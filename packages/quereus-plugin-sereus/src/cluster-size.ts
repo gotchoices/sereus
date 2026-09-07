@@ -99,6 +99,20 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * is what the corroboration floor is asking. See Optimystic's `cluster/cluster-policy.ts`
  * ("Why two size yardsticks, not one") and `corroboratorCapacity` in `cluster/quorum-restore.ts`.
  *
+ * **`assumedClusterSize` is now the ADMISSION yardstick.** Since Optimystic grew
+ * `repairCorroborationClusterSize` (see {@link controlClusterPolicy}), the repair corroboration
+ * floor prefers that separate declaration and reads this field only when nothing was declared —
+ * the unknown-machine-count path, where the paragraph above still describes what it does. So on
+ * every path where the count IS known, the 2 here governs one consumer: the membership admission
+ * gate's low-confidence fallback path. Leaving
+ * it at 2 is deliberate and must NOT be "fixed" to match the repair yardstick. Raising it would
+ * make the gate demand `ceil(0.75 x N)` DECLARED peers before it admits a coordinator's peer
+ * set on that path, and a Cadre party is phones and laptops: it cannot promise that three
+ * quarters of its enrolled machines are awake at any moment, so a party of eight with three
+ * awake would stop transacting entirely. The repair yardstick has no such cost (it gates only
+ * whether this node believes a repair answer), which is exactly why the two are now separate
+ * numbers rather than one.
+ *
  * The `satisfies` is load-bearing: without it a mistyped or obsolete key would compile at both
  * this definition and every consumer, because TypeScript only excess-property-checks fresh
  * object literals, not a shared constant handed to `clusterPolicy`.
@@ -143,12 +157,20 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * honestly reports the stale revision, the reader concludes it is current, and re-arms its
  * repair window forever. Measured on the control-DB replication scenario: 4 failures in 10 runs
  * at breadth 2, 0 in 20 at breadth 3, 0 in 10 at breadth 8. What lifts the floor off a single
- * voter is a *third machine*, not a wider target: `corroboratorCapacity` takes the cohort peers
- * actually present against {@link STRAND_CLUSTER_POLICY}'s declared `assumedClusterSize`, so a
- * three-machine strand needs two corroborators whatever this number says, and a two-machine one
- * cannot supply them however wide the target is. The underlying Optimystic behaviour is unfixed
- * — `backlog/debt-read-repair-single-voter-corroboration` — so a two-machine strand still takes
- * the exposure. Raising this number does not buy the way out; adding a machine does.
+ * voter is a third machine **or a declaration that there are three** — not a wider target.
+ * `corroboratorCapacity` takes the max of the cohort peers actually present and the declared
+ * repair yardstick, so raising *this* number (the replication breadth) does nothing: the
+ * yardstick is a separate declaration. Cadre now derives it from the machines enrolled in the
+ * party ({@link resolveRepairYardstick}, threaded to {@link strandClusterPolicy} through
+ * `StartStrandConfig.enrolledMachines`), so a strand on a party of three or more declares its
+ * way to a floor of two corroborators even when its cohort view has momentarily shrunk to one
+ * peer — which is the case the declaration exists for, since that view comes from
+ * unauthenticated routing. What remains exposed is a strand whose declaration is honestly 2: an
+ * explicit `clusterSize: 2`, or a genuinely two-machine party, which fields exactly one peer and
+ * can never supply a second corroborator however wide the target is. The underlying Optimystic
+ * behaviour is unfixed — `backlog/debt-read-repair-single-voter-corroboration` — so those still
+ * take the exposure. Raising this number does not buy the way out; a machine, or an honest
+ * declaration of the machines already enrolled, does.
  *
  * **Why not derived from the party or member count.** The strand's `Member` rows live *in* the
  * strand database, which runs on the strand libp2p node, whose cluster size is frozen at
@@ -216,6 +238,15 @@ export const DEFAULT_STRAND_CLUSTER_SIZE = 4;
  * number, so the relaxed branch is reachable only by a cohort that is genuinely that small. See
  * Optimystic's `cluster/cluster-policy.ts` ("Why two size yardsticks, not one").
  *
+ * **`assumedClusterSize` is now the ADMISSION yardstick**, for the same reason and with the same
+ * warning as {@link CONTROL_CLUSTER_POLICY}'s: whenever the enrolled-machine count is known the
+ * repair corroboration floor reads {@link strandClusterPolicy}'s separate
+ * `repairCorroborationClusterSize` instead, leaving the 2 here to govern only the membership
+ * admission gate's low-confidence fallback (it remains the repair fallback on the
+ * unknown-count path, which is what the paragraph above describes). Do not raise it to match the
+ * repair yardstick — a strand shared between phones cannot promise that `ceil(0.75 x N)` of its
+ * machines are awake, and the gate would refuse its writes.
+ *
  * The `satisfies` is load-bearing for the same reason as {@link CONTROL_CLUSTER_POLICY}'s.
  */
 export const STRAND_CLUSTER_POLICY = Object.freeze({
@@ -250,4 +281,125 @@ export function resolveStrandClusterSize(configured?: number): number {
 		);
 	}
 	return configured;
+}
+
+/**
+ * The repair yardstick to declare for a network, from the machines enrolled in this party and
+ * the breadth that network replicates to.
+ *
+ * ## What this number does
+ *
+ * Optimystic's block repair (read-repair and reconcile) asks a block's cohort for the newest
+ * revision and trusts an answer only when enough independent peers agree on it. "Enough" is
+ * measured against a **declared** number rather than the peers currently visible — deliberately,
+ * because the visible set comes from unauthenticated routing, and a partition (or an attacker
+ * with routing influence) can shrink it. `clusterPolicy.repairCorroborationClusterSize` is that
+ * declaration; it moves the repair yardstick ALONE, leaving
+ * {@link CONTROL_CLUSTER_POLICY}'s / {@link STRAND_CLUSTER_POLICY}'s `assumedClusterSize` — the
+ * membership admission gate's yardstick — untouched. Optimystic resolves
+ * `repairCorroborationClusterSize -> assumedClusterSize -> clusterSize`, and a value that is not
+ * a positive integer falls THROUGH to the next term rather than being clamped, which is why the
+ * builders below refuse to pass a degenerate count at all.
+ *
+ * ## The arithmetic, and why the formula is what it is
+ *
+ * Three consumers read the resolved yardstick `N`. With `p` = cohort peers currently visible
+ * (self excluded) and Optimystic's `CORROBORATION_FLOOR` = 2:
+ *
+ * - **Repair corroboration floor** (`corroboratorCapacity` / `quorumSize` in
+ *   `db-p2p/src/cluster/quorum-restore.ts`): capacity is `max(p, N - 1)` and the floor is
+ *   `max(1, min(2, capacity))`. So `N = 1` and `N = 2` behave IDENTICALLY at every `p` — both
+ *   leave the floor at a single voter whenever `p <= 1`. `N >= 3` pins the floor at two
+ *   corroborators unconditionally, including when the view has shrunk to one peer. That is the
+ *   entire point of declaring. `N` above 3 raises nothing further (the `min(2, ...)` caps it), so
+ *   a larger declaration buys only honesty, never more repair.
+ * - **Commit freshness window** (`CoordinatorRepo.commitQuorumRulesOutRivals`): `fullCohortSize`
+ *   is `max(observed cohort, N)`, and a local commit arms the lazy read-repair window only when
+ *   `approvals > fullCohortSize / 2`. Here a larger `N` is NOT free — see the NOTE below.
+ * - The `repair-fault-tolerance` startup advisory — log text only.
+ *
+ * Hence `max(MIN_CLUSTER_SIZE, min(enrolledMachines, replicationBreadth))`, two clamps each for
+ * a stated reason:
+ *
+ * - **Capped at the replication breadth**, because a block only ever lives on
+ *   `min(breadth, machines serving)` machines. A party of eight running strands at
+ *   {@link DEFAULT_STRAND_CLUSTER_SIZE} has a cohort of four; declaring eight would make
+ *   `approvals > 4` unsatisfiable (a super-majority of four is three), so the freshness window
+ *   would never arm for any strand commit, forever — and buy nothing on repair, whose floor is
+ *   already at its cap at four. Declare the machines that can hold the block, not the machines
+ *   that exist.
+ * - **Floored at {@link MIN_CLUSTER_SIZE}**, so this can only ever RAISE the declared number
+ *   relative to the un-derived constants. A node that authorizes nobody is a genuine
+ *   founder-alone party, but it is equally a freshly seeded node whose membership rows have not
+ *   replicated yet, or one whose trusted-owner anchor is empty — and this node cannot tell those
+ *   apart. Declaring 1 is safety-neutral for repair (identical to 2 at every `p`, per the table
+ *   above) but it WOULD let a solo commit arm the freshness window, which is wrong if the "solo"
+ *   reading came from stale local records. Lifting that floor for a node that can prove it is
+ *   genuinely alone is separate work: `backlog/feat-solo-node-arms-its-own-freshness-window`.
+ *
+ * The yardstick is per-node and protects only that node's own reads — no node refuses another
+ * anything over it — so two members disagreeing (one has replicated a new `CadrePeer` row, one
+ * has not) is harmless by construction, not a race to close.
+ *
+ * NOTE: on a party of three or more machines where fewer than half are awake, a commit reaches a
+ * downsized cohort and no longer arms the freshness window, so each such block's next read costs
+ * one cohort consult per read-repair window instead of trusting the local commit. That is the
+ * correct reading of the honest number — a commit that reached two of five machines genuinely
+ * does not rule out a rival quorum, and arming it today is a consequence of under-declaring — and
+ * the cost is bounded at one consult per block per window by the read path's solo-self-skip exit.
+ * NOT measured under load. If a large, mostly-hibernating party's read path ever shows up as
+ * slow, this is the first thing to look at.
+ */
+export function resolveRepairYardstick(enrolledMachines: number, replicationBreadth: number): number {
+	return Math.max(MIN_CLUSTER_SIZE, Math.min(enrolledMachines, replicationBreadth));
+}
+
+/**
+ * The enrolled-machine count as a usable number, or `undefined` for "this node does not know".
+ * Anything that is not a positive integer is unknown rather than clamped: Optimystic itself
+ * treats a degenerate declaration as absent, so silently rounding one here would hide a caller
+ * bug behind a number nobody chose.
+ */
+function asKnownMachineCount(enrolledMachines?: number): number | undefined {
+	return enrolledMachines !== undefined
+		&& Number.isInteger(enrolledMachines)
+		&& enrolledMachines >= 1
+		? enrolledMachines
+		: undefined;
+}
+
+/**
+ * {@link CONTROL_CLUSTER_POLICY} with the repair yardstick declared from `enrolledMachines`
+ * (see {@link resolveRepairYardstick}); the frozen base object ITSELF when the count is unknown,
+ * so the cold path is provably today's behaviour and identity assertions keep holding.
+ */
+export function controlClusterPolicy(enrolledMachines?: number): NonNullable<NodeOptions['clusterPolicy']> {
+	const known = asKnownMachineCount(enrolledMachines);
+	if (known === undefined) {
+		return CONTROL_CLUSTER_POLICY;
+	}
+	return Object.freeze({
+		...CONTROL_CLUSTER_POLICY,
+		repairCorroborationClusterSize: resolveRepairYardstick(known, CONTROL_REPLICATION_BREADTH)
+	} satisfies NonNullable<NodeOptions['clusterPolicy']>);
+}
+
+/**
+ * {@link STRAND_CLUSTER_POLICY} with the repair yardstick declared from `enrolledMachines` and
+ * this strand's own `clusterSize` (already resolved by {@link resolveStrandClusterSize}, so it is
+ * at least {@link MIN_CLUSTER_SIZE} and the formula's two clamps can never cross); the frozen
+ * base object ITSELF when the count is unknown.
+ */
+export function strandClusterPolicy(
+	clusterSize: number,
+	enrolledMachines?: number
+): NonNullable<NodeOptions['clusterPolicy']> {
+	const known = asKnownMachineCount(enrolledMachines);
+	if (known === undefined) {
+		return STRAND_CLUSTER_POLICY;
+	}
+	return Object.freeze({
+		...STRAND_CLUSTER_POLICY,
+		repairCorroborationClusterSize: resolveRepairYardstick(known, clusterSize)
+	} satisfies NonNullable<NodeOptions['clusterPolicy']>);
 }

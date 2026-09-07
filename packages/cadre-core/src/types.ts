@@ -388,6 +388,12 @@ export interface ControlNetworkConfig {
  * by omission); the strand breadth defaults to
  * {@link CadreNodeConfig.strandClusterSize} while its policy is the fixed
  * {@link STRAND_CLUSTER_POLICY}.
+ *
+ * The two `*ClusterPolicy` BUILDERS are the same objects with the block-repair
+ * corroboration yardstick declared from the machines enrolled in this party
+ * ({@link resolveRepairYardstick}); handed no count, each returns its frozen base
+ * constant unchanged. A network picks the derived number up when its libp2p node is
+ * built, which for a strand is every wake from hibernation.
  */
 export {
   MIN_CLUSTER_SIZE,
@@ -395,7 +401,10 @@ export {
   CONTROL_CLUSTER_POLICY,
   DEFAULT_STRAND_CLUSTER_SIZE,
   STRAND_CLUSTER_POLICY,
-  resolveStrandClusterSize
+  resolveStrandClusterSize,
+  resolveRepairYardstick,
+  controlClusterPolicy,
+  strandClusterPolicy
 } from '@serfab/quereus-plugin-sereus';
 
 /**

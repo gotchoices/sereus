@@ -1635,6 +1635,36 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Machines enrolled in this party (this node included), for a network's block-repair
+   * corroboration yardstick — see `resolveRepairYardstick` in
+   * `@serfab/quereus-plugin-sereus`'s `cluster-size.ts`. A pure field read of the
+   * already-materialized {@link authorizedControlPeers} snapshot, deliberately: the
+   * strand launch and wake paths call this on every rebuild (a hibernating strand
+   * rebuilds many times a day), so it must never be a control-DB query and certainly
+   * never a network round-trip.
+   *
+   * A machine enters that snapshot by a signed enrollment and leaves it by a signed
+   * removal — `queryCadrePeers` drops rows whose `StampId` is retired in
+   * `CadreControl.Revocation` before this set is built — so this is a declaration from
+   * authenticated application state, never a network observation, and a removed peer
+   * stops counting at revocation rather than at reap.
+   *
+   * An EMPTY snapshot returns `undefined` ("this node does not know"), not 1. Empty is
+   * a genuine founder-alone party, a freshly seeded node whose membership rows have not
+   * replicated yet, and a node with an empty trusted-owner anchor — indistinguishable
+   * from here. The two answers are equivalent for repair anyway (the yardstick's floor
+   * is `MIN_CLUSTER_SIZE`, so 1 would declare 2, and 2 behaves exactly as declaring
+   * nothing does), and `undefined` is the one that also declines to arm the commit
+   * freshness window off a possibly-stale local read. Lifting that for a node that can
+   * prove it is alone: `backlog/feat-solo-node-arms-its-own-freshness-window`.
+   */
+  private enrolledMachineCount(): number | undefined {
+    return this.authorizedControlPeers.size === 0
+      ? undefined
+      : this.authorizedControlPeers.size + 1;
+  }
+
+  /**
    * Refresh {@link authorizedControlPeers} from the control DB, best-effort: a
    * failed read keeps the previous snapshot (never clears it), so a transient
    * DB error can neither flip the stream gate's cold-start carve-out back open
@@ -3648,10 +3678,11 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort input
-   * first: the discovery seed may have grown since the strand last ran. Shared by
-   * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so
-   * both apply the same fresh seed resolution. `resumeStrand` is idempotent
+   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort inputs
+   * first: the discovery seed may have grown since the strand last ran, and so may
+   * the party's enrolled-machine count. Shared by the wake (`handleStrandWake`) and
+   * check-in (`handleStrandCheckIn`) paths so both apply the same fresh
+   * resolution. `resumeStrand` is idempotent
    * (returns the live instance unchanged) as a backstop against double-resume.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
@@ -3662,7 +3693,13 @@ export class CadreNode implements SAppIdLookup {
       ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString()
       : undefined;
     const bootstrapNodes = await this.resolveCohortSeed(strandId, delegatePeerId);
-    const instance = await this.strandManager.resumeStrand(strandId, { bootstrapNodes });
+    const instance = await this.strandManager.resumeStrand(strandId, {
+      bootstrapNodes,
+      // The other volatile input: the party may have enrolled or removed a machine while
+      // this strand slept, and the rebuilt node freezes the repair yardstick derived from
+      // it. A field read, not a query — see `enrolledMachineCount`.
+      enrolledMachines: this.enrolledMachineCount()
+    });
     // Same reason as the launch path: `bootstrapNodes` only reaches the address
     // book through @libp2p/bootstrap discovery, so merge it directly as well.
     if (instance.libp2pNode) {
@@ -4162,6 +4199,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes,
       requireSignedSchemas: this.config.requireSignedSchemas,
       clusterSize: this.config.strandClusterSize,
+      enrolledMachines: this.enrolledMachineCount(),
       backfill: this.config.strandBackfill,
       founder
     });

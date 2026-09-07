@@ -17,7 +17,7 @@ import type {
   RawStorageProvider,
   Libp2pNodeWithRepo
 } from './types.js';
-import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './types.js';
+import { resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { resolveListenAddrs } from './relay-addrs.js';
 import { resolveAnnounceAddrs } from './announce-addrs.js';
 
@@ -62,6 +62,15 @@ export interface StartStrandConfig {
    */
   clusterSize?: number;
   /**
+   * Machines enrolled in this party (this node included), for the strand node's
+   * block-repair corroboration yardstick — see `resolveRepairYardstick`. Volatile:
+   * re-resolved on every resume beside the cohort seed, because a party grows and
+   * shrinks while a strand is hibernating. Omitting it means "this node does not
+   * know", which declares nothing and leaves Optimystic's repair floor exactly
+   * where it sits today.
+   */
+  enrolledMachines?: number;
+  /**
    * Tuning for the strand peer-join block catch-up ({@link PeerJoinBackfill}),
    * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
    * libp2p node connects to a peer this runtime has not yet caught up, every
@@ -73,13 +82,23 @@ export interface StartStrandConfig {
 }
 
 /**
- * Volatile inputs re-resolved when resuming a quiesced strand. The cohort
- * discovery seed is the only one — it grows as peers are learned since the
- * strand first launched.
+ * Volatile inputs re-resolved when resuming a quiesced strand — the ones that can
+ * have moved since it last ran, and that the rebuilt libp2p node freezes again. Each
+ * one omitted keeps the value the retained launch config already holds, so a resume
+ * that passes nothing rebuilds the strand exactly as it last ran.
  */
 export interface ResumeStrandOverrides {
-  /** Freshly-resolved cohort discovery seed (multiaddr strings). */
+  /**
+   * Freshly-resolved cohort discovery seed (multiaddr strings). Grows as peers are
+   * learned since the strand first launched.
+   */
   bootstrapNodes?: string[];
+  /**
+   * Freshly-read enrolled-machine count for the repair yardstick (see
+   * {@link StartStrandConfig.enrolledMachines}). Moves whenever the party enrolls or
+   * removes a machine, which a hibernating strand does not otherwise notice.
+   */
+  enrolledMachines?: number;
 }
 
 /**
@@ -309,8 +328,9 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, network, profile, privateKey, sApp config)
-   * from `config`, so the caller controls the cohort-derived values. Storage is the
+   * volatile inputs (bootstrapNodes, enrolledMachines, network, profile,
+   * privateKey, sApp config) from `config`, so the caller controls the
+   * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
    * comes from `strandStorages`.
    */
@@ -343,6 +363,11 @@ export class StrandInstanceManager {
     const listenAddrs = resolveListenAddrs(config.network);
 
     try {
+      // Bound once: the breadth is also the ceiling on the repair yardstick below, and the
+      // two must be derived from the same resolution. Inside the `try` deliberately — a
+      // rejected clusterSize is a build failure that runs the same cleanup as any other.
+      const strandClusterSize = resolveStrandClusterSize(config.clusterSize);
+
       let t0 = performance.now();
       const node = await createLibp2pNode({
         port: 0, // Random port
@@ -351,10 +376,16 @@ export class StrandInstanceManager {
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: enableRelay,
-        clusterSize: resolveStrandClusterSize(config.clusterSize),
+        clusterSize: strandClusterSize,
         // Deliberately NOT CONTROL_CLUSTER_POLICY: a strand is application data with its own
         // breadth reasoning, and the shape match with the control policy is a coincidence.
-        clusterPolicy: STRAND_CLUSTER_POLICY,
+        //
+        // The builder declares this node's block-repair corroboration yardstick from the
+        // party's enrolled-machine count, capped at the breadth above (a block never lives
+        // on more machines than the cohort is wide). Given no count it returns the frozen
+        // STRAND_CLUSTER_POLICY itself. Resolved HERE rather than at `startStrand`, so a
+        // wake from hibernation picks up a party that grew while the strand slept.
+        clusterPolicy: strandClusterPolicy(strandClusterSize, config.enrolledMachines),
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },
@@ -544,9 +575,9 @@ export class StrandInstanceManager {
    * Resume a previously-quiesced strand: rebuild its libp2p node + StrandDatabase
    * from the retained launch config and re-attach them, transitioning it back to
    * `active`. `overrides` re-applies volatile inputs that may have changed since
-   * launch (the cohort `bootstrapNodes` seed) and updates the retained config so
-   * a later resume reuses the latest values. Returns the live instance unchanged
-   * if it is already running.
+   * launch (the cohort `bootstrapNodes` seed and the party's `enrolledMachines`
+   * count) and updates the retained config so a later resume reuses the latest
+   * values. Returns the live instance unchanged if it is already running.
    */
   async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
     if (this.stopping) {
@@ -569,9 +600,13 @@ export class StrandInstanceManager {
     const tTotal = performance.now();
 
     // Re-apply volatile inputs and persist them so a subsequent resume reuses them.
+    // Each `??` matters: a resume that passes no override must keep the retained value,
+    // and a resume that passes one must leave it retained for the next resume — otherwise
+    // a later no-override wake silently reverts to whatever launch time saw.
     const resumeConfig: StartStrandConfig = {
       ...launchConfig,
-      bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes
+      bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes,
+      enrolledMachines: overrides?.enrolledMachines ?? launchConfig.enrolledMachines
     };
     this.launchConfigs.set(strandId, resumeConfig);
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
-import { DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY } from '../src/types.js';
+import { DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY, strandClusterPolicy } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -122,10 +122,14 @@ describe('StrandInstanceManager cluster size wiring', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-policy'));
 
-    // The shared constant itself, not an equal-looking copy: a hand-copied literal here is
-    // exactly how this site and the plugin's networked e2e mesh drifted apart before.
+    // Structural, not identity: with no `enrolledMachines` the builder returns the shared
+    // constant itself, but the assertion has to survive a config that DOES carry a count
+    // (see the enrolled-machine tests below), where the policy is a derived object. What
+    // must not drift is the shape — a hand-copied literal here is exactly how this site and
+    // the plugin's networked e2e mesh diverged before. The identity of the unknown-count
+    // path is pinned separately, immediately below.
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
-      expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
+      expect.objectContaining({ clusterPolicy: expect.objectContaining({ ...STRAND_CLUSTER_POLICY }) })
     );
 
     // Declared, not left to default. The membership admission gate would default to this
@@ -142,5 +146,102 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // Absent on purpose: omitting it is what selects Optimystic's
     // DEFAULT_SUPER_MAJORITY_THRESHOLD (0.75) at both the coordinator and the cluster member.
     expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
+  });
+
+  it('passes the frozen STRAND_CLUSTER_POLICY BY IDENTITY when no machine count is known', async () => {
+    // The cold path — no control database, or a node whose membership rows have not
+    // replicated yet — must be provably today's behaviour, not a look-alike object.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-unknown'));
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
+    );
+  });
+
+  it('declares the repair yardstick from the enrolled-machine count', async () => {
+    // Optimystic measures a block-repair answer against a DECLARED size, not the peers
+    // currently visible — the visible set comes from unauthenticated routing, so a
+    // partition can shrink it and, undeclared, talk the corroboration floor down to a
+    // single voter. Five machines at a breadth of four declares four.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-enrolled', { enrolledMachines: 5 }));
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 5)
+      })
+    );
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clusterPolicy: expect.objectContaining({
+          repairCorroborationClusterSize: DEFAULT_STRAND_CLUSTER_SIZE,
+          // Untouched: the admission gate's yardstick is a separate number now, and
+          // raising it would make a party of phones unable to commit.
+          assumedClusterSize: MIN_CLUSTER_SIZE
+        })
+      })
+    );
+  });
+
+  it('caps the declared yardstick at this strand\'s own configured breadth', async () => {
+    // A strand explicitly configured at the minimum has a cohort of two whatever the
+    // party size, and two is the honest declaration for it. Do not "fix" this to 5.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-capped', {
+      clusterSize: MIN_CLUSTER_SIZE,
+      enrolledMachines: 5
+    }));
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clusterPolicy: expect.objectContaining({ repairCorroborationClusterSize: MIN_CLUSTER_SIZE })
+      })
+    );
+  });
+
+  it('reuses the retained machine count on a resume that overrides only the seed', async () => {
+    // A hibernating strand rebuilds many times a day, and most of those wakes pass no
+    // count (or an unknown one). Reverting to "undeclared" on such a wake would quietly
+    // reopen the single-voter floor the launch-time declaration closed.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-resume-retained', { enrolledMachines: 5 }));
+    await manager.quiesceStrand('cs-policy-resume-retained');
+    await manager.resumeStrand('cs-policy-resume-retained', { bootstrapNodes: [] });
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+    expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        clusterPolicy: expect.objectContaining({
+          repairCorroborationClusterSize: DEFAULT_STRAND_CLUSTER_SIZE
+        })
+      })
+    );
+  });
+
+  it('applies a fresh machine count on resume and retains it for the next one', async () => {
+    // The party grew from two to three while the strand slept; the rebuilt node must
+    // declare three (which is what pins the floor at two corroborators), and a LATER
+    // no-override resume must still see three rather than reverting to the launch value.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-resume-fresh', { enrolledMachines: 2 }));
+    await manager.quiesceStrand('cs-policy-resume-fresh');
+    await manager.resumeStrand('cs-policy-resume-fresh', { bootstrapNodes: [], enrolledMachines: 3 });
+
+    expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        clusterPolicy: expect.objectContaining({ repairCorroborationClusterSize: 3 })
+      })
+    );
+
+    await manager.quiesceStrand('cs-policy-resume-fresh');
+    await manager.resumeStrand('cs-policy-resume-fresh', { bootstrapNodes: [] });
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(3);
+    expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        clusterPolicy: expect.objectContaining({ repairCorroborationClusterSize: 3 })
+      })
+    );
   });
 });

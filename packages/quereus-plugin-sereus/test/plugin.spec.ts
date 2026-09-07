@@ -9,11 +9,15 @@ import { connectToStrand } from '../src/connect.js';
 import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
+	CONTROL_CLUSTER_POLICY,
 	CONTROL_REPLICATION_BREADTH,
 	DEFAULT_STRAND_CLUSTER_SIZE,
 	MIN_CLUSTER_SIZE,
 	STRAND_CLUSTER_POLICY,
-	resolveStrandClusterSize
+	controlClusterPolicy,
+	resolveRepairYardstick,
+	resolveStrandClusterSize,
+	strandClusterPolicy
 } from '../src/cluster-size.js';
 
 // Mock only createLibp2pNode while preserving all other exports from db-p2p
@@ -573,5 +577,107 @@ describe('CONTROL_REPLICATION_BREADTH', () => {
 
 	it('is at or above optimystic\'s minimum cluster size', () => {
 		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThanOrEqual(MIN_CLUSTER_SIZE);
+	});
+});
+
+describe('resolveRepairYardstick', () => {
+	// The number Optimystic measures a block-repair answer against. It must be DECLARED
+	// rather than observed: the cohort a node can see comes from unauthenticated routing,
+	// so a partition (or an attacker with routing influence) shrinks the view and, with it,
+	// the corroboration floor. See the arithmetic note on the function.
+	it('floors at MIN_CLUSTER_SIZE, so it can only ever raise the declaration', () => {
+		// A node that authorizes nobody is a founder alone, a freshly seeded node whose
+		// membership rows have not replicated, or one with an empty owner anchor — the
+		// same reading from here. 2 behaves identically to 1 for repair at every peer
+		// count, and unlike 1 it does not let a solo commit arm the freshness window.
+		expect(resolveRepairYardstick(1, CONTROL_REPLICATION_BREADTH)).toBe(MIN_CLUSTER_SIZE);
+		expect(resolveRepairYardstick(2, CONTROL_REPLICATION_BREADTH)).toBe(MIN_CLUSTER_SIZE);
+	});
+
+	it('declares the party size once it exceeds the floor', () => {
+		// 5 >= 3 is what puts the corroboration floor at two voters unconditionally,
+		// including when the cohort view has momentarily shrunk to one peer. That is the
+		// whole point of the derivation.
+		expect(resolveRepairYardstick(5, CONTROL_REPLICATION_BREADTH)).toBe(5);
+	});
+
+	it('caps at the replication breadth, because a block never lives on more machines', () => {
+		// Eight machines running strands at a breadth of 4 have a cohort of 4. Declaring 8
+		// would make the commit freshness window's `approvals > 8/2` unsatisfiable (a
+		// super-majority of 4 is 3), so no strand commit would ever arm it — and buy
+		// nothing on repair, whose floor is already capped at 4. Do not drop this clamp.
+		expect(resolveRepairYardstick(8, 4)).toBe(4);
+	});
+
+	it('declares the honest 2 for a strand configured at the minimum breadth', () => {
+		// A five-machine party running a `clusterSize: 2` strand has a cohort of two, and
+		// two is what it should declare — the relaxed single-voter floor is the correct
+		// reading of a two-machine cohort, not a bug for a later reader to "fix".
+		expect(resolveRepairYardstick(5, MIN_CLUSTER_SIZE)).toBe(MIN_CLUSTER_SIZE);
+	});
+});
+
+describe('controlClusterPolicy / strandClusterPolicy', () => {
+	it('returns the frozen base constant BY IDENTITY when the count is unknown', () => {
+		// Identity, not equality: the unknown path must be provably today's behaviour, and
+		// every existing consumer and identity assertion has to keep working.
+		expect(controlClusterPolicy(undefined)).toBe(CONTROL_CLUSTER_POLICY);
+		expect(controlClusterPolicy()).toBe(CONTROL_CLUSTER_POLICY);
+		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE)).toBe(STRAND_CLUSTER_POLICY);
+	});
+
+	it('treats a degenerate count as unknown rather than clamping it', () => {
+		// Optimystic itself falls THROUGH a non-positive-integer declaration to the next
+		// term rather than clamping it, so rounding one here would hide a caller bug
+		// behind a number nobody chose.
+		for (const bad of [0, -1, 2.5, Number.NaN]) {
+			expect(controlClusterPolicy(bad)).toBe(CONTROL_CLUSTER_POLICY);
+			expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, bad)).toBe(STRAND_CLUSTER_POLICY);
+		}
+	});
+
+	it('declares the repair yardstick without disturbing the admission yardstick', () => {
+		const policy = controlClusterPolicy(5);
+
+		expect(policy).not.toBe(CONTROL_CLUSTER_POLICY);
+		expect(policy.repairCorroborationClusterSize).toBe(5);
+
+		// The two yardsticks are now separate numbers on purpose. Raising this one to
+		// match would make the membership admission gate's low-confidence path demand
+		// `ceil(0.75 x 5)` declared peers, and a party of phones cannot promise that many
+		// are awake.
+		expect(policy.assumedClusterSize).toBe(CONTROL_CLUSTER_POLICY.assumedClusterSize);
+		expect(policy.assumedClusterSize).toBe(MIN_CLUSTER_SIZE);
+
+		// Still absent, which is what selects DEFAULT_SUPER_MAJORITY_THRESHOLD (0.75) at
+		// both the coordinator and the cluster member.
+		expect(policy).not.toHaveProperty('superMajorityThreshold');
+
+		expect(policy.allowDownsize).toBe(true);
+		expect(policy.sizeTolerance).toBe(CONTROL_CLUSTER_POLICY.sizeTolerance);
+		expect(Object.isFrozen(policy)).toBe(true);
+	});
+
+	it('caps the strand yardstick at that strand\'s own breadth', () => {
+		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 8).repairCorroborationClusterSize)
+			.toBe(DEFAULT_STRAND_CLUSTER_SIZE);
+		expect(strandClusterPolicy(MIN_CLUSTER_SIZE, 5).repairCorroborationClusterSize)
+			.toBe(MIN_CLUSTER_SIZE);
+
+		const policy = strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 3);
+		expect(policy.repairCorroborationClusterSize).toBe(3);
+		expect(policy.assumedClusterSize).toBe(STRAND_CLUSTER_POLICY.assumedClusterSize);
+		expect(policy).not.toHaveProperty('superMajorityThreshold');
+		expect(Object.isFrozen(policy)).toBe(true);
+	});
+
+	it('leaves the base constants themselves untouched', () => {
+		// A builder that mutated its base instead of spreading it would poison every
+		// other consumer of the shared constant, and the freeze would hide it in dev.
+		controlClusterPolicy(9);
+		strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 9);
+
+		expect(CONTROL_CLUSTER_POLICY).not.toHaveProperty('repairCorroborationClusterSize');
+		expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('repairCorroborationClusterSize');
 	});
 });

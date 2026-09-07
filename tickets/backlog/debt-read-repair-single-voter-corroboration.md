@@ -75,3 +75,17 @@ cohort is the whole party. What is left is the strand path, whose own breadth qu
 separately (`backlog/debt-strand-replication-breadth-ignores-party-count`) and which has no reported
 failure yet. The design question above also wants a considered answer in the Optimystic repo rather
 than a quick patch driven by a Sereus scenario.
+
+## Scope narrowing (2026-09-07)
+
+Cadre now *declares* its block-repair yardstick from the machines enrolled in the party rather than
+leaving it pinned at 2, and applies it to each strand network on every rebuild — which for a strand
+is every wake from hibernation (`resolveRepairYardstick` / `strandClusterPolicy` in
+`packages/quereus-plugin-sereus/src/cluster-size.ts`, threaded through
+`StartStrandConfig.enrolledMachines`). A strand in a party of three or more machines therefore no
+longer reaches the relaxed single-voter branch at all, even when its view of the cohort has shrunk
+to one peer.
+
+What is still exposed: a strand explicitly configured at `clusterSize: 2`, an honest two-machine
+party, and any other Optimystic embedder that has not declared a size. The underlying behaviour is
+unchanged upstream, so this ticket stays open.
