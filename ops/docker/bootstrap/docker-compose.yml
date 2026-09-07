@@ -6,9 +6,11 @@ services:
     container_name: sereus_libp2p_bootstrap
     ports:
       - "${HOST_BIND_IP:-0.0.0.0}:${HOST_PORT:-4002}:4001/tcp"
+      - "${HOST_BIND_IP:-0.0.0.0}:${HOST_WS_PORT:-4012}:4002/tcp"
     environment:
       - SEREUS_ROLE=bootstrap
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
+      - LISTEN_ADDRS=${LISTEN_ADDRS:-}
     volumes:
       - "${HOST_DATA_DIR:-./data}:/data"
     restart: unless-stopped

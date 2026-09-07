@@ -6,6 +6,58 @@ repro: verified
 difficulty: hard
 ----
 
+> **Gate finished 2026-09-03 — five runs, five red, and the mechanism is not the one this ticket
+> was filed for. Stays blocked, behind a NEW upstream ticket.**
+>
+> The body's unblock gate ("≥ 5 runs of `control-write-degraded-cohort-member.integration.ts`")
+> was finally run as a clean series, in isolation, against `@optimystic/db-p2p` 0.27.0 with both
+> siblings rebuilt from their committed release trees:
+>
+> | round | result |
+> | --- | --- |
+> | 1-5 | **5 failed / 2 passed of 7, every round, identically** |
+>
+> It was set up to retire this ticket on five clean runs. It got the opposite, and something
+> better: a **reliable repro** for a defect that has been intermittent since 2026-08-12.
+>
+> **The `0/3 approvals, 0 rejections` symptom is gone and did not appear once.** What fails now is
+> a different mechanism wearing the same test:
+>
+> ```
+> Transaction rejected by validators (2/3 rejected):
+>   pending conflict: block _Paunze… held by unresolved action(s) urFN0UkUeVOk61QtJDkz6A
+> ```
+>
+> One action wedges one block for the whole process — 50+ seconds, four consecutive tests. Test 1
+> passes, test 2 wedges the block, and tests 3-7 die on the same block and the same action id;
+> that is the whole 5-of-7 cascade. Traced (`optimystic:db-p2p:cluster-member,block-storage,
+> coordinator-repo*`), the counts for the wedging action are unambiguous:
+>
+> | event | wedged block | its sibling block |
+> | --- | --- | --- |
+> | `block-storage pend` | **3** | 3 |
+> | `block-storage commit` | **1** | 3 |
+>
+> A pend spanning two blocks; the commit applied to one block on all three members and to the other
+> on exactly one. The two members that never applied it keep the pending record, and
+> `validatePendOperations` (`cluster-repo.ts:1479`) then rejects every later write to that block —
+> 41 rejections in one run. This is the **durable** record in storage, not the in-memory
+> reservation that `1-abandoned-pend-holds-the-block` and `2-member-must-answer-a-lost-conflict-race`
+> fixed; the stale-threshold sweep cannot reach it, and nothing else sweeps it either.
+>
+> **Filed upstream as `../optimystic/tickets/fix/1-a-half-applied-commit-wedges-a-block-forever`**
+> (`67fc6b64`), with the counts, the trace commands, and the `block-storage.ts:407` widen-if-seen
+> NOTE it trips.
+>
+> **The retry classifier in this repo was checked and is correct** — the "one thing to watch" below
+> did not bite. `isUncommittedTransactorAggregate` matches on the pend-phase `[block:` token, and
+> re-presenting a pend-phase aggregate is safe by design, so the three attempts are right and
+> merely futile against a pend that never clears. No classifier change is warranted.
+>
+> **Do not read a green run as a fix.** This file was 7/7 green twice on 2026-09-02 and 5/5 red on
+> 2026-09-03 with byte-identical code (the only commits between were version bumps and ticket
+> moves). Machine state moves the rate a long way. Re-measure as a series of five, never once.
+
 > **Gate attempt 2026-08-22 — the `0/3` symptom has not appeared in any observation since the
 > upstream fix, but the five-run gate is NOT complete. Stays blocked.**
 >
@@ -171,3 +223,105 @@ The healthy-trio scenario (≥ 5 runs of
 unblocking this ticket — the upstream repo could not run it from there.
 
 Do not "fix" this by loosening the scenario's assertions.
+
+> **Upstream fix has LANDED, 2026-09-05, and is available to this repo right now. Re-run the gate.**
+>
+> Written from the `../optimystic` side during a tending pass there; nothing in this repo was
+> changed or re-measured to produce it, so treat the recommendation as "worth a run", not a result.
+>
+> The 2026-09-03 gate above filed `a-half-applied-commit-wedges-a-block-forever` upstream. That
+> ticket has since been through the pipeline and split in two, both now complete:
+>
+> - `optimystic/tickets/complete/1-torn-commit-must-cancel-the-blocks-it-abandoned` — the fix.
+> - `optimystic/tickets/complete/name-a-block-that-is-stuck-behind-a-stale-reservation` — the
+>   diagnostic that names the wedging block.
+>
+> The mechanism it repairs is the one measured here. `NetworkTransactor.commit` commits the tail
+> block, then sweeps the rest; when that sweep failed in a transport-shaped way it returned
+> `{ success: true }` anyway, leaving a durable pending record on every block the sweep never
+> reached. That record's only removers are a client cancel (never sent — the client was told it
+> succeeded), a divergence-shaped refusal, or a forward write of the same action id. So it is
+> permanent, and while it stands `ClusterMember.validatePendOperations` rejects every later write to
+> that block from every writer. That is this ticket's `pend 3 / commit 1` table and its 5-of-7
+> cascade, stated from the other side.
+>
+> The invariant it establishes: when `NetworkTransactor.commit` returns, every block in
+> `request.blockIds` is either committed or has had its pending record cancelled.
+>
+> **You do not need a release to test this.** This workspace resolves `@optimystic/*` to
+> `link:../optimystic/packages/*` (root `package.json`, `resolutions`), so
+> `cd ../optimystic && yarn build` plus a rebuild here picks the fix up from that checkout's `main`.
+> It is *not* in a published 0.28.0 — so do not close this on a green gate without separately
+> deciding what a released consumer gets.
+>
+> **What to run:** the five isolated rounds of `control-write-degraded-cohort-member.integration.ts`
+> this ticket already specifies. Record the result either way.
+>
+> **One caveat that decides how to read a still-red gate.** The upstream fix covers the *sweep* arm
+> only. Its complete ticket records, as a deliberate exclusion, that "the tail's own failure path
+> still leaves the cancel to its caller" — which is the sibling failure this repo tracks as
+> `control-write-retry-does-not-absorb-a-transient-stream-reset`, a *different* upstream ticket,
+> still in flight. If the gate comes back red with the same `pending conflict` text, check which arm
+> produced it before concluding the fix did not work.
+
+> **Gate re-run from the `../optimystic` side, 2026-09-06 — eight isolated rounds against that
+> repo's `main`. Improved from 0 clean of 5 to 3 clean of 8. NOT fixed; do not close it.**
+>
+> Run here rather than waiting for someone in this repo to do it, because the upstream fix and its
+> sibling both landed in the same pass and the question of whether they helped was answerable
+> immediately. `../optimystic` was rebuilt first (this repo's stale-build guard caught a stale
+> `db-p2p` `dist` and refused to start — it works).
+>
+> | round | result |
+> | --- | --- |
+> | 1 | 7 passed |
+> | 2 | 5 failed / 2 passed |
+> | 3 | 7 passed |
+> | 4 | 5 failed / 2 passed |
+> | 5 | 2 failed / 5 passed |
+> | 6 | 2 failed / 5 passed |
+> | 7 | 7 passed |
+> | 8 | **7 skipped** — suite-level boot gate: `Timeout waiting for B resolves C's signed address record after 45000ms` |
+>
+> Three clean, four with in-suite failures, one boot failure. The previous measurement was 5 failed
+> of 7 on **every** one of five rounds, deterministically. So the wedge cascade is broken — but the
+> file is now *intermittent* rather than green, and rounds 5 and 6 show a smaller, two-failure shape
+> this ticket has not recorded before.
+>
+> **What the remaining failures are, from a captured round (round 6, full log):**
+>
+> ```
+> Control write [self-record-update] failed non-transiently on attempt 1/3, not retried here:
+>   ... cause=The stream has been reset
+>   cause: StreamResetError: The stream has been reset
+>   cancelError: [Error]
+> ...
+> Control write [peer-remove] failed non-transiently on attempt 1/3, not retried here:
+>   SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10 retries:
+>   pending conflict: block(s) held by unresolved rival action(s) yRfPLIpAdguxZUfWV8U9YA
+> ```
+>
+> `cancelError` is a **new** field the upstream fix attaches when a failed attempt's own cancel could
+> not discharge. Its presence is the fix working and then hitting its own documented limit: the
+> stream reset that killed the commit also killed the cancel, so the pend stood. The
+> `pending conflict` two operations later is that same standing record refusing an unrelated write —
+> and note it now arrives as `SyncRetryExhaustedError` out of the collection sync loop, a different
+> layer from the control-write retry loop this ticket has been watching.
+>
+> Recorded upstream as a measured arm on
+> `optimystic/tickets/backlog/debt-unpromotable-pending-records-need-a-sweep`, which owns exactly this
+> residual: nothing node-side ever clears a marker whose client could not clear it. That ticket was
+> `repro: static` and now has an observed consequence. It is **not** a new upstream fix ticket — the
+> hole is known and deliberately out of scope of what landed.
+>
+> **Round 8's boot failure is a different ticket.** "B resolves C's signed address record" is
+> `control-peer-row-refresh-invisible-to-third-node`. The upstream work for that also landed in this
+> pass (`optimystic/tickets/complete/a-reader-cannot-tell-its-view-stopped-advancing`, which gates
+> commit-side freshness stamping on quorum intersection), so 1 boot failure in 8 is worth re-measuring
+> against the prior rate rather than read as unchanged. This run carried no `DEBUG`, so there is no
+> evidence here either way about whether the repair path engaged.
+>
+> **Suggested next step for this repo:** keep the ticket open, update
+> `tickets/.pre-existing-known.md` with the 3-of-8 rate so nobody reads a green round as a fix, and
+> re-run with `DEBUG='optimystic:db-p2p:*'` on a round that fails, to see whether the standing pend
+> is ever swept once the transport heals or whether it really is permanent for the process.

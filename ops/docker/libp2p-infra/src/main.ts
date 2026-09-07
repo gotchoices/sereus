@@ -9,6 +9,7 @@ import path from 'node:path'
 
 import { createLibp2p } from 'libp2p'
 import { tcp } from '@libp2p/tcp'
+import { webSockets } from '@libp2p/websockets'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
@@ -17,6 +18,8 @@ import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { kadDHT } from '@libp2p/kad-dht'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
+import { isWebSocketAddr, parseAnnounceAddrs, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv } from './env.js'
+
 type Role = 'relay' | 'bootstrap' | 'bootstrap-relay'
 
 const ROLE = (process.env.SEREUS_ROLE ?? '').trim() as Role
@@ -24,46 +27,51 @@ if (!ROLE || !['relay', 'bootstrap', 'bootstrap-relay'].includes(ROLE)) {
   throw new Error(`Missing/invalid SEREUS_ROLE. Expected one of: relay|bootstrap|bootstrap-relay (got ${JSON.stringify(process.env.SEREUS_ROLE)})`)
 }
 
-const DATA_DIR = '/data'
+// `/data` is the container volume; override when running the process directly on a
+// workstation. The identity key is stored here, so a stable DATA_DIR means a stable peer
+// id across restarts — which matters because clients pin the relay's /p2p/<peerId>.
+const DATA_DIR = (process.env.DATA_DIR ?? '').trim() || '/data'
 const KEY_FILE = path.join(DATA_DIR, 'libp2p-private.key.pb')
-
-function parseAnnounceAddrs (): string[] | undefined {
-  const raw = (process.env.ANNOUNCE_ADDRS ?? '').trim()
-  if (!raw) return undefined
-  return raw.split(',').map(s => s.trim()).filter(Boolean)
-}
-
-function parseBooleanEnv (name: string, defaultValue: boolean): boolean {
-  const raw = (process.env[name] ?? '').trim()
-  if (!raw) return defaultValue
-  if (raw.toLowerCase() === 'true') return true
-  if (raw.toLowerCase() === 'false') return false
-  throw new Error(`Invalid ${name}. Expected true|false (got ${JSON.stringify(process.env[name])})`)
-}
-
-function parsePositiveIntEnv (name: string, defaultValue: number): number {
-  const raw = (process.env[name] ?? '').trim()
-  if (!raw) return defaultValue
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`Invalid ${name}. Expected a positive integer (got ${JSON.stringify(process.env[name])})`)
-  }
-  return n
-}
 
 async function loadOrCreatePrivateKey () {
   await fs.mkdir(DATA_DIR, { recursive: true })
+  const stored = await readKeyFile()
+  if (stored) return decodeKey(stored)
+  const pk = await generateKeyPair('Ed25519')
+  await fs.writeFile(KEY_FILE, privateKeyToProtobuf(pk))
+  console.log(`generated a new identity key: ${KEY_FILE}`)
+  return pk
+}
+
+/** The stored bytes as a key — a damaged file names itself rather than surfacing as a protobuf error. */
+function decodeKey (raw: Uint8Array) {
   try {
-    const raw = await fs.readFile(KEY_FILE)
     return privateKeyFromProtobuf(raw)
-  } catch {
-    const pk = await generateKeyPair('Ed25519')
-    await fs.writeFile(KEY_FILE, privateKeyToProtobuf(pk))
-    return pk
+  } catch (err) {
+    throw new Error(`Identity key ${KEY_FILE} is not a valid key file: ${err?.message ?? err}. Restore it from backup (ops/docs/keys.md); deleting it would change this node's peer id.`, { cause: err })
+  }
+}
+
+/**
+ * The stored identity key, or `undefined` when there is none yet.
+ *
+ * Only a missing file means "generate one" — `ops/docs/keys.md` says the key is created on
+ * first start *if missing*, and every other read failure (a permission problem, a bad
+ * sector, a volume that did not mount) has to stay fatal. Generating over one of those
+ * would hand the node a new peer id, which every client pins as `/p2p/<peerId>` and no
+ * operator would be told about.
+ */
+async function readKeyFile () {
+  try {
+    return await fs.readFile(KEY_FILE)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return undefined
+    throw new Error(`Cannot read identity key ${KEY_FILE}: ${err?.message ?? err}. Refusing to generate a new one - that would change this node's peer id.`, { cause: err })
   }
 }
 
 const announce = parseAnnounceAddrs()
+const listen = parseListenAddrs()
 
 // @libp2p/circuit-relay-v2 defaults to applyDefaultLimit: true, which stamps every
 // reservation with a ~128 KiB / 2 min cap and marks the resulting connection "limited" -
@@ -105,10 +113,10 @@ if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
 const node = await createLibp2p({
   privateKey: await loadOrCreatePrivateKey(),
   addresses: {
-    listen: ['/ip4/0.0.0.0/tcp/4001'],
+    listen,
     ...(announce ? { announce } : {})
   },
-  transports: [tcp()],
+  transports: [tcp(), webSockets()],
   connectionEncrypters: [noise()],
   streamMuxers: [yamux()],
   services
@@ -121,6 +129,26 @@ if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
   console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
 }
 console.log('listening/advertising on:')
-node.getMultiaddrs().forEach(ma => console.log(ma.toString()))
+const addrs = node.getMultiaddrs().map(ma => ma.toString())
+addrs.forEach(ma => console.log(`  ${ma}`))
+
+// Phones dial WebSockets, so surface those separately — this is the address a
+// mobile client needs in its relay configuration.
+const wsAddrs = addrs.filter(isWebSocketAddr)
+if (wsAddrs.length > 0) {
+  console.log('\nWebSocket addresses (for clients without raw TCP, e.g. React Native):')
+  wsAddrs.forEach(ma => console.log(`  ${ma}`))
+} else if (listen.some(isWebSocketAddr)) {
+  // A non-empty ANNOUNCE_ADDRS REPLACES the advertised set rather than extending it, so a
+  // fronted node that announces only its TCP address binds WebSockets and tells nobody.
+  // That is silent: the listener is up, and the block above simply prints nothing.
+  console.warn([
+    '',
+    'WARNING: listening on WebSockets but advertising no WebSocket address.',
+    'ANNOUNCE_ADDRS replaces the advertised set, so clients without raw TCP (e.g. React',
+    'Native) cannot reach this node. Add the address they should dial to ANNOUNCE_ADDRS -',
+    'behind a TLS front that is /dns4/<host>/tcp/443/tls/ws.'
+  ].join('\n'))
+}
 
 

@@ -6,6 +6,31 @@ difficulty: hard
 repro: verified
 ----
 
+> **Measured 2026-09-03 — the re-run this ticket prescribes has now been done, and the answer is
+> "still masked". Five isolated rounds, five identical failures.**
+>
+> The 2026-08-21 audit below says the upstream unblock condition looks already satisfied and that
+> the next step is to run the scenario ~6 times and see what the carry step does. Run in isolation
+> against `@optimystic/db-p2p` 0.27.0, both siblings rebuilt from committed release trees:
+>
+> | round | result |
+> | --- | --- |
+> | 1-5 | **1 failed of 1, every round**, at ~8.8 s |
+>
+> ```
+> Error during query on table 'Revocation': Query failed:
+>   Block default/Revocation is unavailable (cohort-unreachable): the repo could not determine whether it exists
+> ```
+>
+> Identical to the fingerprint the audit recorded, and still in **boot** — the carry step this
+> scenario exists to measure has still never executed. So the ticket's own question ("what does the
+> carry step do today?") remains unanswerable, and the alternative the body offers — retire this and
+> open a fresh ticket against the boot failure that actually fires — is now the better-evidenced
+> option. That call is a human's; nothing here has been retired.
+>
+> One thing this run does settle: the failure is **not** intermittent any more. Five for five means
+> whoever picks up the boot failure has a reliable repro, which the ticket has never had.
+
 > **Audit 2026-08-21 — premise still holds, but the unblock condition may already have been met.**
 > The scenario `control-cohort-edge-carries-data` still dies before reaching the carry step, so the
 > original stream-reset symptom remains unobservable and the ticket's reasoning stands. Two things
@@ -126,3 +151,51 @@ coordinator cache holds for the failing block's key at that moment.
 `tickets/.pre-existing-known.md` carries an entry for this slug (the carry-step
 line). It has been updated to today's fingerprint; remove it when the scenario runs
 clean.
+
+> **The upstream ticket this file names has LANDED, and its conclusion changes what this ticket is
+> blocked on — 2026-09-05.** Written from the `../optimystic` side during a tending pass; nothing
+> here was re-measured.
+>
+> **Stale reference first.** The `files:` header points at
+> `../optimystic/tickets/fix/isolated-read-cannot-confirm-a-never-written-block.md`. That path no
+> longer exists: the ticket advanced through that pipeline and completed as
+> `optimystic/tickets/complete/absence-verdict-names-the-evidence`.
+>
+> **What it shipped.** A read that finds a block missing locally now returns a *named* verdict
+> instead of one catch-all, and the four values are meant to be branched on: `'unmaterializable'`;
+> `'peers-unreachable'`; `'cohort-unreachable'` (nothing held locally and no cohort member outside
+> this node could be asked at all); `'claimed-elsewhere'` (a peer positively claimed a revision that
+> could be neither corroborated nor acquired — the block is known to exist somewhere).
+>
+> **What it deliberately did NOT do, in its own words:** *"The isolated boot does not start working
+> because this landed."* The repo layer refuses to decide that a node which reached nobody may
+> believe its own emptiness. Whether a given read may proceed on this node's own view is per-read
+> policy and belongs to the caller — i.e. to this repo. That is a materially different thing from
+> what this ticket is parked on: the boot failure recorded here is by design an application
+> decision, not an upstream defect.
+>
+> **Except that the decision cannot currently be executed from here, and THAT is an upstream
+> defect.** The upstream ticket states its contract as "a consumer's boot path can catch
+> `reason === 'cohort-unreachable'` and proceed under its own risk model with no further plumbing".
+> True for a consumer calling `db-core` directly; false for a consumer reading through SQL, which is
+> every read this repo makes. `OptimysticModule` catches the typed error and rethrows
+> `new Error(message)` with no `cause`, so the class and its `reason` field are destroyed and only
+> the interpolated sentence survives — which is exactly why the failure recorded above is only
+> visible here as prose. Quereus's own wrapper above it *does* thread `cause` faithfully, so the
+> plugin is the sole broken link.
+>
+> Filed upstream as `optimystic/tickets/fix/2-a-sql-caller-cannot-see-why-a-read-failed`
+> (`repro: static` — read from code, not run), citing this ticket as the waiting consumer.
+>
+> **Suggested re-shaping, for whoever owns this here.** The unblock condition is no longer "upstream
+> must make an isolated boot read succeed". It is two smaller things:
+>
+> - upstream makes the reason reachable (the ticket above); and
+> - this repo decides its own boot-read policy — which of the four reasons a bring-up read may
+>   proceed past on this node's own view, and which must still fail. `'cohort-unreachable'` during
+>   bring-up is a plausible tolerate; `'claimed-elsewhere'` is not, since tolerating it would serve
+>   a knowingly false absent.
+>
+> The ticket's own alternative — retire this and open a fresh one against the boot failure that
+> actually fires, rather than the stream-reset symptom never reached in five isolated rounds — looks
+> better than ever under that framing. Still a human's call; nothing has been retired.

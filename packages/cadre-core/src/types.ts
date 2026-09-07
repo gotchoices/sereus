@@ -1,7 +1,7 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
-import type { StrandBackfillConfig } from './strand-backfill.js';
+import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
@@ -21,7 +21,7 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
    * factory always assigns it, but it is not part of the upstream node type, so
    * declaring it required would be a claim this repo cannot enforce. The strand
-   * backfill (`strand-backfill.ts`) logs once and stays inert when it is absent.
+   * backfill (`peer-join-backfill.ts`) logs once and stays inert when it is absent.
    */
   keyNetwork?: IPeerNetwork;
 }
@@ -467,17 +467,32 @@ export interface CadreNodeConfig {
   strandClusterSize?: number;
 
   /**
-   * Tuning for the strand peer-join block catch-up (see `strand-backfill.ts`):
+   * Tuning for the strand peer-join block catch-up (see `peer-join-backfill.ts`):
    * when a strand's libp2p node connects to a peer this runtime has not yet
    * caught up, every block in the strand's own raw store is pushed to that peer,
    * so a machine that joined the strand after blocks were committed still ends
-   * up physically holding them. Applies to every strand this node starts;
-   * strand-only — the control network has its own row-level re-issue queue
-   * (`drainPendingControlReplication`). Omit for the defaults
-   * (`DEFAULT_STRAND_BACKFILL`); `{ enabled: false }` restores the
-   * no-backfill behaviour.
+   * up physically holding them. Applies to every strand this node starts.
+   * Omit for the defaults (`DEFAULT_PEER_JOIN_BACKFILL`); `{ enabled: false }`
+   * restores the no-backfill behaviour. The control network runs its own,
+   * separately tuned catch-up — see {@link controlBackfill}.
    */
-  strandBackfill?: StrandBackfillConfig;
+  strandBackfill?: PeerJoinBackfillConfig;
+
+  /**
+   * Tuning for the CONTROL network's peer-join block catch-up (same module,
+   * `peer-join-backfill.ts`, wired in `CadreNode.start`): when the control
+   * libp2p node connects to an AUTHORIZED party member this runtime has not yet
+   * caught up, every block in the control database's own raw store is pushed to
+   * it. This is what makes a control block committed while the writer was alone
+   * (collection headers written at genesis above all) physically reach members
+   * that joined later — without it, such a member that restarts offline reads
+   * the affected tables as empty. Pushes are gated on
+   * `CadreNode.isAuthorizedMember`, checked at push time, because the control
+   * network's inbound gate deliberately admits non-members in several states
+   * (seed delivery, enrollment, bootstrap/relay peers). Omit for the defaults
+   * (`DEFAULT_PEER_JOIN_BACKFILL`); `{ enabled: false }` disables it.
+   */
+  controlBackfill?: PeerJoinBackfillConfig;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;

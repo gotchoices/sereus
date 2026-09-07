@@ -351,6 +351,75 @@ describe('Manager.Authorized seal branch', () => {
     expect(await tableCount(db, 'Manager')).toBe(0);
     expect(await isStrandSealed(db)).toBe(true);
   }, 30_000);
+
+  it('refuses a SIGNED re-founding attempt at generation 0, not just a null-context one (Authorized)', async () => {
+    const { db, founder } = await openStrand('c');
+    await sealStrand(db, { managerKeyPair: founder });
+    expect(await tableCount(db, 'Member')).toBe(1);
+
+    // Same founding shape as the null-context case above, but with a REAL signature
+    // over the 'add' digest instead of a null context — so this rejection cannot be
+    // blamed on a malformed or missing signature. The founding branch never checks a
+    // signature at all (it is gated purely on old.MemberKey is null, with no verify()
+    // call), so supplying one changes nothing about whether that branch matches; the
+    // only other branch an old.MemberKey-null insert could satisfy is promotion,
+    // which needs an EXISTING Manager row to sign as, and the table is empty. Both
+    // paths dead-end on the same gate the null-context case proves: the retired
+    // Manager stamp.
+    const stampId = generateStrandStampId();
+    const signature = signStrandApproval(
+      ['Strand.Manager', 'add', founder.publicKeyB64, 0, stampId],
+      founder.privateKeyB64,
+    );
+    await expect(
+      db.exec(
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
+           with context ManagerKey = ?, Signature = ?
+           values (?, 0, ?)`,
+        [founder.publicKeyB64, signature, founder.publicKeyB64, stampId],
+      ),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(0);
+    expect(await isStrandSealed(db)).toBe(true);
+  }, 30_000);
+
+  it('refuses a non-zero-generation re-founding insert on a sealed strand (Authorized, promotion branch)', async () => {
+    const { db, founder } = await openStrand('c');
+    await sealStrand(db, { managerKeyPair: founder });
+    expect(await tableCount(db, 'Member')).toBe(1);
+
+    // Generation 1 takes the founding branch out of contention on its own terms —
+    // it requires new.Generation = 0 — regardless of the seal, so this pins the
+    // OTHER branch a re-founding attempt could try: promotion. Promotion's exists()
+    // needs a DIFFERENT, existing manager (A.MemberKey <> new.MemberKey) at a
+    // strictly lower generation who signed the 'add' digest — and a sealed strand's
+    // Manager table is empty forever, so no such row can exist. A real signature is
+    // supplied anyway so the rejection cannot be blamed on a missing one.
+    // Note this case is NOT seal-specific: the self-promotion conjunct alone would
+    // also refuse it on a LIVE strand, and it could not be made seal-specific — a
+    // distinct subject key would fail MemberExists instead, since a sealed strand
+    // can never admit the second member such a key would need. What it pins is that
+    // NO branch answers a non-zero-generation insert here: a future change that let
+    // the founding branch answer for Generation <> 0 surfaces as an unexpected
+    // ACCEPT rather than silently passing.
+    const stampId = generateStrandStampId();
+    const signature = signStrandApproval(
+      ['Strand.Manager', 'add', founder.publicKeyB64, 1, stampId],
+      founder.privateKeyB64,
+    );
+    await expect(
+      db.exec(
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
+           with context ManagerKey = ?, Signature = ?
+           values (?, 1, ?)`,
+        [founder.publicKeyB64, signature, founder.publicKeyB64, stampId],
+      ),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(0);
+    expect(await isStrandSealed(db)).toBe(true);
+  }, 30_000);
 });
 
 // ── What a sealed strand can and cannot still do ──────────────────────────────

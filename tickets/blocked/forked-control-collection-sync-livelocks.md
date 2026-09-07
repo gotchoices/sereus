@@ -5,6 +5,24 @@ files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal
 difficulty: medium
 ----
 
+> **Re-measured 2026-09-02, after the control-network peer-join block catch-up landed
+> (`review/control-network-peer-join-block-catch-up`, commit `50c39aa`). Still real, at a lower
+> rate.** That work asked for this re-measurement explicitly, because it fixed a *different*
+> failure in the same scenario file (the joiner never receiving the `default/CadrePeer`
+> collection-header block, which made `isMember` false at line 154). Five isolated rounds of
+> `control-delete-while-alone-convergence`:
+>
+> | observation | result |
+> | --- | --- |
+> | isolated rounds ×5 | **1 failed, 4 passed** (9 of 10 test cases green) |
+> | failing fingerprint | `SyncRetryExhaustedError { collectionId: 'default/CadrePeer', attempts: 10 }` thrown out of `Collection.syncInternal` under `TransactionBridge.commitTransaction` — this ticket's fingerprint, unchanged |
+> | the line-154 `isMember` fingerprint | **gone** — did not appear in any of the five rounds |
+>
+> So the two failures were genuinely separate causes sharing one file. The catch-up removed one of
+> them; this one survives at roughly 1 case in 10 and still needs the upstream retry-loop fix. Which of
+> the file's two tests failed was not captured in that round (the run was filtered to the error
+> output); the 2026-08-21 audit above records the second one, and nothing here contradicts it.
+
 > **Audit 2026-08-21 — confirmed still real, and the reproduction rate is measured.** This ticket
 > was a candidate for retirement because its scenario passed both full-suite runs (2026-08-20 and
 > 2026-08-21). Running it in isolation says otherwise:

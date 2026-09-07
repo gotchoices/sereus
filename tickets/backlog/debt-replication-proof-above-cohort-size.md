@@ -37,3 +37,32 @@ number of copies changes again.
 - Whether a copy that arrived because someone read it (the read path can fetch and keep a
   block on demand) should count toward the durability claim, or whether the test needs to
   distinguish copies placed at write time from copies pulled in later.
+
+## Second arm — a *security* consequence of the same gap, not only a durability one
+
+Added 2026-09-02 from the plan pass of `strand-seal-binds-a-second-node`, which measured
+this boundary from the other side.
+
+Committing a write needs approval from a super-majority of the block's cohort. On a strand
+of two machines, the cohort *is* both machines, so a write cannot commit unless the other
+machine has already taken part in it. Measured: a founder whose only peer was unreachable
+could not seal the strand at all — `Failed to get super-majority: 1/2 approvals (needed 2,
+0 rejects)` on the `Manager` block, and, when the `Revocation` collection had never been
+written before, `Block default/Revocation is unavailable (cohort-unreachable)`. Both fail
+closed and leave the strand unsealed on both sides.
+
+Above the cohort size that stops holding, and the consequence is not only "fewer copies".
+A machine outside a given block's cohort never has to approve the write, so it can hold a
+stale view of that block for an unbounded time while the write commits elsewhere. For
+membership blocks that stale view is an **authorization** input: the schema's admission
+gates (`ConsumedInvite.NotSealed`, `Manager.Authorized`, the last-member floor) are all
+evaluated against locally visible rows. A machine that has not heard that a strand was
+sealed still satisfies `NotSealed` and would admit the holder of an invitation issued
+before the seal.
+
+So whatever fixture answers the questions above should also be able to stage a *stale
+non-cohort reader* deliberately, not only count copies. Today no fixture in the repo can:
+the two-node closed-strand scenario cannot produce a divergent-commit partition at all,
+for the reason measured above. That is worth knowing before anyone tries to test the
+`MemberExists`-under-partition or `Revocation`-replay hazards that
+`docs/architecture.md` lists beside seal propagation — they need this fixture first.

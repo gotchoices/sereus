@@ -6,6 +6,36 @@ difficulty: hard
 repro: verified
 ----
 
+> **Note added 2026-09-03 from `fix/delete-while-alone-cannot-read-its-own-saved-row` — where the
+> single-holder blocks come from, and one failure this ticket does NOT own.**
+>
+> **Refutation first.** `control-delete-while-alone-convergence` was suspected of being this
+> defect. It is not. Five `DEBUG` runs of that scenario contain **no** `responders: 1, required: 2`
+> and **no** `cluster-fetch:no-quorum` line at all on the failing read; the only `no-quorum` lines
+> carry `holders: 0, absent: 1, required: 1` for a genuinely empty `default/Revocation`. That
+> scenario is now owned by `implement/control-network-peer-join-block-catch-up`. This ticket keeps
+> only `push-wake-e2e`.
+>
+> **What the same investigation did establish, and it bears on this ticket's premise.** The body
+> below says "exactly one holder is the normal case here" and explains it as genesis-while-alone.
+> That is now measured rather than reasoned, and it is sharper than "the owner genesised alone":
+> every commit in that window logs `commit:solo-cohort { cohortSize: 1, soleIsSelf: true }`, and
+> the **named collection-header blocks** (`default/OwnerKey`, `default/CadrePeer`, the
+> `default/<table>/index/...` headers) are written exactly once, at collection creation, and their
+> revision never moves again. So no later commit ever re-broadcasts them: they stay one-holder for
+> the life of the party unless some node happens to read-repair them into its own store, which is
+> decided by hash proximity between a fixed block id and the run's random peer ids.
+>
+> **Consequence for the unblock condition.** This ticket's stated condition has two arms — relax
+> the corroboration floor, *or* "guarantee a committed block reaches a second holder before it
+> becomes readable". `implement/control-network-peer-join-block-catch-up` pursues the second arm
+> from the Sereus side for the control network (a peer-join whole-store push, the thing strands
+> already have and the control network does not). It should reduce this ticket's exposure by
+> giving `default/OwnerKey` a second holder as soon as a member joins. **It does not close this
+> ticket**: it is best-effort and after-the-fact, the window between a solo commit and the next
+> peer join is still one-holder, and `push-wake-e2e`'s scenario 4 reads during bring-up. Re-run
+> this ticket's five-run gate once that lands, and record whatever it measures.
+
 > **Gate re-run 2026-08-24 after the upstream fix — 4 of 5 green. Improved, NOT fixed. Stays blocked.**
 >
 > | measurement | result |

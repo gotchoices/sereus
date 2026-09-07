@@ -10,7 +10,12 @@ export const MIN_CLUSTER_SIZE = 2;
 /**
  * How many nodes each block of the **control** (cadre membership) database is replicated
  * to. Chosen to exceed any party's node count, so in practice every control block lands
- * on every member of the party.
+ * on every member of the party. Cohort width alone only delivers that for blocks written
+ * while the members were serving the network: a block committed while the writer was
+ * alone (the founder's genesis above all — collection headers are written once and never
+ * revised) has a cohort of one, and it reaches later joiners through cadre-core's
+ * peer-join block catch-up (`peer-join-backfill.ts`, membership-gated on the control
+ * network), not through this breadth.
  *
  * **Why full replication here.** Every control node reads the whole control database —
  * membership, peer addresses, the strand list — so a member left out of a block's cohort is
