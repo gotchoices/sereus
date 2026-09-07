@@ -90,6 +90,26 @@ and unreachable from anywhere else, with no error to show for it.
 Phones dial `/ws`; they cannot dial `/ip4/.../tcp/4001` directly. On startup the
 process prints its WebSocket addresses separately for that reason.
 
+> **The relay listening on `/ws` is only half of what a React Native client needs.**
+> Configuring this correctly and still watching a phone fail to connect is the expected
+> outcome until the client side is fixed too, so check both before assuming the relay is
+> misconfigured.
+>
+> React Native declares `WebSocket.bufferedAmount` but never assigns it, so it reads
+> `undefined` at runtime. `@libp2p/websockets` computes back-pressure as
+> `bufferedAmount < maxBufferedAmount`, which is `false` for `undefined`, so **every** send
+> reports "cannot send more" and waits for a `'drain'` event whose own condition
+> (`bufferedAmount === 0`) is equally false forever. The write parks until the socket
+> closes and then rejects with a bare `undefined`, which libp2p's upgrader reports as a
+> misleading `TypeError`. Nothing in that chain names WebSockets, which is why it reads as
+> a relay or NAT problem.
+>
+> The client needs a `bufferedAmount` polyfill before any libp2p code loads — see
+> [#11](https://github.com/gotchoices/sereus/issues/11) for the full mechanism,
+> `packages/reference-app-rn/polyfills` for working implementations, and the React Native
+> polyfill table in [`@optimystic/db-p2p`'s readme](https://github.com/gotchoices/Optimystic/blob/main/packages/db-p2p/readme.md)
+> for the canonical list.
+
 Further points that matter for a phone:
 
 - **If you set `ANNOUNCE_ADDRS`, put the WebSocket address in it.** A non-empty
