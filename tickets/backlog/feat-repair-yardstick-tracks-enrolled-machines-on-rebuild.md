@@ -105,7 +105,11 @@ side, still takes the max with the peers actually visible — so a node whose lo
 
 On the cadre-driven path a strand's cohort is seeded from this party's own `CadrePeer` rows
 (`resolveCohortSeed`), so "machines enrolled in this party" is the right count there too, capped by
-nothing (a value above `strandClusterSize` is harmless; Optimystic caps the floor at two corroborators).
+nothing by the corroboration floor, which Optimystic caps at two corroborators. It is NOT free above
+the cohort a commit actually reaches, though: upstream review found the same yardstick is the
+denominator in `commitQuorumRulesOutRivals` that a local commit must beat to arm the lazy read-repair
+freshness window, so declaring a count well above the machines that answer costs one cohort consult
+per written block per window. Declare the machines enrolled, not a margin above them.
 Two refinements the plan stage must weigh and may decline:
 
 - A cadre machine whose `strandFilter` excludes this strand is not a holder. Counting it over-declares
