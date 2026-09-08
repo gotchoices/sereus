@@ -101,3 +101,21 @@ reverse-order teardown any multi-node fixture needs. Export it.
 - `stopStartedNodes` exported.
 - The four suites pass unchanged — 30 tests across the first three, all green on 2026-08-20, so
   any behavior change is a regression, not a discovery.
+
+## Note added 2026-09-07 from `scenario-strand-follows-a-late-joining-cadre-node`
+
+That ticket sits ahead of this one in the queue and needs a caller-supplied storage provider on
+`controlNodeConfig` before this consolidation runs, so it adds the option itself:
+`ControlNodeOpts.storageProvider?: RawStorageProvider`, forwarded verbatim as `storage.provider`,
+throwing when combined with `storageOpDelayMs`. Two consequences here:
+
+- The "accepts a caller-supplied storage provider" item in *Expected outcome* may already be done
+  when you pick this up — check `node-fixtures.ts` before building it a second time.
+- That is the only difference the table above lists for
+  `strand-membership-closed-strand-e2e.integration.ts:190`, so once the option is in, that copy
+  should fold onto the shared helper with nothing left over.
+
+It also adds a fifth call site to fold in eventually — the new
+`packages/integration-tests/src/scenarios/strand-late-cadre-join.integration.ts` uses
+`controlNodeConfig` directly rather than a private copy, so it is not new duplication; it is just a
+file to re-run when this lands.
