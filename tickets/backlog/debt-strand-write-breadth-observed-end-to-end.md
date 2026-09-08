@@ -1,7 +1,7 @@
 ----
 description: We configure how many machines each piece of strand data is copied to, and we check that the number is passed along correctly — but no test in this repository ever counts how many machines actually ended up holding a block. A wrong number would go unnoticed here.
 prereq:
-files: packages/integration-tests/src/harness/block-store-probe.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-backfill.ts
+files: packages/integration-tests/src/harness/block-store-probe.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/peer-join-backfill.ts
 difficulty: hard
 tradeoffs: The upstream unit spec plus a now-required constructor argument already make the known failure mode unrepresentable, so this test buys defence-in-depth against a future regression rather than covering a live gap — and every similar physical-replication test in this suite has been flaky.
 ----
