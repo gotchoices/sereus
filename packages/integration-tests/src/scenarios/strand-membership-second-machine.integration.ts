@@ -207,8 +207,8 @@ describe('Closed-strand membership driven from a party\'s second machine (2×2)'
 				await waitUntil(
 					async () =>
 						(await strandCount(db, 'Header')) >= 1 &&
-						(await strandCount(db, 'Member')) >= 1 &&
-						(await strandCount(db, 'Manager')) >= 1,
+						(await memberKeys(db)).includes(founderKeyPair.publicKeyB64) &&
+						(await managerKeys(db)).includes(founderKeyPair.publicKeyB64),
 					{ ...GATE, description: `founder bootstrap rows become visible on ${label}` },
 				);
 			}

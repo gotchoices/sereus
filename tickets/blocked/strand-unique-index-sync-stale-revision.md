@@ -266,3 +266,23 @@ the same way as `tickets/blocked/report-dependency-floor-bump-to-embedding-app.m
   they are failing on a real write defect, not on a test bug.
 - Do not edit `../optimystic`'s `src` to force its build through while its own runner is
   working there.
+
+## Arm 2026-09-08 — a second file now sits on the same trigger
+
+`packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts`
+(landed `d96cf7a`) is a new exposure site for this exact fingerprint, and whoever
+re-measures the rate should include it.
+
+Its single test writes `Strand.Member` twice (`consumeInvite`, from party B's second machine)
+and `Strand.Manager` once (`addManager`, on the founder) on a **four**-machine strand where
+every machine has already attached before the first membership write happens. That is this
+ticket's stated trigger — "the first write to that table after another node has attached the
+same strand" — with the founder-authored / joiner-authored distinction removed, since all four
+machines attach during bring-up.
+
+Not yet observed failing: two green foreground runs at the time it landed, and one more during
+its review pass. Per this ticket's own standard ("a single green run proves nothing here"),
+three is not a rate. Recording the file so the next rate measurement covers it rather than
+rediscovering it as a new flake.
+
+Nothing changes about the unblock condition — the fix is still upstream in `../optimystic`.
