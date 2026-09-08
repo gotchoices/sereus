@@ -425,8 +425,11 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   machine catches up when it returns) — `strand-two-party-two-machine.integration.ts`. It
   asserts the commit, not the cohort width: whether the surviving three approved as 3-of-4
   or as a downsized 3-of-3 is not distinguished there.
-- **Uncovered**: membership actions issued from a party's second machine on that shape —
-  ticket `scenario-two-by-two-strand-membership`.
+- Membership actions issued from a party's second machine on that shape (a closed strand's
+  invite consumed, both of a party's machines registered as devices of ONE member, and a
+  promoted manager issuing/admitting — all authored on a machine that neither founded the
+  strand nor owns its party) — `strand-membership-second-machine.integration.ts`. Visibility
+  claims only; the physical story for the shape stays with the line above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: relayed strand plane / per-strand NAT reachability (a strand node earning its
