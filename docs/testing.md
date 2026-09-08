@@ -301,16 +301,25 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   ignored, and the two unparseable-input cases (a non-semver declared range such as `workspace:^`,
   and a malformed sibling version) reported as readable failures rather than a crash — each against a
   throwaway fixture workspace (not this repo's own packages) via `DEP_RANGE_CHECK_ROOT`.
-- NOTE (tripwire, noticed 2026-08-03): `@optimystic/db-p2p-storage-fs` is the one optimystic package
-  *not* in root `resolutions`, so it resolves from npm while its eight siblings resolve to
-  `../optimystic` — and because the gate only checks `link:` targets, its declared range is
-  ungated. Benign while the registry version is the same commit we link, but local edits to that
-  package are invisible to `cadre-cli` / `quereus-plugin-sereus`, and the moment the sibling checkout
-  carries an unpublished version it runs an older build against newer `db-core`/`db-p2p`. If
-  fs-storage behaviour ever needs testing against local optimystic, or that mix ever produces a
-  confusing failure, add a `link:` entry for it.
-- `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
-  run them when the sibling workspace is bumped, not only at release time.
+- RESOLVED (tripwire opened 2026-08-03, closed 2026-09-08): `@optimystic/db-p2p-storage-fs` used to be
+  the one optimystic package *not* in root `resolutions`, so it resolved from npm while its eight
+  siblings resolved to `../optimystic`, and the gate — which only checks `link:` targets — said nothing
+  about its declared range. The history says drift, not intent: fs entered the tree in `da5d105`, a
+  25k-line commit, *before* the one-`link:`-per-new-dependency habit that added `storage-rn`, `-web`
+  and `-ns` each in its own commit. It now has a `link:` entry like the rest, which makes 10 linked
+  packages and puts its range under this gate. Two consequences to keep in mind: local edits to that
+  package are now visible to `cadre-cli` / `cadre-core` / `quereus-plugin-sereus` (previously they ran
+  the registry build), and it had to be added to those suites' stale-build `TARGETS` — `cadre-cli`'s
+  `build-targets.spec.ts` failed on exactly that until it was. `yarn smoke:published` is unaffected: its
+  scratch project lives under the OS temp dir and installs with npm, so root `resolutions` never reach it.
+- `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges,
+  then `yarn install` and re-run this gate; run them when the sibling workspace is bumped, not only at
+  release time. The gate is chained on because `ncu` upgrades each dependency independently and reports
+  nothing when it leaves one behind — a registry `latest` tag that has not propagated, or a transient
+  fetch failure, silently yields a partial upgrade (2026-09-07: every `@optimystic/*` range moved to
+  `^0.29.0` except `@optimystic/db-core`, which stayed `^0.28.0` in five packages). The gate turns that
+  into a failure naming each stale range and its suggested edit, for every package with a `link:`
+  resolution — which, since the entry above was closed, is every `@optimystic/*` this repo depends on.
 - NOTE: the published packages declare `@quereus/quereus` as a regular `dependency`, not a
   `peerDependency` — including `quereus-plugin-sereus`, which is loaded *into* a Quereus host. Ranges
   agree today, so installers dedupe to one copy. If a consumer ever pins a Quereus major that our
@@ -347,9 +356,10 @@ installs anything, so it cannot prove the published artifact at that version act
   that; all three files carry a comment pointing at the others, and that is the whole mechanism.
 - The warm-start half needs two things the cadre-of-one half did not, both added to
   `SCENARIO_DIRECT_DEPS` so the scratch project declares them: `@optimystic/db-p2p-storage-fs` (the
-  `FileRawStorage` that makes the restart cross real files rather than a shared heap object — and,
-  per the tripwire above, the one `@optimystic/*` with no root `resolutions` entry, so it is the one
-  package here that *always* comes from the registry), and `@libp2p/crypto` + `@libp2p/peer-id` for
+  `FileRawStorage` that makes the restart cross real files rather than a shared heap object), and it
+  comes from the registry here like every other scratch-project dependency — the scratch project is
+  outside this repo and installs with npm, so the `link:` resolution fs gained on 2026-09-08 does not
+  reach it — and `@libp2p/crypto` + `@libp2p/peer-id` for
   the throwaway sibling identity whose signed `CadrePeer` row puts the device in a cadre it is the
   last member of. The alternative — harvesting a peerId off a throwaway second node and recording it
   with `authorizePeer` — needs no new dependencies but writes a row with `Sig: null`, which

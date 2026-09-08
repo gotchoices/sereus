@@ -29,6 +29,9 @@ export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
+	// A `devDependency` rather than a `dependency`, so the coverage spec does not demand it,
+	// but `control-db-node-helpers.ts` constructs its `FileRawStorage` on every networked case.
+	{ packageName: '@optimystic/db-p2p-storage-fs', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/quereus-plugin-crypto', distEntry: 'dist/index.js', location: 'linked' },
 	{ packageName: '@optimystic/quereus-plugin-optimystic', distEntry: 'dist/index.js', location: 'linked' },
 	{ packageName: '@quereus/quereus', distEntry: 'dist/src/index.js', location: 'linked' },

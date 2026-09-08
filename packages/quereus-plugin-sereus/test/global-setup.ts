@@ -27,6 +27,7 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
+	{ packageName: '@optimystic/db-p2p-storage-fs', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p-storage-web', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/quereus-plugin-crypto', distEntry: 'dist/index.js', location: 'linked' },
 	{ packageName: '@optimystic/quereus-plugin-optimystic', distEntry: 'dist/index.js', location: 'linked' },

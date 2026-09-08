@@ -13,6 +13,7 @@
     "@optimystic/db-core": "link:../optimystic/packages/db-core",
     "@optimystic/demo": "link:../optimystic/packages/demo",
     "@optimystic/db-p2p": "link:../optimystic/packages/db-p2p",
+    "@optimystic/db-p2p-storage-fs": "link:../optimystic/packages/db-p2p-storage-fs",
     "@optimystic/db-p2p-storage-ns": "link:../optimystic/packages/db-p2p-storage-ns",
     "@optimystic/db-p2p-storage-rn": "link:../optimystic/packages/db-p2p-storage-rn",
     "@optimystic/db-p2p-storage-web": "link:../optimystic/packages/db-p2p-storage-web",
@@ -50,8 +51,8 @@
     "pub:cadre-cli": "node scripts/publish-package.mjs cadre-cli",
     "pub:cadre-provider": "node scripts/publish-package.mjs cadre-provider",
     "pub:cadre-host": "node scripts/publish-package.mjs cadre-host",
-    "upgrade:optimystic": "ncu -u --workspaces --filter '/@optimystic/.*/'",
-    "upgrade:quereus": "ncu -u --workspaces --filter '/@quereus/.*/'"
+    "upgrade:optimystic": "ncu -u --workspaces --filter '/@optimystic/.*/' && yarn install && yarn check:dep-ranges",
+    "upgrade:quereus": "ncu -u --workspaces --filter '/@quereus/.*/' && yarn install && yarn check:dep-ranges"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

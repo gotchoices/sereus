@@ -3676,16 +3676,11 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@optimystic/db-p2p-storage-fs@npm:^0.29.0":
-  version: 0.29.0
-  resolution: "@optimystic/db-p2p-storage-fs@npm:0.29.0"
-  dependencies:
-    "@optimystic/db-core": "npm:^0.29.0"
-    "@optimystic/db-p2p": "npm:^0.29.0"
-    debug: "npm:^4.4.3"
-  checksum: 10c0/4004a775e673c7528beab256a30a08533df38b4132d4b43f4218fc71733ac96dad968ed2ce1a79ab8be39a77f64065bfc0bb2f187758fbf039e32494bfd80fe1
+"@optimystic/db-p2p-storage-fs@link:../optimystic/packages/db-p2p-storage-fs::locator=sereus-workspace%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@optimystic/db-p2p-storage-fs@link:../optimystic/packages/db-p2p-storage-fs::locator=sereus-workspace%40workspace%3A."
   languageName: node
-  linkType: hard
+  linkType: soft
 
 "@optimystic/db-p2p-storage-ns@link:../optimystic/packages/db-p2p-storage-ns::locator=sereus-workspace%40workspace%3A.":
   version: 0.0.0-use.local
