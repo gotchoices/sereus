@@ -16,7 +16,7 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
-import type { CadreNodeConfig, EnrolledMachineStore, SAppConfig } from '@serfab/cadre-core';
+import type { CadreNodeConfig, EnrolledMachineStore, RawStorageProvider, SAppConfig } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
@@ -74,8 +74,18 @@ export interface ControlNodeOpts {
    * Sleep this long before EVERY raw-storage operation, which multiplies the
    * duration of control-database bring-up by a known factor (`slow-raw-storage.ts`).
    * For scenarios that need bring-up to still be running when something else fires.
+   * Mutually exclusive with {@link storageProvider}.
    */
   storageOpDelayMs?: number;
+  /**
+   * Becomes `storage.provider` verbatim — for scenarios that must observe or keep
+   * the node's raw stores, e.g. a `captureRawStorage()` capture (`block-store-probe.ts`)
+   * or a store reused across a stop/restart cycle. Left unset the default
+   * `() => new MemoryRawStorage()` stands. Mutually exclusive with
+   * {@link storageOpDelayMs}: both answer "what storage does this node get", so
+   * `controlNodeConfig` throws rather than silently picking one.
+   */
+  storageProvider?: RawStorageProvider;
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
   /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
@@ -119,14 +129,18 @@ export async function enrolledMachineStoreWith(partyId: string, count: number): 
 
 /** Build a `CadreNodeConfig` for one control-network test node. */
 export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
+  if (opts.storageProvider !== undefined && opts.storageOpDelayMs !== undefined) {
+    throw new Error('controlNodeConfig: storageProvider and storageOpDelayMs are mutually exclusive — both name the node\'s storage');
+  }
   return {
     controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: opts.strandFilter ?? 'all' },
     storage: {
-      provider: opts.storageOpDelayMs === undefined
-        ? () => new MemoryRawStorage()
-        : slowMemoryStorageProvider(opts.storageOpDelayMs)
+      provider: opts.storageProvider
+        ?? (opts.storageOpDelayMs === undefined
+          ? () => new MemoryRawStorage()
+          : slowMemoryStorageProvider(opts.storageOpDelayMs))
     },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
