@@ -385,3 +385,35 @@ installs anything, so it cannot prove the published artifact at that version act
   `node scripts/lib/published-smoke-scenario.mjs` from anywhere inside this repo, which resolves
   `@serfab/*` through the workspace symlinks — and be explicit that doing so proves the scenario,
   not the registry substrate.
+
+## Topology coverage map
+
+Which network shapes the integration suite (`packages/integration-tests/src/scenarios/`)
+actually exercises, so a missing shape is visible instead of sitting unnoticed. A map, not a
+status board — no pass/fail state here; that lives in the suites and in `tickets/` (see above).
+
+- Single machine, control plane only — `control-write-while-alone-convergence.integration.ts`.
+- Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`,
+  `control-write-degraded-cohort-member.integration.ts`.
+- Three-machine party, control plane — `control-cohort-three-node-isolation.integration.ts`,
+  `harness-party-control-cohort.integration.ts` (the `TestParty` star world).
+- One party, two machines, one strand — `websocket-chat.integration.ts`,
+  `convergence-stress.integration.ts`, `strand-addr-seed-convergence.integration.ts`,
+  `strand-late-cadre-join.integration.ts` (join-after-founding ordering).
+- Cross-party strand, one machine per party (two and three parties) — `strand-formation-e2e.integration.ts`,
+  `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
+  `multi-party-workflows.integration.ts`.
+- Cross-process nodes (child processes, fixed port bands) — `deliver-seed-cross-network.integration.ts`
+  (via `child-node-fixtures.ts`).
+- Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
+- **Uncovered**: cross-party strand with multi-machine parties (four machines, the strand
+  replication breadth) — ticket `scenario-two-multi-machine-cadres-share-one-strand`.
+- **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
+- **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
+- **Uncovered**: relayed strand / NAT reachability — ticket `strand-network-nat-relay-reachability`.
+
+All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
+(harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology
+scenario's hook timeouts (bring-up cost is roughly linear in machine count, and every strand
+member is a second libp2p node) — see the `TIME BUDGET` note at the top of
+`packages/integration-tests/src/harness/topology.ts`.
