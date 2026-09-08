@@ -149,6 +149,13 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * phones and laptops is the ordinary case, not the rare one. Six buys no more fault tolerance
  * than four and costs more overfetch (see the NOTE below).
  *
+ * **Exercised at four machines** by `integration-tests`'
+ * `scenarios/strand-two-party-two-machine.integration.ts`, the only scenario that runs a
+ * strand at this breadth. It shows a write committing while one of the four machines is off.
+ * It does NOT distinguish that from a commit on a cohort downsized to the three live holders
+ * (`allowDownsize` in {@link STRAND_CLUSTER_POLICY}), so the table row above remains reasoned
+ * arithmetic with an end-to-end existence proof under it, not a measurement of cohort width.
+ *
  * **It is also a correctness floor, not only a durability one — but the floor is measured in
  * machines, not in this number.** A node that has fallen behind and can ask exactly one peer
  * whether it is current has Optimystic accept that single answer as the cluster's truth

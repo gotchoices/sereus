@@ -12,9 +12,12 @@ strand. So:
 - on a strand of 4 machines or fewer, every machine should hold every block, and
 - above 4, each block should live on 4 of them — which four depends on the block.
 
-The ticket `debt-strand-replication-vs-visibility-proof` covers the first case, at two
-machines, by looking directly inside the second machine's block store. Nothing covers the
-second case. Above four machines, a machine outside a block's holder set answers reads by
+The ticket `debt-strand-replication-vs-visibility-proof` covers the first case at two
+machines, by looking directly inside the second machine's block store, and
+`packages/integration-tests/src/scenarios/strand-two-party-two-machine.integration.ts`
+(landed 2026-09-08) now covers it at FOUR — the cap itself — gating every machine's raw
+store against the author's after each write. So the at-or-below-breadth half is done.
+Nothing covers the second case. Above four machines, a machine outside a block's holder set answers reads by
 going over the network, and the durability question ("do 4 copies really exist?") becomes
 a genuinely different measurement than "can everyone see it?".
 

@@ -406,8 +406,8 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
   `multi-party-workflows.integration.ts`.
 - Cross-party, multi-machine parties, control plane only (two parties, each an owner plus a
-  drone; no cross-party strand transport) — `multi-party-sync.integration.ts`. This is the
-  nearest shape to the first uncovered class below, and stops exactly where it starts.
+  drone; no cross-party strand transport) — `multi-party-sync.integration.ts`. Same machine
+  layout as the four-machine strand line below, stopping where that one starts.
 - Two separate libp2p networks in one process (a party's network plus a standalone node,
   over TCP rather than the suite's usual WebSocket) — `deliver-seed-cross-network.integration.ts`.
 - Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
@@ -421,8 +421,10 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   class below for the strand plane.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
-  the strand replication breadth — degraded commit with one machine off, restart catch-up) —
-  `strand-two-party-two-machine.integration.ts`.
+  the strand replication breadth — a write still commits with one machine off, and the
+  machine catches up when it returns) — `strand-two-party-two-machine.integration.ts`. It
+  asserts the commit, not the cohort width: whether the surviving three approved as 3-of-4
+  or as a downsized 3-of-3 is not distinguished there.
 - **Uncovered**: membership actions issued from a party's second machine on that shape —
   ticket `scenario-two-by-two-strand-membership`.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.

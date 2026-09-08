@@ -57,3 +57,20 @@ this test defence-in-depth. The other half of the reason is cost: the comparable
 `strand-membership-closed-strand-e2e.integration.ts` passed 1 of 4 runs when it was last measured,
 so a three-node physical-holder assertion is a real flakiness risk that needs its own repetition
 budget rather than being bolted onto an unrelated pass.
+## Second case — the same blindness makes a degraded commit unattributable
+
+Added 2026-09-08 from the review pass of `scenario-two-by-two-strand-core`.
+
+`packages/integration-tests/src/scenarios/strand-two-party-two-machine.integration.ts` runs a
+strand on four machines, switches one machine off, and shows a write still committing. That is a
+real availability claim and it holds. What it CANNOT say is which of two things carried the
+commit: three of the original four approving (the reason four is the configured breadth at all),
+or a cohort that had already shrunk to the three live machines approving unanimously. Both look
+identical from outside — a committed row — and the scenario says so in its header rather than
+pretending otherwise.
+
+Same root cause as the counting gap above: nothing in this repository can observe the cohort a write
+actually used. A fixture that can count holders, or read back the approving set, would let that
+scenario upgrade its comment into an assertion. Until then the availability argument for
+`DEFAULT_STRAND_CLUSTER_SIZE = 4` rests on the arithmetic in `cluster-size.ts` with an
+existence proof under it, not on a measurement.

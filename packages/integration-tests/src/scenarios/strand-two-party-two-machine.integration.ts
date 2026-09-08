@@ -3,13 +3,23 @@
  *
  * The first scenario to run a strand at FOUR machines — the designed operating point of
  * `DEFAULT_STRAND_CLUSTER_SIZE = 4` (`quereus-plugin-sereus/src/cluster-size.ts`) — and
- * the first topology that can lose a machine and keep committing: a write commits on
- * `ceil(4 × 0.75) = 3` approvals, so exactly one holder may be away. Every cross-party
+ * the first topology that can lose a machine and keep committing. Every cross-party
  * strand test before this gives each party one machine; every multi-machine strand stays
  * inside one party. One narrative test, phased, because later phases depend on earlier
- * state (a stopped machine, a restart) and each bring-up of this shape costs ~80-120 s
- * (8 libp2p nodes: 4 control + 4 strand — the `TIME BUDGET` rule in
- * `harness/topology.ts`).
+ * state (a stopped machine, a restart): bring-up cannot be shared across separate `it`s
+ * without re-paying it, and it measured 6.6 s on this machine for the 8 libp2p nodes
+ * (4 control + 4 strand) — far under the `TIME BUDGET` rule of thumb in
+ * `harness/topology.ts`, but not free.
+ *
+ * WHAT PHASE 4 DOES AND DOES NOT PROVE. It proves a write COMMITS while one of the four
+ * machines is off. It does NOT distinguish which of the two commit shapes carried it:
+ * the cohort may still list the dead peer and commit on `ceil(4 × 0.75) = 3` of 4
+ * approvals, or it may have downsized to the three live holders (`allowDownsize: true`
+ * in `STRAND_CLUSTER_POLICY`) and committed on a unanimous 3 of 3. This file asserts the
+ * outcome, not the cohort width — nothing here reads the coordinator's cohort, and the
+ * wait for the live peers to drop the dead connection (phase 4) makes the downsized
+ * shape the likelier one. Below four machines neither shape is available at all, which
+ * is why this topology is where the claim becomes assertable.
  *
  * Phases:
  *   1. A write from the founding party's owner reaches every machine — physically
@@ -57,6 +67,9 @@ import {
 	connectStrandNodes,
 	captureRawStorage,
 	awaitBlockCoverage,
+	compareBlockCoverage,
+	blockCoverageIsComplete,
+	formatBlockCoverageGap,
 	controlNodeConfig,
 	createSignedSAppConfig,
 	hasOutboundTo,
@@ -78,10 +91,16 @@ table Data (
 const CONVERGE_BUDGET_MS = 60_000;
 
 /**
- * Phase 4's degraded-write budget. The live cohort may still include the dead peer, so
- * the first write after the stop can pay ~2 × 10 s ClusterClient response deadlines
- * before committing on 3-of-4 approvals — slow (~20 s) or one retry is expected;
- * exceeding THIS budget is the genuine cannot-commit-degraded failure.
+ * Phase 4's degraded-write budget. The live cohort may still list the dead peer, so the
+ * first write after the stop can pay ~2 × 10 s ClusterClient response deadlines before
+ * committing — slow (~20 s) or one retry is expected; exceeding THIS budget is the
+ * genuine cannot-commit-degraded failure.
+ *
+ * NOTE: headroom, not measured need. On both implement-stage runs the live peers dropped
+ * the dead one first and the write committed in ~250 ms on attempt 1, so
+ * {@link insertWithRetry}'s retry and read-back branches have never executed here. If a
+ * slower machine ever does take the slow path, the log line it prints is the first
+ * evidence of it — do not shrink this budget on the strength of the fast runs alone.
  */
 const DEGRADED_WRITE_BUDGET_MS = 90_000;
 
@@ -89,8 +108,11 @@ const DEGRADED_WRITE_BUDGET_MS = 90_000;
 const BURST_ROUNDS = 5;
 
 /**
- * Explicit test timeout: ~10-15 s per machine of bring-up × 8 libp2p nodes, plus the
- * degraded-write budget and a restart, with headroom. Never touch `vitest.config.ts`.
+ * Explicit test timeout. The whole test measured 19-24 s across the implement-stage runs;
+ * this is deliberately ~18× that, because the number it must survive is not the observed
+ * one but the worst case the internal budgets allow — {@link DEGRADED_WRITE_BUDGET_MS}
+ * plus several {@link CONVERGE_BUDGET_MS} gates on a machine slow enough to need them.
+ * Never touch `vitest.config.ts`.
  */
 const TEST_TIMEOUT_MS = 420_000;
 
@@ -100,6 +122,26 @@ interface StrandMachine {
 	store: IRawStorage;
 	db: Database;
 	instance: StrandInstance;
+}
+
+/**
+ * Pair one member's strand instance with the raw store its OWN runtime writes to.
+ *
+ * Throws rather than asserting non-null: `joinStrandOn` returns one instance per member
+ * and refuses any that came up non-active, so an absent instance or database here is a
+ * harness regression, and it should say so instead of surfacing as
+ * `Cannot read properties of undefined` several phases later.
+ */
+function strandMachine(
+	label: string,
+	capture: RawStorageCapture,
+	strandId: string,
+	instance: StrandInstance | undefined,
+): StrandMachine {
+	if (!instance?.database) {
+		throw new Error(`${label}: joinStrandOn returned no strand database for '${strandId}'`);
+	}
+	return { label, store: capture.forStrand(strandId), db: instance.database.getDatabase(), instance };
 }
 
 /**
@@ -119,6 +161,12 @@ async function readDataRows(db: Database): Promise<Map<string, string>> {
 /**
  * Poll until every machine's row set EQUALS `expected` — same size, same values — and
  * return the wall-clock it took, logged by callers so future re-budgeting has numbers.
+ *
+ * NOTE: each poll re-scans every machine's whole table, so one wait costs
+ * `machines × rows` row reads per 500 ms. Free at this scenario's 22 rows (phase 3
+ * converged in 75-105 ms across runs). If a scenario ever reuses this helper with a
+ * table large enough for the scan itself to outlast the poll interval, compare sizes
+ * first and only then values, or diff against the previous scan.
  */
 async function waitForRowConvergence(
 	machines: ReadonlyArray<StrandMachine>,
@@ -143,13 +191,31 @@ async function waitForRowConvergence(
 }
 
 /**
+ * Whether the row is already there despite the insert having reported failure — asked on
+ * the AUTHOR's own database, so it makes no physical claim about any other machine.
+ *
+ * A read that ITSELF fails answers "not known to have landed" rather than propagating:
+ * this runs inside {@link insertWithRetry}'s catch, where a throw would replace the
+ * insert error the caller actually needs to see with an incidental read error, and abort
+ * a retry budget that had time left.
+ */
+async function rowLanded(db: Database, key: string, val: string, label: string): Promise<boolean> {
+	try {
+		return (await readDataRows(db)).get(key) === val;
+	} catch (readError) {
+		console.warn(`[2x2] ${label}: read-back after a failed insert also failed: ${String(readError)}`);
+		return false;
+	}
+}
+
+/**
  * Insert with a bounded retry, for the degraded phase only. The upstream lost-conflict
  * race (`../optimystic/tickets/fix/lost-conflict-race-abstains-and-orphans-the-block`)
  * can orphan a pend — a failed insert that never committed — and a retry is what tells
  * that known flake apart from a genuine cannot-commit-degraded regression (exceeding
- * `budgetMs`). Each failure reads back through the AUTHOR before retrying, so a write
+ * `budgetMs`). Each failure reads back through the author before retrying, so a write
  * that reported failure but actually landed is not re-inserted into a primary-key
- * conflict; the author-side read makes no physical claim about any other machine.
+ * conflict.
  */
 async function insertWithRetry(
 	db: Database, key: string, val: string, budgetMs: number, label: string,
@@ -161,7 +227,7 @@ async function insertWithRetry(
 			console.log(`[2x2] ${label}: committed on attempt ${attempt} after ${Date.now() - start}ms`);
 			return;
 		} catch (error) {
-			if ((await readDataRows(db)).get(key) === val) {
+			if (await rowLanded(db, key, val, label)) {
 				console.log(`[2x2] ${label}: attempt ${attempt} reported failure but the row landed (${Date.now() - start}ms)`);
 				return;
 			}
@@ -224,13 +290,13 @@ describe('Two parties × two machines, one strand across all four', () => {
 			});
 			console.log(`[2x2] bring-up (topology + strand at breadth 4) took ${Date.now() - bootStart}ms`);
 
-			const machines: StrandMachine[] = [
-				{ label: 'a[0]', store: captures.a0.forStrand(strandId), db: instances[0]!.database!.getDatabase(), instance: instances[0]! },
-				{ label: 'a[1]', store: captures.a1.forStrand(strandId), db: instances[1]!.database!.getDatabase(), instance: instances[1]! },
-				{ label: 'b[0]', store: captures.b0.forStrand(strandId), db: instances[2]!.database!.getDatabase(), instance: instances[2]! },
-				{ label: 'b[1]', store: captures.b1.forStrand(strandId), db: instances[3]!.database!.getDatabase(), instance: instances[3]! },
-			];
-			const [mA0, mA1, mB0, mB1] = machines as [StrandMachine, StrandMachine, StrandMachine, StrandMachine];
+			// Destructured from a literal, not sliced out of `machines` with a tuple cast:
+			// each name is typed by construction and the four handles stay one expression.
+			const mA0 = strandMachine('a[0]', captures.a0, strandId, instances[0]);
+			const mA1 = strandMachine('a[1]', captures.a1, strandId, instances[1]);
+			const mB0 = strandMachine('b[0]', captures.b0, strandId, instances[2]);
+			const mB1 = strandMachine('b[1]', captures.b1, strandId, instances[3]);
+			const machines: StrandMachine[] = [mA0, mA1, mB0, mB1];
 
 			/** Everything committed so far, key → val — what every converged read must equal. */
 			const written = new Map<string, string>();
@@ -298,13 +364,24 @@ describe('Two parties × two machines, one strand across all four', () => {
 						description: `${machine.label}'s strand node drops the connection to the stopped a[1]`,
 					});
 			}
-			// The commit needs 3 of 4 approvals, so three live holders suffice — the
-			// assertion this whole topology exists for.
+			// Three live holders carry the commit — the assertion this whole topology
+			// exists for. Which commit shape did it (3-of-4, or a downsized 3-of-3) is
+			// NOT distinguished here; see the header.
 			const phase4Start = Date.now();
 			await insertWithRetry(mB0.db, 'phase4-degraded', 'written-with-a1-off', DEGRADED_WRITE_BUDGET_MS, 'phase 4 degraded write on b[0]');
 			written.set('phase4-degraded', 'written-with-a1-off');
 			await waitForRowConvergence(live, written, 'phase 4');
 			console.log(`[2x2] phase 4 (degraded write + visibility on the three live machines) took ${Date.now() - phase4Start}ms`);
+
+			// NON-VACUITY of phase 5's catch-up gate, taken while a[1] is still down and
+			// its store therefore frozen: a[1] must be genuinely BEHIND b[0] right now.
+			// Without this, `awaitBlockCoverage` below could pass on its first poll
+			// against a store that never missed anything, and phase 5 would assert
+			// nothing at all. Deterministic, not racy — a stopped node writes no blocks,
+			// and the degraded write above committed after it stopped.
+			const preRestartGap = await compareBlockCoverage(mB0.store, mA1.store);
+			expect(blockCoverageIsComplete(preRestartGap), "a[1]'s store is behind b[0]'s while a[1] is off").toBe(false);
+			console.log(`[2x2] phase 4: a[1] is behind while off — ${formatBlockCoverageGap(preRestartGap)}`);
 
 			// ── Phase 5: the machine returns and catches up ─────────────────────────
 			// A NEW CadreNode with the SAME identity (a1's key) on the SAME capture —
@@ -338,8 +415,17 @@ describe('Two parties × two machines, one strand across all four', () => {
 			}
 
 			// Physical catch-up gate, BEFORE any read through the restarted node's
-			// database: the write a[1] missed lands in its OWN store, delivered by the
-			// peer-join backfill (the mechanism under test — deliberately left enabled).
+			// database: the write a[1] missed lands in its OWN store, and the gap
+			// asserted at the end of phase 4 is what makes closing it a real claim.
+			// WHICH mechanism delivered it — the peer-join backfill, or ordinary
+			// replication after the re-dial — is deliberately not distinguished; both are
+			// enabled and either one satisfies a coverage claim.
+			//
+			// NOTE: b[0] stands in for "everything the strand holds" because at steady
+			// state, breadth four and four machines, every machine covers every block —
+			// which phases 1 and 2 gate explicitly. If a later phase ever writes blocks
+			// that legitimately do NOT reach b[0], this source has to become a union of
+			// the live stores instead, or the gate quietly narrows.
 			await awaitBlockCoverage(mB0.store, mA1.store, {
 				timeoutMs: CONVERGE_BUDGET_MS,
 				description: "the blocks a[1] missed while off land physically in its own store",

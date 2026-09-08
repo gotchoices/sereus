@@ -66,6 +66,7 @@ import {
 	awaitBlockCoverage,
 	BlockStoreProbeError,
 	type RawStorageCapture,
+	type StrandLibp2p,
 } from '../harness/index.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -213,9 +214,6 @@ interface LateJoinFixture extends FoundedStrand {
 	/** The newcomer's lifecycle events, collected from before its `start()`. */
 	events: StrandEvents;
 }
-
-/** The strand libp2p node type, as `StrandInstance` declares it. */
-type StrandLibp2p = NonNullable<StrandInstance['libp2pNode']>;
 
 /** What the discovery-and-mesh step produced, for the phases that come after it. */
 interface JoinedStrand {
