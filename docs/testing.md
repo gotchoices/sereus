@@ -420,8 +420,11 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `relay-only-control-addr.integration.ts`. The control plane only — see the last uncovered
   class below for the strand plane.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
-- **Uncovered**: cross-party strand with multi-machine parties (four machines, the strand
-  replication breadth) — ticket `scenario-two-multi-machine-cadres-share-one-strand`.
+- Cross-party strand with multi-machine parties (two parties × two machines: four machines,
+  the strand replication breadth — degraded commit with one machine off, restart catch-up) —
+  `strand-two-party-two-machine.integration.ts`.
+- **Uncovered**: membership actions issued from a party's second machine on that shape —
+  ticket `scenario-two-by-two-strand-membership`.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: relayed strand plane / per-strand NAT reachability (a strand node earning its

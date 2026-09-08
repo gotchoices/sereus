@@ -14,8 +14,10 @@ import type { TopologyMachine } from './topology.js';
 import { waitForCohortOn } from './control-cohort.js';
 import { waitUntil } from './wait-utils.js';
 
-/** The strand libp2p node type, as `StrandInstance` declares it. */
-type StrandLibp2p = NonNullable<StrandInstance['libp2pNode']>;
+/** The strand libp2p node type, as `StrandInstance` declares it. Exported because it
+ *  appears in {@link connectStrandNodes}'s exported signature (declaration emit needs
+ *  the name), not as an invitation to build strand nodes outside `addStrand`. */
+export type StrandLibp2p = NonNullable<StrandInstance['libp2pNode']>;
 
 /** Default budget for {@link joinStrandOn}'s mesh dials and strand cohort barrier. */
 const STRAND_JOIN_TIMEOUT_MS = 30_000;
@@ -98,9 +100,11 @@ async function publishFounderRow(founder: TopologyMachine, row: StrandRow): Prom
 /**
  * Establish a DIRECT strand connection from `dialer` to `target` and wait until BOTH
  * sides report it, scoped to this specific peer pair — `connectControlNodes`'s recipe
- * on the strand plane.
+ * on the strand plane. Exported so a scenario that brings a machine BACK (a restarted
+ * `CadreNode` outside any `joinStrandOn` call) can re-dial the live members with the
+ * same both-sides-settled contract the mesh step uses.
  */
-async function connectStrandNodes(
+export async function connectStrandNodes(
 	dialer: StrandLibp2p, dialerLabel: string,
 	target: StrandLibp2p, targetLabel: string,
 	timeoutMs: number
