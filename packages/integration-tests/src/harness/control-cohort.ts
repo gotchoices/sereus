@@ -140,46 +140,41 @@ async function probeCohort(keyNetwork: Libp2pKeyPeerNetwork): Promise<string[]> 
 }
 
 /**
- * Poll until the cohort `options.node` (default: the owner) would offer a control write
- * to holds at least `minPeers` members, and resolve to those member peer ids.
+ * Poll until `libp2p`'s cohort for the shared probe key holds at least `minPeers`
+ * members, and resolve to those member peer ids. Works for ANY node built by
+ * `createLibp2pNode` — control or strand — which is why it takes a bare `Libp2p`
+ * rather than a `TestParty` (see {@link readCohort} for the same split on the
+ * one-shot side). The one-probe-key representativeness bound from the file header
+ * carries over: valid below `CONTROL_REPLICATION_BREADTH` (16) on control networks
+ * and below `DEFAULT_STRAND_CLUSTER_SIZE` (4) on strands.
  *
- * Throws IMMEDIATELY — never after a timeout — when `minPeers` is below 1 or above the
- * party's own node count, so an unsatisfiable request is a fast, named failure.
+ * Throws IMMEDIATELY — never after a timeout — when `minPeers` is below 1. It cannot
+ * know the network's size, so an ask larger than the network burns its timeout here;
+ * upper-bound validation belongs to wrappers that do know the size
+ * ({@link waitForControlCohort}).
  *
- * Starts and stops nothing: a party whose wait throws inside `beforeAll` still has all
- * its nodes running, so the caller's teardown must still call `shutdownTestParty` (and
- * hence `releasePorts`) on the failure path.
+ * `options.label` names the node in every failure message; pass something a reader
+ * can trace back to a machine ("party alpha machine 2", "strand node of B").
  */
-export async function waitForControlCohort(
-	party: TestParty, minPeers: number, options: ControlCohortOptions = {}
+export async function waitForCohortOn(
+	libp2p: Libp2p, minPeers: number, options: WaitOptions & { label?: string } = {}
 ): Promise<string[]> {
-	const node = options.node ?? party.ownerNode;
-	const partyNodeCount = 1 + party.droneNodes.length;
+	const label = options.label ?? 'node';
 
 	// Validate BEFORE polling: an impossible request must not burn a timeout.
 	if (!Number.isInteger(minPeers) || minPeers < 1) {
 		throw new Error(
-			`waitForControlCohort: minPeers must be an integer >= 1 ("at least N members" has no `
-			+ `meaning at zero); party ${party.name} was asked for ${minPeers}`);
-	}
-	// NOTE: this cap assumes the cohort can never exceed the party, which holds because
-	// `findCluster` admits only peers serving THIS network's protocol and the party's
-	// control network is named `control-<partyId>`. If a scenario ever puts a node into a
-	// party's control network without listing it in `TestParty`, a legitimate wait would
-	// throw here — take the count from the network rather than the party at that point.
-	if (minPeers > partyNodeCount) {
-		throw new Error(
-			`waitForControlCohort: party ${party.name} has ${partyNodeCount} node(s) `
-			+ `(1 owner + ${party.droneNodes.length} drone(s)), so a cohort of ${minPeers} can never form`);
+			`waitForCohortOn: minPeers must be an integer >= 1 ("at least N members" has no `
+			+ `meaning at zero); ${label} was asked for ${minPeers}`);
 	}
 
 	// Resolve up front so a missing attachment throws here rather than being swallowed
 	// by the poll loop (which treats a throwing condition as "not yet").
-	const keyNetwork = resolveKeyNetwork(node.libp2p, `party ${party.name} node ${node.peerId}`);
+	const keyNetwork = resolveKeyNetwork(libp2p, label);
 	const {
 		timeoutMs = DEFAULT_COHORT_TIMEOUT_MS,
 		intervalMs = DEFAULT_COHORT_INTERVAL_MS,
-		description = `control cohort of >= ${minPeers} at ${node.peerId} (party ${party.name})`
+		description = `cohort of >= ${minPeers} at ${label}`
 	} = options;
 
 	let observed: string[] = [];
@@ -202,13 +197,50 @@ export async function waitForControlCohort(
 	} catch (error) {
 		// `waitUntil`'s generic message omits the observed size, which is the whole point.
 		throw new Error(
-			`waitForControlCohort: party ${party.name} node ${node.peerId} saw a cohort of `
+			`waitForCohortOn: ${label} saw a cohort of `
 			+ `${observed.length} (members: ${observed.join(', ') || 'none'}) after `
 			+ `${Date.now() - startedAt}ms, needed ${minPeers} (budget ${timeoutMs}ms)`
 			+ (lastError ? `; every poll FAILED, last error: ${String(lastError)}` : ''),
 			{ cause: error });
 	}
 	return observed;
+}
+
+/**
+ * Poll until the cohort `options.node` (default: the owner) would offer a control write
+ * to holds at least `minPeers` members, and resolve to those member peer ids.
+ *
+ * Throws IMMEDIATELY — never after a timeout — when `minPeers` is below 1 or above the
+ * party's own node count, so an unsatisfiable request is a fast, named failure. The
+ * polling core is {@link waitForCohortOn}; this wrapper adds only the upper bound,
+ * because only it knows the party's size.
+ *
+ * Starts and stops nothing: a party whose wait throws inside `beforeAll` still has all
+ * its nodes running, so the caller's teardown must still call `shutdownTestParty` (and
+ * hence `releasePorts`) on the failure path.
+ */
+export async function waitForControlCohort(
+	party: TestParty, minPeers: number, options: ControlCohortOptions = {}
+): Promise<string[]> {
+	const node = options.node ?? party.ownerNode;
+	const partyNodeCount = 1 + party.droneNodes.length;
+
+	// NOTE: this cap assumes the cohort can never exceed the party, which holds because
+	// `findCluster` admits only peers serving THIS network's protocol and the party's
+	// control network is named `control-<partyId>`. If a scenario ever puts a node into a
+	// party's control network without listing it in `TestParty`, a legitimate wait would
+	// throw here — take the count from the network rather than the party at that point.
+	// Guarded on integer-ness so a non-integer ask still gets the core's ">= 1" message.
+	if (Number.isInteger(minPeers) && minPeers > partyNodeCount) {
+		throw new Error(
+			`waitForControlCohort: party ${party.name} has ${partyNodeCount} node(s) `
+			+ `(1 owner + ${party.droneNodes.length} drone(s)), so a cohort of ${minPeers} can never form`);
+	}
+
+	return waitForCohortOn(node.libp2p, minPeers, {
+		...options,
+		label: `party ${party.name} node ${node.peerId}`
+	});
 }
 
 export interface ControlCohortObserverHandle {
