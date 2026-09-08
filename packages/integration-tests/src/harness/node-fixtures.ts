@@ -249,6 +249,69 @@ export async function connectControlNodes(reader: CadreNode, writer: CadreNode):
   await waitForControlConnection(writer, reader.peerId!.toString(), 'writer control node sees inbound connection from reader');
 }
 
+/** The party id both pair fixtures build: prefix, tag, and a run-unique timestamp. */
+function pairPartyId(tag: string, partyIdPrefix: string): string {
+  return `${partyIdPrefix}-${tag}-${Date.now()}`;
+}
+
+/**
+ * Where owner genesis lands relative to B's start — the one thing the two pair fixtures
+ * disagree on, and the reason they exist as siblings.
+ *
+ * - `'genesis-before-b'`: A is made its own owner while it is still ALONE, so a scenario
+ *   can prove write-while-alone convergence. {@link startPairNodes} performs the genesis
+ *   and returns its public key.
+ * - `'genesis-deferred'`: no genesis happens here at all. The caller connects the two
+ *   nodes, waits for a two-machine control cohort, and only then calls
+ *   {@link makeOwnOwner}, so every row — genesis included — is offered to a cohort that
+ *   spans both machines and can be read back on B.
+ */
+export type PairGenesisOrdering = 'genesis-before-b' | 'genesis-deferred';
+
+export interface StartedPairNodes {
+  A: CadreNode;
+  aKey: PrivateKey;
+  B: CadreNode;
+  bKey: PrivateKey;
+  /** A's derived owner PUBLIC key — present only under `'genesis-before-b'`. */
+  ownerPublicKey?: string;
+}
+
+/**
+ * Build and start the A/B pair: A a relaying storage node (so it holds the CadrePeer
+ * blocks), B a plain transaction node — deliberately NOT its own owner, so every row it
+ * observes must have arrived over the wire.
+ *
+ * Pushes each node onto `opts.started` as it starts, so a caller that owns failure-path
+ * teardown can hand in its own array and stop a half-built pair; pass nothing when the
+ * caller owns shutdown itself.
+ *
+ * `opts.strandWatchMs` overrides the strand watcher poll cadence on BOTH nodes.
+ */
+export async function startPairNodes(
+  partyId: string,
+  ordering: PairGenesisOrdering,
+  opts: { strandWatchMs?: number; started?: CadreNode[] } = {},
+): Promise<StartedPairNodes> {
+  const { strandWatchMs, started } = opts;
+
+  const aKey = await generateKeyPair('Ed25519');
+  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
+  await A.start();
+  started?.push(A);
+
+  // Under 'genesis-before-b' this is the write-while-alone moment: A is its own owner
+  // before B exists, so its owner-key row commits to a one-member cohort.
+  const ownerPublicKey = ordering === 'genesis-before-b' ? await makeOwnOwner(A, aKey) : undefined;
+
+  const bKey = await generateKeyPair('Ed25519');
+  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
+  await B.start();
+  started?.push(B);
+
+  return { A, aKey, B, bKey, ...(ownerPublicKey !== undefined ? { ownerPublicKey } : {}) };
+}
+
 /**
  * Boot node A (owner + writer, storage profile so it holds the CadrePeer blocks) and
  * node B (a plain READER — deliberately NOT its own owner, so every row it observes
@@ -268,17 +331,9 @@ export async function bootPair(
   partyIdPrefix = 'ctrl',
   opts: { strandWatchMs?: number } = {},
 ): Promise<{ A: CadreNode; B: CadreNode }> {
-  const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
-  const { strandWatchMs } = opts;
-
-  const aKey = await generateKeyPair('Ed25519');
-  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
-  await A.start();
-  await makeOwnOwner(A, aKey);
-
-  const bKey = await generateKeyPair('Ed25519');
-  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
-  await B.start();
+  const { A, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-before-b', {
+    strandWatchMs: opts.strandWatchMs,
+  });
 
   // A vouches B so B's inbound pull streams pass A's per-stream control-DB gate
   // (A's snapshot is non-empty once it has an anchor + any member row). B still
@@ -315,12 +370,11 @@ export interface ConnectedPair {
  * depend on bootPair's write-while-alone ordering (they assert pull-on-read convergence
  * of rows written by A, not cross-node read-back of genesis rows).
  *
- * NOTE: the ~8 lines of node construction here duplicate {@link bootPair}'s. Left duplicated
- * because factoring them out would move `B.start()` ahead of A's owner genesis in bootPair,
- * i.e. change the very ordering the two fixtures exist to keep apart, and the full
- * integration suite that would prove that safe exceeds the 10-minute agent run budget. If a
- * THIRD pair fixture lands, extract a shared node-construction helper that takes the
- * ordering as its argument rather than copying a third time.
+ * NOTE: the node construction the two fixtures once duplicated now lives in
+ * {@link startPairNodes}, which takes the genesis ordering as a {@link PairGenesisOrdering}
+ * argument — so the ordering difference is data, not two copies of the same eight lines.
+ * Extracted under `harness-one-node-config-builder` once a third pair fixture came into
+ * view; the earlier note here asked for exactly that on the third copy.
  *
  * The cohort wait is also what makes a later concurrent-write assertion meaningful: a
  * write offered to a one-member cohort commits on the writer's own vote and proves
@@ -335,20 +389,13 @@ export async function bootConnectedPair(
   partyIdPrefix = 'ctrl',
   opts: { strandWatchMs?: number } = {},
 ): Promise<ConnectedPair> {
-  const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
-  const { strandWatchMs } = opts;
   const started: CadreNode[] = [];
 
   try {
-    const aKey = await generateKeyPair('Ed25519');
-    const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
-    await A.start();
-    started.push(A);
-
-    const bKey = await generateKeyPair('Ed25519');
-    const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
-    await B.start();
-    started.push(B);
+    const { A, aKey, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-deferred', {
+      strandWatchMs: opts.strandWatchMs,
+      started,
+    });
 
     // B's dial is admitted by A's cold-start carve-out (no control rows exist yet, so the
     // membership gate has no basis to judge); the vouch that keeps B admitted once rows
@@ -379,12 +426,12 @@ export async function bootConnectedPair(
 }
 
 /** Stop nodes newest-first, reporting (never rethrowing) a stop that fails. */
-async function stopStartedNodes(started: CadreNode[]): Promise<void> {
+export async function stopStartedNodes(started: CadreNode[]): Promise<void> {
   for (const node of [...started].reverse()) {
     try {
       await node.stop();
     } catch (stopError) {
-      console.error('[bootConnectedPair] cleanup of a partially booted node failed:', stopError);
+      console.error('[stopStartedNodes] cleanup of a partially booted node failed:', stopError);
     }
   }
 }

@@ -13,11 +13,10 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, signSchema } from '@serfab/cadre-core';
-import type { CadreNodeConfig, StrandRow, SAppConfig } from '@serfab/cadre-core';
+import type { StrandRow, SAppConfig } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, wsTransports } from '../harness/index.js';
+import { waitUntil, controlNodeConfig } from '../harness/index.js';
 
 // ── Chat schema (mirrors reference-app-rn/src/chat-strand.ts) ──────────────
 
@@ -67,20 +66,7 @@ describe('WebSocket Chat (server-to-server)', () => {
   it('should replicate a chat message over WebSocket', async () => {
     // ── 1. Start the drone (storage profile, WS listener) ──────────────
 
-    const droneConfig: CadreNodeConfig = {
-      controlNetwork: { partyId: PARTY_ID, bootstrapNodes: [] },
-      profile: 'storage',
-      strandFilter: { mode: 'all' },
-      storage: { provider: () => new MemoryRawStorage() },
-      network: {
-        transports: wsTransports(),
-        listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-        enableRelay: true,
-      },
-      hibernation: { enabled: false },
-    };
-
-    drone = new CadreNode(droneConfig);
+    drone = new CadreNode(controlNodeConfig({ partyId: PARTY_ID, profile: 'storage', enableRelay: true }));
     await drone.start();
 
     // Extract the drone's actual multiaddr (with peer ID)
@@ -91,19 +77,12 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     // ── 2. Start the phone (transaction profile, WS dialer) ────────────
 
-    const phoneConfig: CadreNodeConfig = {
-      controlNetwork: { partyId: PARTY_ID, bootstrapNodes: droneAddrs },
+    phone = new CadreNode(controlNodeConfig({
+      partyId: PARTY_ID,
+      bootstrapNodes: droneAddrs,
       profile: 'transaction',
-      strandFilter: { mode: 'all' },
-      storage: { provider: () => new MemoryRawStorage() },
-      network: {
-        transports: wsTransports(),
-        listenAddrs: [],  // client-only
-      },
-      hibernation: { enabled: false },
-    };
-
-    phone = new CadreNode(phoneConfig);
+      listenAddrs: [],  // client-only
+    }));
     await phone.start();
 
     // Wait for the phone to connect to the drone

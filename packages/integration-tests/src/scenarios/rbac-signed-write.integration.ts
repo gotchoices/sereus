@@ -20,42 +20,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, type StrandProvisioner } from '@serfab/cadre-core';
-import type { CadreNodeConfig, StrandRow } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
+import type { StrandRow } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
+import { waitUntil, controlNodeConfig, createMockProvisioner, createSignedSAppConfig } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Deterministic strand provisioner for test predictability */
-function createMockProvisioner(prefix = 'rbac'): StrandProvisioner {
-	let counter = 0;
-	return {
-		provisionStrand: async (_sAppId, _initiatorKey, _responderKey) => ({
-			strandId: `strand-${prefix}-${++counter}`,
-		}),
-	};
-}
-
-function createTestNodeConfig(
-	partyId: string,
-	opts: { bootstrapNodes?: string[]; profile?: 'storage' | 'transaction'; enableRelay?: boolean } = {},
-): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
-		},
-		hibernation: { enabled: false },
-	};
-}
 
 // ── sApp member identities + signing ─────────────────────────────────────────
 // The fixture's verify() is pinned to ed25519, so member keys MUST be ed25519.
@@ -113,10 +82,10 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			const sAppConfig = createSignedSAppConfig(appLogic, '0.1.0');
 
 			// Two real CadreNodes over libp2p (Phase-2 pattern from strand-formation-e2e).
-			aliceNode = new CadreNode(createTestNodeConfig(`alice-${partyId}`, { profile: 'storage', enableRelay: true }));
+			aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
 			await aliceNode.start();
 
-			bobNode = new CadreNode(createTestNodeConfig(`bob-${partyId}`, { bootstrapNodes: aliceNode.getMultiaddrs() }));
+			bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
 			await bobNode.start();
 
 			aliceNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner('rbac') });

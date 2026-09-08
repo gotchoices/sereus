@@ -14,18 +14,21 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	type CadreNodeConfig,
 	type StrandRow,
 	type StrandInstance,
 	type SAppConfig,
-	type StrandProvisioner,
-	type FormationUsageRecorder,
 } from '@serfab/cadre-core';
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
+import {
+	waitUntil,
+	controlNodeConfig,
+	createMockProvisioner,
+	createMockUsageRecorder,
+	createSignedSAppConfig,
+} from '../harness/index.js';
 
 // ── Schemas ────────────────────────────────────────────────────────────────
 
@@ -56,54 +59,18 @@ table Data (
 const CHAT_SAPP_CONFIG = createSignedSAppConfig(CHAT_SCHEMA, '0.1.0');
 const SIMPLE_SAPP_CONFIG = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 
-// ── Mock implementations ───────────────────────────────────────────────────
-
-function createMockProvisioner(prefix = 'mp'): StrandProvisioner {
-	let counter = 0;
-	return {
-		provisionStrand: async (_sAppId, _initiatorKey, _responderKey) => ({
-			strandId: `strand-${prefix}-${++counter}`,
-		}),
-	};
-}
-
-function createMockUsageRecorder(): FormationUsageRecorder & {
-	knownTokens: Set<string>;
-	usedTokens: Map<string, { peerKey: string; strandId: string }>;
-} {
-	const knownTokens = new Set<string>();
-	const usedTokens = new Map<string, { peerKey: string; strandId: string }>();
-	return {
-		knownTokens,
-		usedTokens,
-		recordUsage: async ({ token, peerKey, strandId }) => {
-			usedTokens.set(token, { peerKey, strandId });
-		},
-		isTokenUsed: async (token) => usedTokens.has(token),
-		isTokenValid: async (token) => ({
-			valid: knownTokens.has(token),
-		}),
-	};
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Every node in this file is a RELAYING STORAGE node — the two places this scenario
+ * departs from the harness default (a non-relaying transaction node). Nothing else
+ * differs, so this pins those two and delegates.
+ */
 function createNodeConfig(
 	partyId: string,
-	opts: { bootstrapNodes?: string[]; profile?: 'storage' | 'transaction' } = {},
+	opts: { bootstrapNodes?: string[] } = {},
 ): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
-		profile: opts.profile ?? 'storage',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			enableRelay: true,
-		},
-		hibernation: { enabled: false },
-	};
+	return controlNodeConfig({ partyId, profile: 'storage', enableRelay: true, ...opts });
 }
 
 function nowTimestamp(): string {

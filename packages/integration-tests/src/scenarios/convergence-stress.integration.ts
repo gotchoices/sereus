@@ -16,11 +16,10 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, signSchema } from '@serfab/cadre-core';
-import type { CadreNodeConfig, StrandRow, StrandInstance, SAppConfig } from '@serfab/cadre-core';
+import type { StrandRow, StrandInstance, SAppConfig } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, sleep, wsTransports } from '../harness/index.js';
+import { waitUntil, sleep, controlNodeConfig } from '../harness/index.js';
 import { randomUUID } from 'node:crypto';
 
 // ── Chat schema (mirrors websocket-chat.integration.ts) ─────────────────
@@ -154,38 +153,19 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 	const strandId = `strand-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 	// Drone: storage profile, WS listener
-	const droneConfig: CadreNodeConfig = {
-		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'storage',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			enableRelay: true,
-		},
-		hibernation: { enabled: false },
-	};
-
-	const drone = new CadreNode(droneConfig);
+	const drone = new CadreNode(controlNodeConfig({ partyId, profile: 'storage', enableRelay: true }));
 	await drone.start();
 
 	const droneAddrs = drone.getControlNode()!.getMultiaddrs().map(ma => ma.toString());
 
-	// Phone: transaction profile, WS dialer
-	const phoneConfig: CadreNodeConfig = {
-		controlNetwork: { partyId, bootstrapNodes: droneAddrs },
+	// Phone: transaction profile, WS dialer — no listener of its own, so it models a
+	// dial-only client (`listenAddrs: []` is load-bearing, not an omission).
+	const phone = new CadreNode(controlNodeConfig({
+		partyId,
+		bootstrapNodes: droneAddrs,
 		profile: 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: [],
-		},
-		hibernation: { enabled: false },
-	};
-
-	const phone = new CadreNode(phoneConfig);
+		listenAddrs: [],
+	}));
 	await phone.start();
 
 	// Wait for control-level connection
