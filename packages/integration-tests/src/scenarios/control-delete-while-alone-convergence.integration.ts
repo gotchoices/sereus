@@ -37,24 +37,21 @@ import {
 	waitForCadrePeerConverged,
 	connectControlNodes,
 	randomPeerId,
-	wsTransports,
+	controlNodeConfig,
 } from '../harness/index.js';
 
+/**
+ * A node pinned to `store` — the SAME `MemoryRawStorage` instance for every scope, so
+ * its rows survive the stop/restart choreography this file depends on. That pinning is
+ * the only thing here the harness default (a fresh store per scope) would break.
+ */
 function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
 	store: MemoryRawStorage,
 	profile: 'storage' | 'transaction',
 ): CadreNode {
-	return new CadreNode({
-		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile,
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => store },
-		privateKey,
-		network: { transports: wsTransports(), listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'] },
-		hibernation: { enabled: false },
-	});
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, profile, storageProvider: () => store }));
 }
 
 interface AloneRemoval {

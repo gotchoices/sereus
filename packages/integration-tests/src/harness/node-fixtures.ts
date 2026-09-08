@@ -325,23 +325,35 @@ export async function startPairNodes(
  * `opts.strandWatchMs` overrides the strand watcher poll cadence on BOTH nodes —
  * scenarios asserting watcher-driven convergence need a cadence shorter than the
  * 5 s `CadreNode` default so their quiet-window assertions stay affordable.
+ *
+ * Caller owns shutdown of a boot that RETURNS; a boot that THROWS hands back no node
+ * handles, so it stops whatever it already started itself — same contract as
+ * {@link bootConnectedPair}, and a leaked libp2p node outlives the run.
  */
 export async function bootPair(
   tag: string,
   partyIdPrefix = 'ctrl',
   opts: { strandWatchMs?: number } = {},
 ): Promise<{ A: CadreNode; B: CadreNode }> {
-  const { A, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-before-b', {
-    strandWatchMs: opts.strandWatchMs,
-  });
+  const started: CadreNode[] = [];
 
-  // A vouches B so B's inbound pull streams pass A's per-stream control-DB gate
-  // (A's snapshot is non-empty once it has an anchor + any member row). B still
-  // pins nobody — row presence (`isMember`) is what these scenarios assert, not
-  // trust.
-  await A.authorizePeer(B.peerId!.toString());
+  try {
+    const { A, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-before-b', {
+      strandWatchMs: opts.strandWatchMs,
+      started,
+    });
 
-  return { A, B };
+    // A vouches B so B's inbound pull streams pass A's per-stream control-DB gate
+    // (A's snapshot is non-empty once it has an anchor + any member row). B still
+    // pins nobody — row presence (`isMember`) is what these scenarios assert, not
+    // trust.
+    await A.authorizePeer(B.peerId!.toString());
+
+    return { A, B };
+  } catch (error) {
+    await stopStartedNodes(started);
+    throw error;
+  }
 }
 
 export interface ConnectedPair {
