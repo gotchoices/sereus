@@ -243,6 +243,15 @@ export interface AwaitBlockCoverageOptions extends BlockCoverageOptions {
 	description: string;
 	timeoutMs?: number;
 	intervalMs?: number;
+	/**
+	 * Called with EVERY poll's gap, complete or not.
+	 *
+	 * The timeout message reports the last gap only when the wait FAILS. A caller that
+	 * wants to know which kind of gap it passed through on the way to coverage — an
+	 * `absent` block and a `behind` one implicate different delivery mechanisms — has no
+	 * other way to see it, because a successful wait ends on an empty gap by definition.
+	 */
+	onGap?: (gap: BlockCoverageGap) => void;
 }
 
 /**
@@ -259,11 +268,12 @@ export async function awaitBlockCoverage(
 	target: IRawStorage,
 	options: AwaitBlockCoverageOptions,
 ): Promise<void> {
-	const { description, timeoutMs = 30_000, intervalMs = 250, ...compareOptions } = options;
+	const { description, timeoutMs = 30_000, intervalMs = 250, onGap, ...compareOptions } = options;
 	let lastGap = '';
 	await waitUntil(async () => {
 		const gap = await compareBlockCoverage(source, target, compareOptions);
 		lastGap = formatBlockCoverageGap(gap);
+		onGap?.(gap);
 		return blockCoverageIsComplete(gap);
 	}, { timeoutMs, intervalMs, description }).catch((error: unknown) => {
 		throw new Error(`${(error as Error).message} — last coverage gap: ${lastGap}`, { cause: error });

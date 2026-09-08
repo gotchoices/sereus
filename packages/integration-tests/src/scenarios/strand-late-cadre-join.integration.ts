@@ -8,6 +8,16 @@
  * only machine running. Every other two-instance strand scenario starts both machines
  * before the strand is created; the ordering here is the subject.
  *
+ * Test 3 covers the harder half of the same story: the founder keeps writing THROUGHOUT
+ * the newcomer's enrollment, so its rows straddle a seam between two different delivery
+ * mechanisms. Rows written before the newcomer's strand node connects arrive by the
+ * peer-join block catch-up (`cadre-core/src/peer-join-backfill.ts`), a whole-store push
+ * that enumerates the store ONCE and then marks the peer done for that runtime. Rows
+ * written after it connects arrive by ordinary cohort replication instead. A row committed
+ * after the catch-up's enumeration passed its id, but before the peer was marked done, is
+ * never pushed — replication has to cover it. If the two halves do not meet cleanly, that
+ * row is silently absent on the new machine, and Test 3 is what finds it.
+ *
  * THREE RULES, ALL LOAD-BEARING:
  *
  * 1. ORDERING. The newcomer is constructed only AFTER the founder's writes, and the
@@ -22,11 +32,11 @@
  *    timeout; if that fires, check the direct RPC first the way
  *    `strand-addr-seed-convergence.integration.ts` does, before blaming discovery.
  *
- * 3. PHASE 3 NEVER READS THE NEWCOMER'S STRAND DATABASE. A read issued through the node
- *    under test can itself pull blocks into that node's store and mask the gap
+ * 3. THE PHYSICAL CLAIM NEVER READS THE NEWCOMER'S STRAND DATABASE. A read issued through
+ *    the node under test can itself pull blocks into that node's store and mask the gap
  *    (`harness/block-store-probe.ts`). The physical claim is read off raw stores only;
- *    the newcomer's database is first read in Phase 4a, after coverage is already proven
- *    and the founder is down.
+ *    the newcomer's database is first read after coverage is already proven — in Test 1's
+ *    Phase 4a, with the founder down, and in Test 3's behavioural gate.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -48,6 +58,8 @@ import {
 	hasOutboundTo,
 	captureRawStorage,
 	readBlockIndex,
+	newOrAdvancedSince,
+	compareBlockCoverage,
 	awaitBlockCoverage,
 	BlockStoreProbeError,
 	type RawStorageCapture,
@@ -74,6 +86,19 @@ const QUIET_WINDOW_MS = STRAND_WATCH_MS * 5;
 
 /** One shared budget for every converge wait (enrollment, discovery, mesh, coverage). */
 const CONVERGE_BUDGET_MS = 30_000;
+
+/**
+ * Test 3's block-coverage budget only. Its founder writes tens of rows rather than five,
+ * and keeps writing while the catch-up runs, so the store the newcomer has to cover is
+ * larger and settles later than Tests 1 and 2's. Given its own, longer wait.
+ *
+ * NOTE: sized for the ~30 rows a 100 ms writer produces inside the current ~3 s enrollment
+ * window (measured 2026-09-08, 12 runs; coverage completed on the FIRST poll every time, so
+ * there is a lot of headroom here). If enrollment gets slower, {@link WRITER_TICK_MS} gets
+ * shorter, or the store grows for any other reason, this budget has to grow with it — a
+ * timeout here would read as a replication failure when it is really a too-small window.
+ */
+const COVERAGE_BUDGET_MS = 60_000;
 
 /**
  * Anti-vacuity floor for the founder's pre-join strand block count. Measured 2026-09-07
@@ -132,7 +157,13 @@ function expectSeedRows(rows: Map<string, string>, where: string): void {
 	}
 }
 
-// ── Bring-up: Phase 0 (founder alone) + Phase 1 (enrollment) ─────────────────
+// ── Bring-up, in three pieces so a test can run code between them ────────────
+//
+// Test 1 and Test 2 call `foundStrandAlone` then `enrollNewcomer` back to back and behave
+// exactly as they did when the two were one function. Test 3 exists because it needs to
+// start a writer BETWEEN them. `joinDiscoveredStrand` is Test 1's old Phase 2 lifted out
+// unchanged, because Test 3 needs the same discovery-and-mesh sequence; Test 2 must NOT
+// run it, which is why enrollment and joining are separate steps rather than one.
 
 /** Filled in as each node boots, so a test's `finally` can stop partial state. */
 interface LateJoinHandles { founder?: CadreNode; newcomer?: CadreNode; restarted?: CadreNode }
@@ -150,13 +181,17 @@ async function stopLateJoin(handles: LateJoinHandles): Promise<void> {
 	}
 }
 
-interface LateJoinFixture {
+/** What Phase 0 produced: the founder, alone, with its strand founded and published. */
+interface FoundedStrand {
+	/** Names this run in every log line, and salts the party and strand ids. */
+	label: string;
 	founder: CadreNode;
-	newcomer: CadreNode;
 	founderCapture: RawStorageCapture;
 	newcomerCapture: RawStorageCapture;
 	/** The founder's strand-scoped raw store — the source side of every coverage claim. */
 	founderStore: IRawStorage;
+	/** The founder's live strand database, so a test can keep writing to it. */
+	founderDb: Database;
 	/** The founder's strand blocks at the end of Phase 0: written before the newcomer existed. */
 	preJoinIndex: Map<BlockId, ActionRev>;
 	strandId: string;
@@ -164,26 +199,41 @@ interface LateJoinFixture {
 	partyId: string;
 	ownerPublicKey: string;
 	founderPeerId: string;
+}
+
+/** Phase 0's fixture plus everything Phase 1's enrollment produced. */
+interface LateJoinFixture extends FoundedStrand {
+	newcomer: CadreNode;
 	newcomerPeerId: string;
-	/** The newcomer's key, so Phase 4b can restart the SAME identity on the SAME capture. */
+	/** The newcomer's key, so a cold restart can reuse the SAME identity on the SAME capture. */
 	newcomerKey: PrivateKey;
 	/** The newcomer's lifecycle events, collected from before its `start()`. */
 	events: StrandEvents;
 }
 
+/** The strand libp2p node type, as `StrandInstance` declares it. */
+type StrandLibp2p = NonNullable<StrandInstance['libp2pNode']>;
+
+/** What the discovery-and-mesh step produced, for the phases that come after it. */
+interface JoinedStrand {
+	strand: StrandInstance;
+	/** The row the newcomer's OWN watcher emitted — never a test-side copy. */
+	discoveredRow: StrandRow;
+	founderStrandNode: StrandLibp2p;
+	newcomerStrandNode: StrandLibp2p;
+}
+
 /**
  * Phase 0 — the founder, alone: own owner, addressed `CadrePeer` row, strand added and
  * published, five rows written, ZERO control connections asserted, pre-join block index
- * snapshotted. Phase 1 — enrollment over the production membership path: vouch before
- * start, `createSeed`/`applySeed`, membership converged and asserted both ways.
+ * snapshotted.
  */
-async function bringUpLateJoin(label: string, handles: LateJoinHandles): Promise<LateJoinFixture> {
+async function foundStrandAlone(label: string, handles: LateJoinHandles): Promise<FoundedStrand> {
 	const partyId = `late-join-${label}-${Date.now()}`;
 	const strandId = `strand-late-${label}-${Date.now()}`;
 	const founderCapture = captureRawStorage();
 	const newcomerCapture = captureRawStorage();
 
-	// ── Phase 0: the founder, alone ─────────────────────────────────────────
 	const founderKey = await generateKeyPair('Ed25519');
 	const founder = new CadreNode(controlNodeConfig({
 		partyId, privateKey: founderKey, profile: 'storage',
@@ -227,7 +277,22 @@ async function bringUpLateJoin(label: string, handles: LateJoinHandles): Promise
 	console.log(`[late-join:${label}] founder pre-join strand store holds ${preJoinIndex.size} committed blocks`);
 	expect(preJoinIndex.size).toBeGreaterThanOrEqual(PRE_JOIN_BLOCK_FLOOR);
 
-	// ── Phase 1: enrollment, the production membership path ─────────────────
+	return {
+		label, founder, founderCapture, newcomerCapture, founderStore, founderDb, preJoinIndex,
+		strandId, sApp, partyId, ownerPublicKey, founderPeerId,
+	};
+}
+
+/**
+ * Phase 1 — enrollment over the production membership path: vouch before start,
+ * `createSeed`/`applySeed`, membership converged and asserted both ways.
+ *
+ * The newcomer does NOT run the strand here; that is {@link joinDiscoveredStrand}'s job,
+ * and Test 2 is the case that never takes it.
+ */
+async function enrollNewcomer(founded: FoundedStrand, handles: LateJoinHandles): Promise<LateJoinFixture> {
+	const { founder, founderPeerId, partyId, ownerPublicKey, newcomerCapture } = founded;
+
 	// Vouch BEFORE the newcomer starts, so the founder's inbound gate admits its
 	// cold-start dial and the push-time membership gate authorizes backfill to it.
 	const newcomerKey = await generateKeyPair('Ed25519');
@@ -269,9 +334,216 @@ async function bringUpLateJoin(label: string, handles: LateJoinHandles): Promise
 	expect(await founder.isAuthorizedMember(newcomerPeerId)).toBe(true);
 	expect(await newcomer.isAuthorizedMember(founderPeerId)).toBe(true);
 
+	return { ...founded, newcomer, newcomerPeerId, newcomerKey, events };
+}
+
+/**
+ * Phase 2 — discovery and join, through the product's own path, ending with the strand
+ * mesh asserted in BOTH directions.
+ */
+async function joinDiscoveredStrand(fx: LateJoinFixture): Promise<JoinedStrand> {
+	const { founder, newcomer, strandId, sApp, events } = fx;
+
+	// The newcomer holds no sApp config for the id, so its watcher's first sighting
+	// of the row (read over the network) emits `strand:discovered` with the full row.
+	await waitUntil(() => events.discovered.includes(strandId), {
+		timeoutMs: CONVERGE_BUDGET_MS,
+		description: "newcomer's watcher discovers the strand published before it existed",
+	});
+	const discoveredRow = events.discoveredRows[events.discovered.indexOf(strandId)]!;
+	expect(discoveredRow).toEqual({ Id: strandId, MemberPrivateKey: null, Type: 'o' });
+
+	// Join with THAT row — never a test-side copy, and never a hand-dial (rule 2).
+	let strand: StrandInstance;
+	try {
+		strand = await newcomer.addStrand({ strandRow: discoveredRow, sAppConfig: sApp });
+	} catch (error) {
+		// A failed launch keeps being retried by the watcher (the config stays
+		// registered), each failure re-emitting strand:error — report the tally, not
+		// just the first. A `Missing block` here is bug-strand-join-dies-on-missing-block.
+		await sleep(STRAND_WATCH_MS * 3);
+		throw new Error(
+			`newcomer addStrand failed; ${events.errors.length} strand:error event(s) collected: ${String(error)}`,
+			{ cause: error },
+		);
+	}
+	expect(strand.status).toBe('active');
+
+	// The mesh must form from the RPC-resolved seed alone, in BOTH directions. The
+	// founder's strand peer id differing from its control peer id keeps this from
+	// passing vacuously on the already-open control connection.
+	const founderStrandNode = founder.getStrand(strandId)!.libp2pNode!;
+	const founderStrandPeerId = founderStrandNode.peerId.toString();
+	expect(founderStrandPeerId).not.toBe(fx.founderPeerId);
+	const newcomerStrandNode = strand.libp2pNode!;
+	const newcomerStrandPeerId = newcomerStrandNode.peerId.toString();
+	await waitUntil(
+		() => newcomerStrandNode.getConnections().some((c) => c.remotePeer.toString() === founderStrandPeerId),
+		{
+			timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
+			description: "newcomer's strand node connects to the founder's strand node from the RPC-resolved seed",
+		},
+	);
+	await waitUntil(
+		() => founderStrandNode.getConnections().some((c) => c.remotePeer.toString() === newcomerStrandPeerId),
+		{
+			timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
+			description: "founder's strand node sees the inbound connection from the newcomer's strand node",
+		},
+	);
+
+	return { strand, discoveredRow, founderStrandNode, newcomerStrandNode };
+}
+
+// ── Test 3's bounded continuous writer ───────────────────────────────────────
+
+/**
+ * How long the writer sleeps between rows — a floor on the rate, not a guarantee of it.
+ *
+ * Deliberately short. The seam this test aims at is narrow (a block committed after the
+ * catch-up enumeration passed its id, but before the peer was marked done), so the more
+ * rows land inside the join window the better the odds of landing one in it. Measured
+ * 2026-09-07: 100 ms puts roughly 25-30 rows inside enrollment. Do NOT lengthen this to
+ * settle a failing run — a founder whose own writes fail under this load is a finding.
+ */
+const WRITER_TICK_MS = 100;
+
+/** Every Nth tick also re-writes the update-target row, advancing its revision. */
+const WRITER_UPDATE_EVERY = 4;
+
+/**
+ * Hard bound on the writer, so a hung enrollment cannot let it run for the whole timeout.
+ *
+ * NOTE: 400 ticks is ~40 s of writing against a ~3 s enrollment window (measured 2026-09-08,
+ * 12 runs: 28-34 rows), so it is currently unreachable. If enrollment ever gets slow enough
+ * to reach it, `awaitPhaseRows` fails with "straddle writer exited after N row(s)" rather
+ * than a replication error — that message means this bound, not a lost row.
+ */
+const WRITER_MAX_TICKS = 400;
+
+/** Rows that must exist before enrollment starts, so the straddle is real and not a race. */
+const WRITER_WARMUP_ROWS = 3;
+
+/**
+ * Rows that must be written AFTER the strand mesh formed. Without this floor, Test 3
+ * degenerates into Test 1: every row would have been covered by the peer-join catch-up
+ * and the replication half of the seam would go unexercised.
+ */
+const POST_MESH_ROW_FLOOR = 5;
+
+/** The row the writer keeps UPDATING, so the run covers a revision advancing. */
+const UPDATE_KEY = 'straddle-updated-row';
+const updateValue = (n: number): string => `revision-${n}`;
+
+/** When a row was written, relative to the strand mesh coming up. */
+type StraddlePhase = 'enrolling' | 'post-mesh';
+
+/** One row the writer put in, tagged with when it went in. */
+interface StraddleWrite {
+	key: string;
+	val: string;
+	phase: StraddlePhase;
+}
+
+/**
+ * A bounded writer that keeps inserting into the founder's strand database while the rest
+ * of the test enrolls a second machine around it.
+ *
+ * It captures rather than swallows its own error, and {@link StraddleWriter.stop} re-throws
+ * it: a writer that died during enrollment would leave every assertion downstream passing
+ * for the worst possible reason — there being nothing left to lose.
+ */
+interface StraddleWriter {
+	/** Every row written so far, in write order. Stable only after {@link stop}. */
+	readonly writes: readonly StraddleWrite[];
+	/** How many rows carry `phase`. */
+	countIn(phase: StraddlePhase): number;
+	/** Tag every subsequent row with `phase`. */
+	enterPhase(phase: StraddlePhase): void;
+	/** The value {@link UPDATE_KEY} was last set to. */
+	lastUpdateValue(): string;
+	/** How many updates it has issued against that row. */
+	updateCount(): number;
+	/** Wait until `count` rows carry `phase`; fails fast if the writer has already exited. */
+	awaitPhaseRows(phase: StraddlePhase, count: number, timeoutMs: number): Promise<void>;
+	/** Stop, await the loop, and re-throw whatever it hit. Safe to call more than once. */
+	stop(): Promise<void>;
+}
+
+function startStraddleWriter(db: Database, label: string): StraddleWriter {
+	const writes: StraddleWrite[] = [];
+	let phase: StraddlePhase = 'enrolling';
+	let running = true;
+	let exited = false;
+	let failure: unknown;
+	let updates = 0;
+	let ticks = 0;
+
+	const loop = (async () => {
+		while (running && ticks < WRITER_MAX_TICKS) {
+			ticks += 1;
+			// Read the phase ONCE per tick: a row whose insert started before the mesh came
+			// up but landed after keeps the earlier, more conservative tag.
+			const at = phase;
+			const key = `straddle-${at}-${ticks}`;
+			const val = `written-while-${at}-${ticks}`;
+			await db.exec('insert into App.Data (Key, Val) values (?, ?)', [key, val]);
+			writes.push({ key, val, phase: at });
+			if (ticks % WRITER_UPDATE_EVERY === 0) {
+				updates += 1;
+				await db.exec('update App.Data set Val = ? where Key = ?', [updateValue(updates), UPDATE_KEY]);
+			}
+			await sleep(WRITER_TICK_MS);
+		}
+	})().catch((error: unknown) => {
+		failure = error;
+	}).finally(() => {
+		exited = true;
+	});
+
+	const countIn = (of: StraddlePhase): number => writes.filter((w) => w.phase === of).length;
+
+	const stop = async (): Promise<void> => {
+		running = false;
+		await loop;
+		if (failure !== undefined) {
+			throw new Error(
+				`[${label}] straddle writer failed after ${writes.length} row(s) and ${updates} update(s): ${String(failure)}`,
+				{ cause: failure },
+			);
+		}
+	};
+
+	const awaitPhaseRows = async (of: StraddlePhase, count: number, timeoutMs: number): Promise<void> => {
+		const deadline = Date.now() + timeoutMs;
+		while (countIn(of) < count) {
+			if (exited) {
+				// `stop()` re-throws the writer's own error when it has one; reaching the
+				// line past it means the writer merely ran out of ticks.
+				await stop();
+				throw new Error(
+					`[${label}] straddle writer exited after ${writes.length} row(s) with only ` +
+					`${countIn(of)} of ${count} '${of}' row(s)`,
+				);
+			}
+			if (Date.now() > deadline) {
+				throw new Error(
+					`[${label}] timed out after ${timeoutMs}ms waiting for ${count} '${of}' row(s) ` +
+					`from the straddle writer; saw ${countIn(of)}`,
+				);
+			}
+			await sleep(100);
+		}
+	};
+
 	return {
-		founder, newcomer, founderCapture, newcomerCapture, founderStore, preJoinIndex,
-		strandId, sApp, partyId, ownerPublicKey, founderPeerId, newcomerPeerId, newcomerKey, events,
+		writes,
+		countIn,
+		enterPhase: (next) => { phase = next; },
+		lastUpdateValue: () => updateValue(updates),
+		updateCount: () => updates,
+		awaitPhaseRows,
+		stop,
 	};
 }
 
@@ -281,57 +553,12 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 	it('delivers a pre-existing strand — blocks and all — to a machine enrolled after the writes', async () => {
 		const handles: LateJoinHandles = {};
 		try {
-			const fx = await bringUpLateJoin('follow', handles);
-			const { founder, newcomer, newcomerCapture, founderStore, preJoinIndex, strandId, sApp, events } = fx;
+			const fx = await enrollNewcomer(await foundStrandAlone('follow', handles), handles);
+			const { founder, newcomer, newcomerCapture, founderStore, preJoinIndex, strandId, sApp } = fx;
 
 			// ── Phase 2: discovery and join, through the product's own path ─────
-			// The newcomer holds no sApp config for the id, so its watcher's first sighting
-			// of the row (read over the network) emits `strand:discovered` with the full row.
-			await waitUntil(() => events.discovered.includes(strandId), {
-				timeoutMs: CONVERGE_BUDGET_MS,
-				description: "newcomer's watcher discovers the strand published before it existed",
-			});
-			const discoveredRow = events.discoveredRows[events.discovered.indexOf(strandId)]!;
-			expect(discoveredRow).toEqual({ Id: strandId, MemberPrivateKey: null, Type: 'o' });
-
-			// Join with THAT row — never a test-side copy, and never a hand-dial (rule 2).
-			let newcomerStrand: StrandInstance;
-			try {
-				newcomerStrand = await newcomer.addStrand({ strandRow: discoveredRow, sAppConfig: sApp });
-			} catch (error) {
-				// A failed launch keeps being retried by the watcher (the config stays
-				// registered), each failure re-emitting strand:error — report the tally, not
-				// just the first. A `Missing block` here is bug-strand-join-dies-on-missing-block.
-				await sleep(STRAND_WATCH_MS * 3);
-				throw new Error(
-					`newcomer addStrand failed; ${events.errors.length} strand:error event(s) collected: ${String(error)}`,
-					{ cause: error },
-				);
-			}
-			expect(newcomerStrand.status).toBe('active');
-
-			// The mesh must form from the RPC-resolved seed alone, in BOTH directions. The
-			// founder's strand peer id differing from its control peer id keeps this from
-			// passing vacuously on the already-open control connection.
-			const founderStrandNode = founder.getStrand(strandId)!.libp2pNode!;
-			const founderStrandPeerId = founderStrandNode.peerId.toString();
-			expect(founderStrandPeerId).not.toBe(fx.founderPeerId);
-			const newcomerStrandNode = newcomerStrand.libp2pNode!;
-			const newcomerStrandPeerId = newcomerStrandNode.peerId.toString();
-			await waitUntil(
-				() => newcomerStrandNode.getConnections().some((c) => c.remotePeer.toString() === founderStrandPeerId),
-				{
-					timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
-					description: "newcomer's strand node connects to the founder's strand node from the RPC-resolved seed",
-				},
-			);
-			await waitUntil(
-				() => founderStrandNode.getConnections().some((c) => c.remotePeer.toString() === newcomerStrandPeerId),
-				{
-					timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
-					description: "founder's strand node sees the inbound connection from the newcomer's strand node",
-				},
-			);
+			const joined = await joinDiscoveredStrand(fx);
+			const { strand: newcomerStrand, discoveredRow, newcomerStrandNode } = joined;
 
 			// ── Phase 3: the physical claim — RAW STORES ONLY (rule 3) ──────────
 			// The peer-join backfill PUSHES the founder's blocks one debounce (~1s) after the
@@ -400,7 +627,7 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 	it('a cadre machine that never runs the strand holds none of its blocks', async () => {
 		const handles: LateJoinHandles = {};
 		try {
-			const fx = await bringUpLateJoin('decline', handles);
+			const fx = await enrollNewcomer(await foundStrandAlone('decline', handles), handles);
 			const { newcomer, newcomerCapture, founderStore, strandId, events } = fx;
 
 			// The newcomer demonstrably SAW the strand and declined (no addStrand)…
@@ -428,4 +655,134 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			await stopLateJoin(handles);
 		}
 	}, 120_000);
+
+	it('loses no row written while the newcomer is still catching up', async () => {
+		const handles: LateJoinHandles = {};
+		let writer: StraddleWriter | undefined;
+		try {
+			const founded = await foundStrandAlone('straddle', handles);
+			const { founderDb, founderStore, strandId } = founded;
+
+			// The row the writer will keep UPDATING. Its first revision is written while the
+			// founder is still the party's only machine, so a newcomer that receives that
+			// revision and no later one reports as `behind` rather than `absent` — a different
+			// failure shape, and one any presence-only check would read as a pass.
+			await founderDb.exec('insert into App.Data (Key, Val) values (?, ?)', [UPDATE_KEY, updateValue(0)]);
+
+			writer = startStraddleWriter(founderDb, 'late-join:straddle');
+			// The straddle only exists if the writer is demonstrably going before enrollment
+			// starts. Nothing below distinguishes "delivered correctly" from "never written".
+			await writer.awaitPhaseRows('enrolling', WRITER_WARMUP_ROWS, CONVERGE_BUDGET_MS);
+
+			// Enrollment and the strand join both run WHILE the founder keeps writing. The
+			// peer-join catch-up enumerates the founder's store once during this window; every
+			// row committed after its own id was passed over has to arrive some other way.
+			const fx = await enrollNewcomer(founded, handles);
+			const joined = await joinDiscoveredStrand(fx);
+
+			// Mesh up in both directions. From here the newcomer's strand node is in the cohort,
+			// so subsequent rows are ordinary replication's problem, not the catch-up's.
+			const enrollingRows = writer.countIn('enrolling');
+			writer.enterPhase('post-mesh');
+
+			// DIAGNOSTIC ONLY, never asserted: one sample of the coverage gap while the founder
+			// is still writing. A moving source can never be covered deterministically, so this
+			// cannot be a gate — but it is the only place the test can see whether a gap exists
+			// mid-window at all, which is what tells "the seam was exercised and closed" apart
+			// from "the newcomer was already caught up before we looked". Raw stores only.
+			const midFlight = await compareBlockCoverage(founderStore, fx.newcomerCapture.forStrand(strandId));
+			console.log(
+				`[late-join:straddle] mid-flight gap (diagnostic, writer still running): ` +
+				`absent=${midFlight.absent.length}, behind=${midFlight.behind.length}, ` +
+				`metadataOnly=${midFlight.metadataOnly.length}`,
+			);
+
+			await writer.awaitPhaseRows('post-mesh', POST_MESH_ROW_FLOOR, CONVERGE_BUDGET_MS);
+			await writer.stop();
+
+			// Anti-vacuity, both halves of the seam. Without post-mesh rows this test is Test 1
+			// with extra steps; without enrolling rows there is no straddle at all.
+			expect(enrollingRows, 'rows written while the newcomer was enrolling').toBeGreaterThan(0);
+			const postMeshRows = writer.writes.filter((w) => w.phase === 'post-mesh');
+			expect(postMeshRows.length, 'rows written AFTER the strand mesh formed').toBeGreaterThanOrEqual(POST_MESH_ROW_FLOOR);
+			expect(writer.updateCount(), `updates issued against ${UPDATE_KEY}`).toBeGreaterThan(0);
+
+			// The updates must have LANDED on the founder. `update … where Key = ?` is a
+			// full-PK point lookup; one that matched nothing would no-op silently and leave the
+			// revision-advance half of this test asserting over a block that never moved.
+			const founderRows = await readDataRows(founderDb);
+			expect(founderRows.get(UPDATE_KEY), 'founder-side value of the updated row').toBe(writer.lastUpdateValue());
+
+			// Final tallies, not the `enrollingRows` snapshot: the tick already in flight when
+			// `enterPhase` ran keeps its earlier tag, so the snapshot is one or two low.
+			console.log(
+				`[late-join:straddle] writer wrote ${writer.writes.length} rows ` +
+				`(${writer.countIn('enrolling')} while enrolling, ${postMeshRows.length} after the mesh formed) ` +
+				`and ${writer.updateCount()} updates to ${UPDATE_KEY}`,
+			);
+
+			// ── Physical gate: RAW STORES ONLY, whole store, no narrowing ───────
+			// No `include`: everything the founder holds, at a revision no older than the
+			// founder's, with content bytes present. The gap kinds are recorded on the way
+			// through because a successful wait ends on an empty gap and would otherwise say
+			// nothing about which mechanism was still catching up.
+			const newcomerStore = fx.newcomerCapture.forStrand(strandId);
+			expect(newcomerStore).not.toBe(founderStore);
+
+			// Anti-vacuity for the gate itself: the founder's store must have MOVED since the
+			// pre-join snapshot, or "the newcomer covers the founder" would be a claim about
+			// Test 1's six blocks and say nothing about the straddling writes.
+			const founderFinalIndex = await readBlockIndex(founderStore);
+			const movedSincePreJoin = newOrAdvancedSince(founded.preJoinIndex);
+			const moved = [...founderFinalIndex].filter(([id, rev]) => movedSincePreJoin(id, rev));
+			console.log(
+				`[late-join:straddle] founder strand store: ${founded.preJoinIndex.size} blocks pre-join, ` +
+				`${founderFinalIndex.size} after the writer stopped, ${moved.length} new or advanced`,
+			);
+			expect(moved.length, 'founder blocks new or advanced since the pre-join snapshot').toBeGreaterThan(0);
+
+			const kindsSeen = new Set<string>();
+			let lastNonEmpty = 'none';
+			await awaitBlockCoverage(founderStore, newcomerStore, {
+				timeoutMs: COVERAGE_BUDGET_MS,
+				description: "every founder block — written before, during and after the join — lands in the newcomer's own store",
+				onGap: (gap) => {
+					const kinds: string[] = [];
+					if (gap.absent.length > 0) kinds.push('absent');
+					if (gap.behind.length > 0) kinds.push('behind');
+					if (gap.metadataOnly.length > 0) kinds.push('metadataOnly');
+					for (const kind of kinds) kindsSeen.add(kind);
+					if (kinds.length > 0) {
+						lastNonEmpty = `${kinds.join('+')} ` +
+							`(absent=${gap.absent.length}, behind=${gap.behind.length}, metadataOnly=${gap.metadataOnly.length})`;
+					}
+				},
+			});
+			// Which kind was last outstanding says which half of the seam was slowest: `absent`
+			// is a block the newcomer never received at all, `behind` one it holds at a stale
+			// revision — the shape the updated row produces.
+			console.log(
+				`[late-join:straddle] gap kinds seen before coverage closed: ` +
+				`[${[...kindsSeen].join(', ')}]; last non-empty gap: ${lastNonEmpty}`,
+			);
+
+			// ── Behavioural gate: coverage is proven, so reading through the node is safe ──
+			const rows = await readDataRows(joined.strand.database!.getDatabase());
+			const missing = writer.writes
+				.filter((w) => rows.get(w.key) !== w.val)
+				.map((w) => `${w.key} [written ${w.phase}] expected '${w.val}', got '${String(rows.get(w.key))}'`);
+			expect(missing, 'rows the writer committed that the newcomer cannot read back').toEqual([]);
+			expect(rows.get(UPDATE_KEY), 'newcomer-side value of the updated row').toBe(writer.lastUpdateValue());
+			expectSeedRows(rows, 'straddle: newcomer after coverage');
+		} finally {
+			// Stop the writer FIRST and swallow only here: a stray insert against a stopping
+			// strand database would throw into teardown and mask whatever actually failed.
+			try {
+				await writer?.stop();
+			} catch (error) {
+				console.warn('[late-join:straddle] writer teardown reported:', error);
+			}
+			await stopLateJoin(handles);
+		}
+	}, 180_000);
 });
