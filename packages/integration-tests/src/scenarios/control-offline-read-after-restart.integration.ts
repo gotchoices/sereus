@@ -38,34 +38,27 @@ import type { PrivateKey } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import {
-	waitUntil,
 	waitForCadrePeerConverged,
 	connectControlNodes,
 	randomPeerId,
-	wsTransports,
+	controlNodeConfig,
 	captureRawStorage,
-	compareBlockCoverage,
-	blockCoverageIsComplete,
-	formatBlockCoverageGap,
+	awaitBlockCoverage,
 	readBlockIndex,
 	type RawStorageCapture,
 } from '../harness/index.js';
 
+/**
+ * One node on the party, on ITS OWN storage capture — the shared builder plus the
+ * `storageProvider` seam, so this file carries no private copy of the node config.
+ */
 function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
 	capture: RawStorageCapture,
 	profile: 'storage' | 'transaction',
 ): CadreNode {
-	return new CadreNode({
-		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile,
-		strandFilter: { mode: 'all' },
-		storage: { provider: capture.provider },
-		privateKey,
-		network: { transports: wsTransports(), listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'] },
-		hibernation: { enabled: false },
-	});
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, profile, storageProvider: capture.provider }));
 }
 
 /** The joiner's control store, from its capture — the store the restarted node reads. */
@@ -112,17 +105,8 @@ describe('Control-network peer-join block catch-up', () => {
 			// database, so nothing here can pull a block in and mask the gap.
 			const storeA = controlStore(captureA);
 			const storeB = controlStore(captureB);
-			let lastGap = '';
-			await waitUntil(async () => {
-				const gap = await compareBlockCoverage(storeA, storeB);
-				lastGap = formatBlockCoverageGap(gap);
-				return blockCoverageIsComplete(gap);
-			}, {
-				timeoutMs: 30_000,
-				intervalMs: 250,
-				description: 'peer-join catch-up covers B\'s raw control store (last gap: see failure message)',
-			}).catch((error) => {
-				throw new Error(`${(error as Error).message} — last coverage gap: ${lastGap}`);
+			await awaitBlockCoverage(storeA, storeB, {
+				description: "peer-join catch-up covers B's raw control store",
 			});
 			// The two collection headers this file's behavioural reads depend on, named
 			// explicitly so a coverage regression fails naming the load-bearing blocks.

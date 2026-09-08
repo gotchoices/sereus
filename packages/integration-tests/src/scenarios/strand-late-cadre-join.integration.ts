@@ -48,16 +48,14 @@ import {
 	hasOutboundTo,
 	captureRawStorage,
 	readBlockIndex,
-	compareBlockCoverage,
-	blockCoverageIsComplete,
-	formatBlockCoverageGap,
+	awaitBlockCoverage,
 	BlockStoreProbeError,
 	type RawStorageCapture,
 } from '../harness/index.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** The one-table sApp two other strand scenarios already use. */
+/** The one-table sApp several other strand scenarios already use. */
 const SIMPLE_SCHEMA = `
 table Data (
     Key text primary key,
@@ -134,21 +132,6 @@ function expectSeedRows(rows: Map<string, string>, where: string): void {
 	}
 }
 
-/**
- * Poll `target`'s raw store until it covers `source`'s, re-reading BOTH stores inside
- * each iteration and carrying the last observed gap into the failure message.
- */
-async function awaitCoverage(source: IRawStorage, target: IRawStorage, description: string): Promise<void> {
-	let lastGap = '';
-	await waitUntil(async () => {
-		const gap = await compareBlockCoverage(source, target);
-		lastGap = formatBlockCoverageGap(gap);
-		return blockCoverageIsComplete(gap);
-	}, { timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250, description }).catch((error) => {
-		throw new Error(`${(error as Error).message} — last coverage gap: ${lastGap}`, { cause: error });
-	});
-}
-
 // ── Bring-up: Phase 0 (founder alone) + Phase 1 (enrollment) ─────────────────
 
 /** Filled in as each node boots, so a test's `finally` can stop partial state. */
@@ -157,8 +140,13 @@ interface LateJoinHandles { founder?: CadreNode; newcomer?: CadreNode; restarted
 /** Stop whatever is still live, watcher nodes before the founder they read. */
 async function stopLateJoin(handles: LateJoinHandles): Promise<void> {
 	for (const node of [handles.restarted, handles.newcomer, handles.founder]) {
-		await node?.stop().catch((error: unknown) =>
-			console.warn('[late-join] node teardown failed:', error));
+		// try/catch, not `.catch()`: a `stop()` that throws SYNCHRONOUSLY would escape a
+		// promise-tail handler and abandon every node after it in this list.
+		try {
+			await node?.stop();
+		} catch (error) {
+			console.warn('[late-join] node teardown failed:', error);
+		}
 	}
 }
 
@@ -350,10 +338,10 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			// strand connection opens; a pull-on-read path could satisfy a select but not this.
 			const newcomerStore = newcomerCapture.forStrand(strandId);
 			expect(newcomerStore).not.toBe(founderStore);
-			await awaitCoverage(
-				founderStore, newcomerStore,
-				"the founder's strand blocks land physically in the newcomer's own store",
-			);
+			await awaitBlockCoverage(founderStore, newcomerStore, {
+				timeoutMs: CONVERGE_BUDGET_MS,
+				description: "the founder's strand blocks land physically in the newcomer's own store",
+			});
 
 			// The "written before you existed" set, named directly: every pre-join block id —
 			// the once-written collection headers included — is present on the newcomer.
@@ -387,6 +375,12 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 
 			// Control-plane half of the claim: the restarted node still names the strand from
 			// its OWN control store — evidence the production discovery path would work here too.
+			// NOTE: this read is not gated on the control-network catch-up having covered the
+			// newcomer's control store — it relies on that landing during the several seconds of
+			// Phases 2-4a (one ~1 s debounce), which held on every run to date. If it ever flakes,
+			// gate it with `awaitBlockCoverage(founderCapture.provider('control'),
+			// newcomerCapture.provider('control'), …)` BEFORE `newcomer.stop()` — never by reading
+			// through the restarted node, which would pull the row in and mask the gap.
 			const strandsSeen = await restarted.getControlDatabase()!.queryStrands();
 			expect(strandsSeen.map((row) => row.Id)).toContain(strandId);
 

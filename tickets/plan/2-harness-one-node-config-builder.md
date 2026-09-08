@@ -119,3 +119,23 @@ It also adds a fifth call site to fold in eventually — the new
 `packages/integration-tests/src/scenarios/strand-late-cadre-join.integration.ts` uses
 `controlNodeConfig` directly rather than a private copy, so it is not new duplication; it is just a
 file to re-run when this lands.
+
+## Note added 2026-09-07 from the review of `scenario-strand-follows-a-late-joining-cadre-node`
+
+Two items from the table above are already done, and one file joins it:
+
+- **`controlNodeConfig` now accepts a caller-supplied storage provider.** `ControlNodeOpts.storageProvider`
+  landed with the late-cadre-join scenario and is exercised by three files. Do not build it again.
+- **A fifth private builder existed and is now folded.** `control-offline-read-after-restart.integration.ts`
+  carried its own `nodeOn(...)` (a hand-written `CadreNodeConfig` literal, the only difference from the
+  shared helper being its caller-supplied storage provider). The review folded it onto
+  `controlNodeConfig({ ..., storageProvider })` and re-ran that file green, so it is no longer on your list.
+  It is evidence for the ticket's premise rather than new work: the original inventory missed it, exactly
+  as it missed `multi-party-workflows`.
+- **`strand-membership-closed-strand-e2e.integration.ts:190` is now a mechanical fold**, since the one
+  blocker the table names for it (a caller-supplied storage provider) is in place.
+
+The review also hoisted the coverage-poll loop that two scenario files had copied — `waitUntil` around
+`compareBlockCoverage`, carrying the last gap into the timeout message — into
+`harness/block-store-probe.ts` as `awaitBlockCoverage`. Nothing for this ticket to do there; it is
+mentioned so the consolidation does not re-derive it.

@@ -34,6 +34,7 @@
 
 import type { ActionId, ActionRev, BlockId } from '@optimystic/db-core';
 import { MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
+import { waitUntil } from './wait-utils.js';
 
 /** The scope key cadre-core uses for the control database's storage. */
 const CONTROL_SCOPE = 'control';
@@ -234,4 +235,37 @@ export function formatBlockCoverageGap(gap: BlockCoverageGap): string {
 	}
 	if (gap.metadataOnly.length > 0) parts.push(`metadata-only (no content bytes): [${gap.metadataOnly.join(', ')}]`);
 	return parts.join('; ');
+}
+
+/** How to run an {@link awaitBlockCoverage} poll. */
+export interface AwaitBlockCoverageOptions extends BlockCoverageOptions {
+	/** Named in the timeout message, so a failure says which claim did not close. */
+	description: string;
+	timeoutMs?: number;
+	intervalMs?: number;
+}
+
+/**
+ * Poll until `target` covers `source`, re-reading BOTH stores every iteration and carrying
+ * the LAST observed gap into the timeout message.
+ *
+ * The last-gap carry is why this is a helper rather than a `waitUntil` at each call site: a
+ * bare timeout says only "coverage never completed", while the gap names the block ids still
+ * absent, behind, or metadata-only — which is what tells a replication failure apart from a
+ * slow one.
+ */
+export async function awaitBlockCoverage(
+	source: IRawStorage,
+	target: IRawStorage,
+	options: AwaitBlockCoverageOptions,
+): Promise<void> {
+	const { description, timeoutMs = 30_000, intervalMs = 250, ...compareOptions } = options;
+	let lastGap = '';
+	await waitUntil(async () => {
+		const gap = await compareBlockCoverage(source, target, compareOptions);
+		lastGap = formatBlockCoverageGap(gap);
+		return blockCoverageIsComplete(gap);
+	}, { timeoutMs, intervalMs, description }).catch((error: unknown) => {
+		throw new Error(`${(error as Error).message} — last coverage gap: ${lastGap}`, { cause: error });
+	});
 }
