@@ -22,7 +22,12 @@ import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
 import { signMessageEd25519 } from './test-network.js';
 
-/** WebSocket + circuit-relay transports shared by every e2e/integration scenario. */
+/**
+ * WebSocket + circuit-relay transports every control node gets. Since the last private
+ * config copies folded onto {@link controlNodeConfig} no scenario calls this directly —
+ * it stays exported so a scenario building a non-control libp2p node by hand (and
+ * `control-node-config.spec.ts`) can name the same pair rather than re-listing it.
+ */
 export function wsTransports(): Libp2pTransports {
   return [webSockets(), circuitRelayTransport()];
 }

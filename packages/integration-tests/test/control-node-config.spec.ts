@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { CadreNodeConfig, RawStorageProvider } from '@serfab/cadre-core';
-import { controlNodeConfig, type ControlNodeOpts } from '../src/harness/node-fixtures.js';
+import { controlNodeConfig, wsTransports, type ControlNodeOpts } from '../src/harness/node-fixtures.js';
 
 /**
  * `CadreNodeConfig` leaves `network` and `storage` optional for embedders that accept the
@@ -50,6 +50,14 @@ describe('controlNodeConfig', () => {
 			expect(config.strandFilter).toEqual({ mode: 'all' });
 			expect(config.network.listenAddrs).toEqual(['/ip4/127.0.0.1/tcp/0/ws']);
 			expect(config.hibernation).toEqual({ enabled: false });
+		});
+
+		it('always populates transports — a node built without them dials nothing', () => {
+			// No scenario passes transports and none can override them, so this builder is the
+			// single place they come from; dropping them yields a node that starts and then
+			// silently fails every dial, which reads as a timeout far from the cause.
+			expect(config.network.transports).toHaveLength(wsTransports().length);
+			expect(config.network.transports?.every((t) => typeof t === 'function')).toBe(true);
 		});
 
 		it('omits every optional key rather than setting it undefined, so CadreNode defaults stand', () => {

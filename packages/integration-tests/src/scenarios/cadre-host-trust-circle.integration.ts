@@ -14,9 +14,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 
-import { createTestCadreHost, type TestCadreHost } from '../harness/index.js';
+import { createTestCadreHost, makeOwnOwner, type TestCadreHost } from '../harness/index.js';
 
 describe('cadre-host trust-circle', () => {
 	let cadreNode: CadreNode;
@@ -27,19 +27,20 @@ describe('cadre-host trust-circle', () => {
 		// cadre-cli `--owner` shape), so registerSelf can owner-sign the
 		// INSERT of its own CadrePeer row.
 		const nodeKey = await generateKeyPair('Ed25519');
-		const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
 		const baseId = Math.random().toString(36).slice(2);
 
+		// NOTE: deliberately NOT `controlNodeConfig()` — this node is never put on the
+		// wire, so it carries no `network`/`storage`/`strandFilter`/`hibernation` block
+		// and runs on cadre-core's own defaults. Routing it through the shared builder
+		// would ADD WebSocket transports, a loopback listener and a memory store, which
+		// is a behaviour change, not a deduplication. Leave it hand-written.
 		cadreNode = new CadreNode({
 			controlNetwork: { partyId: `host-${baseId}`, bootstrapNodes: [] },
 			privateKey: nodeKey,
 			profile: 'transaction',
 		});
 		await cadreNode.start();
-		const db = cadreNode.getControlDatabase();
-		if (!db) throw new Error('control database missing');
-		await db.insertOwnerKey(publicKeyB64);
-		cadreNode.initializeSeedBootstrap(privateKeyB64);
+		await makeOwnOwner(cadreNode, nodeKey);
 
 		// The owner writes its own CadrePeer row up-front (the implement
 		// ticket's CLI change), so it appears as a member alongside redeemed peers.
