@@ -141,15 +141,15 @@ import {
 	isStrandSealed,
 	signStrandApproval,
 	generateStrandStampId,
-	type StrandProvisioner,
 	type Ed25519KeyPair,
 } from '@serfab/cadre-core';
-import type { CadreNodeConfig, StrandRow, StrandInstance } from '@serfab/cadre-core';
+import type { StrandRow, StrandInstance } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
 import {
 	waitUntil,
-	wsTransports,
+	controlNodeConfig,
+	createMockProvisioner,
 	createSignedSAppConfig,
 	captureRawStorage,
 	compareBlockCoverage,
@@ -172,39 +172,6 @@ import { loadSimpleSApp } from '../fixtures/index.js';
  * future CI-driven bump happens once rather than at every call site.
  */
 const GATE = { timeoutMs: 15_000, intervalMs: 250 } as const;
-
-/** Deterministic strand provisioner for test predictability. */
-function createMockProvisioner(prefix = 'closed'): StrandProvisioner {
-	let counter = 0;
-	return {
-		provisionStrand: async (_sAppId, _initiatorKey, _responderKey) => ({
-			strandId: `strand-${prefix}-${++counter}`,
-		}),
-	};
-}
-
-/**
- * @param capture - This node's OWN storage capture, whose per-scope factory becomes the
- *   node's storage provider. One capture per node — see {@link bringUpClosedStrand}.
- */
-function createTestNodeConfig(
-	partyId: string,
-	capture: RawStorageCapture,
-	opts: { bootstrapNodes?: string[]; profile?: 'storage' | 'transaction'; enableRelay?: boolean } = {},
-): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: capture.provider },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
-		},
-		hibernation: { enabled: false },
-	};
-}
 
 /** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
 function freshKeyPair(): Ed25519KeyPair {
@@ -507,10 +474,19 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		const sAppConfig = createSignedSAppConfig(appLogic, '0.1.0');
 
 		// ── Two real CadreNodes over libp2p (rbac/Phase-2 pattern) ───────────
-		founderNode = new CadreNode(createTestNodeConfig(`founder-${partyId}`, founderCapture, { profile: 'storage', enableRelay: true }));
+		founderNode = new CadreNode(controlNodeConfig({
+			partyId: `founder-${partyId}`,
+			storageProvider: founderCapture.provider,
+			profile: 'storage',
+			enableRelay: true,
+		}));
 		await founderNode.start();
 
-		joinerNode = new CadreNode(createTestNodeConfig(`joiner-${partyId}`, joinerCapture, { bootstrapNodes: founderNode.getMultiaddrs() }));
+		joinerNode = new CadreNode(controlNodeConfig({
+			partyId: `joiner-${partyId}`,
+			storageProvider: joinerCapture.provider,
+			bootstrapNodes: founderNode.getMultiaddrs(),
+		}));
 		await joinerNode.start();
 
 		// Form a strand over the wire to get a real negotiated strandId (the closed

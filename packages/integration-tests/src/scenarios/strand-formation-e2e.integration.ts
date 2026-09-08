@@ -10,16 +10,15 @@
  * - Three-party strand formation
  * - Real-recorder consent enforcement, real-approval-hook redemption, provisioning abort
  *
- * NOTE: 1744 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
- * 1170. Still one cohesive subject, and each `Phase N` describe owns its own `TestCadreNetwork`,
- * so the phases are already independent. If another phase lands here, split per phase into
- * sibling files and move the module-scope helpers above (`ownerSigner` … `readFormationUsage`)
- * into a shared `strand-formation-helpers.ts` — the split is mechanical precisely because no
- * phase shares state with another.
+ * NOTE: 1687 lines (`wc -l`, 2026-09-08) — the second-largest file in `src/scenarios/`, after
+ * `strand-membership-closed-strand-e2e` at 1787. Still one cohesive subject, and each `Phase N`
+ * describe owns its own `TestCadreNetwork`, so the phases are already independent. If another
+ * phase lands here, split per phase into sibling files and move the module-scope helpers above
+ * (`ownerSigner` … `readFormationUsage`) into a shared `strand-formation-helpers.ts` — the split
+ * is mechanical precisely because no phase shares state with another.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	StrandSolicitationService,
@@ -32,45 +31,11 @@ import {
 	type DisclosureValidator,
 	type FormationApproval,
 	type FormationUsageRecorder,
-	type StrandProvisioner,
 } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation, StrandFormationManagerConfig } from '@serfab/cadre-core';
-import { TestCadreNetwork, signMessageEd25519, startApprovalHook, waitUntil, wsTransports, createSignedSAppConfig, readCohort } from '../harness/index.js';
+import type { StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation, StrandFormationManagerConfig } from '@serfab/cadre-core';
+import { TestCadreNetwork, signMessageEd25519, startApprovalHook, waitUntil, controlNodeConfig, createMockProvisioner, createMockUsageRecorder, createSignedSAppConfig, readCohort } from '../harness/index.js';
 import type { TestParty } from '../harness/types.js';
-
-// ── Mock implementations ────────────────────────────────────────────────────
-
-/** Deterministic strand provisioner for test predictability */
-function createMockProvisioner(prefix = 'test'): StrandProvisioner {
-	let counter = 0;
-	return {
-		provisionStrand: async (_sAppId, _initiatorKey, _responderKey) => ({
-			strandId: `strand-${prefix}-${++counter}`,
-		}),
-	};
-}
-
-/** In-memory usage recorder that tracks tokens */
-function createMockUsageRecorder(): FormationUsageRecorder & {
-	knownTokens: Set<string>;
-	usedTokens: Map<string, { peerKey: string; strandId: string }>;
-} {
-	const knownTokens = new Set<string>();
-	const usedTokens = new Map<string, { peerKey: string; strandId: string }>();
-
-	return {
-		knownTokens,
-		usedTokens,
-		recordUsage: async ({ token, peerKey, strandId }) => {
-			usedTokens.set(token, { peerKey, strandId });
-		},
-		isTokenUsed: async (token) => usedTokens.has(token),
-		isTokenValid: async (token) => ({
-			valid: knownTokens.has(token),
-		}),
-	};
-}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -114,25 +79,6 @@ function createWrongKeySAppConfig(schema: string, version: string): SAppConfig {
 // Create two distinct signed sApp configs for isolation tests
 const SAPP_CONFIG_A = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 const SAPP_CONFIG_B = createSignedSAppConfig(SIMPLE_SCHEMA, '0.2.0');
-
-/** Create a CadreNodeConfig for Phase 2 tests */
-function createTestNodeConfig(
-	partyId: string,
-	opts: { bootstrapNodes?: string[]; profile?: 'storage' | 'transaction'; enableRelay?: boolean } = {},
-): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
-		},
-		hibernation: { enabled: false },
-	};
-}
 
 // ── Consent-path helpers (Phases 4 & 5) ─────────────────────────────────────
 //
@@ -452,13 +398,13 @@ describe('E2E Strand Formation', () => {
 			try {
 				const partyId = `lifecycle-${Date.now()}`;
 
-				aliceNode = new CadreNode(createTestNodeConfig(`alice-${partyId}`, { profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
 				await aliceNode.start();
 
 				const aliceAddrs = aliceNode.getMultiaddrs();
 				expect(aliceAddrs.length).toBeGreaterThan(0);
 
-				bobNode = new CadreNode(createTestNodeConfig(`bob-${partyId}`, { bootstrapNodes: aliceAddrs }));
+				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceAddrs }));
 				await bobNode.start();
 
 				// Initialize strand solicitation on Alice (responder)
@@ -560,10 +506,10 @@ describe('E2E Strand Formation', () => {
 			try {
 				const partyId = `multi-${Date.now()}`;
 
-				aliceNode = new CadreNode(createTestNodeConfig(`alice-${partyId}`, { profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
 				await aliceNode.start();
 
-				bobNode = new CadreNode(createTestNodeConfig(`bob-${partyId}`, { bootstrapNodes: aliceNode.getMultiaddrs() }));
+				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
 				await bobNode.start();
 
 				// Alice initializes solicitation with a provisioner
@@ -671,17 +617,17 @@ describe('E2E Strand Formation', () => {
 				const partyId = `three-${Date.now()}`;
 
 				// Alice (responder)
-				aliceNode = new CadreNode(createTestNodeConfig(`alice-${partyId}`, { profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
 				await aliceNode.start();
 
 				const aliceAddrs = aliceNode.getMultiaddrs();
 
 				// Bob (initiator 1)
-				bobNode = new CadreNode(createTestNodeConfig(`bob-${partyId}`, { bootstrapNodes: aliceAddrs }));
+				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceAddrs }));
 				await bobNode.start();
 
 				// Carol (initiator 2)
-				carolNode = new CadreNode(createTestNodeConfig(`carol-${partyId}`, { bootstrapNodes: aliceAddrs }));
+				carolNode = new CadreNode(controlNodeConfig({ partyId: `carol-${partyId}`, bootstrapNodes: aliceAddrs }));
 				await carolNode.start();
 
 				// Alice initializes solicitation
@@ -826,7 +772,7 @@ describe('E2E Strand Formation', () => {
 				let node: CadreNode | undefined;
 				try {
 					const partyId = `gate-${name}-${Date.now()}`;
-					node = new CadreNode(createTestNodeConfig(`solo-${partyId}`));
+					node = new CadreNode(controlNodeConfig({ partyId: `solo-${partyId}` }));
 					await node.start();
 
 					const strandId = `strand-gate-${name}`;
