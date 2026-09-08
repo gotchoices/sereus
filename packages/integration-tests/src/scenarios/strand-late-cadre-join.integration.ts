@@ -35,8 +35,11 @@
  * 3. THE PHYSICAL CLAIM NEVER READS THE NEWCOMER'S STRAND DATABASE. A read issued through
  *    the node under test can itself pull blocks into that node's store and mask the gap
  *    (`harness/block-store-probe.ts`). The physical claim is read off raw stores only;
- *    the newcomer's database is first read after coverage is already proven — in Test 1's
- *    Phase 4a, with the founder down, and in Test 3's behavioural gate.
+ *    the newcomer's database is first read after coverage is already proven, and in both
+ *    tests that read it the FOUNDER IS ALREADY STOPPED (Test 1's Phase 4a, Test 3's
+ *    behavioural gate). With the founder up, a coordinator that resolves to the author
+ *    answers out of the author's own storage, so such a read holds even on a newcomer
+ *    that received nothing — it would restate the physical claim rather than add to it.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -93,7 +96,7 @@ const CONVERGE_BUDGET_MS = 30_000;
  * larger and settles later than Tests 1 and 2's. Given its own, longer wait.
  *
  * NOTE: sized for the ~30 rows a 100 ms writer produces inside the current ~3 s enrollment
- * window (measured 2026-09-08, 12 runs; coverage completed on the FIRST poll every time, so
+ * window (measured 2026-09-08, 18 runs; coverage completed on the FIRST poll every time, so
  * there is a lot of headroom here). If enrollment gets slower, {@link WRITER_TICK_MS} gets
  * shorter, or the store grows for any other reason, this budget has to grow with it — a
  * timeout here would read as a replication failure when it is really a too-small window.
@@ -403,19 +406,27 @@ async function joinDiscoveredStrand(fx: LateJoinFixture): Promise<JoinedStrand> 
  * Deliberately short. The seam this test aims at is narrow (a block committed after the
  * catch-up enumeration passed its id, but before the peer was marked done), so the more
  * rows land inside the join window the better the odds of landing one in it. Measured
- * 2026-09-07: 100 ms puts roughly 25-30 rows inside enrollment. Do NOT lengthen this to
+ * 2026-09-08 over 18 runs: 100 ms puts 23-29 rows inside enrollment. Do NOT lengthen this to
  * settle a failing run — a founder whose own writes fail under this load is a finding.
  */
 const WRITER_TICK_MS = 100;
 
-/** Every Nth tick also re-writes the update-target row, advancing its revision. */
+/**
+ * Every Nth tick also re-writes the update-target row, advancing its revision.
+ *
+ * NOTE: an update is guaranteed to land in the POST-MESH half only because this is smaller
+ * than {@link POST_MESH_ROW_FLOOR} — any run of that many consecutive ticks contains a
+ * multiple of it. Raise this above the floor (or lower the floor below it) and every
+ * revision advance can fall inside the catch-up half, leaving the `behind` gap shape
+ * unexercised on the replication side without any assertion noticing.
+ */
 const WRITER_UPDATE_EVERY = 4;
 
 /**
  * Hard bound on the writer, so a hung enrollment cannot let it run for the whole timeout.
  *
  * NOTE: 400 ticks is ~40 s of writing against a ~3 s enrollment window (measured 2026-09-08,
- * 12 runs: 28-34 rows), so it is currently unreachable. If enrollment ever gets slow enough
+ * 18 runs: 28-34 rows), so it is currently unreachable. If enrollment ever gets slow enough
  * to reach it, `awaitPhaseRows` fails with "straddle writer exited after N row(s)" rather
  * than a replication error — that message means this bound, not a lost row.
  */
@@ -726,6 +737,13 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			// founder's, with content bytes present. The gap kinds are recorded on the way
 			// through because a successful wait ends on an empty gap and would otherwise say
 			// nothing about which mechanism was still catching up.
+			//
+			// NOTE: this gate has never actually WITNESSED a gap — coverage has completed on
+			// its first poll in every run to date (18 runs to 2026-09-08), so `kindsSeen` logs
+			// `[]` and the gate proves the END STATE only. The mid-flight diagnostic above is
+			// what shows the newcomer was genuinely behind while the writer ran. If a future
+			// change makes the window worth witnessing directly, that needs staging this test
+			// does not have — a gate cannot poll a source that is still moving.
 			const newcomerStore = fx.newcomerCapture.forStrand(strandId);
 			expect(newcomerStore).not.toBe(founderStore);
 
@@ -766,7 +784,18 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 				`[${[...kindsSeen].join(', ')}]; last non-empty gap: ${lastNonEmpty}`,
 			);
 
-			// ── Behavioural gate: coverage is proven, so reading through the node is safe ──
+			// ── Behavioural gate: FOUNDER DOWN, so the read cannot be answered over the wire ──
+			// Coverage is proven, so reading through the newcomer can no longer mask a gap
+			// (rule 3). Stopping the founder first is what makes this gate say anything the
+			// physical gate did not: with the founder up, a coordinator resolving to the
+			// AUTHOR would answer every one of these rows out of the founder's own storage
+			// and the assertion below would hold even on a newcomer that received nothing.
+			await founded.founder.stop();
+			handles.founder = undefined;
+			await waitUntil(() => joined.newcomerStrandNode.getConnections().length === 0, {
+				timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
+				description: "newcomer's strand node drops to zero connections after the founder stops",
+			});
 			const rows = await readDataRows(joined.strand.database!.getDatabase());
 			const missing = writer.writes
 				.filter((w) => rows.get(w.key) !== w.val)
@@ -774,6 +803,8 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			expect(missing, 'rows the writer committed that the newcomer cannot read back').toEqual([]);
 			expect(rows.get(UPDATE_KEY), 'newcomer-side value of the updated row').toBe(writer.lastUpdateValue());
 			expectSeedRows(rows, 'straddle: newcomer after coverage');
+			// Still alone at the end of the read — nothing could have answered over the wire.
+			expect(joined.newcomerStrandNode.getConnections().length).toBe(0);
 		} finally {
 			// Stop the writer FIRST and swallow only here: a stray insert against a stopping
 			// strand database would throw into teardown and mask whatever actually failed.
