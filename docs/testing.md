@@ -391,6 +391,8 @@ installs anything, so it cannot prove the published artifact at that version act
 Which network shapes the integration suite (`packages/integration-tests/src/scenarios/`)
 actually exercises, so a missing shape is visible instead of sitting unnoticed. A map, not a
 status board — no pass/fail state here; that lives in the suites and in `tickets/` (see above).
+Each line names one shape and a scenario that exercises it, not every scenario of that shape;
+scenarios whose subject is a protocol or a service rather than a network shape are not listed.
 
 - Single machine, control plane only — `control-write-while-alone-convergence.integration.ts`.
 - Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`,
@@ -403,17 +405,37 @@ status board — no pass/fail state here; that lives in the suites and in `ticke
 - Cross-party strand, one machine per party (two and three parties) — `strand-formation-e2e.integration.ts`,
   `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
   `multi-party-workflows.integration.ts`.
-- Cross-process nodes (child processes, fixed port bands) — `deliver-seed-cross-network.integration.ts`
-  (via `child-node-fixtures.ts`).
+- Cross-party, multi-machine parties, control plane only (two parties, each an owner plus a
+  drone; no cross-party strand transport) — `multi-party-sync.integration.ts`. This is the
+  nearest shape to the first uncovered class below, and stops exactly where it starts.
+- Two separate libp2p networks in one process (a party's network plus a standalone node,
+  over TCP rather than the suite's usual WebSocket) — `deliver-seed-cross-network.integration.ts`.
+- Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
+  and the provider launch them) — `cadre-host-node-donation.integration.ts` (a host donating a
+  node into a second, externally-founded party), `cadre-host-owner-node.integration.ts`,
+  `provider-seed-accepted.integration.ts`; the identity/bootstrap/store fixtures those share
+  live in `child-node-fixtures.ts`.
+- Relayed control plane (a control node with no inbound reachability of its own, reserving a
+  circuit-relay slot on a sibling and being dialed through it) —
+  `relay-only-control-addr.integration.ts`. The control plane only — see the last uncovered
+  class below for the strand plane.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - **Uncovered**: cross-party strand with multi-machine parties (four machines, the strand
   replication breadth) — ticket `scenario-two-multi-machine-cadres-share-one-strand`.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
-- **Uncovered**: relayed strand / NAT reachability — ticket `strand-network-nat-relay-reachability`.
+- **Uncovered**: relayed strand plane / per-strand NAT reachability (a strand node earning its
+  own relay reservation, separately from its control node's) — ticket
+  `strand-network-nat-relay-reachability`.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology
 scenario's hook timeouts (bring-up cost is roughly linear in machine count, and every strand
 member is a second libp2p node) — see the `TIME BUDGET` note at the top of
 `packages/integration-tests/src/harness/topology.ts`.
+
+NOTE: this map is hand-maintained; nothing checks its scenario paths or ticket slugs, so a
+renamed scenario or a landed ticket leaves a stale line until someone next touches the section.
+Fine while it is a few dozen scenarios and a reader checks the path they care about; if it
+starts being read as authoritative, or the stale lines outnumber the live ones, generate the
+covered half from the scenario directory instead.
