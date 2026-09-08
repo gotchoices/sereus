@@ -16,6 +16,7 @@ export * from './test-cadre-host.js';
 export * from './forced-cluster.js';
 export * from './control-cohort.js';
 export * from './topology.js';
+export * from './strand-join.js';
 export * from './block-store-probe.js';
 export * from './provider-process-orchestrator.js';
 export * from './fixtures/loopback-http-server.js';

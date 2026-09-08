@@ -15,6 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Database } from '@quereus/quereus';
 import type { CadreNode } from '@serfab/cadre-core';
+import { generateStrandMemberKey, strandMemberKeyPair } from '@serfab/cadre-core';
 import {
 	bootTopology,
 	joinStrandOn,
@@ -49,6 +50,12 @@ async function readDataRows(db: Database): Promise<Map<string, string>> {
 		rows.set(row.Key as string, row.Val as string);
 	}
 	return rows;
+}
+
+/** Row count of one `Strand.*` table, for the founder-bootstrap assertions. */
+async function strandCount(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
+	const row = await db.get(`select count(1) as c from Strand.${table}`);
+	return (row?.c as number) ?? 0;
 }
 
 /** Peer ids of every OPEN control connection `node` currently holds. */
@@ -117,6 +124,11 @@ describe('Topology builder harness', () => {
 			})).rejects.toThrow(/publish requires members\[0\] to be its party's owner/);
 			await expect(joinStrandOn({ strandId: 's', sAppConfig: sApp, members: [owner, owner] }))
 				.rejects.toThrow(/listed twice/);
+			await expect(joinStrandOn({ strandId: 's', sAppConfig: sApp, members: [owner], type: 'c' }))
+				.rejects.toThrow(/needs a memberPrivateKey/);
+			await expect(joinStrandOn({
+				strandId: 's', sAppConfig: sApp, members: [owner], memberPrivateKey: 'k',
+			})).rejects.toThrow(/memberPrivateKey with type 'o'/);
 
 			// stop() is idempotent.
 			await topo.stop();
@@ -303,6 +315,63 @@ describe('Topology builder harness', () => {
 			await topo?.stop();
 		}
 	}, 240_000);
+
+	it("controlMesh 'star' plus the strand knobs the mesh cases never drive: mesh 'none', publish, closed founder", async () => {
+		let topo: Topology | undefined;
+		try {
+			topo = await bootTopology({
+				tag: 'topo-star',
+				controlMesh: 'star',
+				parties: [{ name: 'star', machines: [{}, {}, {}] }],
+			});
+			const owner = topo.machine('star', 0);
+			const spoke1 = topo.machine('star', 1);
+			const spoke2 = topo.machine('star', 2);
+
+			// Star wiring: the owner reaches every machine, and each spoke holds exactly
+			// ONE control connection — to the owner. That is the whole difference from
+			// 'full', and the reason 'star' barriers on the owner alone.
+			const ownerCohort = await readCohort(owner.node.getControlNode()!, 'star owner');
+			expect(ownerCohort.length).toBeGreaterThanOrEqual(3);
+			for (const spoke of [spoke1, spoke2]) {
+				expect(controlConnectionPeers(spoke.node), `star[${spoke.index}] spoke links`)
+					.toEqual([owner.peerId]);
+			}
+
+			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
+
+			// mesh 'none' + publish: the builder wires nothing and runs no barrier (both
+			// members still come up active), and the owner-signed Strand row lands in the
+			// party's control DB where a watcher would find it.
+			const openId = `topo-star-open-${Date.now()}`;
+			const openInstances = await joinStrandOn({
+				strandId: openId, sAppConfig: sApp, members: [owner, spoke1], mesh: 'none', publish: true,
+			});
+			expect(openInstances.map((i) => i.status)).toEqual(['active', 'active']);
+			const published = (await owner.node.getControlDatabase()!.queryStrands())
+				.find((row) => row.Id === openId);
+			expect(published).toEqual({ Id: openId, MemberPrivateKey: null, Type: 'o' });
+
+			// Closed strand: the founder derives its Member/Manager keypair from the row's
+			// MemberPrivateKey, so the bootstrap rows prove the key reached the row.
+			const memberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const closedId = `topo-star-closed-${Date.now()}`;
+			const [closed] = await joinStrandOn({
+				strandId: closedId, sAppConfig: sApp, members: [spoke2],
+				type: 'c', memberPrivateKey, founder: true, mesh: 'none',
+			});
+			const closedDb = closed!.database!.getDatabase();
+			expect(await strandCount(closedDb, 'Header')).toBe(1);
+			expect(await strandCount(closedDb, 'Member')).toBe(1);
+			expect(await strandCount(closedDb, 'Manager')).toBe(1);
+			expect((await closedDb.get('select Type from Strand.Header'))?.Type).toBe('c');
+			expect((await closedDb.get('select Key from Strand.Member'))?.Key)
+				.toBe(founderKeyPair.publicKeyB64);
+		} finally {
+			await topo?.stop();
+		}
+	}, 180_000);
 
 	it('a machine that fails to start stops everything already started before the throw', async () => {
 		const started: CadreNode[] = [];
