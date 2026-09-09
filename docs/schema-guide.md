@@ -227,6 +227,68 @@ schema "com.example.indexes" version 1 using (default_vtab_module = 'memory') {
 
 ---
 
+### Ordering Events (There Is No Commit-Order Column)
+
+A strand table gives you exactly the columns you declared, nothing more. There is no
+auto-increment, no rowid, no commit-sequence column, and no function that returns one. Rows
+come back in primary-key order because the underlying storage is a B-tree keyed on the primary
+key — with a UUID or text `id`, that order is arbitrary, not chronological. The one
+transaction-related function the engine offers, `StampId()`, returns an identifier for the
+*current* transaction (peer-id hash + random bytes); it tells you *which* transaction wrote a
+row, never *when* relative to another.
+
+You also cannot fake a server-assigned timestamp. Quereus rejects non-deterministic functions
+(`RANDOM`, current-time) in constraints, defaults and computed columns at schema definition
+time, because peers re-execute a transaction's statements to validate it and must reach the
+same answer. Any timestamp on a row is therefore whatever the writing client asserted about
+itself — nothing in the stack checks it.
+
+Underneath, the storage engine *does* keep a true commit order: each table maps to one
+Optimystic collection, and that collection's append-only log assigns every committed
+transaction a revision number — 1, 2, 3, ... — agreed by every replica
+(`../optimystic/docs/correctness.md` §6.3, "Ordering Guarantees"). It is real, and it is not
+currently reachable from SQL. Two caveats if you go looking for it anyway: it is commit order,
+not send order or causal order — two peers posting concurrently are ordered by whichever commit
+the cohort accepted first, not by which was written first on either device — and it is scoped
+to one table's collection, so there is no defined order between rows in two different tables.
+
+Until (if ever) that changes, pick one of two patterns:
+
+**Pattern A — client timestamp with a deterministic tiebreak.** What the reference chat apps
+do. Simple, and its weakness is worth saying plainly: the timestamp is asserted by the row's
+author, so a wrong or dishonest clock silently reorders history and nothing in the stack
+notices. Fine for a cooperative app; not fine when back-dating matters.
+
+```sql
+select Id, Content, Timestamp
+  from Message
+ order by Timestamp asc, Id asc;
+```
+
+**Pattern B — record what the author had already seen.** Instead of (or alongside) a
+timestamp, have each row name the other rows its author had seen when writing it. That builds a
+happened-before graph in your own schema — it does not give you absolute time, but an insertion
+claiming to predate something its author had demonstrably already seen becomes detectable, and
+honest participants can bound a dishonest clock from both sides. This is the shape Matrix uses
+(`prev_events`) and Secure Scuttlebutt uses (per-feed hash chains). A minimal sketch:
+
+```sql
+table Message (
+  Id      text primary key,
+  Content text not null,
+  Timestamp datetime not null
+);
+
+-- Edges: which prior messages this message's author had already seen
+table MessageParent (
+  MessageId text references Message(Id),
+  ParentId  text references Message(Id),
+  constraint pk_message_parent primary key (MessageId, ParentId)
+);
+```
+
+---
+
 ### Common Table Expressions (CTE), Recursive, and Hints
 
 ```sql

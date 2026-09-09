@@ -161,6 +161,10 @@ export async function queryMessages(
   // Id is only a stable tiebreak: Timestamp has second resolution, so two
   // peers posting within the same second converge to an arbitrary-but-stable
   // order. Acceptable for the reference app.
+  //
+  // NOTE: Timestamp is a client-asserted clock, not a commit order — the
+  // engine exposes no commit-order column. See docs/schema-guide.md
+  // "Ordering Events (There Is No Commit-Order Column)".
   for await (const row of db.eval(
     `select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
      from App.Message M

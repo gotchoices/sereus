@@ -63,6 +63,10 @@ export async function insertChatMessage(
  * `Timestamp` (the text UUID `Id` is not chronologically sortable); `Id` is only
  * a stable tiebreak, since `Timestamp` has second resolution and two peers posting
  * within the same second converge to an arbitrary-but-stable order.
+ *
+ * NOTE: `Timestamp` is a client-asserted clock, not a commit order — the engine
+ * exposes no commit-order column. See docs/schema-guide.md "Ordering Events
+ * (There Is No Commit-Order Column)".
  */
 export async function selectChatMessages(database: Database): Promise<ChatMessageRow[]> {
 	const messages: ChatMessageRow[] = [];

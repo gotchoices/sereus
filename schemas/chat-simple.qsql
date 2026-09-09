@@ -18,6 +18,10 @@ table Message (
     Id text primary key,
     MemberId text not null,
     Content text not null,
+    -- NOTE: client-asserted, not server-verified — the engine has no server-assigned
+    -- alternative (non-deterministic functions like current-time are rejected by the
+    -- determinism validator at schema definition time). See docs/schema-guide.md
+    -- "Ordering Events (There Is No Commit-Order Column)".
     Timestamp datetime not null,
     foreign key (MemberId) references Member(Id)
 );
