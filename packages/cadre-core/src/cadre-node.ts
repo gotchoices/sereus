@@ -11,6 +11,8 @@ import type {
   StrandInstance,
   StrandRow,
   StrandConfig,
+  FoundStrandConfig,
+  FoundStrandResult,
   SAppConfig,
   CadreNodeEvents,
   ControlNetworkSeed,
@@ -76,7 +78,7 @@ import {
 import { withDeadline } from './control-stream.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
 import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
@@ -172,6 +174,57 @@ function requireNonBlank(value: string, label: string): string {
     throw new Error(`A ${label} is required (received an empty or whitespace-only value)`);
   }
   return trimmed;
+}
+
+/**
+ * Is the live `Strand` row the one a publish of `desired` would have produced?
+ *
+ * "Identical content" can only mean `(Type, MemberPrivateKey)`: those plus `Id` and
+ * `StampId` are the whole row (`control-schema.ts`), and `StampId` is a single-use nonce,
+ * not content — nothing records WHO inserted the row, so "is this ours?" is unanswerable
+ * after the fact and does not need to be. A live row matching on both columns is, by
+ * construction, the state a repeat publish would have reached, whichever branch of
+ * `Strand.AuthorizedInsert` seated it (owner-signed, or the unsigned consent branch an
+ * invite redemption uses).
+ *
+ * Returns the mismatching column names, empty when the row matches. The KEY's value is
+ * deliberately never returned or logged — it is the closed strand's read-gating secret.
+ */
+function strandRowMismatches(live: StrandRow, desired: StrandRow): string[] {
+  const mismatches: string[] = [];
+  if (live.Type !== desired.Type) {
+    mismatches.push(`Type is '${live.Type}', not the requested '${desired.Type}'`);
+  }
+  if ((live.MemberPrivateKey ?? null) !== (desired.MemberPrivateKey ?? null)) {
+    mismatches.push('MemberPrivateKey differs from the one supplied');
+  }
+  return mismatches;
+}
+
+/**
+ * The live row when it matches `desired` ({@link strandRowMismatches}); otherwise throw
+ * naming the columns that differ.
+ *
+ * A mismatch must stay a hard error: accepting one would let a retry reopen a strand the
+ * party closed, or swap the key that gates its reads — so the two cases the raw
+ * `UNIQUE constraint failed: Strand.Id` could not distinguish ("already done, carry on"
+ * vs. "genuine conflict, stop") are separated here rather than left to the caller.
+ *
+ * @param situation - How the row came to be there, as a verb phrase completing
+ *   `Strand <id> …`, e.g. `'is already published'`.
+ */
+function requireMatchingStrandRow(live: StrandRow, desired: StrandRow, situation: string): StrandRow {
+  const mismatches = strandRowMismatches(live, desired);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Strand ${desired.Id} ${situation} with DIFFERENT content, so this publish is a ` +
+      `conflict, not a repeat: ${mismatches.join('; ')}. Reconcile deliberately — attach ` +
+      'the existing strand with addStrand/foundStrand to keep it, or unpublishStrand first ' +
+      'to re-seat it (destructive for a closed strand: its MemberPrivateKey is stored ' +
+      'nowhere else).'
+    );
+  }
+  return live;
 }
 
 /**
@@ -3940,6 +3993,10 @@ export class CadreNode implements SAppIdLookup {
    * Add a strand with its sApp configuration.
    * The hosting application must provide the sApp schema when creating a strand.
    *
+   * This is the ATTACH half only — it starts the local instance and never publishes the
+   * `Strand` row. A joiner (the row arrived over the control network) wants exactly this; a
+   * FOUNDER wants {@link foundStrand}, which publishes and attaches in one resumable call.
+   *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
    * automatic relaunch need it. So once the strand's row is visible on the control
@@ -3970,11 +4027,34 @@ export class CadreNode implements SAppIdLookup {
    * owner identity, so other cadre members discover it via control-network
    * sync (their {@link StrandWatcher} fires `strand:discovered`).
    *
-   * This is the owner-signed `Strand` INSERT that {@link addStrand}
-   * deliberately omits: `addStrand` only starts the LOCAL strand instance,
-   * whereas publishing makes the strand visible cadre-wide. A typical creator
-   * does both (start locally + publish); a discovering peer only does
-   * `addStrand` (the row already exists).
+   * **Founding a strand is TWO steps** — this one (publish the row cadre-wide) and
+   * {@link addStrand} (start the local instance, `founder: true` to write the strand's
+   * `Header`/founding membership). `addStrand` deliberately omits the insert: it only
+   * starts the LOCAL instance, whereas publishing makes the strand visible cadre-wide. A
+   * discovering peer only does `addStrand` (the row already exists). Callers founding a
+   * strand should use {@link foundStrand}, which performs both steps and is safe to
+   * re-run — hand-rolling the pair is what left strands half-founded when an app was
+   * killed between them.
+   *
+   * **Idempotent for identical content.** A live row whose `(Type, MemberPrivateKey)` match
+   * the arguments is the state this call would have produced, so the call logs and returns
+   * that row instead of writing — a publish interrupted after it committed can be repeated.
+   * DIFFERENT content on the same id throws, naming the columns that differ, rather than
+   * surfacing the raw `UNIQUE constraint failed: Strand.Id`: silently accepting it would
+   * let a retry reopen a closed strand or swap the key gating its reads. The read and the
+   * insert are not atomic, so a concurrent founder (two machines of one party, same id) is
+   * caught on the insert's uniqueness rejection and resolved the same way — re-read, no-op
+   * on a match, rethrow otherwise. Never an overwrite either way.
+   *
+   * A tombstoned strand is NOT resurrected here: {@link unpublishStrand} deletes the row, so
+   * the idempotent branch is unreachable and the ordinary publish path re-seats it, exactly
+   * as that method documents.
+   *
+   * **Already stuck on `UNIQUE constraint failed: Strand.Id`?** The row is already published
+   * — attach, do NOT republish: `addStrand` (or {@link foundStrand}) with the id and, for a
+   * closed strand, the `MemberPrivateKey` read back from the row. `unpublishStrand` + a
+   * fresh publish also clears it for an OPEN strand, but is destructive for a closed one
+   * (the key exists nowhere else). No app-data wipe is needed for either.
    *
    * The insert is signed with the ed25519 key behind this node's PeerId — which
    * {@link ed25519KeyPairFromLibp2p} also exposes as the node's owner keypair,
@@ -3988,22 +4068,139 @@ export class CadreNode implements SAppIdLookup {
    *   {@link addStrand}).
    * @param type - `'o'` for open (default) or `'c'` for closed.
    * @param memberPrivateKey - Optional membership key for a closed strand.
-   * @throws if the node is not started, exposes no owner signing key, the id is blank, or
-   *   the control DB rejects the (unauthorized) insert.
+   * @returns The live `Strand` row — the one just inserted, or the matching one already
+   *   there. A closed strand's caller should carry THIS row's `MemberPrivateKey` forward:
+   *   on a repeat it is the stored key, not the argument.
+   * @throws if the node is not started, exposes no owner signing key, the id is blank, a
+   *   row with the same id holds different content, or the control DB rejects the
+   *   (unauthorized) insert.
    */
-  async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
+  async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<StrandRow> {
     const signingKey = this.requireOwnerSigningKey(`publish strand ${strandId}`);
     // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
     // trims too, and an untrimmed row would be unreachable by the same string.
     const trimmed = requireNonBlank(strandId, 'strand id');
-    await this.controlDatabase!.insertStrand(
-      trimmed,
-      type,
-      signingKey.publicKeyB64,
-      signMessageWith(signingKey.privateKeyB64),
-      memberPrivateKey
-    );
+    const desired: StrandRow = { Id: trimmed, Type: type, MemberPrivateKey: memberPrivateKey ?? null };
+
+    // Read first rather than leaning on the insert's collision for BOTH readings. The
+    // ordinary resume (an app killed after its own publish committed) then needs no error
+    // matching at all: the collision path can only recognise itself by the engine's message
+    // TEXT (see isStrandIdConflict), and an upstream reword there must degrade the RARE race,
+    // not the common resume. It also spends no stamp or signature on a known no-op.
+    const existing = await this.controlDatabase!.queryStrand(trimmed);
+    if (existing) {
+      // NOTE: reads local converged state, and `queryStrand` does not filter rows whose
+      // StampId a Revocation has retired. So on a sibling that still physically holds a row
+      // deleted elsewhere while ALONE (the delete-while-alone gap in docs/architecture.md),
+      // an owner-signed republish now no-ops onto that doomed row instead of re-seating the
+      // id under a fresh stamp. Harmless while that gap is itself unresolved — both
+      // behaviours end at the same unconverged state — but if delete-while-alone ever gains
+      // real replay, filter retired stamps here (queryStrandStampId + the Revocation read)
+      // so a re-seat is not mistaken for a repeat.
+      const matched = requireMatchingStrandRow(existing, desired, 'is already published');
+      log('publishStrand(%s): already published (type %s) with identical content — no-op', trimmed, type);
+      return matched;
+    }
+
+    try {
+      await this.controlDatabase!.insertStrand(
+        trimmed,
+        type,
+        signingKey.publicKeyB64,
+        signMessageWith(signingKey.privateKeyB64),
+        memberPrivateKey
+      );
+    } catch (error) {
+      // Only the uniqueness collision is a candidate for the idempotent reading; every
+      // other rejection (unauthorized signer, retired stamp) must keep surfacing.
+      if (!isStrandIdConflict(error)) {
+        throw error;
+      }
+      const landed = await this.controlDatabase!.queryStrand(trimmed);
+      if (!landed) {
+        // Collided, yet no row is readable: not the race this branch handles (a row
+        // deleted between the rejection and the re-read, or a stale local view). Surface
+        // the original rather than guessing.
+        throw error;
+      }
+      log('publishStrand(%s): lost a concurrent founding race; re-read the landed row', trimmed);
+      return requireMatchingStrandRow(landed, desired, 'landed concurrently from another founder');
+    }
     log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signingKey.publicKeyB64);
+    return desired;
+  }
+
+  /**
+   * Found a strand — publish its row cadre-wide AND start the local instance as its
+   * founder — in one resumable call. The single entry point for creating a strand; a
+   * caller joining one someone else founded uses {@link addStrand} alone.
+   *
+   * Safe to re-run from any point of interruption, which hand-rolling
+   * {@link publishStrand} + {@link addStrand} is not. Either half can already have
+   * happened:
+   *
+   * - **row already published** → the stored row is adopted rather than re-published, so a
+   *   run killed after the insert committed no longer dies on
+   *   `UNIQUE constraint failed: Strand.Id`. For a closed strand the row's STORED
+   *   `MemberPrivateKey` wins over `config.memberPrivateKey`: a caller that mints a key per
+   *   attempt (as the reference apps do) would otherwise present a key that does not match
+   *   the membership already seated in the strand.
+   * - **instance already running** → `addStrand` returns the tracked instance untouched,
+   *   and the founder bootstrap is insert-if-absent, so re-founding writes nothing twice.
+   *
+   * Always founds (`founder: true`), never merely attaches. That is what closes the other
+   * half of the interruption: attaching as a joiner leaves the strand `active` but with
+   * `Strand.Header` empty, so its provenance record (sApp id/version/schema/signature) is
+   * never written and nothing later remembers this node was the founder.
+   *
+   * `Type` is compared, not adopted: a stored row of the other type means the caller and
+   * the control plane disagree about what this strand IS, so it throws.
+   *
+   * @returns The instance AND the row the strand actually runs under — read the membership
+   *   key from the returned row, not from a freshly minted one ({@link FoundStrandResult}).
+   * @throws if the node is not started, the id is blank, a published row of the same id has
+   *   a different `Type`, or either half rejects.
+   */
+  async foundStrand(config: FoundStrandConfig): Promise<FoundStrandResult> {
+    const { strandId, type = 'o', memberPrivateKey, sAppConfig } = config;
+    if (!this._running || !this.controlDatabase) {
+      throw new Error(`CadreNode must be started before attempting to found strand ${strandId}`);
+    }
+    const trimmed = requireNonBlank(strandId, 'strand id');
+    const published = await this.controlDatabase.queryStrand(trimmed);
+    const strandRow = published
+      ? this.adoptPublishedStrand(published, type, memberPrivateKey)
+      : await this.publishStrand(trimmed, type, memberPrivateKey);
+    const instance = await this.addStrand({ strandRow, sAppConfig, founder: true });
+    return { instance, strandRow };
+  }
+
+  /**
+   * Resume onto an already-published `Strand` row: keep its stored content, reject a type
+   * disagreement. The stored `MemberPrivateKey` is authoritative — see {@link foundStrand}
+   * for why a caller-minted key must lose here (and why that is NOT the same rule as
+   * {@link publishStrand}'s, which throws on a key mismatch because it is being asked to
+   * WRITE that key, not to resume onto what already exists).
+   */
+  private adoptPublishedStrand(
+    published: StrandRow,
+    type: 'o' | 'c',
+    memberPrivateKey?: string
+  ): StrandRow {
+    if (published.Type !== type) {
+      throw new Error(
+        `Cannot found strand ${published.Id} as type '${type}': it is already published as ` +
+        `type '${published.Type}'. Reconcile deliberately rather than re-founding — a ` +
+        'published open strand cannot be closed, nor a closed one opened, by re-publishing.'
+      );
+    }
+    if (memberPrivateKey !== undefined && memberPrivateKey !== published.MemberPrivateKey) {
+      log('foundStrand(%s): already published — resuming on the STORED MemberPrivateKey; ' +
+        'the supplied key is discarded (read it back from the returned instance)', published.Id);
+    } else {
+      log('foundStrand(%s): already published (type %s) — adopting the stored row', published.Id, type);
+    }
+    return published;
   }
 
   /**

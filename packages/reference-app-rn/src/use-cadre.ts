@@ -171,6 +171,15 @@ export function useCadreInternal(): UseCadreResult {
     // chat config + addStrand), then refresh. Guard against a double-join (we may
     // already host it — e.g. our own just-published strand, or a re-fire) and
     // surface failures rather than eating them.
+    //
+    // NOTE: this ATTACHES (no `founder`), and deliberately so — nothing in the `Strand` row
+    // records who published it, so this handler cannot tell our own orphaned strand from
+    // someone else's, and founding another party's strand would write a second `Strand.Header`
+    // before sync delivered theirs. Consequence: a strand this app published and then died
+    // before founding is auto-joined HEADERLESS here (it works, but its sApp provenance row is
+    // never written). Re-founding it needs a caller that KNOWS it is the founder — i.e.
+    // `createChatStrand`/`createClosedChatStrand`, which go through `CadreNode.foundStrand`
+    // and are safe to re-run on the same strand id.
     const onDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
       if (strand.Type !== 'o') return;
       if (node.getStrands().has(strandId)) return;

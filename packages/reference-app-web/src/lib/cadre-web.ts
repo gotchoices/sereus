@@ -489,30 +489,41 @@ export interface CreatedInvitation {
  * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
  * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no member
  * role column, so unlike RN there is no owner/member role assignment to mirror —
- * bring-up is just `publishStrand` + `addStrand`.
+ * bring-up is one `foundStrand` call.
  *
- * The strand's raw storage is pre-opened before `addStrand` (the provider is
+ * `foundStrand` does both control-plane steps (publish + attach as founder, which
+ * runs the one-time genesis bootstrap seating Header/Member/Owner from
+ * `MemberPrivateKey`) and is safe to re-run: a tab closed between them resumes
+ * rather than failing forever on `UNIQUE constraint failed: Strand.Id`. The id
+ * here is freshly minted per call, so the resume path is reached only if a caller
+ * ever passes a stable id — but going through the one entry point is what keeps
+ * this call site off the pattern that bricks when they do.
+ *
+ * The strand's raw storage is pre-opened before founding (the provider is
  * synchronous), mirroring the Phase-1 chat-strand bring-up in {@link addChatStrand}.
  *
- * Returns the generated strand id + membership key so the caller can bind a
- * `FormationInvite` to the strand (provision-then-record) and track it.
+ * Returns the generated strand id + the membership key the strand ACTUALLY runs
+ * under (the resolved row's, not necessarily the one minted here) so the caller
+ * can bind a `FormationInvite` to the strand (provision-then-record) and track it.
  */
 async function createClosedChatStrand(
 	cadre: CadreNode,
 ): Promise<{ strandId: string; memberPrivateKey: string }> {
 	const strandId = crypto.randomUUID();
-	const memberPrivateKey = await generateStrandMemberKey();
 	await openStores([strandId]);
-	await cadre.publishStrand(strandId, 'c', memberPrivateKey);
-	await cadre.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
+	const { strandRow } = await cadre.foundStrand({
+		strandId,
+		type: 'c',
+		memberPrivateKey: await generateStrandMemberKey(),
 		sAppConfig: getChatSAppConfig(),
-		// This node provisioned + published the strand, so it is the founder: run the
-		// one-time genesis bootstrap that seats Header/Member/Owner from
-		// MemberPrivateKey. Idempotent (insert-if-absent) across reload / re-addStrand.
-		founder: true,
 	});
-	return { strandId, memberPrivateKey };
+	if (!strandRow.MemberPrivateKey) {
+		throw new Error(
+			`Closed strand ${strandId} was founded without a MemberPrivateKey — no ` +
+				'invitation bound to it could read the strand',
+		);
+	}
+	return { strandId, memberPrivateKey: strandRow.MemberPrivateKey };
 }
 
 /**

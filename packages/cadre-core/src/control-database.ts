@@ -17,6 +17,7 @@ import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-ret
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { retryControlRead } from './control-read-retry.js';
 import type { ControlReadRetryOptions } from './control-read-retry.js';
+import { chainMessages } from './control-retry.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -292,6 +293,38 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   Strand: 'Id',
   DeviceToken: 'PeerId',
 };
+
+/**
+ * The rejection a second insert of an already-seated strand id produces, as the optimystic
+ * vtab words it (`uniqueConstraintMessage`, qualified by table name only — no schema
+ * prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
+ *
+ * `Strand.StampId` is unique too, but a fresh stamp is minted per insert attempt, so only
+ * the primary key can collide on a repeat publish. Matching the column explicitly keeps
+ * any OTHER uniqueness failure out of the idempotency branch.
+ */
+const STRAND_ID_CONFLICT = /UNIQUE constraint failed: Strand\.Id\b/i;
+
+/**
+ * Did this write fail because the strand id is already seated?
+ *
+ * {@link CadreNode.publishStrand} uses this to tell "my own earlier publish already
+ * landed" (re-read, and no-op when the row matches) apart from every other rejection —
+ * an unauthorized signer, a retired stamp — which must keep surfacing.
+ *
+ * Matched by TEXT, not by type: the typed engine error does not survive the trip out of
+ * optimystic (same constraint the retry classifiers in `control-write-retry.ts` document).
+ * Fails CLOSED — a rewording upstream turns the idempotent branch back into the raw
+ * uniqueness error the caller saw before, never into a silent overwrite. The
+ * `publish-strand.spec.ts` repeat-publish cases assert against the live engine error, so a
+ * reword reddens there.
+ */
+export function isStrandIdConflict(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return chainMessages(error).some(message => STRAND_ID_CONFLICT.test(message));
+}
 
 /**
  * Guarded tables a node may reap locally once their tombstone has committed — the
@@ -1143,6 +1176,10 @@ export class ControlDatabase {
 
   /**
    * Insert a strand into the control database using an owner signature.
+   *
+   * Fails with a `Strand.Id` uniqueness violation when the id is already seated — the
+   * caller decides whether that is a duplicate of its own earlier write (idempotent) or a
+   * genuine conflict; see {@link isStrandIdConflict} and `CadreNode.publishStrand`.
    *
    * The owner signs the canonical row-bound authorization message (see
    * {@link buildAuthorizationMessage}) — NOT a bare stamp — so the signature is bound to

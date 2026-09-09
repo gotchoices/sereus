@@ -69,16 +69,18 @@ export function getChatSAppConfig(): SAppConfig {
 /**
  * Create a new **open** chat strand on the given cadre node.
  *
- * Two steps, in order:
- *   1. Publish the `Strand` row to the shared control database so other cadre
- *      members discover it via control-network sync (their node fires
- *      `strand:discovered`). This is an owner-signed insert — the phone must
- *      be an enrolled owner (see `runOwnerGenesis` in cadre-phone.ts).
- *   2. Start the local strand instance with the chat sApp config.
+ * Founding is two steps — publish the `Strand` row to the shared control database
+ * so other cadre members discover it via control-network sync (their node fires
+ * `strand:discovered`), then start the local instance as the strand's founder —
+ * and `foundStrand` performs both. Publishing is an owner-signed insert, so the
+ * phone must be an enrolled owner (see `runOwnerGenesis` in cadre-phone.ts); a
+ * failure surfaces as a thrown error rather than a local-only strand no peer
+ * could ever join.
  *
- * Publishing FIRST means a publish failure (e.g. this node is not an enrolled
- * owner) surfaces as a thrown error and we never start a local-only strand
- * that no peer could ever join — the masked-failure mode this replaces.
+ * Going through `foundStrand` rather than hand-rolling `publishStrand` +
+ * `addStrand` is what makes this survive being killed mid-sequence: the app can
+ * be closed between the two writes and the next attempt on the SAME strand id
+ * resumes instead of failing forever on `UNIQUE constraint failed: Strand.Id`.
  *
  * @param cadreNode  Running CadreNode
  * @param strandId   Unique strand identifier (caller-generated UUID)
@@ -88,19 +90,12 @@ export async function createChatStrand(
   cadreNode: CadreNode,
   strandId: string,
 ): Promise<StrandInstance> {
-  const strandRow: StrandRow = {
-    Id: strandId,
-    MemberPrivateKey: null,
-    Type: 'o', // open — anyone can participate
-  };
-
-  await cadreNode.publishStrand(strandId, 'o');
-
-  return cadreNode.addStrand({
-    strandRow,
+  const { instance } = await cadreNode.foundStrand({
+    strandId,
+    type: 'o', // open — anyone can participate
     sAppConfig: getChatSAppConfig(),
-    founder: true,
   });
+  return instance;
 }
 
 /**
@@ -137,6 +132,12 @@ export interface CreateClosedStrandResult {
  * key under this node's owner, starts the instance, and assigns the creator
  * the app-level `owner` role.
  *
+ * The key returned is the one `foundStrand` resolved, NOT necessarily the one
+ * minted here: re-founding a strand id that is already published adopts the
+ * stored key, since that is the key the membership already seated in the strand
+ * was derived from. Handing back a fresh key there would produce invitations
+ * that cannot read the strand.
+ *
  * @param cadreNode  Running CadreNode (must be an enrolled owner to publish)
  * @param strandId   Unique strand identifier (caller-generated UUID)
  */
@@ -144,25 +145,23 @@ export async function createClosedChatStrand(
   cadreNode: CadreNode,
   strandId: string,
 ): Promise<CreateClosedStrandResult> {
-  const memberPrivateKey = await generateStrandMemberKey();
-
-  const strandRow: StrandRow = {
-    Id: strandId,
-    MemberPrivateKey: memberPrivateKey,
-    Type: 'c', // closed — invitation-only
-  };
-
-  await cadreNode.publishStrand(strandId, 'c', memberPrivateKey);
-
-  const instance = await cadreNode.addStrand({
-    strandRow,
+  const { instance, strandRow } = await cadreNode.foundStrand({
+    strandId,
+    type: 'c', // closed — invitation-only
+    memberPrivateKey: await generateStrandMemberKey(),
     sAppConfig: getChatSAppConfig(),
-    founder: true,
   });
+
+  if (!strandRow.MemberPrivateKey) {
+    throw new Error(
+      `Closed chat strand ${strandId} was founded without a MemberPrivateKey — ` +
+        'the control row carries no membership key, so no invitation could read it',
+    );
+  }
 
   await assignLocalMemberRole(cadreNode, instance, 'owner');
 
-  return { instance, memberPrivateKey };
+  return { instance, memberPrivateKey: strandRow.MemberPrivateKey };
 }
 
 /**

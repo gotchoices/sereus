@@ -783,6 +783,46 @@ export interface StrandConfig {
 }
 
 /**
+ * What {@link CadreNode.foundStrand} needs to publish a strand's control row AND start it
+ * locally as its founder — the resumable one-call form of `publishStrand` + `addStrand`.
+ *
+ * No `strandRow`: the row is the OUTPUT of founding, either freshly published or read back
+ * from an interrupted earlier attempt. `StrandConfig` (the join/attach shape) takes one
+ * because there the row already exists and came from the control network.
+ */
+export interface FoundStrandConfig {
+  /** Unique strand identifier. Trimmed; blank is rejected. */
+  strandId: string;
+  /** `'o'` for open (default) or `'c'` for closed. */
+  type?: 'o' | 'c';
+  /**
+   * Membership key gating a closed strand. Required in practice for `type: 'c'` (the
+   * founder bootstrap rejects a null key), and IGNORED when the strand is already
+   * published — the stored key wins, so read the resolved key back off the returned
+   * instance rather than trusting a freshly minted one.
+   */
+  memberPrivateKey?: string;
+  /** sApp configuration the hosting application provides, as for {@link StrandConfig}. */
+  sAppConfig: SAppConfig;
+}
+
+/**
+ * What {@link CadreNode.foundStrand} hands back: the running instance PLUS the `Strand` row
+ * the strand actually runs under.
+ *
+ * The row is returned separately rather than left for the caller to read off the instance
+ * because on a resumed founding it is NOT the caller's input — a closed strand adopts the
+ * stored `MemberPrivateKey`, discarding a freshly minted one. A caller that must carry the
+ * membership key onward (to mint an invitation, say) reads it from HERE.
+ */
+export interface FoundStrandResult {
+  /** The active local instance, as {@link CadreNode.addStrand} would have returned. */
+  instance: StrandInstance;
+  /** The live control-plane row: freshly published, or the one already there. */
+  strandRow: StrandRow;
+}
+
+/**
  * Result of creating a new cadre peer
  */
 export interface CreatePeerResult {

@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import type { CadreNode } from '../src/cadre-node.js';
+import type { ControlDatabase } from '../src/control-database.js';
 import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
@@ -108,6 +109,181 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   }, 60_000);
 });
 
+// ── publishStrand idempotency (founding is resumable) ────────────────────────
+//
+// Founding a strand is TWO writes — publishStrand then addStrand(founder) — and an app
+// killed between them used to be stuck forever: every later attempt died on the half that
+// had already succeeded (`UNIQUE constraint failed: Strand.Id`), with no way to tell "I
+// already did this" from "this is a genuine conflict". These pin both readings.
+
+/**
+ * Make the NEXT `queryStrand(strandId)` on this database report the row as absent, then
+ * restore the real read.
+ *
+ * Simulates the concurrent-founding race — two machines of one party founding the same id,
+ * where the read-then-insert pair is not atomic — from a single node: publishStrand's
+ * pre-read misses the row, so its insert genuinely collides against the live engine and the
+ * catch/re-read branch runs. That also pins `isStrandIdConflict` against the REAL rejection
+ * text, which is the one thing a reworded storage-layer error would silently break.
+ *
+ * @returns A probe reporting whether the blinded read actually fired. Assert it: without
+ *   the blinding the pre-read short-circuit handles the repeat and a no-op assertion goes
+ *   green having never reached the race branch at all.
+ */
+function blindOneStrandRead(db: ControlDatabase, strandId: string): () => boolean {
+  const realQueryStrand = db.queryStrand.bind(db);
+  let blinded = false;
+  db.queryStrand = async (id: string) => {
+    if (id === strandId) {
+      db.queryStrand = realQueryStrand;
+      blinded = true;
+      return null;
+    }
+    return await realQueryStrand(id);
+  };
+  return () => blinded;
+}
+
+describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
+  let node: CadreNode | undefined;
+
+  const rand = (): string => Math.random().toString(36).slice(2);
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('returns the row it published, so a caller can carry the resolved content forward', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const strandId = 'strand-' + rand();
+
+    expect(await node.publishStrand(strandId, 'o')).toEqual({
+      Id: strandId,
+      Type: 'o',
+      MemberPrivateKey: null,
+    });
+  }, 60_000);
+
+  it('repeat publish of identical OPEN content is a no-op and leaves exactly one row', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-' + rand();
+
+    await node.publishStrand(strandId, 'o');
+    const second = await node.publishStrand(strandId, 'o');
+
+    expect(second).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+    expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
+  }, 60_000);
+
+  it('repeat publish of identical CLOSED content is a no-op and keeps the stored key', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-c-' + rand();
+    const memberKey = 'member-key-' + rand();
+
+    await node.publishStrand(strandId, 'c', memberKey);
+    const second = await node.publishStrand(strandId, 'c', memberKey);
+
+    expect(second).toEqual({ Id: strandId, Type: 'c', MemberPrivateKey: memberKey });
+    expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
+    expect((await db.queryStrand(strandId))?.MemberPrivateKey).toBe(memberKey);
+  }, 60_000);
+
+  it('repeat publish with a DIFFERENT Type throws naming the mismatch and leaves the row intact', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-' + rand();
+
+    await node.publishStrand(strandId, 'o');
+
+    // Accepting this would let a retry close a strand the party published as open.
+    await expect(node.publishStrand(strandId, 'c')).rejects.toThrow(
+      /Type is 'o', not the requested 'c'/,
+    );
+    expect(await db.queryStrand(strandId)).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+  }, 60_000);
+
+  it('repeat publish with a DIFFERENT memberPrivateKey throws and keeps the stored key', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-c-' + rand();
+    const stored = 'member-key-' + rand();
+
+    await node.publishStrand(strandId, 'c', stored);
+
+    // Accepting this would swap the key gating the strand's reads out from under the
+    // membership already seated in it.
+    await expect(node.publishStrand(strandId, 'c', 'member-key-' + rand())).rejects.toThrow(
+      /MemberPrivateKey differs from the one supplied/,
+    );
+    expect((await db.queryStrand(strandId))?.MemberPrivateKey).toBe(stored);
+  }, 60_000);
+
+  it('the mismatch error never leaks the stored MemberPrivateKey', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const strandId = 'strand-c-' + rand();
+    const stored = 'secret-member-key-' + rand();
+
+    await node.publishStrand(strandId, 'c', stored);
+    const rejection = await node.publishStrand(strandId, 'c', 'other-' + rand()).catch(
+      (error: unknown) => String(error),
+    );
+
+    expect(rejection).not.toContain(stored);
+  }, 60_000);
+
+  it('unpublish then republish still re-seats the strand (the no-op branch cannot resurrect it)', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-' + rand();
+
+    await node.publishStrand(strandId, 'o');
+    await node.unpublishStrand(strandId);
+    expect(await db.queryStrand(strandId)).toBeNull();
+
+    // Row absent → the ordinary publish path runs, exactly as unpublishStrand documents.
+    await node.publishStrand(strandId, 'o');
+    expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
+  }, 60_000);
+
+  it('losing a concurrent founding race on identical content re-reads and no-ops', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-race-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-race-' + rand();
+
+    await node.publishStrand(strandId, 'o');
+    const blinded = blindOneStrandRead(db, strandId);
+
+    // The insert really collides here — this is the catch/re-read branch, not the
+    // pre-read short-circuit.
+    expect(await node.publishStrand(strandId, 'o')).toEqual({
+      Id: strandId,
+      Type: 'o',
+      MemberPrivateKey: null,
+    });
+    expect(blinded()).toBe(true);
+    expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
+  }, 60_000);
+
+  it('losing that race onto DIFFERENT content throws the mismatch, not the raw uniqueness error', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-race-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-race-' + rand();
+    const stored = 'member-key-' + rand();
+
+    await node.publishStrand(strandId, 'c', stored);
+    const blinded = blindOneStrandRead(db, strandId);
+
+    await expect(node.publishStrand(strandId, 'c', 'member-key-' + rand())).rejects.toThrow(
+      /landed concurrently from another founder with DIFFERENT content/,
+    );
+    expect(blinded()).toBe(true);
+    expect((await db.queryStrand(strandId))?.MemberPrivateKey).toBe(stored);
+  }, 60_000);
+});
+
 // ── CadreNode.addStrand founder bootstrap (node-level seam) ──────────────────
 
 const SCHEMA = 'create table Note (Id text primary key);';
@@ -192,4 +368,155 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
       }),
     ).rejects.toThrow(/MemberPrivateKey/i);
   }, 60_000);
+});
+
+// ── CadreNode.foundStrand (the resumable one-call founding path) ─────────────
+//
+// The single entry point callers should use to create a strand: publish the control row AND
+// attach as founder. Hand-rolling the pair left two failure modes when an app died between
+// the writes — a bricked strand id (the publish half already landed) and a HEADERLESS strand
+// (the app resumed by attaching as a joiner, so the founder bootstrap never ran and
+// `Strand.Header` stayed empty). Both are pinned here.
+
+describe('CadreNode.foundStrand (publish + found in one resumable call)', () => {
+  let node: CadreNode | undefined;
+
+  const rand3 = (): string => Math.random().toString(36).slice(2);
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('open strand: publishes the row and seats the Header in one call', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    const strandId = 'found-open-' + rand3();
+
+    const { instance, strandRow } = await node.foundStrand({
+      strandId,
+      type: 'o',
+      sAppConfig: signedSApp(),
+    });
+
+    expect(instance.status).toBe('active');
+    expect(strandRow).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+    expect(await controlDb.queryStrand(strandId)).toEqual(strandRow);
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
+  }, 60_000);
+
+  it('founding twice leaves one control row and one Header', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    const strandId = 'found-twice-' + rand3();
+    const sAppConfig = signedSApp();
+
+    await node.foundStrand({ strandId, type: 'o', sAppConfig });
+    // Detach locally, as an app restart would, so the second call really re-founds
+    // rather than returning the already-tracked instance.
+    await node.stopStrand(strandId);
+
+    const { instance } = await node.foundStrand({ strandId, type: 'o', sAppConfig });
+
+    expect(instance.status).toBe('active');
+    expect((await controlDb.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
+  }, 60_000);
+
+  it('resumes an interrupted founding: a published-but-never-founded strand gets its Header', async () => {
+    // The exact interruption from the field: publishStrand committed, then the app died
+    // before addStrand. Re-founding must NOT die on the publish half, and must found rather
+    // than merely attach — attaching leaves the strand active with an empty Header, so its
+    // sApp provenance is never recorded.
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-resume-' + rand3();
+
+    await node.publishStrand(strandId, 'o');
+
+    const { instance } = await node.foundStrand({
+      strandId,
+      type: 'o',
+      sAppConfig: signedSApp(),
+    });
+
+    expect(instance.status).toBe('active');
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
+  }, 60_000);
+
+  it('closed strand: founds under the minted key and seats Header/Member/Manager', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-closed-' + rand3();
+    const memberPrivateKey = await generateStrandMemberKey();
+
+    const { instance, strandRow } = await node.foundStrand({
+      strandId,
+      type: 'c',
+      memberPrivateKey,
+      sAppConfig: signedSApp(),
+    });
+
+    expect(strandRow.MemberPrivateKey).toBe(memberPrivateKey);
+    const db = instance.database!.getDatabase();
+    expect(await countRow(db, 'Header')).toBe(1);
+    expect(await countRow(db, 'Member')).toBe(1);
+    expect(await countRow(db, 'Manager')).toBe(1);
+  }, 60_000);
+
+  it('closed strand resume: adopts the STORED member key and discards the freshly minted one', async () => {
+    // The reference apps mint a key per attempt. On a resume the stored key is the one the
+    // seated membership was derived from, so a fresh key must lose — otherwise the strand
+    // runs (and mints invitations) under a key that cannot read it.
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-closed-resume-' + rand3();
+    const stored = await generateStrandMemberKey();
+    const minted = await generateStrandMemberKey();
+    expect(minted).not.toBe(stored);
+
+    await node.publishStrand(strandId, 'c', stored);
+
+    const { instance, strandRow } = await node.foundStrand({
+      strandId,
+      type: 'c',
+      memberPrivateKey: minted,
+      sAppConfig: signedSApp(),
+    });
+
+    expect(strandRow.MemberPrivateKey).toBe(stored);
+    const db = instance.database!.getDatabase();
+    const member = await db.get('select Key from Strand.Member');
+    expect(member?.Key).toBe(strandMemberKeyPair(stored).publicKeyB64);
+  }, 60_000);
+
+  it('refuses to found a published strand as the other Type', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-type-clash-' + rand3();
+
+    await node.publishStrand(strandId, 'o');
+
+    await expect(
+      node.foundStrand({
+        strandId,
+        type: 'c',
+        memberPrivateKey: await generateStrandMemberKey(),
+        sAppConfig: signedSApp(),
+      }),
+    ).rejects.toThrow(/already published as type 'o'/);
+  }, 60_000);
+
+  it('rejects an empty or whitespace-only id before any write', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+
+    await expect(
+      node.foundStrand({ strandId: '   ', type: 'o', sAppConfig: signedSApp() }),
+    ).rejects.toThrow(/required/i);
+    expect(await controlDb.queryStrands()).toEqual([]);
+  }, 60_000);
+
+  it('throws if the node has not been started', async () => {
+    const { node: stopped } = await newUnstartedNode('found-strand-stopped-');
+    await expect(
+      stopped.foundStrand({ strandId: 'found-' + rand3(), type: 'o', sAppConfig: signedSApp() }),
+    ).rejects.toThrow(/must be started/i);
+  });
 });
