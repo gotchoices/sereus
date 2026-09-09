@@ -158,9 +158,9 @@ export async function queryMessages(
   const messages: ChatMessage[] = [];
 
   // Order by Timestamp (the text UUID Id is not chronologically sortable).
-  // Id is only a stable tiebreak: Timestamp has second resolution, so two
-  // peers posting within the same second converge to an arbitrary-but-stable
-  // order. Acceptable for the reference app.
+  // Id is only a stable tiebreak: Timestamp is an ISO-8601 string with
+  // millisecond resolution, so two peers stamping the same instant converge to
+  // an arbitrary-but-stable order. Acceptable for the reference app.
   //
   // NOTE: Timestamp is a client-asserted clock, not a commit order — the
   // engine exposes no commit-order column. See docs/schema-guide.md

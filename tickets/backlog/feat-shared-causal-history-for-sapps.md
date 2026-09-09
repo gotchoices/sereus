@@ -8,10 +8,10 @@ tradeoffs: It is a schema pattern an app can already write for itself in about t
 ## Where this came from
 
 Raised by the reporter of **gotchoices/sereus#5** while asking whether the stack already
-provides message ordering. It does not, at the SQL layer — see
-`tickets/implement/1-document-commit-order-answer.md` for the verified answer, and
-`tickets/blocked/expose-commit-order-to-sql-decision.md` for the open question of whether it
-should. The reporter had already designed the fallback, noted it needs nothing from us, and
+provides message ordering. It does not, at the SQL layer — the verified answer is written up in
+`docs/schema-guide.md` under "Ordering Events (There Is No Commit-Order Column)" (landed by the
+`document-commit-order-answer` ticket), and `tickets/blocked/expose-commit-order-to-sql-decision.md`
+holds the open question of whether it should. The reporter had already designed the fallback, noted it needs nothing from us, and
 observed that **every** app storing a sequence of events will want the same thing. This ticket is
 that observation.
 

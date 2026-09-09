@@ -61,8 +61,8 @@ export async function insertChatMessage(
 /**
  * Read all chat messages joined to their author member, oldest first. Order by
  * `Timestamp` (the text UUID `Id` is not chronologically sortable); `Id` is only
- * a stable tiebreak, since `Timestamp` has second resolution and two peers posting
- * within the same second converge to an arbitrary-but-stable order.
+ * a stable tiebreak, since two peers stamping the same instant (`Timestamp` is an
+ * ISO-8601 string, millisecond resolution) converge to an arbitrary-but-stable order.
  *
  * NOTE: `Timestamp` is a client-asserted clock, not a commit order — the engine
  * exposes no commit-order column. See docs/schema-guide.md "Ordering Events

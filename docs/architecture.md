@@ -1427,6 +1427,7 @@ Maestro Studio, with Appium as the documented fallback.
 - [Strand Management](strands.md) - Strand concepts and negotiation
 - [API Specification](api.md) - Cadre peer authorization API
 - [Cadre Consistency Model](cadre-consistency.md) - Design exploration: async Right-is-Right + transactional Sync for the control network
+- [Schema Guide](schema-guide.md) - Writing an sApp's Quereus schema: constraints, mutation context, and why there is no commit-order column
 
 ### Schemas
 
