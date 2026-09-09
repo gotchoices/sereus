@@ -4,7 +4,7 @@ files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-me
 repro: verified
 ----
 
-# Blocked (b): a control write is rejected by a cohort member holding forked content
+# Complete: a control write rejected by a cohort member holding forked content
 
 **Category (b) — dependency outside this repo.** The fork is created and must be prevented inside
 `@optimystic/db-p2p`; nothing on this side can guard it.
@@ -75,3 +75,48 @@ writes"* — and the release decision should be made on that basis.
   upstream sibling ticket's mechanism rather than
   `control-peer-row-refresh-invisible-to-third-node`, which currently owns it. Do not re-attribute
   either on this evidence; the sibling ticket carries one observation only.
+
+## Resolution, 2026-09-09
+
+**Unblocked and closed.** The upstream guard landed as
+`../optimystic/tickets/complete/a-commit-over-a-gapped-base-forks-the-block.md` and `../optimystic`
+was rebuilt before measuring.
+
+`StorageRepo.internalCommit` now applies an update-only transform only to the base the writer
+declared it read, taken from the commit op's `blockDigests[blockId].baseRev`. A member holding any
+other base refuses through the existing `refuseMissingBase` path, which `commit` already classifies
+as divergence and `ClusterMember.applyConsensusOperation` already handles by reconciling the batch
+from a cohort peer — so the writer's retry lands on a healed base and no new machinery was needed.
+
+**The fix is not the one this ticket recommended, and the difference matters.** This ticket proposed
+guarding on `latest.rev !== rev - 1`. That is wrong: revisions are allocated per *collection*, not
+per block, so a member legitimately holds block X at revision 1 and receives a commit of X at
+revision 7 when revisions 2-6 touched other blocks. That guard would have refused a large share of
+sound commits. The implement pass caught it and keyed on the writer's per-block declaration instead —
+a field the digest check already carries. Every clause abstains rather than refuses when the
+declaration is missing or malformed, so pre-upgrade writers, undeclarable blocks, and the
+read-driven promotion in `get()` keep today's behaviour.
+
+## Verification
+
+| measurement | result |
+| --- | --- |
+| three isolated runs of `control-write-degraded-cohort-member` | **0** `content-digest-mismatch`; runs 1 and 3 **7/7 green**, where the file had been five-red |
+| full `yarn check` | **0** `content-digest-mismatch` across 279 integration tests |
+| `dep-check` / `smoke:published` | pass / pass (5/5) |
+
+`tickets/.pre-existing-known.md` moved to *Resolved in place*. Logs:
+`tickets/.logs/postguard-degraded-cohort.log`, `tickets/.logs/rel-check.log`.
+
+## What did not resolve, and is not this ticket's
+
+The same file still draws `pending conflict … held by unresolved action(s)` and
+`StreamResetError`, owned by `control-write-retry-does-not-absorb-a-transient-stream-reset`. Worth
+recording for whoever picks that up: the pend collision was **absent** from all three isolated runs
+and present 36 times in the full-suite run on the same build, so it is load- or ordering-sensitive —
+51 files run in one fork before that scenario is reached. That does not change its ownership, but it
+means the question of whether the upstream discharge fix works is still open rather than answered.
+
+The sibling upstream ticket `cohort-pend-refusal-must-reach-the-coordinator` (one observation only)
+remains in `implement/` upstream. This ticket's guard makes that fork self-limiting, so it is not a
+prerequisite for anything here.
