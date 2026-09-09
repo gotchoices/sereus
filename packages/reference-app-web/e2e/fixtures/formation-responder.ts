@@ -206,8 +206,16 @@ export async function startFormationResponder(opts?: {
 			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
 		});
 
-		// Host CLOSED chat strand — byte-identical to the browser's createClosedChatStrand
-		// (publishStrand 'c' + addStrand with the SHARED signed config).
+		// Host CLOSED chat strand, using the SHARED signed config the browser uses.
+		//
+		// NOTE: this does NOT mirror the browser's createClosedChatStrand, despite having
+		// been described as byte-identical to it. That call founds the strand (now via
+		// CadreNode.foundStrand); this attaches it — no `founder: true`, so the bootstrap
+		// never seats Header/Member/Manager and the responder hosts a closed strand with no
+		// manager. Divergence is pre-existing and the suite passes with it, which is the
+		// point: the e2e exercises a strand shape the app never produces. Tracked as backlog
+		// debt; fixing it means switching to `foundStrand` and re-running the Playwright
+		// suite, which the ticket covers.
 		const strandId = crypto.randomUUID();
 		const memberKey = await generateStrandMemberKey();
 		await node.publishStrand(strandId, 'c', memberKey);

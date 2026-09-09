@@ -4147,11 +4147,24 @@ export class CadreNode implements SAppIdLookup {
    *   the membership already seated in the strand.
    * - **instance already running** → `addStrand` returns the tracked instance untouched,
    *   and the founder bootstrap is insert-if-absent, so re-founding writes nothing twice.
+   *   "Untouched" cuts both ways — see the NOTE below.
    *
-   * Always founds (`founder: true`), never merely attaches. That is what closes the other
-   * half of the interruption: attaching as a joiner leaves the strand `active` but with
-   * `Strand.Header` empty, so its provenance record (sApp id/version/schema/signature) is
-   * never written and nothing later remembers this node was the founder.
+   * Founds (`founder: true`) rather than attaching, which closes the other half of the
+   * interruption: attaching as a joiner leaves the strand `active` but with `Strand.Header`
+   * empty, so its provenance record (sApp id/version/schema/signature) is never written and
+   * nothing later remembers this node was the founder.
+   *
+   * NOTE: that half holds only while THIS call is the one that launches the instance.
+   * {@link launchStrand} returns an already-tracked instance and silently drops the
+   * `founder` flag it was asked for, and two things can get there first: an app that
+   * re-registered the sApp config and attached the strand itself (the reference RN app's
+   * `strand:discovered` handler does exactly this after a restart), or this node's own
+   * {@link StrandWatcher} — the row is published before `addStrand` runs, and
+   * `launchStrand` awaits `resolveCohortSeed` (network) between its tracked-instance check
+   * and `startStrand`, so a poll landing in that window launches the row as a JOINER. Then
+   * this method returns an active but HEADERLESS instance and reports success. Founder-ness
+   * is neither persisted nor observable on a tracked instance, so nothing here can detect
+   * it; closing it is a representation change, filed as backlog debt.
    *
    * `Type` is compared, not adopted: a stored row of the other type means the caller and
    * the control plane disagree about what this strand IS, so it throws.

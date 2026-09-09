@@ -77,3 +77,15 @@ above on 2026-08-13. The revocation drain/queue work added another self-containe
 subsystem (`pendingRevocations`, `noteGuardedDelete`, `drainPendingRevocations`,
 `reconstructAuthoredMembership`) as more methods on the same class. Evidence for the
 existing ticket, not a new one — the growth rate is the point.
+
+## Re-measured 2026-09-09 (review of `strand-founding-resume-path`)
+
+`wc -l packages/cadre-core/src/cadre-node.ts` → **6075** lines, up from the 5104 recorded
+above on 2026-08-18 — roughly +19% in three weeks, and now well past the 4770 the ticket
+was opened at. The resume-path work contributed ~230 of that: `foundStrand`,
+`adoptPublishedStrand`, and two module-level helpers (`strandRowMismatches`,
+`requireMatchingStrandRow`), all of them strand-founding logic landing on the same class
+as everything else. They belong with the "strand launch and teardown" group in the list
+above, which — with `addStrand`, `launchStrand`, `publishStrand`, `unpublishStrand`,
+`foundStrand`, `handleStrandAdded`, `handleStrandRemoved` and cohort-seed resolution — is
+now the largest of the seven jobs listed. Evidence for the existing ticket, not a new one.

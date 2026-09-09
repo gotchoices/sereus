@@ -168,9 +168,10 @@ The main entry point for cadre participation.
 | `stop()` | Gracefully disconnect from all networks |
 | `getStrands()` | Get all active strand instances |
 | `getStrand(id)` | Get a specific strand instance |
-| `addStrand(row)` | Manually add a strand (testing/direct API) |
+| `foundStrand(config)` | **Create a strand**: publish its `Strand` row and start it locally as founder, in one call that is safe to re-run after an interruption. Returns the instance plus the row it actually runs under — for a closed strand read the membership key from there, since a resumed founding keeps the stored key |
+| `addStrand(row)` | Attach only — start a local instance for a row that already exists (the join path; also testing/direct API). Does **not** publish |
 | `stopStrand(id)` | Stop a strand on this node only (the shared `Strand` row stays; rediscovered on restart) |
-| `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide |
+| `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide. Idempotent: a live row with the same `(Type, MemberPrivateKey)` is returned unwritten; different content on the same id throws. Prefer `foundStrand` when creating a strand |
 | `unpublishStrand(id)` | Owner-signed party-wide removal — deletes this party's `Strand` row; every node stops the strand. Destroys a closed strand's `MemberPrivateKey` |
 | `getEnrollmentService()` | Access peer enrollment API |
 

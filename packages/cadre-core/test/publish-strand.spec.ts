@@ -519,4 +519,32 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
       stopped.foundStrand({ strandId: 'found-' + rand3(), type: 'o', sAppConfig: signedSApp() }),
     ).rejects.toThrow(/must be started/i);
   });
+
+  // Characterizes a KNOWN GAP rather than a wanted behaviour. `launchStrand` returns an
+  // already-tracked instance and drops the `founder` flag it was asked for, so whoever
+  // launches the strand first decides whether the bootstrap runs — and `foundStrand`
+  // reports success either way. The same shape is reachable without an explicit attach:
+  // the row is published before `addStrand`, so this node's own `StrandWatcher` can
+  // auto-launch it as a joiner during `launchStrand`'s `resolveCohortSeed` round.
+  //
+  // When founder-ness becomes persisted/observable and `foundStrand` can re-found here,
+  // this expectation flips to 1 — update it then; do NOT delete the case.
+  it('KNOWN GAP: founding a strand already ATTACHED as a joiner leaves it headerless', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-attached-' + rand3();
+    const sAppConfig = signedSApp();
+
+    await node.publishStrand(strandId, 'o');
+    // What the reference RN app's `strand:discovered` handler does after a restart: nothing
+    // in the `Strand` row records who published it, so it can only attach.
+    await node.addStrand({
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+      sAppConfig,
+    });
+
+    const { instance } = await node.foundStrand({ strandId, type: 'o', sAppConfig });
+
+    expect(instance.status).toBe('active');
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+  }, 60_000);
 });
