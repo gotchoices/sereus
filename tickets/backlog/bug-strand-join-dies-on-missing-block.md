@@ -1,13 +1,35 @@
 ----
-description: When a second machine joins a strand, roughly one attempt in nine dies while setting up the strand's tables because it asks for a piece of data the other machine has but it cannot get. The problem was previously blamed on a bug that has since been fixed and closed — the failure outlived the fix and now has nobody tracking it.
+description: When a second machine joined a shared workspace, about one attempt in nine used to die while setting up its tables because it asked for a piece of data the other machine had but it could not get. It has now gone six runs in a row without happening, and nobody knows what changed.
 prereq:
 files: packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts, packages/quereus-plugin-sereus/src/compose-strand.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/integration-tests/src/harness/block-store-probe.ts, tickets/.pre-existing-known.md
 difficulty: hard
-repro: verified
+repro: verified (last seen 2026-08-11; six clean runs on 0.29.0, see below)
 severity: wrong-result
-likelihood: normal-use
-tradeoffs: It is one intermittent test in a suite full of routing races, the previous two attributions for it both turned out to be wrong, and a maintainer may reasonably wait for the strand read path to settle rather than spend another diagnosis pass on a ~1-in-9 draw.
+likelihood: unusual
+tradeoffs: It has not reproduced in six consecutive runs on 0.29.0, its previous two attributions both turned out to be wrong, and a maintainer may reasonably close it as gone rather than spend a diagnosis pass chasing a failure that no longer appears.
 ----
+
+> **Update 2026-09-08 — it stopped reproducing, and nobody knows why.**
+>
+> Six consecutive runs of `yarn workspace @serfab/quereus-plugin-sereus test` on `@optimystic/*`
+> 0.29.0 (five scripted, one by hand): every run `9 files / 108 passed / 1 todo`, zero `Missing block`,
+> zero `Cannot add to non-existent chain`. At the previously recorded rate — roughly one failure per
+> run — six clean runs is a real signal.
+>
+> **This is not a fix, and it should not be written up as one.** No mechanism was identified and no
+> change was made here. Two things moved underneath it: the 0.29.0 window carries upstream read-path
+> work (`a-reader-cannot-tell-its-view-stopped-advancing`,
+> `2-sync-fail-fast-on-a-stalled-revision-view`), and the suite itself grew from 76 tests to 108. The
+> body below already warns that this failure has been attributed wrongly twice; attributing it to
+> 0.29.0 on timing alone would be the third time. It is a coincidence with a plausible shape, not a
+> diagnosis.
+>
+> **What this changes:** `likelihood` drops to `unusual` and the ticket becomes a watch item rather
+> than a diagnosis job. If several more full-suite runs stay clean, retire it and note in
+> `.pre-existing-known.md` that the mechanism was never found. If it recurs, the three discriminating
+> measurements below are still the right brief, and the topology and strand-join harness landed on
+> 2026-09-08 makes a deterministic two-machine reproduction far cheaper to build than it was in August.
+> Measurement log: `tickets/.logs/strand-join-remeasure-0.29.0.log`.
 
 # A joining peer's strand setup intermittently fails with `Missing block`
 
