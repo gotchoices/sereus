@@ -105,3 +105,23 @@ Everything keeps working and nothing warns. A workspace shared between three peo
 copy of its data on whichever person's machines wrote it, and the numbers in the configuration
 keep looking like they say otherwise. `implement/34-debt-strand-breadth-counts-machines` makes
 that visible in writing; it does not change it.
+
+## Evidence arm: the shared member key may mean removal does not stop writes (2026-09-09)
+
+Raised as **gotchoices/sereus#4**. This ticket already records that a closed strand ends up with
+exactly one `Member` row — the founding one — and every joiner is handed the same
+`MemberPrivateKey`. An outside consumer drew the consequence for revocation:
+
+> If that is so, a removed party still holds a key that satisfies `Member.Authorized`, so it is not
+> clear removal stops them **writing** either.
+
+And ranked it: *"A removed member who can still read old traffic is tolerable; one who can still post
+into the conversation is not."*
+
+**Why this arm matters for prioritisation:** shared identity has been carried as a correctness and
+attribution concern. This is the security consequence — until per-party identity lands, member
+removal may be advisory for writes as well as for reads, and no consumer can word a remove button
+honestly. Confirming or refuting it is cheap and should happen before anyone ships removal.
+
+The open decision (is stopping writes achievable independently of rotating the read gate?) is
+`blocked/what-does-removing-a-member-guarantee`.

@@ -56,3 +56,23 @@ can become a real per-member check instead of a strand-wide one.
 The control layer's `CadreControl.FormationInvite` is also a bearer token (a random `Token`
 with a use count) and has the same property. Whatever is decided here probably wants to be
 consistent across both layers, or to state clearly why the two differ.
+
+## Evidence arm: an outside consumer read this as a revocation bypass (2026-09-09)
+
+Raised as **gotchoices/sereus#4** while designing a chat app with a manager-facing "remove member"
+button. Their reading, from our own docs rather than from experiment:
+
+> a removed party holding an unspent, unexpired, uncancelled invitation still re-admits itself
+
+Removal cannot cancel invitations addressed to the departing party because a bearer invitation
+records no intended recipient — `schemas/strand.qsql`'s `Invite` carries only `Key` and `Expiration`
+— and nothing in `ConsumedInvite`'s gates checks that the issuing manager is still a manager.
+
+**Why this arm matters for prioritisation:** the security consequence is not visible from this
+ticket's title, so it has been triaged as an ergonomics feature rather than as the thing that closes
+a revocation bypass. A consumer shipping removal today is shipping a control that a removed party can
+undo. The reporter offers a blunter interim — removal cancels *all* outstanding invitations — which
+is over-broad but closes the hole with the schema we already have.
+
+The open decision (is re-admission a bug or accepted behaviour pending this ticket?) is
+`blocked/what-does-removing-a-member-guarantee`.
