@@ -21,7 +21,7 @@
 import debug from 'debug';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
-import type { StrandFormationDisclosure } from './types.js';
+import type { StrandFormationDisclosure, StrandMembershipInvite } from './types.js';
 import { type ControlStream, writeFrame, withTimeout } from './control-stream.js';
 import { canonicalJson } from './canonical-json.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
@@ -147,6 +147,16 @@ export interface FormationProvisionResult {
    * already-used token discloses neither identity nor key. Absent for open strands.
    */
   memberPrivateKey?: string;
+  /**
+   * The joiner's single-use membership invitation into the (closed, bound) host
+   * strand — issued by the responder's live strand runtime against `Strand.Invite`
+   * just before the consent row was recorded. Same disclosure timing as
+   * {@link memberPrivateKey}: present only on an approved result, absent for open
+   * strands and the responder-provisions path. Bounded and shape-checked on the
+   * initiator side ({@link isWellFormedMembershipInvite}) — a hostile responder's
+   * malformed field fails validation rather than crashing the initiator.
+   */
+  membershipInvite?: StrandMembershipInvite;
   dbConnectionInfo: FormationDbConnectionInfo;
 }
 
@@ -314,6 +324,32 @@ class FrameReader {
 const PLACEHOLDER_CADRE_ADDR = /^cadre-[ab]-\d+\.local$/;
 
 /**
+ * Both halves of a {@link StrandMembershipInvite} are base64url ed25519 key encodings —
+ * 43 chars for 32 bytes. The bound is deliberately loose (a future encoding change must
+ * not silently strand joiners) while still capping what a hostile responder can make the
+ * initiator retain.
+ */
+const MAX_MEMBERSHIP_INVITE_KEY_LENGTH = 256;
+const BASE64URL_KEY = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Is `value` a well-formed {@link StrandMembershipInvite} — exactly two bounded
+ * base64url strings? The initiator-side shape check for the one attacker-influenced
+ * OBJECT the formation result carries (`strandAddrs` gets the equivalent treatment in
+ * {@link sanitizeStrandAddrs}): a malformed field from a hostile responder must fail
+ * validation, never crash the initiator or be carried into the joiner's invite cache.
+ * `undefined` is NOT well-formed — absence is legal on the result and callers gate on
+ * presence first.
+ */
+export function isWellFormedMembershipInvite(value: unknown): value is StrandMembershipInvite {
+  if (typeof value !== 'object' || value === null) return false;
+  const { inviteKey, invitePrivateKey } = value as Record<string, unknown>;
+  const wellFormedKey = (key: unknown): boolean =>
+    typeof key === 'string' && key.length > 0 && key.length <= MAX_MEMBERSHIP_INVITE_KEY_LENGTH && BASE64URL_KEY.test(key);
+  return wellFormedKey(inviteKey) && wellFormedKey(invitePrivateKey);
+}
+
+/**
  * Structural check on a `responderCreates` result: the responder must have approved,
  * disclosed a non-empty real identity + cadre (not the legacy `cadre-*.local`
  * placeholders), and returned a strand vouched for by the responder party with a real id.
@@ -335,6 +371,12 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
   const provision = response.provisionResult;
   if (!provision?.strand?.strandId) return false;
   if (provision.strand.createdBy !== 'responder') return false;
+  // Optional, but when present it must be well-formed: a malformed invitation is a
+  // membership the joiner can never redeem, so reject the result rather than accept a
+  // formation that would leave a half-member.
+  if (provision.membershipInvite !== undefined && !isWellFormedMembershipInvite(provision.membershipInvite)) {
+    return false;
+  }
   return true;
 }
 

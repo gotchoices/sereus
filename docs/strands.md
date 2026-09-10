@@ -216,11 +216,22 @@ database, which Optimystic replicates to **every node the party owns**:
   gates reads; it deliberately derives **nobody's identity**.
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
-  `Member.Key`/`Manager.MemberKey` are its public key. It is minted at
+  `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it at
   `publishStrand` for a closed strand (healed at a founder launch for strands that
-  predate the split), is **never** put on the formation wire, and is deleted — with
-  its `Revocation` tombstone — in the same transaction that removes the `Strand`
-  row (`unpublishStrand`).
+  predate the split); a **joiner** mints (or, on a re-formation, reuses) its own at
+  `formStrand`, when the approving closed-strand formation result carries a
+  single-use strand membership invitation
+  (`FormationProvisionResult.membershipInvite` — a `Strand.Invite` keypair the
+  responder's live strand runtime issues under its party identity, disclosed on the
+  same terms as the read secret; issuance failing rejects the redemption retryably
+  *before* the formation token is spent, so a joiner is never admitted as an
+  unmemberable half-member). The joiner's node stages the invitation in memory
+  (`getPendingMembershipInvite`) for strand bring-up to redeem — `consumeInvite`
+  seats the `Strand.Member` row under the joiner's own public key (the automatic
+  redemption + device binding is `strand-node-binds-member-peer`). Either party's
+  key is **never** put on the formation wire, and the row is deleted — with its
+  `Revocation` tombstone — in the same transaction that removes the `Strand` row
+  (`unpublishStrand`).
 
 The two used to be one key: the founding identity derived from the shared read
 secret, so any joiner could compute the founder's member *and manager* private key

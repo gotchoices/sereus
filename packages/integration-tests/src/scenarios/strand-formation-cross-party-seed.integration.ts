@@ -49,7 +49,13 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, ControlFormationUsageRecorder } from '@serfab/cadre-core';
+import {
+	CadreNode,
+	ControlFormationUsageRecorder,
+	consumeInvite,
+	generateStrandMemberKey,
+	strandMemberKeyPair,
+} from '@serfab/cadre-core';
 import type { OpenInvitation, StrandRow } from '@serfab/cadre-core';
 import {
 	controlNodeConfig,
@@ -200,6 +206,151 @@ describe('Cross-party strand seed carried by formation', () => {
 					timeoutMs: CONVERGE_MS,
 					intervalMs: 250,
 					description: 'the host row replicates to the joiner over the seeded mesh',
+				},
+			);
+		} finally {
+			await joiner?.stop();
+			await host?.stop();
+		}
+	}, 180_000);
+
+	/**
+	 * CLOSED-strand variant (`strand-formation-membership-invite`): the formation result
+	 * also carries the joiner's own single-use `Strand.Invite`, the joiner's node persists
+	 * its own party identity (`StrandPartyKey`) and stages the invitation, and redeeming
+	 * it on the joiner's replica seats a `Strand.Member` row under the JOINER's key —
+	 * distinct from the founder's. Redemption is explicit here (`consumeInvite`) to prove
+	 * the carried invitation is genuine; the automatic bring-up redemption is the next
+	 * ticket (`strand-node-binds-member-peer`).
+	 */
+	it('carries a redeemable membership invitation for a closed strand', async () => {
+		let host: CadreNode | undefined;
+		let joiner: CadreNode | undefined;
+		try {
+			const runTag = Date.now();
+			const strandId = `strand-closed-membership-${runTag}`;
+			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
+
+			const hostKey = await generateKeyPair('Ed25519');
+			host = new CadreNode(controlNodeConfig({
+				partyId: `host-c-${runTag}`,
+				privateKey: hostKey,
+				profile: 'storage',
+				enableRelay: true,
+			}));
+			await host.start();
+			await makeOwnOwner(host, hostKey);
+			host.initializeStrandSolicitation({
+				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
+			});
+
+			// Found the CLOSED host strand: the shared read secret gates attach; the
+			// founder's own identity (StrandPartyKey, minted by publish) signs the
+			// membership invitation the redemption below issues.
+			const founded = await host.foundStrand({
+				strandId,
+				type: 'c',
+				memberPrivateKey: await generateStrandMemberKey(),
+				sAppConfig: sApp,
+			});
+			expect(founded.founded).toBe(true);
+			const founderPartyKey = await host.getControlDatabase()!.queryStrandPartyKey(strandId);
+			expect(founderPartyKey).not.toBeNull();
+			const founderMemberKey = strandMemberKeyPair(founderPartyKey!).publicKeyB64;
+
+			const invitation: OpenInvitation = await host.createOpenInvitation(SAPP_ID, YEAR_MS);
+			await host.publishFormationInvite(invitation.token, SAPP_ID, {
+				strandId,
+				expiresAtMs: Date.now() + YEAR_MS,
+				totalUses: 1,
+			});
+
+			// The joiner is a REAL party: its own identity key, its own owner genesis —
+			// persisting the formation-issued StrandPartyKey identity is an owner-signed
+			// write into the joiner's OWN control DB (formStrand throws without it).
+			const joinerKey = await generateKeyPair('Ed25519');
+			joiner = new CadreNode(controlNodeConfig({
+				partyId: `joiner-c-${runTag}`,
+				privateKey: joinerKey,
+				bootstrapNodes: controlAddrs(host),
+			}));
+			await joiner.start();
+			await makeOwnOwner(joiner, joinerKey);
+
+			// ── The formation result carries the read secret AND the membership invitation ──
+			const formResult = await joiner.formStrand(invitation, {
+				partyId: `joiner-c-${runTag}`,
+				purpose: 'closed-strand membership',
+			});
+			expect(formResult.strandId).toBe(strandId);
+			expect(formResult.memberPrivateKey).toBeTruthy();
+			expect(formResult.membershipInvite).toBeDefined();
+			const invite = formResult.membershipInvite!;
+
+			// The joiner's node persisted its OWN party identity and staged the invitation.
+			const joinerPartyKey = await joiner.getControlDatabase()!.queryStrandPartyKey(strandId);
+			expect(joinerPartyKey).not.toBeNull();
+			expect(joinerPartyKey).not.toBe(founderPartyKey);
+			const joinerMemberKey = strandMemberKeyPair(joinerPartyKey!).publicKeyB64;
+			expect(joinerMemberKey).not.toBe(founderMemberKey);
+			expect(joiner.getPendingMembershipInvite(strandId)).toEqual(invite);
+
+			// ── Stand the strand up on the joiner and redeem the invitation there ──
+			const joinerStrand = await joiner.addStrand({
+				strandRow: {
+					Id: strandId,
+					MemberPrivateKey: formResult.memberPrivateKey!,
+					Type: 'c',
+					FounderOwnerKey: null,
+				},
+				sAppConfig: sApp,
+			});
+			const joinerDb = joinerStrand.database!.getDatabase();
+
+			// ConsumedInvite.InviteExists needs the host-issued Strand.Invite row visible on
+			// the joiner's replica — wait for it to converge over the freshly-seeded mesh.
+			await waitUntil(
+				async () => {
+					for await (const row of joinerDb.eval('select Key from Strand.Invite')) {
+						if (row.Key === invite.inviteKey) return true;
+					}
+					return false;
+				},
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 500,
+					description: "the issued Strand.Invite row replicates to the joiner's strand DB",
+				},
+			);
+
+			// Redeem: a real Strand.Member row lands under the JOINER's own party key.
+			await consumeInvite(joinerDb, {
+				inviteKey: invite.inviteKey,
+				invitePrivateKey: invite.invitePrivateKey,
+				memberKey: joinerMemberKey,
+			});
+
+			const memberKeys = new Set<string>();
+			for await (const row of joinerDb.eval('select Key from Strand.Member')) {
+				memberKeys.add(row.Key as string);
+			}
+			expect(memberKeys.has(joinerMemberKey)).toBe(true);
+			expect(memberKeys.has(founderMemberKey)).toBe(true);
+
+			// And the admission converges back to the FOUNDER's replica — the joiner is a
+			// member of the shared strand, not of a local fork.
+			const hostDb = founded.instance.database!.getDatabase();
+			await waitUntil(
+				async () => {
+					for await (const row of hostDb.eval('select Key from Strand.Member')) {
+						if (row.Key === joinerMemberKey) return true;
+					}
+					return false;
+				},
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 500,
+					description: "the joiner's Member row replicates back to the host",
 				},
 			);
 		} finally {

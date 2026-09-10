@@ -7,7 +7,8 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import type {
   OpenInvitation,
   FormStrandResult,
-  StrandFormationDisclosure
+  StrandFormationDisclosure,
+  StrandMembershipInvite
 } from './types.js';
 // control-database does not import this service, so these imports introduce no cycle.
 import { generateStampId, formationConsentMessage } from './control-database.js';
@@ -199,6 +200,14 @@ export interface StrandSolicitationServiceOptions {
    * by `CadreNode`; unwired, the responder discloses no strand addresses.
    */
   resolveStrandAddrs?: (strandId: string) => string[];
+  /**
+   * Issue a single-use strand membership invitation against the live host strand a
+   * bound closed-strand redemption resolved to (responder side). Wired by `CadreNode`;
+   * see `StrandFormationManagerOptions.issueMembershipInvite` for the full contract
+   * (null = open strand, throw = reject the redemption retryably, unwired = mock/test
+   * posture: approve with no invitation).
+   */
+  issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
   /** Configuration for the formation manager */
   formationConfig?: StrandFormationManagerConfig;
 }
@@ -224,6 +233,7 @@ export class StrandSolicitationService {
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
+  private readonly issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
   private formationManager?: StrandFormationManager;
   private readonly formationConfig?: StrandFormationManagerConfig;
   /**
@@ -247,6 +257,7 @@ export class StrandSolicitationService {
     this.partyId = options?.partyId ?? `party-${Date.now()}`;
     this.cadrePeerAddrs = options?.cadrePeerAddrs ?? [];
     this.resolveStrandAddrs = options?.resolveStrandAddrs;
+    this.issueMembershipInvite = options?.issueMembershipInvite;
     this.formationConfig = options?.formationConfig;
     log('StrandSolicitationService created for party: %s', this.partyId);
   }
@@ -265,6 +276,7 @@ export class StrandSolicitationService {
         partyId: this.partyId,
         cadrePeerAddrs: this.cadrePeerAddrs,
         resolveStrandAddrs: this.resolveStrandAddrs,
+        issueMembershipInvite: this.issueMembershipInvite,
         config: this.formationConfig
       });
     }
@@ -353,6 +365,9 @@ export class StrandSolicitationService {
         // Carry the host strand's membership key delivered over the protocol (closed-strand
         // provision-then-record). invitePrivateKey stays the initiator's generated signing key.
         memberPrivateKey: result.memberPrivateKey,
+        // The joiner's own single-use membership invitation into a closed host strand
+        // (already shape-checked by the manager); absent for open/unbound.
+        membershipInvite: result.membershipInvite,
         // The responder's live strand-network addresses, or `[]` when it had none to give.
         strandAddrs: result.strandAddrs
       };

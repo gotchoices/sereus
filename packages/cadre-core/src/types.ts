@@ -956,6 +956,27 @@ export interface OpenInvitation {
 }
 
 /**
+ * A single-use strand membership invitation carried on a closed-strand formation
+ * result: the `Strand.Invite` keypair the responder (the host strand's founder party)
+ * issued for this redemption. The joiner spends it — `consumeInvite` on its own strand
+ * replica — to seat a `Strand.Member` row under its OWN party key, so joining no longer
+ * hands out the founder's identity. Structurally identical to
+ * `strand-membership-writer`'s `IssuedInvite`; declared here so the wire/type layer does
+ * not import the writer.
+ */
+export interface StrandMembershipInvite {
+  /** The invite ed25519 PUBLIC key (base64url) — the `Strand.Invite.Key` row. */
+  inviteKey: string;
+  /**
+   * The invite ed25519 PRIVATE seed (base64url). A single-use bearer credential:
+   * whoever holds it can `consumeInvite` exactly once. Same sensitivity class and
+   * handling as `memberPrivateKey` — delivered only inside the validated,
+   * post-approval formation result, never written to either side's control DB.
+   */
+  invitePrivateKey: string;
+}
+
+/**
  * Result of forming a strand via open invitation
  */
 export interface FormStrandResult {
@@ -972,6 +993,15 @@ export interface FormStrandResult {
    * from {@link invitePrivateKey} (the initiator's own generated signing key).
    */
   memberPrivateKey?: string;
+  /**
+   * The joiner's own single-use membership invitation into the (closed, bound) host
+   * strand — see {@link StrandMembershipInvite}. Present only when the responder's
+   * host strand is closed and its runtime issued one; absent for open strands and the
+   * responder-provisions (unbound) path. `CadreNode.formStrand` itself persists the
+   * joiner's party key and caches this invitation for the strand bring-up to redeem,
+   * so an embedding app normally never touches it.
+   */
+  membershipInvite?: StrandMembershipInvite;
   /**
    * The responder's live STRAND-network multiaddrs for the formed strand — the only
    * cross-party discovery seed there is, since the strand-addr RPC that resolves a

@@ -396,6 +396,7 @@ export {
   FormationListener,
   dialFormation,
   isValidResponderCreatesResult,
+  isWellFormedMembershipInvite,
   sanitizeStrandAddrs,
   FORMATION_PROTOCOL,
   type FormationParty,
@@ -414,6 +415,8 @@ export {
 export {
   StrandFormationManager,
   createStrandFormationManager,
+  MEMBERSHIP_INVITE_TTL_MS,
+  MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
   type StrandFormationManagerConfig,
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';

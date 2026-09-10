@@ -636,14 +636,16 @@ Neither of these is optional, and the design does not work without them.
 
 ### Per-party strand identity
 
-`feat-strand-party-identity` is a **hard prerequisite**, and only its *founder* half has landed
-(`strand-party-member-key`): the founding party now has its own membership identity in the
+`feat-strand-party-identity` is a **hard prerequisite**, and its first two quarters have landed.
+`strand-party-member-key` gave the founding party its own membership identity in the
 control-layer `CadreControl.StrandPartyKey` table, so the founder's key is no longer derivable
-from `Strand.MemberPrivateKey`. A *joining* party still has none — formation hands it the shared
-`Strand.MemberPrivateKey` and nothing else, so on a production closed strand the joiners still
-present one indistinguishable key. Until the joiner half lands
-(`strand-formation-membership-invite`), `SignerKey` cannot distinguish parties and "every
-required role has signed" collapses to one row.
+from `Strand.MemberPrivateKey`. `strand-formation-membership-invite` extends that to *joining*
+parties: a closed-strand formation now also carries a single-use `Strand.Invite` for the joiner,
+whose node mints and persists its own `StrandPartyKey` identity at `formStrand`. What remains is
+the automatic redemption — the joiner's strand bring-up consuming that invitation to seat its
+`Strand.Member` row and bind its devices (`strand-node-binds-member-peer`). Until that lands,
+production joiners hold distinct identities but no `Member` rows yet, so `SignerKey` still
+cannot distinguish the joining parties and "every required role has signed" collapses to one row.
 
 It also bounds what open strands can do. `Member` is closed-only by schema, so signature
 admissibility as specified above **does not work on an open strand at all**. Until an open

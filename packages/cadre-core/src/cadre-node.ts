@@ -25,6 +25,7 @@ import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure,
+  StrandMembershipInvite,
   ResolveOpts,
   SelfRegistrationOutcome,
   ServiceWakeResult,
@@ -40,7 +41,9 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
-import { generateStrandMemberKey } from './strand-member-key.js';
+import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
+import { issueInvite } from './strand-membership-writer.js';
+import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
@@ -518,6 +521,28 @@ export class CadreNode implements SAppIdLookup {
    * `unpublishStrand` or cap the map.
    */
   private readonly crossPartyStrandAddrs = new Map<string, string[]>();
+
+  /**
+   * PENDING strand membership invitations learned at formation, keyed by strandId — the
+   * single-use `Strand.Invite` credential a closed-strand formation result carried back
+   * ({@link FormStrandResult.membershipInvite}), waiting for this node's strand bring-up
+   * to redeem (`consumeInvite` seats the `Strand.Member` row under this party's own key
+   * — the `strand-node-binds-member-peer` half of the party-identity chain).
+   *
+   * IN-MEMORY, deliberately, like {@link crossPartyStrandAddrs}: a restarted joiner
+   * re-forms from scratch anyway (durability is
+   * `backlog/feat-cross-party-strand-addr-durability`'s problem), and re-forming issues
+   * a fresh invitation. A re-formation against the same strand REPLACES the entry — the
+   * fresh invitation supersedes one that may have expired. The party key the invitation
+   * admits, by contrast, IS persisted (`StrandPartyKey`, seated by
+   * {@link adoptFormationMembershipInvite} before the entry lands here), so a lost
+   * invitation never orphans an identity.
+   *
+   * NOTE: entries live for the node's lifetime (one small pair per formed closed
+   * strand), the same unbounded-keys tripwire {@link crossPartyStrandAddrs} documents —
+   * if a node ever forms strands at scale, evict alongside that map.
+   */
+  private readonly pendingMembershipInvites = new Map<string, StrandMembershipInvite>();
 
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
@@ -6368,7 +6393,11 @@ export class CadreNode implements SAppIdLookup {
       // Overrides any caller-supplied hook, exactly like partyId/cadrePeerAddrs: only
       // this node can say which strand-network addresses it is actually listening on,
       // and a wrong answer here seeds a joiner's mesh with addresses that reach nobody.
-      resolveStrandAddrs: (strandId: string) => this.getStrandMultiaddrs(strandId)
+      resolveStrandAddrs: (strandId: string) => this.getStrandMultiaddrs(strandId),
+      // Overridden on the same grounds: only this node holds the running strand
+      // instance's database and this party's `StrandPartyKey` identity, and a wrong
+      // issuer here would admit joiners under someone else's authority.
+      issueMembershipInvite: (strandId: string) => this.issueStrandMembershipInvite(strandId)
     });
 
     // Register as responder on the control node
@@ -6436,7 +6465,112 @@ export class CadreNode implements SAppIdLookup {
       this.controlNode
     );
     this.recordCrossPartyStrandAddrs(result.strandId, result.strandAddrs);
+    // A closed host strand's approval carries the joiner's own membership invitation —
+    // persist this party's identity key and stage the invitation for bring-up to redeem.
+    // Runs AFTER the addr recording so a persistence failure (which throws — see the
+    // method) still leaves the cross-party seed in place for a manual recovery.
+    if (result.membershipInvite) {
+      await this.adoptFormationMembershipInvite(result.strandId, result.membershipInvite);
+    }
     return result;
+  }
+
+  /**
+   * Adopt an approved closed-strand formation's membership half on the JOINER:
+   *
+   * 1. Mint-or-reuse this party's own strand identity — {@link ensureStrandPartyKey}
+   *    with no explicit key returns the stored `StrandPartyKey` row when one exists (a
+   *    re-formation by an existing member party: lost addresses, an app reinstall with
+   *    an intact control DB) and mints + persists a fresh one otherwise. The invitation
+   *    will admit THIS key's public half as the `Strand.Member`.
+   * 2. Stage the invitation in {@link pendingMembershipInvites} for the strand
+   *    bring-up flow (`strand-node-binds-member-peer`) to redeem via `consumeInvite`.
+   *
+   * Throws — failing the whole {@link formStrand} — when the identity cannot be
+   * persisted: a joiner "joined" without a persistable identity could never become a
+   * member, and failing loudly beats a silent half-member. The formation itself has
+   * already succeeded by then and its one-time token is SPENT, so the error says so:
+   * recovery is fixing the underlying cause (no owner signing key / control DB write
+   * rejected) and redeeming a FRESH invitation.
+   */
+  private async adoptFormationMembershipInvite(strandId: string, invite: StrandMembershipInvite): Promise<void> {
+    try {
+      await this.ensureStrandPartyKey(strandId);
+    } catch (error) {
+      throw new Error(
+        `Formation for strand ${strandId} was approved (its one-time token is spent), but ` +
+        'persisting this party\'s membership identity (StrandPartyKey) failed — the joiner ' +
+        'cannot become a member without it. Fix the underlying cause, then redeem a fresh ' +
+        'invitation (the delivered one dies with this error).',
+        { cause: error }
+      );
+    }
+    this.pendingMembershipInvites.set(strandId, invite);
+    log('formStrand: staged membership invitation for strand %s (party key persisted)', strandId);
+  }
+
+  /**
+   * The pending single-use membership invitation a closed-strand formation carried back
+   * for `strandId`, or `undefined` when none is staged — the seam the strand bring-up
+   * flow (`strand-node-binds-member-peer`) reads to redeem the joiner's `Strand.Member`
+   * seat. In-memory only; see {@link pendingMembershipInvites} for lifetime and
+   * re-formation semantics.
+   */
+  getPendingMembershipInvite(strandId: string): StrandMembershipInvite | undefined {
+    return this.pendingMembershipInvites.get(strandId);
+  }
+
+  /**
+   * Responder-side issuer behind the formation manager's `issueMembershipInvite` seam
+   * (see `StrandFormationManagerOptions.issueMembershipInvite` for the contract this
+   * implements): mint a single-use `Strand.Invite` against the LIVE host strand so a
+   * validated joiner can seat its own `Strand.Member` row.
+   *
+   * - Open host strand → `null` (no members, nothing to invite into).
+   * - Closed host strand with no running local instance/database → throw: a joiner
+   *   admitted without an invitation would look joined and never become a member, and a
+   *   responder not running the strand cannot serve its sync anyway. The manager maps
+   *   the throw to a clean retryable rejection BEFORE the formation token is spent.
+   * - Closed host strand with no `StrandPartyKey` row → throw, same mapping: this
+   *   party's identity is the invite's issuing manager, and without it nothing can sign
+   *   the issuance. (The founder's publish/launch paths mint it, so this is a
+   *   not-yet-converged sibling or a pre-split strand that has not healed.)
+   *
+   * The invitation expires `MEMBERSHIP_INVITE_TTL_MS` from now — see that constant for
+   * the slow-joiner / lost-result tradeoff.
+   */
+  private async issueStrandMembershipInvite(strandId: string): Promise<StrandMembershipInvite | null> {
+    if (!this.controlDatabase) {
+      throw new Error(`Cannot issue a membership invitation for strand ${strandId}: control database unavailable`);
+    }
+    const row = await this.controlDatabase.queryStrand(strandId);
+    if (!row) {
+      // The bound resolution saw this row moments ago; a vanished row is a concurrent
+      // unpublish — reject rather than invite into a strand this party just removed.
+      throw new Error(`Cannot issue a membership invitation for strand ${strandId}: its Strand row is gone`);
+    }
+    if (row.Type !== 'c') {
+      return null;
+    }
+    const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();
+    if (!db) {
+      throw new Error(
+        `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
+        'not live on this responder (not launched, hibernating, or quiescing)'
+      );
+    }
+    const partyKey = await this.controlDatabase.queryStrandPartyKey(strandId);
+    if (partyKey === null) {
+      throw new Error(
+        `Cannot issue a membership invitation for closed strand ${strandId}: this party holds ` +
+        'no StrandPartyKey row for it (identity not yet converged, or a pre-split strand that ' +
+        'has not healed at launch)'
+      );
+    }
+    return await issueInvite(db, {
+      managerKeyPair: strandMemberKeyPair(partyKey),
+      expiration: Date.now() + MEMBERSHIP_INVITE_TTL_MS
+    });
   }
 
   /**
