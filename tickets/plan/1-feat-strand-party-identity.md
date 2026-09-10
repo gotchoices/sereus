@@ -125,3 +125,19 @@ honestly. Confirming or refuting it is cheap and should happen before anyone shi
 
 The open decision (is stopping writes achievable independently of rotating the read gate?) is
 `blocked/what-does-removing-a-member-guarantee`.
+
+## Promoted to `plan/` 2026-09-10 — removal enforcement is waiting on this
+
+Revocation enforcement landed (`strand-revocation-enforcer.ts`, proven by
+`packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts`): once a
+removal replicates, remaining machines refuse, stop dialing, and hang up every machine the removed
+member registered. But `docs/strands.md` → "What removal still does not do" states the gap plainly:
+on a strand formed the way a real deployment forms one today, every party presents the *same*
+founding member identity and no device records are written — so there is no per-party member to
+remove and nothing to deny it by. The machinery is in place; the identity it needs is not.
+
+The owner's ruling on gotchoices/sereus#4 is that removal cuts the network, and the public reply
+tells the reporter to word their UI on that basis and that per-party identity is next. This ticket
+is what makes that reply true for an app. Plan for the end state where `strand-removal-cuts-network`
+passes against a strand formed through the ordinary formation flow, with no test-registered device
+records.

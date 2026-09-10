@@ -89,3 +89,10 @@ an omission.
 
 `chat-simple.qsql` is deliberately permissionless and documented as such — it is not affected
 and must not be "fixed" to match.
+
+## Promoted to `fix/` 2026-09-10
+
+The public reply on gotchoices/sereus#7 tells the reporter that `schemas/chat.qsql` is repaired but
+still unsafe as a reference because of exactly this defect, and that the fix is next. Severity is
+`corruption`: anyone with write access can impersonate a member and rewrite or erase history in a
+schema consumers are copying.

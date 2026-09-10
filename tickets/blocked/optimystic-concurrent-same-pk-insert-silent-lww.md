@@ -76,3 +76,10 @@ Re-run the measurement (experiments 1 and 3 are the cheap discriminators). If th
 error message is a new third shape, callers classifying constraint errors need a matching
 arm — grep `packages/cadre-core/src` for the message patterns then in use. No sereus
 ticket is prereq-chained to this slug; the formation redesign proceeds independently.
+
+## 2026-09-10 — now ticketed where the fix belongs
+
+Filed upstream as `../optimystic/tickets/fix/3-a-concurrent-same-key-insert-silently-keeps-one-row.md`,
+reproduce-first, since this measurement predates Optimystic's fork guard and pend-refusal fix. The
+unblock condition here is unchanged. Sereus now warns sApp developers against self-imposed integer
+sequences (`docs/schema-guide.md`), and that warning is referenced publicly on gotchoices/sereus#5.
