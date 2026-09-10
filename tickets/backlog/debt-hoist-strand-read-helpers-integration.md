@@ -1,5 +1,5 @@
 description: Three of the network test files that read a strand's membership tables each keep their own copy of the same small set of read helpers, and the copies have already started to drift apart; give them one shared home.
-files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, packages/integration-tests/src/scenarios/harness-topology.integration.ts, packages/integration-tests/src/harness/index.ts
+files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, packages/integration-tests/src/scenarios/harness-topology.integration.ts, packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts, packages/integration-tests/src/scenarios/strand-two-party-two-machine.integration.ts, packages/integration-tests/src/harness/index.ts
 difficulty: easy
 tradeoffs: Test-local duplication is cheap to read and impossible to break for anyone else, and a shared module in `src/harness/` is one more thing a scenario author has to know about — a maintainer may reasonably decide three copies of six short functions is under the threshold that justifies the indirection.
 ----
@@ -107,3 +107,31 @@ of vitest's assertion diffs. That decision belongs to this ticket, not to a revi
 an unrelated scenario.
 
 `SIMPLE_SCHEMA` (now twelve copies) stays out of scope for the same reason given above.
+
+## Third arm: the removal scenario adds a fourth copy (added 2026-09-10)
+
+`strand-removal-cuts-network.integration.ts` landed 2026-09-10 (`e01a2ca`) and, like the
+second-machine file before it, copied the family rather than hoisting it. Counted
+2026-09-10 with `grep -ln "<name>" packages/integration-tests/src/scenarios/*.ts`:
+
+| helper | copies now | added by this file |
+| --- | --- | --- |
+| `freshKeyPair` | 3 | yes (closed-strand-e2e, second-machine, removal-cuts-network) |
+| `memberKeys` | 3 | yes |
+| `GATE` | 5 | yes |
+| `insertWithRetry` (+ its read-back branch) | 2 | yes (with `strand-two-party-two-machine`) |
+| `SIMPLE_SCHEMA` | 13 | yes (still out of scope, per above) |
+
+Drift arrived with this copy too, in the same shape as the second arm's: the 2×2 file's
+`insertWithRetry` reads back through a named `rowLanded` helper that LOGS a failed
+read-back; the removal file's copy originally inlined `.catch(() => undefined)`, silently
+swallowing it. Fixed at review time in the new file (it now has its own `rowLanded`), which
+makes the two bodies agree again — and makes the case for one home rather than two agreeing
+copies. The removal file's `insertWithRetry` also documents a DIFFERENT reason for
+retrying (a post-removal cohort downsize, measured) than the 2×2's (an upstream
+lost-conflict race), so a hoist has to keep both rationales, not pick one.
+
+Also note for whoever does the hoist: `expectConnected` / `expectCut` /
+`expectNeverConverges` in the removal file are `expect`-based like the second arm's
+helpers, so they hit the same "harness modules do not import vitest" decision recorded
+there.

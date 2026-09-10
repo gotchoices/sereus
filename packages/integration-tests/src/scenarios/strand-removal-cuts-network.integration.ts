@@ -162,8 +162,9 @@ const NO_CONVERGENCE_BUDGET_MS = 10_000;
  * Budget for the post-cut write by the remaining cohort.
  *
  * MEASURED, not hypothetical: on this fixture the first write after the cut FAILS several
- * times before it commits — 4 failed attempts with `BlockUnavailableError: Block
- * default/Data is unavailable (peers-unreachable)`, committing on attempt 5 at ~4.1 s.
+ * times before it commits — three or four failed attempts with `BlockUnavailableError:
+ * Block default/Data is unavailable (peers-unreachable)`, committing 3.5-4.3 s in, over
+ * four runs.
  * The cohort still lists the removed party's machines, which are now unreachable (and
  * this node refuses to dial them), so the write cannot proceed until the cohort downsizes
  * to the live holders (`allowDownsize: true` in `STRAND_CLUSTER_POLICY`). It recovers on
@@ -199,6 +200,8 @@ interface StrandMachine {
 	 *  the deny set is keyed by. Distinct from its control-network peer id. */
 	peerId: string;
 	instance: StrandInstance;
+	/** The strand's own libp2p node — captured once, so no call site re-asserts it is there. */
+	libp2p: NonNullable<StrandInstance['libp2pNode']>;
 }
 
 /**
@@ -212,6 +215,7 @@ function strandMachine(label: string, node: CadreNode, instance: StrandInstance 
 	return {
 		label, node, instance,
 		db: instance.database.getDatabase(),
+		libp2p: instance.libp2pNode,
 		peerId: instance.libp2pNode.peerId.toString(),
 	};
 }
@@ -219,7 +223,7 @@ function strandMachine(label: string, node: CadreNode, instance: StrandInstance 
 /** Open connections `from`'s strand node holds to `to`'s strand peer id — the same
  *  surface the teardown sweep enumerates and hangs up through. */
 function strandConnectionsTo(from: StrandMachine, to: StrandMachine): number {
-	return from.instance.libp2pNode!.getConnections()
+	return from.libp2p.getConnections()
 		.filter((c) => c.remotePeer.toString() === to.peerId)
 		.length;
 }
@@ -294,6 +298,25 @@ async function expectNeverConverges(machine: StrandMachine, key: string, val: st
 }
 
 /**
+ * Whether the row is already there despite the insert having reported failure — asked on
+ * the AUTHOR's own database, so it makes no physical claim about any other machine.
+ *
+ * A read that ITSELF fails answers "not known to have landed" rather than propagating: it
+ * runs inside {@link insertWithRetry}'s catch, where a throw would replace the insert
+ * error the caller needs to see. It is LOGGED rather than swallowed silently — on this
+ * fixture the author is the one machine that must still be able to read, so a read error
+ * here is worth seeing next to the insert errors around it.
+ */
+async function rowLanded(machine: StrandMachine, key: string, val: string): Promise<boolean> {
+	try {
+		return (await dataValue(machine.db, key)) === val;
+	} catch (readError) {
+		console.warn(`[removal-cut] ${machine.label}: read-back of '${key}' after a failed insert also failed: ${String(readError)}`);
+		return false;
+	}
+}
+
+/**
  * Insert with a bounded retry, for the post-cut write only — the same shape as the sibling
  * 2×2 scenario's helper, but here the retry is LOAD-BEARING rather than defensive: the
  * first attempts after a cut reliably fail while the cohort still lists the removed
@@ -309,7 +332,7 @@ async function insertWithRetry(machine: StrandMachine, key: string, val: string,
 			console.log(`[removal-cut] ${machine.label}: committed '${key}' on attempt ${attempt} after ${Date.now() - start}ms`);
 			return;
 		} catch (error) {
-			if ((await dataValue(machine.db, key).catch(() => undefined)) === val) {
+			if (await rowLanded(machine, key, val)) {
 				console.log(`[removal-cut] ${machine.label}: attempt ${attempt} reported failure but '${key}' landed`);
 				return;
 			}
@@ -465,6 +488,15 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// (denying a legitimate member on a view it has not caught up on) partitions
 			// someone who did nothing wrong. Enforcement is per-machine and eventually
 			// consistent, and this is what that costs.
+			//
+			// NOTE: read this as "has not PROCESSED the removal", not "has not RECEIVED
+			// it" — a[1]'s poll is suspended, so the tombstone may well have replicated
+			// to a[1] already (the gate below waits for exactly that). The window this
+			// arm pins is between arrival and the refresh that acts on it, which is the
+			// one an app can close with `refreshRevocationEnforcement`. Racing
+			// replication itself would need a partitioned fixture and pins nothing extra:
+			// a machine that has not received the removal is a strict sub-case of one
+			// that has not acted on it.
 			expectConnected(a1, b0, 'a[1] has not refreshed its deny set yet — the fail-open window');
 			expectConnected(a1, b1, 'a[1] has not refreshed its deny set yet — the fail-open window');
 
@@ -506,13 +538,25 @@ describe('Removing a party cuts its machines off the strand', () => {
 			} catch (error) {
 				pushError = error;
 			}
+			// The author's own read-back says WHICH shape this run took: a row the removed
+			// party can read back locally makes "it never reached a[0]/a[1]" evidence of
+			// the cut rather than of a write that never existed. Logged, not asserted —
+			// a write that fails outright is equally the cut (see the comment above), so
+			// requiring either shape would make this a flake rather than a claim.
 			console.log(
 				`[removal-cut] removed party's post-cut write ${pushError === undefined ? 'committed locally' : 'failed'}`
-				+ `${pushError === undefined ? '' : `: ${String(pushError)}`}`,
+				+ `${pushError === undefined ? '' : `: ${String(pushError)}`}`
+				+ `; readable back on ${b0.label}: ${await rowLanded(b0, pushKey, 'from the removed party')}`,
 			);
 			await expectNeverConverges(a0, pushKey, 'from the removed party');
 			await expectNeverConverges(a1, pushKey, 'from the removed party');
 
+			// NOTE: nothing here asserts anything about b[0]↔b[1], which stay connected to
+			// each other throughout — correctly: a node never hangs ITSELF up (the
+			// enforcer excludes its own peer id), and neither removed machine has
+			// refreshed against the other's now-orphaned binding. If that pair is ever
+			// expected to fall apart on its own, this is the file to say so in.
+			//
 			// The sessions are still down after all of that — a re-dial by the removed
 			// party is refused by the connection gate, not merely swept once.
 			for (const remaining of [a0, a1]) {
@@ -589,8 +633,10 @@ describe('Removing a party cuts its machines off the strand', () => {
 			);
 			expect(revokedOnB[0]).toBe(strandId);
 
-			// The remaining party is not told it was removed — the signal is about THIS
-			// node's own peer id being denied, not about any removal on the strand.
+			// The remaining party is not told it was removed. Asserted here only as a
+			// baseline — a[0]'s poll is suspended, so it has derived nothing yet and this
+			// could not fire either way. The load-bearing check is after a[0]'s refresh
+			// below, where a[0] HAS a deny set holding b[0] and still does not signal.
 			expect(revokedOnA).toEqual([]);
 
 			// Nothing is torn down on the removed node's behalf: it still holds the
@@ -602,6 +648,12 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// And when the remaining party does act, the session goes.
 			await a0.node.refreshRevocationEnforcement(strandId);
 			expectCut(a0, b0, 'the remaining party swept the removed node once it refreshed');
+
+			// The meaningful half of the "only the removed node is told" claim: a[0] has
+			// now derived a deny set — it just cut b[0] off it — and is still not told it
+			// was removed. The signal keys on this node's OWN peer id being denied, not
+			// on there being a removal on the strand.
+			expect(revokedOnA).toEqual([]);
 		} finally {
 			await topology?.stop();
 		}

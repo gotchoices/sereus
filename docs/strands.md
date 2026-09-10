@@ -407,9 +407,9 @@ no longer the case.
   retry.** Nothing has to be done to eject the removed party from the group that holds the
   strand's data — cutting the connections is enough, and the remaining machines carry on
   committing among themselves. They do have to notice that the removed machines are gone
-  first: measured on that four-machine test, the first write after a removal failed four
-  times over about four seconds ("block unavailable — peers unreachable") before
-  committing. It recovers on its own, so an app that writes immediately after removing
+  first: measured on that four-machine test over four runs, the first write after a removal
+  failed three or four times over three to four seconds ("block unavailable — peers
+  unreachable") before committing. It recovers on its own, so an app that writes immediately after removing
   someone should expect a brief wobble rather than a failure.
 - **A delegate grant is not a way around any of this.** A party's own relay can hold a
   short-lived admission grant for a machine of its own party (see [Relay
