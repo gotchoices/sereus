@@ -173,13 +173,29 @@ export interface StorageConfig {
  * Network configuration for libp2p
  */
 export interface NetworkConfig {
+  /**
+   * Addresses this machine's libp2p nodes bind. Omitted, `@optimystic/db-p2p`'s own
+   * default (`/ip4/0.0.0.0/tcp/0`) applies; `[]` means "cannot listen" and is honored
+   * as written (React Native hosts rely on that).
+   *
+   * The machine runs one control node plus one node per strand, so a FIXED port here
+   * can only belong to one of them. The control node binds it as configured; each
+   * strand node binds the same entry with its port rewritten to `0`, keeping the
+   * interface and transport (`/ws`, `/quic-v1`, a specific-interface bind). A
+   * `<relay>/p2p-circuit` entry is untouched — the port inside it is the relay's, not
+   * a local bind. See `strand-network-config.ts`.
+   */
   listenAddrs?: string[];
   /**
    * Addresses to advertise to peers **instead of** `listenAddrs` — for a node behind
    * NAT or a reverse proxy that is reachable at a different address than it binds
    * (e.g. `mynode.example.com:4001` in front of a `0.0.0.0:4001` listener). Reaches
-   * libp2p's `addresses.announce` via `@optimystic/db-p2p`'s `NodeOptions.announceAddrs`,
-   * on this node's control node and on every strand node it runs.
+   * libp2p's `addresses.announce` via `@optimystic/db-p2p`'s `NodeOptions.announceAddrs`.
+   *
+   * **Applies to this machine's CONTROL node only.** Strand nodes drop it: any concrete
+   * entry names a port, and that port is the control node's, so a strand node
+   * advertising it would send peers to the wrong node (`strand-network-config.ts`).
+   * Entries are still validated at node start whichever node ends up using them.
    *
    * **A non-empty value REPLACES the advertised set entirely.** Observed addresses,
    * and the `/p2p-circuit` address earned from a {@link relayAddrs} reservation, are
@@ -209,6 +225,8 @@ export interface NetworkConfig {
    * without discarding the observed and `/p2p-circuit` addresses it would otherwise
    * advertise. Reaches libp2p's `addresses.appendAnnounce` via
    * `@optimystic/db-p2p`'s `NodeOptions.appendAnnounceAddrs`.
+   *
+   * **Control node only**, on the same terms as {@link announceAddrs}.
    *
    * **Ignored while {@link announceAddrs} is non-empty** — that is libp2p's own
    * precedence, applied upstream; this repo does not merge the two locally. Set one

@@ -902,6 +902,34 @@ their relay connection cannot disturb anything, since a strand node's protocol
 ids are namespaced `/optimystic/strand-<id>/…` and the relay is never in its
 cohort.
 
+**What a strand node does NOT inherit: the host's one endpoint.** A machine runs
+one control node plus one node per strand, all built from the same operator
+`NetworkConfig`, and two of its fields describe a single endpoint on that host.
+`packages/cadre-core/src/strand-network-config.ts` derives a strand-node view of
+them:
+
+| field | control node | strand node |
+| --- | --- | --- |
+| `listenAddrs`, direct entry with a fixed port | binds as configured | same entry, port rewritten to `0` |
+| `listenAddrs`, `<relay>/p2p-circuit` entry | — (control takes the bare search entry) | inherited verbatim; the port in it is the relay's |
+| `listenAddrs: []` | binds nothing | binds nothing |
+| `announceAddrs` / `appendAnnounceAddrs` | advertised | dropped |
+
+Without the port rewrite, a machine configured with a fixed port (`cadre-cli`'s
+example config ships `/ip4/0.0.0.0/tcp/4001`) could start no strand at all: the
+control node binds the port and every strand node then fails `EADDRINUSE`.
+Announce entries are dropped for the matching reason — any concrete entry names a
+port, and that port is the control node's, so a strand node advertising it would
+hand peers an address that reaches the wrong node. With `announceAddrs`, which
+*replaces* the advertised set rather than extending it, that wrong address would be
+the only one the strand node published.
+
+So **a strand node is not separately dialable at a published fixed address.** It
+is reached by its ephemeral direct listener plus observed addresses, or through
+circuit relay. A hosted deployment wanting a strand node reachable at its own
+published public port would need a per-strand network-config surface, which
+nothing needs today.
+
 It cannot rely on libp2p's built-in relay *discovery* to do that. Discovery
 nominates a peer as a relay only once the relay-hop protocol id appears in that
 peer's peer-store protocol list, and that list is written exclusively by the
@@ -1025,6 +1053,9 @@ interface CadreNodeConfig {
     // here; naming a relay directly ("<relay>/p2p-circuit") is REJECTED at start on the
     // control node — libp2p dials that relay from inside listen(), which the bring-up
     // quiet period denies. Use relayAddrs, which reserves after bring-up.
+    // The control node binds these as written; each STRAND node binds the same entries
+    // with any fixed port rewritten to 0, since only one node per machine can hold a
+    // given port (`strand-network-config.ts`).
     listenAddrs?: string[];
     // Addresses to advertise INSTEAD OF listenAddrs. A non-empty value REPLACES the whole
     // advertised set — observed addrs and the /p2p-circuit addr a relayAddrs reservation
@@ -1032,8 +1063,8 @@ interface CadreNodeConfig {
     announceAddrs?: string[];
     // Addresses to advertise IN ADDITION TO listenAddrs — the usual choice. Ignored while
     // announceAddrs is non-empty (upstream libp2p precedence). Malformed entries in either
-    // field fail startup; empty arrays mean "unset". Both apply to the control node and to
-    // every strand node.
+    // field fail startup; empty arrays mean "unset". Both are CONTROL-NODE only: a strand
+    // node drops them, because any concrete entry names the control node's port.
     appendAnnounceAddrs?: string[];
     // Circuit relays to reserve a slot on, as `<dial addr>/p2p/<relayPeerId>`.
     // On the CONTROL node this adds the bare `/p2p-circuit` search entry to the listen

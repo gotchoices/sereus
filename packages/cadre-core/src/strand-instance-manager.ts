@@ -18,8 +18,7 @@ import type {
   Libp2pNodeWithRepo
 } from './types.js';
 import { resolveStrandClusterSize, strandClusterPolicy } from './types.js';
-import { resolveListenAddrs } from './relay-addrs.js';
-import { resolveAnnounceAddrs } from './announce-addrs.js';
+import { strandNodeAddrs } from './strand-network-config.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -396,7 +395,12 @@ export class StrandInstanceManager {
     // strand node's protocol ids are namespaced `/optimystic/strand-<id>/…`, so a
     // relay dialed from inside `libp2p.start()` is never in the strand's cohort and
     // cannot refuse its database bring-up. See `relay-addrs.ts`.
-    const listenAddrs = resolveListenAddrs(config.network);
+    //
+    // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
+    // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
+    // bind one port) and the announce config is dropped (it names the control node's
+    // address). See `strand-network-config.ts` for both, and for the tradeoff.
+    const addrOptions = strandNodeAddrs(config.network);
 
     try {
       // Bound once: the breadth is also the ceiling on the repair yardstick below, and the
@@ -429,33 +433,15 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
-        // NOTE: strand nodes receive the same RESOLVED listen addrs as the
-        // control node. A fixed-port listen addr (e.g. cadre-cli's example
-        // `/ip4/0.0.0.0/tcp/4001`) would have control + strand nodes racing to
-        // bind one port — EADDRINUSE. Unverified; if a deployment configures a
-        // fixed port and strands fail to start, rewrite the port per node here.
-        // An inherited configured `/p2p-circuit` addr, by contrast, is deliberate —
-        // it is what gives a NAT'd strand node a reachable relay slot — and works
-        // because the launch path announces this strand's derived peerId to
-        // the relay first (delegate admission; see cadre-node.ts). Those circuit
-        // entries come either from a hand-written `network.listenAddrs` or from
-        // `network.relayAddrs`, which `resolveListenAddrs` folds into the same list
-        // on the configured route this call takes (see the comment above it).
-        ...(listenAddrs && { listenAddrs }),
-        // A strand node behind a reverse proxy has the same advertising need as the
-        // control node, and inherits the same `NetworkConfig` — so it announces the same
-        // addresses.
-        //
-        // NOTE: an announce addr naming a PORT therefore names the control node's port,
-        // not this strand node's — the same second-node-on-one-host problem the listen
-        // NOTE above describes, and the reason both belong to one fix. It is currently
-        // unreachable: naming a fixed public port means configuring a fixed
-        // `listenAddrs` port, and that collides at bind time before any strand node gets
-        // far enough to advertise anything. Whatever gives strand nodes their own listen
-        // port has to give them their own announce addrs in the same pass, or a strand
-        // will advertise an address that reaches the control node. Tracked as an arm of
-        // `tickets/backlog/strand-network-nat-relay-reachability.md`.
-        ...resolveAnnounceAddrs(config.network),
+        // Listen entries only — a strand node announces nothing the operator configured
+        // (`strand-network-config.ts`). An inherited configured `/p2p-circuit` entry is
+        // deliberate and survives the derivation untouched: it is what gives a NAT'd
+        // strand node a reachable relay slot, and it works because the launch path
+        // announces this strand's derived peerId to the relay first (delegate admission;
+        // see cadre-node.ts). Those circuit entries come either from a hand-written
+        // `network.listenAddrs` or from `network.relayAddrs`, which the resolution folds
+        // into the same list on the configured route this call takes (see above).
+        ...addrOptions,
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));

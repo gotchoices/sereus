@@ -24,18 +24,17 @@ vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode 
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
 /**
- * A strand node behind a reverse proxy has the same advertising need as the control
- * node, and inherits the same `NetworkConfig` — so `network.announceAddrs` /
- * `network.appendAnnounceAddrs` must reach `createLibp2pNode` here too, on exactly the
- * terms `cadre-node-control-node-options.spec.ts` pins for the control node. Without
- * this, a deployment would advertise a reachable address for its control node while
- * every strand node it runs kept advertising an unreachable one.
+ * A strand node inherits the machine's one `NetworkConfig`, but NOT the two fields in
+ * it that describe a single endpoint on the host: it binds an ephemeral port rather
+ * than the operator's fixed one, and it advertises no announce address at all.
+ * `strand-network-config.spec.ts` pins the derivation itself; what this file pins is
+ * that `buildStrandRuntime` hands `createLibp2pNode` the derived view and nothing
+ * else — the mistake it guards against is one of the two fields quietly coming back.
  *
- * The last case widens that by one field: `network.relayAddrs` is inherited the same
- * way but resolves DIFFERENTLY here than on the control node, and nothing else pins
- * which of the two routes this caller takes.
+ * `network.relayAddrs` is inherited the same way but resolves DIFFERENTLY here than on
+ * the control node, and nothing else pins which of the two routes this caller takes.
  */
-describe('StrandInstanceManager announce-addrs wiring', () => {
+describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
   let authorPublicKey: string;
 
@@ -74,16 +73,16 @@ describe('StrandInstanceManager announce-addrs wiring', () => {
     return mocks.createLibp2pNode.mock.calls[0]![0];
   }
 
-  it('forwards a configured announceAddrs', async () => {
+  it('drops a configured announceAddrs — it names the address of the control node', async () => {
     const options = await strandOptions({ announceAddrs: ['/dns4/mynode.example.com/tcp/4001'] });
 
-    expect(options.announceAddrs).toEqual(['/dns4/mynode.example.com/tcp/4001']);
+    expect('announceAddrs' in options).toBe(false);
   });
 
-  it('forwards a configured appendAnnounceAddrs', async () => {
+  it('drops a configured appendAnnounceAddrs on the same terms', async () => {
     const options = await strandOptions({ appendAnnounceAddrs: ['/dns4/mynode.example.com/tcp/4001'] });
 
-    expect(options.appendAnnounceAddrs).toEqual(['/dns4/mynode.example.com/tcp/4001']);
+    expect('appendAnnounceAddrs' in options).toBe(false);
   });
 
   it('omits both keys entirely when network is absent', async () => {
@@ -91,27 +90,45 @@ describe('StrandInstanceManager announce-addrs wiring', () => {
 
     expect('announceAddrs' in options).toBe(false);
     expect('appendAnnounceAddrs' in options).toBe(false);
+    expect('listenAddrs' in options).toBe(false);
   });
 
   /**
-   * The empty-means-unset rule matters more here than the forwarding does: libp2p reads
-   * `announce: []` as "no override", so forwarding an empty array is harmless — but an
-   * empty CONFIG value must never become an explicit empty announce set if that
-   * semantic ever changes upstream. Dropping the key is the durable answer.
+   * The regression this file exists for. `cadre-cli`'s example config ships
+   * `/ip4/0.0.0.0/tcp/4001`; the control node binds it, so a strand node handed the
+   * same entry cannot bind anything and the machine can start no strand at all.
    */
-  it('drops an empty announceAddrs rather than forwarding it as an explicit empty set', async () => {
-    const options = await strandOptions({ announceAddrs: [], appendAnnounceAddrs: [] });
+  it('hands the strand node an ephemeral port in place of the configured fixed one', async () => {
+    const options = await strandOptions({ listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] });
 
-    expect('announceAddrs' in options).toBe(false);
-    expect('appendAnnounceAddrs' in options).toBe(false);
+    expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0']);
   });
 
-  it('fails the strand start on a malformed entry, rather than building a node that cannot report its addresses', async () => {
+  it('keeps an explicitly empty listenAddrs empty — a host that cannot listen still does not', async () => {
+    const options = await strandOptions({ listenAddrs: [] });
+
+    expect(options.listenAddrs).toEqual([]);
+  });
+
+  /**
+   * An announce entry the strand node ignores must still be REJECTED somewhere, or a
+   * templated `cadre.yaml` with an unsubstituted address variable would reach libp2p
+   * on the control node and throw out of every later `getMultiaddrs()` call. The
+   * control node validates it at its own build (`cadre-node.ts`), which runs first;
+   * this pins that the strand path no longer re-validates a field it discards.
+   */
+  it('does not fail the strand start on a malformed announce entry it discards', async () => {
+    const options = await strandOptions({ announceAddrs: ['not-a-multiaddr'] });
+
+    expect('announceAddrs' in options).toBe(false);
+  });
+
+  it('still fails the strand start on a malformed relayAddrs entry, which it does use', async () => {
     const manager = new StrandInstanceManager();
 
     await expect(
-      manager.startStrand(createStartConfig('announce-bad', { network: { announceAddrs: ['not-a-multiaddr'] } }))
-    ).rejects.toThrow(/network\.announceAddrs entry is not a valid multiaddr/);
+      manager.startStrand(createStartConfig('relay-bad', { network: { relayAddrs: ['not-a-multiaddr'] } }))
+    ).rejects.toThrow(/network\.relayAddrs entry is not a valid multiaddr/);
   });
 
   /**
@@ -123,7 +140,7 @@ describe('StrandInstanceManager announce-addrs wiring', () => {
    * silently. The resolution rules themselves are `relay-addrs.spec.ts`'s; the only
    * thing pinned here is WHICH route this caller takes.
    */
-  it('resolves an inherited relayAddrs on the CONFIGURED route, not the control node\'s search route', async () => {
+  it('resolves an inherited relayAddrs on the CONFIGURED route, not the search route of the control node', async () => {
     const relay = '/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
     const options = await strandOptions({ listenAddrs: ['/ip4/0.0.0.0/tcp/0'], relayAddrs: [relay] });
 
