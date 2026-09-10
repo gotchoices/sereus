@@ -141,7 +141,7 @@ Terminology aside: your **trust circle** in the everyday sense is the handful of
 
 The grantee's cadre authority — typically their phone — presents the grant token as `Authorization: Bearer <grant-token>` and drives the donation lifecycle against your host:
 
-1. `POST /grants` with their party id, bootstrap addresses, and owner public key(s) → your host spawns a child cadre node that pins **their** owner key and joins **their** cadre.
+1. `POST /grants` with their party id, bootstrap addresses, and owner public key(s) → your host spawns a child cadre node that pins **their** owner key and joins **their** cadre. Each bootstrap address must be a full multiaddr naming both where to reach the peer and who it is (`/dns4/…/tcp/443/wss/p2p/12D3KooW…`); anything the donated node could not dial is refused as `400 invalid_request` naming the bad entry, before anything is spawned.
 2. `GET /grants/:id/peer` → the new node's peerId and multiaddrs.
 3. Their device signs a seed for that peer and `PUT /grants/:id/seed` hands it back; the node accepts it precisely because their owner key was pinned at spawn.
 4. `DELETE /grants/:id` when they're done — the node is stopped and removed.

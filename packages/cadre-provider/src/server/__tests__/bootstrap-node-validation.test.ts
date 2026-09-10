@@ -105,6 +105,25 @@ describe('validateBootstrapNodes (the provider copy of the address rule)', () =>
       .toMatch(/must carry a decodable peer id/);
   });
 
+  // Case 4: parses, names a decodable peer, and survives `@libp2p/bootstrap`'s
+  // filter — but names no place, so libp2p finds no transport and the dial fails
+  // with no valid addresses. Same visible outcome as case 2.
+  it('rejects an address that names only peer ids, with no location to dial', () => {
+    for (const bad of [`/p2p/${PEER}`, `/p2p/${PEER}/p2p-circuit/p2p/${PEER}`]) {
+      const message = errorOf([bad]);
+      expect(message).toMatch(/must name where to reach the peer/);
+      expect(message).toContain(bad);
+    }
+  });
+
+  // A partial address is deliberately still accepted: which transports the child
+  // can dial is the embedder's choice, so only the total absence of a location is
+  // a boundary error.
+  it('accepts an address with a location but no transport, leaving that to the child', () => {
+    const partial = `/ip4/1.2.3.4/p2p/${PEER}`;
+    expect(validateBootstrapNodes([partial])).toEqual({ nodes: [partial] });
+  });
+
   it('names the offending entry when only one address in a batch is bad', () => {
     const message = errorOf([GOOD, '/ip4/10.0.0.9/tcp/4001', GOOD_2]);
     expect(message).toContain('/ip4/10.0.0.9/tcp/4001');
@@ -167,6 +186,7 @@ describe('POST /containers request validation', () => {
       ['not-an-address'],
       ['/ip4/127.0.0.1/tcp/4001'],
       [`/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq`],
+      [`/p2p/${PEER}`],
       [''],
       [],
     ];

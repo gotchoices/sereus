@@ -178,6 +178,9 @@ describe('POST /grants', () => {
       ['/ip4/127.0.0.1/tcp/4001'],
       // Names a peer id that does not decode: the child dies constructing libp2p.
       ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      // Names a decodable peer but no place to dial it: bootstrap keeps it, libp2p
+      // finds no transport for it, and the node is alone just the same.
+      ['/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       [''],
       [],
     ];

@@ -243,6 +243,39 @@ deduplicated, so the container record shows exactly the pins the node got. The f
 accepted seed anchors the key in `/data`, so later seeds from the same owner need no
 pin and survive restarts.
 
+### Bootstrap addresses are checked at create time
+
+`bootstrapNodes` is the list of control-network addresses the new container dials to
+find the tenant's cadre. It is forwarded verbatim into the container as
+`CADRE_BOOTSTRAP_NODES`, so a typo is invisible to the caller unless the create call
+rejects it. Each entry must:
+
+- be a string that parses as a multiaddr,
+- carry a `/p2p/<peerId>` component whose peer id decodes,
+- and name where that peer is — an address of nothing but peer ids
+  (`/p2p/<peerId>`) is refused.
+
+```bash
+curl -X POST $URL/api/v1/containers   -H 'Authorization: Bearer ...'   -d '{"partyId":"party-1",
+       "bootstrapNodes":["/dns4/cadre.example/tcp/443/wss/p2p/12D3KooW..."],
+       "pinnedOwnerKeys":["<owner-b64url>"]}'
+```
+
+Anything else is `400 INVALID_REQUEST` naming the offending entry, with nothing
+provisioned. Each clause is a different failure the tenant would otherwise only meet
+as a broken container: an unparsable address makes libp2p construction throw and the
+node never starts; an address with no `/p2p/` is dropped by `@libp2p/bootstrap`, so
+the node comes up healthy-looking with **zero** bootstrap peers and never joins; a
+truncated peer id throws inside the child; and an address with no location leaves the
+node holding a peer it can never dial. Reachability is *not* checked — a good address
+for a peer that is down looks the same from here.
+
+The rest of the body is checked at the same boundary: `partyId` must be a non-blank
+string (it is stored trimmed), `profile` must be `storage` or `transaction`,
+`strandFilter` a string, `resources` an object with string `memoryLimit`/`cpuLimit`
+and a numeric `storageQuotaBytes`, and `tags` an object of strings. Limit *formats*
+(`"512M"`, `"0.5"`) are still the orchestrator's to parse.
+
 ### Kubernetes
 
 For Kubernetes deployments, implement a custom orchestrator or use the Docker orchestrator with Docker-in-Docker.

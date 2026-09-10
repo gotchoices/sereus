@@ -11,10 +11,10 @@
  * ## The rule, and why each clause is there
  *
  * An entry is usable exactly when it is a string, parses as a multiaddr, carries
- * a `/p2p/<peerId>` component, and that peer id decodes. Each clause corresponds
- * to a distinct downstream failure the caller would otherwise never be told about
- * — the value is forwarded verbatim into the spawned child, so every one of these
- * surfaces inside a container the caller cannot see:
+ * a `/p2p/<peerId>` component whose peer id decodes, and says where that peer is.
+ * Each clause corresponds to a distinct downstream failure the caller would
+ * otherwise never be told about — the value is forwarded verbatim into the spawned
+ * child, so every one of these surfaces where the caller cannot see it:
  *
  * - **Not parsable as a multiaddr → the child dies at boot.** `@libp2p/bootstrap`'s
  *   constructor maps `multiaddr()` over the whole list *before* filtering anything,
@@ -33,6 +33,15 @@
  *   `@libp2p/bootstrap` then calls `peerIdFromString` on it, unguarded, and it
  *   throws `Incorrect length`. A truncated copy-paste of a 52-character peer id is
  *   the likeliest human typo in this field.
+ * - **No location at all → the node starts and never joins.** `/p2p/<peerId>` (and
+ *   `/p2p/<relay>/p2p-circuit/p2p/<target>`) parses and names a decodable peer, and
+ *   `@libp2p/bootstrap` keeps it — but it says nothing about *where* the peer is, so
+ *   libp2p finds no transport for it and the dial fails with no valid addresses.
+ *   The node comes up with a bootstrap peer it can never reach, which looks the same
+ *   from outside as having none. Only the total absence of a location is rejected:
+ *   which transports the child can actually dial is the embedder's choice
+ *   (`NetworkConfig.transports`), invisible from here, so a partial address like
+ *   `/ip4/1.2.3.4/p2p/<peerId>` is deliberately left to the child.
  *
  * The peer id is read the way `@libp2p/bootstrap` reads it — the `p2p` components
  * of `getComponents()` — rather than through the deprecated `getPeerId()`, so the
@@ -64,7 +73,7 @@
  */
 
 import debug from 'debug';
-import { CODE_P2P, multiaddr, type Multiaddr } from '@multiformats/multiaddr';
+import { CODE_P2P, CODE_P2P_CIRCUIT, multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 
 const log = debug('cadre:provider:bootstrap-nodes');
@@ -114,10 +123,17 @@ function validateBootstrapNode(value: string): { node: string } | { error: strin
     };
   }
 
-  const peerIds = address.getComponents().filter(component => component.code === CODE_P2P);
+  const components = address.getComponents();
+  const peerIds = components.filter(component => component.code === CODE_P2P);
   if (peerIds.length === 0) {
     return {
       error: `bootstrapNodes entries must include a /p2p/<peerId> component ("${describeRejectedAddress(trimmed)}" names no peer, so the node would drop it and start with no bootstrap peers)`,
+    };
+  }
+
+  if (!components.some(component => component.code !== CODE_P2P && component.code !== CODE_P2P_CIRCUIT)) {
+    return {
+      error: `bootstrapNodes entries must name where to reach the peer ("${describeRejectedAddress(trimmed)}" names only peer ids, so no transport can dial it and the node would start with no reachable bootstrap peers)`,
     };
   }
 
