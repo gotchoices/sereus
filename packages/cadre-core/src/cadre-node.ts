@@ -4663,6 +4663,7 @@ export class CadreNode implements SAppIdLookup {
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
       revocationEnforcement: this.config.strandRevocationEnforcement,
+      onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder
     });
@@ -5861,6 +5862,26 @@ export class CadreNode implements SAppIdLookup {
       this.membershipGateDrain ??= this.drainMembershipGate(reason);
       await this.membershipGateDrain;
     }
+  }
+
+  /**
+   * Re-materialize a CLOSED strand's revoked-peer deny set now, and hang up any
+   * connected peer it newly covers — the strand-side counterpart to
+   * {@link refreshMembershipGate}.
+   *
+   * Unlike that one, NOTHING calls this automatically: strand membership is
+   * written through the strand's own `Database` handle
+   * (`strand-membership-writer.ts`), which raises no notification this runtime
+   * can hook, and a revocation that arrives by REPLICATION raises none either.
+   * The gate therefore polls (default 30 s). An app that has just called
+   * `revokeMember` or `leaveStrand` should follow the write with this call so
+   * the cut is immediate rather than up to one poll interval late.
+   *
+   * Quiet no-op for a strand that is not running, is quiesced, is open, or has
+   * the gate disabled. Never rejects; resolves once the sweep has finished.
+   */
+  async refreshRevocationEnforcement(strandId: string): Promise<void> {
+    await this.strandManager.refreshRevocationEnforcement(strandId);
   }
 
   /**

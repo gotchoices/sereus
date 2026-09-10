@@ -118,6 +118,16 @@ export interface StartStrandConfig {
    * (a removed party's peers keep being served).
    */
   revocationEnforcement?: StrandRevocationEnforcementConfig;
+
+  /**
+   * Called when THIS node's own peer id turns up in the strand's revoked set —
+   * this node's party was removed from the closed strand, or left it. Fires at
+   * most once per runtime (a resume rebuilds the enforcer and may legitimately
+   * re-fire), and only for closed strands with the gate armed. `CadreNode`
+   * wires it to its `strand:revoked` event; nothing is stopped or torn down on
+   * this node's behalf — what to do about it is the app's call.
+   */
+  onSelfRevoked?: (strandId: string) => void;
 }
 
 /**
@@ -443,7 +453,14 @@ export class StrandInstanceManager {
                 throw new Error(`strand ${strandId} has no live database`);
               }
               return readStrandRevocationRows(database.getDatabase());
-            }
+            },
+            // Read per sweep, never captured: this closure is built BEFORE the
+            // libp2p node exists (its options embed the enforcer's predicates),
+            // and `releaseRuntime` clears the field again on quiesce. Undefined
+            // therefore means "no transport right now", which the enforcer
+            // treats as "nothing to tear down".
+            getNetwork: () => instance.libp2pNode,
+            onSelfRevoked: () => config.onSelfRevoked?.(strandId)
           }, config.revocationEnforcement)
         : undefined;
     if (revocationEnforcer) {
@@ -648,6 +665,32 @@ export class StrandInstanceManager {
     } catch (error) {
       log('Failed to dispose storage cache for strand %s: %o', strandId, error);
     }
+  }
+
+  /**
+   * Refresh a strand's revoked-peer deny set NOW — and, with it, run the
+   * teardown sweep that hangs up every connected revoked peer.
+   *
+   * The gate is otherwise poll-driven (default
+   * `DEFAULT_REVOCATION_POLL_INTERVAL_MS`), because neither a replicated
+   * revocation nor a local `revokeMember`/`leaveStrand` raises anything this
+   * runtime can hook. A caller that just wrote a revocation against the
+   * strand's database should follow it with this call, which makes the cut
+   * immediate instead of waiting out the interval.
+   *
+   * Quiet no-op — matching `quiesceStrand`'s posture — when the strand is not
+   * tracked, is quiesced, is open, or has the gate disabled: in every one of
+   * those cases there is no enforcer to refresh. Never rejects (the enforcer's
+   * refresh contains its own failures), and resolves only once the sweep has
+   * finished.
+   */
+  async refreshRevocationEnforcement(strandId: string): Promise<void> {
+    const enforcer = this.revocationEnforcers.get(strandId);
+    if (!enforcer) {
+      log('refreshRevocationEnforcement: strand %s has no armed revocation enforcer', strandId);
+      return;
+    }
+    await enforcer.refresh();
   }
 
   /**

@@ -39,6 +39,47 @@
  *   only way to clear a wrongly-registered binding, and clearing an orphan
  *   forgets the denial (the NOTE at that branch says so).
  *
+ * ## Removal cuts LIVE sessions too — the refresh IS the teardown seam
+ *
+ * Refusing NEW connections only half-honors "no longer be answered to or
+ * communicated with": a long-lived strand connection may never re-dial, so
+ * without teardown a removed party keeps whatever session it already holds.
+ * There is no push notification to hang teardown off — a REPLICATED revocation
+ * arrives with no change event (the strand database has no reactive
+ * subscription; `StrandWatcher` polls for the same reason), and a LOCAL
+ * `revokeMember`/`leaveStrand` writes through a bare `Database` handle this
+ * runtime never sees — so teardown rides the snapshot refresh itself, with
+ * `refresh()` exposed for immediacy
+ * (`StrandInstanceManager.refreshRevocationEnforcement` →
+ * `CadreNode.refreshRevocationEnforcement`).
+ *
+ * The sweep is driven by MEMBERSHIP in the deny set, never by an
+ * entered-the-set diff: every refresh hangs up every currently-connected
+ * revoked peer, so a resume, a crashed refresh, or a connection established
+ * between two refreshes cannot leave a session standing (a diff would be a
+ * strict subset of this, so none is kept). A peer with no open connection is
+ * simply not swept, and a failed `hangUp` is logged, never thrown — the next
+ * refresh retries it. `hangUp` closes DIRECT and RELAYED connections alike, and
+ * on a strand node running the relay server it also drops any reservation the
+ * revoked peer holds there (a reservation dies with its connection — see the
+ * relay-seam doc in `membership-connection-gater.ts`).
+ *
+ * Teardown is also what stops OUTBOUND traffic. The gate is one-directional —
+ * `authorizeStream` judges streams the revoked peer opens to US — so nothing
+ * else prevents this node from pushing over an already-open connection, which
+ * `PeerJoinBackfill` does for that connection's whole life. Closing the
+ * connection stops both directions at once, which is why no separate outbound
+ * gate exists.
+ *
+ * If this node's OWN peer id is in the set, it was itself removed (or it left —
+ * a voluntary departure files the same tombstone). Nothing is torn down for
+ * that: the other side's gate already refuses us, and every other revoked peer
+ * is still swept. Instead `onSelfRevoked` fires ONCE per enforcer lifetime,
+ * which `CadreNode` surfaces as `strand:revoked` so the embedding app decides
+ * what to do — this module never stops or leaves a strand on its own.
+ * Best-effort by nature: a removed party learns only if the tombstone
+ * replicated to it before the cut.
+ *
  * ## What transfers from the control gater (`membership-connection-gater.ts`)
  *
  * Transfers: the two-layer shape (fail-closed per-stream gate as PRIMARY, an
@@ -138,6 +179,22 @@ const defaultScheduler: RevocationRefreshScheduler = {
   clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0])
 };
 
+/**
+ * The minimum of a libp2p node the teardown sweep needs: who WE are, what is
+ * open, and how to close it. Deliberately not the node itself, so the sweep
+ * unit-tests against a three-property stub; `Libp2p` (hence
+ * `Libp2pNodeWithRepo`) satisfies it structurally, which is what
+ * `StrandInstanceManager` passes.
+ */
+export interface StrandRevocationNetwork {
+  /** This node's own peer id — how the enforcer recognizes ITSELF in the deny set. */
+  readonly peerId: PeerId;
+  /** Every open connection. Only `remotePeer` is read — and reused as the hangUp target. */
+  getConnections(): readonly { readonly remotePeer: PeerId }[];
+  /** Close every connection to `peer`: direct, relayed, and any reservation riding one. */
+  hangUp(peer: PeerId): Promise<void>;
+}
+
 export interface StrandRevocationEnforcerDeps {
   /** Log tag naming which strand this enforcer serves (the strand id). */
   label: string;
@@ -149,6 +206,23 @@ export interface StrandRevocationEnforcerDeps {
    * model, `refreshAuthorizedControlPeers`.
    */
   readRows: () => Promise<StrandRevocationRows>;
+  /**
+   * Handle on the strand's libp2p node for the teardown sweep, read LAZILY on
+   * every sweep — never captured. It has to be: the enforcer is constructed
+   * BEFORE the node (the node's options embed the enforcer's predicates), and
+   * the node is dropped again on quiesce. Omit it, or return undefined, and the
+   * gate still refuses new connections — only teardown of OPEN ones is skipped.
+   */
+  getNetwork?: () => StrandRevocationNetwork | undefined;
+  /**
+   * Called at most ONCE per enforcer lifetime, the first time this node's own
+   * peer id appears in the deny set — i.e. this node's party was removed from
+   * the strand, or left it. Wired by `StrandInstanceManager` through to
+   * `CadreNode`'s `strand:revoked` event. A resume rebuilds the enforcer, so a
+   * still-revoked strand legitimately re-fires once per resume. A throw is
+   * logged and swallowed — an embedder's handler must not derail the sweep.
+   */
+  onSelfRevoked?: () => void;
   /** Timer seam; omit for real (unref'd) intervals. */
   scheduler?: RevocationRefreshScheduler;
 }
@@ -227,6 +301,8 @@ export class StrandRevocationEnforcer {
   private intervalHandle: unknown;
   private started = false;
   private stopped = false;
+  /** Latch for the one-shot self-revocation signal — see {@link StrandRevocationEnforcerDeps.onSelfRevoked}. */
+  private selfRevokedSignaled = false;
 
   constructor(
     private readonly deps: StrandRevocationEnforcerDeps,
@@ -309,12 +385,121 @@ export class StrandRevocationEnforcer {
       if (this.stopped) return;
       this.revokedPeerIds = deriveRevokedPeerIds(rows);
       log('[%s] deny set refreshed: %d revoked peer(s)', this.deps.label, this.revokedPeerIds.size);
+      // Awaited inside the refresh, so an on-demand refresh() resolves only once
+      // the cut has been made — that is what makes "revoke, then refresh" an
+      // immediate teardown for the caller rather than a scheduled one.
+      await this.tearDownRevoked(this.revokedPeerIds);
     } catch (error) {
       log('[%s] deny-set refresh failed — keeping previous snapshot: %o', this.deps.label, error);
     } finally {
       this.refreshing = false;
     }
   }
+
+  /**
+   * Close what is already OPEN to the peers of `revoked` — the teardown half of
+   * enforcement (module doc: "Removal cuts LIVE sessions too"). Never rejects:
+   * every failure is contained, so the refresh loop survives and simply retries
+   * on the next tick.
+   *
+   * `revoked` is passed IN rather than read off the field, so the sweep judges
+   * the exact snapshot its own refresh produced; likewise the connection list is
+   * enumerated once, before any await, so a peer re-admitted mid-sweep is at
+   * worst hung up once and reconnects.
+   *
+   * NOTE: dropping the revoked peer from the strand's Optimystic cohort needs no
+   * separate action — machines quiesce strands routinely and the remaining cohort
+   * keeps committing, so an unreachable cohort peer is already tolerated, and
+   * `denyDialPeer` makes the exclusion fast (a local refusal, not a dial timeout).
+   * Two residual facts, both accepted: the removed node keeps every block it had
+   * already replicated (revocation is forward-looking), and a block whose only
+   * holders were the removed party's machines can be unavailable to the rest
+   * until repair. If post-removal commit latency or `cluster-fetch:no-quorum`
+   * ever shows up, that is an upstream (Optimystic) conversation, not a
+   * workaround here.
+   */
+  private async tearDownRevoked(revoked: ReadonlySet<string>): Promise<void> {
+    if (this.stopped || revoked.size === 0) {
+      return;
+    }
+    const network = this.resolveNetwork();
+    if (!network) {
+      return;
+    }
+    const selfPeerId = network.peerId.toString();
+    if (revoked.has(selfPeerId)) {
+      // Deliberately does NOT return: we tear nothing down on our own behalf
+      // (the other side's gate already refuses us), but any OTHER revoked peer
+      // we are still connected to is swept in the same pass.
+      this.signalSelfRevoked();
+    }
+    for (const peer of connectedRevokedPeers(network, revoked, selfPeerId, this.deps.label)) {
+      await this.hangUpRevoked(network, peer);
+    }
+  }
+
+  /** The lazily-read network handle; an accessor that throws costs this pass only. */
+  private resolveNetwork(): StrandRevocationNetwork | undefined {
+    try {
+      return this.deps.getNetwork?.();
+    } catch (error) {
+      log('[%s] network handle unavailable — teardown skipped this pass: %o', this.deps.label, error);
+      return undefined;
+    }
+  }
+
+  /** One hangUp, contained: a stopping node or an already-closed connection is not an error here. */
+  private async hangUpRevoked(network: StrandRevocationNetwork, peer: PeerId): Promise<void> {
+    try {
+      await network.hangUp(peer);
+      log('[%s] hung up revoked peer %s', this.deps.label, peer.toString());
+    } catch (error) {
+      log('[%s] hangUp of revoked peer %s failed — next refresh retries: %o', this.deps.label, peer.toString(), error);
+    }
+  }
+
+  /** Fire {@link StrandRevocationEnforcerDeps.onSelfRevoked} at most once per lifetime. */
+  private signalSelfRevoked(): void {
+    if (this.selfRevokedSignaled) {
+      return;
+    }
+    this.selfRevokedSignaled = true;
+    log('[%s] THIS node is revoked from the strand (removed or left) — signalling', this.deps.label);
+    try {
+      this.deps.onSelfRevoked?.();
+    } catch (error) {
+      log('[%s] onSelfRevoked handler threw: %o', this.deps.label, error);
+    }
+  }
+}
+
+/**
+ * The distinct peer ids of `network`'s open connections that are in `revoked`,
+ * as the `PeerId` objects `hangUp` takes — reusing each connection's own
+ * `remotePeer` rather than parsing the string back, so no peer-id codec is
+ * needed here. Self is excluded (a node holds no connection to itself, and
+ * hanging one up would be nonsense if it did), and a peer connected twice — say
+ * one direct and one relayed — yields ONE hangUp, which closes both.
+ * Enumeration failure yields an empty sweep, logged.
+ */
+function connectedRevokedPeers(
+  network: StrandRevocationNetwork,
+  revoked: ReadonlySet<string>,
+  selfPeerId: string,
+  label: string
+): PeerId[] {
+  const targets = new Map<string, PeerId>();
+  try {
+    for (const connection of network.getConnections()) {
+      const remotePeerId = connection.remotePeer.toString();
+      if (remotePeerId !== selfPeerId && revoked.has(remotePeerId)) {
+        targets.set(remotePeerId, connection.remotePeer);
+      }
+    }
+  } catch (error) {
+    log('[%s] connection enumeration failed — teardown skipped this pass: %o', label, error);
+  }
+  return [...targets.values()];
 }
 
 /**

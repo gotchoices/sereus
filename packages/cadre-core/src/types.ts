@@ -1017,6 +1017,22 @@ export interface CadreNodeEvents {
   'strand:hibernating': { strandId: string };
   'strand:waking': { strandId: string };
   /**
+   * Emitted when this node discovers it is no longer a member of a CLOSED
+   * strand — its party was removed by a manager, or it left. Detected by the
+   * strand's revoked-peer gate (`strand-revocation-enforcer.ts`) seeing this
+   * node's own peer id in the revoked set, so it is BEST-EFFORT: it fires only
+   * if the removal replicated here before the rest of the strand cut us off,
+   * and a node that was already offline may never see it at all.
+   *
+   * Nothing is stopped or torn down for you. Treat it as "this strand will no
+   * longer sync": remaining members refuse this node's streams, dials, and
+   * connections, so reads keep working against whatever is stored locally while
+   * writes stop propagating. Stopping the strand (`stopStrand`) or deleting its
+   * data is the app's decision. Fires once per strand runtime — a hibernation
+   * wake rebuilds the gate and may re-emit for a strand still revoked.
+   */
+  'strand:revoked': { strandId: string };
+  /**
    * Emitted when the control network advertises a strand this node has no
    * registered `sAppConfig` for — i.e. a strand created by another member. The
    * hosting app decides whether to join it (register a config + `addStrand`,

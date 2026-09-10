@@ -7,6 +7,8 @@ import {
   readStrandRevocationRows,
   DEFAULT_REVOCATION_POLL_INTERVAL_MS,
   type StrandRevocationRows,
+  type StrandRevocationNetwork,
+  type StrandRevocationEnforcerDeps,
   type RevocationRefreshScheduler
 } from '../src/strand-revocation-enforcer.js';
 import {
@@ -274,6 +276,244 @@ describe('refresh contract', () => {
     await enforcer.refresh();
     expect(reads).toBe(2);
     enforcer.stop();
+  });
+});
+
+/**
+ * The TEARDOWN half of enforcement: what happens to sessions that are already
+ * OPEN when a revocation lands. The enforcer takes `{ peerId, getConnections,
+ * hangUp }` rather than a whole libp2p node precisely so this needs no
+ * transport — a stub proves the sweep's decisions; that `hangUp` really closes
+ * a RELAYED connection (and the relay reservation riding it) is libp2p's
+ * contract, proven on a real relay by the e2e ticket.
+ */
+describe('teardown sweep', () => {
+  const SELF = 'self-peer';
+
+  function fakeNetwork(connected: string[] = []) {
+    const connections = connected.map((peerId) => ({ remotePeer: pid(peerId) }));
+    const hangUp = vi.fn(async (_peer: PeerId) => {});
+    const network: StrandRevocationNetwork = {
+      peerId: pid(SELF),
+      getConnections: () => connections,
+      hangUp
+    };
+    return { network, hangUp, connections };
+  }
+
+  /** The peer ids handed to hangUp, in call order. */
+  function hungUp(hangUp: { mock: { calls: unknown[][] } }): string[] {
+    return hangUp.mock.calls.map((call) => String(call[0]));
+  }
+
+  function enforcerWith(
+    source: StrandRevocationRows,
+    deps: Partial<StrandRevocationEnforcerDeps> = {}
+  ): StrandRevocationEnforcer {
+    return new StrandRevocationEnforcer({ label: 'teardown', readRows: async () => source, ...deps });
+  }
+
+  it('hangs up a newly revoked peer that is connected, and leaves a live member alone', async () => {
+    const { network, hangUp } = fakeNetwork(['bad-peer', 'good-peer']);
+    const enforcer = enforcerWith(
+      rows(['live'], [['gone', 'bad-peer'], ['live', 'good-peer']]),
+      { getNetwork: () => network }
+    );
+
+    // refresh() resolves only after the sweep — that is what makes "revoke, then
+    // refreshRevocationEnforcement()" an immediate cut for the caller.
+    await enforcer.refresh();
+
+    expect(hungUp(hangUp)).toEqual(['bad-peer']);
+  });
+
+  it('does not call hangUp for a revoked peer with no open connection', async () => {
+    const { network, hangUp } = fakeNetwork(['good-peer']);
+    const enforcer = enforcerWith(rows(['live'], [['gone', 'bad-peer'], ['live', 'good-peer']]), {
+      getNetwork: () => network
+    });
+
+    await enforcer.refresh();
+
+    expect(hangUp).not.toHaveBeenCalled();
+  });
+
+  it('sweeps by MEMBERSHIP, not by an entered-the-set diff', async () => {
+    // The peer is revoked while disconnected, so no diff pass would ever fire
+    // for it again — a later connection (a resume, a missed refresh, a
+    // reconnection between ticks) must still be cut.
+    const { network, hangUp, connections } = fakeNetwork([]);
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), { getNetwork: () => network });
+
+    await enforcer.refresh();
+    expect(hangUp).not.toHaveBeenCalled();
+
+    connections.push({ remotePeer: pid('bad-peer') });
+    await enforcer.refresh();
+
+    expect(hungUp(hangUp)).toEqual(['bad-peer']);
+  });
+
+  it('hangs up every machine of a multi-machine removed party', async () => {
+    const { network, hangUp } = fakeNetwork(['machine-1', 'machine-2', 'good-peer']);
+    const enforcer = enforcerWith(
+      rows(['live'], [['gone', 'machine-1'], ['gone', 'machine-2'], ['live', 'good-peer']]),
+      { getNetwork: () => network }
+    );
+
+    await enforcer.refresh();
+
+    expect(hungUp(hangUp).sort()).toEqual(['machine-1', 'machine-2']);
+  });
+
+  it('issues ONE hangUp for a peer holding two connections (direct + relayed)', async () => {
+    // libp2p's hangUp closes every connection to the peer, relayed included —
+    // hence one call, not one per connection.
+    const { network, hangUp } = fakeNetwork(['bad-peer', 'bad-peer']);
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), { getNetwork: () => network });
+
+    await enforcer.refresh();
+
+    expect(hungUp(hangUp)).toEqual(['bad-peer']);
+  });
+
+  it('survives a rejected hangUp and retries it on the next refresh', async () => {
+    const { network, hangUp } = fakeNetwork(['bad-peer']);
+    hangUp.mockRejectedValue(new Error('connection already closing'));
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), { getNetwork: () => network });
+
+    await expect(enforcer.refresh()).resolves.toBeUndefined();
+    await enforcer.refresh();
+
+    expect(hangUp).toHaveBeenCalledTimes(2);
+  });
+
+  it('survives a getConnections that throws — that pass tears nothing down', async () => {
+    const hangUp = vi.fn(async (_peer: PeerId) => {});
+    const network: StrandRevocationNetwork = {
+      peerId: pid(SELF),
+      getConnections: () => { throw new Error('node stopping'); },
+      hangUp
+    };
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), { getNetwork: () => network });
+
+    await expect(enforcer.refresh()).resolves.toBeUndefined();
+
+    expect(hangUp).not.toHaveBeenCalled();
+    expect(enforcer.isRevoked('bad-peer')).toBe(true);
+  });
+
+  it('is inert while the strand is quiesced (no live node to sweep)', async () => {
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), { getNetwork: () => undefined });
+
+    await expect(enforcer.refresh()).resolves.toBeUndefined();
+    expect(enforcer.isRevoked('bad-peer')).toBe(true);
+  });
+
+  it('a getNetwork accessor that throws costs only that pass', async () => {
+    const enforcer = enforcerWith(rows([], [['gone', 'bad-peer']]), {
+      getNetwork: () => { throw new Error('no database'); }
+    });
+
+    await expect(enforcer.refresh()).resolves.toBeUndefined();
+  });
+
+  it('does not sweep when stop() lands before the read completes', async () => {
+    const { network, hangUp } = fakeNetwork(['bad-peer']);
+    let release: (result: StrandRevocationRows) => void = () => {};
+    const enforcer = new StrandRevocationEnforcer({
+      label: 'teardown',
+      readRows: () => new Promise<StrandRevocationRows>((resolve) => { release = resolve; }),
+      getNetwork: () => network
+    });
+
+    const inFlight = enforcer.refresh();
+    enforcer.stop();
+    release(rows([], [['gone', 'bad-peer']]));
+    await inFlight;
+
+    expect(hangUp).not.toHaveBeenCalled();
+  });
+
+  it('sweeps the connection list enumerated at the start of the pass', async () => {
+    // A connection that opens mid-sweep belongs to the NEXT pass: the list is
+    // taken once, from the same snapshot the refresh produced, so a peer
+    // re-admitted between the read and the hangUp is at worst cut once.
+    const { network, hangUp, connections } = fakeNetwork(['bad-peer-1']);
+    hangUp.mockImplementation(async () => {
+      connections.push({ remotePeer: pid('bad-peer-2') });
+    });
+    const enforcer = enforcerWith(
+      rows([], [['gone', 'bad-peer-1'], ['gone', 'bad-peer-2']]),
+      { getNetwork: () => network }
+    );
+
+    await enforcer.refresh();
+    expect(hungUp(hangUp)).toEqual(['bad-peer-1']);
+
+    await enforcer.refresh();
+    expect(hungUp(hangUp)).toEqual(['bad-peer-1', 'bad-peer-1', 'bad-peer-2']);
+  });
+
+  describe('self-revocation', () => {
+    it('signals ONCE however many refreshes find this node revoked, and tears nothing down', async () => {
+      const onSelfRevoked = vi.fn();
+      const { network, hangUp } = fakeNetwork([]);
+      const enforcer = enforcerWith(rows([], [['gone', SELF]]), { getNetwork: () => network, onSelfRevoked });
+
+      await enforcer.refresh();
+      await enforcer.refresh();
+
+      expect(onSelfRevoked).toHaveBeenCalledTimes(1);
+      expect(hangUp).not.toHaveBeenCalled();
+    });
+
+    it('never hangs up its own peer id even if a self-connection is reported', async () => {
+      const { network, hangUp } = fakeNetwork([SELF]);
+      const enforcer = enforcerWith(rows([], [['gone', SELF]]), { getNetwork: () => network });
+
+      await enforcer.refresh();
+
+      expect(hangUp).not.toHaveBeenCalled();
+    });
+
+    it('still sweeps OTHER revoked peers in the pass that finds itself revoked', async () => {
+      const onSelfRevoked = vi.fn();
+      const { network, hangUp } = fakeNetwork(['bad-peer']);
+      const enforcer = enforcerWith(rows([], [['gone', SELF], ['gone', 'bad-peer']]), {
+        getNetwork: () => network,
+        onSelfRevoked
+      });
+
+      await enforcer.refresh();
+
+      expect(onSelfRevoked).toHaveBeenCalledTimes(1);
+      expect(hungUp(hangUp)).toEqual(['bad-peer']);
+    });
+
+    it('a throwing handler does not derail the sweep', async () => {
+      const { network, hangUp } = fakeNetwork(['bad-peer']);
+      const enforcer = enforcerWith(rows([], [['gone', SELF], ['gone', 'bad-peer']]), {
+        getNetwork: () => network,
+        onSelfRevoked: () => { throw new Error('app handler broke'); }
+      });
+
+      await expect(enforcer.refresh()).resolves.toBeUndefined();
+      expect(hungUp(hangUp)).toEqual(['bad-peer']);
+    });
+
+    it('does not fire for a node that is merely not a member of anything', async () => {
+      const onSelfRevoked = vi.fn();
+      const { network } = fakeNetwork([]);
+      const enforcer = enforcerWith(rows(['live'], [['live', 'good-peer']]), {
+        getNetwork: () => network,
+        onSelfRevoked
+      });
+
+      await enforcer.refresh();
+
+      expect(onSelfRevoked).not.toHaveBeenCalled();
+    });
   });
 });
 

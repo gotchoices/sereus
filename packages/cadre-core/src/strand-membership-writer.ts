@@ -852,6 +852,13 @@ export interface RevokeMemberParams {
  * (`Member.MinOneMember`, a local-count floor with the cross-node caveat its
  * schema NOTE states).
  *
+ * Callers running inside a cadre runtime should follow this write with
+ * `CadreNode.refreshRevocationEnforcement(strandId)`. The removed party's
+ * machines are refused at the network layer by the strand's revoked-peer gate
+ * (`strand-revocation-enforcer.ts`), which polls for membership changes because
+ * this bare `Database` handle raises no event the runtime can hook — so without
+ * that call the cut lands up to one poll interval (default 30 s) later.
+ *
  * @param db - The closed strand's database.
  * @param params - The revoking manager keypair and the target member key.
  * @throws If `Member.Authorized` rejects (a non-manager or same-transaction
@@ -906,6 +913,11 @@ export interface LeaveStrandParams {
  *
  * The same floors as {@link revokeMember} apply: a manager must resign first
  * (`NotAManager`) and the last member cannot leave (`MinOneMember`).
+ *
+ * Like {@link revokeMember}, a caller inside a cadre runtime should follow this
+ * with `CadreNode.refreshRevocationEnforcement(strandId)` — here it is what
+ * makes the departing node notice its own departure promptly (the gate emits
+ * `strand:revoked` when it finds this node's own peer id revoked).
  *
  * @param db - The closed strand's database.
  * @param params - The departing member's own keypair.

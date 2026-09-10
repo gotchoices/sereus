@@ -30,16 +30,17 @@ const mocks = vi.hoisted(() => {
   });
   const enforcerStart = vi.fn();
   const enforcerStop = vi.fn();
+  const enforcerRefresh = vi.fn(async () => {});
   const authorizeStream = vi.fn(() => true);
   const StrandRevocationEnforcer = vi.fn(function StrandRevocationEnforcerMock() {
-    return { start: enforcerStart, stop: enforcerStop, authorizeStream };
+    return { start: enforcerStart, stop: enforcerStop, refresh: enforcerRefresh, authorizeStream };
   });
   const composedGater = { composed: true } as unknown as ConnectionGater;
   const createRevocationConnectionGater = vi.fn(() => composedGater);
   const readStrandRevocationRows = vi.fn(async () => ({ memberKeys: new Set<string>(), bindings: [] }));
   return {
     stop, createLibp2pNode, StrandDatabase,
-    StrandRevocationEnforcer, enforcerStart, enforcerStop, authorizeStream,
+    StrandRevocationEnforcer, enforcerStart, enforcerStop, enforcerRefresh, authorizeStream,
     createRevocationConnectionGater, composedGater, readStrandRevocationRows
   };
 });
@@ -198,6 +199,62 @@ describe('StrandInstanceManager revoked-peer enforcement arming', () => {
     await manager.resumeStrand('rev-cycle', { bootstrapNodes: [] });
     expect(mocks.StrandRevocationEnforcer).toHaveBeenCalledTimes(2);
     expect(mocks.enforcerStart).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives the enforcer a LAZY handle on the live libp2p node for the teardown sweep', async () => {
+    // Lazy because the enforcer is constructed before the node exists and the
+    // node is dropped again on quiesce — a captured reference would sweep a
+    // node that is gone (or miss the one that arrived).
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('rev-network', 'c'));
+
+    const [deps] = mocks.StrandRevocationEnforcer.mock.calls[0] as unknown as [
+      { getNetwork: () => unknown }
+    ];
+    expect(deps.getNetwork()).toBe(manager.getInstance('rev-network')!.libp2pNode);
+
+    await manager.quiesceStrand('rev-network');
+    expect(deps.getNetwork()).toBeUndefined();
+  });
+
+  it('forwards the enforcer\'s self-revocation signal to the launch config, tagged with the strand id', async () => {
+    const onSelfRevoked = vi.fn();
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('rev-self', 'c', { onSelfRevoked }));
+
+    const [deps] = mocks.StrandRevocationEnforcer.mock.calls[0] as unknown as [
+      { onSelfRevoked: () => void }
+    ];
+    deps.onSelfRevoked();
+
+    expect(onSelfRevoked).toHaveBeenCalledWith('rev-self');
+  });
+
+  it('refreshRevocationEnforcement drives an on-demand refresh (and sweep)', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('rev-ondemand', 'c'));
+
+    await manager.refreshRevocationEnforcement('rev-ondemand');
+
+    expect(mocks.enforcerRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshRevocationEnforcement is a quiet no-op for an unknown, quiesced, open, or disarmed strand', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('rev-quiet-open', 'o'));
+    await manager.startStrand(createStartConfig('rev-quiet-off', 'c', {
+      revocationEnforcement: { enabled: false }
+    }));
+    await manager.startStrand(createStartConfig('rev-quiet-cycle', 'c'));
+    await manager.quiesceStrand('rev-quiet-cycle');
+
+    // Matching quiesceStrand's posture: nothing to refresh is not an error.
+    await expect(manager.refreshRevocationEnforcement('never-heard-of-it')).resolves.toBeUndefined();
+    await expect(manager.refreshRevocationEnforcement('rev-quiet-open')).resolves.toBeUndefined();
+    await expect(manager.refreshRevocationEnforcement('rev-quiet-off')).resolves.toBeUndefined();
+    await expect(manager.refreshRevocationEnforcement('rev-quiet-cycle')).resolves.toBeUndefined();
+
+    expect(mocks.enforcerRefresh).not.toHaveBeenCalled();
   });
 
   it('stops the enforcer on stopStrand too', async () => {
