@@ -72,16 +72,18 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-08-17';
+const MEASURED_ON = '2026-09-10';
 /**
- * Cold: first-ever start against empty storage — 8 control tables and 1 index
- * created. 172 operations over 21 blocks: the 130 genuine writes (unchanged since
- * the first 2026-08-12 measurement), one `getMetadata` per block, and a handful of
- * cold list/read fills. History: 1541 uncached (2026-08-12), 1983 after the
- * upstream catalog re-read (2026-08-14), 172 with the write-through cache wired
- * (2026-08-17) — so a run near 2000 means the cache has left the path.
+ * Cold: first-ever start against empty storage — 9 control tables and 1 index
+ * created (StrandPartyKey joined the schema with the strand-party-member-key
+ * ticket). 169 operations over 20 blocks: the genuine writes, one `getMetadata`
+ * per block, and a handful of cold list/read fills. History: 1541 uncached
+ * (2026-08-12), 1983 after the upstream catalog re-read (2026-08-14), 172 over 21
+ * blocks with the write-through cache wired (2026-08-17), 169 over 20 with the
+ * 9-table schema (2026-09-10) — so a run near 2000 means the cache has left the
+ * path.
  */
-const COLD: Budget = { ops: 172, blocks: 21, opBudget: 200, blockBudget: 24 };
+const COLD: Budget = { ops: 169, blocks: 20, opBudget: 200, blockBudget: 24 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
  * hydrates instead of the schema being applied. 52 operations over 22 blocks: a
@@ -97,9 +99,10 @@ const COLD: Budget = { ops: 172, blocks: 21, opBudget: 200, blockBudget: 24 };
  * cache was wired (a shared instance measured 3 ops, the first start's surviving
  * cache, not a restart). A device restart kills the process and the cache with it;
  * the fresh identity reproduces that. History: 315 uncached (2026-08-12), 463
- * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17).
+ * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17),
+ * 46 with the 9-table schema (2026-09-10).
  */
-const WARM: Budget = { ops: 52, blocks: 22, opBudget: 65, blockBudget: 25 };
+const WARM: Budget = { ops: 46, blocks: 22, opBudget: 65, blockBudget: 25 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {

@@ -291,6 +291,7 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   CadrePeer: 'PeerId',
   ValidationKey: 'Key',
   Strand: 'Id',
+  StrandPartyKey: 'Id',
   DeviceToken: 'PeerId',
 };
 
@@ -329,11 +330,11 @@ export function isStrandIdConflict(error: unknown): boolean {
 /**
  * Guarded tables a node may reap locally once their tombstone has committed — the
  * tables whose `AuthorizedDelete` carries the REAP branch (see the constraint comment on
- * `CadrePeer.AuthorizedDelete` in the schema). `Strand` is deliberately absent: its row
- * carries `MemberPrivateKey`, the party's own membership secret for that network, stored
- * nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any future change).
- * `OwnerKey` has no production removal path and `MinOneOwner` makes an automated
- * owner-key reap a party-bricking hazard.
+ * `CadrePeer.AuthorizedDelete` in the schema). `Strand` and `StrandPartyKey` are
+ * deliberately absent: their rows carry `MemberPrivateKey` / `PrivateKey` — party
+ * secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any
+ * future change). `OwnerKey` has no production removal path and `MinOneOwner` makes an
+ * automated owner-key reap a party-bricking hazard.
  */
 export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
@@ -507,8 +508,8 @@ export class ControlDatabase {
     // NOTE: this is where a slow launch is felt. Duration is (raw-storage operations
     // issued) × per-operation storage latency: ~1ms/op on an idle machine, but
     // 50-90ms/op on a loaded disk or a phone's flash under launch contention. A cold
-    // start now reaches the backend 172 times (8 tables + 1 index, 21 distinct blocks
-    // — dominated by its 130 genuine writes), a warm restart 52, because cadre-core
+    // start now reaches the backend 169 times (9 tables + 1 index, 20 distinct blocks
+    // — dominated by its genuine writes), a warm restart 46, because cadre-core
     // wraps every embedder storage in `@optimystic/db-p2p`'s write-through cache
     // (@serfab/quereus-plugin-sereus's cached-storage.ts). Uncached the same start issued ~2000 operations — the
     // upstream re-read amplification measured in
@@ -966,6 +967,30 @@ export class ControlDatabase {
     return this.queryStampId('Strand', strandId);
   }
 
+  /** `StrandPartyKey` stamp nonce — bound into {@link deleteStrandPartyKey}'s remove digest. */
+  queryStrandPartyKeyStampId(strandId: string): Promise<string | null> {
+    return this.queryStampId('StrandPartyKey', strandId);
+  }
+
+  /**
+   * Read THIS party's own strand membership private key (base64 protobuf; decode with
+   * `strandMemberKeyPair`) for one strand, or null when no `StrandPartyKey` row exists.
+   * The identity source the closed-strand founder bootstrap derives its `Member.Key` /
+   * `Manager.MemberKey` from — deliberately NOT `Strand.MemberPrivateKey`, the
+   * strand-wide read secret every joining party receives.
+   */
+  async queryStrandPartyKey(strandId: string): Promise<string | null> {
+    this.ensureInitialized();
+    for (const row of await this.readRows(
+      'select PrivateKey from CadreControl.StrandPartyKey where Id = ?',
+      [strandId],
+      'strand-party-key'
+    )) {
+      return (row.PrivateKey as string | null) ?? null;
+    }
+    return null;
+  }
+
   /** `ValidationKey` stamp nonce — bound into {@link deleteValidationKey}'s remove digest. */
   queryValidationKeyStampId(key: string): Promise<string | null> {
     return this.queryStampId('ValidationKey', key);
@@ -1242,6 +1267,15 @@ export class ControlDatabase {
    * The remove digest binds only (Id, StampId) — not Type/MemberPrivateKey — so this
    * works identically for open and closed strands.
    *
+   * When the strand has a `StrandPartyKey` row (this party's own membership identity for
+   * the strand — minted at publish for closed strands), it is deleted IN THE SAME
+   * transaction, with its own `'remove'`-tagged signature and its own `Revocation`
+   * tombstone, so a re-published strand always mints fresh identity and no crash window
+   * can orphan the key row. The party-key delete happens ONLY alongside an actual strand
+   * row delete: a `StrandPartyKey` row with no local `Strand` row is a JOINER's identity
+   * (the joiner never holds the strand row) and is not this method's to destroy — that
+   * is {@link deleteStrandPartyKey}'s.
+   *
    * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
    * when a row was actually removed.
    */
@@ -1250,7 +1284,136 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.lockedWithRetry(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage), {}, 'strand-delete');
+    return this.lockedWithRetry(() => this.deleteStrandAndPartyKey(strandId, ownerKey, signMessage), {}, 'strand-delete');
+  }
+
+  /**
+   * The locked body of {@link deleteStrand}: the `Strand` delete + tombstone, plus — when
+   * one exists — the strand's `StrandPartyKey` delete + tombstone, all in ONE
+   * transaction. A two-table sibling of {@link deleteGuardedRow} (see that method for the
+   * per-clause security rationale: stamp read inside the locked body, `'remove'`-tagged
+   * digests, mandatory same-transaction tombstones); kept separate rather than
+   * generalizing the shared body because no other guarded table has a companion row.
+   *
+   * Not wrapped in {@link withWriteLock} — the caller holds the (non-re-entrant) lock.
+   */
+  private async deleteStrandAndPartyKey(
+    strandId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    // retry: false — these reads run inside the locked write body (see queryStampId's NOTE).
+    const strandStamp = await this.queryStampId('Strand', strandId, false);
+    if (strandStamp === null) {
+      log('delete Strand: no row for %s (already absent)', strandId);
+      return false;
+    }
+    const partyKeyStamp = await this.queryStampId('StrandPartyKey', strandId, false);
+
+    const strandSignature = signMessage(
+      buildAuthorizationMessage('CadreControl.Strand', 'remove', [strandId, strandStamp]));
+    const strandRevocationSignature = signMessage(
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['Strand', strandId, strandStamp]));
+    const partyKeySignature = partyKeyStamp === null ? null : signMessage(
+      buildAuthorizationMessage('CadreControl.StrandPartyKey', 'remove', [strandId, partyKeyStamp]));
+    const partyKeyRevocationSignature = partyKeyStamp === null ? null : signMessage(
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', strandId, partyKeyStamp]));
+
+    await this.inTransaction('delete Strand', async () => {
+      await this.db!.exec(`
+        delete from CadreControl.Strand
+          with context OwnerKey = ?, Signature = ?
+          where Id = ?
+      `, [ownerKey, strandSignature, strandId]);
+      await this.db!.exec(`
+        insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+          with context OwnerKey = ?, Signature = ?
+          values ('Strand', ?, ?, 0)
+      `, [ownerKey, strandRevocationSignature, strandId, strandStamp]);
+      if (partyKeyStamp !== null) {
+        await this.db!.exec(`
+          delete from CadreControl.StrandPartyKey
+            with context OwnerKey = ?, Signature = ?
+            where Id = ?
+        `, [ownerKey, partyKeySignature, strandId]);
+        await this.db!.exec(`
+          insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+            with context OwnerKey = ?, Signature = ?
+            values ('StrandPartyKey', ?, ?, 0)
+        `, [ownerKey, partyKeyRevocationSignature, strandId, partyKeyStamp]);
+      }
+    });
+
+    log('Strand deleted: %s (stamp retired%s)', strandId,
+      partyKeyStamp === null ? '' : '; party key deleted, stamp retired');
+    this.notifyGuardedDelete({ tableName: 'Strand', rowKey: strandId, stampId: strandStamp });
+    if (partyKeyStamp !== null) {
+      this.notifyGuardedDelete({ tableName: 'StrandPartyKey', rowKey: strandId, stampId: partyKeyStamp });
+    }
+    return true;
+  }
+
+  /**
+   * Insert this party's own strand membership identity key (`StrandPartyKey` row) using
+   * an owner signature.
+   *
+   * Mirrors {@link insertStrand}: the owner signs the canonical row-bound authorization
+   * message over (Id, PrivateKey, StampId) — binding the key material means a captured
+   * approval can only ever reproduce the exact key it approved — and the StampId is
+   * persisted as a unique column for single-use anti-replay.
+   *
+   * @param strandId - The strand this key is the party's identity for.
+   * @param privateKey - The party's ed25519 strand member private key, base64 protobuf
+   *   (same encoding as `Strand.MemberPrivateKey`; mint with `generateStrandMemberKey`).
+   * @param ownerKey - Public key of the authorizing owner.
+   * @param signMessage - Function that ed25519-signs the raw message bytes (no pre-hash)
+   *   with the owner's private key, returning a base64url signature.
+   */
+  async insertStrandPartyKey(
+    strandId: string,
+    privateKey: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    this.ensureInitialized();
+    log('Inserting strand party key for strand: %s', strandId);
+
+    const peerId = this.config.libp2pNode.peerId.toString();
+    const stampId = generateStampId(peerId);
+
+    // Field order MUST match the schema's StrandPartyKey `AuthorizedInsert` verify:
+    // Id, PrivateKey, StampId.
+    const message = buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', [strandId, privateKey, stampId]);
+    const signature = signMessage(message);
+
+    await this.execWrite(`
+      insert into CadreControl.StrandPartyKey (Id, PrivateKey, StampId)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?)
+    `, [ownerKey, signature, strandId, privateKey, stampId], 'strand-party-key-insert');
+
+    log('Strand party key inserted for strand: %s', strandId);
+  }
+
+  /**
+   * Owner-signed removal of one `StrandPartyKey` row — the party's own membership
+   * identity for that strand, stored nowhere else, so this is as destructive as
+   * {@link deleteStrand} on a closed strand. {@link deleteStrand} already removes the
+   * founder's row alongside the `Strand` row in one transaction; this standalone form
+   * exists for a party-key row with NO local `Strand` row (a joiner's identity — the
+   * shape the formation tickets build on).
+   *
+   * Mirrors {@link deleteValidationKey}: `'remove'`-tagged digest over (Id, StampId),
+   * `Revocation` tombstone in the same transaction. A no-op (no throw, no tombstone)
+   * when the row does not exist — `false` then, `true` when a row was actually removed.
+   */
+  deleteStrandPartyKey(
+    strandId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    return this.lockedWithRetry(() => this.deleteGuardedRow('StrandPartyKey', strandId, ownerKey, signMessage), {}, 'strand-party-key-delete');
   }
 
   /**
@@ -1588,14 +1751,25 @@ export class ControlDatabase {
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
-    if (this.guardedDeleteListener) {
-      try {
-        this.guardedDeleteListener({ tableName: table, rowKey: keyValue, stampId });
-      } catch (error) {
-        log('guarded-delete listener threw (committed delete unaffected): %o', error);
-      }
-    }
+    this.notifyGuardedDelete({ tableName: table, rowKey: keyValue, stampId });
     return true;
+  }
+
+  /**
+   * Fire the guarded-delete listener for one committed tombstone, swallowing (and
+   * logging) a listener throw — a committed delete never fails because bookkeeping did.
+   * Shared by {@link deleteGuardedRow} and {@link deleteStrandAndPartyKey} (which files
+   * up to two tombstones per transaction).
+   */
+  private notifyGuardedDelete(revocation: RevokedRowRef): void {
+    if (!this.guardedDeleteListener) {
+      return;
+    }
+    try {
+      this.guardedDeleteListener(revocation);
+    } catch (error) {
+      log('guarded-delete listener threw (committed delete unaffected): %o', error);
+    }
   }
 
   /**

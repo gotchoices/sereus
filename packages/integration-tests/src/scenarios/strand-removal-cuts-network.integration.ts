@@ -416,12 +416,14 @@ describe('Removing a party cuts its machines off the strand', () => {
 			});
 			const strandId = `strand-removal-cut-${Date.now()}`;
 			const memberPrivateKey = await generateStrandMemberKey();
-			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const partyMemberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 			const instances = await joinStrandOn({
 				strandId,
 				sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0'),
 				type: 'c',
 				memberPrivateKey,
+				partyMemberPrivateKey,
 				members: [topology.machine('a', 0), topology.machine('a', 1), topology.machine('b', 0), topology.machine('b', 1)],
 				founder: true,
 				mesh: 'full',
@@ -587,12 +589,14 @@ describe('Removing a party cuts its machines off the strand', () => {
 			});
 			const strandId = `strand-removal-signal-${Date.now()}`;
 			const memberPrivateKey = await generateStrandMemberKey();
-			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const partyMemberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 			const instances = await joinStrandOn({
 				strandId,
 				sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0'),
 				type: 'c',
 				memberPrivateKey,
+				partyMemberPrivateKey,
 				members: [topology.machine('a', 0), topology.machine('b', 0)],
 				founder: true,
 				mesh: 'full',
@@ -687,12 +691,14 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			const closedStrandId = `strand-removal-closed-${Date.now()}`;
 			const memberPrivateKey = await generateStrandMemberKey();
-			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const partyMemberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 			const closedInstances = await joinStrandOn({
 				strandId: closedStrandId,
 				sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0'),
 				type: 'c',
 				memberPrivateKey,
+				partyMemberPrivateKey,
 				members: [machineA, machineB],
 				founder: true,
 				mesh: 'full',

@@ -9,11 +9,16 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
 
 /**
  * End-to-end plumbing test for the founder flag: `addStrand`/`startStrand`
- * threading `founder` (+ strandType + memberPrivateKey) down to the StrandDatabase,
- * which runs the founder bootstrap in `initialize()`. Drives the real
+ * threading `founder` (+ strandType + partyMemberPrivateKey) down to the
+ * StrandDatabase, which runs the founder bootstrap in `initialize()`. Drives the real
  * StrandInstanceManager (real libp2p node + StrandDatabase) solo — the network
  * transactor self-coordinates at a cohort of one, so the membership rows commit
  * without any peer.
+ *
+ * The founding identity comes from the PARTY's own key (`partyMemberPrivateKey`,
+ * the control-layer `StrandPartyKey`), never from the strand row's shared
+ * `MemberPrivateKey` — which every joining party receives and could otherwise use
+ * to forge the founder (gotchoices/sereus#4).
  *
  * Only the FOUNDER writes. A joiner (`founder:false`) writes nothing locally — in a
  * networked cadre it would instead receive the rows via Optimystic sync (covered by
@@ -29,13 +34,14 @@ function signedSApp(): SAppConfig {
   return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
 }
 
-function startConfig(strandRow: StrandRow, founder: boolean): StartStrandConfig {
+function startConfig(strandRow: StrandRow, founder: boolean, partyMemberPrivateKey?: string): StartStrandConfig {
   return {
     strandRow,
     sAppConfig: signedSApp(),
     profile: 'transaction',
     defaultLatencyHint: 'interactive',
     founder,
+    partyMemberPrivateKey,
   };
 }
 
@@ -56,12 +62,13 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     }
   });
 
-  it('founder of a closed strand seats Header + founding Member/Manager from MemberPrivateKey', async () => {
+  it('founder of a closed strand seats Header + founding Member/Manager from the PARTY key', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
+    const partyMemberPrivateKey = await generateStrandMemberKey();
     const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
-    const instance = await manager.startStrand(startConfig(strandRow, true));
+    const instance = await manager.startStrand(startConfig(strandRow, true, partyMemberPrivateKey));
     expect(instance.status).toBe('active');
 
     const db = instance.database!.getDatabase();
@@ -69,11 +76,14 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     expect(await count(db, 'Member')).toBe(1);
     expect(await count(db, 'Manager')).toBe(1);
 
-    const expectedKey = strandMemberKeyPair(memberPrivateKey).publicKeyB64;
+    // The founding identity is the party key's public half — and must NOT be
+    // derivable from the shared MemberPrivateKey any joiner also holds.
+    const expectedKey = strandMemberKeyPair(partyMemberPrivateKey).publicKeyB64;
     const member = await db.get('select Key from Strand.Member');
     const managerRow = await db.get('select MemberKey from Strand.Manager');
     expect(member?.Key).toBe(expectedKey);
     expect(managerRow?.MemberKey).toBe(expectedKey);
+    expect(member?.Key).not.toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
   }, 30_000);
 
   it('joiner of a closed strand writes nothing locally (founder:false)', async () => {
@@ -107,11 +117,13 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     expect(header?.Type).toBe('o');
   }, 30_000);
 
-  it('founding a closed strand with no MemberPrivateKey fails and tears the runtime down', async () => {
+  it('founding a closed strand with no party key fails and tears the runtime down', async () => {
     manager = new StrandInstanceManager();
-    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: null, Type: 'c', FounderOwnerKey: null };
+    // The row even carries the shared MemberPrivateKey — which must NOT be accepted
+    // as an identity substitute; only the party's own key founds.
+    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null };
 
-    await expect(manager.startStrand(startConfig(strandRow, true))).rejects.toThrow(/MemberPrivateKey/i);
+    await expect(manager.startStrand(startConfig(strandRow, true))).rejects.toThrow(/StrandPartyKey/i);
 
     // The failed bring-up rolled back: no live database handle leaks (releaseRuntime
     // ran via buildStrandRuntime's catch) and the dead record is dropped, so the

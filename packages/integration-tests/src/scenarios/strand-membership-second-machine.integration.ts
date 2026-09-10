@@ -175,17 +175,21 @@ describe('Closed-strand membership driven from a party\'s second machine (2×2)'
 			const b0 = topology.machine('b', 0);
 			const b1 = topology.machine('b', 1);
 
-			// The shared closed StrandRow: Type 'c' plus a minted MemberPrivateKey, from
-			// which a[0]'s `founder: true` bootstrap derives — and seats — the founding
-			// Member/Manager/Header rows. The test derives the same keypair to sign with.
+			// The shared closed StrandRow: Type 'c' plus a minted MemberPrivateKey (the
+			// strand-wide read secret). The founding identity is a SEPARATE party key —
+			// a[0]'s `founder: true` bootstrap derives — and seats — the founding
+			// Member/Manager/Header rows from it. The test derives the same keypair to
+			// sign with.
 			const strandId = `strand-2x2-membership-${Date.now()}`;
 			const memberPrivateKey = await generateStrandMemberKey();
-			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const partyMemberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 			const instances = await joinStrandOn({
 				strandId,
 				sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0'),
 				type: 'c',
 				memberPrivateKey,
+				partyMemberPrivateKey,
 				members: [a0, a1, b0, b1],
 				founder: true,
 				mesh: 'full',

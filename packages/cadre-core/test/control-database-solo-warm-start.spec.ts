@@ -182,13 +182,16 @@ async function expectWarmState(
 	expect(new Set(peers.map((p) => p.peerId))).toEqual(new Set(expected.members));
 }
 
-/** The embedder's launch call, under its own deadline. */
+/** The embedder's launch call, under its own deadline. `partyMemberPrivateKey` is the
+ *  closed-strand founding identity (the row here carries no founder provenance to heal
+ *  a StrandPartyKey against, so the explicit founder supplies it). */
 function addStrand(
 	node: CadreNode,
-	strandRow: { Id: string; MemberPrivateKey: string | null; Type: 'o' | 'c'; FounderOwnerKey: string | null }
+	strandRow: { Id: string; MemberPrivateKey: string | null; Type: 'o' | 'c'; FounderOwnerKey: string | null },
+	partyMemberPrivateKey?: string
 ): Promise<StrandInstance> {
 	return within(`addStrand(${strandRow.Type === 'c' ? 'closed' : 'open'})`, ADD_STRAND_TIMEOUT_MS,
-		() => node.addStrand({ strandRow, sAppConfig: signedSApp(), founder: true }));
+		() => node.addStrand({ strandRow, sAppConfig: signedSApp(), founder: true, partyMemberPrivateKey }));
 }
 
 const strandId = (tag: string) => `warm-${tag}-${Math.random().toString(36).slice(2)}`;
@@ -304,18 +307,20 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				});
 
 				const memberPrivateKey = await generateStrandMemberKey();
+				const partyMemberPrivateKey = await generateStrandMemberKey();
 				const instance = await addStrand(second,
-					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null });
+					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
+					partyMemberPrivateKey);
 				expect(instance.status).toBe('active');
 
 				// The founder really is seated — a launch that resolved an empty seed
 				// and then quietly skipped the membership bootstrap would leave the
 				// device unable to admit anyone, which is the same class of stuck as
-				// a hang.
+				// a hang. The seated key is the PARTY's own, never the shared secret.
 				const db = instance.database!.getDatabase();
 				const member = await within('select from Strand.Member', OP_TIMEOUT_MS,
 					() => db.get('select Key from Strand.Member'));
-				expect(member?.Key).toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
+				expect(member?.Key).toBe(strandMemberKeyPair(partyMemberPrivateKey).publicKeyB64);
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
 			}

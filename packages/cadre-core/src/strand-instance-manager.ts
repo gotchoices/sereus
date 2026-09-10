@@ -61,6 +61,17 @@ export interface StartStrandConfig {
    */
   founder?: boolean;
   /**
+   * THIS party's own strand membership private key (base64 protobuf) for a closed
+   * strand — the identity the founder bootstrap derives `Member.Key` /
+   * `Manager.MemberKey` from. Resolved by the caller (`CadreNode.launchStrand`: an
+   * explicit attach-time key, else the control-layer `StrandPartyKey` row, healed by
+   * mint-on-launch for the founding machine) and retained with the launch config, so a
+   * hibernation wake rebuilds under the same identity. Deliberately NOT the strand
+   * row's shared `MemberPrivateKey` (see `StrandDatabaseConfig.partyMemberPrivateKey`).
+   * Absent for open strands, and for joiners with no persisted party key.
+   */
+  partyMemberPrivateKey?: string;
+  /**
    * Number of nodes Optimystic is told this strand's replication cluster should
    * have. Same rule as {@link CadreNodeConfig.strandClusterSize}, which CadreNode
    * forwards here: every node on the strand should use the same value, and it is
@@ -543,10 +554,13 @@ export class StrandInstanceManager {
         libp2pNode: node,
         coordinatedRepo: node.coordinatedRepo,
         // Founder bootstrap inputs: the strand's type drives which membership rows
-        // are written, and the closed-strand MemberPrivateKey derives the founding
-        // Member/Manager key. Both come off the control-network strand row.
+        // are written, and the PARTY's own key (partyMemberPrivateKey, resolved by the
+        // caller from the control-layer StrandPartyKey row) derives the founding
+        // Member/Manager key. The row's shared MemberPrivateKey rides along as the
+        // read-gating secret only — it derives nobody's identity.
         strandType: config.strandRow.Type,
         memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
+        partyMemberPrivateKey: config.partyMemberPrivateKey,
         founder: config.founder
       });
       instance.database = strandDb;
@@ -797,10 +811,18 @@ export class StrandInstanceManager {
    *   database), so the bootstrap could not run here: the CALLER must wake the
    *   strand (`CadreNode.wakeStrand`, which owns the hibernation bookkeeping this
    *   manager does not) so the rebuild — which now founds — runs it.
+   * @param resolvePartyKey - Asked for the party's own membership key when (and only
+   *   when) a CLOSED strand's retained config carries none — the instance was launched
+   *   as a joiner before its `StrandPartyKey` row existed or replicated. The resolved
+   *   key is retained alongside the founder flip so the bootstrap (now, or on the
+   *   caller's wake for `'needs-resume'`) can seat the founding Member/Manager.
    * @throws when the strand is not tracked — this seam exists only for the
    *   tracked-instance launch path; an untracked id is a caller bug.
    */
-  async foundExistingStrand(strandId: string): Promise<'already-founder' | 'bootstrapped' | 'needs-resume'> {
+  async foundExistingStrand(
+    strandId: string,
+    resolvePartyKey?: () => Promise<string | undefined>
+  ): Promise<'already-founder' | 'bootstrapped' | 'needs-resume'> {
     const instance = this.instances.get(strandId);
     const config = this.launchConfigs.get(strandId);
     if (!instance || !config) {
@@ -809,9 +831,12 @@ export class StrandInstanceManager {
     if (config.founder === true) {
       return 'already-founder';
     }
+    const partyMemberPrivateKey =
+      config.partyMemberPrivateKey
+        ?? (config.strandRow.Type === 'c' ? await resolvePartyKey?.() : undefined);
     // A fresh object rather than mutating in place: startStrand retains the CALLER'S
     // config object, which is not ours to rewrite.
-    this.launchConfigs.set(strandId, { ...config, founder: true });
+    this.launchConfigs.set(strandId, { ...config, founder: true, partyMemberPrivateKey });
     if (!instance.database) {
       return 'needs-resume';
     }
@@ -846,7 +871,10 @@ export class StrandInstanceManager {
         'is no live database to write to — resume it first.'
       );
     }
-    await instance.database.ensureFounderBootstrap();
+    // Forward the RETAINED config's party key: a foundExistingStrand that flipped a
+    // joiner launch to founder may have resolved a key the live database's captured
+    // config (built at the original launch) never saw.
+    await instance.database.ensureFounderBootstrap(this.launchConfigs.get(strandId)?.partyMemberPrivateKey);
   }
 
   /**

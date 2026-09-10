@@ -500,15 +500,18 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		expect(formResult.strandId).toBeDefined();
 
 		// ── Construct the shared CLOSED StrandRow directly ───────────────────
-		// Type:'c' + a minted MemberPrivateKey; both nodes attach the same row. The
-		// founder derives the founding Member/Manager key from MemberPrivateKey.
+		// Type:'c' + a minted MemberPrivateKey (the shared read secret); both nodes
+		// attach the same row. The founder derives the founding Member/Manager key from
+		// its OWN party identity key, passed explicitly (the hand-built row carries no
+		// founder provenance to heal a StrandPartyKey against).
 		const memberPrivateKey = await generateStrandMemberKey();
-		const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+		const partyMemberPrivateKey = await generateStrandMemberKey();
+		const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 		const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
 		// Both nodes run the network transactor (every strand does), so the manual
 		// strand dial below actually replicates rows across the two raw stores.
-		const founderStrand = await founderNode.addStrand({ strandRow, sAppConfig, founder: true });
+		const founderStrand = await founderNode.addStrand({ strandRow, sAppConfig, founder: true, partyMemberPrivateKey });
 		const joinerStrand = await joinerNode.addStrand({ strandRow, sAppConfig, founder: false });
 		expect(founderStrand.status).toBe('active');
 		expect(joinerStrand.status).toBe('active');

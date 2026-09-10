@@ -174,7 +174,7 @@ describe('CadreNode strand unpublish', () => {
     );
   });
 
-  it('unpublishing a closed strand destroys the row and its MemberPrivateKey', async () => {
+  it('unpublishing a closed strand destroys the row, its MemberPrivateKey, and its party key', async () => {
     let ownerKey: { publicKeyB64: string };
     ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
@@ -188,11 +188,23 @@ describe('CadreNode strand unpublish', () => {
       Type: 'c',
       FounderOwnerKey: ownerKey.publicKeyB64,
     });
+    const partyKeyStamp = await db.queryStrandPartyKeyStampId(strandId);
+    expect(partyKeyStamp).not.toBeNull();
 
     await node.unpublishStrand(strandId);
 
     expect(await db.queryStrand(strandId)).toBeNull();
     expect(await db.queryStrands()).toEqual([]);
+    // The party's membership identity goes in the SAME act — deleted and its stamp
+    // retired — so a later re-publish mints fresh identity.
+    expect(await db.queryStrandPartyKey(strandId)).toBeNull();
+    expect((await db.queryRevokedStamps('StrandPartyKey')).has(partyKeyStamp!)).toBe(true);
+
+    // And the re-publish really does mint a fresh key under a fresh stamp.
+    await node.publishStrand(strandId, 'c', memberKey);
+    const freshStamp = await db.queryStrandPartyKeyStampId(strandId);
+    expect(freshStamp).not.toBeNull();
+    expect(freshStamp).not.toBe(partyKeyStamp);
   }, 60_000);
 
   it('re-publishing after unpublish succeeds on a fresh stamp (the id is not blacklisted)', async () => {

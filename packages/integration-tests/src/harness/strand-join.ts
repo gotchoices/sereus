@@ -8,7 +8,7 @@
  * another machine against `topology.ts`'s ~10-15 s per machine rule of thumb.
  */
 
-import { DEFAULT_STRAND_CLUSTER_SIZE } from '@serfab/cadre-core';
+import { DEFAULT_STRAND_CLUSTER_SIZE, generateStrandMemberKey } from '@serfab/cadre-core';
 import type { CadreNode, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import type { TopologyMachine } from './topology.js';
 import { waitForCohortOn } from './control-cohort.js';
@@ -31,11 +31,20 @@ export interface StrandJoinSpec {
 	type?: 'o' | 'c';
 	/** The shared `StrandRow.MemberPrivateKey` (mint one with
 	 *  `generateStrandMemberKey`). REQUIRED for `type: 'c'` and rejected for open
-	 *  strands, which carry `null` — a closed row without it founds a strand nobody,
-	 *  the founder included, can ever hold membership in. Also forwarded to
-	 *  `publishStrand` under {@link publish}, so a discovering same-party machine reads
-	 *  the same key off the published row. */
+	 *  strands, which carry `null` — it is the strand-wide read secret every member
+	 *  party holds. Also forwarded to `publishStrand` under {@link publish}, so a
+	 *  discovering same-party machine reads the same key off the published row.
+	 *  Deliberately NOT anyone's identity — that is {@link partyMemberPrivateKey}. */
 	memberPrivateKey?: string;
+	/** The FOUNDING party's own membership identity key for a closed strand — the
+	 *  founder bootstrap derives `Member.Key`/`Manager.MemberKey` from it, never from
+	 *  the shared {@link memberPrivateKey}. Minted by default; inject one (same
+	 *  `generateStrandMemberKey` encoding) when the scenario needs the founder keypair
+	 *  to sign membership writes: `strandMemberKeyPair(partyMemberPrivateKey)` is the
+	 *  founding manager's keypair. Rejected for open strands. With {@link publish} it is
+	 *  also seated as the founding machine's `StrandPartyKey` control row, so publish's
+	 *  own mint and the seated identity cannot diverge. */
+	partyMemberPrivateKey?: string;
 	/** The machines that run the strand, in join order. `members[0]` founds. Machines
 	 *  NOT listed never see `addStrand` — the negative case is first-class. */
 	members: ReadonlyArray<TopologyMachine>;
@@ -164,6 +173,11 @@ function validateStrandJoinSpec(spec: StrandJoinSpec): void {
 			`joinStrandOn: strand '${spec.strandId}' passes a memberPrivateKey with type 'o' — `
 			+ "membership keys belong to closed strands; pass type: 'c' or drop the key");
 	}
+	if (type === 'o' && spec.partyMemberPrivateKey) {
+		throw new Error(
+			`joinStrandOn: strand '${spec.strandId}' passes a partyMemberPrivateKey with type 'o' — `
+			+ "party identity keys belong to closed strands; pass type: 'c' or drop the key");
+	}
 	if (spec.publish && spec.members[0]!.index !== 0) {
 		throw new Error(
 			`joinStrandOn: publish requires members[0] to be its party's owner (the Strand insert is `
@@ -203,6 +217,20 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 		FounderOwnerKey: null,
 	};
 
+	// The FOUNDING party's own membership identity for a closed strand (the harness's
+	// StrandPartyKey stand-in): injected or minted. Passed to the founder's addStrand
+	// in-memory — the hand-built row above carries no founder provenance to heal a
+	// persisted key against, and members[0] need not be an enrolled owner. Under
+	// `publish` it IS persisted (below), so publishStrand's own mint-if-absent finds
+	// this key rather than minting a divergent one.
+	const type = spec.type ?? 'o';
+	const partyMemberPrivateKey = type === 'c'
+		? spec.partyMemberPrivateKey ?? await generateStrandMemberKey()
+		: undefined;
+	if (type === 'c' && spec.publish) {
+		await members[0]!.node.ensureStrandPartyKey(spec.strandId, partyMemberPrivateKey);
+	}
+
 	const instances: StrandInstance[] = [];
 	for (let i = 0; i < members.length; i++) {
 		const member = members[i]!;
@@ -212,7 +240,7 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 			instance = await member.node.addStrand({
 				strandRow,
 				sAppConfig: spec.sAppConfig,
-				...(i === 0 && spec.founder ? { founder: true } : {}),
+				...(i === 0 && spec.founder ? { founder: true, partyMemberPrivateKey } : {}),
 			});
 		} catch (error) {
 			throw new Error(

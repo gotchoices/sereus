@@ -355,14 +355,16 @@ describe('Topology builder harness', () => {
 				Id: openId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: expect.any(String),
 			});
 
-			// Closed strand: the founder derives its Member/Manager keypair from the row's
-			// MemberPrivateKey, so the bootstrap rows prove the key reached the row.
+			// Closed strand: the founder derives its Member/Manager keypair from the
+			// PARTY's own identity key (never from the shared MemberPrivateKey), so the
+			// bootstrap rows prove the injected party key reached the bootstrap.
 			const memberPrivateKey = await generateStrandMemberKey();
-			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
+			const partyMemberPrivateKey = await generateStrandMemberKey();
+			const founderKeyPair = strandMemberKeyPair(partyMemberPrivateKey);
 			const closedId = `topo-star-closed-${Date.now()}`;
 			const [closed] = await joinStrandOn({
 				strandId: closedId, sAppConfig: sApp, members: [spoke2],
-				type: 'c', memberPrivateKey, founder: true, mesh: 'none',
+				type: 'c', memberPrivateKey, partyMemberPrivateKey, founder: true, mesh: 'none',
 			});
 			const closedDb = closed!.database!.getDatabase();
 			expect(await strandCount(closedDb, 'Header')).toBe(1);

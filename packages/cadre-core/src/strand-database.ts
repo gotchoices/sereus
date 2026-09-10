@@ -27,11 +27,21 @@ export interface StrandDatabaseConfig {
    */
   strandType: 'o' | 'c';
   /**
-   * The closed-strand `MemberPrivateKey` (base64 protobuf) from the strand row.
-   * Required when `founder` is true and `strandType` is `'c'` — it derives the
-   * founding `Member.Key`/`Manager.MemberKey`. Absent for open strands.
+   * The closed-strand `MemberPrivateKey` (base64 protobuf) from the strand row —
+   * the strand-wide read secret every joining party receives. Carried for the
+   * strand's read-gating story only; it derives NOBODY's identity (that used to be
+   * this key's second job, which let any joiner sign as the founding manager —
+   * gotchoices/sereus#4). Absent for open strands.
    */
   memberPrivateKey?: string;
+  /**
+   * THIS party's own strand membership private key (base64 protobuf), from the
+   * control-layer `StrandPartyKey` row (or supplied explicitly at attach). Required
+   * when `founder` is true and `strandType` is `'c'` — it derives the founding
+   * `Member.Key`/`Manager.MemberKey`. Never shared outside the party; absent for
+   * open strands and for joiners that have not yet persisted one.
+   */
+  partyMemberPrivateKey?: string;
   /**
    * Whether this node founds the strand. When true, {@link initialize} runs the
    * one-time founder membership bootstrap after the schema is applied. Joiners
@@ -120,16 +130,18 @@ export class StrandDatabase {
   /**
    * Run the founder membership bootstrap against the freshly-composed strand DB.
    *
-   * Derives the founding keypair from the closed-strand `memberPrivateKey` (the
-   * `Member.Key`/`Manager.MemberKey` are its public key); a closed strand with no
-   * `memberPrivateKey` throws, because it could never seat a founding manager.
+   * Derives the founding keypair from this PARTY's own `partyMemberPrivateKey` (the
+   * `Member.Key`/`Manager.MemberKey` are its public key) — deliberately NOT from the
+   * strand row's shared `MemberPrivateKey`, which every joining party receives and could
+   * therefore use to forge the founder's identity. A closed strand with no
+   * `partyMemberPrivateKey` throws, because it could never seat a founding manager.
    * Open strands derive no keypair (Header only). Idempotent — see
    * {@link bootstrapFounderMembership}.
    */
   private async bootstrapFounder(): Promise<void> {
-    const { strandId, strandType, memberPrivateKey, sAppConfig } = this.config;
+    const { strandId, strandType, partyMemberPrivateKey, sAppConfig } = this.config;
     const founderKeyPair = strandType === 'c'
-      ? this.deriveFounderKeyPair(strandId, memberPrivateKey)
+      ? this.deriveFounderKeyPair(strandId, partyMemberPrivateKey)
       : undefined;
     await bootstrapFounderMembership(this.db!, {
       strandId,
@@ -140,18 +152,20 @@ export class StrandDatabase {
   }
 
   /**
-   * Derive the founding keypair for a closed strand from its `memberPrivateKey`,
-   * failing loudly when the key is absent (a closed strand with no founding
-   * Manager can never admit anyone).
+   * Derive the founding keypair for a closed strand from the party's own
+   * `partyMemberPrivateKey`, failing loudly when the key is absent (a closed strand
+   * with no founding Manager can never admit anyone).
    */
-  private deriveFounderKeyPair(strandId: string, memberPrivateKey: string | undefined) {
-    if (!memberPrivateKey) {
+  private deriveFounderKeyPair(strandId: string, partyMemberPrivateKey: string | undefined) {
+    if (!partyMemberPrivateKey) {
       throw new Error(
-        `Cannot found closed strand ${strandId}: the strand row has no MemberPrivateKey. ` +
-        'A closed strand needs a founding Member/Manager derived from that key.',
+        `Cannot found closed strand ${strandId}: this party has no StrandPartyKey for it. ` +
+        'A closed strand needs a founding Member/Manager derived from the party\'s own ' +
+        'membership key (minted at publishStrand, or healed at a founder launch) — the ' +
+        'shared MemberPrivateKey deliberately no longer derives anyone\'s identity.',
       );
     }
-    return strandMemberKeyPair(memberPrivateKey);
+    return strandMemberKeyPair(partyMemberPrivateKey);
   }
 
   /**
@@ -164,10 +178,16 @@ export class StrandDatabase {
    * so this object's own record of how it was launched stays coherent with what
    * actually ran (a construction-time `founder: false` is a statement about the
    * launch, not a permanent identity).
+   *
+   * @param partyMemberPrivateKey - The party's own membership key, for a closed strand
+   *   whose original (joiner) launch resolved none — e.g. the `StrandPartyKey` row had
+   *   not been written or replicated yet. The captured config's key wins when both
+   *   exist: it is the identity this instance launched under.
    */
-  async ensureFounderBootstrap(): Promise<void> {
+  async ensureFounderBootstrap(partyMemberPrivateKey?: string): Promise<void> {
     this.ensureInitialized();
     this.config.founder = true;
+    this.config.partyMemberPrivateKey ??= partyMemberPrivateKey;
     await this.bootstrapFounder();
   }
 

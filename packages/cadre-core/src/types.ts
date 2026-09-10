@@ -839,6 +839,19 @@ export interface StrandConfig {
    * it deliberately, since a consent-seated row carries a null column.
    */
   founder?: boolean;
+  /**
+   * THIS party's own strand membership private key (base64 protobuf, as
+   * `generateStrandMemberKey` mints) for a CLOSED strand — the identity whose public
+   * key seats the founding `Member`/`Manager`. The explicit sibling of
+   * {@link founder}: normally the launch reads it from the party's control-layer
+   * `StrandPartyKey` row (minting one on the founding machine when absent), and an
+   * explicit value here WINS over that read — for callers whose row carries no
+   * founder provenance to heal against (an explicit `founder: true` over a hand-built
+   * row, as the test harness does). Deliberately NOT
+   * {@link StrandRow.MemberPrivateKey}, the strand-wide read secret every joining
+   * party receives — that key derives nobody's identity.
+   */
+  partyMemberPrivateKey?: string;
 }
 
 /**

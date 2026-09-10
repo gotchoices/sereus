@@ -294,6 +294,66 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text, Signature text);
 
+    -- ONE party's own membership identity for one strand: the private key whose public
+    -- half seats this party's `Strand.Member` / `Strand.Manager` rows. Deliberately a
+    -- SEPARATE key from Strand.MemberPrivateKey — that column is the strand-wide read
+    -- secret formation hands to EVERY joining party, so an identity derived from it is
+    -- one every joiner can forge (gotchoices/sereus#4). A side table rather than a
+    -- Strand column because a JOINER holds no control Strand row at all (reference apps
+    -- attach formed strands from an in-memory row) yet must persist its own party key
+    -- too; keyed by strand id it serves founder and joiner uniformly, and it leaves the
+    -- heavily-audited Strand insert digest untouched. Deliberately NO closed-strands-only
+    -- cross-table check: the joiner writes this row with no local Strand row to check
+    -- against. Party-private in the same sense as MemberPrivateKey — replicated in
+    -- plaintext to every machine the party owns (docs/strands.md → "Closed-Strand Member
+    -- Key Handling"; that replication is what lets any of the party's machines sign
+    -- membership writes) — but unlike MemberPrivateKey it is NEVER put on the formation
+    -- wire.
+    table StrandPartyKey (
+        Id text primary key,            -- the strand id this key is for
+        PrivateKey text not null,       -- THIS party's ed25519 strand member private key, base64
+                                        -- protobuf — the same encoding as Strand.MemberPrivateKey;
+                                        -- decode with cadre-core's strandMemberKeyPair.
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
+                                        -- `unique` holds over LIVE rows only; a removed row's stamp is
+                                        -- retired permanently into Revocation (NotRevoked below).
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert
+        -- naming a retired stamp: the approval that seated this row can never re-seat it
+        -- after removal. Same rationale as OwnerKey.NotRevoked, stated in full there.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'StrandPartyKey' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'StrandPartyKey' and R.StampId = old.StampId and R.RowKey = old.Id)
+        ),
+        -- Insert + delete only; a rotation is remove-then-insert (fresh stamp, fresh
+        -- signature). Required because AuthorizedInsert / AuthorizedDelete below cover
+        -- neither update — an in-place rewrite would swap the party's identity key with
+        -- no signature at all. Mirrors ValidationKey.NoUpdate.
+        constraint NoUpdate check on update (false),
+        constraint AuthorizedInsert check on insert (
+            -- Owners authorize by signing over THIS row (Id, PrivateKey, StampId);
+            -- single-use via unique StampId. Binding PrivateKey means a captured approval
+            -- can only ever reproduce the exact key it approved, never seat an
+            -- attacker-chosen identity under the party's name.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.StrandPartyKey', 'add', new.Id, new.PrivateKey, new.StampId), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest
+            -- bound to the STORED row (Id, StampId), so the enrollment approval — which
+            -- never expires — can never be replayed as a removal.
+            -- DELIBERATELY no REAP branch (cf. ValidationKey.AuthorizedDelete): like
+            -- Strand.MemberPrivateKey, PrivateKey is a secret stored nowhere else, so this
+            -- delete's effect is unrecoverable and stays strictly owner-signed. Same
+            -- reasoning as Strand.AuthorizedDelete.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.StrandPartyKey', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+        )
+    ) with context (OwnerKey text, Signature text);
+
     -- A peer (node) that is part of the cadre, carrying a self-published,
     -- freshness-stamped, self-signed address record (see PeerAddressRecord in cadre-core).
     -- The row IS the peer-address record: a resolver reads it, re-verifies Sig against
@@ -734,9 +794,9 @@ declare schema CadreControl {
     -- ReissuedAt counter below exists so an owner can re-write — and therefore re-broadcast —
     -- such a tombstone once peers are reachable, without changing what it means.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken' (confined by RowIsGone below)
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'DeviceToken' (confined by RowIsGone below)
         RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
-                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id
+                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id / StrandPartyKey.Id
                                     -- Every guarded table's RevocationRecorded CHECK requires the
                                     -- accompanying tombstone to carry the removed row's key here, so
                                     -- a REMOVAL cannot file a misnamed tombstone. A tombstone with no
@@ -781,6 +841,7 @@ declare schema CadreControl {
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
                 or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
+                or (new.TableName = 'StrandPartyKey' and not exists (select 1 from StrandPartyKey K where K.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
         ),
         -- Appending a tombstone is an OWNER action, like every other write in this schema.

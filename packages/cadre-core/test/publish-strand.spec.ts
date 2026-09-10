@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
@@ -62,6 +62,38 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     const stored = await db.queryStrand(strandId);
     expect(stored?.Type).toBe('c');
     expect(stored?.MemberPrivateKey).toBe(memberKey);
+  }, 60_000);
+
+  it('closed strand: mints a StrandPartyKey row DISTINCT from the shared member key, stable on repeat', async () => {
+    // The identity split (gotchoices/sereus#4): the party's own membership identity
+    // must not be derivable from the strand-wide MemberPrivateKey every joiner holds.
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-pk-' + rand();
+    const memberKey = await generateStrandMemberKey();
+
+    await node.publishStrand(strandId, 'c', memberKey);
+
+    const partyKey = await db.queryStrandPartyKey(strandId);
+    expect(partyKey).not.toBeNull();
+    expect(partyKey).not.toBe(memberKey);
+    expect(strandMemberKeyPair(partyKey!).publicKeyB64)
+      .not.toBe(strandMemberKeyPair(memberKey).publicKeyB64);
+
+    // Repeat publish keeps the SAME identity — a founding key that rotated per publish
+    // would break every insert-if-absent bootstrap guard.
+    await node.publishStrand(strandId, 'c', memberKey);
+    expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
+  }, 60_000);
+
+  it('open strand: mints NO StrandPartyKey row', async () => {
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-o-' + rand();
+
+    await node.publishStrand(strandId, 'o');
+
+    expect(await db.queryStrandPartyKey(strandId)).toBeNull();
   }, 60_000);
 
   it('rejects when the node is not an enrolled owner (constraint propagates)', async () => {
@@ -324,15 +356,20 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     node = undefined;
   });
 
-  it('founder of a closed strand: Header=1, Member=1, Manager=1 with derived key', async () => {
+  it('founder of a closed strand: Header=1, Member=1, Manager=1 keyed by the PARTY key', async () => {
     ({ node } = await startSelfOwnerNode('addstrand-founder-', { enrollOwner: true }));
     const strandId = 'addstrand-closed-' + rand2();
     const memberPrivateKey = await generateStrandMemberKey();
+    const partyMemberPrivateKey = await generateStrandMemberKey();
 
+    // A hand-built row (null FounderOwnerKey) carries no provenance to heal a party
+    // key against, so the explicit founder supplies its identity explicitly — the
+    // shape the integration harness uses.
     const instance = await node.addStrand({
       strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
       sAppConfig: signedSApp(),
       founder: true,
+      partyMemberPrivateKey,
     });
 
     expect(instance.status).toBe('active');
@@ -341,11 +378,13 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     expect(await countRow(db, 'Member')).toBe(1);
     expect(await countRow(db, 'Manager')).toBe(1);
 
-    const expectedKey = strandMemberKeyPair(memberPrivateKey).publicKeyB64;
+    const expectedKey = strandMemberKeyPair(partyMemberPrivateKey).publicKeyB64;
     const member = await db.get('select Key from Strand.Member');
     const manager = await db.get('select MemberKey from Strand.Manager');
     expect(member?.Key).toBe(expectedKey);
     expect(manager?.MemberKey).toBe(expectedKey);
+    // The shared read key must not be the identity source any more.
+    expect(member?.Key).not.toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
   }, 60_000);
 
   it('founder of an open strand: Header=1, Member=0, Manager=0, Header.Type=o', async () => {
@@ -368,17 +407,20 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     expect(header?.Type).toBe('o');
   }, 60_000);
 
-  it('closed founder with null MemberPrivateKey rejects', async () => {
+  it('closed founder with no party key rejects (the shared MemberPrivateKey is no substitute)', async () => {
     ({ node } = await startSelfOwnerNode('addstrand-founder-', { enrollOwner: true }));
     const strandId = 'addstrand-closed-nokey-' + rand2();
 
+    // Null FounderOwnerKey → no heal (this machine has no provenance claim on the
+    // row), no explicit partyMemberPrivateKey, no StrandPartyKey row: the founder
+    // bootstrap must throw rather than fall back to the shared member key.
     await expect(
       node.addStrand({
-        strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'c', FounderOwnerKey: null },
+        strandRow: { Id: strandId, MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null },
         sAppConfig: signedSApp(),
         founder: true,
       }),
-    ).rejects.toThrow(/MemberPrivateKey/i);
+    ).rejects.toThrow(/StrandPartyKey/i);
   }, 60_000);
 });
 
@@ -460,8 +502,9 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
   }, 60_000);
 
-  it('closed strand: founds under the minted key and seats Header/Member/Manager', async () => {
+  it('closed strand: founds under the publish-minted PARTY key and seats Header/Member/Manager', async () => {
     ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
     const strandId = 'found-closed-' + rand3();
     const memberPrivateKey = await generateStrandMemberKey();
 
@@ -477,6 +520,13 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     expect(await countRow(db, 'Header')).toBe(1);
     expect(await countRow(db, 'Member')).toBe(1);
     expect(await countRow(db, 'Manager')).toBe(1);
+
+    // The founding identity is the publish-minted party key, never the shared secret.
+    const partyKey = await controlDb.queryStrandPartyKey(strandId);
+    expect(partyKey).not.toBeNull();
+    const member = await db.get('select Key from Strand.Member');
+    expect(member?.Key).toBe(strandMemberKeyPair(partyKey!).publicKeyB64);
+    expect(member?.Key).not.toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
   }, 60_000);
 
   it('closed strand resume: adopts the STORED member key and discards the freshly minted one', async () => {
@@ -484,12 +534,15 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     // seated membership was derived from, so a fresh key must lose — otherwise the strand
     // runs (and mints invitations) under a key that cannot read it.
     ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
     const strandId = 'found-closed-resume-' + rand3();
     const stored = await generateStrandMemberKey();
     const minted = await generateStrandMemberKey();
     expect(minted).not.toBe(stored);
 
     await node.publishStrand(strandId, 'c', stored);
+    const partyKey = await controlDb.queryStrandPartyKey(strandId);
+    expect(partyKey).not.toBeNull();
 
     const { instance, strandRow } = await node.foundStrand({
       strandId,
@@ -499,9 +552,12 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     });
 
     expect(strandRow.MemberPrivateKey).toBe(stored);
+    // The resume founds under the SAME party identity the publish minted — a fresh
+    // identity per resume would orphan the membership already seated.
+    expect(await controlDb.queryStrandPartyKey(strandId)).toBe(partyKey);
     const db = instance.database!.getDatabase();
     const member = await db.get('select Key from Strand.Member');
-    expect(member?.Key).toBe(strandMemberKeyPair(stored).publicKeyB64);
+    expect(member?.Key).toBe(strandMemberKeyPair(partyKey!).publicKeyB64);
   }, 60_000);
 
   it('refuses to found a published strand as the other Type', async () => {
@@ -673,5 +729,84 @@ describe('CadreNode.addStrand founder derivation from Strand.FounderOwnerKey', (
 
     expect(instance.status).toBe('active');
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+  }, 60_000);
+});
+
+// ── StrandPartyKey heal at launch (strands published before the key split) ───
+//
+// A closed strand published straight through ControlDatabase.insertStrand — the shape
+// every strand published BEFORE the identity/read-secret split has — carries no
+// StrandPartyKey row. The FOUNDING machine (row's FounderOwnerKey is its own owner key)
+// heals at launch: mint once, stable thereafter. Everyone else never mints.
+
+describe('CadreNode.addStrand party-key heal at launch', () => {
+  let node: CadreNode | undefined;
+
+  const rand5 = (): string => Math.random().toString(36).slice(2);
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  /** Seat a closed Strand row via the DB writer alone — no publish-time party-key mint. */
+  async function seedPreSplitClosedStrand(
+    db: ControlDatabase,
+    ownerKey: { privateKeyB64: string; publicKeyB64: string },
+    strandId: string,
+  ): Promise<void> {
+    const signAsOwner = (message: Uint8Array): string =>
+      cryptoSign(message, ownerKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    await db.insertStrand(strandId, 'c', ownerKey.publicKeyB64, signAsOwner, await generateStrandMemberKey());
+  }
+
+  it('the founding machine heals a keyless closed strand: mints once, stable across relaunch', async () => {
+    let ownerKey: { privateKeyB64: string; publicKeyB64: string };
+    ({ node, ownerKey } = await startSelfOwnerNode('party-key-heal-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'heal-closed-' + rand5();
+    const sAppConfig = signedSApp();
+
+    await seedPreSplitClosedStrand(db, ownerKey, strandId);
+    expect(await db.queryStrandPartyKey(strandId)).toBeNull();
+
+    const row = await db.queryStrand(strandId);
+    const first = await node.addStrand({ strandRow: row!, sAppConfig });
+    expect(first.status).toBe('active');
+
+    const healed = await db.queryStrandPartyKey(strandId);
+    expect(healed).not.toBeNull();
+    const member = await first.database!.getDatabase().get('select Key from Strand.Member');
+    expect(member?.Key).toBe(strandMemberKeyPair(healed!).publicKeyB64);
+
+    // Relaunch finds the row and reuses it — the founding Member.Key must be stable
+    // across restarts or the bootstrap's insert-if-absent guards stop matching.
+    await node.stopStrand(strandId);
+    const second = await node.addStrand({ strandRow: row!, sAppConfig });
+    expect(second.status).toBe('active');
+    expect(await db.queryStrandPartyKey(strandId)).toBe(healed);
+    const memberAfter = await second.database!.getDatabase().get('select Key from Strand.Member');
+    expect(memberAfter?.Key).toBe(strandMemberKeyPair(healed!).publicKeyB64);
+  }, 60_000);
+
+  it('a non-founder launch never mints a party key', async () => {
+    ({ node } = await startSelfOwnerNode('party-key-heal-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'heal-foreign-' + rand5();
+
+    // A closed row published by a DIFFERENT machine (foreign owner key): this node
+    // attaches as a joiner and must leave the party-key table alone — minting here
+    // would be the mint race between a party's machines the heal is scoped to avoid.
+    const instance = await node.addStrand({
+      strandRow: {
+        Id: strandId, MemberPrivateKey: await generateStrandMemberKey(), Type: 'c',
+        FounderOwnerKey: 'foreign-owner-key-' + rand5(),
+      },
+      sAppConfig: signedSApp(),
+    });
+
+    expect(instance.status).toBe('active');
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+    expect(await db.queryStrandPartyKey(strandId)).toBeNull();
   }, 60_000);
 });

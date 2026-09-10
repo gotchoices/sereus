@@ -205,23 +205,39 @@ as a separate in-strand signing act — is a design-stage plan: see
 
 ## Closed-Strand Member Key Handling
 
-A closed strand's read-gating secret is the control-layer `Strand.MemberPrivateKey`
-(an Ed25519 key minted by `generateStrandMemberKey`; the founding `Member`/`Manager`
-keys derive from it). It is held **unencrypted** in the party's control database,
-which Optimystic replicates to **every node the party owns**.
+A closed strand involves **two different party-held Ed25519 keys**, both minted by
+`generateStrandMemberKey` and both held **unencrypted** in the party's control
+database, which Optimystic replicates to **every node the party owns**:
 
-**That replication is the point.** It is what makes a party's cadre nodes
-*fungible* for closed strands: any node has the member key, so any node can serve
-or participate in the strand — including a node added to the cadre long after the
-strand was formed, and a node that comes up headless (push-woken, background
-runner) with no user present to unlock anything. Formation likewise puts the raw
-key on the wire (`FormationProvisionResult.memberPrivateKey`, disclosed only after
-token + disclosure validation) and the initiator records it into its own control DB.
+- **The strand-wide read secret** — the control-layer `Strand.MemberPrivateKey`.
+  Formation delivers it to *every* joining party
+  (`FormationProvisionResult.memberPrivateKey`, disclosed only after token +
+  disclosure validation), and the initiator records it into its own control DB. It
+  gates reads; it deliberately derives **nobody's identity**.
+- **The party's own membership identity** — the control-layer
+  `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
+  `Member.Key`/`Manager.MemberKey` are its public key. It is minted at
+  `publishStrand` for a closed strand (healed at a founder launch for strands that
+  predate the split), is **never** put on the formation wire, and is deleted — with
+  its `Revocation` tombstone — in the same transaction that removes the `Strand`
+  row (`unpublishStrand`).
+
+The two used to be one key: the founding identity derived from the shared read
+secret, so any joiner could compute the founder's member *and manager* private key
+and sign as the founding manager (gotchoices/sereus#4). Identity and the shared
+secret are now separate things.
+
+**The replication is the point.** It is what makes a party's cadre nodes
+*fungible* for closed strands: any node has both keys, so any node can serve
+or participate in the strand — and sign the party's membership writes — including
+a node added to the cadre long after the strand was formed, and a node that comes
+up headless (push-woken, background runner) with no user present to unlock
+anything.
 
 **Accepted residual risk (decided 2026-07).** A compromised device — stolen phone,
-rooted OS, app-storage extraction — leaks the member private key of every closed
-strand that party belongs to, giving the attacker that member's read access. The
-team explicitly accepts this for now rather than hardening, because:
+rooted OS, app-storage extraction — leaks both keys of every closed strand that
+party belongs to, giving the attacker that party's read access and its membership
+identity. The team explicitly accepts this for now rather than hardening, because:
 
 - the key sits behind the same app-storage boundary (mobile LevelDB) as the rest of
   the control DB's strand data, so encrypting only this column is partial hardening;

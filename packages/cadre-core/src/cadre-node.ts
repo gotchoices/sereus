@@ -40,6 +40,7 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
+import { generateStrandMemberKey } from './strand-member-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
@@ -4111,7 +4112,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode not running');
     }
 
-    const { strandRow, sAppConfig, founder } = config;
+    const { strandRow, sAppConfig, founder, partyMemberPrivateKey } = config;
 
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
@@ -4121,8 +4122,9 @@ export class CadreNode implements SAppIdLookup {
     // An unset `founder` is DERIVED from the row inside launchStrand (this node founds
     // iff the row's FounderOwnerKey is its own owner key); an explicit flag wins — the
     // formation/responder flows pass one deliberately, since their consent-seated rows
-    // carry a null column. See StrandConfig.founder.
-    return await this.launchStrand(strandRow, sAppConfig, founder);
+    // carry a null column. See StrandConfig.founder. Same rule for the explicit
+    // partyMemberPrivateKey: it wins over the StrandPartyKey control-row read.
+    return await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
   }
 
   /**
@@ -4169,10 +4171,16 @@ export class CadreNode implements SAppIdLookup {
    * Failing loudly here is intentional: a silently-unpublished strand would run
    * as a local-only island that no peer could ever discover or join.
    *
+   * A CLOSED strand's publish also seats this party's own membership identity key —
+   * the `StrandPartyKey` row {@link ensureStrandPartyKey} documents — which is what the
+   * founder bootstrap derives `Member.Key`/`Manager.MemberKey` from. The
+   * `memberPrivateKey` ARGUMENT stays the strand-wide read secret formation hands to
+   * joiners; it derives nobody's identity.
+   *
    * @param strandId - Unique strand identifier (typically the same id passed to
    *   {@link addStrand}).
    * @param type - `'o'` for open (default) or `'c'` for closed.
-   * @param memberPrivateKey - Optional membership key for a closed strand.
+   * @param memberPrivateKey - Optional shared membership (read) key for a closed strand.
    * @returns The live `Strand` row — the one just inserted, or the matching one already
    *   there. A closed strand's caller should carry THIS row's `MemberPrivateKey` forward:
    *   on a repeat it is the stored key, not the argument.
@@ -4211,6 +4219,13 @@ export class CadreNode implements SAppIdLookup {
       // so a re-seat is not mistaken for a repeat.
       const matched = requireMatchingStrandRow(existing, desired, 'is already published');
       log('publishStrand(%s): already published (type %s) with identical content — no-op', trimmed, type);
+      // A closed strand THIS machine published must hold a party key (its own membership
+      // identity — see ensureStrandPartyKey). Insert-if-absent, so the ordinary repeat
+      // is a read-only no-op and a publish interrupted between the row insert and the
+      // mint heals here. A row another machine published is that machine's to mint for.
+      if (type === 'c' && this.isSelfFoundedRow(matched)) {
+        await this.ensureStrandPartyKey(trimmed);
+      }
       return matched;
     }
 
@@ -4239,6 +4254,14 @@ export class CadreNode implements SAppIdLookup {
       return requireMatchingStrandRow(landed, desired, 'landed concurrently from another founder');
     }
     log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signingKey.publicKeyB64);
+    // A closed strand's publish also mints this party's own membership identity key
+    // (StrandPartyKey) — the key the founder bootstrap derives Member/Manager from,
+    // deliberately distinct from the shared memberPrivateKey argument above. A failure
+    // here surfaces (the strand row has already committed, so a retried publish takes
+    // the idempotent branch and heals the mint; so does the next founder launch).
+    if (type === 'c') {
+      await this.ensureStrandPartyKey(trimmed);
+    }
     return desired;
   }
 
@@ -4344,10 +4367,12 @@ export class CadreNode implements SAppIdLookup {
    * is an owner-signed control-plane write like every other, not "destroy the network".
    *
    * Irreversible for a closed strand (`Type='c'`): the row carries `MemberPrivateKey`,
-   * this party's membership secret for that network, and it is stored nowhere else.
-   * With it gone the party can never again admit a member to that closed strand, and a
-   * re-published row would carry a DIFFERENT key that does not match the membership
-   * already written into the strand's RBAC layer. The strand id itself is NOT
+   * this party's read secret for that network, and the strand's `StrandPartyKey` row —
+   * this party's own membership identity, removed (and tombstoned) in the SAME
+   * transaction — is stored nowhere else either. With both gone the party can never
+   * again sign as its seated member/manager there, and a re-published row mints a fresh
+   * identity that does not match the membership already written into the strand's RBAC
+   * layer. The strand id itself is NOT
    * blacklisted: a fresh owner-signed {@link publishStrand} re-seats it under a new
    * stamp — only the unsigned consent re-seat is permanently foreclosed (the removal's
    * `Revocation` tombstone names the id, which the consent branch of
@@ -4412,6 +4437,92 @@ export class CadreNode implements SAppIdLookup {
       await this.stopStrand(trimmed);
     }
     log('Unpublished strand %s from control DB under owner %s', trimmed, signingKey.publicKeyB64);
+  }
+
+  /**
+   * Seat this party's own strand membership identity key — the `StrandPartyKey` row —
+   * for `strandId`, minting a fresh one when none is given, and adopting the stored one
+   * when a row already exists. Insert-if-absent and stable thereafter: the founding
+   * `Member.Key` must not change across restarts, or the bootstrap's insert-if-absent
+   * guards stop matching.
+   *
+   * This is the identity half of the closed-strand key split: the row's `PrivateKey` —
+   * NOT the strand row's shared `MemberPrivateKey`, which formation hands to every
+   * joining party — is what the founder bootstrap derives `Member.Key`/`Manager.MemberKey`
+   * from. It replicates to every machine this party owns (same plaintext-at-rest stance
+   * as `MemberPrivateKey`; docs/strands.md → "Closed-Strand Member Key Handling") and is
+   * never put on the formation wire.
+   *
+   * Called internally by {@link publishStrand} (closed strands mint at publish) and by
+   * the launch-time founder heal; public so a test harness — or a joiner flow that
+   * persists a formation-issued identity — can seat a specific key deliberately.
+   *
+   * @param strandId - The strand the key is this party's identity for.
+   * @param partyMemberPrivateKey - Optional specific key (base64 protobuf, as
+   *   `generateStrandMemberKey` mints). When a row already holds a DIFFERENT key this
+   *   throws — a party has one identity per strand; rotation is a deliberate
+   *   remove-then-insert, not a silent swap.
+   * @returns The live party key: the one just seated, or the stored one.
+   */
+  async ensureStrandPartyKey(strandId: string, partyMemberPrivateKey?: string): Promise<string> {
+    const signingKey = this.requireOwnerSigningKey(`seat a party key for strand ${strandId}`);
+    const trimmed = requireNonBlank(strandId, 'strand id');
+    const existing = await this.controlDatabase!.queryStrandPartyKey(trimmed);
+    if (existing !== null) {
+      if (partyMemberPrivateKey !== undefined && partyMemberPrivateKey !== existing) {
+        // Neither key is included: the party key is this party's membership identity secret.
+        throw new Error(
+          `Strand ${trimmed} already has a party key and the supplied one differs. The stored ` +
+          'key is the identity the strand membership was seated under; to rotate it, remove ' +
+          'the row deliberately (deleteStrandPartyKey) rather than overwriting it.'
+        );
+      }
+      return existing;
+    }
+    const key = partyMemberPrivateKey ?? await generateStrandMemberKey();
+    try {
+      await this.controlDatabase!.insertStrandPartyKey(
+        trimmed, key, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+    } catch (error) {
+      // The read and the insert are not atomic; a concurrent seat of the same strand's
+      // key can land in between. Adopt the landed row when it satisfies this request —
+      // the same resolution publishStrand applies to its own read-then-insert window —
+      // and rethrow every other rejection (unauthorized signer, retired stamp).
+      const landed = await this.controlDatabase!.queryStrandPartyKey(trimmed);
+      if (landed === null || (partyMemberPrivateKey !== undefined && partyMemberPrivateKey !== landed)) {
+        throw error;
+      }
+      log('ensureStrandPartyKey(%s): lost a concurrent seat race; adopting the landed key', trimmed);
+      return landed;
+    }
+    log('Seated strand party key for %s under owner %s', trimmed, signingKey.publicKeyB64);
+    return key;
+  }
+
+  /**
+   * Resolve the party membership key a closed strand's launch threads into the founder
+   * bootstrap: the explicit attach-time key when given, else the party's persisted
+   * `StrandPartyKey` row, else — on the one machine whose owner key the row names as
+   * founder — a freshly minted-and-persisted key (the heal for strands published before
+   * the key split, or by a publish that was interrupted before its mint). Everyone else
+   * resolves undefined: non-founding machines never mint (no mint race between a
+   * party's machines), and only a founder bootstrap needs the key at all.
+   */
+  private async resolveStrandPartyKey(strand: StrandRow, explicitKey?: string): Promise<string | undefined> {
+    if (explicitKey !== undefined) {
+      return explicitKey;
+    }
+    if (!this.controlDatabase) {
+      return undefined;
+    }
+    const stored = await this.controlDatabase.queryStrandPartyKey(strand.Id);
+    if (stored !== null) {
+      return stored;
+    }
+    if (!this.isSelfFoundedRow(strand)) {
+      return undefined;
+    }
+    return await this.ensureStrandPartyKey(strand.Id);
   }
 
   /**
@@ -4590,13 +4701,18 @@ export class CadreNode implements SAppIdLookup {
   private async launchStrand(
     strand: StrandRow,
     sAppConfig: SAppConfig,
-    founder?: boolean
+    founder?: boolean,
+    explicitPartyKey?: string
   ): Promise<StrandInstance> {
     const resolvedFounder = founder ?? this.isSelfFoundedRow(strand);
     const existing = this.strandManager.getInstance(strand.Id);
     if (existing) {
       if (resolvedFounder) {
-        const outcome = await this.strandManager.foundExistingStrand(strand.Id);
+        // The resolver runs only when the retained config lacks a party key for a
+        // closed strand (see foundExistingStrand), so the common watcher re-entry
+        // ('already-founder') still costs no control read.
+        const outcome = await this.strandManager.foundExistingStrand(strand.Id,
+          () => this.resolveStrandPartyKey(strand, explicitPartyKey));
         if (outcome === 'needs-resume') {
           // Quiesced instance: the retained config now founds, but founding promises
           // the bootstrap has RUN by the time the caller resolves — wake through the
@@ -4616,6 +4732,15 @@ export class CadreNode implements SAppIdLookup {
       }
       return existing;
     }
+
+    // A closed strand's launch carries the party's OWN membership identity key: the
+    // explicit attach-time key, else the control-layer StrandPartyKey row — minted here
+    // (heal) when this machine is the row-derived founder and no row exists yet. A
+    // joiner with no persisted key threads undefined; only a FOUNDER bootstrap needs
+    // the key, and that path throws loudly without one (StrandDatabase).
+    const partyMemberPrivateKey = strand.Type === 'c'
+      ? await this.resolveStrandPartyKey(strand, explicitPartyKey)
+      : undefined;
 
     // Each strand node gets its own transport identity, derived from the cadre
     // identity key + strandId (see strand-transport-key.ts). Sharing the
@@ -4665,7 +4790,10 @@ export class CadreNode implements SAppIdLookup {
       revocationEnforcement: this.config.strandRevocationEnforcement,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
       // The RESOLVED flag, never the raw argument — see the doc comment above.
-      founder: resolvedFounder
+      founder: resolvedFounder,
+      // Retained with the launch config, so a hibernation wake rebuilds under the
+      // same identity without re-reading the control DB.
+      partyMemberPrivateKey
     });
 
     // The seed reached the node as `bootstrapNodes`, which only enters the
