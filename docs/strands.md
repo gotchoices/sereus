@@ -130,10 +130,19 @@ relays, and is never locked out of its first address by replication ordering.
     lifetime, currently 15 min). Acceptable while a relay restart is rare and the strand
     recovers on its own; if relay restarts become routine — or that outage window starts
     mattering — the durable attestation below is the fix, not a shorter refresh interval.
-  - Deferred: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
-    PeerId)` row binding a member to its strand transport peerIds — would add revocation
-    and audit on top of the in-memory grant. It is the same binding strand-*mesh*
-    admission control will need, so it waits for that work rather than being built twice.
+  - Half landed: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
+    PeerId)` row binding a member to its strand transport peerIds. The **revocation** half
+    of that binding now exists and is enforced: a row left orphaned by its member's removal
+    is exactly what a strand node denies that member's machines by, at the connection,
+    stream, dial and relay-reservation hooks
+    (`packages/cadre-core/src/strand-revocation-enforcer.ts`, and [Removing
+    Members](#removing-members) for what that guarantees in plain terms). The **admission**
+    half — reading the same rows as an allowlist, so a strand admits only machines
+    positively bound to a live member — is still deferred, and now waits specifically on
+    per-party membership identity (`feat-strand-party-identity`): without it every party
+    presents the same founding member key and an allowlist would have nothing to tell them
+    apart. The relay's in-memory grant above is unaffected either way — it remains how a
+    party's own strand nodes reserve on their own party's relay.
 
 - Before strand initialization, where (if anywhere) do peers publish reachability?
   - If the answer is “a DHT”, which one, and how is it invitation-only?
@@ -338,10 +347,17 @@ Membership removal is governed by the same signed-approval discipline as admissi
   that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
   manager seat. This is the removal-side half of the manager-is-also-a-member rule stated
   above; the other half refuses to promote a key that is not a member in the first place.
-- **Clearing the removed member's device records is a separate step, not a cascade.**
-  Removing a member leaves behind the records binding its devices to the strand; a manager
-  lists the departed member's devices and clears each one with its own signed removal.
-  Anything reading those device records must check membership separately rather than
+- **Clearing the removed member's device records is a separate step, not a cascade — and
+  it is no longer free housekeeping.** Removing a member leaves behind the records binding
+  its devices to the strand; a manager lists the departed member's devices and clears each
+  one with its own signed removal. Those leftover records are now *load-bearing*: they are
+  the only durable, replicated record of which machines belonged to the removed member, and
+  they are exactly what the remaining machines recognise its machines by (see [What removal
+  does to the network](#what-removal-does-to-the-network) below). Clearing one therefore
+  also forgets the network denial of that machine. So clear a leftover record only for a
+  machine that is genuinely gone for good, or for a binding that should never have existed
+  in the first place — tidying them up as routine housekeeping quietly re-opens the door.
+  Anything reading those device records must still check membership separately rather than
   treating a device record as proof of it.
 - **A device record can only be added or deleted, never edited.** Every field of the record
   is part of its identity, so re-binding is a delete plus a fresh add. Allowing an edit
@@ -357,6 +373,85 @@ Membership removal is governed by the same signed-approval discipline as admissi
   nodes already replicated, and it still holds the strand's member private key. Cutting
   off its *future* reads means rotating the read gate, which currently means re-forming
   the strand — see [Closed-Strand Member Key Handling](#closed-strand-member-key-handling).
+
+#### What removal does to the network
+
+Removal used to be a database fact only: the row went away, and the removed party's
+machines carried on holding the connections they already had to everyone else's. That is
+no longer the case.
+
+- **Remaining machines refuse the removed party's machines outright.** Once the removal has
+  replicated to a remaining member's machine, that machine stops talking to every machine
+  the removed member had registered: it refuses new connections from them, refuses to open
+  new request streams for them, refuses to relay for them, and will not dial them itself.
+  It also closes the sessions it already had open, so a long-lived connection that would
+  otherwise never re-dial does not outlive the removal. A removed party running several
+  machines loses all of them in the same step. This is proved on a real four-machine strand
+  by `packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts`,
+  which asserts that the connections existed *before* the removal and are gone after it,
+  and that the removed party can then neither read what the remaining members write nor
+  push anything back to them.
+- **The leftover device records are what makes this possible.** A machine is recognised as
+  belonging to the removed member by the device record binding it, which is why those
+  records are kept rather than deleted along with the member — see the housekeeping bullet
+  above.
+- **Enforcement is per-machine and eventually consistent.** Each machine acts on the
+  removal once it has actually replicated *there*; a machine that has not seen it yet keeps
+  serving the removed party until it does. That direction is deliberate. The opposite error
+  — refusing someone on a view you have not caught up on — would cut off a legitimate
+  member for a reason they can neither see nor fix, so the rule is that a machine denies
+  only on evidence it holds, never on evidence it is missing. The test above asserts this
+  window on purpose rather than tolerating it: one remaining machine cuts while the other,
+  which has not yet processed the removal, is still serving the removed party.
+- **The remaining members keep working, but the first write after a cut may need a
+  retry.** Nothing has to be done to eject the removed party from the group that holds the
+  strand's data — cutting the connections is enough, and the remaining machines carry on
+  committing among themselves. They do have to notice that the removed machines are gone
+  first: measured on that four-machine test, the first write after a removal failed four
+  times over about four seconds ("block unavailable — peers unreachable") before
+  committing. It recovers on its own, so an app that writes immediately after removing
+  someone should expect a brief wobble rather than a failure.
+- **A delegate grant is not a way around any of this.** A party's own relay can hold a
+  short-lived admission grant for a machine of its own party (see [Relay
+  willingness](#some-questions)), but such grants are only ever announced over a channel
+  that is itself gated on membership of the announcing party, so *another* party's machines
+  never hold one. And a grant admits only a connection and a relay slot on the granting
+  party's own control machine; a removed machine that somehow rides a relay still meets the
+  strand's own per-request refusal at the far end.
+
+#### What the app has to call, and what the removed party is told
+
+- **The cut happens on a timer unless the app asks for it now.** Each machine re-reads the
+  membership on a poll — 30 seconds by default — so a removal with nothing else done takes
+  up to that long to bite on any given machine. An app that removes a member (or leaves a
+  strand) should follow the write with `CadreNode.refreshRevocationEnforcement(strandId)`
+  on its own node: that re-reads the membership and closes the sessions before it returns.
+  It is the difference between a "remove member" button that can honestly say the person is
+  gone now and one that can only say they will be within the minute.
+- **A removed node is told, best-effort.** A node that finds its own machine in the denied
+  set raises a `strand:revoked` event naming the strand — the thing an app hangs a "you
+  were removed" screen on. It is best-effort by nature: the node only learns if the removal
+  reached it before the other side stopped talking to it, which is likely if it was online
+  at the time and impossible if it was not. Nothing is stopped on the removed node's
+  behalf; it keeps its strand running, its replicated data and its member key, and is
+  simply no longer talked to. What to do about that — leave the strand, warn the person,
+  keep the local copy as a read-only archive — is the app's decision, not the runtime's.
+
+#### What removal still does not do
+
+- **Per-party removal is not reachable from an app yet.** On a strand formed the way a real
+  deployment forms one today, every party presents the *same* founding member identity and
+  no device records are written at all — so there is no per-party member to remove and no
+  device record to deny it by. Everything above is built, and proved against strands whose
+  device records are registered explicitly by the test; giving each party its own membership
+  identity and its own device records is tracked as `feat-strand-party-identity`. Until that
+  lands, the enforcement machinery is in place and the identity it needs is not.
+- **It does not cut off past reads, and it does not rotate the member key** — the
+  forward-looking bullet above.
+- **It does not cancel an unspent invitation**, so a removed party still holding one
+  re-admits itself; cancelling is a separate manual step, and binding an invitation to its
+  invitee is tracked as `feat-strand-invitee-bound-invites` (see the invitation bullet
+  above and the known gaps below).
 
 Known gaps remain, all out of scope of the rules above:
 

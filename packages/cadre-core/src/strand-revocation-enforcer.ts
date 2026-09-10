@@ -425,9 +425,19 @@ export class StrandRevocationEnforcer {
    * Two residual facts, both accepted: the removed node keeps every block it had
    * already replicated (revocation is forward-looking), and a block whose only
    * holders were the removed party's machines can be unavailable to the rest
-   * until repair. If post-removal commit latency or `cluster-fetch:no-quorum`
-   * ever shows up, that is an upstream (Optimystic) conversation, not a
-   * workaround here.
+   * until repair.
+   *
+   * NOTE: post-removal commit latency is real and MEASURED, not hypothetical. On
+   * the two-parties-by-two-machines fixture in
+   * `integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts`
+   * the remaining cohort's FIRST write after a cut failed four times with
+   * `BlockUnavailableError: … (peers-unreachable)` before committing on the
+   * fifth attempt, ~4.1 s in — the cohort still listed the removed party's now
+   * unreachable machines and had to downsize to the live holders first. It
+   * recovers on its own, so this is a latency cost, not a defect, and it is
+   * stated for app authors in `docs/strands.md` → Removing Members. If it ever
+   * stops recovering — a write that never commits, or `cluster-fetch:no-quorum` —
+   * that is an upstream (Optimystic) conversation, not a workaround here.
    */
   private async tearDownRevoked(revoked: ReadonlySet<string>): Promise<void> {
     if (this.stopped) {

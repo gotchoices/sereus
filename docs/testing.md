@@ -465,6 +465,17 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   promoted manager issuing/admitting — all authored on a machine that neither founded the
   strand nor owns its party) — `strand-membership-second-machine.integration.ts`. Visibility
   claims only; the physical story for the shape stays with the line above.
+- Removal ENFORCED at the network layer (a closed strand's removed party is hung up by the
+  remaining machines, both of its machines at once; a machine that has not yet processed the
+  removal deliberately keeps serving it; the remaining cohort still commits and the removed
+  party can neither read that write nor push one back; a removed node learns from its own
+  poll that it was removed; an open strand on the same two nodes is untouched) —
+  `strand-removal-cuts-network.integration.ts`. Every connection there is DIRECT: the
+  relay-mediated variant — a removed party reached over `/p2p-circuit`, where `hangUp` must
+  also drop the relay reservation riding the connection — is **uncovered**, and would need
+  the relay-only two-party fixture of `blind-relay-phone-to-phone-e2e.integration.ts` rather
+  than an option on this topology. That file also registers its `Strand.MemberPeer` rows by
+  hand, because production writes none yet (`feat-strand-party-identity`).
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a

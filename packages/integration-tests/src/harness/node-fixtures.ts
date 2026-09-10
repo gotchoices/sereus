@@ -95,6 +95,15 @@ export interface ControlNodeOpts {
   reconcileMs?: number;
   /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
   strandWatchMs?: number;
+  /**
+   * Override the CLOSED-strand revoked-peer deny-set refresh cadence (ms;
+   * `DEFAULT_REVOCATION_POLL_INTERVAL_MS`, 30 s). Two uses, opposite ends:
+   * a SHORT value exercises the interval-driven cut without an explicit
+   * `CadreNode.refreshRevocationEnforcement` call, and a value longer than the
+   * test suspends the node's refresh entirely, so every cut it makes is one the
+   * test drove on purpose (the deterministic route).
+   */
+  revocationPollMs?: number;
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
@@ -148,6 +157,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
           : slowMemoryStorageProvider(opts.storageOpDelayMs))
     },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
+    ...(opts.revocationPollMs !== undefined
+      ? { strandRevocationEnforcement: { pollIntervalMs: opts.revocationPollMs } } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {
