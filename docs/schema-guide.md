@@ -311,6 +311,21 @@ schema "com.example.causal" version 1 using (default_vtab_module = 'memory') {
 }
 ```
 
+**Not a third pattern: a self-imposed integer sequence does not work here.** The obvious idea —
+an integer primary key assigned as `max(id) + 1`, with the primary key (or a uniqueness check) as
+the safety net that catches a collision — looks sound, because in every single-writer SQL database
+a reader has used, a duplicate key is refused outright. It is not refused here. When two peers
+concurrently insert the same key, the write is not rejected: both peers are told they succeeded,
+and the two commits are silently resolved last-writer-wins — one row simply vanishes, with no
+error raised anywhere. A `max(id) + 1` scheme is exactly the shape that triggers this, since two
+concurrent writers computing the same next id are indistinguishable, at merge time, from a
+duplicate-key race. A stricter "no gaps" variant (`id = 0 or exists(id - 1)`) is not a safer
+alternative — it fails the identical way. This gap is specific to *concurrent* commits: a
+sequential duplicate insert, where one write commits before the next begins, is still refused by
+the ordinary constraint error. The behavior lives in the underlying storage layer's merge/sync
+path, not in anything a schema author writes, so no constraint shape closes it; it is a tracked,
+unresolved limitation, not a bug in your schema. Use Pattern A or B above instead.
+
 ---
 
 ### Common Table Expressions (CTE), Recursive, and Hints
