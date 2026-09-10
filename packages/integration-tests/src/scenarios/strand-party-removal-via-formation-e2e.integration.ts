@@ -35,9 +35,13 @@
  *   2. **Re-joining after removal** (host × 2 machines, joiner × 1). A fresh formation after the
  *      cut still succeeds — formation runs on the CONTROL network, which strand revocation
  *      does not gate — reuses the party's identity and stages a fresh invitation. But the
- *      invitation cannot be spent: seating the member row is a STRAND write, and the
- *      removed party's machines are exactly the ones being denied. Re-admission therefore
- *      has to be authored by a remaining manager, and this test pins both halves.
+ *      invitation is never spent, and the reason is not the one the setup suggests: the
+ *      joiner's membership reconciler latched a terminal `done` during the FIRST join and
+ *      nothing re-arms it, so no pass ever attempts the redemption (the denial of the
+ *      strand write would block it too, but is never reached). Re-admission therefore has
+ *      to be authored by a remaining manager. Read the comment at the negative assertion
+ *      before drawing conclusions from this test — it says exactly which half is pinned.
+ *      Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`.
  *
  * ── HOW TIMING IS CONTROLLED (read before changing a poll value) ──────────────
  * Two independent per-strand loops poll on the same default cadence, and this file wants
@@ -868,17 +872,36 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			expect(await joinOwner.node.getControlDatabase()!.queryStrandPartyKey(strandId)).toBe(joinPartyKey);
 			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
 
-			// ── …but the invitation cannot be spent while the party is cut off ───────
-			// Seating a `Strand.Member` row is a STRAND write, and the machines that
-			// would have to carry it are precisely the ones being denied — the removed
-			// party cannot even see the `Strand.Invite` row the responder just issued.
-			// So a fresh formation alone does NOT re-admit anyone; it only re-arms the
-			// joiner side. Bounded, and paired with the positive claim below on the same
-			// fixture: a strand that had merely stalled would fail that instead of
-			// passing this.
+			// ── …but the invitation is never even ATTEMPTED ─────────────────────────
+			// What is pinned here is the OUTCOME — a fresh formation alone re-admits
+			// nobody — and the mechanism behind it, which is NOT the one the shape of
+			// this test first suggests.
+			//
+			// Two things would each block the redemption on their own:
+			//   (a) seating a `Strand.Member` row is a STRAND write, and the machines
+			//       that would carry it are precisely the ones being denied; and
+			//   (b) nothing ever tries. `StrandMembershipReconciler` latches a terminal
+			//       `done` once the member row and binding are in place — during the
+			//       FIRST join, above — and `adoptFormationMembershipInvite` stages the
+			//       second invitation without re-arming it. `start()` early-returns on a
+			//       stopped loop, and only a strand relaunch (quiesce → resume, or a
+			//       process restart) builds a new one.
+			//
+			// (b) is what is actually operative, and it comes first: with
+			// `DEBUG=sereus:cadre:strand-membership-reconciler`, all three reconcilers
+			// log "stopped (done)" BEFORE the removal, and not one line is logged during
+			// the window below. So this test does not — and cannot — demonstrate (a);
+			// treating it as proof of (a) is the mistake to avoid.
+			//
+			// The staged-invitation assertions are what discriminate the two: an
+			// invitation the reconciler had merely FAILED to redeem would have been
+			// consumed, burned or dropped by now (it clears its own entry on every
+			// settled outcome). Still staged, untouched, means no pass ran.
+			// `backlog/bug-removed-party-cannot-redeem-its-way-back` carries both arms.
 			await sleep(NO_SELF_READMISSION_BUDGET_MS);
 			expect(await memberKeys(host0.db)).not.toContain(joinerMemberKey);
 			expectCut(host0, join0, 'a fresh formation changes nothing on the strand plane');
+			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
 
 			// ── The re-admission a remaining manager authors DOES heal it ────────────
 			// The manager seats the member key directly on its own replica, so the heal
@@ -897,6 +920,16 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			await connectStrandNodes(join0.libp2p, join0.label, host0.libp2p, host0.label, MESH_TIMEOUT_MS);
 			await insertWithRetry(host0, 'after-readmission', 'welcome back', REMAINING_COHORT_WRITE_BUDGET_MS);
 			await awaitRowVisible(join0, 'after-readmission', 'welcome back');
+
+			// The discriminating assertion for (b) above: the strand plane is fully
+			// healed — the row just written by the host reached this very machine — and
+			// the second invitation is STILL staged, neither redeemed nor burned. A
+			// reconciler that was merely network-blocked would have settled it by now;
+			// the loop is gone, not waiting. This is the loose end
+			// `bug-removed-party-cannot-redeem-its-way-back` has to close, and if a fix
+			// re-arms the reconciler this assertion flips — rewrite it to the new
+			// behaviour rather than deleting it.
+			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
 		} finally {
 			await topology?.stop();
 		}

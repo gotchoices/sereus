@@ -256,6 +256,15 @@ export class StrandMembershipReconciler {
     this.reconciling = true;
     try {
       if (this.deps.isSelfRevoked?.() === true) {
+        // NOTE: "arrives via a fresh formation" is aspirational, not current behaviour.
+        // A fresh formation stages a new invitation (`adoptFormationMembershipInvite`)
+        // but does NOT re-arm this loop — `finish` latches `stoppedFlag` and `start()`
+        // early-returns on it, so only a strand relaunch (quiesce → resume, or a process
+        // restart) builds a reconciler that would redeem it. The same latch applies on the
+        // `done` path below, which is the case a REMOVED party actually hits: it finished
+        // its first join long before it was removed. Measured end to end in
+        // `strand-party-removal-via-formation-e2e.integration.ts` (test 2), tracked as
+        // `backlog/bug-removed-party-cannot-redeem-its-way-back`.
         this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation');
         return;
       }

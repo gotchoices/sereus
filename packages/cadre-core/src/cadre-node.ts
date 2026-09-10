@@ -6537,6 +6537,14 @@ export class CadreNode implements SAppIdLookup {
         { cause: error }
       );
     }
+    // NOTE: staging alone is not enough on a node whose reconciler for this strand has
+    // already finished. `StrandMembershipReconciler` latches a terminal stopped state on
+    // its `done` path and is rebuilt only by a strand relaunch, so a RE-formation against
+    // an already-launched strand stages an invitation no loop will ever look at. Harmless
+    // for a party that is still a member (the invitation would only be burned), and the
+    // live defect for one that has been REMOVED — which is exactly when an app re-forms.
+    // Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`; pinned by
+    // `strand-party-removal-via-formation-e2e.integration.ts` (test 2).
     this.pendingMembershipInvites.set(strandId, invite);
     log('formStrand: staged membership invitation for strand %s (party key persisted)', strandId);
   }
