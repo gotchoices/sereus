@@ -242,6 +242,11 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 				relayAddrs: [relay.dialAddr],
 			}));
 			await B.start();
+			// B is a REAL party, not a bare node: a closed-strand formation makes the
+			// joiner persist its OWN membership identity (`StrandPartyKey`) into its own
+			// control DB, which is an owner-signed write. Without genesis that insert is
+			// refused and `formStrand` fails the whole join.
+			await makeOwnOwner(B, bKey);
 			const bPeerId = B.peerId!.toString();
 			for (const addr of controlAddrs(B)) {
 				expect(addr).toContain('/p2p-circuit');
@@ -266,6 +271,12 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 			// The closed strand's membership secret crossed the circuit intact —
 			// the whole point of binding the invite to a closed strand.
 			expect(formResult.memberPrivateKey).toBe(memberPrivateKey);
+			// So did B's own single-use membership invitation, and B's node adopted it:
+			// its own party identity persisted, the invitation staged for bring-up. This
+			// is the only RELAY-ROUTED exercise of that field.
+			expect(formResult.membershipInvite).toBeDefined();
+			expect(await B.getControlDatabase()!.queryStrandPartyKey(strandId)).not.toBeNull();
+			expect(B.getPendingMembershipInvite(strandId)).toEqual(formResult.membershipInvite);
 
 			// The formation-carried seed is a RELAY-ROUTED strand address: every
 			// entry is a live announced addr of A's STRAND node (sampled now, not

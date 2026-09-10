@@ -288,8 +288,34 @@ describe('formation membership invitation (initiator floor)', () => {
     ).rejects.toThrow(/Responder result failed validation/);
   });
 
+  it('a permissive custom validator still cannot get a malformed invitation into the result', async () => {
+    // The default validator is the FIRST floor; this pins the SECOND — the manager's own
+    // re-check, which drops (rather than carries) an invitation a custom
+    // FormationResponseValidator waved through.
+    const malformed = { inviteKey: 'not base64url !!!', invitePrivateKey: 42 };
+    const recorder = fakeRecorder(BOUND);
+    const manager = new StrandFormationManager({
+      formationUsageRecorder: recorder,
+      partyId: HOST_PARTY,
+      cadrePeerAddrs: HOST_CADRE,
+      formationResponseValidator: { async validateResponse() { return true; } },
+      issueMembershipInvite: async () => malformed as unknown as StrandMembershipInvite
+    });
+    const { node, invoke } = captureHandler();
+    manager.registerResponder(node);
+    const { invitation, disclosure, consent } = await formationArgs('invite-permissive', 'permissive');
+
+    const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
+
+    expect(result.strandId).toBe(HOST_STRAND_ID);
+    expect(result.membershipInvite).toBeUndefined();
+  });
+
   it('isWellFormedMembershipInvite: accepts the real shape, rejects every malformation', () => {
     expect(isWellFormedMembershipInvite(GOOD_INVITE)).toBe(true);
+    // The length bound is inclusive — a future longer encoding must not be rejected one
+    // character early.
+    expect(isWellFormedMembershipInvite({ inviteKey: 'A'.repeat(256), invitePrivateKey: 'B' })).toBe(true);
 
     expect(isWellFormedMembershipInvite(undefined)).toBe(false);
     expect(isWellFormedMembershipInvite(null)).toBe(false);

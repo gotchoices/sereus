@@ -6527,17 +6527,32 @@ export class CadreNode implements SAppIdLookup {
    * validated joiner can seat its own `Strand.Member` row.
    *
    * - Open host strand → `null` (no members, nothing to invite into).
-   * - Closed host strand with no running local instance/database → throw: a joiner
-   *   admitted without an invitation would look joined and never become a member, and a
-   *   responder not running the strand cannot serve its sync anyway. The manager maps
-   *   the throw to a clean retryable rejection BEFORE the formation token is spent.
-   * - Closed host strand with no `StrandPartyKey` row → throw, same mapping: this
-   *   party's identity is the invite's issuing manager, and without it nothing can sign
-   *   the issuance. (The founder's publish/launch paths mint it, so this is a
-   *   not-yet-converged sibling or a pre-split strand that has not healed.)
+   * - Closed host strand with no `StrandPartyKey` row → throw: this party's identity is
+   *   the invite's issuing manager, and without it nothing can sign the issuance. (The
+   *   founder's publish/launch paths mint it, so this is a not-yet-converged sibling or
+   *   a pre-split strand that has not healed.) The manager maps the throw to a clean
+   *   retryable rejection BEFORE the formation token is spent.
+   * - Closed host strand with no running local instance/database → throw, same mapping:
+   *   a joiner admitted without an invitation would look joined and never become a
+   *   member, and a responder not running the strand cannot serve its sync anyway.
+   *
+   * Identity is checked BEFORE the runtime: it is the cheaper read and the more
+   * actionable diagnosis when both are missing (a missing runtime is transient, a
+   * missing identity is not), and it keeps the branch reachable without standing a
+   * strand runtime up.
    *
    * The invitation expires `MEMBERSHIP_INVITE_TTL_MS` from now — see that constant for
    * the slow-joiner / lost-result tradeoff.
+   *
+   * NOTE: the issuing identity must be a `Strand.Manager` (the schema's `InviteValid`
+   * gate), and only the FOUNDING party's key is seated as one. Today only the founder
+   * party can host a bound formation at all — a joining party never gets the host
+   * strand's control `Strand` row, so `resolveStrand` reports `missing` on it — so this
+   * never bites. If a joined party is ever able to host formations into a strand it
+   * joined (re-invite / multi-hop join), issuance here fails the manager gate and every
+   * such redemption rejects with the retryable-sounding
+   * `MEMBERSHIP_INVITE_UNAVAILABLE_REASON` forever; that flow needs manager delegation,
+   * not a retry.
    */
   private async issueStrandMembershipInvite(strandId: string): Promise<StrandMembershipInvite | null> {
     if (!this.controlDatabase) {
@@ -6552,19 +6567,19 @@ export class CadreNode implements SAppIdLookup {
     if (row.Type !== 'c') {
       return null;
     }
-    const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();
-    if (!db) {
-      throw new Error(
-        `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
-        'not live on this responder (not launched, hibernating, or quiescing)'
-      );
-    }
     const partyKey = await this.controlDatabase.queryStrandPartyKey(strandId);
     if (partyKey === null) {
       throw new Error(
         `Cannot issue a membership invitation for closed strand ${strandId}: this party holds ` +
         'no StrandPartyKey row for it (identity not yet converged, or a pre-split strand that ' +
         'has not healed at launch)'
+      );
+    }
+    const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();
+    if (!db) {
+      throw new Error(
+        `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
+        'not live on this responder (not launched, hibernating, or quiescing)'
       );
     }
     return await issueInvite(db, {
