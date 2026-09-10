@@ -583,6 +583,39 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(throttleMap(harness.node).has('s2')).toBe(false);
   });
 
+  it('re-forming against a running strand refreshes on the next tick, not ten minutes later', async () => {
+    // Re-forming is the documented recovery when a carried address goes dead (the
+    // responder rotated its relay reservation). If the freshly-carried addresses had to
+    // wait out the rest of the refresh throttle, that recovery would take up to the full
+    // interval to reach the address book.
+    const [self, crossStrand, crossStrand2, ownStrand] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
+    );
+    const stale = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
+    const fresh = `/ip4/203.0.113.9/tcp/4003/ws/p2p/${crossStrand2}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    recordCrossParty(harness.node, 's1', [stale]);
+    await refresh(harness.node, T0);
+    expect(throttleMap(harness.node).get('s1')).toBe(T0);
+
+    // A second redemption lands one tick later — well inside the throttle window.
+    recordCrossParty(harness.node, 's1', [fresh]);
+    expect(throttleMap(harness.node).has('s1')).toBe(false);
+
+    await refresh(harness.node, T0 + 15_000);
+    expect(strand.merges).toEqual([
+      { peerId: crossStrand, addrs: [stale] },
+      { peerId: crossStrand2, addrs: [fresh] },
+      { peerId: crossStrand, addrs: [stale] }
+    ]);
+  });
+
   it('honours a configured strandAddrRefreshMs override', async () => {
     const [self, sib, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
     const strand = fakeStrandNode(ownStrand);

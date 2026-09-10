@@ -4,6 +4,8 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Libp2p } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
+import { multiaddr } from '@multiformats/multiaddr';
+import { groupAddrsByPeerId } from '../src/peer-addr-book.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { duplexPair } from './wake-stream-helpers.js';
 
@@ -306,6 +308,22 @@ describe('CadreNode cross-party strand addrs in the cohort seed', () => {
     expect(contactMap(node).get('strand-x')).toEqual([CROSS_A]);
   });
 
+  it('caps the accumulated list, so repeat formations cannot grow it without bound', async () => {
+    // The map accumulates across redemptions and nothing here can tell a dead entry from a
+    // live one, so without a cap a re-invited strand would gain up to 16 addrs per
+    // redemption for the node's lifetime — every one of them re-merged into the strand's
+    // peerStore on every refresh pass.
+    const node = new CadreNode(createConfig());
+    const addr = (i: number): string => `/ip4/203.0.113.7/tcp/${4000 + i}/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN`;
+    recordCrossParty(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(i)));
+    recordCrossParty(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
+
+    const stored = contactMap(node).get('strand-x')!;
+    expect(stored).toHaveLength(16);
+    // The freshest disclosure survives whole; the older entries are what fall off the end.
+    expect(stored).toEqual(Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
+  });
+
   it('merges a second formation against the same strand, newest first', async () => {
     // Two redemptions of the same host strand (a re-invite after a relay rotation): the
     // fresher disclosure leads, the older entry stays as a fallback.
@@ -313,5 +331,58 @@ describe('CadreNode cross-party strand addrs in the cohort seed', () => {
     recordCrossParty(node, 'strand-x', [CROSS_A]);
     recordCrossParty(node, 'strand-x', [CROSS_B, CROSS_A]);
     expect(contactMap(node).get('strand-x')).toEqual([CROSS_B, CROSS_A]);
+  });
+});
+
+// ── What this node ANSWERS with: getStrandMultiaddrs ──────────────────────────
+
+describe('CadreNode.getStrandMultiaddrs', () => {
+  /** Drive the private answer path against a strand node announcing `announced`. */
+  function answers(announced: string[], strandPeerId: string): string[] {
+    const node = new CadreNode(createConfig());
+    const instance = {
+      strandId: 's1',
+      status: 'active',
+      libp2pNode: {
+        peerId: { toString: () => strandPeerId },
+        getMultiaddrs: () => announced.map((a) => multiaddr(a))
+      }
+    };
+    (node as unknown as { strandManager: unknown }).strandManager = {
+      getInstance: (id: string) => (id === 's1' ? instance : undefined)
+    };
+    return (node as unknown as { getStrandMultiaddrs(id: string): string[] }).getStrandMultiaddrs('s1');
+  }
+
+  it('returns [] for a strand with no live node', () => {
+    const node = new CadreNode(createConfig());
+    (node as unknown as { strandManager: unknown }).strandManager = { getInstance: () => undefined };
+    expect((node as unknown as { getStrandMultiaddrs(id: string): string[] }).getStrandMultiaddrs('s1')).toEqual([]);
+  });
+
+  it('binds every announced addr to this strand node, so the receiver can attribute it', async () => {
+    // Both consumers — the strand-addr RPC answer and the formation result's
+    // `strandAddrs` — run the list through `groupAddrsByPeerId` on arrival, which DROPS
+    // an entry naming no destination. libp2p normally appends the id itself; these are
+    // the two shapes where it would not.
+    const [self, relay] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const bare = '/ip4/10.0.0.1/tcp/4001/ws';
+    const hop = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit`;
+    const already = `/ip4/10.0.0.2/tcp/4002/p2p/${self}`;
+
+    const out = answers([bare, hop, already], self);
+
+    // Signaling (circuit) first, then the direct addrs in their announced order.
+    expect(out).toEqual([`${hop}/p2p/${self}`, `${bare}/p2p/${self}`, already]);
+    // ...and every entry survives attribution, filed under THIS node.
+    expect([...groupAddrsByPeerId(out).keys()]).toEqual([self]);
+  });
+
+  it('drops an announced addr that terminates in a DIFFERENT peer id', async () => {
+    // It does not reach this node, and announcing it would file our address under
+    // someone else's id in the receiver's book.
+    const [self, other] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const mine = `/ip4/10.0.0.1/tcp/4001/p2p/${self}`;
+    expect(answers([mine, `/ip4/10.0.0.9/tcp/4001/p2p/${other}`], self)).toEqual([mine]);
   });
 });

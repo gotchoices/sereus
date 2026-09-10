@@ -7,7 +7,7 @@ import { MemoryDatastore } from 'datastore-core';
 import { TypedEventEmitter } from 'main-event';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2pEvents, PeerId, PeerStore } from '@libp2p/interface';
-import { mergePeerAddrs, groupAddrsByPeerId, withAddressedPeerId, type MergeAddrsResult, type PeerAddrBookHost } from '../src/peer-addr-book.js';
+import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult, type PeerAddrBookHost } from '../src/peer-addr-book.js';
 
 /**
  * The address-book merge helper, exercised against a REAL `@libp2p/peer-store`
@@ -310,37 +310,3 @@ describe('groupAddrsByPeerId', () => {
   });
 });
 
-describe('withAddressedPeerId', () => {
-  it('appends the peer id to an address that names no destination', async () => {
-    const self = (await freshPeerId()).toString();
-    expect(withAddressedPeerId('/ip4/10.0.0.1/tcp/4001/ws', self))
-      .toBe(`/ip4/10.0.0.1/tcp/4001/ws/p2p/${self}`);
-  });
-
-  it('appends the peer id behind a relay hop, turning it into a dialable circuit addr', async () => {
-    const [relay, self] = await Promise.all([freshPeerId(), freshPeerId()]);
-    const hop = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit`;
-    // The trailing /p2p/ names the RELAY, so `groupAddrsByPeerId` would drop this as
-    // unattributable; suffixed, it names the destination and survives the round trip.
-    const suffixed = withAddressedPeerId(hop, self.toString());
-    expect(suffixed).toBe(`${hop}/p2p/${self.toString()}`);
-    expect([...groupAddrsByPeerId([suffixed!]).keys()]).toEqual([self.toString()]);
-  });
-
-  it('leaves an address that already names a destination untouched', async () => {
-    const self = (await freshPeerId()).toString();
-    const addr = `/ip4/10.0.0.1/tcp/4001/ws/p2p/${self}`;
-    expect(withAddressedPeerId(addr, self)).toBe(addr);
-  });
-
-  it('returns null for an address that does not parse', async () => {
-    const self = (await freshPeerId()).toString();
-    expect(withAddressedPeerId('not-a-multiaddr', self)).toBeNull();
-  });
-
-  it('returns null for a blank address rather than a bare /p2p/ that reaches nothing', async () => {
-    // `multiaddr('')` is a legal EMPTY multiaddr, so this is a guard, not a parse result.
-    const self = (await freshPeerId()).toString();
-    expect(withAddressedPeerId('', self)).toBeNull();
-  });
-});

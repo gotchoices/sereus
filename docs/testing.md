@@ -414,7 +414,14 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-late-cadre-join.integration.ts` (join-after-founding ordering).
 - Cross-party strand, one machine per party (two and three parties) — `strand-formation-e2e.integration.ts`,
   `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
-  `multi-party-workflows.integration.ts`.
+  `multi-party-workflows.integration.ts`. All of those reach the strand mesh by dialing one
+  party's strand node at the other **by hand**, because each forms through a mock provisioner
+  on an unbound invitation and so has no live host strand to learn an address from. The one
+  scenario that reaches it with **no hand-dial** is
+  `strand-formation-cross-party-seed.integration.ts`: the host founds its strand before
+  publishing an invitation bound to it, so the formation result carries the host's live
+  strand addresses and the joiner's seed comes from the handshake alone. Loopback addresses
+  only — the cross-party RELAYED strand shape is still uncovered (see the relay line below).
 - Cross-party, multi-machine parties, control plane only (two parties, each an owner plus a
   drone; no cross-party strand transport) — `multi-party-sync.integration.ts`. Same machine
   layout as the four-machine strand line below, stopping where that one starts.

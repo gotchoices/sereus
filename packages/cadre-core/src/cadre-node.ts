@@ -45,7 +45,7 @@ import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
-import { mergePeerAddrs, groupAddrsByPeerId, withAddressedPeerId, type MergeAddrsResult } from './peer-addr-book.js';
+import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -85,6 +85,7 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+import { MAX_STRAND_ADDRS } from './strand-formation-protocol.js';
 import {
   createMembershipConnectionGater,
   DEFAULT_ENROLLMENT_WINDOW_MS,
@@ -154,11 +155,6 @@ function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
 }
 
 /**
- * Build the signing callback the `ControlDatabase` writers expect: they hand it the
- * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
- * them directly (no pre-hash) with the owner private key, returning a base64url signature.
- */
-/**
  * `primary` followed by the entries of `extra` it does not already contain, de-duplicated
  * and order-preserving.
  *
@@ -182,6 +178,11 @@ function unionAddrs(primary: readonly string[], extra: readonly string[]): strin
   return out;
 }
 
+/**
+ * Build the signing callback the `ControlDatabase` writers expect: they hand it the
+ * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
+ * them directly (no pre-hash) with the owner private key, returning a base64url signature.
+ */
 function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
   return (message: Uint8Array): string =>
     sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
@@ -510,7 +511,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * NOTE: entries are kept for the node's lifetime, including across a
    * {@link stopStrand} — a stopped strand may be rediscovered by the watcher and must
-   * still get its seed. Bounded by the number of strands this node has EVER formed as an
+   * still get its seed. Each strand's list is capped at `MAX_STRAND_ADDRS`, but the
+   * number of KEYS is bounded only by the strands this node has ever formed as an
    * initiator (not by time); if a node ever forms strands at scale, evict on
    * `unpublishStrand` or cap the map.
    */
@@ -2445,20 +2447,25 @@ export class CadreNode implements SAppIdLookup {
    * One address bound to `peerId`, or `null` when it cannot be — logged either
    * way, never thrown, so every caller's list-shaping stays total.
    *
+   * Used both to normalize addresses this node DIALS (a `CadrePeer` row, a
+   * seed-supplied bootstrap addr) and to normalize the ones it ANNOUNCES
+   * ({@link getStrandMultiaddrs}); the rule is the same either way — an address
+   * that does not reach `peerId` is not an address for `peerId`.
+   *
    * `withTrailingPeerId` encapsulates `/p2p/<peerId>`, which throws on a peer id
    * that does not parse. Unreachable for a `CadrePeer` row (the binding gate
-   * above parsed it already), reachable for a seed-supplied one
-   * ({@link bootstrapDialAddrs}).
+   * above parsed it already) and for our own node's id, reachable for a
+   * seed-supplied one ({@link bootstrapDialAddrs}).
    */
   private bindAddrToPeer(addr: Multiaddr, peerId: string): Multiaddr | null {
     try {
       const bound = withTrailingPeerId(addr, peerId);
       if (!bound) {
-        log('normalizeDialAddrs: dropping addr %s — it names a peer other than %s', addr.toString(), peerId);
+        log('bindAddrToPeer: dropping addr %s — it names a peer other than %s', addr.toString(), peerId);
       }
       return bound;
     } catch (error) {
-      log('normalizeDialAddrs: cannot bind %s to %s: %o', addr.toString(), peerId, error);
+      log('bindAddrToPeer: cannot bind %s to %s: %o', addr.toString(), peerId, error);
       return null;
     }
   }
@@ -5018,6 +5025,15 @@ export class CadreNode implements SAppIdLookup {
    * handshake, and a bad entry costs one failed dial that ages out at the
    * peerStore's one-hour expiry. No new gating here — cross-party strand trust is
    * `backlog/strand-network-nat-relay-reachability`.
+   *
+   * NOTE: one input does NOT age out — the cross-party addresses a formation
+   * carried back ({@link crossPartyStrandAddrs}). Nothing can re-resolve them, so
+   * {@link refreshStrandPeerAddrs} re-merges the same stored list every pass, which
+   * also means a junk entry from a responder survives for the node's lifetime rather
+   * than an hour. Bounded to {@link MAX_STRAND_ADDRS} per strand, from a party this
+   * node deliberately formed a strand with, and still authority-free — so the
+   * exposure is a handful of failed dials, not a trust hole. Evict on
+   * `unpublishStrand` if that ever stops being an acceptable price.
    */
   private async mergeStrandPeerAddrs(strandNode: Libp2p, addrs: string[], strandId: string): Promise<void> {
     const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
@@ -5061,18 +5077,26 @@ export class CadreNode implements SAppIdLookup {
     if (!node) {
       return [];
     }
-    // Every entry is made to NAME this strand node (`withAddressedPeerId`), because both
-    // consumers — the strand-addr RPC answer and the formation result's `strandAddrs` —
-    // are attributed per peer on arrival (`groupAddrsByPeerId`) and an entry naming no
-    // destination is dropped there. libp2p already appends the id to its announced
-    // addresses, so this is normally a no-op; it is the guard for a bare listen addr and
-    // for a relay hop whose trailing `/p2p/` names the RELAY.
+    // Every entry is bound to THIS strand node's id, because both consumers — the
+    // strand-addr RPC answer and the formation result's `strandAddrs` — are attributed
+    // per peer on arrival (`groupAddrsByPeerId`) and an entry naming no destination is
+    // dropped there. libp2p already appends the id to its announced addresses, so this
+    // is normally a no-op; it is the guard for a bare listen addr and for a relay hop
+    // whose trailing `/p2p/` names the RELAY. An addr terminating in a DIFFERENT id is
+    // dropped rather than announced — it does not reach this node, and announcing it
+    // would file our address under someone else's id in the receiver's book.
+    //
+    // Re-parsed through this package's own `multiaddr` rather than passed straight in:
+    // libp2p hands back its nested `@multiformats/multiaddr` copy, a structurally
+    // different type from the one `withTrailingPeerId` takes (see
+    // `backlog/reference-app-web-libp2p-interface-dedup`). Re-parsing a string libp2p
+    // itself produced cannot fail.
     const selfId = node.peerId.toString();
     const addrs: string[] = [];
     for (const ma of node.getMultiaddrs()) {
-      const addressed = withAddressedPeerId(ma.toString(), selfId);
-      if (addressed !== null) {
-        addrs.push(addressed);
+      const bound = this.bindAddrToPeer(multiaddr(ma.toString()), selfId);
+      if (bound !== null) {
+        addrs.push(bound.toString());
       }
     }
     return orderSignalingFirst(addrs);
@@ -6253,8 +6277,21 @@ export class CadreNode implements SAppIdLookup {
       log('formStrand: responder disclosed no strand addrs for %s — cross-party seed stays empty', strandId);
       return;
     }
-    const merged = unionAddrs(strandAddrs, this.crossPartyStrandAddrs.get(strandId) ?? []);
+    // Capped at the same `MAX_STRAND_ADDRS` one arriving list is, because this
+    // ACCUMULATES: re-forming against the same strand (the documented recovery for a
+    // responder whose relay reservation rotated) unions a fresh list onto the old one,
+    // and nothing here can tell a dead entry from a live one. Without the cap, the seed
+    // — and the peerStore rows every refresh pass re-merges from it — would grow by up
+    // to 16 entries per redemption for the node's lifetime. Oldest entries fall off the
+    // end, which is the right end to lose: `unionAddrs` keeps the freshest list first.
+    const merged = unionAddrs(strandAddrs, this.crossPartyStrandAddrs.get(strandId) ?? [])
+      .slice(0, MAX_STRAND_ADDRS);
     this.crossPartyStrandAddrs.set(strandId, merged);
+    // A strand already running when this lands (a re-formation) would otherwise wait out
+    // the rest of its ~10-minute refresh throttle before the new addresses reached its
+    // address book. Clearing the stamp makes the next 15 s reconcile tick merge them,
+    // which matters precisely because re-forming is the recovery path for a dead entry.
+    this.strandPeerAddrRefreshAt.delete(strandId);
     log('formStrand: recorded %d cross-party strand addr(s) for %s', merged.length, strandId);
   }
 

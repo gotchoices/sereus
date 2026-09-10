@@ -62,8 +62,19 @@ formStrand(
     invitePrivateKey: string,
     strandId: string,
     memberPrivateKey?: string,   // closed strands only
+    strandAddrs: string[],       // host's live strand-network addrs; often empty
 }>;
 ```
+
+`strandAddrs` is the joiner's cross-party discovery seed: the host's live strand-network
+multiaddrs, disclosed on the same terms as the rest of the responder's identity (only once
+the token and disclosure validate and provisioning approves). It is **empty whenever the
+host holds no running node for the strand** — the ordinary case for an invitation not bound
+to an existing strand, since the host mints that strand during the redemption itself. Empty
+is normal, never an error. A joiner that launches the strand through the same `CadreNode`
+gets seeded automatically and can ignore the field; it is returned for an app that stands
+the strand up somewhere else. See [architecture.md → Strand-Address
+Resolution](architecture.md#strand-address-resolution).
 
 ## Validate Strand Formation (approval hook)
 
