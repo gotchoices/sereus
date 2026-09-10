@@ -218,6 +218,17 @@ export class StrandMembershipReconciler {
     log('[%s] membership reconciler started (poll %dms)', this.deps.label, this.pollIntervalMs);
   }
 
+  /**
+   * Resolve once no pass is in flight. {@link stop} only disarms the POLL — a pass
+   * already past its stopped check runs to completion, so a caller that must know the
+   * loop can no longer write (`StrandInstanceManager.clearOwnMemberPeerBinding`, which
+   * would otherwise have its removal undone by a racing `registerMemberPeer`) awaits
+   * this after stopping. Never rejects: the pass chain contains every failure.
+   */
+  async settle(): Promise<void> {
+    await this.tail;
+  }
+
   /** Disarm the poll; a pass already in flight completes but writes idempotently. */
   stop(): void {
     if (this.stoppedFlag) return;
@@ -296,6 +307,14 @@ export class StrandMembershipReconciler {
    * otherwise ignored, and the stage is cleared either way: with the member row
    * present the invitation has no further local use, and keeping a possibly-dead
    * credential staged would leave `getPendingMembershipInvite` lying.
+   *
+   * NOTE: accepted tradeoff — a burn that failed for a TRANSIENT reason is never
+   * retried, so that bearer credential stays spendable until it expires. Weighed and
+   * kept because it lands in the same state the strand already documents as normal
+   * ("removal does not cancel an unspent invitation", docs/strands.md) and retrying
+   * would mean keeping a dead-or-alive credential staged indefinitely. Revisit if
+   * unspent invitations ever become a real admission risk — which is when
+   * `feat-strand-member-allowlist-admission` lands.
    */
   private async burnLeftoverInvite(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
     const pending = this.deps.pendingInvite;
@@ -364,7 +383,16 @@ export class StrandMembershipReconciler {
     return this.keyPair;
   }
 
-  /** Count a no-member/no-invitation pass; escalate to ONE visible warning at the bound. */
+  /**
+   * Count a no-member/no-invitation pass; escalate to ONE visible warning at the bound.
+   *
+   * NOTE: an idling loop never gives up — a machine whose party is never admitted keeps
+   * polling for the life of the process, one `Strand.Member` scan per strand per
+   * interval (30 s by default). Negligible at the handful of strands a device runs and
+   * the handful of members a strand has; if a node ever runs strands by the hundred, or
+   * a strand's member set grows large, bound the idle phase (give up after N passes and
+   * surface it) rather than shortening the interval.
+   */
   private noteIdlePass(): void {
     this.idlePasses += 1;
     if (this.idlePasses >= IDLE_PASSES_BEFORE_ESCALATION && !this.idleEscalated) {

@@ -12,6 +12,7 @@ import {
 import {
   bootstrapFounderMembership,
   issueInvite,
+  consumeInvite,
   cancelInvite,
   addMemberByManager,
   sealStrand,
@@ -344,6 +345,28 @@ describe('waiting and failure classification', () => {
     expect(reconciler.stopped).toBe(false);
   }, 30_000);
 
+  it('an invitation already consumed by ANOTHER party is dropped, not retried forever', async () => {
+    const { db, founder } = await openClosedStrand();
+    const winner = await freshParty();
+    const loser = await freshParty();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    // The bearer credential is spent by whoever presents it first…
+    await consumeInvite(db, {
+      inviteKey: invite.inviteKey,
+      invitePrivateKey: invite.invitePrivateKey,
+      memberKey: winner.pair.publicKeyB64,
+    });
+    // …so a second holder's staged copy is dead on arrival (ConsumedInvite's primary key).
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const reconciler = reconcilerOver(db, loser.privateKey, { pendingInvite: slot.source });
+
+    await reconciler.reconcile();
+
+    expect(slot.staged()).toBeUndefined();
+    expect(await isStrandMember(db, loser.pair.publicKeyB64)).toBe(false);
+    expect(reconciler.stopped).toBe(false);
+  }, 30_000);
+
   it('a SEALED strand is terminal: the loop stops rather than retry forever', async () => {
     const { db, founder } = await openClosedStrand();
     const joiner = await freshParty();
@@ -446,6 +469,24 @@ describe('scheduler wiring', () => {
 
     expect(reconciler.done).toBe(true);
     expect(clock.cleared()).toBe(true);
+  }, 30_000);
+
+  it('stop() does not cancel a pass already in flight — settle() is what waits it out', async () => {
+    const strand = await openClosedStrand();
+    // Stop the loop from INSIDE the pass, at the last read before the binding write:
+    // this is exactly the race clearOwnMemberPeerBinding faces, made deterministic.
+    const reconciler: StrandMembershipReconciler = reconcilerOver(strand.db, strand.founderPrivateKey, {
+      getOwnPeerId: () => { reconciler.stop(); return 'founder-machine'; },
+    });
+
+    void reconciler.reconcile();
+    await reconciler.settle();
+
+    // The pass stop() could not cancel ran to completion and wrote — which is why
+    // clearOwnMemberPeerBinding awaits settle() before removing the binding.
+    expect(reconciler.stopped).toBe(true);
+    expect(reconciler.done).toBe(true);
+    expect(await tableCount(strand.db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
   it('stop() disarms the poll and later passes are inert', async () => {

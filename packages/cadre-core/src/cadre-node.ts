@@ -4478,6 +4478,13 @@ export class CadreNode implements SAppIdLookup {
     // keeps the stale binding, which grants nothing today. Sibling machines observing
     // this removal via their watchers do NOT clear their own bindings (see the NOTE on
     // StrandInstanceManager.clearOwnMemberPeerBinding).
+    //
+    // NOTE: this makes unpublishStrand await a STRAND-NETWORK write it never used to —
+    // however long that write takes to reject or commit is now added to unpublish's
+    // wall-clock. Fine while strand writes fail fast on an unreachable quorum; if
+    // unpublish ever starts hanging on an isolated strand, give this call its own
+    // deadline rather than dropping it (a binding cleared late is still worth more than
+    // one never cleared).
     await this.strandManager.clearOwnMemberPeerBinding(trimmed);
     // Converge locally now rather than waiting up to a poll interval. The watcher fires
     // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose
@@ -6537,9 +6544,11 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The pending single-use membership invitation a closed-strand formation carried back
    * for `strandId`, or `undefined` when none is staged — the seam the strand bring-up
-   * flow (`strand-node-binds-member-peer`) reads to redeem the joiner's `Strand.Member`
-   * seat. In-memory only; see {@link pendingMembershipInvites} for lifetime and
-   * re-formation semantics.
+   * membership reconciler (`strand-membership-reconciler.ts`) reads to redeem the
+   * joiner's `Strand.Member` seat. `undefined` therefore also means "already redeemed,
+   * burned, or found dead": the reconciler clears the entry as soon as it settles the
+   * invitation, so a caller polling this sees it disappear on its own. In-memory only;
+   * see {@link pendingMembershipInvites} for lifetime and re-formation semantics.
    */
   getPendingMembershipInvite(strandId: string): StrandMembershipInvite | undefined {
     return this.pendingMembershipInvites.get(strandId);

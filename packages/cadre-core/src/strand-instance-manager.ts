@@ -800,8 +800,9 @@ export class StrandInstanceManager {
    * without a party key; a quiesced (hibernating) strand, or a strand whose write
    * quorum is already unreachable, leaves the stale binding behind with a log —
    * it grants nothing today (admission is not allowlist-gated) and only
-   * mis-credits diversity. The strand's own membership reconciler is stopped
-   * FIRST so a racing pass cannot re-register the binding just cleared.
+   * mis-credits diversity. The strand's own membership reconciler is stopped —
+   * and its in-flight pass awaited — FIRST, so a pass that was already past its
+   * own stopped check cannot re-register the binding this is about to clear.
    *
    * NOTE: deliberately NOT handled here (or anywhere yet): clearing the bindings
    * of a machine removed from the CADRE at the control layer, or of a party's
@@ -817,7 +818,11 @@ export class StrandInstanceManager {
     if (!instance || !config || config.strandRow.Type !== 'c' || !config.partyMemberPrivateKey) {
       return;
     }
-    this.membershipReconcilers.get(strandId)?.stop();
+    const reconciler = this.membershipReconcilers.get(strandId);
+    if (reconciler) {
+      reconciler.stop();
+      await reconciler.settle();
+    }
     const db = instance.database?.getDatabase();
     const peerId = instance.libp2pNode?.peerId.toString();
     if (!db || !peerId) {

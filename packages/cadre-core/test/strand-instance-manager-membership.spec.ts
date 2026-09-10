@@ -44,8 +44,14 @@ const mocks = vi.hoisted(() => {
   });
   const reconcilerStart = vi.fn();
   const reconcilerStop = vi.fn();
+  const reconcilerSettle = vi.fn(async () => {});
   const StrandMembershipReconciler = vi.fn(function StrandMembershipReconcilerMock() {
-    return { start: reconcilerStart, stop: reconcilerStop, reconcile: vi.fn(async () => {}) };
+    return {
+      start: reconcilerStart,
+      stop: reconcilerStop,
+      settle: reconcilerSettle,
+      reconcile: vi.fn(async () => {}),
+    };
   });
   const enforcerIsRevoked = vi.fn(() => false);
   const StrandRevocationEnforcer = vi.fn(function StrandRevocationEnforcerMock() {
@@ -62,7 +68,7 @@ const mocks = vi.hoisted(() => {
   const removeMemberPeer = vi.fn(async () => {});
   return {
     stop, fakeDb, createLibp2pNode, StrandDatabase,
-    StrandMembershipReconciler, reconcilerStart, reconcilerStop,
+    StrandMembershipReconciler, reconcilerStart, reconcilerStop, reconcilerSettle,
     StrandRevocationEnforcer, enforcerIsRevoked, createRevocationConnectionGater, readStrandRevocationRows,
     removeMemberPeer,
   };
@@ -267,8 +273,12 @@ describe('clearOwnMemberPeerBinding', () => {
 
     await manager.clearOwnMemberPeerBinding('clear-live');
 
-    // The reconciler is silenced FIRST so a racing pass cannot re-register.
+    // The reconciler is silenced FIRST — and its in-flight pass awaited, since
+    // stop() only disarms the poll — so no racing pass can re-register the binding.
     expect(mocks.reconcilerStop).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcilerSettle).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcilerSettle.mock.invocationCallOrder[0]!)
+      .toBeLessThan(mocks.removeMemberPeer.mock.invocationCallOrder[0]!);
     expect(mocks.removeMemberPeer).toHaveBeenCalledTimes(1);
     const [db, params] = mocks.removeMemberPeer.mock.calls[0] as unknown as [
       Database, { memberKeyPair: { publicKeyB64: string }; peerId: string }
