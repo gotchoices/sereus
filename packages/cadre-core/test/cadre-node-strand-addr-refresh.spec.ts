@@ -202,6 +202,13 @@ function throttleMap(node: CadreNode): Map<string, number> {
   return (node as unknown as { strandPeerAddrRefreshAt: Map<string, number> }).strandPeerAddrRefreshAt;
 }
 
+/** Record a formation's cross-party strand addrs, exactly as a successful `formStrand` does. */
+function recordCrossParty(node: CadreNode, strandId: string, addrs: string[]): void {
+  (node as unknown as {
+    recordCrossPartyStrandAddrs(id: string, addrs: readonly string[]): void;
+  }).recordCrossPartyStrandAddrs(strandId, addrs);
+}
+
 const T0 = 1_700_000_000_000;
 
 describe('CadreNode.refreshStrandPeerAddrs', () => {
@@ -489,6 +496,91 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
 
     expect(queries).toBe(0);
     expect(harness.asked).toEqual([]);
+  });
+
+  // ── Cross-party addrs: re-merged on every pass, with or without a sibling ──
+
+  it("keeps a formation's cross-party addrs alive when there is no sibling to ask", async () => {
+    // Nothing can RE-RESOLVE a cross-party address — the strand-addr RPC is
+    // membership-gated and answers own-party callers only — so this periodic re-merge is
+    // the only thing standing between the joiner's seed and the peerStore's one-hour
+    // expiry. A two-party joiner has no cohort sibling at all, which is exactly the case
+    // that used to make the pass return before merging anything.
+    const [self, crossStrand, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    recordCrossParty(harness.node, 's1', [crossAddr]);
+
+    await refresh(harness.node, T0);
+
+    expect(harness.asked).toEqual([]);
+    expect(strand.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
+    // The pass DID work, so it stamps — unlike the nothing-to-do case above, it must not
+    // re-run on every 15 s reconcile tick.
+    expect(throttleMap(harness.node).get('s1')).toBe(T0);
+
+    // ...and it comes back round once the refresh interval has elapsed, which is what
+    // actually beats the expiry.
+    await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS);
+    expect(strand.merges).toHaveLength(2);
+  });
+
+  it('unions cross-party addrs with the sibling answers rather than replacing them', async () => {
+    const [self, sib, sibStrand, crossStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 5 }, () => freshPeerId())
+    );
+    const sibAddr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
+    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [sib],
+      replies: new Map([[sib, { 's1': [sibAddr] }]]),
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    recordCrossParty(harness.node, 's1', [crossAddr]);
+
+    await refresh(harness.node, T0);
+
+    expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
+    // Two peers, one from each source — the cross-party entry is filed under the OTHER
+    // party's strand transport id, never merged into the sibling's group.
+    expect(strand.merges).toEqual([
+      { peerId: sibStrand, addrs: [sibAddr] },
+      { peerId: crossStrand, addrs: [crossAddr] }
+    ]);
+  });
+
+  it("never merges one strand's cross-party addrs into another strand's address book", async () => {
+    const [self, crossStrand, ownStrand1, ownStrand2] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
+    );
+    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
+    const s1 = fakeStrandNode(ownStrand1);
+    const s2 = fakeStrandNode(ownStrand2);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([
+        ['s1', strandInstance('s1', s1.node)],
+        ['s2', strandInstance('s2', s2.node)]
+      ])
+    });
+    recordCrossParty(harness.node, 's1', [crossAddr]);
+
+    await refresh(harness.node, T0);
+
+    expect(s1.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
+    expect(s2.merges).toEqual([]);
+    expect(throttleMap(harness.node).has('s2')).toBe(false);
   });
 
   it('honours a configured strandAddrRefreshMs override', async () => {

@@ -248,3 +248,44 @@ function restampData(peer: Peer, addrs: Multiaddr[], peerId: PeerId): {
     peerRecordEnvelope: peer.peerRecordEnvelope
   };
 }
+
+/**
+ * `addr` in the shape {@link groupAddrsByPeerId} can attribute: guaranteed to name a
+ * destination peer, by appending `/p2p/<peerId>` when it names none.
+ *
+ * The produce-side twin of {@link groupAddrsByPeerId}: an address list that reaches a
+ * remote node (the strand-addr RPC answer, the strand addrs carried on a formation
+ * result) is only usable there if each entry says WHICH peer it reaches. libp2p's
+ * `getMultiaddrs()` normally appends the node's own id already, in which case this is a
+ * no-op; a bare listen addr — or a relay hop whose trailing `/p2p/` names the RELAY
+ * (`…/p2p/<relay>/p2p-circuit`) — would otherwise be dropped on arrival.
+ *
+ * Returns null for an address that is blank or does not parse, so a caller can drop it.
+ * `peerId` itself is taken on trust — callers pass their own node's id — and a bad one
+ * would be folded downstream by `mergePeerAddrs`'s own best-effort parse.
+ */
+export function withAddressedPeerId(addr: string, peerId: string): string | null {
+  // `multiaddr('')` is a legal EMPTY multiaddr, so the parse below would accept it and
+  // hand back a bare `/p2p/<peerId>` that reaches nothing.
+  if (addr.length === 0) {
+    return null;
+  }
+  let parsed: Multiaddr;
+  try {
+    parsed = multiaddr(addr);
+  } catch (error) {
+    log('withAddressedPeerId: skipping unparsable addr %s: %o', addr, error);
+    return null;
+  }
+  if (lastAddressedPeerId(parsed) !== null) {
+    return addr;
+  }
+  const suffixed = `${addr}/p2p/${peerId}`;
+  try {
+    multiaddr(suffixed);
+  } catch (error) {
+    log('withAddressedPeerId: %s + /p2p/%s does not parse: %o', addr, peerId, error);
+    return null;
+  }
+  return suffixed;
+}

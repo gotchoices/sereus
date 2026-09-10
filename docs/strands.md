@@ -71,9 +71,11 @@ ways over the `/p2p-circuit` hop — are proven end to end by
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
 (see [architecture.md → Relay Integration](architecture.md#relay-integration) for what
 exactly it pins, including the per-strand relay-slot cost and the reservation-loss
-asymmetry). That scenario is one party's two machines; the CROSS-party SN–SN story —
-formation handing the other party a relay-routed strand address, discovery, roaming —
-is the part that remains open below.
+asymmetry). That scenario is one party's two machines. Formation now **does** hand the
+other party the responder's strand addresses (see the cross-party paragraph below), so the
+address-handoff half of the cross-party SN–SN story is in place; what remains open is
+proving it over a RELAY rather than loopback, plus discovery and roaming — a party that
+moves to a different relay after formation has no way to say so, and no way to be found.
 
 Open question: what is “the DHT” here?
 - Is a **cadre** its own DHT overlay?
@@ -126,7 +128,7 @@ relays, and is never locked out of its first address by replication ordering.
   - If the answer is “a DHT”, which one, and how is it invitation-only?
 - After strand initialization, the **strand** likely has its own DHT overlay for Optimystic/Quereus routing; does that DHT also serve as the canonical place to publish addresses for existing strand members?
 
-**Within-party answer (implemented).** For a node's **own co-cadre siblings** there is no DHT lookup at all: the control network already gives every party node a connection to its siblings, but a `CadrePeer` row stores only a sibling's **control**-network address — dialing that reaches the sibling's control instance, not its strand instance (a strand is a separate libp2p node on its own port, with its own transport peerId derived from the cadre identity key — cadre authority stays on the control node, and the distinct peerId is what lets both nodes share one circuit relay). So a strand's bootstrap addresses are resolved **on demand over the control mesh**: a node asks each connected sibling "what are your live strand-`X` multiaddrs?" via the `/sereus/strand-addr/1.0.0` RPC and seeds from the union (see [architecture.md → Strand-Address Resolution](architecture.md#strand-address-resolution)). This is single-party only — it bootstraps this party's own nodes onto a strand. **Cross-party** strand discovery (finding *another* party's strand members) remains the open question above: it is future work, expected to use a strand-overlay DHT and/or the strand's own `MemberPeer` records rather than the control network. Until it lands, every discovered strand cohort is one party's machines (a cross-party mesh can still be built by hand — see the cross-party note in [architecture.md → Replication cluster size](architecture.md#replication-cluster-size)) — see [architecture.md → Strand Networks](architecture.md#strand-networks) — so a strand's replication breadth (`DEFAULT_STRAND_CLUSTER_SIZE`, [architecture.md → Replication cluster size](architecture.md#replication-cluster-size)) buys machine redundancy within that party and no party redundancy at all.
+**Within-party answer (implemented).** For a node's **own co-cadre siblings** there is no DHT lookup at all: the control network already gives every party node a connection to its siblings, but a `CadrePeer` row stores only a sibling's **control**-network address — dialing that reaches the sibling's control instance, not its strand instance (a strand is a separate libp2p node on its own port, with its own transport peerId derived from the cadre identity key — cadre authority stays on the control node, and the distinct peerId is what lets both nodes share one circuit relay). So a strand's bootstrap addresses are resolved **on demand over the control mesh**: a node asks each connected sibling "what are your live strand-`X` multiaddrs?" via the `/sereus/strand-addr/1.0.0` RPC and seeds from the union (see [architecture.md → Strand-Address Resolution](architecture.md#strand-address-resolution)). This is single-party only — it bootstraps this party's own nodes onto a strand. See [architecture.md → Strand Networks](architecture.md#strand-networks) and, for what a strand's replication breadth (`DEFAULT_STRAND_CLUSTER_SIZE`) does and does not buy, [architecture.md → Replication cluster size](architecture.md#replication-cluster-size).
 
 That resolution is not one-shot. The launch/resume seed is also merged straight into the
 new strand node's libp2p **address book** (its peerStore), and every running strand
@@ -138,9 +140,33 @@ cluster and repo clients, FRET ping/announce — and a bootstrap address list al
 put anything in the address book that outlives the initial discovery. Without the refresh, a
 sibling that restarts its strand node or rotates its relay reservation stays unreachable
 until this node restarts or resumes the strand, and even the original seed addresses expire
-out of the peerStore after an hour. Only own-cadre siblings are covered — the strand-addr RPC
-is control-network, hence single-party — so cross-party strand members remain the open
-question above.
+out of the peerStore after an hour.
+
+**Cross-party answer (implemented, one-shot).** The RPC above is membership-gated, so it can
+never answer for another party's strand nodes. The address instead travels on the **formation
+handshake** — the one moment the two parties are authenticated to each other and agreeing on a
+strand id. An approving formation result now carries the responder's live strand-network
+addresses for the strand it provisioned (`strandAddrs`), disclosed under exactly the same gate
+as its party id and cadre addresses, so a rejected redemption discloses nothing. The joiner
+keeps them per strand and unions them into that strand's discovery seed — behind any fresher
+sibling answer — on launch, on hibernation resume, and on every periodic address refresh.
+`integration-tests` scenario `strand-formation-cross-party-seed` proves two different parties
+meshing on one strand, and replicating rows across it, with no hand-dial anywhere.
+
+Two limits are real and are **not** solved by that work:
+
+- **In-memory, so one-shot.** The carried addresses die with the joiner's process. A restarted
+  joiner with no sibling of its own running the strand is back to an empty seed, and the
+  cross-party mesh does not re-form until it redeems a fresh invitation. Durability —
+  persisting the contact, or re-resolving it — is `backlog/feat-cross-party-strand-addr-durability`.
+- **Never refreshed.** They are the responder's addresses at the instant of formation. If its
+  relay reservation rotates before the joiner dials, the entry is dead and nothing re-resolves
+  it; recovery today is a fresh invitation.
+
+So the remaining open question is narrower than it was: not "how does one party find another
+party's strand at all", but "how does a party that has already joined **re-find** the other
+side after it moves" — still expected to want a strand-overlay DHT and/or the strand's own
+`MemberPeer` records rather than the control network.
 
 ## Strand Creation
 

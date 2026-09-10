@@ -99,6 +99,22 @@ function resolveSeed(node: CadreNode, strandId: string): Promise<string[]> {
   return (node as unknown as { resolveCohortSeed(id: string): Promise<string[]> }).resolveCohortSeed(strandId);
 }
 
+/**
+ * Record a formation's cross-party strand addrs on `node`, exactly as a successful
+ * `formStrand` does. Driving the real private recorder (rather than writing the map
+ * directly) keeps these tests honest about the empty-list and merge rules it enforces.
+ */
+function recordCrossParty(node: CadreNode, strandId: string, addrs: string[]): void {
+  (node as unknown as {
+    recordCrossPartyStrandAddrs(id: string, addrs: readonly string[]): void;
+  }).recordCrossPartyStrandAddrs(strandId, addrs);
+}
+
+/** The private cross-party contact map, for asserting what a formation recorded. */
+function contactMap(node: CadreNode): Map<string, string[]> {
+  return (node as unknown as { crossPartyStrandAddrs: Map<string, string[]> }).crossPartyStrandAddrs;
+}
+
 describe('CadreNode.resolveCohortSeed', () => {
   it('returns an empty seed when there is no control DB / node', async () => {
     const node = new CadreNode(createConfig());
@@ -216,5 +232,86 @@ describe('CadreNode.resolveCohortSeed', () => {
     const seed = await resolveSeed(node, 'strand-x');
 
     expect(seed).toEqual(['/ip4/2.2.2.2/tcp/2/p2p/strand']);
+  });
+});
+
+// ── Cross-party seed: the addrs a formation carried back ──────────────────────
+
+describe('CadreNode cross-party strand addrs in the cohort seed', () => {
+  const CROSS_A = '/ip4/203.0.113.7/tcp/4001/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
+  const CROSS_B = '/ip4/203.0.113.8/tcp/4002/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
+
+  it('seeds a strand from the formation addrs alone when no sibling can answer', async () => {
+    // The two-party case the whole feature exists for: the joiner has no cohort sibling
+    // running this strand, so the strand-addr RPC yields nothing and the formation addrs
+    // are the ONLY seed there is.
+    const self = await freshPeerId();
+    const node = new CadreNode(createConfig());
+    injectSeed(node, {
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: []
+    });
+    recordCrossParty(node, 'strand-x', [CROSS_A]);
+
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([CROSS_A]);
+  });
+
+  it('seeds from the formation addrs even before the control DB and node exist', async () => {
+    // `addStrand` can run before the control plane is up; the sibling half returns []
+    // there, and the cross-party half must not be lost with it.
+    const node = new CadreNode(createConfig());
+    recordCrossParty(node, 'strand-x', [CROSS_A]);
+
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([CROSS_A]);
+  });
+
+  it('appends formation addrs AFTER sibling answers and de-dupes against them', async () => {
+    const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const siblingAddr = '/ip4/10.0.0.1/tcp/5/p2p/strand';
+    const node = new CadreNode(createConfig());
+    injectSeed(node, {
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [sib],
+      replies: new Map([[sib, [siblingAddr, CROSS_A]]])
+    });
+    recordCrossParty(node, 'strand-x', [CROSS_A, CROSS_B]);
+
+    // Sibling answers lead (they were resolved just now); the formation addr the
+    // sibling already named is not repeated.
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([siblingAddr, CROSS_A, CROSS_B]);
+  });
+
+  it('scopes formation addrs to their own strand', async () => {
+    const self = await freshPeerId();
+    const node = new CadreNode(createConfig());
+    injectSeed(node, {
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: []
+    });
+    recordCrossParty(node, 'strand-x', [CROSS_A]);
+
+    await expect(resolveSeed(node, 'strand-other')).resolves.toEqual([]);
+  });
+
+  it('records nothing for an empty disclosure, so a later one is not shadowed', async () => {
+    const node = new CadreNode(createConfig());
+    recordCrossParty(node, 'strand-x', []);
+    expect(contactMap(node).has('strand-x')).toBe(false);
+
+    recordCrossParty(node, 'strand-x', [CROSS_A]);
+    recordCrossParty(node, 'strand-x', []);
+    expect(contactMap(node).get('strand-x')).toEqual([CROSS_A]);
+  });
+
+  it('merges a second formation against the same strand, newest first', async () => {
+    // Two redemptions of the same host strand (a re-invite after a relay rotation): the
+    // fresher disclosure leads, the older entry stays as a fallback.
+    const node = new CadreNode(createConfig());
+    recordCrossParty(node, 'strand-x', [CROSS_A]);
+    recordCrossParty(node, 'strand-x', [CROSS_B, CROSS_A]);
+    expect(contactMap(node).get('strand-x')).toEqual([CROSS_B, CROSS_A]);
   });
 });

@@ -96,6 +96,17 @@ export interface StrandFormationManagerOptions {
   partyId: string;
   /** This party's cadre peer addresses */
   cadrePeerAddrs?: string[];
+  /**
+   * This node's live STRAND-network multiaddrs for a strand it is running (responder
+   * side). Wired by `CadreNode` to its own per-strand address lookup; the manager has no
+   * route to the strand runtime itself.
+   *
+   * A hook, not a `config` knob, so it sits with the other responder-side seams
+   * (`strandProvisioner`, `formationUsageRecorder`) rather than among the timeouts. Left
+   * unwired — every mock/transport test — the responder simply discloses no strand
+   * addresses and cross-party joiners fall back to an empty seed.
+   */
+  resolveStrandAddrs?: (strandId: string) => string[];
   /** Configuration options */
   config?: StrandFormationManagerConfig;
 }
@@ -120,6 +131,7 @@ export class StrandFormationManager {
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
+  private readonly resolveStrandAddrs?: (strandId: string) => string[];
   private readonly config: StrandFormationManagerConfig;
   private readonly listener: FormationListener;
   private readonly registeredNodes = new Set<Libp2p>();
@@ -132,6 +144,7 @@ export class StrandFormationManager {
     this.formationResponseValidator = options.formationResponseValidator;
     this.partyId = options.partyId;
     this.cadrePeerAddrs = options.cadrePeerAddrs ?? [];
+    this.resolveStrandAddrs = options.resolveStrandAddrs;
     this.config = options.config ?? {};
 
     this.listener = new FormationListener({
@@ -140,6 +153,9 @@ export class StrandFormationManager {
       provisionStrand: (contact, signal) =>
         this.provisionAsResponder(contact, signal),
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
+      // Forwarded only when wired, so `FormationListenerOptions.resolveStrandAddrs`
+      // stays genuinely absent (and the listener short-circuits) for an unwired manager.
+      ...(this.resolveStrandAddrs && { resolveStrandAddrs: this.resolveStrandAddrs }),
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
       provisionTimeoutMs: this.config.provisionTimeoutMs,
@@ -204,7 +220,7 @@ export class StrandFormationManager {
 
     this.dialerSessions++;
     try {
-      const provision = await dialFormation(node, {
+      const dialed = await dialFormation(node, {
         contact,
         responderAddrs: invitation.bootstrap,
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
@@ -214,7 +230,8 @@ export class StrandFormationManager {
         protocolId: this.config.protocolId
       });
 
-      log('Strand formed: %s', provision.strand.strandId);
+      const provision = dialed.provision;
+      log('Strand formed: %s (%d cross-party strand addr(s))', provision.strand.strandId, dialed.strandAddrs.length);
 
       return {
         memberKey: contact.partyId,
@@ -223,7 +240,9 @@ export class StrandFormationManager {
         // The host strand's membership key, delivered through the protocol (provision-then-record).
         // Undefined for an open strand. Kept separate from invitePrivateKey (the initiator's
         // generated signing key), which is set by the StrandSolicitationService layer.
-        memberPrivateKey: provision.memberPrivateKey
+        memberPrivateKey: provision.memberPrivateKey,
+        // Possibly empty — the responder may hold no live strand node yet.
+        strandAddrs: dialed.strandAddrs
       };
     } finally {
       this.dialerSessions--;

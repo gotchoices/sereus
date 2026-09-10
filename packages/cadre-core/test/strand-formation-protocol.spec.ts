@@ -4,6 +4,7 @@ import {
   FormationListener,
   dialFormation,
   isValidResponderCreatesResult,
+  sanitizeStrandAddrs,
   type FormationContactMessage,
   type FormationResultMessage,
   type FormationListenerOptions,
@@ -49,11 +50,24 @@ const RESPONDER_IDENTITY = {
   cadrePeerAddrs: ['/ip4/10.0.0.1/tcp/2/p2p/responder']
 };
 
+/** A real Ed25519 peer id, so the sanitizer's multiaddr parse actually has to pass. */
+const STRAND_PEER = '12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
+
+/** One dialable strand-network addr of {@link STRAND_PEER}, distinct per port. */
+function strandAddr(port: number): string {
+  return `/ip4/10.0.0.1/tcp/${port}/ws/p2p/${STRAND_PEER}`;
+}
+
+/** The responder's live strand-network addrs — the cross-party seed under test. */
+const RESPONDER_STRAND_ADDRS = [strandAddr(9)];
+
 function baseOptions(overrides: Partial<FormationListenerOptions>): {
   options: FormationListenerOptions;
   identityDisclosed: () => boolean;
+  strandAddrsRead: () => string[];
 } {
   let disclosed = false;
+  const strandAddrLookups: string[] = [];
   const options: FormationListenerOptions = {
     validateToken: async () => ({ valid: true }),
     validateDisclosure: async () => true,
@@ -65,9 +79,12 @@ function baseOptions(overrides: Partial<FormationListenerOptions>): {
       }
     }),
     getResponderIdentity: () => { disclosed = true; return RESPONDER_IDENTITY; },
+    // Wired by DEFAULT so every `strandAddrs === undefined` assertion below is a real
+    // claim about disclosure timing rather than a vacuous one about an unwired hook.
+    resolveStrandAddrs: (strandId) => { strandAddrLookups.push(strandId); return RESPONDER_STRAND_ADDRS; },
     ...overrides
   };
-  return { options, identityDisclosed: () => disclosed };
+  return { options, identityDisclosed: () => disclosed, strandAddrsRead: () => strandAddrLookups };
 }
 
 /** An approving `provisionStrand` that spends `delayMs` of real work before answering. */
@@ -105,6 +122,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.reason).toBe('Invalid token');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     // The responder identity must not even be read before a token passes.
     expect(identityDisclosed()).toBe(false);
     // Nor may a spent/forged token still drive the disclosure hook: the token gate comes first.
@@ -127,6 +145,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.approved).toBe(false);
     expect(result.reason).toBe('Invalid disclosure');
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     // The positive control for every `disclosureChecks === 0` assertion elsewhere: a contact
     // that clears consent + token DOES reach the hook, exactly once.
@@ -146,12 +165,13 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.approved).toBe(false);
     expect(result.reason).toBe('Too many concurrent formation sessions');
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     expect(stream.closed).toBe(true);
   });
 
   it('discloses responder identity + provision result only after both validations pass', async () => {
-    const { options, identityDisclosed } = baseOptions({});
+    const { options, identityDisclosed, strandAddrsRead } = baseOptions({});
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
     listener.register(node);
@@ -166,6 +186,25 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.provisionResult?.strand.strandId).toBe('strand-ok');
     expect(result.provisionResult?.strand.createdBy).toBe('responder');
     expect(identityDisclosed()).toBe(true);
+    // The cross-party seed rides the SAME disclosure gate, and is looked up for the
+    // strand that was actually provisioned — never some other strand of this responder.
+    expect(result.strandAddrs).toEqual(RESPONDER_STRAND_ADDRS);
+    expect(strandAddrsRead()).toEqual(['strand-ok']);
+  });
+
+  it('never looks up strand addrs on a rejection, so a stranger cannot probe them', async () => {
+    // The positive control for every `strandAddrs === undefined` assertion in this file:
+    // the hook is wired, the token is not, and the hook is never even CALLED.
+    const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false }) });
+    const listener = new FormationListener(options);
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    expect(decodeFirstFrame<FormationResultMessage>(stream.sent).strandAddrs).toBeUndefined();
+    expect(strandAddrsRead()).toEqual([]);
   });
 
   it('rejects a post-validation provisioning outcome without disclosing responder cadre', async () => {
@@ -187,6 +226,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.reason).toBe('Host strand not yet available on this responder');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(result.provisionResult).toBeUndefined();
     // Identity is read only on the approval path — a rejection discloses nothing.
     expect(identityDisclosed()).toBe(false);
@@ -232,6 +272,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.reason).toBe('Formation provisioning timed out');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     expect(stream.closed).toBe(true);
     // The abandoned hook must have been CANCELLED, not merely left running.
@@ -371,6 +412,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // A post-validation rejection still discloses nothing, adopted or not.
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
   });
 
@@ -483,8 +525,91 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.reason).toBe('Internal formation error');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.strandAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     expect(stream.closed).toBe(true);
+  });
+});
+
+// ── Cross-party strand addrs on the result (the joiner's only discovery seed) ──
+
+describe('FormationListener strandAddrs disclosure', () => {
+  /** Read one approved result out of a listener built from `overrides`. */
+  async function approvedResult(
+    overrides: Partial<FormationListenerOptions>
+  ): Promise<FormationResultMessage> {
+    const { options } = baseOptions(overrides);
+    const listener = new FormationListener(options);
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+    return decodeFirstFrame<FormationResultMessage>(stream.sent);
+  }
+
+  it('approves with NO strandAddrs when the responder holds no live strand node', async () => {
+    // The responder-provisions path mints a strand that has not launched yet, so an empty
+    // answer is the NORMAL case — it must never turn a valid redemption into a failure.
+    const result = await approvedResult({ resolveStrandAddrs: () => [] });
+    expect(result.approved).toBe(true);
+    expect(result.provisionResult?.strand.strandId).toBe('strand-ok');
+    expect(result.strandAddrs).toBeUndefined();
+  });
+
+  it('approves with NO strandAddrs when no resolver is wired at all', async () => {
+    const result = await approvedResult({ resolveStrandAddrs: undefined });
+    expect(result.approved).toBe(true);
+    expect(result.strandAddrs).toBeUndefined();
+  });
+
+  it('approves with NO strandAddrs when the resolver throws', async () => {
+    // The seed is an optimization; the consent row is the commitment. A strand runtime
+    // torn down mid-session must cost the joiner its seed, never its join.
+    const result = await approvedResult({
+      resolveStrandAddrs: () => { throw new Error('strand runtime gone'); }
+    });
+    expect(result.approved).toBe(true);
+    expect(result.provisionResult?.strand.strandId).toBe('strand-ok');
+    expect(result.strandAddrs).toBeUndefined();
+  });
+
+  it('caps the disclosed list so the result frame stays bounded', async () => {
+    const many = Array.from({ length: 40 }, (_v, i) => strandAddr(1000 + i));
+    const result = await approvedResult({ resolveStrandAddrs: () => many });
+    expect(result.strandAddrs).toHaveLength(16);
+    expect(result.strandAddrs).toEqual(many.slice(0, 16));
+  });
+
+  it('skips a malformed entry rather than failing the formation over it', async () => {
+    const good = strandAddr(9);
+    const alsoGood = strandAddr(10);
+    const result = await approvedResult({
+      resolveStrandAddrs: () => [good, 'not-a-multiaddr', alsoGood, good]
+    });
+    expect(result.approved).toBe(true);
+    expect(result.strandAddrs).toEqual([good, alsoGood]);
+  });
+});
+
+// ── sanitizeStrandAddrs: the shared wire-boundary normalizer ───────────────
+
+describe('sanitizeStrandAddrs', () => {
+  it('returns [] for anything that is not an array', () => {
+    expect(sanitizeStrandAddrs(undefined)).toEqual([]);
+    expect(sanitizeStrandAddrs(null)).toEqual([]);
+    expect(sanitizeStrandAddrs(strandAddr(9))).toEqual([]);
+    expect(sanitizeStrandAddrs({ 0: strandAddr(9) })).toEqual([]);
+  });
+
+  it('drops non-strings, empties, unparsables and duplicates, preserving order', () => {
+    const a = strandAddr(9);
+    const b = strandAddr(10);
+    expect(sanitizeStrandAddrs([a, 42, '', 'nonsense', a, b])).toEqual([a, b]);
+  });
+
+  it('caps at 16 entries', () => {
+    const many = Array.from({ length: 25 }, (_v, i) => strandAddr(2000 + i));
+    expect(sanitizeStrandAddrs(many)).toEqual(many.slice(0, 16));
   });
 });
 
@@ -522,6 +647,7 @@ describe('FormationListener joiner-consent pre-check', () => {
       expect(result.reason, label).toBe('Invalid joiner consent');
       expect(result.partyId, label).toBeUndefined();
       expect(result.cadrePeerAddrs, label).toBeUndefined();
+      expect(result.strandAddrs, label).toBeUndefined();
       expect(identityDisclosed(), label).toBe(false);
       expect(tokenChecks, label).toBe(0);
       // validateDisclosure is a host-supplied hook that may do arbitrary work (an allowlist
@@ -600,6 +726,14 @@ describe('isValidResponderCreatesResult rejection matrix', () => {
     })).toBe(false);
   });
 
+  it('accepts a result with an absent or empty strandAddrs', () => {
+    // An empty cross-party seed is the NORMAL responder-provisions outcome; a validator
+    // that rejected it would make every unbound redemption fail.
+    expect(isValidResponderCreatesResult(good)).toBe(true);
+    expect(isValidResponderCreatesResult({ ...good, strandAddrs: [] })).toBe(true);
+    expect(isValidResponderCreatesResult({ ...good, strandAddrs: [strandAddr(9)] })).toBe(true);
+  });
+
   it('rejects a strand the responder did not create', () => {
     expect(isValidResponderCreatesResult({
       ...good,
@@ -635,8 +769,34 @@ describe('dialFormation provision-result invariant', () => {
     });
 
     const result = await dialFormation(node, { contact, responderAddrs, validateResponse: async () => true });
-    expect(result).toEqual(provisionResult);
+    expect(result.provision).toEqual(provisionResult);
+    // A responder that disclosed no strand addrs yields an empty seed, never undefined —
+    // callers above this boundary never have to null-check it.
+    expect(result.strandAddrs).toEqual([]);
     expect(stream.closed).toBe(true);
+  });
+
+  it('returns the responder strand addrs, sanitized, so a padded or junk list cannot reach the seed', async () => {
+    const provisionResult: FormationProvisionResult = {
+      strand: { strandId: 'strand-with-addrs', createdBy: 'responder' },
+      dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+    };
+    const good = strandAddr(7);
+    const alsoGood = strandAddr(8);
+    const padded = Array.from({ length: 30 }, (_v, i) => strandAddr(3000 + i));
+    const { node } = dialNode({
+      approved: true,
+      partyId: RESPONDER_IDENTITY.partyId,
+      cadrePeerAddrs: RESPONDER_IDENTITY.cadrePeerAddrs,
+      strandAddrs: [good, 'garbage', alsoGood, good, ...padded],
+      provisionResult
+    });
+
+    const result = await dialFormation(node, { contact, responderAddrs, validateResponse: async () => true });
+    expect(result.provision).toEqual(provisionResult);
+    expect(result.strandAddrs).toHaveLength(16);
+    expect(result.strandAddrs.slice(0, 2)).toEqual([good, alsoGood]);
+    expect(result.strandAddrs).not.toContain('garbage');
   });
 
   it('throws when the responder approves but returns no provision result', async () => {
@@ -693,7 +853,7 @@ describe('dialFormation provision-result invariant', () => {
       stepTimeoutMs: 10,
       provisionTimeoutMs: 200
     });
-    expect(result).toEqual(provisionResult);
+    expect(result.provision).toEqual(provisionResult);
   });
 
   it('fails the await-response read with its own timeout when the responder never answers', async () => {

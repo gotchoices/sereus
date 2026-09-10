@@ -378,6 +378,7 @@ export {
   FormationListener,
   dialFormation,
   isValidResponderCreatesResult,
+  sanitizeStrandAddrs,
   FORMATION_PROTOCOL,
   type FormationParty,
   type FormationContactMessage,
@@ -387,6 +388,7 @@ export {
   type FormationDbConnectionInfo,
   type FormationListenerOptions,
   type FormationDialOptions,
+  type FormationDialResult,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 

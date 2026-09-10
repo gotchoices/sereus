@@ -110,6 +110,16 @@ const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = DEFAULT_PROVISION_TIMEOUT_MS + PR
  */
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
 
+/**
+ * Cap on the strand-network addresses a formation result carries
+ * ({@link FormationResultMessage.strandAddrs}). A node's own strand multiaddrs are a
+ * handful of entries (one per listen transport, plus a circuit-relay reservation), so
+ * 16 is generous for the honest case while keeping the result frame bounded against a
+ * peer that would pad it — either direction, since both sides run the list through
+ * {@link sanitizeStrandAddrs}.
+ */
+const MAX_STRAND_ADDRS = 16;
+
 // ── Roles ────────────────────────────────────────────────────────────────────
 
 export type FormationParty = 'initiator' | 'responder';
@@ -185,8 +195,58 @@ export interface FormationResultMessage {
   partyId?: string;
   /** Responder's real multiaddrs (omitted on rejection). */
   cadrePeerAddrs?: string[];
+  /**
+   * The responder's live STRAND-network multiaddrs for the provisioned strand — the
+   * initiator's only cross-party discovery seed, since the strand-addr RPC that resolves
+   * a sibling's strand addrs is membership-gated and answers own-party callers only.
+   *
+   * Disclosed on the same terms as `partyId`/`cadrePeerAddrs`: only after token +
+   * disclosure validation AND an approving provisioning outcome; a rejection carries
+   * none. Signaling-first, each entry ending in `/p2p/<responder strand transport
+   * peerId>` so the initiator can attribute it. OMITTED when the responder holds no live
+   * strand node for the provisioned strand (the responder-provisions path mints a strand
+   * that has not launched yet) — an absent or empty list is legal and means "no
+   * cross-party seed", never a protocol error.
+   */
+  strandAddrs?: string[];
   /** The provisioned strand/db result (always present on approval). */
   provisionResult?: FormationProvisionResult;
+}
+
+/**
+ * Normalize a strand-address list arriving from — or heading to — the wire: keep only
+ * parsable multiaddr strings, drop duplicates, and cap at {@link MAX_STRAND_ADDRS}.
+ * Order is preserved, so the responder's signaling-first ordering survives.
+ *
+ * Applied on BOTH sides on purpose. The responder bounds what it sends; the initiator
+ * bounds what it stores, because a peer is free to ignore the cap. A malformed entry is
+ * SKIPPED rather than fatal — these are runtime-discovered addresses (same posture as
+ * `extractCircuitRelayTargets` in `delegate-admission.ts`), and one bad entry must not
+ * cost a formation that has otherwise succeeded.
+ */
+export function sanitizeStrandAddrs(addrs: unknown): string[] {
+  if (!Array.isArray(addrs)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of addrs) {
+    if (out.length >= MAX_STRAND_ADDRS) break;
+    if (typeof entry !== 'string' || entry.length === 0) {
+      log('strandAddrs: skipping non-string entry %o', entry);
+      continue;
+    }
+    if (seen.has(entry)) continue;
+    try {
+      multiaddr(entry);
+    } catch (error) {
+      // Deliberately not echoing the raw value at error level: it arrived from a remote
+      // peer. The log line below is the observability for a responder announcing junk.
+      log('strandAddrs: skipping unparsable entry: %o', error);
+      continue;
+    }
+    seen.add(entry);
+    out.push(entry);
+  }
+  return out;
 }
 
 // ── Stream framing helpers ───────────────────────────────────────────────────
@@ -356,6 +416,17 @@ export interface FormationListenerOptions {
   provisionStrand(contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
+  /**
+   * This node's live STRAND-network multiaddrs for a provisioned strand, read on the
+   * approval path only (same disclosure timing as {@link getResponderIdentity}) and
+   * carried back as {@link FormationResultMessage.strandAddrs}.
+   *
+   * Optional, and an empty answer is legal: the strand may not be running here yet (the
+   * responder-provisions path mints it during this very session). The listener cannot
+   * reach the strand runtime itself, so this is the seam `CadreNode` wires to its own
+   * per-strand address lookup.
+   */
+  resolveStrandAddrs?(strandId: string): string[];
   sessionTimeoutMs?: number;
   stepTimeoutMs?: number;
   /**
@@ -562,6 +633,23 @@ export class FormationListener {
     return true;
   }
 
+  /**
+   * The strand addresses to disclose for an APPROVED provisioning, sanitized and capped.
+   *
+   * Never throws: a hook that fails (a strand runtime torn down mid-session) costs the
+   * joiner its cross-party seed, not the formation it has already earned — the seed is
+   * an optimization, the consent row is the commitment.
+   */
+  private strandAddrsFor(id: number, strandId: string): string[] {
+    if (!this.options.resolveStrandAddrs) return [];
+    try {
+      return sanitizeStrandAddrs(this.options.resolveStrandAddrs(strandId));
+    } catch (err) {
+      log('formation session #%d: strand-addr lookup for %s failed (continuing): %o', id, strandId, err);
+      return [];
+    }
+  }
+
   private async runSession(id: number, stream: ControlStream): Promise<void> {
     // Track whether ANY frame has been written so the catch below can convert an
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
@@ -609,10 +697,15 @@ export class FormationListener {
       }
       // Validation + provisioning passed → safe to disclose responder identity/cadre.
       const identity = this.options.getResponderIdentity();
+      const strandAddrs = this.strandAddrsFor(id, outcome.result.strand.strandId);
       send({
         approved: true,
         partyId: identity.partyId,
         cadrePeerAddrs: identity.cadrePeerAddrs,
+        // Omitted rather than sent empty: an absent field and an empty list mean the same
+        // thing to the initiator, and omitting keeps every rejection-parity assertion a
+        // plain `toBeUndefined()`.
+        ...(strandAddrs.length > 0 ? { strandAddrs } : {}),
         provisionResult: outcome.result
       });
     } catch (err) {
@@ -652,11 +745,30 @@ export interface FormationDialOptions {
 }
 
 /**
+ * What one successful formation dial yields the initiator.
+ *
+ * The provisioned strand travels in {@link FormationProvisionResult}, but the responder's
+ * strand-network addresses are NOT part of that structure — they are a disclosure of the
+ * responder's live runtime, alongside `partyId`/`cadrePeerAddrs`, not a property of the
+ * strand row. Returning them beside the provision result keeps that separation while
+ * still handing the caller the one thing it needs to seed a cross-party mesh.
+ *
+ * `strandAddrs` is always an array and is frequently EMPTY — see
+ * {@link FormationResultMessage.strandAddrs}.
+ */
+export interface FormationDialResult {
+  provision: FormationProvisionResult;
+  /** Sanitized + capped ({@link sanitizeStrandAddrs}); `[]` when the responder sent none. */
+  strandAddrs: string[];
+}
+
+/**
  * Initiator side of the native formation protocol. Dials the responder, sends the
  * contact (carrying the real disclosure/token/cadre), validates the responder's
- * result, and returns the strand the responder provisioned.
+ * result, and returns the strand the responder provisioned plus the responder's
+ * strand-network addresses (see {@link FormationDialResult}).
  */
-export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationProvisionResult> {
+export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
   if (options.responderAddrs.length === 0) {
     throw new Error('No responder addresses available for formation');
   }
@@ -684,7 +796,9 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
       if (!ok) throw new Error('Responder result failed validation');
 
       if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
-      return response.provisionResult;
+      // Sanitized HERE — the wire boundary — so nothing above this call ever handles an
+      // unvalidated, unbounded address list from a remote peer.
+      return { provision: response.provisionResult, strandAddrs: sanitizeStrandAddrs(response.strandAddrs) };
     } finally {
       try { await stream.close(); } catch { /* ignore */ }
     }

@@ -933,6 +933,21 @@ export interface FormStrandResult {
    * from {@link invitePrivateKey} (the initiator's own generated signing key).
    */
   memberPrivateKey?: string;
+  /**
+   * The responder's live STRAND-network multiaddrs for the formed strand — the only
+   * cross-party discovery seed there is, since the strand-addr RPC that resolves a
+   * sibling's strand addresses answers own-party callers only.
+   *
+   * Always an array, frequently EMPTY: the responder discloses none when it holds no
+   * live strand node for the strand it just provisioned (the responder-provisions path
+   * mints a strand that has not launched yet). `CadreNode.formStrand` records these
+   * itself, so an embedding app only needs them to seed a strand it launches OUTSIDE
+   * that node.
+   *
+   * One-shot and in-memory: they are the responder's addresses at the moment of
+   * formation and are never re-resolved — see `docs/strands.md`.
+   */
+  strandAddrs: string[];
 }
 
 /**

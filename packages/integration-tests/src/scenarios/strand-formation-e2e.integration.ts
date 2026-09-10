@@ -449,8 +449,15 @@ describe('E2E Strand Formation', () => {
 				});
 				expect(bobStrand.status).toBe('active');
 
-				// Manually connect strand-level libp2p nodes
-				// (strand peer discovery via control network is TODO)
+				// Manually connect strand-level libp2p nodes. Strand peer discovery DOES
+				// exist now — own-party over the strand-addr RPC, cross-party over the
+				// addresses formation carries back — but neither can help HERE: this
+				// scenario redeems an UNBOUND invite through a mock provisioner, so Alice
+				// has no live strand node at redemption time and discloses no strand addrs,
+				// and Alice/Bob are separate parties so no strand-addr RPC applies either.
+				// The de-hand-dialed cross-party proof is the sibling scenario
+				// `strand-formation-cross-party-seed`, whose host founds its strand BEFORE
+				// publishing a bound invite.
 				const aliceStrandAddrs = aliceStrand.libp2pNode!.getMultiaddrs();
 				expect(aliceStrandAddrs.length).toBeGreaterThan(0);
 

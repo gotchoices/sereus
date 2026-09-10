@@ -193,6 +193,12 @@ export interface StrandSolicitationServiceOptions {
   partyId?: string;
   /** Cadre peer addresses for this node */
   cadrePeerAddrs?: string[];
+  /**
+   * This node's live STRAND-network multiaddrs for a strand it is running (responder
+   * side), carried back to a validated joiner as its cross-party discovery seed. Wired
+   * by `CadreNode`; unwired, the responder discloses no strand addresses.
+   */
+  resolveStrandAddrs?: (strandId: string) => string[];
   /** Configuration for the formation manager */
   formationConfig?: StrandFormationManagerConfig;
 }
@@ -217,6 +223,7 @@ export class StrandSolicitationService {
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
+  private readonly resolveStrandAddrs?: (strandId: string) => string[];
   private formationManager?: StrandFormationManager;
   private readonly formationConfig?: StrandFormationManagerConfig;
   /**
@@ -239,6 +246,7 @@ export class StrandSolicitationService {
     this.formationResponseValidator = options?.formationResponseValidator;
     this.partyId = options?.partyId ?? `party-${Date.now()}`;
     this.cadrePeerAddrs = options?.cadrePeerAddrs ?? [];
+    this.resolveStrandAddrs = options?.resolveStrandAddrs;
     this.formationConfig = options?.formationConfig;
     log('StrandSolicitationService created for party: %s', this.partyId);
   }
@@ -256,6 +264,7 @@ export class StrandSolicitationService {
         formationResponseValidator: this.formationResponseValidator,
         partyId: this.partyId,
         cadrePeerAddrs: this.cadrePeerAddrs,
+        resolveStrandAddrs: this.resolveStrandAddrs,
         config: this.formationConfig
       });
     }
@@ -343,7 +352,9 @@ export class StrandSolicitationService {
         strandId: result.strandId,
         // Carry the host strand's membership key delivered over the protocol (closed-strand
         // provision-then-record). invitePrivateKey stays the initiator's generated signing key.
-        memberPrivateKey: result.memberPrivateKey
+        memberPrivateKey: result.memberPrivateKey,
+        // The responder's live strand-network addresses, or `[]` when it had none to give.
+        strandAddrs: result.strandAddrs
       };
     }
 
@@ -354,7 +365,9 @@ export class StrandSolicitationService {
     return {
       memberKey,
       invitePrivateKey,
-      strandId
+      strandId,
+      // No wire, so nothing was disclosed — an empty seed, never absent.
+      strandAddrs: []
     };
   }
 

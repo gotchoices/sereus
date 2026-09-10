@@ -45,7 +45,7 @@ import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
-import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
+import { mergePeerAddrs, groupAddrsByPeerId, withAddressedPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -158,6 +158,30 @@ function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
  * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
  * them directly (no pre-hash) with the owner private key, returning a base64url signature.
  */
+/**
+ * `primary` followed by the entries of `extra` it does not already contain, de-duplicated
+ * and order-preserving.
+ *
+ * Used wherever a strand's discovery seed unions two sources of address strings — the
+ * freshly-RPC'd sibling answers and the cross-party addresses learned at formation. The
+ * caller passes the FRESHER source as `primary`, so a stale entry can only ever be
+ * appended, never promoted ahead of a current one, and each source keeps whatever
+ * signaling-first ordering it arrived with.
+ */
+function unionAddrs(primary: readonly string[], extra: readonly string[]): string[] {
+  if (extra.length === 0) {
+    return [...primary];
+  }
+  const out = [...primary];
+  const seen = new Set(primary);
+  for (const addr of extra) {
+    if (seen.has(addr)) continue;
+    seen.add(addr);
+    out.push(addr);
+  }
+  return out;
+}
+
 function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
   return (message: Uint8Array): string =>
     sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
@@ -461,6 +485,36 @@ export class CadreNode implements SAppIdLookup {
    * stale stamp.
    */
   private readonly strandPeerAddrRefreshAt = new Map<string, number>();
+
+  /**
+   * CROSS-PARTY strand-network addresses learned at formation, keyed by strandId — the
+   * responder's live strand addrs, carried back on the formation result
+   * (`FormationResultMessage.strandAddrs`) and recorded by {@link formStrand}.
+   *
+   * This is the ONLY cross-party discovery input there is. The strand-addr RPC that
+   * resolves a strand's addresses is membership-gated and answers own-party siblings
+   * only, so without this map a joiner's cohort seed for a two-party strand is empty and
+   * the mesh never forms.
+   *
+   * Read by {@link resolveCohortSeed} (launch + hibernation resume) and re-merged by
+   * every {@link refreshStrandPeerAddrs} pass — the re-merge is what keeps the entries
+   * alive past the peerStore's one-hour address expiry, since nothing can re-resolve
+   * them.
+   *
+   * IN-MEMORY and ONE-SHOT, deliberately (see `docs/strands.md`): the addresses die with
+   * the process, and a restarted initiator with no sibling running the strand is back to
+   * an empty seed until the durability work lands
+   * (`backlog/feat-cross-party-strand-addr-durability`). They are also never refreshed,
+   * so a responder whose relay reservation rotates before the initiator dials leaves a
+   * dead entry behind; recovery today is a fresh invitation.
+   *
+   * NOTE: entries are kept for the node's lifetime, including across a
+   * {@link stopStrand} — a stopped strand may be rediscovered by the watcher and must
+   * still get its seed. Bounded by the number of strands this node has EVER formed as an
+   * initiator (not by time); if a node ever forms strands at scale, evict on
+   * `unpublishStrand` or cap the map.
+   */
+  private readonly crossPartyStrandAddrs = new Map<string, string[]>();
 
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
@@ -4636,6 +4690,21 @@ export class CadreNode implements SAppIdLookup {
    * for a relay we are not yet connected to.
    */
   private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<string[]> {
+    const siblings = await this.resolveSiblingSeed(strandId, delegatePeerId);
+    // Sibling answers FIRST: they were resolved just now, while a contact-map entry is as
+    // old as the formation that produced it. `unionAddrs` appends only what the siblings
+    // did not already name, so a fresher answer is never displaced and each source keeps
+    // its own signaling-first ordering.
+    return unionAddrs(siblings, this.crossPartyStrandAddrs.get(strandId) ?? []);
+  }
+
+  /**
+   * The own-party half of {@link resolveCohortSeed}: strand-network addresses resolved
+   * from CONNECTED cohort siblings over the control-mesh strand-addr RPC, doubling as
+   * the delegate announcement when `delegatePeerId` is given. Empty when the control DB
+   * or node is absent (not yet started / torn down).
+   */
+  private async resolveSiblingSeed(strandId: string, delegatePeerId?: string): Promise<string[]> {
     if (!this.controlDatabase || !this.controlNode) {
       return [];
     }
@@ -4857,36 +4926,42 @@ export class CadreNode implements SAppIdLookup {
     if (due.length === 0) {
       return;
     }
-    // A due strand with nobody to ask leaves its throttle unstamped (see below),
-    // so this pass re-enters on EVERY 15 s reconcile tick for as long as the node
-    // is alone — which is the steady state of a solo node running a strand.
     // `connectedSiblingTargets`' membership read is unbounded, and with zero
-    // connections its answer is empty whatever the table holds, so decide it here
-    // from the connection list instead of paying for the read once a tick.
-    if (this.controlNode.getConnections().length === 0) {
-      return;
-    }
+    // connections its answer is empty whatever the table holds, so decide it from the
+    // connection list instead of paying for the read once a tick. Note this only skips
+    // the RPC: a strand carrying cross-party contact addresses still refreshes below,
+    // because those never came from a sibling in the first place.
+    //
     // NOTE: one strand-addr RPC per (due strand × connected sibling) per refresh
     // interval — each a tiny request/response on an already-open control
     // connection. If a node ever runs MANY strands at once, batch the RPC to
     // carry several strand ids per request rather than one fan-out per strand.
-    const targets = await this.connectedSiblingTargets().catch((error): StrandAddrPeer[] => {
-      log('refreshStrandPeerAddrs: sibling enumeration failed (skipping pass): %o', error);
-      return [];
-    });
-    // No sibling to ask (or a shutdown landed mid-enumeration): leave every stamp
-    // untouched so the next reconcile tick retries, rather than sitting out the
-    // whole refresh interval having asked nobody.
-    if (targets.length === 0 || !this._running || !this.controlNode) {
+    const targets = this.controlNode.getConnections().length === 0
+      ? []
+      : await this.connectedSiblingTargets().catch((error): StrandAddrPeer[] => {
+        log('refreshStrandPeerAddrs: sibling enumeration failed (skipping pass): %o', error);
+        return [];
+      });
+    // A shutdown landed mid-enumeration.
+    if (!this._running || !this.controlNode) {
       return;
     }
     await Promise.all(due.map((strandId) => this.refreshOneStrandPeerAddrs(strandId, targets, now)));
   }
 
   /**
-   * One strand's share of {@link refreshStrandPeerAddrs}: RPC the siblings, then
-   * merge their answers into this strand's address book. Errors are logged and
-   * swallowed so one strand's failure never costs the others their refresh.
+   * One strand's share of {@link refreshStrandPeerAddrs}: RPC the siblings, union their
+   * answers with this strand's cross-party contact addresses, and merge the lot into the
+   * strand's address book. Errors are logged and swallowed so one strand's failure never
+   * costs the others their refresh.
+   *
+   * `targets` may be EMPTY — a solo node, or one whose only control peers are strangers.
+   * The cross-party addresses still have to be re-merged in that case: they were learned
+   * at formation and can never be re-resolved, so this periodic re-merge is the ONLY
+   * thing standing between them and the peerStore's one-hour expiry. A strand with
+   * neither a sibling to ask nor a contact entry does nothing and leaves its throttle
+   * unstamped, so the next reconcile tick retries rather than sitting out the whole
+   * refresh interval having done nothing.
    */
   private async refreshOneStrandPeerAddrs(
     strandId: string,
@@ -4898,13 +4973,19 @@ export class CadreNode implements SAppIdLookup {
     if (!controlNode || !strandNode) {
       return;
     }
+    const contactAddrs = this.crossPartyStrandAddrs.get(strandId) ?? [];
+    if (targets.length === 0 && contactAddrs.length === 0) {
+      return;
+    }
     try {
       // The running strand node's own peerId is the delegate to announce — see
       // the relationship note on refreshStrandPeerAddrs.
-      const addrs = await collectStrandAddrs(controlNode, [...targets], strandId, {
-        delegatePeerId: strandNode.peerId.toString()
-      });
-      // Stamped on the RPC having happened, not on its answer: the fan-out is
+      const siblingAddrs = targets.length === 0
+        ? []
+        : await collectStrandAddrs(controlNode, [...targets], strandId, {
+          delegatePeerId: strandNode.peerId.toString()
+        });
+      // Stamped on the pass having happened, not on its answer: the fan-out is
       // what the throttle exists to bound, and an all-empty round is a normal
       // steady state for a strand no connected sibling currently runs.
       this.strandPeerAddrRefreshAt.set(strandId, now);
@@ -4913,7 +4994,7 @@ export class CadreNode implements SAppIdLookup {
       if (!this._running || this.strandManager.getInstance(strandId)?.libp2pNode !== strandNode) {
         return;
       }
-      await this.mergeStrandPeerAddrs(strandNode, addrs, strandId);
+      await this.mergeStrandPeerAddrs(strandNode, unionAddrs(siblingAddrs, contactAddrs), strandId);
     } catch (error) {
       log('refreshStrandPeerAddrs: strand %s refresh failed (continuing): %o', strandId, error);
     }
@@ -4980,7 +5061,21 @@ export class CadreNode implements SAppIdLookup {
     if (!node) {
       return [];
     }
-    return orderSignalingFirst(node.getMultiaddrs().map((ma) => ma.toString()));
+    // Every entry is made to NAME this strand node (`withAddressedPeerId`), because both
+    // consumers — the strand-addr RPC answer and the formation result's `strandAddrs` —
+    // are attributed per peer on arrival (`groupAddrsByPeerId`) and an entry naming no
+    // destination is dropped there. libp2p already appends the id to its announced
+    // addresses, so this is normally a no-op; it is the guard for a bare listen addr and
+    // for a relay hop whose trailing `/p2p/` names the RELAY.
+    const selfId = node.peerId.toString();
+    const addrs: string[] = [];
+    for (const ma of node.getMultiaddrs()) {
+      const addressed = withAddressedPeerId(ma.toString(), selfId);
+      if (addressed !== null) {
+        addrs.push(addressed);
+      }
+    }
+    return orderSignalingFirst(addrs);
   }
 
   /**
@@ -6068,7 +6163,11 @@ export class CadreNode implements SAppIdLookup {
     this.strandSolicitationService = new StrandSolicitationService({
       ...options,
       partyId: this.config.controlNetwork.partyId,
-      cadrePeerAddrs: this.getMultiaddrs()
+      cadrePeerAddrs: this.getMultiaddrs(),
+      // Overrides any caller-supplied hook, exactly like partyId/cadrePeerAddrs: only
+      // this node can say which strand-network addresses it is actually listening on,
+      // and a wrong answer here seeds a joiner's mesh with addresses that reach nobody.
+      resolveStrandAddrs: (strandId: string) => this.getStrandMultiaddrs(strandId)
     });
 
     // Register as responder on the control node
@@ -6130,11 +6229,33 @@ export class CadreNode implements SAppIdLookup {
       this.initializeStrandSolicitation();
     }
 
-    return await this.strandSolicitationService!.formStrand(
+    const result = await this.strandSolicitationService!.formStrand(
       invitation,
       disclosure,
       this.controlNode
     );
+    this.recordCrossPartyStrandAddrs(result.strandId, result.strandAddrs);
+    return result;
+  }
+
+  /**
+   * Remember the responder's strand-network addresses for a strand this node just
+   * formed, so the strand's discovery seed has something to work with when the app
+   * launches it (see {@link crossPartyStrandAddrs}).
+   *
+   * Scoped strictly to `strandId`: these addresses reach ONE strand node of ONE other
+   * party and must never seed another strand's mesh or the control peerStore. An empty
+   * list is recorded as no entry at all rather than an empty one, so a later formation
+   * against the same strand that DOES disclose addresses is not shadowed.
+   */
+  private recordCrossPartyStrandAddrs(strandId: string, strandAddrs: readonly string[]): void {
+    if (strandAddrs.length === 0) {
+      log('formStrand: responder disclosed no strand addrs for %s — cross-party seed stays empty', strandId);
+      return;
+    }
+    const merged = unionAddrs(strandAddrs, this.crossPartyStrandAddrs.get(strandId) ?? []);
+    this.crossPartyStrandAddrs.set(strandId, merged);
+    log('formStrand: recorded %d cross-party strand addr(s) for %s', merged.length, strandId);
   }
 
   /**

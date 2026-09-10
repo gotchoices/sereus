@@ -542,7 +542,11 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		expect(await strandCount(joinerDb, 'Member')).toBe(0);
 		expect(await strandCount(joinerDb, 'Manager')).toBe(0);
 
-		// ── Manually connect strand-level libp2p (peer discovery via control net is TODO) ──
+		// ── Manually connect strand-level libp2p ──
+		// Same reason as strand-formation-e2e's Phase-2 dial: this fixture forms through a
+		// MOCK provisioner (unbound invite), so the founder has no live strand node at
+		// redemption time and the formation result carries no strand addresses to seed
+		// from. The seeded cross-party path is `strand-formation-cross-party-seed`.
 		const founderStrandAddrs = founderStrand.libp2pNode!.getMultiaddrs();
 		expect(founderStrandAddrs.length).toBeGreaterThan(0);
 		await joinerStrand.libp2pNode!.dial(founderStrandAddrs[0]!);
