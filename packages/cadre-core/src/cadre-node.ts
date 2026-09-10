@@ -4662,6 +4662,7 @@ export class CadreNode implements SAppIdLookup {
       // than merely weak. The full argument, and the count that will legitimately go here,
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
+      revocationEnforcement: this.config.strandRevocationEnforcement,
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder
     });

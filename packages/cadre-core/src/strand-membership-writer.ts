@@ -1207,7 +1207,17 @@ async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams, st
   await insertRevocation(db, 'MemberPeer', stampId, memberKeyPair);
 }
 
-/** The manager branch: a manager signs the manager-remove-tagged digest + tombstone. */
+/**
+ * The manager branch: a manager signs the manager-remove-tagged digest + tombstone.
+ *
+ * NOTE: clearing an ORPHANED binding (one whose member was already removed) also
+ * forgets the NETWORK DENIAL of that peer id. The orphaned `MemberPeer` row IS
+ * the record the strand revoked-peer gate derives its deny set from
+ * (`strand-revocation-enforcer.ts`) — the `Strand.Revocation` tombstone keeps
+ * only the stamp, not the peer id — so once the orphan is cleared, remaining
+ * members' nodes resume answering and dialing that peer. Only clear a binding
+ * that should never have existed, or a peer that is truly gone.
+ */
 async function deleteMemberPeerByManager(
   db: Database,
   params: RemoveMemberPeerByManagerParams,

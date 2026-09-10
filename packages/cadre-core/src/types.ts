@@ -2,6 +2,7 @@ import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interf
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
@@ -328,8 +329,14 @@ export interface NetworkConfig {
    * On the CONTROL node this gater is composed with the built-in membership
    * admission gate (`membership-connection-gater.ts`): every hook supplied here
    * is honored unchanged, and on inbound encrypted connections a deny from
-   * either this gater or the membership policy denies. Strand cohort nodes
-   * receive this gater as-is (their peers are legitimately cross-party).
+   * either this gater or the membership policy denies.
+   *
+   * Strand cohort nodes: an OPEN strand's node receives this gater as-is (its
+   * peers are legitimately cross-party). A CLOSED strand's node composes
+   * revoked-peer denial onto it (`strand-revocation-enforcer.ts`) — every hook
+   * supplied here is still honored unchanged, and on the composed hooks
+   * (inbound encrypted connection, outbound peer dial, relay reservation) a
+   * deny from either this gater or the revocation check denies.
    */
   connectionGater?: ConnectionGater;
   /**
@@ -528,6 +535,18 @@ export interface CadreNodeConfig {
    * (`DEFAULT_PEER_JOIN_BACKFILL`); `{ enabled: false }` disables it.
    */
   controlBackfill?: PeerJoinBackfillConfig;
+
+  /**
+   * Tuning for the CLOSED-strand revoked-peer gate
+   * (`strand-revocation-enforcer.ts`), applied to every closed strand this node
+   * starts: each strand node materializes the peer ids bound to REMOVED members
+   * (orphaned `Strand.MemberPeer` rows) and refuses them at the stream and
+   * connection layers, so removing a party cuts the network to its machines
+   * rather than only deleting its row. Open strands never arm it. Omit for the
+   * defaults (`DEFAULT_REVOCATION_POLL_INTERVAL_MS` refresh cadence);
+   * `{ enabled: false }` restores the pre-existing behaviour.
+   */
+  strandRevocationEnforcement?: StrandRevocationEnforcementConfig;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;

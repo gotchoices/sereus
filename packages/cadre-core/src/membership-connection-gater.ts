@@ -367,7 +367,11 @@ export class UnauthorizedReservationBudget {
  * dialer sees its "open" connection close moments later.
  *
  * Control node only: strand cohort nodes legitimately connect cross-party
- * peers, so `CadreNode` threads the raw configured gater to them unchanged.
+ * peers, so cadre membership never gates them. An OPEN strand's node receives
+ * the raw configured gater unchanged; a CLOSED strand's node composes its own
+ * revoked-peer denial onto it instead — a deny-list on positive revocation
+ * evidence, not this module's membership admission — see
+ * `strand-revocation-enforcer.ts`.
  */
 export function createMembershipConnectionGater(
   policy: InboundAdmissionPolicy,
@@ -440,9 +444,11 @@ export function createMembershipConnectionGater(
  * fail-open outcome) if it has not settled in time — see
  * {@link ADMISSION_DECISION_TIMEOUT_MS} for why an unbounded await is not safe
  * on the connection hook. The timer is always cleared so a decided call never
- * holds the event loop open.
+ * holds the event loop open. Exported for the strand revoked-peer gate
+ * (`strand-revocation-enforcer.ts`), which bounds its connection hooks with the
+ * same fail-open contract.
  */
-async function decideWithinDeadline<T>(
+export async function decideWithinDeadline<T>(
   decide: () => Promise<T> | T,
   fallback: T,
   timeoutMs: number,

@@ -4,6 +4,12 @@ import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import {
+  StrandRevocationEnforcer,
+  createRevocationConnectionGater,
+  readStrandRevocationRows,
+  type StrandRevocationEnforcementConfig
+} from './strand-revocation-enforcer.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import type {
   StrandInstance,
@@ -103,6 +109,15 @@ export interface StartStrandConfig {
    * no-backfill behaviour.
    */
   backfill?: PeerJoinBackfillConfig;
+  /**
+   * Tuning for the CLOSED-strand revoked-peer gate
+   * ({@link StrandRevocationEnforcer}), forwarded from
+   * {@link CadreNodeConfig.strandRevocationEnforcement}. Armed only for
+   * `strandRow.Type === 'c'` (an open strand has no membership rows to derive a
+   * deny set from); `{ enabled: false }` restores the pre-existing behaviour
+   * (a removed party's peers keep being served).
+   */
+  revocationEnforcement?: StrandRevocationEnforcementConfig;
 }
 
 /**
@@ -209,6 +224,13 @@ export class StrandInstanceManager {
    * missed writes).
    */
   private backfills: Map<string, PeerJoinBackfill> = new Map();
+  /**
+   * The per-strand revoked-peer enforcer (closed strands only), keyed by strand
+   * id. Same lifecycle rationale as {@link backfills}: created in
+   * `buildStrandRuntime`, stopped and dropped in `releaseRuntime`, so quiesce →
+   * resume rebuilds it with a fresh (initially empty, fail-open) snapshot.
+   */
+  private revocationEnforcers: Map<string, StrandRevocationEnforcer> = new Map();
   /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
@@ -402,6 +424,45 @@ export class StrandInstanceManager {
     // address). See `strand-network-config.ts` for both, and for the tradeoff.
     const addrOptions = strandNodeAddrs(config.network);
 
+    // The CLOSED-strand revoked-peer gate (see strand-revocation-enforcer.ts).
+    // Constructed BEFORE the libp2p node because the node's options embed its
+    // predicates; its deny set starts empty (admit everything — fail-open, same
+    // posture as bring-up everywhere here) and is first populated after the
+    // strand database initializes below. Registered in the map immediately so
+    // the failure rollback (releaseRuntime) tears it down like every other
+    // runtime component. Open strands skip it entirely: their Member/MemberPeer
+    // tables are empty by schema (`OnlyClosed`), so there is nothing to derive
+    // a deny set from — arming would be pointless polling.
+    const revocationEnforcer =
+      config.strandRow.Type === 'c' && config.revocationEnforcement?.enabled !== false
+        ? new StrandRevocationEnforcer({
+            label: strandId,
+            readRows: () => {
+              const database = instance.database;
+              if (!database) {
+                throw new Error(`strand ${strandId} has no live database`);
+              }
+              return readStrandRevocationRows(database.getDatabase());
+            }
+          }, config.revocationEnforcement)
+        : undefined;
+    if (revocationEnforcer) {
+      this.revocationEnforcers.set(strandId, revocationEnforcer);
+    }
+
+    // Closed strands compose revoked-peer denial onto the caller's gater and arm
+    // the fail-closed per-stream gate; open strands keep the raw configured gater
+    // (their peers are legitimately cross-party and nothing is ever revoked).
+    const revocationGateOptions = revocationEnforcer
+      ? {
+          connectionGater: createRevocationConnectionGater(revocationEnforcer, config.network?.connectionGater),
+          authorizeInboundStream: (remotePeerId: string, protocol: string) =>
+            revocationEnforcer.authorizeStream(remotePeerId, protocol)
+        }
+      : config.network?.connectionGater
+        ? { connectionGater: config.network.connectionGater }
+        : {};
+
     try {
       // Bound once: the breadth is also the ceiling on the repair yardstick below, and the
       // two must be derived from the same resolution. Inside the `try` deliberately — a
@@ -444,7 +505,10 @@ export class StrandInstanceManager {
         // `network.listenAddrs` or from `network.relayAddrs`, which the resolution folds
         // into the same list on the configured route this call takes (see above).
         ...addrOptions,
-        ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
+        // The raw configured gater (open strands), or the revocation-composed
+        // gater plus the fail-closed per-stream revoked-peer gate (closed
+        // strands) — resolved above, before the try.
+        ...revocationGateOptions
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 
@@ -470,6 +534,12 @@ export class StrandInstanceManager {
       instance.database = strandDb;
       await strandDb.initialize();
       timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
+
+      // Arm the revoked-peer deny-set poll now that the database it reads
+      // exists. start() kicks an immediate refresh WITHOUT awaiting it —
+      // bring-up and resume are never blocked on a membership read; until the
+      // first read lands the empty snapshot admits everyone (fail-open).
+      revocationEnforcer?.start();
 
       // Peer-join block catch-up: push this strand's own blocks to each newly
       // connected peer, so a machine that joined after blocks were committed
@@ -537,6 +607,13 @@ export class StrandInstanceManager {
     if (backfill) {
       backfill.stop();
       this.backfills.delete(instance.strandId);
+    }
+    // The revoked-peer enforcer goes with the runtime it gated: a resume
+    // rebuilds it with a fresh (initially empty, fail-open) snapshot.
+    const revocationEnforcer = this.revocationEnforcers.get(instance.strandId);
+    if (revocationEnforcer) {
+      revocationEnforcer.stop();
+      this.revocationEnforcers.delete(instance.strandId);
     }
     if (instance.database) {
       await instance.database.close();

@@ -139,6 +139,22 @@ export {
   type PeerJoinBackfillPushClient
 } from './peer-join-backfill.js';
 
+// Closed-strand revoked-peer enforcement (deny the network nodes of removed
+// members at the stream and connection layers — see the module doc for the
+// settled deny-list design and fail directions).
+export {
+  StrandRevocationEnforcer,
+  createRevocationConnectionGater,
+  readStrandRevocationRows,
+  DEFAULT_REVOCATION_POLL_INTERVAL_MS,
+  type StrandRevocationEnforcementConfig,
+  type StrandRevocationEnforcerDeps,
+  type StrandRevocationRows,
+  type StrandMemberPeerBinding,
+  type StrandRevocationJudge,
+  type RevocationRefreshScheduler
+} from './strand-revocation-enforcer.js';
+
 // Hibernation
 export {
   HibernationManager,
