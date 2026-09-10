@@ -502,6 +502,29 @@ describe('teardown sweep', () => {
       expect(hungUp(hangUp)).toEqual(['bad-peer']);
     });
 
+    it('re-arms on re-admission, so a SECOND removal signals again', async () => {
+      // A manager can re-admit a party it removed (a fresh Member row makes the
+      // orphaned bindings live again); the latch tracks the transition INTO the
+      // set, not the enforcer's lifetime, so the second removal is reported too.
+      const onSelfRevoked = vi.fn();
+      const { network } = fakeNetwork([]);
+      let source = rows([], [['gone', SELF]]);
+      const enforcer = new StrandRevocationEnforcer({
+        label: 'teardown',
+        readRows: async () => source,
+        getNetwork: () => network,
+        onSelfRevoked
+      });
+
+      await enforcer.refresh();
+      source = rows(['gone'], [['gone', SELF]]);
+      await enforcer.refresh();
+      source = rows([], [['gone', SELF]]);
+      await enforcer.refresh();
+
+      expect(onSelfRevoked).toHaveBeenCalledTimes(2);
+    });
+
     it('does not fire for a node that is merely not a member of anything', async () => {
       const onSelfRevoked = vi.fn();
       const { network } = fakeNetwork([]);

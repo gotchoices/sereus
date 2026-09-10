@@ -1028,8 +1028,10 @@ export interface CadreNodeEvents {
    * longer sync": remaining members refuse this node's streams, dials, and
    * connections, so reads keep working against whatever is stored locally while
    * writes stop propagating. Stopping the strand (`stopStrand`) or deleting its
-   * data is the app's decision. Fires once per strand runtime — a hibernation
-   * wake rebuilds the gate and may re-emit for a strand still revoked.
+   * data is the app's decision. Emitted once per removal — re-armed if a manager
+   * re-admits this party, so a second removal is reported again — and a
+   * hibernation wake rebuilds the gate, which may re-emit for a strand still
+   * revoked.
    */
   'strand:revoked': { strandId: string };
   /**

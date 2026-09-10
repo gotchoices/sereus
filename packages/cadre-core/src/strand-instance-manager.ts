@@ -121,9 +121,10 @@ export interface StartStrandConfig {
 
   /**
    * Called when THIS node's own peer id turns up in the strand's revoked set —
-   * this node's party was removed from the closed strand, or left it. Fires at
-   * most once per runtime (a resume rebuilds the enforcer and may legitimately
-   * re-fire), and only for closed strands with the gate armed. `CadreNode`
+   * this node's party was removed from the closed strand, or left it. Fires once
+   * per removal (re-armed if the party is re-admitted; a resume also rebuilds the
+   * enforcer and may legitimately re-fire), and only for closed strands with the
+   * gate armed. `CadreNode`
    * wires it to its `strand:revoked` event; nothing is stopped or torn down on
    * this node's behalf — what to do about it is the app's call.
    */

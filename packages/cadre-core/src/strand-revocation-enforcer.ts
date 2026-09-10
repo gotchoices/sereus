@@ -74,7 +74,8 @@
  * If this node's OWN peer id is in the set, it was itself removed (or it left —
  * a voluntary departure files the same tombstone). Nothing is torn down for
  * that: the other side's gate already refuses us, and every other revoked peer
- * is still swept. Instead `onSelfRevoked` fires ONCE per enforcer lifetime,
+ * is still swept. Instead `onSelfRevoked` fires ONCE per entry into the set
+ * (re-armed if the party is re-admitted, so a second removal signals again),
  * which `CadreNode` surfaces as `strand:revoked` so the embedding app decides
  * what to do — this module never stops or leaves a strand on its own.
  * Best-effort by nature: a removed party learns only if the tombstone
@@ -215,11 +216,12 @@ export interface StrandRevocationEnforcerDeps {
    */
   getNetwork?: () => StrandRevocationNetwork | undefined;
   /**
-   * Called at most ONCE per enforcer lifetime, the first time this node's own
-   * peer id appears in the deny set — i.e. this node's party was removed from
-   * the strand, or left it. Wired by `StrandInstanceManager` through to
+   * Called ONCE each time this node's own peer id ENTERS the deny set — i.e.
+   * this node's party was removed from the strand, or left it. Not re-fired
+   * while it stays there; re-armed if the party is re-admitted, so a second
+   * removal signals again. Wired by `StrandInstanceManager` through to
    * `CadreNode`'s `strand:revoked` event. A resume rebuilds the enforcer, so a
-   * still-revoked strand legitimately re-fires once per resume. A throw is
+   * still-revoked strand also legitimately re-fires once per resume. A throw is
    * logged and swallowed — an embedder's handler must not derail the sweep.
    */
   onSelfRevoked?: () => void;
@@ -376,7 +378,16 @@ export class StrandRevocationEnforcer {
     return !this.isRevoked(remotePeerId);
   }
 
-  /** One serialized snapshot rebuild; contains every failure (contract: never rejects). */
+  /**
+   * One serialized snapshot rebuild; contains every failure (contract: never rejects).
+   *
+   * NOTE: nothing here carries a deadline — a `readRows` or a `hangUp` that never
+   * settles wedges the refresh chain, which freezes the deny set (the poll skips
+   * while `refreshing`, and every later `refresh()` chains behind the stuck one).
+   * Both are bounded in practice (Quereus reads settle; libp2p's connection close
+   * has its own timeout). If a strand is ever seen with a stale deny set and no
+   * refresh log line, wrap both awaits in a timeout rather than hunting further.
+   */
   private async doRefresh(): Promise<void> {
     if (this.stopped) return;
     this.refreshing = true;
@@ -419,7 +430,7 @@ export class StrandRevocationEnforcer {
    * workaround here.
    */
   private async tearDownRevoked(revoked: ReadonlySet<string>): Promise<void> {
-    if (this.stopped || revoked.size === 0) {
+    if (this.stopped) {
       return;
     }
     const network = this.resolveNetwork();
@@ -427,11 +438,13 @@ export class StrandRevocationEnforcer {
       return;
     }
     const selfPeerId = network.peerId.toString();
-    if (revoked.has(selfPeerId)) {
-      // Deliberately does NOT return: we tear nothing down on our own behalf
-      // (the other side's gate already refuses us), but any OTHER revoked peer
-      // we are still connected to is swept in the same pass.
-      this.signalSelfRevoked();
+    // Judged on EVERY pass, including the empty-set one: leaving the set is what
+    // re-arms the signal (see trackSelfRevoked). Being revoked ourselves tears
+    // nothing down on our own behalf — the other side's gate already refuses us —
+    // so the sweep below still runs for every OTHER revoked peer in the pass.
+    this.trackSelfRevoked(revoked.has(selfPeerId));
+    if (revoked.size === 0) {
+      return;
     }
     for (const peer of connectedRevokedPeers(network, revoked, selfPeerId, this.deps.label)) {
       await this.hangUpRevoked(network, peer);
@@ -458,8 +471,18 @@ export class StrandRevocationEnforcer {
     }
   }
 
-  /** Fire {@link StrandRevocationEnforcerDeps.onSelfRevoked} at most once per lifetime. */
-  private signalSelfRevoked(): void {
+  /**
+   * Latch {@link StrandRevocationEnforcerDeps.onSelfRevoked} to the TRANSITION
+   * into the revoked state: fired once on entry, and re-armed the moment this
+   * node is out of the set again — a manager can re-admit a party it removed
+   * (a fresh `Member` row makes the orphaned bindings live again), and a second
+   * removal has to be reported like the first.
+   */
+  private trackSelfRevoked(selfRevoked: boolean): void {
+    if (!selfRevoked) {
+      this.selfRevokedSignaled = false;
+      return;
+    }
     if (this.selfRevokedSignaled) {
       return;
     }
@@ -479,8 +502,9 @@ export class StrandRevocationEnforcer {
  * `remotePeer` rather than parsing the string back, so no peer-id codec is
  * needed here. Self is excluded (a node holds no connection to itself, and
  * hanging one up would be nonsense if it did), and a peer connected twice — say
- * one direct and one relayed — yields ONE hangUp, which closes both.
- * Enumeration failure yields an empty sweep, logged.
+ * one direct and one relayed — yields ONE hangUp, which closes both. A throw
+ * mid-enumeration is logged and keeps whatever was collected before it: a
+ * partial sweep beats none, and the next refresh re-enumerates anyway.
  */
 function connectedRevokedPeers(
   network: StrandRevocationNetwork,
