@@ -11,6 +11,7 @@ import {
   PreSplitStrandIdentityError,
   addMemberByManager,
   addManager,
+  removeManager,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
 } from '../src/strand-membership-writer.js';
@@ -305,6 +306,19 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
     expect(await tableCount(db, 'Member')).toBe(1);
     const manager = await db.get('select MemberKey from Strand.Manager');
     expect(manager?.MemberKey).toBe(sharedKeyPair.publicKeyB64);
+  }, 30_000);
+
+  it('refuses a pre-split strand whose shared-derived founder handed management on and resigned', async () => {
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+    const successor = strandMemberKeyPair(await generateStrandMemberKey());
+    await addMemberByManager(db, { managerKeyPair: sharedKeyPair, memberKey: successor.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: sharedKeyPair, newManagerKey: successor.publicKeyB64 });
+    await removeManager(db, { byManagerKeyPair: sharedKeyPair, targetManagerKey: sharedKeyPair.publicKeyB64 });
+
+    // The shared-derived key is no manager now, but its Member row still gives it away.
+    await expect(bootstrapFounderMembership(db, {
+      strandId, type: 'c', sApp, founderKeyPair: partyKeyPair, sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+    })).rejects.toThrow(PreSplitStrandIdentityError);
   }, 30_000);
 
   it('without the shared key supplied, the same rows are skipped as insert-if-absent always did', async () => {

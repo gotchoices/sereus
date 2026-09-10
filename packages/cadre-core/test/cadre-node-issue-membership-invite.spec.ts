@@ -108,6 +108,10 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
       strandId, type: 'c', sApp: sAppConfig, founderKeyPair: strandMemberKeyPair(memberPrivateKey),
     });
 
+    // Before any founder launch has recorded a refusal (a sibling machine, or a node
+    // restarted since), issuance reads the fingerprint off the live rows.
+    await expect(issue(node, strandId)).rejects.toThrow(PreSplitStrandIdentityError);
+
     // The founder request (derived — this node published the row) is refused and recorded.
     await expect(node.addStrand({ strandRow, sAppConfig })).rejects.toThrow(PreSplitStrandIdentityError);
     // The joiner runtime is still live, yet issuance reports the permanent refusal rather

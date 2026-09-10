@@ -42,7 +42,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
-import { issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
+import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
@@ -560,9 +560,11 @@ export class CadreNode implements SAppIdLookup {
    * `Strand.Invite` gate (a refused in-place founding leaves a joiner instance up whose
    * party key is no manager).
    *
-   * Written and cleared by {@link launchStrand}; also cleared by {@link detachStrand} and
-   * {@link unpublishStrand}, so a recreated id starts clean. In-memory: after a restart
-   * the next founder launch of the strand records it again.
+   * Written and cleared by {@link launchStrand}; also cleared by {@link detachStrand},
+   * {@link unpublishStrand} and {@link cleanup}, so a recreated id starts clean.
+   * In-memory: after a restart the next founder launch of the strand records it again;
+   * until then issuance still reads the fingerprint off the live rows whenever a runtime
+   * is up — only a strand with no runtime at all answers retryably meanwhile.
    */
   private readonly strandLaunchRefusals = new Map<string, PreSplitStrandIdentityError>();
 
@@ -3850,8 +3852,9 @@ export class CadreNode implements SAppIdLookup {
     // Stop all strand instances
     await this.strandManager.stopAll();
 
-    // Clear sApp configs
+    // Clear sApp configs and recorded launch refusals
     this.sAppConfigs.clear();
+    this.strandLaunchRefusals.clear();
 
     // Drop delegate-admission state: the grants are scoped to the session that
     // recorded them, so a stop()/start() cycle on this object must not keep
@@ -6643,6 +6646,10 @@ export class CadreNode implements SAppIdLookup {
    * - Closed host strand with no running local instance/database → throw, same mapping:
    *   a joiner admitted without an invitation would look joined and never become a
    *   member, and a responder not running the strand cannot serve its sync anyway.
+   * - Closed host strand whose LIVE rows carry the pre-split fingerprint
+   *   (`assertNotPreSplitStrand`) → throw `PreSplitStrandIdentityError`, same mapping as
+   *   the recorded refusal. Covers the responders that never ran a refused founder launch:
+   *   a sibling machine of the founding party, or a node restarted since the refusal.
    *
    * The recorded refusal is checked first: it is an in-memory read and the only
    * permanent diagnosis. Identity is checked BEFORE the runtime: it is the cheaper read
@@ -6693,6 +6700,9 @@ export class CadreNode implements SAppIdLookup {
         `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
         'not live on this responder (not launched, hibernating, or quiescing)'
       );
+    }
+    if (row.MemberPrivateKey) {
+      await assertNotPreSplitStrand(db, strandId, strandMemberKeyPair(row.MemberPrivateKey).publicKeyB64);
     }
     return await issueInvite(db, {
       managerKeyPair: strandMemberKeyPair(partyKey),

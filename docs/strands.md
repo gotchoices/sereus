@@ -249,11 +249,12 @@ secret are now separate things.
 
 **Strands founded before the split must be recreated.** A closed strand founded on
 `@serfab/*` 0.13.0 or earlier still has the shared-derived key as its founding
-manager, so every member can still act as its founder. It cannot be repaired in
-place: any joiner may already have admitted or revoked anyone, or could race a
-rewrite of the manager. The founder launch detects it — a `Strand.Manager` row equal
-to the key derived from the shared `MemberPrivateKey` — and refuses it with
-`PreSplitStrandIdentityError`, and a join attempt against it is rejected with
+member and manager, so every member can still act as its founder. It cannot be
+repaired in place: any joiner may already have admitted or revoked anyone, or could
+race a rewrite of the membership. The founder launch detects it — a `Strand.Member` or
+`Strand.Manager` row equal to the key derived from the shared `MemberPrivateKey` — and
+refuses it with `PreSplitStrandIdentityError`; membership-invite issuance runs the same
+check on the live rows, and a join attempt against it is rejected with
 `'Host strand must be recreated'` rather than told to retry. Unpublish it and found a
 new strand. Details: [`docs/architecture.md` → Strand Membership Bootstrap](architecture.md#strand-membership-bootstrap).
 
