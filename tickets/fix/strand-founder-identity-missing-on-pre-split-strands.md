@@ -50,3 +50,12 @@ A cadre-core spec: found a closed strand the pre-split way (seat Header / Member
 - Cover: correctly founded strand still launches; pre-split strand fails with the message; joiner launch unaffected.
 - Correct the `resolveStrandPartyKey` comment and the `bootstrapFounderMembership` error text.
 - Update `docs/strands.md`, `docs/architecture.md`, `.release-notes.pending.md`.
+
+## Addendum (2026-09-10): how this surfaces through formation
+
+`strand-formation-membership-invite` (implement fc0ad48) added `CadreNode.issueStrandMembershipInvite`, called on every bound closed-strand redemption. On a pre-split strand the founder launch has already minted a `StrandPartyKey` row, the runtime is live, so the method reaches `issueInvite(db, { managerKeyPair: strandMemberKeyPair(partyKey) })` — and the strand's `InviteValid` constraint rejects it because the party key is not a `Strand.Manager`. The formation manager maps every hook throw to `MEMBERSHIP_INVITE_UNAVAILABLE_REASON` ('Strand membership invitation unavailable, retry'). So a joiner is told to retry a condition that is permanent, and retries forever.
+
+Two more corrections for this ticket:
+
+- The `issueStrandMembershipInvite` doc comment and its no-`StrandPartyKey` error text both say "a pre-split strand that has not healed at launch" — the same false premise as `resolveStrandPartyKey`: launch does not heal membership. Correct both.
+- If the launch-time check above is implemented as a hard launch failure, formation never reaches this path for a pre-split strand (no live runtime → the existing "not live" rejection). If it is implemented as refusing founder-only writes instead, the hook must throw a distinct, non-retryable reason for this case rather than the generic retry one. Either way, add a test that a bound closed redemption against a pre-split strand does not answer "retry".
