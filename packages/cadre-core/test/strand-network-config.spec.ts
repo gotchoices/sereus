@@ -112,6 +112,18 @@ describe('strandNodeAddrs', () => {
       }).listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0', `${relay}/p2p-circuit`]);
     });
 
+    /**
+     * The shape `reference-app-web` ships (`src/lib/cadre-web.ts`): a BARE
+     * `/p2p-circuit` search entry beside `/webrtc`. Neither names a local port, so both
+     * have to reach the strand node byte-for-byte — zeroing or dropping either would
+     * cost a browser node its only two ways of being reached.
+     */
+    it('passes the browser shape — bare /p2p-circuit beside /webrtc — through unchanged', () => {
+      const browser = ['/p2p-circuit', '/webrtc'];
+
+      expect(strandNodeAddrs({ listenAddrs: browser }).listenAddrs).toEqual(browser);
+    });
+
     it('gives a relay-only config its circuit entry and an ephemeral direct listener', () => {
       const relay = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`;
 

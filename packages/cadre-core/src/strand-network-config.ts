@@ -60,12 +60,20 @@ export interface StrandNodeAddrs {
  * every fixed direct port rewritten to an ephemeral one, and no announce fields.
  *
  * Validation is unchanged and still fail-fast — `resolveListenAddrs` throws here on a
- * malformed `relayAddrs` entry exactly as it does for the control node. Announce
- * entries are validated on the CONTROL node's own build (`cadre-node.ts`), which runs
- * first, so a typo there still refuses node start even though strand nodes ignore the
- * field.
+ * malformed `relayAddrs` entry exactly as it does for the control node.
+ *
+ * NOTE: announce entries are no longer validated on this path at all; the CONTROL
+ * node's own build (`cadre-node.ts`) is the only thing that parses them, and it runs
+ * before any strand starts, so a typo still refuses node start today. That is an
+ * ORDERING guarantee, not a structural one. Revisit if a strand node is ever built
+ * before the control node's libp2p options are resolved — a malformed announce entry
+ * would then go unreported until the control node's own build.
  */
 export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeAddrs {
+  // The default `'configured'` relay route, deliberately NOT the control node's
+  // `'search'` route: nothing drives an explicit reservation for a strand node, so a
+  // bare `/p2p-circuit` search entry would register a pending reservation nobody fills
+  // and leave every NAT'd strand node undialable. See `relay-addrs.ts`.
   const listenAddrs = resolveListenAddrs(network);
   if (!listenAddrs) {
     return {};
@@ -130,6 +138,12 @@ function withEphemeralPort(component: Component): Component {
  * Exact-string dedupe, first occurrence wins — matching `relay-addrs.ts`. Entries
  * that differed only by port collapse into one after the rewrite, and libp2p would
  * otherwise try to bind the same ephemeral-port entry twice.
+ *
+ * NOTE: an operator who writes two fixed ports on the same interface and transport
+ * (`/ip4/0.0.0.0/tcp/4001` and `…/tcp/4002`) gets ONE strand listener, not two, since
+ * the two entries are identical once zeroed. Intended — the ports were the only thing
+ * distinguishing them and neither survives. Revisit if a deployment ever needs a
+ * strand node to hold a fixed count of direct listeners.
  */
 function dedupe(addrs: readonly string[]): string[] {
   return [...new Set(addrs)];

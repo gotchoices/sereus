@@ -47,11 +47,19 @@ network:
   # Addresses to listen on. Do NOT name a relay here ("<relay addr>/p2p-circuit") —
   # that form is rejected at start; use relayAddrs below, which reserves the slot
   # once this node's control database is up.
+  # A machine runs one control node plus one node per strand, and only ONE of them can
+  # hold a given port: the CONTROL node binds the ports written here, and each strand
+  # node binds the same entries with the port rewritten to 0 (an OS-assigned one). So a
+  # port forwarded through NAT reaches this machine's control node only — strand nodes
+  # are reached through observed addresses on a reachable host, or through relayAddrs.
   listenAddrs:
     - "/ip4/0.0.0.0/tcp/4001"
     - "/ip6/::/tcp/4001"
   # Extra addresses to announce (if behind NAT/proxy), ADDED to the ones above. This
   # is the usual choice: the node stays reachable at its other addresses too.
+  # CONTROL NODE ONLY, like announceAddrs below: any address written here names a port,
+  # and that port is the control node's, so a strand node advertising it would send
+  # peers to the wrong node. Strand nodes announce nothing configured here.
   # appendAnnounceAddrs:
   #   - "/dns4/mynode.example.com/tcp/4001"
   # Addresses to announce INSTEAD OF the ones above. A non-empty value REPLACES
