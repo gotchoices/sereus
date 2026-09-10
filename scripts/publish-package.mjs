@@ -171,6 +171,12 @@ async function main() {
 	// today, because a resume means re-running the same command; if resuming ever becomes something
 	// a script does on the operator's behalf, compare the tag here too (`npm dist-tag ls`) rather
 	// than only the version.
+	// NOTE: the registry serves packuments through a CDN cache, so a version published seconds ago
+	// can still read as absent. Re-running `yarn pub` immediately after a mid-chain failure may
+	// therefore try to republish a package that did land; npm refuses that ("cannot publish over the
+	// previously published versions"), so it fails loudly rather than doing harm — wait a few minutes
+	// and re-run. If that ever needs smoothing, probe `/<name>/<version>` or send `cache-control:
+	// no-cache` in `registryHasVersion` rather than retrying a publish.
 	if (await registryHasVersion(manifest.name, manifest.version)) {
 		console.log(`${manifest.name}@${manifest.version} is already on npm — skipping.`);
 		return;
