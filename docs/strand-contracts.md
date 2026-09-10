@@ -369,6 +369,28 @@ gate writes on `Signature` rows for those templates.
 This is a small addition to the strand-start schema verification already in place, and it is
 what makes "the sApp decides which keys matter" concrete rather than an aspiration.
 
+## Party-Private App State (Interim)
+
+Answers **gotchoices/sereus#6**. sApps regularly need state that belongs to one party alone —
+a read position, a draft, a UI preference — that should still follow that party across its own
+devices. No facility for this exists today, and none is planned before the initial release; the
+real design (shape undecided) is tracked in `backlog/feat-party-private-app-state`.
+
+**Interim answer:** store the value in the strand database, keyed by the owning party (e.g. a
+row per member id).
+
+**Caveat — read this before using the workaround.** The strand database is visible to every
+member of the strand: any member can read any row in it, regardless of which key it is stored
+under. A per-user key partitions the data by owner; it does **not** hide it from anyone else in
+the strand. Do not put anything there whose disclosure to a fellow strand member would matter.
+
+**Node-local storage is not an alternative.** `packages/cadre-core/src/node-local-snapshot.ts`
+is deliberately never replicated, so state kept there does not follow a party to a second
+device — which is usually the entire reason this state is wanted in the first place.
+
+**Migration.** Data stored under this workaround will need to move once the real facility
+ships; no migration plan exists yet.
+
 ---
 
 ## Self-Contained Storage: `Strand.Document`

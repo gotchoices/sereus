@@ -7,7 +7,10 @@ An initial attempt at a strand negotiation (“strand initialization”) protoco
 - **party**: a person or entity that transacts data with other parties.
 - **node**: a device/process that runs libp2p, identified by a **Peer ID**.
 - **cadre**: one or more nodes representing a single party within a strand.
-- **strand**: a logical network over which participating parties transact data and share a database.
+- **strand**: a logical network over which participating parties transact data and share a
+  database. That database is visible to every member of the strand — see
+  [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim)
+  for where per-user state that should *not* be strand-wide visible belongs today.
 - **cohort**: the set of nodes participating in a strand (union of all cadres). Optimystic uses
   the same word for a narrower thing — the nodes a single *block* is replicated to, sized by
   `DEFAULT_STRAND_CLUSTER_SIZE`. Code comments and [`architecture.md` → Replication cluster
