@@ -32,6 +32,13 @@ import { extractDeclareSchemaBody } from '../helpers/qsql-body.js';
  * optimystic local transactor) so it exercises the real apply/DML path in-process,
  * with no cohort and no peer round trips — the same shape as
  * `strand-schema.e2e.spec.ts`.
+ *
+ * NOTE: single-writer, single-session by design. It never opens a second peer and
+ * never reopens the strand, so nothing here proves the chat schema survives a warm
+ * restart (`strand-schema.e2e.spec.ts` proves that for `Strand`) or that two
+ * concurrent redeemers of one invitation are serialized. Neither matters while
+ * `schemas/chat.qsql` has no runtime consumer; if an app ever loads it, add a
+ * reopen case and a concurrent-writer case before trusting it.
  */
 
 // Repo-root `schemas/` relative to this source file. vitest runs the `.ts` under
@@ -278,6 +285,8 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		// ── Messages ──────────────────────────────────────────────────────────────
 		const nowMs = Date.now();
 		const now = await canonicalNow(chatDb, nowMs);
+		// An hour off the collective clock — outside every `± 5 min` TimeValid window.
+		const staleNow = await canonicalNow(chatDb, nowMs - 60 * 60 * 1000);
 
 		const msg0Sig = await signDigest(chatDb, '?, ?, ?', [0, 'm1', 'hello'], founderKey.privateKey);
 		await chatDb.exec(
@@ -320,6 +329,17 @@ describe('Chat reference schemas (write-through e2e)', () => {
 			),
 			'MessageExists',
 		);
+		// An attachment whose timestamp is an hour off the collective clock is refused by
+		// the `TimeValid` window `Attachment` gained alongside `Message`'s.
+		await expectRefusedBy(
+			() => chatDb.exec(
+				`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
+					with context now = ?
+					values (0, 1, ?, 'text/plain', null, ?)`,
+				[now, staleNow, new Uint8Array([1])],
+			),
+			'TimeValid',
+		);
 
 		const msg1Sig = await signDigest(chatDb, '?, ?, ?', [1, 'm1', 'replying'], founderKey.privateKey);
 		await chatDb.exec(
@@ -327,6 +347,26 @@ describe('Chat reference schemas (write-through e2e)', () => {
 				with context MemberKey = ?, MemberSignature = ?, now = ?
 				values (1, ?, 'm1', 'replying')`,
 			[founderKey.publicKey, msg1Sig, now, now],
+		);
+		// A message whose timestamp is an hour off the collective clock is refused, even
+		// though its Id is next in sequence and its signature is good — the signature
+		// covers (Id, MemberId, Content) and never the timestamp.
+		const msg2Sig = await signDigest(chatDb, '?, ?, ?', [2, 'm1', 'time traveller'], founderKey.privateKey);
+		await expectRefusedBy(
+			() => chatDb.exec(
+				`insert into App.Message (Id, Timestamp, MemberId, Content)
+					with context MemberKey = ?, MemberSignature = ?, now = ?
+					values (2, ?, 'm1', 'time traveller')`,
+				[founderKey.publicKey, msg2Sig, now, staleNow],
+			),
+			'TimeValid',
+		);
+
+		// Both ends of a Response must name a real message. `OriginalExists` is checked
+		// first, against a ResponseId that does exist, so the refusal can only be that one.
+		await expectRefusedBy(
+			() => chatDb.exec('insert into App.Response (OriginalId, ResponseId) values (99, 1)'),
+			'OriginalExists',
 		);
 		await chatDb.exec('insert into App.Response (OriginalId, ResponseId) values (0, 1)');
 		await expectRefusedBy(
@@ -398,8 +438,10 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(2);
 		expect(await selectCount(chatDb, 'select count(*) as c from App.UsedInvite')).toBe(2);
 
-		// A member may not mint an invitation that grants a privilege they lack — and
-		// 'm2' joined through a `CanInvite = false` invitation, so it holds none.
+		// Minting an invitation at all requires the INVITING member to hold `CanInvite`
+		// (`Invite.InsertValid` joins through `Member M ... and M.CanInvite`). 'm2' joined
+		// through a `CanInvite = false` invitation, so it holds none and is refused even
+		// for an invitation that would itself grant nothing.
 		const m2Key = newKeyPair();
 		await chatDb.exec('insert into App.MemberKey (MemberId, Key) values (?, ?)', ['m2', m2Key.publicKey]);
 		const m2InviteAttempt = newKeyPair();

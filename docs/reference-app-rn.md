@@ -119,28 +119,31 @@ network: {
 
 ## Simplified Chat Schema
 
-The production `schemas/chat.qsql` has full cryptographic signature verification on every operation. For the reference app, we use a permissionless schema that lets anyone insert/update/delete freely:
+`schemas/chat.qsql` is the fuller design — invitations, per-member keys and ed25519 signature verification on every authorized write. No app loads it. The reference app runs `schemas/chat-simple.qsql`, a permissionless schema that lets anyone insert/update/delete freely:
 
 ```sql
-declare schema Chat {
-    table Member (
-        Id text primary key,
-        Name text not null check (length(Name) between 1 and 100)
-    );
+table Member (
+    Id text primary key,
+    Name text not null check (length(Name) between 1 and 100),
+    -- App-level role (owner | member), assigned on closed-strand create/join.
+    Role text not null default 'member' check (Role in ('owner', 'member'))
+);
 
-    table Message (
-        -- Text UUID primary key: each peer generates it locally so concurrent
-        -- posts into a shared strand never collide. A max(Id)+1 integer key is
-        -- NOT safe here: a concurrent duplicate-key insert is silently
-        -- last-writer-wins, not refused, so the losing row is lost with no error.
-        Id text primary key,
-        MemberId text not null,
-        Content text not null,
-        Timestamp datetime not null,
-        foreign key (MemberId) references Member(Id)
-    );
-}
+table Message (
+    -- Text UUID primary key: each peer generates it locally so concurrent
+    -- posts into a shared strand never collide. A max(Id)+1 integer key is
+    -- NOT safe here: a concurrent duplicate-key insert is silently
+    -- last-writer-wins, not refused, so the losing row is lost with no error.
+    Id text primary key,
+    MemberId text not null,
+    Content text not null,
+    Timestamp datetime not null,
+    foreign key (MemberId) references Member(Id)
+);
 ```
+
+`schemas/chat-simple.qsql` is the source of record for the above; `composeStrand` supplies the
+`declare schema App { ... }` wrapper, so the file itself is a bare table list.
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 

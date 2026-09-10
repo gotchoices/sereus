@@ -129,7 +129,7 @@ declare schema Chat {
     table MemberKey (
         MemberId string,
         Key string, --public key of member, part of private/public key pair
-        primary key (MemberId, Key),
+        primary key (MemberId, Key)
     );
 
     index MemberKeyByKey on MemberKey (Key);
