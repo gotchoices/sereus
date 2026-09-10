@@ -198,10 +198,13 @@ const WS_TRANSPORT_SWITCH_PORT = 0;
  * a third libp2p-node build site could resolve listen addrs and forget to call this,
  * putting the original bug back on that path. Both existing sites are covered
  * (`cadre-node.ts` → `buildControlNodeOptions`, `strand-network-config.ts` →
- * `strandNodeAddrs`) and `createLibp2pNode` has exactly those two callers in this repo.
- * If a third appears, fold the two functions into one that returns listen addrs and
- * transport options together, so forgetting becomes impossible rather than merely
- * unlikely.
+ * `strandNodeAddrs`), and they are the only two `createLibp2pNode` callers in this repo
+ * that derive their listen set from a `NetworkConfig` — the other callers
+ * (`integration-tests/src/harness/test-party.ts`, `quereus-plugin-sereus`'s `connect.ts`
+ * and `connect-browser.ts`) pass no `listenAddrs` at all, or pass their own transports
+ * with it. If a third CONFIG-derived site appears, fold the two functions into one that
+ * returns listen addrs and transport options together, so forgetting becomes impossible
+ * rather than merely unlikely.
  *
  * @param listenAddrs the ALREADY-resolved listen set — the output of
  *   {@link resolveListenAddrs} after any per-node rewriting — so the check reads what
@@ -235,7 +238,7 @@ export class UnbindableListenAddressError extends Error {
     super(
       'network.listenAddrs names an address this node has no transport for: ' +
       `${listenAddrs.map((a) => `${a} — ${unbindableReason(a)}`).join('; ')}. ` +
-      'Default transports bind TCP, WebSocket (/ws, /wss) and circuit-relay addresses only. ' +
+      'Default transports bind TCP (including /unix/<path>), WebSocket (/ws, /wss) and circuit-relay addresses only. ' +
       'Either drop the address, or supply the transport programmatically via network.transports.'
     );
     this.name = 'UnbindableListenAddressError';
@@ -274,10 +277,11 @@ function listenTransportKind(listenAddr: string): 'tcp' | 'websockets' | 'circui
   if (outermost === 'ws' || outermost === 'wss') {
     return 'websockets';
   }
-  // Only a BARE tcp stack is TCP. `/tcp/<port>/<anything else>` layers a transport
-  // `@libp2p/tcp` does not implement, and would otherwise be waved through because a
-  // `tcp` component happens to appear.
-  return stack.length === 1 && outermost === 'tcp' ? 'tcp' : 'unsupported';
+  // Only a BARE tcp or unix stack is TCP. `@libp2p/tcp` binds both — its `listenFilter`
+  // accepts an exact TCP match OR a `/unix/<path>` address (a named pipe on Windows) —
+  // and nothing layered on top of either, which is why `/tcp/<port>/<anything else>` is
+  // NOT waved through merely because a `tcp` component happens to appear.
+  return stack.length === 1 && (outermost === 'tcp' || outermost === 'unix') ? 'tcp' : 'unsupported';
 }
 
 /**
@@ -329,8 +333,7 @@ const TRANSPORT_PACKAGES: Record<string, string> = {
   'quic-v1': '@libp2p/quic',
   'webtransport': '@libp2p/webtransport',
   'webrtc': '@libp2p/webrtc',
-  'webrtc-direct': '@libp2p/webrtc',
-  'unix': '@libp2p/tcp bound to a unix socket path'
+  'webrtc-direct': '@libp2p/webrtc'
 };
 
 /**

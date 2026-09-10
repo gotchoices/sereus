@@ -1109,6 +1109,12 @@ interface CadreNodeConfig {
     // The control node binds these as written; each STRAND node binds the same entries
     // with any fixed port rewritten to 0, since only one node per machine can hold a
     // given port (`strand-network-config.ts`).
+    // Only TCP, WebSocket ("/ws", "/wss") and circuit-relay entries are bindable unless
+    // `transports` below supplies the factories for something else. A "/ws" entry turns
+    // the WebSocket transport on by itself; anything else ("/quic-v1", "/webrtc",
+    // "/webtransport") FAILS start naming the address and the libp2p package it would
+    // need, rather than being dropped in silence by libp2p's transport manager
+    // (`relay-addrs.ts` → `resolveTransportOptions`).
     listenAddrs?: string[];
     // Addresses to advertise INSTEAD OF listenAddrs. A non-empty value REPLACES the whole
     // advertised set — observed addrs and the /p2p-circuit addr a relayAddrs reservation

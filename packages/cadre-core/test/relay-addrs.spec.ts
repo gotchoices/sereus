@@ -321,6 +321,16 @@ describe('resolveTransportOptions', () => {
       expect(resolveTransportOptions(undefined, [])).toEqual({});
       expect(resolveTransportOptions(undefined, undefined)).toEqual({});
     });
+
+    /**
+     * `@libp2p/tcp` is the transport for a unix-socket path too — its `listenFilter`
+     * accepts an exact TCP match OR anything starting `/unix/` (a named pipe on
+     * Windows). Refusing one would be this check DENYING an address the default
+     * transports bind, which is the opposite of its job.
+     */
+    it('adds nothing for a unix-socket path, which @libp2p/tcp binds as well', () => {
+      expect(resolveTransportOptions(undefined, ['/unix/%2Ftmp%2Fcadre.sock'])).toEqual({});
+    });
   });
 
   describe('an unbindable address is refused', () => {
