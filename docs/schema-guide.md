@@ -573,6 +573,7 @@ schema "org.sereus.chat" version 1 using (default_vtab_module = 'memory') {
 - Keep views as read models; avoid complex write logic in views.
 - Use seeds for deterministic bootstrap (roles, system users, defaults).
 - Index for uniqueness and query speed; prefer named composite PKs where natural.
+- Per-user state (read position, drafts, preferences) has no private home yet: a per-party key in the strand table partitions it but hides nothing from other members — see [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim).
 
 This guide is intentionally compact and example-first. With it, an agent should be able to author strand schemas that enforce consent, membership, multi-tenancy, and audit/security directly in Quereus.
 

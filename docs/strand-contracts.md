@@ -384,6 +384,11 @@ member of the strand: any member can read any row in it, regardless of which key
 under. A per-user key partitions the data by owner; it does **not** hide it from anyone else in
 the strand. Do not put anything there whose disclosure to a fellow strand member would matter.
 
+**The key does not protect writes either.** Nothing about a per-party key stops another member
+writing to that row. If it matters that only the owner may change their own value, the sApp schema
+has to say so with a check constraint over the writer's identity — the mutation-context pattern in
+[`schema-guide.md` → Roles & Permissions](schema-guide.md#roles--permissions-schema-enforced-via-context).
+
 **Node-local storage is not an alternative.** `packages/cadre-core/src/node-local-snapshot.ts`
 is deliberately never replicated, so state kept there does not follow a party to a second
 device — which is usually the entire reason this state is wanted in the first place.
