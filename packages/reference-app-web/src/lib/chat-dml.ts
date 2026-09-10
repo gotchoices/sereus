@@ -37,9 +37,11 @@ function quereusTimestamp(): string {
  * `Message.MemberId → Member.Id` foreign-key check rejects the write — this is
  * load-bearing for a fresh formed strand whose `Member` table starts empty.
  * `Member.Id = memberName` keeps the demo single-field while still exercising the
- * FK join. The primary key is generated locally as a UUID (a read-then-increment
- * of `max(Id)` would collide when two peers post concurrently into a shared
- * strand). Returns the new message id.
+ * FK join. The primary key is generated locally as a UUID: a read-then-increment
+ * of `max(Id)` is unsafe here, because a duplicate key from two concurrent peers
+ * is silently last-writer-wins rather than refused, losing one message with no
+ * error (docs/schema-guide.md, "Ordering Events (There Is No Commit-Order
+ * Column)"). Returns the new message id.
  */
 export async function insertChatMessage(
 	database: Database,

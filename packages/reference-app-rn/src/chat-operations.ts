@@ -126,8 +126,10 @@ export async function insertMessage(
   const now = new Date().toISOString();
 
   // Generate the primary key locally as a UUID. A read-then-increment of
-  // max(Id) would collide when two peers post concurrently into a shared
-  // strand, since each reads the same local max before either replicates.
+  // max(Id) is unsafe here: two peers posting concurrently read the same local
+  // max before either replicates, and the resulting duplicate key is silently
+  // last-writer-wins rather than refused — one message is lost with no error.
+  // See docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)".
   const id = uuid();
 
   await db.exec(

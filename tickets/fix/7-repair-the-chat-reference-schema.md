@@ -45,12 +45,17 @@ harness, so the reproduction matches the reported experience.
    `context.` prefix, the update path has never been exercised.
 5. **`new.Id = old.id`** — inconsistent identifier case in the same expression.
 6. **A strict integer sequence on `Message`** (`Id = 0 or exists(Id - 1)` in spirit) that cannot hold
-   under concurrent writers. This one is **not automatically a defect**: per the owner's answer to
-   **#5**, there is no engine-provided ordering generator and *"sApp developers can impose their own
-   monotonic scheme using ints and constraints"* — which is precisely what this constraint
-   demonstrates. Keep it if it can be made to hold, but it must carry a comment stating the
-   concurrency limitation plainly, in the manner of `chat-simple.qsql:14-18`, so a reader does not
-   copy it into a multi-writer strand and discover the collision in production.
+   under concurrent writers. The earlier framing of this item leaned on the owner's answer to **#5**
+   — *"sApp developers can impose their own monotonic scheme using ints and constraints"* — to argue
+   the constraint was demonstrating a viable pattern. **That premise has since been refuted and
+   documented** (see `docs/schema-guide.md`, "Ordering Events (There Is No Commit-Order Column)",
+   the "Not a third pattern" paragraph): a concurrent duplicate key is not refused here, it is
+   silently last-writer-wins, so the scheme loses rows without an error. The constraint cannot be
+   "made to hold" under concurrent writers. Keeping it as a demonstration of constraint syntax is
+   still fine, but it must carry a comment saying plainly that the pattern itself is unsafe on this
+   stack — matching the wording now at `chat-simple.qsql:14-18` (silently last-writer-wins, losing
+   row lost with no error), not the older "would collide" phrasing — so a reader does not copy it
+   into a multi-writer strand and lose messages in production.
 
 Treat 1-5 as certain and 6 as a documentation obligation. Expect the load attempt to surface more.
 

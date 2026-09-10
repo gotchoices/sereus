@@ -71,8 +71,9 @@ async function queryAll(
 /**
  * Insert N messages rapidly on a strand using locally-generated UUID keys.
  * Each insert awaits completion (Optimystic synchronous replication). The UUID
- * key is collision-free across concurrent peers — a max(Id)+1 read would collide
- * when both nodes post before either replicates.
+ * key is collision-free across concurrent peers — a max(Id)+1 read yields the
+ * same key on both nodes when they post before either replicates, and that
+ * duplicate is silently last-writer-wins rather than refused, losing a row.
  */
 async function insertBatch(
 	strand: StrandInstance,
