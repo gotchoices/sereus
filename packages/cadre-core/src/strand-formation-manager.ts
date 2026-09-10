@@ -13,6 +13,7 @@ import {
 } from './formation-approval.js';
 // control-database does not import this manager, so this import introduces no cycle.
 import { FormationAbortedError, InvitationExhaustedError } from './control-database.js';
+import { PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { canonicalJson } from './canonical-json.js';
 import type {
   DisclosureValidator,
@@ -62,9 +63,20 @@ export const MEMBERSHIP_INVITE_TTL_MS = 7 * 24 * 3600_000;
  * write. Retryable on purpose, and rejected BEFORE the consent row is recorded, so the
  * formation token stays unspent: approving without an invitation would admit a joiner
  * that looks joined but can never become a member, and a responder not running the
- * strand cannot serve the joiner's sync anyway.
+ * strand cannot serve the joiner's sync anyway. The one permanent failure,
+ * a pre-split host strand, gets {@link HOST_STRAND_MUST_BE_RECREATED_REASON} instead.
  */
 export const MEMBERSHIP_INVITE_UNAVAILABLE_REASON = 'Strand membership invitation unavailable, retry';
+
+/**
+ * Rejection reason for a bound CLOSED-strand redemption whose host strand was founded
+ * before the per-party identity split: the responder's founder launch refused it
+ * (`PreSplitStrandIdentityError`), so no invitation can ever be issued into it. Not
+ * retryable — the host must recreate the strand and issue a fresh invitation. Like
+ * {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON}, rejected before consent is recorded, so
+ * the formation token stays unspent.
+ */
+export const HOST_STRAND_MUST_BE_RECREATED_REASON = 'Host strand must be recreated';
 
 /**
  * Rejection reason a would-be joiner is told for each approval-failure category
@@ -143,7 +155,9 @@ export interface StrandFormationManagerOptions {
    * invitation cannot be issued (runtime not live, no party key, strand DB write
    * rejected) — the manager then rejects the whole redemption with
    * {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON} BEFORE recording consent, so the
-   * formation token stays unspent and the joiner can retry.
+   * formation token stays unspent and the joiner can retry. Throw a
+   * `PreSplitStrandIdentityError` for a host strand that can never issue one; that maps
+   * to the non-retryable {@link HOST_STRAND_MUST_BE_RECREATED_REASON}.
    *
    * Left unwired — mock/transport tests — the bound path approves with no invitation,
    * mirroring the unwired {@link resolveStrandAddrs} posture. Production
@@ -428,7 +442,7 @@ export class StrandFormationManager {
           // here can atomically un-issue a strand-DB row.
           const issued = await this.issueBoundMembershipInvite(token, resolved.strandId);
           if (!issued.ok) {
-            return { approved: false, reason: MEMBERSHIP_INVITE_UNAVAILABLE_REASON };
+            return { approved: false, reason: issued.reason };
           }
           // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
           await recorder!.recordUsage({
@@ -499,15 +513,19 @@ export class StrandFormationManager {
    * - Hook returns an invitation (closed host strand): carry it on the approval.
    * - Hook returns `null` (open host strand): approve with no invitation.
    * - Hook throws (runtime not live, no party key, strand-DB write rejected): report
-   *   `ok: false` — the caller rejects with {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON}
-   *   BEFORE any consent row is written, so the formation token stays unspent. The
-   *   LOG-before-reject keeps this a deliberate internal-error→protocol-rejection
-   *   conversion, same as the catch-all below it.
+   *   `ok: false` with {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON} — the caller rejects
+   *   BEFORE any consent row is written, so the formation token stays unspent.
+   * - Hook throws `PreSplitStrandIdentityError` (the host strand was founded before the
+   *   per-party identity split and can never issue one): same, but with the
+   *   non-retryable {@link HOST_STRAND_MUST_BE_RECREATED_REASON}.
+   *
+   * The LOG-before-reject keeps both a deliberate internal-error→protocol-rejection
+   * conversion, same as the catch-all in {@link provisionAsResponder}.
    */
   private async issueBoundMembershipInvite(
     token: string,
     strandId: string
-  ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false }> {
+  ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false; reason: string }> {
     if (!this.issueMembershipInvite) {
       return { ok: true };
     }
@@ -515,8 +533,12 @@ export class StrandFormationManager {
       const invite = await this.issueMembershipInvite(strandId);
       return { ok: true, invite: invite ?? undefined };
     } catch (err) {
+      if (err instanceof PreSplitStrandIdentityError) {
+        log('host strand %s is pre-split (token %s); rejecting — it must be recreated: %o', strandId, token, err);
+        return { ok: false, reason: HOST_STRAND_MUST_BE_RECREATED_REASON };
+      }
       log('membership-invite issue for strand %s failed (token %s); rejecting retryably: %o', strandId, token, err);
-      return { ok: false };
+      return { ok: false, reason: MEMBERSHIP_INVITE_UNAVAILABLE_REASON };
     }
   }
 

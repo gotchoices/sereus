@@ -212,6 +212,37 @@ export interface FounderBootstrapParams {
    * Required for a closed strand; ignored for an open strand.
    */
   founderKeyPair?: Ed25519KeyPair;
+  /**
+   * The public key derived from the strand row's SHARED `MemberPrivateKey` (the read
+   * secret every joining party holds). When supplied for a closed strand, a
+   * `Strand.Manager` row holding it refuses the bootstrap with
+   * {@link PreSplitStrandIdentityError}: that key can never legitimately be a manager
+   * since the per-party identity split, so its presence is exactly the fingerprint of a
+   * strand founded before it. Omitted, no such check runs (a caller that holds no shared
+   * key has nothing to compare against). Ignored for an open strand.
+   */
+  sharedMemberPublicKey?: string;
+}
+
+/**
+ * A founder launch refused a closed strand founded BEFORE the per-party identity split:
+ * its founding `Strand.Manager` is the key derived from the shared `MemberPrivateKey`,
+ * which every joining party holds, so any member can sign as the founder. There is no
+ * repair — rewriting the manager cannot be trusted, since any joiner could already have
+ * admitted or revoked anyone, or could race the rewrite — so the strand must be
+ * recreated. Thrown by {@link bootstrapFounderMembership}; the formation layer maps it to
+ * a non-retryable rejection.
+ */
+export class PreSplitStrandIdentityError extends Error {
+  constructor(readonly strandId: string) {
+    super(
+      `Closed strand ${strandId} was founded before per-party strand identity: its founding ` +
+      'manager key is derived from the shared MemberPrivateKey that every joining party holds, ' +
+      'so any member can act as its founder. It cannot be repaired — recreate the strand ' +
+      '(unpublish it and found a new one).',
+    );
+    this.name = 'PreSplitStrandIdentityError';
+  }
 }
 
 /**
@@ -355,6 +386,20 @@ async function insertFounderManagerIfAbsent(db: Database, memberKey: string, str
 }
 
 /**
+ * Refuse a closed strand whose manager set holds the shared-derived key (see
+ * {@link FounderBootstrapParams.sharedMemberPublicKey}). Cannot misfire: rows not yet
+ * loaded read as no managers; a correctly founded strand's managers are party keys; a
+ * sealed strand has none.
+ *
+ * @throws {PreSplitStrandIdentityError} when a `Strand.Manager` row is the shared-derived key.
+ */
+async function assertNotPreSplitStrand(db: Database, strandId: string, sharedMemberPublicKey: string): Promise<void> {
+  if (await managerRow(db, sharedMemberPublicKey) !== undefined) {
+    throw new PreSplitStrandIdentityError(strandId);
+  }
+}
+
+/**
  * Founder-only one-time bootstrap of a strand's `Strand.*` membership/RBAC rows.
  *
  * Runs once at bring-up on the strand's FOUNDER (the party that provisioned and
@@ -375,13 +420,20 @@ async function insertFounderManagerIfAbsent(db: Database, memberKey: string, str
  * Manager could never admit anyone, so failing loudly here (which propagates out
  * of `StrandDatabase.initialize()` and triggers the runtime's rollback) is correct.
  *
+ * A closed strand whose manager set holds `sharedMemberPublicKey` throws
+ * {@link PreSplitStrandIdentityError} before writing anything: the insert-if-absent
+ * guards would otherwise skip over its pre-split founding rows and leave the shared
+ * key as the only manager.
+ *
  * @param db - The strand's Quereus database (schema already applied).
  * @param params - Strand id/type, the sApp config for the Header, and (closed only)
- *   the derived founder keypair.
+ *   the derived founder keypair and the shared-derived public key to refuse.
  * @throws If `type === 'c'` and no `founderKeyPair` is supplied.
+ * @throws {PreSplitStrandIdentityError} If `type === 'c'` and a `Strand.Manager` row is
+ *   `sharedMemberPublicKey`.
  */
 export async function bootstrapFounderMembership(db: Database, params: FounderBootstrapParams): Promise<void> {
-  const { strandId, type, founderKeyPair } = params;
+  const { strandId, type, founderKeyPair, sharedMemberPublicKey } = params;
   log('Founder bootstrap for strand %s (type %s)', strandId, type);
 
   // Validate BEFORE writing anything: a closed strand with no founder key must
@@ -389,9 +441,12 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
   // (such a strand could never admit anyone).
   if (type === 'c' && !founderKeyPair) {
     throw new Error(
-      `Cannot bootstrap closed strand ${strandId}: no founder key pair derived from MemberPrivateKey. ` +
-      'A closed strand needs a founding Member + Manager or it can never admit members.',
+      `Cannot bootstrap closed strand ${strandId}: no founder key pair derived from this party's ` +
+      'StrandPartyKey. A closed strand needs a founding Member + Manager or it can never admit members.',
     );
+  }
+  if (type === 'c' && sharedMemberPublicKey !== undefined) {
+    await assertNotPreSplitStrand(db, strandId, sharedMemberPublicKey);
   }
 
   // Header is written for every strand; Member/Manager are closed-only.

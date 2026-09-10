@@ -951,6 +951,10 @@ export class StrandInstanceManager {
    *   caller's wake for `'needs-resume'`) can seat the founding Member/Manager.
    * @throws when the strand is not tracked — this seam exists only for the
    *   tracked-instance launch path; an untracked id is a caller bug.
+   * @throws whatever the live bootstrap throws (e.g. `PreSplitStrandIdentityError`),
+   *   after {@link withdrawFounderRequest} — so a retry re-attempts the founding rather
+   *   than resolving `'already-founder'` over an instance that never founded. A caller
+   *   whose `'needs-resume'` wake fails owes the same withdrawal.
    */
   async foundExistingStrand(
     strandId: string,
@@ -973,8 +977,27 @@ export class StrandInstanceManager {
     if (!instance.database) {
       return 'needs-resume';
     }
-    await this.ensureFounderBootstrap(strandId);
+    try {
+      await this.ensureFounderBootstrap(strandId);
+    } catch (error) {
+      this.withdrawFounderRequest(strandId);
+      throw error;
+    }
     return 'bootstrapped';
+  }
+
+  /**
+   * Undo {@link foundExistingStrand}'s founder flip after the founding it promised
+   * failed, so the retained config again says what this instance actually runs as (a
+   * joiner) and the next founder request re-attempts the bootstrap. The resolved party
+   * key stays retained — it is this party's identity for the strand either way. No-op
+   * when the strand is untracked or its config does not found.
+   */
+  withdrawFounderRequest(strandId: string): void {
+    const config = this.launchConfigs.get(strandId);
+    if (config?.founder === true) {
+      this.launchConfigs.set(strandId, { ...config, founder: false });
+    }
   }
 
   /**

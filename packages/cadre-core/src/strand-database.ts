@@ -135,19 +135,21 @@ export class StrandDatabase {
    * strand row's shared `MemberPrivateKey`, which every joining party receives and could
    * therefore use to forge the founder's identity. A closed strand with no
    * `partyMemberPrivateKey` throws, because it could never seat a founding manager.
-   * Open strands derive no keypair (Header only). Idempotent — see
-   * {@link bootstrapFounderMembership}.
+   * The shared key's public half IS passed, but only so the bootstrap can refuse a strand
+   * founded under it before the split (`PreSplitStrandIdentityError`). Open strands derive
+   * no keypair (Header only). Idempotent — see {@link bootstrapFounderMembership}.
    */
   private async bootstrapFounder(): Promise<void> {
-    const { strandId, strandType, partyMemberPrivateKey, sAppConfig } = this.config;
-    const founderKeyPair = strandType === 'c'
-      ? this.deriveFounderKeyPair(strandId, partyMemberPrivateKey)
-      : undefined;
+    const { strandId, strandType, memberPrivateKey, partyMemberPrivateKey, sAppConfig } = this.config;
+    const closed = strandType === 'c';
     await bootstrapFounderMembership(this.db!, {
       strandId,
       type: strandType,
       sApp: sAppConfig,
-      founderKeyPair,
+      founderKeyPair: closed ? this.deriveFounderKeyPair(strandId, partyMemberPrivateKey) : undefined,
+      sharedMemberPublicKey: closed && memberPrivateKey
+        ? strandMemberKeyPair(memberPrivateKey).publicKeyB64
+        : undefined,
     });
   }
 
@@ -161,8 +163,9 @@ export class StrandDatabase {
       throw new Error(
         `Cannot found closed strand ${strandId}: this party has no StrandPartyKey for it. ` +
         'A closed strand needs a founding Member/Manager derived from the party\'s own ' +
-        'membership key (minted at publishStrand, or healed at a founder launch) — the ' +
-        'shared MemberPrivateKey deliberately no longer derives anyone\'s identity.',
+        'membership key (minted at publishStrand, or at the founder launch that follows a ' +
+        'publish interrupted before its mint) — the shared MemberPrivateKey deliberately ' +
+        'no longer derives anyone\'s identity.',
       );
     }
     return strandMemberKeyPair(partyMemberPrivateKey);
@@ -174,10 +177,10 @@ export class StrandDatabase {
    * request arrives for an instance that was first launched as a joiner.
    * Idempotent: every bootstrap write is insert-if-absent
    * ({@link bootstrapFounderMembership}), so calling it on an instance that
-   * already founded writes nothing. Also flips the captured config's `founder`,
-   * so this object's own record of how it was launched stays coherent with what
-   * actually ran (a construction-time `founder: false` is a statement about the
-   * launch, not a permanent identity).
+   * already founded writes nothing. On success also flips the captured config's
+   * `founder`, so this object's own record of how it was launched stays coherent
+   * with what actually ran (a construction-time `founder: false` is a statement
+   * about the launch, not a permanent identity); a refused bootstrap leaves it a joiner.
    *
    * @param partyMemberPrivateKey - The party's own membership key, for a closed strand
    *   whose original (joiner) launch resolved none — e.g. the `StrandPartyKey` row had
@@ -186,9 +189,9 @@ export class StrandDatabase {
    */
   async ensureFounderBootstrap(partyMemberPrivateKey?: string): Promise<void> {
     this.ensureInitialized();
-    this.config.founder = true;
     this.config.partyMemberPrivateKey ??= partyMemberPrivateKey;
     await this.bootstrapFounder();
+    this.config.founder = true;
   }
 
   /**

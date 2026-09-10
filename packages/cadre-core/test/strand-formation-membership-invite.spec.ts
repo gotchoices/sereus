@@ -13,6 +13,8 @@
  *  - bound + hook throws (runtime absent / no party key / strand-DB reject) → clean
  *    retryable rejection with `MEMBERSHIP_INVITE_UNAVAILABLE_REASON`, NO usage
  *    recorded (the formation token stays unspent), NO responder disclosure,
+ *  - bound + hook throws `PreSplitStrandIdentityError` → the NON-retryable
+ *    `HOST_STRAND_MUST_BE_RECREATED_REASON`, token likewise unspent,
  *  - bound + hook returns null (open host strand) → approved, no invitation,
  *  - bound + hook UNWIRED (mock/transport posture) → approved, no invitation,
  *  - unbound → the hook is never consulted and no invitation is carried,
@@ -24,8 +26,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   StrandFormationManager,
-  MEMBERSHIP_INVITE_UNAVAILABLE_REASON
+  MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
+  HOST_STRAND_MUST_BE_RECREATED_REASON
 } from '../src/strand-formation-manager.js';
+import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
 import {
   isWellFormedMembershipInvite,
   type FormationResultMessage
@@ -187,6 +191,24 @@ describe('formation membership invitation (bound closed path)', () => {
     // Rejection parity: no identity, no cadre, no provision result, no invitation.
     expect(reply.partyId).toBeUndefined();
     expect(reply.cadrePeerAddrs).toBeUndefined();
+    expect(reply.provisionResult).toBeUndefined();
+  });
+
+  it('hook throws PreSplitStrandIdentityError → non-retryable "must be recreated", token unspent', async () => {
+    const recorder = fakeRecorder(BOUND);
+    const manager = new StrandFormationManager({
+      formationUsageRecorder: recorder,
+      partyId: HOST_PARTY,
+      cadrePeerAddrs: HOST_CADRE,
+      issueMembershipInvite: async (strandId) => { throw new PreSplitStrandIdentityError(strandId); }
+    });
+
+    const reply = await respondOnce(manager, 'invite-pre-split-host');
+
+    expect(reply.approved).toBe(false);
+    expect(reply.reason).toBe(HOST_STRAND_MUST_BE_RECREATED_REASON);
+    expect(reply.reason).not.toMatch(/retry/i);
+    expect(recorder.usageRecorded).toHaveLength(0);
     expect(reply.provisionResult).toBeUndefined();
   });
 

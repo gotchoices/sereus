@@ -42,7 +42,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
-import { issueInvite } from './strand-membership-writer.js';
+import { issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
@@ -550,6 +550,21 @@ export class CadreNode implements SAppIdLookup {
    * if a node ever forms strands at scale, evict alongside that map.
    */
   private readonly pendingMembershipInvites = new Map<string, StrandMembershipInvite>();
+
+  /**
+   * Founder launches refused because the strand was founded before the per-party
+   * identity split (`PreSplitStrandIdentityError`), keyed by strandId. Read by
+   * {@link issueStrandMembershipInvite}, which rethrows the recorded error so a bound
+   * redemption against the strand is rejected as "must be recreated" — not told to retry
+   * because the runtime is not live (a refused fresh launch leaves none) or failed by the
+   * `Strand.Invite` gate (a refused in-place founding leaves a joiner instance up whose
+   * party key is no manager).
+   *
+   * Written and cleared by {@link launchStrand}; also cleared by {@link detachStrand} and
+   * {@link unpublishStrand}, so a recreated id starts clean. In-memory: after a restart
+   * the next founder launch of the strand records it again.
+   */
+  private readonly strandLaunchRefusals = new Map<string, PreSplitStrandIdentityError>();
 
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
@@ -4469,6 +4484,9 @@ export class CadreNode implements SAppIdLookup {
         'row deletion itself cannot be replayed, so other nodes may keep running the strand ' +
         'until the collection converges.', trimmed);
     }
+    // A refused pre-split launch left no tracked instance, so the stop below never
+    // reaches detachStrand for it — clear the refusal here so a re-founded id starts clean.
+    this.strandLaunchRefusals.delete(trimmed);
     // Clear THIS machine's own MemberPeer binding while the strand runtime — and the
     // retained party key — is still live: the delete above already destroyed the
     // party's StrandPartyKey row, so once this process forgets the key nothing can
@@ -4512,9 +4530,10 @@ export class CadreNode implements SAppIdLookup {
    * as `MemberPrivateKey`; docs/strands.md → "Closed-Strand Member Key Handling") and is
    * never put on the formation wire.
    *
-   * Called internally by {@link publishStrand} (closed strands mint at publish) and by
-   * the launch-time founder heal; public so a test harness — or a joiner flow that
-   * persists a formation-issued identity — can seat a specific key deliberately.
+   * Called internally by {@link publishStrand} (closed strands mint at publish) and by a
+   * founder launch that finds no row (a publish interrupted before its mint); public so a
+   * test harness — or a joiner flow that persists a formation-issued identity — can seat
+   * a specific key deliberately.
    *
    * @param strandId - The strand the key is this party's identity for.
    * @param partyMemberPrivateKey - Optional specific key (base64 protobuf, as
@@ -4562,10 +4581,14 @@ export class CadreNode implements SAppIdLookup {
    * Resolve the party membership key a closed strand's launch threads into the founder
    * bootstrap: the explicit attach-time key when given, else the party's persisted
    * `StrandPartyKey` row, else — on the one machine whose owner key the row names as
-   * founder — a freshly minted-and-persisted key (the heal for strands published before
-   * the key split, or by a publish that was interrupted before its mint). Everyone else
-   * resolves undefined: non-founding machines never mint (no mint race between a
-   * party's machines), and only a founder bootstrap needs the key at all.
+   * founder — a freshly minted-and-persisted key, which seats the identity for a publish
+   * that was interrupted before its mint. Everyone else resolves undefined: non-founding
+   * machines never mint (no mint race between a party's machines), and only a founder
+   * bootstrap needs the key at all.
+   *
+   * Minting does NOT repair a strand founded before the key split: its founding
+   * membership was seated under the shared `MemberPrivateKey`, and nothing re-seats it —
+   * the founder bootstrap refuses such a strand (`PreSplitStrandIdentityError`) instead.
    *
    * NOTE: "founding machine" here is the ROW's provenance, not the launch's resolved
    * `founder` flag — so an explicit `founder: false` over a row this machine published
@@ -4764,6 +4787,10 @@ export class CadreNode implements SAppIdLookup {
    * now the tracked instance is founded in place
    * ({@link StrandInstanceManager.foundExistingStrand}), waking it first if quiesced
    * so the bootstrap actually runs before this resolves.
+   *
+   * A founder launch refused as pre-split (`PreSplitStrandIdentityError`) is recorded in
+   * {@link strandLaunchRefusals} for the formation arm, then rethrown; a founder launch
+   * that succeeds clears the record (it ran the bootstrap's pre-split check and passed).
    */
   private async launchStrand(
     strand: StrandRow,
@@ -4772,6 +4799,30 @@ export class CadreNode implements SAppIdLookup {
     explicitPartyKey?: string
   ): Promise<StrandInstance> {
     const resolvedFounder = founder ?? this.isSelfFoundedRow(strand);
+    try {
+      const instance = await this.startOrFoundStrand(strand, sAppConfig, resolvedFounder, explicitPartyKey);
+      if (resolvedFounder) {
+        this.strandLaunchRefusals.delete(strand.Id);
+      }
+      return instance;
+    } catch (error) {
+      if (error instanceof PreSplitStrandIdentityError) {
+        this.strandLaunchRefusals.set(strand.Id, error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The launch itself, for {@link launchStrand} (which documents the behaviour): found a
+   * tracked instance in place, or start a fresh one.
+   */
+  private async startOrFoundStrand(
+    strand: StrandRow,
+    sAppConfig: SAppConfig,
+    resolvedFounder: boolean,
+    explicitPartyKey: string | undefined
+  ): Promise<StrandInstance> {
     const existing = this.strandManager.getInstance(strand.Id);
     if (existing) {
       if (resolvedFounder) {
@@ -4781,16 +4832,25 @@ export class CadreNode implements SAppIdLookup {
         const outcome = await this.strandManager.foundExistingStrand(strand.Id,
           () => this.resolveStrandPartyKey(strand, explicitPartyKey));
         if (outcome === 'needs-resume') {
-          // Quiesced instance: the retained config now founds, but founding promises
-          // the bootstrap has RUN by the time the caller resolves — wake through the
-          // hibernation manager (coalesced with any in-flight wake, timer-aware) so
-          // the rebuild executes it now rather than at some eventual wake.
-          await this.wakeStrand(strand.Id);
-          // The wake's rebuild founds — UNLESS a wake was already in flight when the
-          // config flipped, in which case it had already read the pre-flip config and
-          // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
-          // (insert-if-absent) bootstrap so founding never resolves headerless.
-          await this.strandManager.ensureFounderBootstrap(strand.Id);
+          try {
+            // Quiesced instance: the retained config now founds, but founding promises
+            // the bootstrap has RUN by the time the caller resolves — wake through the
+            // hibernation manager (coalesced with any in-flight wake, timer-aware) so
+            // the rebuild executes it now rather than at some eventual wake.
+            await this.wakeStrand(strand.Id);
+            // The wake's rebuild founds — UNLESS a wake was already in flight when the
+            // config flipped, in which case it had already read the pre-flip config and
+            // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
+            // (insert-if-absent) bootstrap so founding never resolves headerless.
+            await this.strandManager.ensureFounderBootstrap(strand.Id);
+          } catch (error) {
+            // The founding did not happen (e.g. the rebuild refused a pre-split strand and
+            // rolled back, leaving the instance tracked with no runtime): withdraw the flip
+            // so the next attempt re-runs the founding instead of resolving
+            // 'already-founder' over an instance that never founded.
+            this.strandManager.withdrawFounderRequest(strand.Id);
+            throw error;
+          }
         }
         log('launchStrand: strand %s already tracked — founder request honored (%s)',
           strand.Id, outcome);
@@ -4802,9 +4862,10 @@ export class CadreNode implements SAppIdLookup {
 
     // A closed strand's launch carries the party's OWN membership identity key: the
     // explicit attach-time key, else the control-layer StrandPartyKey row — minted here
-    // (heal) when this machine is the row-derived founder and no row exists yet. A
-    // joiner with no persisted key threads undefined; only a FOUNDER bootstrap needs
-    // the key, and that path throws loudly without one (StrandDatabase).
+    // when this machine is the row-derived founder and no row exists yet (a publish
+    // interrupted before its mint). A joiner with no persisted key threads undefined;
+    // only a FOUNDER bootstrap needs the key, and that path throws loudly without one
+    // (StrandDatabase).
     const partyMemberPrivateKey = strand.Type === 'c'
       ? await this.resolveStrandPartyKey(strand, explicitPartyKey)
       : undefined;
@@ -5332,20 +5393,22 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Local teardown for one strand, shared by the caller-driven {@link stopStrand} and the
-   * watcher-driven `handleStrandRemoved`: untrack hibernation, drop the sApp config, stop
-   * the instance, emit `strand:stopped`. Touches no control-plane row — which side of the
-   * removal the node is on is the caller's concern, not this method's.
+   * watcher-driven `handleStrandRemoved`: untrack hibernation, drop the sApp config and any
+   * recorded launch refusal, stop the instance, emit `strand:stopped`. Touches no
+   * control-plane row — which side of the removal the node is on is the caller's concern,
+   * not this method's.
    *
    * The stop + emit are skipped when the strand manager holds no instance for `strandId` —
    * e.g. a party owner that published a strand's row but never ran it locally, or an
    * explicit {@link stopStrand} for an id this node never started. `hibernationManager`
-   * untrack and the `sAppConfigs` delete stay unconditional (both are no-ops when there is
-   * nothing to remove), so a launch that failed before an instance was ever tracked still
-   * gets its stray sApp config cleared.
+   * untrack and the `sAppConfigs` / {@link strandLaunchRefusals} deletes stay
+   * unconditional (all no-ops when there is nothing to remove), so a launch that failed
+   * before an instance was ever tracked still gets its stray entries cleared.
    */
   private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);
     this.sAppConfigs.delete(strandId);
+    this.strandLaunchRefusals.delete(strandId);
     if (!this.strandManager.hasStrand(strandId)) {
       log('detachStrand: strand %s not tracked locally — no-op (no stop, no strand:stopped)', strandId);
       return;
@@ -6569,19 +6632,23 @@ export class CadreNode implements SAppIdLookup {
    * validated joiner can seat its own `Strand.Member` row.
    *
    * - Open host strand → `null` (no members, nothing to invite into).
+   * - Closed host strand whose founder launch was refused as pre-split
+   *   ({@link strandLaunchRefusals}) → rethrow the recorded `PreSplitStrandIdentityError`;
+   *   the manager maps it to the NON-retryable `HOST_STRAND_MUST_BE_RECREATED_REASON`.
    * - Closed host strand with no `StrandPartyKey` row → throw: this party's identity is
    *   the invite's issuing manager, and without it nothing can sign the issuance. (The
-   *   founder's publish/launch paths mint it, so this is a not-yet-converged sibling or
-   *   a pre-split strand that has not healed.) The manager maps the throw to a clean
-   *   retryable rejection BEFORE the formation token is spent.
+   *   founder's publish/launch paths mint it, so this is a not-yet-converged sibling.)
+   *   The manager maps the throw to a clean retryable rejection BEFORE the formation
+   *   token is spent.
    * - Closed host strand with no running local instance/database → throw, same mapping:
    *   a joiner admitted without an invitation would look joined and never become a
    *   member, and a responder not running the strand cannot serve its sync anyway.
    *
-   * Identity is checked BEFORE the runtime: it is the cheaper read and the more
-   * actionable diagnosis when both are missing (a missing runtime is transient, a
-   * missing identity is not), and it keeps the branch reachable without standing a
-   * strand runtime up.
+   * The recorded refusal is checked first: it is an in-memory read and the only
+   * permanent diagnosis. Identity is checked BEFORE the runtime: it is the cheaper read
+   * and the more actionable diagnosis when both are missing (a missing runtime is
+   * transient, a missing identity is not), and it keeps the branch reachable without
+   * standing a strand runtime up.
    *
    * The invitation expires `MEMBERSHIP_INVITE_TTL_MS` from now — see that constant for
    * the slow-joiner / lost-result tradeoff.
@@ -6609,12 +6676,15 @@ export class CadreNode implements SAppIdLookup {
     if (row.Type !== 'c') {
       return null;
     }
+    const refusal = this.strandLaunchRefusals.get(strandId);
+    if (refusal) {
+      throw refusal;
+    }
     const partyKey = await this.controlDatabase.queryStrandPartyKey(strandId);
     if (partyKey === null) {
       throw new Error(
         `Cannot issue a membership invitation for closed strand ${strandId}: this party holds ` +
-        'no StrandPartyKey row for it (identity not yet converged, or a pre-split strand that ' +
-        'has not healed at launch)'
+        'no StrandPartyKey row for it (identity not yet converged from the machine that published it)'
       );
     }
     const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();

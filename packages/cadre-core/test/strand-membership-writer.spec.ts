@@ -8,6 +8,7 @@ import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-memb
 import {
   signStrandPayload,
   bootstrapFounderMembership,
+  PreSplitStrandIdentityError,
   addMemberByManager,
   addManager,
   STRAND_ENGINE,
@@ -271,3 +272,82 @@ describe('bootstrapFounderMembership', () => {
     expect(await tableCount(db, 'Manager')).toBe(0);
   }, 30_000);
 });
+
+describe('bootstrapFounderMembership: pre-split detection', () => {
+  let open: OpenStrand | null = null;
+
+  afterEach(async () => {
+    if (open) {
+      await open.shutdown();
+      open = null;
+    }
+  });
+
+  /** A strand whose founding was seated under the key derived from the SHARED read secret. */
+  async function preSplitStrand() {
+    open = await openStrandDb();
+    const sharedKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+    const partyKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+    const sApp = makeSAppConfig();
+    await bootstrapFounderMembership(open.db, { strandId: open.strandId, type: 'c', sApp, founderKeyPair: sharedKeyPair });
+    return { db: open.db, strandId: open.strandId, sApp, sharedKeyPair, partyKeyPair };
+  }
+
+  it('refuses a closed strand whose manager is the shared-derived key, writing nothing', async () => {
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+
+    const refused = bootstrapFounderMembership(db, {
+      strandId, type: 'c', sApp, founderKeyPair: partyKeyPair, sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+    });
+
+    await expect(refused).rejects.toThrow(PreSplitStrandIdentityError);
+    await expect(refused).rejects.toMatchObject({ strandId, message: expect.stringMatching(/recreate the strand/) });
+    expect(await tableCount(db, 'Member')).toBe(1);
+    const manager = await db.get('select MemberKey from Strand.Manager');
+    expect(manager?.MemberKey).toBe(sharedKeyPair.publicKeyB64);
+  }, 30_000);
+
+  it('without the shared key supplied, the same rows are skipped as insert-if-absent always did', async () => {
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+
+    await expect(
+      bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair: partyKeyPair }),
+    ).resolves.toBeUndefined();
+    const manager = await db.get('select MemberKey from Strand.Manager');
+    expect(manager?.MemberKey).toBe(sharedKeyPair.publicKeyB64);
+  }, 30_000);
+
+  it('with the shared key supplied, a fresh closed strand founds under the party key', async () => {
+    open = await openStrandDb();
+    const { db, strandId } = open;
+    const sharedKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+    const partyKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+    const params = {
+      strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair: partyKeyPair,
+      sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+    };
+
+    await bootstrapFounderMembership(db, params);
+    // ...and re-running it (a founder restart) still passes the check.
+    await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
+
+    const manager = await db.get('select MemberKey from Strand.Manager');
+    expect(manager?.MemberKey).toBe(partyKeyPair.publicKeyB64);
+    expect(await tableCount(db, 'Manager')).toBe(1);
+  }, 30_000);
+
+  it('never checks an open strand (no managers to compare)', async () => {
+    open = await openStrandDb();
+    const { db, strandId } = open;
+
+    await bootstrapFounderMembership(db, {
+      strandId, type: 'o', sApp: makeSAppConfig(), sharedMemberPublicKey: freshPublicKey(),
+    });
+    expect(await tableCount(db, 'Header')).toBe(1);
+  }, 30_000);
+});
+
+function freshPublicKey(): string {
+  const priv = generatePrivateKey('ed25519', 'base64url') as string;
+  return getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
+}

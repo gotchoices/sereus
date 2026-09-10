@@ -11,20 +11,31 @@
  *  - open host strand → `null` (approve with no invitation),
  *  - `Strand` row gone (concurrent unpublish) → throw → retryable rejection,
  *  - no `StrandPartyKey` identity → throw → retryable rejection,
- *  - closed strand whose runtime is not live → throw → retryable rejection.
+ *  - closed strand whose runtime is not live → throw → retryable rejection,
+ *  - closed strand whose founder launch was refused as pre-split → rethrow the
+ *    `PreSplitStrandIdentityError` → non-retryable rejection, until the strand is stopped.
  *
  * The method is private (only the formation manager calls it), so the tests reach it the
  * way the sibling node specs reach private members: a narrowing cast.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
-import type { StrandMembershipInvite } from '../src/types.js';
-import { sign } from '@optimystic/quereus-plugin-crypto';
-import { generateStrandMemberKey } from '../src/strand-member-key.js';
+import type { SAppConfig, StrandMembershipInvite } from '../src/types.js';
+import { generatePrivateKey, getPublicKey, sign } from '@optimystic/quereus-plugin-crypto';
+import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { bootstrapFounderMembership, PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
+import { signSchema } from '../src/schema-verification.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
 const rand = (): string => Math.random().toString(36).slice(2);
+
+function signedSApp(): SAppConfig {
+  const schema = 'create table Note (Id text primary key);';
+  const priv = generatePrivateKey('ed25519', 'base64url') as string;
+  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
+  return { id: pub, version: '1.0.0', schema, signature: signSchema(schema, '1.0.0', priv) };
+}
 
 /** The private responder-side issuer, as the formation manager's wired hook calls it. */
 function issue(node: CadreNode, strandId: string): Promise<StrandMembershipInvite | null> {
@@ -65,7 +76,7 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
     const strandId = 'strand-no-identity-' + rand();
     await node.publishStrand(strandId, 'c', await generateStrandMemberKey());
     // Publishing a closed strand mints the identity; remove it to stand in for a sibling
-    // machine that has not converged on the row (or a pre-split strand not yet healed).
+    // machine that has not converged on the row.
     const removed = await node.getControlDatabase()!.deleteStrandPartyKey(
       strandId,
       ownerKey.publicKeyB64,
@@ -83,4 +94,29 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
 
     await expect(issue(node, strandId)).rejects.toThrow(/runtime is\s+not live/);
   }, 30_000);
+
+  it('closed strand whose founder launch was refused as pre-split → rethrows the refusal until stopped', async () => {
+    const strandId = 'strand-pre-split-' + rand();
+    const memberPrivateKey = await generateStrandMemberKey();
+    await node.publishStrand(strandId, 'c', memberPrivateKey);
+    const strandRow = (await node.getControlDatabase()!.queryStrand(strandId))!;
+    const sAppConfig = signedSApp();
+    // Attach as a joiner (writes nothing), then seat the pre-split founding by hand:
+    // Header/Member/Manager under the key derived from the SHARED read secret.
+    const instance = await node.addStrand({ strandRow, sAppConfig, founder: false });
+    await bootstrapFounderMembership(instance.database!.getDatabase(), {
+      strandId, type: 'c', sApp: sAppConfig, founderKeyPair: strandMemberKeyPair(memberPrivateKey),
+    });
+
+    // The founder request (derived — this node published the row) is refused and recorded.
+    await expect(node.addStrand({ strandRow, sAppConfig })).rejects.toThrow(PreSplitStrandIdentityError);
+    // The joiner runtime is still live, yet issuance reports the permanent refusal rather
+    // than a retryable invite-gate failure.
+    expect(node.getStrand(strandId)?.database).toBeDefined();
+    await expect(issue(node, strandId)).rejects.toThrow(PreSplitStrandIdentityError);
+
+    // Stopping the strand clears the refusal: the ordinary not-live branch answers again.
+    await node.stopStrand(strandId);
+    await expect(issue(node, strandId)).rejects.toThrow(/runtime is\s+not live/);
+  }, 60_000);
 });

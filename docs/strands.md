@@ -219,8 +219,8 @@ database, which Optimystic replicates to **every node the party owns**:
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
   `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it at
-  `publishStrand` for a closed strand (healed at a founder launch for strands that
-  predate the split); a **joiner** mints (or, on a re-formation, reuses) its own at
+  `publishStrand` for a closed strand (or at the next founder launch, when a publish
+  was interrupted before its mint); a **joiner** mints (or, on a re-formation, reuses) its own at
   `formStrand`, when the approving closed-strand formation result carries a
   single-use strand membership invitation
   (`FormationProvisionResult.membershipInvite` — a `Strand.Invite` keypair the
@@ -246,6 +246,16 @@ The two used to be one key: the founding identity derived from the shared read
 secret, so any joiner could compute the founder's member *and manager* private key
 and sign as the founding manager (gotchoices/sereus#4). Identity and the shared
 secret are now separate things.
+
+**Strands founded before the split must be recreated.** A closed strand founded on
+`@serfab/*` 0.13.0 or earlier still has the shared-derived key as its founding
+manager, so every member can still act as its founder. It cannot be repaired in
+place: any joiner may already have admitted or revoked anyone, or could race a
+rewrite of the manager. The founder launch detects it — a `Strand.Manager` row equal
+to the key derived from the shared `MemberPrivateKey` — and refuses it with
+`PreSplitStrandIdentityError`, and a join attempt against it is rejected with
+`'Host strand must be recreated'` rather than told to retry. Unpublish it and found a
+new strand. Details: [`docs/architecture.md` → Strand Membership Bootstrap](architecture.md#strand-membership-bootstrap).
 
 **The replication is the point.** It is what makes a party's cadre nodes
 *fungible* for closed strands: any node has both keys, so any node can serve

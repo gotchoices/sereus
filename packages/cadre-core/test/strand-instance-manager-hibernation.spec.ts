@@ -243,6 +243,31 @@ describe('StrandInstanceManager.foundExistingStrand', () => {
     const manager = new StrandInstanceManager();
     await expect(manager.foundExistingStrand('ghost')).rejects.toThrow(/not tracked/);
   });
+
+  it('withdraws the flip when the live bootstrap throws, so a retry re-runs it', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('found-refused'));
+    mocks.ensureFounderBootstrap.mockRejectedValueOnce(new Error('bootstrap refused'));
+
+    await expect(manager.foundExistingStrand('found-refused')).rejects.toThrow(/bootstrap refused/);
+
+    // Not 'already-founder': the retained config went back to joiner, so the retry
+    // runs the bootstrap again...
+    expect(await manager.foundExistingStrand('found-refused')).toBe('bootstrapped');
+    expect(mocks.ensureFounderBootstrap).toHaveBeenCalledTimes(2);
+  });
+
+  it('withdrawFounderRequest reverts a flip whose resume rebuild failed, so the next rebuild joins', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('found-withdrawn'));
+    await manager.quiesceStrand('found-withdrawn');
+    expect(await manager.foundExistingStrand('found-withdrawn')).toBe('needs-resume');
+
+    // The caller's wake failed; it withdraws the flip (CadreNode.launchStrand does).
+    manager.withdrawFounderRequest('found-withdrawn');
+    await manager.resumeStrand('found-withdrawn');
+    expect(lastStrandDatabaseFounder()).toBe(false);
+  });
 });
 
 // The post-wake re-run `CadreNode.launchStrand` performs. It exists because
