@@ -421,7 +421,8 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-formation-cross-party-seed.integration.ts`: the host founds its strand before
   publishing an invitation bound to it, so the formation result carries the host's live
   strand addresses and the joiner's seed comes from the handshake alone. Loopback addresses
-  only — the cross-party RELAYED strand shape is still uncovered (see the relay line below).
+  there; the same no-hand-dial handshake over a RELAY is `blind-relay-phone-to-phone-e2e`
+  (see the relay lines below).
 - Cross-party, multi-machine parties, control plane only (two parties, each an owner plus a
   drone; no cross-party strand transport) — `multi-party-sync.integration.ts`. Same machine
   layout as the four-machine strand line below, stopping where that one starts.
@@ -443,8 +444,16 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-circuit-same-party-e2e.integration.ts`. It also measures the relay-slot cost (one
   reservation per node per network) and characterizes relay restart: control reservations
   recover, strand reservations do not (ticket
-  `bug-strand-relay-reservation-not-resupervised`). Same party only — the cross-party relayed
-  strand shape is not covered.
+  `bug-strand-relay-reservation-not-resupervised`). Same party; the cross-party half is the
+  line below.
+- Relayed strand plane ACROSS parties (two parties, each a single relay-only machine,
+  sharing one CLOSED strand through the same dedicated relay: the bound invitation carries a
+  `/p2p-circuit` bootstrap address, the stranger-open formation protocol runs over the
+  circuit and hands back a relay-routed strand address plus the membership secret, the
+  joiner meshes from that seed with no hand-dial, rows replicate both ways, and every
+  cross-party connection — control and strand — classifies `relayed` and unlimited) —
+  `blind-relay-phone-to-phone-e2e.integration.ts`. One SHARED relay only; the two-relay
+  shape (each party reserved on a different relay) is not covered.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
@@ -458,10 +467,9 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   claims only; the physical story for the shape stays with the line above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
-- **Uncovered**: relayed strand plane ACROSS parties (two parties, each machine relay-only,
-  sharing one strand through a relay — formation handing the far party a relay-routed strand
-  address). The same-party half is covered by the line above; the cross-party half is queued as
-  `formation-carries-strand-addrs` / `blind-relay-phone-to-phone-e2e`.
+- **Uncovered**: the two-relay circuit shape — each party holding its reservation on a
+  DIFFERENT relay, so the path between them crosses relay boundaries. Both relay scenarios
+  above share one relay.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology

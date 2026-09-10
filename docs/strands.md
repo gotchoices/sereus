@@ -64,18 +64,25 @@ A user with only a phone wants to connect to another such user.
 - This allows the second party to discover a current dial address using only the Peer ID plus bootstrap information.
 - If a party loses its phone, it should be able to rejoin the cadre with a new phone only if its identity key material can be recovered/rotated safely.
 
-**Transport half proven (implemented), within one party.** The relay mechanics this use
-case rests on — two machines that can accept no inbound connections at all forming a
-control mesh AND a strand mesh through a dedicated relay, with strand data flowing both
-ways over the `/p2p-circuit` hop — are proven end to end by
+**The use case itself is proven end to end (one shared relay).** Two DIFFERENT parties,
+each a single node that cannot listen (`listenAddrs: []`), form a closed strand and
+replicate rows both ways with every byte crossing one dedicated ungated relay:
+`packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`.
+The invitation's bootstrap addresses carry the host's `/p2p-circuit` control address (the
+only kind of address a relay-only host has), the stranger-open formation protocol runs
+over the circuit, the formation result hands the joiner a relay-routed strand address plus
+the closed strand's membership secret, and the joiner's strand node — holding its own
+reservation on the same relay — reaches the host's strand node from that seed with no
+hand-dial. Every A↔B connection classifies `relayed`. Cost, measured there: 4 relay
+reservations for the pair sharing one strand (2 control + 2 strand) — one slot per node
+per network, so every strand a NAT'd node joins costs one extra relay slot per node. The
+same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
-(see [architecture.md → Relay Integration](architecture.md#relay-integration) for what
-exactly it pins, including the per-strand relay-slot cost and the reservation-loss
-asymmetry). That scenario is one party's two machines. Formation now **does** hand the
-other party the responder's strand addresses (see the cross-party paragraph below), so the
-address-handoff half of the cross-party SN–SN story is in place; what remains open is
-proving it over a RELAY rather than loopback, plus discovery and roaming — a party that
-moves to a different relay after formation has no way to say so, and no way to be found.
+(one party's two machines over the same fixture) additionally pins the reservation-loss
+asymmetry — see [architecture.md → Relay Integration](architecture.md#relay-integration).
+Still open: TWO relays (the parties reserved on different relays) is untested, and
+discovery and roaming remain unsolved — a party that moves to a different relay after
+formation has no way to say so, and no way to be found.
 
 Open question: what is “the DHT” here?
 - Is a **cadre** its own DHT overlay?
@@ -151,7 +158,10 @@ as its party id and cadre addresses, so a rejected redemption discloses nothing.
 keeps them per strand and unions them into that strand's discovery seed — behind any fresher
 sibling answer — on launch, on hibernation resume, and on every periodic address refresh.
 `integration-tests` scenario `strand-formation-cross-party-seed` proves two different parties
-meshing on one strand, and replicating rows across it, with no hand-dial anywhere.
+meshing on one strand, and replicating rows across it, with no hand-dial anywhere — over
+loopback addresses; `blind-relay-phone-to-phone-e2e` proves the same handshake carrying a
+RELAY-ROUTED strand address between two relay-only parties, with the closed strand's
+membership secret delivered over the circuit (see the SN–SN use case above).
 
 Two limits are real and are **not** solved by that work:
 

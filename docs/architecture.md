@@ -919,6 +919,24 @@ per network** — two machines running one strand hold four slots (2 control +
 2 strand), so each additional strand a machine serves through a relay costs it
 one more slot.
 
+**And across parties — the blind-relay phone-to-phone shape:**
+`packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`
+runs two DIFFERENT parties, each one relay-only `CadreNode`, against the same
+dedicated relay. The bound invitation's bootstrap addresses carry the host's
+`/p2p-circuit` control address, the stranger-open formation protocol
+(`STRANGER_OPEN_PROTOCOLS`) runs over the circuit — possible only because the
+relay applies no default limit (the formation handler does not set
+`runOnLimitedConnection`; the scenario asserts `connection.limits` stays absent,
+so an ops config regression fails by name) — and the formation result hands the
+joiner a relay-routed strand address plus the closed strand's membership
+secret. The joiner's strand node reaches the host's from that seed alone, rows
+replicate both ways, and every cross-party connection classifies `relayed`.
+Slot cost is the same measured number as above: 4 for the pair (2 control +
+2 strand) — party boundaries change nothing about it. The delegate-admission
+path is a non-participant against a dedicated relay (it speaks no strand-addr
+RPC, so the announce folds to a no-op). Untested: the two-relay shape, where
+each party reserved on a different relay.
+
 **Strand launch while the relay is down** is fail-then-retry, not fail-fast —
 read off the code, not measured by a scenario (unlike the two claims either side
 of it): the
