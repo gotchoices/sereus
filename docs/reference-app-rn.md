@@ -119,7 +119,7 @@ network: {
 
 ## Simplified Chat Schema
 
-`schemas/chat.qsql` is the fuller design — invitations, per-member keys and ed25519 signature verification on every authorized write. No app loads it. The reference app runs `schemas/chat-simple.qsql`, a permissionless schema that lets anyone insert/update/delete freely:
+`schemas/chat.qsql` is the fuller design — invitations, per-member keys and ed25519 signature verification on every write: tables are insert-only (Member additionally allows a signed self-rename and refuses deletes), and every insert after the founding transaction must carry a signature. No app loads it. The reference app runs `schemas/chat-simple.qsql`, a permissionless schema that lets anyone insert/update/delete freely:
 
 ```sql
 table Member (

@@ -1,5 +1,10 @@
 -- The fuller of the two chat schemas: invitations, per-member keys and ed25519
--- signature verification on every authorized write.
+-- signature verification on every write. Every table is insert-only (Member
+-- additionally allows a signed self-rename and refuses deletes), and every
+-- insert after the founding transaction must carry a signature: a member key
+-- signs messages, attachments, responses, additional device keys and new
+-- invitations; the invitation's own key signs a member's admission, the
+-- invitation's redemption, and that member's first device key.
 
 declare schema Chat {
     table Invite (
@@ -69,8 +74,17 @@ declare schema Chat {
                     or ((select count(1) from committed.UsedInvite U where U.Key = new.Key) = 0
                         and (select count(1) from UsedInvite U where U.Key = new.Key) <= 1)))
         ),
-        constraint MemberValid check (exists (select 1 from Member M where M.Id = new.MemberId))
-    );
+        constraint MemberValid check (exists (select 1 from Member M where M.Id = new.MemberId)),
+        -- Redemption needs the invitation holder's consent: the redemption is signed
+        -- with the invitation's PRIVATE key, and the invitation's public key IS
+        -- new.Key, so no extra context variable is needed to name the verifier.
+        -- Without this, anyone could pair an unspent one-time invitation with any
+        -- already-seated member, spending it so the real invitee can never join.
+        constraint RedemptionAuthorized check on insert (
+            verify(digest(new.Key, new.MemberId), context.InviteSignature, new.Key, 'ed25519')
+        )
+    )
+        with context (InviteSignature string null);
 
     -- See the UsedInvite comment above: a non-founding member row and its UsedInvite
     -- row must be inserted in a single transaction, because each one's constraint
@@ -126,11 +140,36 @@ declare schema Chat {
     --   insert into UsedInvite (Key, MemberId) values ('<invite public key>', 'm2');
     --   commit;
 
+    -- NOTE: the key set is append-only and there is no revocation or recovery
+    -- path — a member who loses every private key can never register another,
+    -- because the first-key branch below is closed once any key is committed.
+    -- That is the honest consequence of an append-only key set and the right
+    -- default for a reference schema, but it is permanent lockout by design.
     table MemberKey (
         MemberId string,
         Key string, --public key of member, part of private/public key pair
-        primary key (MemberId, Key)
-    );
+        primary key (MemberId, Key),
+        constraint InsertOnly check on update, delete (false),
+        constraint InsertValid check on insert (
+            -- First key: authorized by the invitation this member joined under.
+            -- Same committed/live counting pair as Invite.InsertValid, and both
+            -- counts are load-bearing for the same reason: a CHECK sees the new
+            -- row already present, so `committed` = 0 is what restricts this
+            -- branch to the member's FIRST key (a spent invitation secret is not
+            -- a permanent credential), and live `<= 1` is what stops one
+            -- transaction registering an unbounded set of keys through it.
+            (exists (select 1 from UsedInvite U where U.MemberId = new.MemberId and U.Key = context.InviteKey)
+                and (select count(1) from committed.MemberKey K where K.MemberId = new.MemberId) = 0
+                and (select count(1) from MemberKey K where K.MemberId = new.MemberId) <= 1
+                and verify(digest(new.MemberId, new.Key), context.InviteSignature, context.InviteKey, 'ed25519'))
+            -- Additional device: signed by a key the member ALREADY holds. The existing
+            -- key is read from committed. — the live table already holds the row being
+            -- judged, so a live read would let the new key vouch for itself.
+            or (exists (select 1 from committed.MemberKey K where K.MemberId = new.MemberId and K.Key = context.MemberKey)
+                and verify(digest(new.MemberId, new.Key), context.MemberSignature, context.MemberKey, 'ed25519'))
+        )
+    )
+        with context (InviteKey string null, InviteSignature string null, MemberKey string null, MemberSignature string null);
 
     index MemberKeyByKey on MemberKey (Key);
 
@@ -140,6 +179,11 @@ declare schema Chat {
         MemberId string,  -- ID of the member who sent the message
         Content string,  -- Content of the message
         primary key (Id),
+        -- A chat message may not be edited or deleted: the simplest rule and the
+        -- only one consistent with a signed, gapless-sequence log. If editing is
+        -- ever wanted, MessageAuthorized must be re-scoped to cover updates and
+        -- the digest must bind whatever the edit is allowed to change.
+        constraint InsertOnly check on update, delete (false),
         -- User's timestamp is reasonably close to the collective
         constraint TimeValid check (new.Timestamp between context.now - timespan('5 min') and context.now + timespan('5 min')),
         -- ID is a gapless sequence starting at 0.
@@ -171,9 +215,20 @@ declare schema Chat {
         constraint InsertOnly check on update, delete (false),
         constraint MessageExists check on insert (exists (select 1 from Message M where M.Id = new.MessageId)),
         -- Same tolerance window as Message.TimeValid
-        constraint TimeValid check (new.Timestamp between context.now - timespan('5 min') and context.now + timespan('5 min'))
+        constraint TimeValid check (new.Timestamp between context.now - timespan('5 min') and context.now + timespan('5 min')),
+        -- Only the author of the message may hang an attachment off it. Declared
+        -- LAST on purpose: the engine reports a multiply-violated statement
+        -- against the first declared constraint, so declaring this ahead of
+        -- MessageExists would make a signed insert naming a nonexistent message
+        -- report AttachmentAuthorized instead — and the suite's MessageExists
+        -- negative case would silently start proving something else.
+        constraint AttachmentAuthorized check on insert (
+            exists (select 1 from Message M join MemberKey K on K.MemberId = M.MemberId
+                where M.Id = new.MessageId and K.Key = context.MemberKey)
+                and verify(digest(new.MessageId, new.Sequence, new.Type, new.Filename, new.Content), context.MemberSignature, context.MemberKey, 'ed25519')
+        )
     )
-        with context (now datetime);
+        with context (now datetime, MemberKey string null, MemberSignature string null);
 
     table Response (
         OriginalId integer,   -- ID of the original message
@@ -181,6 +236,16 @@ declare schema Chat {
         primary key (ResponseId),
         constraint InsertOnly check on update, delete (false),
         constraint OriginalExists check on insert (exists (select 1 from Message M where M.Id = new.OriginalId)),
-        constraint ResponseExists check on insert (exists (select 1 from Message M where M.Id = new.ResponseId))
-    );
+        constraint ResponseExists check on insert (exists (select 1 from Message M where M.Id = new.ResponseId)),
+        -- Only the author of the RESPONDING message may declare it a response.
+        -- Declared last for the same reason as Attachment.AttachmentAuthorized:
+        -- the referential constraints above must keep winning the report when a
+        -- statement violates both.
+        constraint ResponseAuthorized check on insert (
+            exists (select 1 from Message M join MemberKey K on K.MemberId = M.MemberId
+                where M.Id = new.ResponseId and K.Key = context.MemberKey)
+                and verify(digest(new.OriginalId, new.ResponseId), context.MemberSignature, context.MemberKey, 'ed25519')
+        )
+    )
+        with context (MemberKey string null, MemberSignature string null);
 }
