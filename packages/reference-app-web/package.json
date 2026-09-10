@@ -1,6 +1,6 @@
 {
   "name": "@serfab/reference-app-web",
-  "version": "1.0.0-beta.1",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "scripts": {
