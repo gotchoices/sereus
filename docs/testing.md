@@ -477,7 +477,19 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   than an option on this topology. That file also registers its `Strand.MemberPeer` rows by
   hand — written before production wrote any; every machine now registers its own
   automatically at bring-up (`strand-membership-reconciler.ts`), so the hand registrations
-  there stand in for machines, not for a missing mechanism.
+  there stand in for machines, not for a missing mechanism. The same claims on rows
+  production wrote are the line below.
+- The whole journey on production-written rows (two real parties meet over the formation
+  handshake; the runtime issues, redeems and seats the joining party's membership and binds
+  each of its machines with no `issueInvite` / `consumeInvite` / `registerMemberPeer` call in
+  the test; removing that party then cuts both of its machines, the remaining cohort still
+  commits, and the removed party can neither read that write nor push one back) —
+  `strand-party-removal-via-formation-e2e.integration.ts`. Its second test covers re-joining
+  after a removal: a fresh formation still succeeds (it runs on the control network) and
+  reuses the party's identity, but the invitation cannot be spent while the party's machines
+  are cut off, so re-admission has to be authored by a remaining manager —
+  `backlog/bug-removed-party-cannot-redeem-its-way-back`. Connections here are DIRECT too;
+  the relay-mediated variant stays uncovered, as above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a

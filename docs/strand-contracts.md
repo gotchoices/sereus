@@ -636,7 +636,7 @@ Neither of these is optional, and the design does not work without them.
 
 ### Per-party strand identity
 
-`feat-strand-party-identity` is a **hard prerequisite**, and its identity machinery has landed.
+Per-party strand identity is a **hard prerequisite**, and it has landed in full.
 `strand-party-member-key` gave the founding party its own membership identity in the
 control-layer `CadreControl.StrandPartyKey` table, so the founder's key is no longer derivable
 from `Strand.MemberPrivateKey`. `strand-formation-membership-invite` extended that to *joining*
@@ -646,8 +646,11 @@ is now automatic (`strand-node-binds-member-peer`): the joiner's strand bring-up
 invitation to seat its own `Strand.Member` row, and every machine of every party binds its own
 device record (`Strand.MemberPeer`), retrying in the background until the strand's rows have
 replicated. Production joiners on newly-formed closed strands therefore hold distinct member
-rows, and `SignerKey` can distinguish the parties; what remains before leaning on this in
-anger is the real-network end-to-end proof (`strand-party-removal-via-formation-e2e`).
+rows, and `SignerKey` can distinguish the parties. The real-network end-to-end proof is in:
+`packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts`
+forms a closed strand between two real parties over the formation handshake, asserts the
+distinct `Member` rows and per-machine `MemberPeer` bindings the runtime wrote by itself, and
+then removes one party. Nothing further is pending here.
 
 It also bounds what open strands can do. `Member` is closed-only by schema, so signature
 admissibility as specified above **does not work on an open strand at all**. Until an open

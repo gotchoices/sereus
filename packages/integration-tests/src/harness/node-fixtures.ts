@@ -105,13 +105,17 @@ export interface ControlNodeOpts {
    */
   revocationPollMs?: number;
   /**
-   * Disarm the CLOSED-strand membership reconciler (the bring-up loop that
-   * redeems a staged invitation and writes each machine's own `MemberPeer`
-   * binding). For scenarios that hand-drive the membership writers and assert
-   * exact row sets — the automatic loop would race and shift their counts. Its
-   * retry cadence otherwise mirrors {@link revocationPollMs}.
+   * The CLOSED-strand membership reconciler (the bring-up loop that redeems a
+   * staged invitation and writes each machine's own `MemberPeer` binding).
+   *
+   * `false` disarms it — for scenarios that hand-drive the membership writers and
+   * assert exact row sets, where the automatic loop would race and shift their
+   * counts. `{ pollIntervalMs }` keeps it armed on an explicit cadence, which is
+   * how a scenario gets a FAST reconciler while {@link revocationPollMs} stays
+   * suspended: left unset the reconciler mirrors the revocation cadence, so
+   * suspending one would otherwise suspend both.
    */
-  membershipReconciliation?: false;
+  membershipReconciliation?: false | { pollIntervalMs: number };
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
@@ -167,8 +171,12 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.revocationPollMs !== undefined
       ? { strandRevocationEnforcement: { pollIntervalMs: opts.revocationPollMs } } : {}),
-    ...(opts.membershipReconciliation === false
-      ? { strandMembershipReconciliation: { enabled: false } } : {}),
+    ...(opts.membershipReconciliation !== undefined
+      ? {
+        strandMembershipReconciliation: opts.membershipReconciliation === false
+          ? { enabled: false }
+          : { pollIntervalMs: opts.membershipReconciliation.pollIntervalMs }
+      } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {

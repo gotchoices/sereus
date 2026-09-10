@@ -199,11 +199,14 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * cadre-driven path, the one that resolves a seed for itself, a strand's libp2p mesh is seeded
  * from exactly one party's own control-database peer rows (`CadreNode.resolveCohortSeed`), so
  * the cohort actually formed is that one party's machines. Four copies are, on that path, four
- * machines belonging to one party — one failure domain, one witness. A cross-party mesh is not
- * forbidden, only undiscoverable: it takes hand-supplied addresses
- * (`StrandConnectionOptions.bootstrapNodes`) or a hand-written dial (see the doc). Tracked:
- * `backlog/feat-strand-party-identity`. Full reasoning: `docs/architecture.md` →
- * "Replication cluster size".
+ * machines belonging to one party — one failure domain, one witness. A cross-party mesh has
+ * exactly one automatic path — a formation result carries the responder's strand addresses and
+ * `CadreNode.resolveCohortSeed` unions them in, seeding only the pair that just redeemed an
+ * invitation — and is otherwise hand-supplied addresses
+ * (`StrandConnectionOptions.bootstrapNodes`) or a hand-written dial (see the doc). Every party
+ * now holds its own membership identity, so the missing piece is placement, not identity:
+ * tracked as `backlog/feat-strand-party-diverse-placement`. Full reasoning:
+ * `docs/architecture.md` → "Replication cluster size".
  *
  * Raising or lowering it per strand is still the embedder's call
  * ({@link resolveStrandClusterSize}, `CadreNodeConfig.strandClusterSize`,

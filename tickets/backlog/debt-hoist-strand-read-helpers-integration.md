@@ -1,5 +1,5 @@
 description: Three of the network test files that read a strand's membership tables each keep their own copy of the same small set of read helpers, and the copies have already started to drift apart; give them one shared home.
-files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, packages/integration-tests/src/scenarios/harness-topology.integration.ts, packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts, packages/integration-tests/src/scenarios/strand-two-party-two-machine.integration.ts, packages/integration-tests/src/harness/index.ts
+files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, packages/integration-tests/src/scenarios/harness-topology.integration.ts, packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts, packages/integration-tests/src/scenarios/strand-two-party-two-machine.integration.ts, packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts, packages/integration-tests/src/harness/index.ts
 difficulty: easy
 tradeoffs: Test-local duplication is cheap to read and impossible to break for anyone else, and a shared module in `src/harness/` is one more thing a scenario author has to know about — a maintainer may reasonably decide three copies of six short functions is under the threshold that justifies the indirection.
 ----
@@ -135,3 +135,18 @@ Also note for whoever does the hoist: `expectConnected` / `expectCut` /
 `expectNeverConverges` in the removal file are `expect`-based like the second arm's
 helpers, so they hit the same "harness modules do not import vitest" decision recorded
 there.
+
+## Fourth arm: the formation-removal scenario adds a fifth copy (added 2026-09-10)
+
+`strand-party-removal-via-formation-e2e.integration.ts` landed 2026-09-10 and copied the family again rather than hoisting it — deliberately, because the hoist is a refactor across six passing network files and is this ticket's job, not that ticket's. Counted 2026-09-10 with `grep -c` over `packages/integration-tests/src/scenarios/*.integration.ts`:
+
+| helper | copies now | added by this file |
+| --- | --- | --- |
+| `memberKeys` | 4 | yes |
+| `GATE` | 6 | yes |
+| `expectConnected` / `expectCut` / `expectNeverConverges` | 2 each | yes (with `strand-removal-cuts-network`) |
+| `insertWithRetry` (+ `rowLanded`) | 3 | yes |
+| `dataValue` / `awaitRowVisible` | 2 | yes |
+| `SIMPLE_SCHEMA` | 14 | yes (still out of scope, per above) |
+
+No drift this time: the bodies were copied from `strand-removal-cuts-network` unchanged, and the two files' `insertWithRetry` rationales are now the same one (a post-removal cohort downsize), so the hoist has three rationales to keep, not two. One genuinely NEW helper arrived with this file and is a candidate to move with the family: `memberPeerBindings` (scans `Strand.MemberPeer` and returns `MemberKey|PeerId` pairs, rather than the removal file's peer-ids-only `memberPeerIds` — the pairing is what a per-party binding claim needs). Prefer the pair-returning shape when hoisting; `memberPeerIds` is derivable from it, not the other way round.

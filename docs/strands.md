@@ -452,6 +452,16 @@ no longer the case.
   failed three or four times over three to four seconds ("block unavailable — peers
   unreachable") before committing. It recovers on its own, so an app that writes immediately after removing
   someone should expect a brief wobble rather than a failure.
+- **The removed party's own machines also stop talking to each other.** A machine is
+  recognised as removed by its leftover device record having no member behind it, and that
+  is just as true of the removed party's *own* machines as of anyone else's. A machine never
+  refuses itself, but it does refuse its siblings, so within one poll interval a removed
+  party with several machines finds them refusing one another about that strand — its local
+  copies stop converging even among themselves. Asserted at the end of the first test in
+  `packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts`.
+  An app that keeps a removed strand around as a read-only archive should expect each
+  machine's archive to be whatever that machine had at the moment of removal, not a shared
+  one.
 - **A delegate grant is not a way around any of this.** A party's own relay can hold a
   short-lived admission grant for a machine of its own party (see [Relay
   willingness](#some-questions)), but such grants are only ever announced over a channel
@@ -480,20 +490,27 @@ no longer the case.
 
 #### What removal still does not do
 
-- **Prove the whole journey on a real network.** Per-party removal now has real identities
-  and real device records behind it: each party presents its own membership identity (the
-  founder's minted at publish, a joiner's at formation), and every machine registers its
-  own device record automatically when it brings the strand up — nothing is written by
-  hand any more, so the housekeeping rules above describe records the runtime itself
-  creates. What remains unproven end-to-end is the full journey — form a strand with a
-  second party over the real network, remove that party, watch its machines get cut —
-  which is tracked as `strand-party-removal-via-formation-e2e`.
+- **Let a removed party bring itself back.** Removal is reachable from an app today, end
+  to end: a second party joins through the ordinary formation handshake, the runtime seats
+  its membership and registers each of its machines by itself, and removing it cuts every
+  one of those machines off the network — proved on a real four-machine, two-party strand
+  by `packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts`.
+  What removal does *not* leave is a way for the removed party to get back in on its own. A
+  fresh invitation still reaches a removed party — invitations travel on the control
+  network, which strand removal does not touch — but *redeeming* one means writing a
+  membership row into the strand, and the machines that would carry that write are exactly
+  the ones the remaining members are refusing. So re-admission has to be authored by a
+  remaining manager (admit the key directly, or clear the leftover device records first);
+  handing the removed party an invitation and waiting achieves nothing. The same scenario
+  file pins both halves. Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`.
 - **It does not cut off past reads, and it does not rotate the member key** — the
   forward-looking bullet above.
-- **It does not cancel an unspent invitation**, so a removed party still holding one
-  re-admits itself; cancelling is a separate manual step, and binding an invitation to its
-  invitee is tracked as `feat-strand-invitee-bound-invites` (see the invitation bullet
-  above and the known gaps below).
+- **It does not cancel an unspent invitation.** Nothing in the membership rules stops a
+  removed party from redeeming one it still holds — cancelling is a separate manual step,
+  and binding an invitation to its invitee is tracked as `feat-strand-invitee-bound-invites`
+  (see the invitation bullet above and the known gaps below). In practice the network cut
+  blocks the redemption as long as it lasts, per the re-admission bullet above; that is a
+  side effect of the cut, not a guarantee the rules make, so cancel rather than rely on it.
 
 Known gaps remain, all out of scope of the rules above:
 
@@ -521,6 +538,7 @@ Known gaps remain, all out of scope of the rules above:
   invitation is a bearer credential: whoever holds it can redeem it once, and the strand
   keeps no record of who it was meant for. Managers can now cancel invitations, but nothing
   can cancel them *on a member's behalf* at removal time — a manager has to review the
-  outstanding invitations and decide. So a removed party holding an unspent, unexpired,
-  uncancelled invitation still re-admits itself. Binding an invitation to a specific invitee
-  is tracked as `feat-strand-invitee-bound-invites`.
+  outstanding invitations and decide. So nothing in the rules stops a removed party holding
+  an unspent, unexpired, uncancelled invitation from re-admitting itself — only the network
+  cut does, and only while it lasts. Binding an invitation to a specific invitee is tracked
+  as `feat-strand-invitee-bound-invites`.

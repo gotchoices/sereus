@@ -13,7 +13,9 @@ Sources read: MyCHIPs (`../../mc/mychips`) `contract/*.yaml` (all 13 documents),
 (`../../stroc`) `docs/Specification.md`, `Legacy.md`, `FeatureComparison.md`, `STATUS.md`,
 `packages/core/src/types.ts`, `contracts/*.json`; and in Sereus `schemas/strand.qsql`,
 `schemas/control.qsql`, `architecture.md` → Strand Formation, `strands.md`,
-`tickets/backlog/feat-strand-party-identity.md`, `feat-open-strand-witness-policy.md`.
+`tickets/backlog/feat-strand-party-identity.md` (since delivered and retired — its surviving
+descendants are `feat-strand-party-diverse-placement` and
+`feat-strand-member-allowlist-admission`), `feat-open-strand-witness-policy.md`.
 
 The foundations are right and should stay: content-addressed templates, a template signed
 together with its parameters rather than materialized into them, signing decoupled from
@@ -137,14 +139,15 @@ signature:
   as a `Member`), and `strand-node-binds-member-peer` redeems that invitation automatically
   at the joiner's strand bring-up and binds each machine's own device record. Joining
   parties on newly-formed closed strands now hold distinct `Member` rows, so
-  `Signature.SignerKey` can distinguish them; the real-network end-to-end proof is
-  `strand-party-removal-via-formation-e2e`.
+  `Signature.SignerKey` can distinguish them. The real-network end-to-end proof has landed:
+  `packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts`.
 - That key is held **in plaintext on every node of the cadre**
   ([`strands.md`](strands.md) → Closed-Strand Member Key Handling), minted by software and
   rotated by remove-then-add. Appropriate for "this party's software authorized this write";
   weak for "this party agreed to be bound". MyCHIPs signed with the user's own signing key.
 
-**Change.** Name `feat-strand-party-identity` a hard prerequisite, and let the **instrument
+**Change.** Name per-party strand identity a hard prerequisite (it has since landed — see the
+bullet above), and let the **instrument
 declare which class of key may execute it** rather than fixing one answer for every sApp.
 Requiring an enclave-held ceremony for every acceptance would defeat the document's own
 auto-accept policy knob, which only makes sense if accepting is cheap; permitting a
@@ -510,7 +513,8 @@ member roster.
    posting kinds, parameter schema with defaults.
 5. **Offers are firm offers.** `ExpiresAt` mandatory and instrument-capped; no withdrawal.
 6. **Key class is declared, not fixed.** `member` in-band, `party` for external obligations;
-   the member key authorizes filing in both. Hard dependency on `feat-strand-party-identity`.
+   the member key authorizes filing in both. Hard dependency on per-party strand identity,
+   which has since landed.
    Signatures and key registrations survive member departure.
 7. **Signatures are bound to the strand** via `Header.Id` in the digest.
 8. **Legal roles never derive from the RBAC tables.** `Manager` is orthogonal, closed-only and

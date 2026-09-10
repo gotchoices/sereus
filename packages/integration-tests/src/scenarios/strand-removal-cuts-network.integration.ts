@@ -47,14 +47,18 @@
  * These tests register `Strand.MemberPeer` rows EXPLICITLY, for determinism. A
  * `MemberPeer` row binds a member identity to one of its machines' strand peer ids,
  * and it is the record the deny set is derived from — a removed member's rows become
- * orphans (no live `Member` row), and orphaned rows ARE the denial. Production now
- * writes these rows automatically (each machine's bring-up membership reconciler,
+ * orphans (no live `Member` row), and orphaned rows ARE the denial. Production writes
+ * these rows automatically (each machine's bring-up membership reconciler,
  * `strand-membership-reconciler.ts` — it also fires here for the founding machine,
  * whose auto-binding coincides with the explicit one below and is idempotent), but the
  * OTHER machines in this fixture attach without party identity keys, so the explicit
  * registrations remain what puts every binding in place at a moment the test controls.
- * The full form-then-remove journey on production-written rows is
- * `strand-party-removal-via-formation-e2e`.
+ * That is a fixture shortcut, NOT a missing mechanism: the same cut is proved on rows
+ * production wrote end to end — two real parties meeting over the formation handshake,
+ * with no membership writer called by the test at all — in
+ * `strand-party-removal-via-formation-e2e.integration.ts`. What this file keeps that the
+ * other one does not is the deliberate stale-view arm (test 1), the interval-driven
+ * self-revocation signal (test 2) and the open-strand isolation case (test 3).
  *
  * ── WHAT IS ASSERTED, AND HOW ────────────────────────────────────────────────
  * Connection claims read the strand libp2p node's own `getConnections()` — the same
@@ -438,8 +442,9 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			// ── Party B becomes its own member, distinct from the founding identity ──
 			// Without this, both parties present the founder's key and "remove B" has no
-			// subject — which is exactly the production state `feat-strand-party-identity`
-			// is about (header: FIXTURE HONESTY).
+			// subject. Production reaches the same state on its own, through the formation
+			// handshake (`strand-party-removal-via-formation-e2e.integration.ts`); here it
+			// is hand-driven so the fixture controls when it lands (header: FIXTURE HONESTY).
 			await waitUntil(
 				async () => (await memberKeys(b0.db)).includes(founderKeyPair.publicKeyB64),
 				{ ...GATE, description: 'the founder bootstrap rows become visible on b[0]' },

@@ -63,6 +63,10 @@ export interface TopologyMachineSpec {
 	 *  own refresh so every cut it makes is one the scenario drove, or short to
 	 *  exercise the interval-driven cut. */
 	revocationPollMs?: number;
+	/** Per-machine closed-strand membership reconciler: `false` to disarm it, or an
+	 *  explicit cadence. Unset it mirrors {@link revocationPollMs} — see
+	 *  `ControlNodeOpts.membershipReconciliation` in `node-fixtures.ts`. */
+	membershipReconciliation?: false | { pollIntervalMs: number };
 	enableRelay?: boolean;
 	/** An EMPTY list makes a client-only machine, which `controlMesh: 'full'` cannot
 	 *  wire — `connectControlNodes` throws ("writer control node has no listen
@@ -182,6 +186,8 @@ function machineConfig(
 		...((machine.strandWatchMs ?? spec.strandWatchMs) !== undefined
 			? { strandWatchMs: machine.strandWatchMs ?? spec.strandWatchMs } : {}),
 		...(machine.revocationPollMs !== undefined ? { revocationPollMs: machine.revocationPollMs } : {}),
+		...(machine.membershipReconciliation !== undefined
+			? { membershipReconciliation: machine.membershipReconciliation } : {}),
 		...(machine.enableRelay !== undefined ? { enableRelay: machine.enableRelay } : {}),
 		...(machine.listenAddrs !== undefined ? { listenAddrs: machine.listenAddrs } : {}),
 		...(machine.reconcileMs !== undefined ? { reconcileMs: machine.reconcileMs } : {}),
