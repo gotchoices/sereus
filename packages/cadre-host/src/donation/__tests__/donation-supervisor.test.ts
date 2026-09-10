@@ -84,7 +84,7 @@ function makeHarness(): Harness {
     provision: () => service.provision({
       grantToken: token,
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       ownerKeys: [OWNER_KEY],
     }),
   };
@@ -284,7 +284,7 @@ describe('DonationSupervisor.reconcile', () => {
       id: 'grn_inflight',
       grantToken: 'tok',
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       ownerKeys: [OWNER_KEY],
       profile: 'storage',
       status: 'provisioning',
@@ -304,7 +304,7 @@ describe('DonationSupervisor.reconcile', () => {
       id: 'grn_nohandle',
       grantToken: 'tok',
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       ownerKeys: [OWNER_KEY],
       profile: 'storage',
       status: 'awaiting_seed',

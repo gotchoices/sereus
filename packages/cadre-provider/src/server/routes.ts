@@ -6,9 +6,9 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import debug from 'debug';
 import type { ContainerService } from '../service/container-service.js';
 import type { BillingService } from '../service/billing-service.js';
-import type { Container, CreateContainerRequest } from '../types.js';
+import type { Container } from '../types.js';
 import { Scope, hasPermission } from './permissions.js';
-import { validatePinnedOwnerKeys } from './owner-key-validation.js';
+import { validateCreateContainerRequest } from './create-request-validation.js';
 
 const log = debug('cadre:provider:routes');
 
@@ -97,23 +97,12 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     }
     if (!requireScope(reply, customer, Scope.ContainersCreate)) return reply;
 
-    const body = request.body as Omit<Partial<CreateContainerRequest>, 'pinnedOwnerKeys'> & {
-      shutdownAfter?: unknown;
-      pinnedOwnerKeys?: unknown;
-    };
-
-    // Validate required fields
-    if (!body.partyId) {
-      return errorResponse(reply, 'INVALID_REQUEST', 'partyId is required');
-    }
-    if (!body.bootstrapNodes?.length) {
-      return errorResponse(reply, 'INVALID_REQUEST', 'bootstrapNodes is required');
-    }
-    // Optional, but the create call is the last point where the caller can still
-    // supply it — a container created without it refuses every seed.
-    const pinned = validatePinnedOwnerKeys(body.pinnedOwnerKeys);
-    if ('error' in pinned) {
-      return errorResponse(reply, 'INVALID_REQUEST', pinned.error);
+    // One validator owns the whole body — see `create-request-validation.ts` for
+    // why no per-field check lives here. Nothing is provisioned on a rejection:
+    // this runs before the quota check and before the service is touched.
+    const validated = validateCreateContainerRequest(request.body, customer.customerId);
+    if ('error' in validated) {
+      return errorResponse(reply, 'INVALID_REQUEST', validated.error);
     }
 
     // Check quota
@@ -122,20 +111,12 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       return errorResponse(reply, 'QUOTA_EXCEEDED', canCreate.reason ?? 'Cannot create more containers', 403);
     }
 
-    const createRequest: CreateContainerRequest = {
-      customerId: customer.customerId,
-      partyId: body.partyId,
-      bootstrapNodes: body.bootstrapNodes,
-      profile: body.profile ?? 'storage',
-      resources: body.resources,
-      strandFilter: body.strandFilter,
-      tags: body.tags,
-      ...(pinned.keys ? { pinnedOwnerKeys: pinned.keys } : {}),
-    };
+    const container = await containerService.createContainer(validated.request);
 
-    const container = await containerService.createContainer(createRequest);
-
-    const shutdownAfter = parseShutdownFlag(body.shutdownAfter);
+    // Transport flag, not part of the container: shared with DELETE and never
+    // reaches the spawned child, so it is read off the raw body rather than
+    // validated into the create request.
+    const shutdownAfter = parseShutdownFlag((request.body as { shutdownAfter?: unknown } | undefined)?.shutdownAfter);
     const payload: { ok: true; data: { container: Omit<Container, 'seedToken'> }; shutdownInitiated?: true } = {
       ok: true,
       data: { container: redactContainer(container) },

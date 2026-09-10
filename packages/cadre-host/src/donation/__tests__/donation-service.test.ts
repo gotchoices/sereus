@@ -95,7 +95,7 @@ function makeGrants(opts?: { maxNodes?: number }): { grants: GrantService; token
 const baseRequest = (grantToken: string) => ({
   grantToken,
   partyId: 'party-P',
-  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
   ownerKeys: [OWNER_KEY],
 });
 
@@ -509,7 +509,7 @@ describe('DonationService.respawn', () => {
     expect(orch.createCalls[1]).toMatchObject({
       containerId: provisioned.id,
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       pinnedOwnerKeys: [OWNER_KEY],
       profile: 'storage',
     });
@@ -833,7 +833,7 @@ describe('DonationService.terminate', () => {
       id: 'grn_stuck',
       grantToken: token,
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       ownerKeys: [OWNER_KEY],
       profile: 'storage',
       status: 'provisioning',
@@ -952,7 +952,7 @@ describe('DonationService.reapStaleProvisioning', () => {
     id: opts.id,
     grantToken: opts.token,
     partyId: 'party-P',
-    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
     ownerKeys: [OWNER_KEY],
     profile: 'storage',
     status: 'provisioning',
@@ -998,7 +998,7 @@ describe('DonationService.reapStaleProvisioning', () => {
     const spawn = await orch.createContainer({
       containerId: 'grn_stuck',
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       profile: 'storage',
       pinnedOwnerKeys: [OWNER_KEY],
     });
@@ -1041,7 +1041,7 @@ describe('DonationService.reapStaleProvisioning', () => {
     const firstSpawn = await orch.createContainer({
       containerId: 'grn_first',
       partyId: 'party-P',
-      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       profile: 'storage',
       pinnedOwnerKeys: [OWNER_KEY],
     });

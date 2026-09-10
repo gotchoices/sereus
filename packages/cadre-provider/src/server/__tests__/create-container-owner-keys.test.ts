@@ -54,7 +54,7 @@ async function makeServer(): Promise<ProviderServer> {
 function createPayload(pinnedOwnerKeys?: unknown): Record<string, unknown> {
   return {
     partyId: 'party-1',
-    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001'],
+    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
     ...(pinnedOwnerKeys === undefined ? {} : { pinnedOwnerKeys }),
   };
 }

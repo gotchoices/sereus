@@ -49,7 +49,7 @@ describe('seed token is never serialized to the API', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001'] },
+      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
     });
     const id = (create.json() as { data: { container: { id: string } } }).data.container.id;
 
@@ -71,7 +71,7 @@ describe('seed token is never serialized to the API', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001'] },
+      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
     });
     const id = (create.json() as { data: { container: { id: string } } }).data.container.id;
     const stored = await waitForSeedToken(store, id);
@@ -91,7 +91,7 @@ describe('seed token is never serialized to the API', () => {
     const res = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001'] },
+      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
     });
     expect(res.statusCode).toBe(201);
     const container = (res.json() as { data: { container: Record<string, unknown> } }).data.container;

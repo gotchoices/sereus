@@ -5135,6 +5135,7 @@ __metadata:
     "@libp2p/crypto": "npm:^5.1.13"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/peer-id": "npm:^6.0.4"
+    "@multiformats/multiaddr": "npm:^12.5.1"
     "@serfab/cadre-cli": "workspace:^"
     "@serfab/cadre-core": "workspace:^"
     "@serfab/cadre-provider": "workspace:^"
@@ -5171,6 +5172,8 @@ __metadata:
   resolution: "@serfab/cadre-provider@workspace:packages/cadre-provider"
   dependencies:
     "@fastify/cors": "npm:^11.2.0"
+    "@libp2p/peer-id": "npm:^6.0.4"
+    "@multiformats/multiaddr": "npm:^12.5.1"
     "@types/debug": "npm:^4.1.12"
     "@types/dockerode": "npm:^3.3.31"
     "@types/js-yaml": "npm:^4.0.9"

@@ -66,7 +66,7 @@ const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
 
 const body = {
   partyId: 'party-P',
-  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
   ownerKeys: [OWNER_KEY],
 };
 
@@ -152,6 +152,66 @@ describe('POST /grants', () => {
     const error = (res.json() as { error: { code: string; message: string } }).error;
     expect(error.code).toBe('invalid_request');
     expect(error.message).toBe('ownerKeys must be an array of strings');
+  });
+
+  // The address rule the whole `bootstrap-node-validation.ts` module exists for,
+  // at the route boundary. Its accept/reject table is pinned in
+  // `bootstrap-node-validation.test.ts`; what matters here is that a bad address
+  // is a 400 naming the entry, and that no child was spawned on the way.
+  it('rejects an unusable bootstrapNodes entry → 400 invalid_request, naming the bad address', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants', headers: bearer(token),
+      payload: { ...body, bootstrapNodes: [...body.bootstrapNodes, 'not-an-address'] },
+    });
+    expect(res.statusCode).toBe(400);
+    const error = (res.json() as { error: { code: string; message: string } }).error;
+    expect(error.code).toBe('invalid_request');
+    expect(error.message).toContain('not-an-address');
+  });
+
+  it('provisions nothing for any of the unusable-address shapes', async () => {
+    const bad: unknown[] = [
+      [42],
+      ['not-an-address'],
+      // Parses, but names no peer: the child would start with zero bootstrap
+      // peers and never reach the requester's cadre.
+      ['/ip4/127.0.0.1/tcp/4001'],
+      // Names a peer id that does not decode: the child dies constructing libp2p.
+      ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      [''],
+      [],
+    ];
+    for (const bootstrapNodes of bad) {
+      const res = await app.inject({
+        method: 'POST', url: '/grants', headers: bearer(token),
+        payload: { ...body, bootstrapNodes },
+      });
+      expect(res.statusCode, `expected 400 for ${JSON.stringify(bootstrapNodes)}`).toBe(400);
+    }
+
+    const list = await app.inject({ method: 'GET', url: '/grants', headers: bearer(token) });
+    expect((list.json() as { data: { donations: unknown[] } }).data.donations).toHaveLength(0);
+  });
+
+  it('rejects a non-string partyId → 400, rather than stringifying it into the child config', async () => {
+    for (const partyId of [42, { id: 'party-P' }, '   ']) {
+      const res = await app.inject({
+        method: 'POST', url: '/grants', headers: bearer(token),
+        payload: { ...body, partyId },
+      });
+      expect(res.statusCode, `expected 400 for partyId ${JSON.stringify(partyId)}`).toBe(400);
+      expect((res.json() as { error: { message: string } }).error.message).toBe('partyId is required');
+    }
+  });
+
+  it('rejects an unknown profile → 400', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants', headers: bearer(token),
+      payload: { ...body, profile: 'archive' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: { message: string } }).error.message)
+      .toBe('profile must be "storage" or "transaction"');
   });
 
   it('enforces the grant quota → 429 quota_exceeded once maxNodes is reached', async () => {

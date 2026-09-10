@@ -51,6 +51,8 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@libp2p/peer-id": "^6.0.4",
+    "@multiformats/multiaddr": "^12.5.1",
     "commander": "^14.0.2",
     "debug": "^4.4.3",
     "dockerode": "^4.0.9",

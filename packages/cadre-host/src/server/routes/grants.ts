@@ -20,8 +20,9 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import type { DonationService, DonationProvisionRequest } from '../../donation/donation-service.js';
+import type { DonationService } from '../../donation/donation-service.js';
 import type { DonationView, GrantValidator } from '../../donation/types.js';
+import { validateProvisionRequest } from './provision-request-validation.js';
 
 export interface GrantsRoutesOptions {
   donations: DonationService;
@@ -109,33 +110,15 @@ export function registerGrantsRoutes(app: FastifyInstance, opts: GrantsRoutesOpt
       return errorResponse(reply, 'unauthorized', 'Missing bearer grant token', 401);
     }
 
-    const body = (request.body ?? {}) as Partial<DonationProvisionRequest>;
-    if (typeof body.partyId !== 'string' || body.partyId.length === 0) {
-      return errorResponse(reply, 'invalid_request', 'partyId is required', 400);
-    }
-    if (!Array.isArray(body.bootstrapNodes) || body.bootstrapNodes.length === 0) {
-      return errorResponse(reply, 'invalid_request', 'bootstrapNodes is required', 400);
-    }
-    if (!Array.isArray(body.ownerKeys) || body.ownerKeys.length === 0) {
-      return errorResponse(reply, 'invalid_request', 'ownerKeys is required', 400);
-    }
-    // Element types too, not just the array: `provision`'s shape check trims each
-    // entry, so a non-string reaches the caller as an internal `.trim is not a
-    // function` rather than as a message naming what is wrong with the request.
-    if (!body.ownerKeys.every(key => typeof key === 'string')) {
-      return errorResponse(reply, 'invalid_request', 'ownerKeys must be an array of strings', 400);
-    }
-    if (body.profile !== undefined && body.profile !== 'storage' && body.profile !== 'transaction') {
-      return errorResponse(reply, 'invalid_request', 'profile must be "storage" or "transaction"', 400);
+    // One validator owns the whole body — see `provision-request-validation.ts`
+    // for why no per-field check lives here. Nothing is provisioned on a
+    // rejection: this runs before the service is touched.
+    const validated = validateProvisionRequest(request.body ?? {}, token);
+    if ('error' in validated) {
+      return errorResponse(reply, 'invalid_request', validated.error, 400);
     }
 
-    const donation = await donations.provision({
-      grantToken: token,
-      partyId: body.partyId,
-      bootstrapNodes: body.bootstrapNodes,
-      ownerKeys: body.ownerKeys,
-      ...(body.profile ? { profile: body.profile } : {}),
-    });
+    const donation = await donations.provision(validated.request);
     return reply.status(201).send({ ok: true, data: { donation } });
   });
 

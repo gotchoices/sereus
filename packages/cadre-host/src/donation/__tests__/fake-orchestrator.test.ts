@@ -16,7 +16,7 @@ import { FakeOrchestrator } from './fake-orchestrator.js';
 const request = (containerId: string): OrchestratorCreateRequest => ({
   containerId,
   partyId: 'party-P',
-  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
   profile: 'storage',
 });
 
