@@ -902,6 +902,37 @@ their relay connection cannot disturb anything, since a strand node's protocol
 ids are namespaced `/optimystic/strand-<id>/…` and the relay is never in its
 cohort.
 
+**Proven end to end over a standalone relay** (same party, both machines
+relay-only):
+`packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
+runs one party's two `CadreNode`s with `listenAddrs: []` and only a dedicated
+ungated relay (`harness/dedicated-relay.ts`, config-parity with the
+`ops/docker/libp2p-infra` container). The control mesh forms over the circuit,
+the joiner resolves the founder's strand address via the strand-addr RPC alone
+(no hand-dial), both strand nodes' configured-route reservations land
+(`getMultiaddrs()` gains `/p2p-circuit`), the strand connection classifies as
+`relayed` per `summarizeConnectionPaths`, and App rows replicate both ways
+across the circuit. Relay-slot cost, measured there: **one reservation per node
+per network** — two machines running one strand hold four slots (2 control +
+2 strand), so each additional strand a machine serves through a relay costs it
+one more slot.
+
+**Strand launch while the relay is down** is fail-then-retry, not fail-fast: the
+configured circuit listener dials the relay from inside `libp2p.start()`, so the
+launch throws, nothing is left tracked, and `StrandWatcher` re-attempts on its
+poll under a per-strand backoff (never abandoned — see `strand-watcher.ts`). The
+strand comes up on the first poll after the relay is back.
+
+**Reservation loss is asymmetric — measured, not designed.** When the relay
+restarts under a running strand, the control nodes re-reserve on their own (the
+supervisor below re-drives) while the strand nodes never do:
+`@libp2p/circuit-relay-v2` re-drives a lost *configured* reservation nowhere,
+and cadre-core runs no supervisor for strand nodes. A hibernating strand
+self-heals on its next wake (the rebuild re-reserves from inside `listen()`); a
+realtime strand stays undialable. Tracked in
+`tickets/backlog/bug-strand-relay-reservation-not-resupervised.md`; the
+scenario's inverted gate fails the day recovery starts working.
+
 **What a strand node does NOT inherit: the host's one endpoint.** A machine runs
 one control node plus one node per strand, all built from the same operator
 `NetworkConfig`, and two of its fields describe a single endpoint on that host.

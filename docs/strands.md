@@ -64,6 +64,17 @@ A user with only a phone wants to connect to another such user.
 - This allows the second party to discover a current dial address using only the Peer ID plus bootstrap information.
 - If a party loses its phone, it should be able to rejoin the cadre with a new phone only if its identity key material can be recovered/rotated safely.
 
+**Transport half proven (implemented), within one party.** The relay mechanics this use
+case rests on — two machines that can accept no inbound connections at all forming a
+control mesh AND a strand mesh through a dedicated relay, with strand data flowing both
+ways over the `/p2p-circuit` hop — are proven end to end by
+`packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
+(see [architecture.md → Relay Integration](architecture.md#relay-integration) for what
+exactly it pins, including the per-strand relay-slot cost and the reservation-loss
+asymmetry). That scenario is one party's two machines; the CROSS-party SN–SN story —
+formation handing the other party a relay-routed strand address, discovery, roaming —
+is the part that remains open below.
+
 Open question: what is “the DHT” here?
 - Is a **cadre** its own DHT overlay?
 - Is there a **pre-strand rendezvous DHT** used only for discovery/initial contact?
