@@ -1,6 +1,5 @@
--- Simplified chat schema for the reference app.
--- No signature verification, no invite flow, no authorization constraints.
--- Keeps the reference app focused on P2P plumbing rather than application-level crypto.
+-- The chat schema the reference app actually runs. Deliberately omits application-level
+-- crypto: no signature verification, no invite flow, no authorization constraints.
 
 table Member (
     Id text primary key,
