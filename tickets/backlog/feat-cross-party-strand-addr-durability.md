@@ -2,7 +2,7 @@ description: Two people's shared workspace stays connected only while both apps 
 prereq: formation-carries-strand-addrs
 files: schemas/strand.qsql, packages/cadre-core/src/strand-membership-writer.ts, packages/cadre-core/src/strand-addr-protocol.ts, packages/cadre-core/src/cadre-node.ts, docs/strands.md
 difficulty: hard
-tradeoffs: The formation-time one-shot seed already covers the release demo path, and a durable registry touches the heavily-audited strand membership schema — it may be better designed together with strand-mesh admission control (feat-strand-party-identity) than before it.
+tradeoffs: The formation-time one-shot seed already covers the release demo path, and a durable registry touches the heavily-audited strand membership schema — it may be better designed together with strand-mesh admission control (feat-strand-member-allowlist-admission) than before it.
 ----
 
 ## Problem

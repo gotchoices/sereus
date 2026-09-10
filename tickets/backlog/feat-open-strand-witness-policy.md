@@ -1,6 +1,6 @@
 ----
 description: A workspace can be marked as open to anyone, but nothing about how it protects itself is any different from an invitation-only one. Decide what an open workspace should actually require before it accepts a change, and whether we should offer that mode at all until we can back it up.
-prereq: feat-strand-party-identity
+prereq: strand-node-binds-member-peer
 files: schemas/strand.qsql, schemas/control.qsql, packages/quereus-plugin-sereus/src/cluster-size.ts, docs/strands.md, docs/architecture.md
 difficulty: hard
 ----
@@ -62,9 +62,10 @@ to just pick — which is why this sits in backlog rather than going straight to
    promising split is that ordinary data commits locally and replicates lazily, while changes
    carrying rules for everyone require attestation from several distinct parties. That is the
    two-layer model `docs/cadre-consistency.md` already proposes for the control database,
-   applied to strands. It cannot be enforced until copy placement can tell parties apart, which
-   is why `feat-strand-party-identity` is a prerequisite — and that ticket records why the gap is
-   wider than it looks: production strands write no per-party membership rows at all today.
+   applied to strands. It cannot be enforced until the strand can tell parties apart, which is
+   why per-party membership identity (`strand-node-binds-member-peer`, the last build ticket of
+   the former `feat-strand-party-identity` plan) is a prerequisite; party-aware copy *placement*
+   is tracked separately as `feat-strand-party-diverse-placement`.
 4. **What is the assumed-cohort-size value for an open workspace, and who sets it?** It must be
    identical for every participant or writes fail, so it has to come from a single replicated
    source rather than each machine's own config. The immutable open/closed flag is the obvious
