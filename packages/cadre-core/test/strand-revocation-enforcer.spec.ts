@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
+import type { Database } from '@quereus/quereus';
 import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
@@ -225,6 +226,19 @@ describe('refresh contract', () => {
     expect(scheduled).toEqual([DEFAULT_REVOCATION_POLL_INTERVAL_MS]);
   });
 
+  it('discards a read that lands after stop() — a torn-down enforcer never repopulates', async () => {
+    let release: (rows: StrandRevocationRows) => void = () => {};
+    const enforcer = enforcerOver(() => new Promise<StrandRevocationRows>((resolve) => { release = resolve; }));
+
+    const inFlight = enforcer.refresh();
+    enforcer.stop();
+    release(rows([], [['gone', 'peer-x']]));
+    await inFlight;
+
+    expect(enforcer.revokedCount).toBe(0);
+    expect(enforcer.isRevoked('peer-x')).toBe(false);
+  });
+
   it('an interval tick is skipped (not queued) while a refresh is already in flight', async () => {
     let reads = 0;
     let releaseFirstRead: (() => void) | undefined;
@@ -330,6 +344,43 @@ describe('connection gater composition', () => {
 
     expect(called).toBe(true);
     expect(denied).toBe(false);
+  });
+});
+
+/**
+ * A `Database` double whose membership tables gain a newly joined member
+ * (`M2` + its binding `P2`) the moment the FIRST of the two scans has been
+ * issued — so one table is read pre-join and the other post-join. Nothing holds
+ * the two scans to a single snapshot in production either, which is why
+ * `readStrandRevocationRows` fixes their order.
+ */
+function joinBetweenScansDb(): Database {
+  let scansIssued = 0;
+  const joined = (): boolean => scansIssued > 1;
+  return {
+    eval: (sql: string) => {
+      scansIssued++;
+      const rows = sql.includes('Strand.MemberPeer')
+        ? (joined()
+          ? [{ MemberKey: 'M1', PeerId: 'P1' }, { MemberKey: 'M2', PeerId: 'P2' }]
+          : [{ MemberKey: 'M1', PeerId: 'P1' }])
+        : (joined() ? [{ Key: 'M1' }, { Key: 'M2' }] : [{ Key: 'M1' }]);
+      return (async function* () { yield* rows; })();
+    }
+  } as unknown as Database;
+}
+
+describe('read skew between the two scans (readStrandRevocationRows ordering)', () => {
+  it('admits a member that joins mid-read — the skew window must never fail CLOSED', async () => {
+    // Bindings are scanned FIRST, so the joiner's binding is simply absent from
+    // the older snapshot. Scanning Member first would instead pair the newer
+    // binding with the older key set and revoke a brand-new member.
+    const rows = await readStrandRevocationRows(joinBetweenScansDb());
+    const enforcer = enforcerOver(rows);
+    await enforcer.refresh();
+
+    expect(enforcer.isRevoked('P2')).toBe(false);
+    expect(enforcer.revokedCount).toBe(0);
   });
 });
 

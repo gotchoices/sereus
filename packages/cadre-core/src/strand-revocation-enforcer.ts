@@ -153,6 +153,24 @@ export interface StrandRevocationEnforcerDeps {
   scheduler?: RevocationRefreshScheduler;
 }
 
+/** Every `Strand.MemberPeer` binding — live-membered and orphaned alike. */
+async function scanBindings(db: Database): Promise<StrandMemberPeerBinding[]> {
+  const bindings: StrandMemberPeerBinding[] = [];
+  for await (const row of db.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
+    bindings.push({ memberKey: row.MemberKey as string, peerId: row.PeerId as string });
+  }
+  return bindings;
+}
+
+/** Every live `Strand.Member.Key`. */
+async function scanMemberKeys(db: Database): Promise<Set<string>> {
+  const memberKeys = new Set<string>();
+  for await (const row of db.eval('select Key from Strand.Member')) {
+    memberKeys.add(row.Key as string);
+  }
+  return memberKeys;
+}
+
 /**
  * Read the deny-set inputs from a strand database: full-scan
  * `Strand.MemberPeer` and `Strand.Member`, to be joined in JavaScript by the
@@ -161,6 +179,19 @@ export interface StrandRevocationEnforcerDeps {
  * applies, so correctness depends only on each scan returning a superset of the
  * live rows.
  *
+ * **Scan order is load-bearing, and it is BINDINGS FIRST.** The two scans are
+ * separate reads with nothing holding them to one snapshot, so a write that
+ * lands between them is seen by the second scan and not the first. A member
+ * joins as `Member` row then `MemberPeer` row (`MemberExists` forces that
+ * order), so reading `Member` first would let a join that commits mid-read
+ * produce a binding whose member key is absent from the key set — a brand-new
+ * member classified as REVOKED, the one fail-CLOSED outcome this module exists
+ * to avoid. Reading bindings first inverts the skew: the new binding is simply
+ * not in the older bindings snapshot, so the joiner is unclassified and
+ * admitted, and a revocation that lands mid-read is still seen (the key is
+ * missing from the NEWER key scan). Every skew window then resolves fail-open,
+ * matching the module doc.
+ *
  * NOTE: two whole-table scans per refresh (default every 30 s per closed
  * strand). Fine at strand scale (a handful of members and bindings); if
  * membership churn ever makes these tables large, the fix is a reliable
@@ -168,14 +199,8 @@ export interface StrandRevocationEnforcerDeps {
  * (`debt-composite-pk-point-lookup-unreliable-untracked`) — not a bigger scan.
  */
 export async function readStrandRevocationRows(db: Database): Promise<StrandRevocationRows> {
-  const memberKeys = new Set<string>();
-  for await (const row of db.eval('select Key from Strand.Member')) {
-    memberKeys.add(row.Key as string);
-  }
-  const bindings: StrandMemberPeerBinding[] = [];
-  for await (const row of db.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
-    bindings.push({ memberKey: row.MemberKey as string, peerId: row.PeerId as string });
-  }
+  const bindings = await scanBindings(db);
+  const memberKeys = await scanMemberKeys(db);
   return { memberKeys, bindings };
 }
 
@@ -339,6 +364,15 @@ export type StrandRevocationJudge = Pick<StrandRevocationEnforcer, 'isRevoked'>;
  * a revocation-check error admits outright, and the fail-closed stream gate
  * still stands behind both. The deadline is belt-and-braces: the snapshot read
  * is synchronous.
+ *
+ * NOTE: accepted tradeoff — swallowing a BASE hook's throw diverges from
+ * `createMembershipConnectionGater`, which lets it propagate to libp2p (a
+ * fail-closed outcome there). Uniform fail-open was chosen for this module so
+ * every hook has one failure direction, and it was the shape the plan specified;
+ * the cost is that an embedder gater which throws is silently admitted here
+ * while the same gater passed raw to an OPEN strand would refuse. Loud in the
+ * log either way. Revisit if an embedder ever ships a gater whose throw is a
+ * meaningful deny, or if the two gaters are unified.
  *
  * NOTE: `base` is spread, so a gater passed as a CLASS INSTANCE would lose its
  * prototype methods — same caveat as `createMembershipConnectionGater`; every

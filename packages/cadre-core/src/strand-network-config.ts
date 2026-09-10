@@ -24,8 +24,11 @@
  * the relay's, not a local bind (`relay-addrs.ts`).
  *
  * Everything else in `NetworkConfig` — `relayAddrs`, `transports`,
- * `connectionGater`, `enableRelay` — is inherited unchanged by the caller; this
- * module only owns the two host-endpoint fields above.
+ * `connectionGater`, `enableRelay` — is inherited by the caller; this module
+ * only owns the two host-endpoint fields above. One caveat on `connectionGater`:
+ * an OPEN strand's node gets it unchanged, while a CLOSED strand's node composes
+ * revoked-peer denial onto it in `strand-instance-manager.ts` (every supplied
+ * hook still honored — see `strand-revocation-enforcer.ts`).
  *
  * It does carry one non-address option out with them: the WebSocket transport switch
  * a `/ws` listen entry implies (`relay-addrs.ts` → `resolveTransportOptions`). That is
