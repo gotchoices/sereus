@@ -3,6 +3,7 @@ import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
+import type { StrandMembershipReconciliationConfig } from './strand-membership-reconciler.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
@@ -547,6 +548,19 @@ export interface CadreNodeConfig {
    * `{ enabled: false }` restores the pre-existing behaviour.
    */
   strandRevocationEnforcement?: StrandRevocationEnforcementConfig;
+
+  /**
+   * Tuning for the CLOSED-strand membership reconciler
+   * (`strand-membership-reconciler.ts`), applied to every closed strand this
+   * node launches with a party identity key: at bring-up each machine redeems a
+   * pending formation invitation (seating the party's `Strand.Member` row) and
+   * writes its own machine→party `Strand.MemberPeer` binding, retrying in the
+   * background without blocking bring-up. Omit for the defaults (the retry
+   * cadence mirrors {@link strandRevocationEnforcement}'s `pollIntervalMs`);
+   * `{ enabled: false }` disarms the loop — for test fixtures that hand-drive
+   * the membership writers and assert exact row sets.
+   */
+  strandMembershipReconciliation?: StrandMembershipReconciliationConfig;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;

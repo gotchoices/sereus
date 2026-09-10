@@ -248,6 +248,32 @@ describe('CadreNode strand unpublish', () => {
     expect(stopped).toEqual([strandId]);
   }, 60_000);
 
+  it('clears this machine\'s own MemberPeer binding while the runtime is still live', async () => {
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
+    const strandId = 'strand-clearbind-' + rand();
+    await node.addStrand(createStrandConfig(strandId));
+    await node.publishStrand(strandId);
+
+    // Spy on the REAL manager: the wiring under test is that unpublishStrand routes
+    // through clearOwnMemberPeerBinding AFTER the control delete (so a rejected
+    // unpublish never strips a binding the party still needs) but BEFORE the local
+    // stop, so the strand database — and the retained party key, whose durable copy
+    // that delete just destroyed — is still there to sign the removal. The method's
+    // own arms (self-signed removal, quiet no-ops, the never-throws best-effort
+    // contract) are strand-instance-manager-membership.spec.ts.
+    const manager = (node as unknown as { strandManager: import('../src/strand-instance-manager.js').StrandInstanceManager }).strandManager;
+    const liveAtCall: boolean[] = [];
+    const clearSpy = vi.spyOn(manager, 'clearOwnMemberPeerBinding').mockImplementation(async (id: string) => {
+      liveAtCall.push(manager.getInstance(id)?.database !== undefined);
+    });
+
+    await node.unpublishStrand(strandId);
+
+    expect(clearSpy).toHaveBeenCalledWith(strandId);
+    expect(liveAtCall).toEqual([true]);
+    clearSpy.mockRestore();
+  }, 60_000);
+
   it('stops a locally-running instance the watcher never tracked (never-published id)', async () => {
     ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;

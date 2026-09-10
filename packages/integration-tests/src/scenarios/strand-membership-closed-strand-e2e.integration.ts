@@ -474,11 +474,18 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		const sAppConfig = createSignedSAppConfig(appLogic, '0.1.0');
 
 		// ── Two real CadreNodes over libp2p (rbac/Phase-2 pattern) ───────────
+		// The automatic membership reconciler is DISARMED on both nodes: this suite
+		// hand-drives every membership writer and asserts exact row sets (e.g. "exactly
+		// one MemberPeer row"), which the background loop's own founder binding would
+		// shift nondeterministically. The automatic path has its own coverage
+		// (cadre-core's strand-membership-reconciler.spec.ts, and the closed-strand
+		// variant of strand-formation-cross-party-seed for the real network).
 		founderNode = new CadreNode(controlNodeConfig({
 			partyId: `founder-${partyId}`,
 			storageProvider: founderCapture.provider,
 			profile: 'storage',
 			enableRelay: true,
+			membershipReconciliation: false,
 		}));
 		await founderNode.start();
 
@@ -486,6 +493,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 			partyId: `joiner-${partyId}`,
 			storageProvider: joinerCapture.provider,
 			bootstrapNodes: founderNode.getMultiaddrs(),
+			membershipReconciliation: false,
 		}));
 		await joinerNode.start();
 

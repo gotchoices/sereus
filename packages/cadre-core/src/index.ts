@@ -157,6 +157,18 @@ export {
   type RevocationRefreshScheduler
 } from './strand-revocation-enforcer.js';
 
+// Closed-strand membership reconciliation: the bring-up loop that finishes a
+// party's join on every machine — redeem the staged formation invitation, then
+// write the durable machine→party MemberPeer binding — without ever blocking
+// bring-up (see the module doc for the pass ladder and terminal states).
+export {
+  StrandMembershipReconciler,
+  IDLE_PASSES_BEFORE_ESCALATION,
+  type StrandMembershipReconcilerDeps,
+  type StrandMembershipReconciliationConfig,
+  type PendingMembershipInviteSource
+} from './strand-membership-reconciler.js';
+
 // Hibernation
 export {
   HibernationManager,
@@ -222,6 +234,8 @@ export {
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
+  burnInvite,
+  isStrandMember,
   cancelInvite,
   listOutstandingInvites,
   addMemberByManager,

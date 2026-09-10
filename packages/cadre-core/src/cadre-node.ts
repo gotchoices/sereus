@@ -538,6 +538,13 @@ export class CadreNode implements SAppIdLookup {
    * {@link adoptFormationMembershipInvite} before the entry lands here), so a lost
    * invitation never orphans an identity.
    *
+   * INVALIDATION is owned by the strand's bring-up membership reconciler
+   * (`strand-membership-reconciler.ts`, wired via `StartStrandConfig.pendingMembershipInvite`
+   * in {@link launchStrand}): it deletes the entry once the invitation is redeemed, burned
+   * against an already-seated member, or found dead (expired / cancelled / consumed
+   * elsewhere / the strand sealed). Until the strand is actually launched here the entry
+   * just waits.
+   *
    * NOTE: entries live for the node's lifetime (one small pair per formed closed
    * strand), the same unbounded-keys tripwire {@link crossPartyStrandAddrs} documents —
    * if a node ever forms strands at scale, evict alongside that map.
@@ -4462,6 +4469,16 @@ export class CadreNode implements SAppIdLookup {
         'row deletion itself cannot be replayed, so other nodes may keep running the strand ' +
         'until the collection converges.', trimmed);
     }
+    // Clear THIS machine's own MemberPeer binding while the strand runtime — and the
+    // retained party key — is still live: the delete above already destroyed the
+    // party's StrandPartyKey row, so once this process forgets the key nothing can
+    // ever sign the removal again. Runs AFTER the control delete so a rejected
+    // unpublish (unauthorized signer) never strips a binding the party still needs;
+    // best-effort by contract (never throws) — a hibernating or unreachable strand
+    // keeps the stale binding, which grants nothing today. Sibling machines observing
+    // this removal via their watchers do NOT clear their own bindings (see the NOTE on
+    // StrandInstanceManager.clearOwnMemberPeerBinding).
+    await this.strandManager.clearOwnMemberPeerBinding(trimmed);
     // Converge locally now rather than waiting up to a poll interval. The watcher fires
     // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose
     // strandFilter never admitted this strand (the watcher never knew it, so it will never
@@ -4831,7 +4848,15 @@ export class CadreNode implements SAppIdLookup {
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
       revocationEnforcement: this.config.strandRevocationEnforcement,
+      membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
+      // The staged formation invitation seam for the bring-up membership
+      // reconciler: read lazily per pass (a re-formation replaces the entry) and
+      // cleared once spent, burned, or dead — see pendingMembershipInvites.
+      pendingMembershipInvite: {
+        get: () => this.pendingMembershipInvites.get(strand.Id),
+        clear: () => { this.pendingMembershipInvites.delete(strand.Id); }
+      },
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
       // Retained with the launch config, so a hibernation wake rebuilds under the

@@ -545,15 +545,7 @@ export interface ConsumeInviteParams {
  *   `ConsumedInvite` row survives).
  */
 export async function consumeInvite(db: Database, params: ConsumeInviteParams): Promise<void> {
-  const { inviteKey, invitePrivateKey, memberKey, nowMs } = params;
-
-  const usagePayload = `${inviteKey}|${memberKey}`;
-  const inviteSignature = signStrandPayload(usagePayload, invitePrivateKey);
-
-  // Canonicalise "now" the same way issueInvite canonicalises Expiration, so the
-  // schema's `I.Expiration > context.Now` compares like-for-like canonical strings.
-  // Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
-  const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
+  const { inviteKey, memberKey } = params;
 
   await inStrandTransaction(db, async () => {
     // 1. Member — admitted by the deferred invite branch (the matching
@@ -567,14 +559,60 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
 
     // 2. ConsumedInvite — proves possession of the invite private key and that the
     //    invite has not expired (NotExpired gate against the canonical Now).
-    await db.exec(
-      `insert into Strand.ConsumedInvite (InviteKey, MemberKey)
-         with context InviteSignature = ?, Now = ?
-         values (?, ?)`,
-      [inviteSignature, nowCanonical, inviteKey, memberKey],
-    );
+    await insertConsumedInviteRow(db, params);
   });
   log('Consumed invite %s -> member %s', inviteKey, memberKey);
+}
+
+/**
+ * Insert the `Strand.ConsumedInvite` marker row — the possession-plus-freshness proof
+ * shared by {@link consumeInvite} (paired with its `Member` insert inside one
+ * transaction) and {@link burnInvite} (standalone, against an already-seated member).
+ *
+ * The invite signature covers `InviteKey || '|' || MemberKey` (the `ValidUsage` gate),
+ * and "now" is canonicalised the same way {@link issueInvite} canonicalises
+ * `Expiration`, so the schema's `I.Expiration > context.Now` compares like-for-like
+ * canonical strings (`canonicalDatetime` is a pure scalar eval, safe mid-transaction).
+ * Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
+ */
+async function insertConsumedInviteRow(db: Database, params: ConsumeInviteParams): Promise<void> {
+  const { inviteKey, invitePrivateKey, memberKey, nowMs } = params;
+  const inviteSignature = signStrandPayload(`${inviteKey}|${memberKey}`, invitePrivateKey);
+  const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
+  await db.exec(
+    `insert into Strand.ConsumedInvite (InviteKey, MemberKey)
+       with context InviteSignature = ?, Now = ?
+       values (?, ?)`,
+    [inviteSignature, nowCanonical, inviteKey, memberKey],
+  );
+}
+
+/**
+ * Burn an invitation against an ALREADY-SEATED member: insert the
+ * `Strand.ConsumedInvite` row alone, naming the existing `Member.Key`, so the bearer
+ * credential can never be spent by anyone else.
+ *
+ * The already-member arm of the bring-up membership reconciler
+ * (`strand-membership-reconciler.ts`): a machine that finds its party's `Member` row
+ * already present (a sibling machine redeemed the invitation's twin first, or a
+ * manager admitted the party directly) may still hold an UNSPENT formation-delivered
+ * invitation — a bearer credential whoever presents can join with. Every
+ * `ConsumedInvite` constraint is satisfiable without a same-transaction `Member`
+ * insert (`MemberExists` reads the live table), so this is one auto-commit statement
+ * whose deferred checks fire at its own commit. It seats nobody now or later:
+ * `Member.Authorized`'s invite branch requires a same-transaction FRESH consumption,
+ * so the row it leaves is exactly as inert as any other spent invitation's.
+ *
+ * @param db - The closed strand's database (the member already exists).
+ * @param params - The invite key/secret and the EXISTING member's public key, plus the
+ *   optional `nowMs` instant for the expiry gate (default `Date.now()`).
+ * @throws If any constraint rejects — already consumed (the `InviteKey` primary key),
+ *   cancelled, expired, or a sealed strand. Callers treat a burn failure as "already
+ *   dead" and log rather than retry.
+ */
+export async function burnInvite(db: Database, params: ConsumeInviteParams): Promise<void> {
+  await insertConsumedInviteRow(db, params);
+  log('Burned invite %s against existing member %s', params.inviteKey, params.memberKey);
 }
 
 /**
@@ -757,6 +795,18 @@ async function memberStampId(db: Database, memberKey: string): Promise<string | 
     }
   }
   return undefined;
+}
+
+/**
+ * Whether `memberKey` holds a live `Strand.Member` row, as seen by THIS database
+ * instance — the membership probe behind the bring-up reconciler
+ * (`strand-membership-reconciler.ts`). Reads via {@link memberStampId}'s unfiltered
+ * scan + JavaScript compare (the {@link scanMemberPeers} argument for why a PK point
+ * lookup is not reliable on a networked strand). Local visibility only: `false` can
+ * mean "not replicated here yet", never a durable verdict about the strand.
+ */
+export async function isStrandMember(db: Database, memberKey: string): Promise<boolean> {
+  return await memberStampId(db, memberKey) != null;
 }
 
 /** Parameters for {@link addMemberByManager}. */

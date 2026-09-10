@@ -44,15 +44,17 @@
  *     an app that never calls `refreshRevocationEnforcement` actually gets.
  *
  * ── FIXTURE HONESTY (the most important comment in this file) ─────────────────
- * These tests register `Strand.MemberPeer` rows EXPLICITLY, and production does not yet.
- * A `MemberPeer` row binds a member identity to one of its machines' strand peer ids,
+ * These tests register `Strand.MemberPeer` rows EXPLICITLY, for determinism. A
+ * `MemberPeer` row binds a member identity to one of its machines' strand peer ids,
  * and it is the record the deny set is derived from — a removed member's rows become
- * orphans (no live `Member` row), and orphaned rows ARE the denial. On a strand formed
- * the production way today, every party presents the same founding member identity and
- * no device rows are written at all, so the enforcement proved here is not yet reachable
- * from an app. Closing that is `feat-strand-party-identity`. Everything below is a proof
- * of the MACHINERY, on the inputs that machinery is specified against — not a claim that
- * an app can do this today. The registration sites repeat this in one line each.
+ * orphans (no live `Member` row), and orphaned rows ARE the denial. Production now
+ * writes these rows automatically (each machine's bring-up membership reconciler,
+ * `strand-membership-reconciler.ts` — it also fires here for the founding machine,
+ * whose auto-binding coincides with the explicit one below and is idempotent), but the
+ * OTHER machines in this fixture attach without party identity keys, so the explicit
+ * registrations remain what puts every binding in place at a moment the test controls.
+ * The full form-then-remove journey on production-written rows is
+ * `strand-party-removal-via-formation-e2e`.
  *
  * ── WHAT IS ASSERTED, AND HOW ────────────────────────────────────────────────
  * Connection claims read the strand libp2p node's own `getConnections()` — the same
@@ -445,12 +447,10 @@ describe('Removing a party cuts its machines off the strand', () => {
 			const memberB = await admitSecondParty(a0, founderKeyPair, b0);
 
 			// ── The device records: each party binds its own machines ────────────────
-			// FIXTURE HONESTY: production writes no `MemberPeer` rows today — a strand
-			// formed the production way gives every party the same founding member
-			// identity and no device bindings, so the deny set is empty there and none of
-			// this enforcement is reachable from an app until `feat-strand-party-identity`
-			// lands. These rows are the specified INPUT to the enforcement, registered
-			// here by hand so the machinery can be proved against them.
+			// FIXTURE HONESTY: registered by hand so every binding is in place at a
+			// moment the test controls (header: FIXTURE HONESTY — production now writes
+			// its own via the bring-up reconciler, but party B's machines here attach
+			// without identity keys, so only the founder's would appear on its own).
 			await registerMemberPeer(a0.db, { memberKeyPair: founderKeyPair, peerId: a0.peerId });
 			await registerMemberPeer(a0.db, { memberKeyPair: founderKeyPair, peerId: a1.peerId });
 			await registerMemberPeer(b0.db, { memberKeyPair: memberB, peerId: b0.peerId });
@@ -610,10 +610,11 @@ describe('Removing a party cuts its machines off the strand', () => {
 			);
 			const memberB = await admitSecondParty(a0, founderKeyPair, b0);
 
-			// FIXTURE HONESTY, again: production writes no device records yet — see the
-			// file header. A node with no `MemberPeer` row of its own can never recognize
-			// ITSELF in the deny set, so it would never be told; that is a real limitation
-			// of the signal, downstream of `feat-strand-party-identity`.
+			// FIXTURE HONESTY, again: registered by hand (see the file header). A node
+			// with no `MemberPeer` row of its own can never recognize ITSELF in the deny
+			// set, so it would never be told — which is why production's bring-up
+			// reconciler now binds every machine automatically; b[0] attaches without an
+			// identity key here, so the test binds it at a moment it controls.
 			await registerMemberPeer(a0.db, { memberKeyPair: founderKeyPair, peerId: a0.peerId });
 			await registerMemberPeer(b0.db, { memberKeyPair: memberB, peerId: b0.peerId });
 			await awaitBindingsVisible([a0, b0], [a0.peerId, b0.peerId]);

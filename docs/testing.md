@@ -475,7 +475,9 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   also drop the relay reservation riding the connection — is **uncovered**, and would need
   the relay-only two-party fixture of `blind-relay-phone-to-phone-e2e.integration.ts` rather
   than an option on this topology. That file also registers its `Strand.MemberPeer` rows by
-  hand, because production writes none yet (`feat-strand-party-identity`).
+  hand — written before production wrote any; every machine now registers its own
+  automatically at bring-up (`strand-membership-reconciler.ts`), so the hand registrations
+  there stand in for machines, not for a missing mechanism.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a

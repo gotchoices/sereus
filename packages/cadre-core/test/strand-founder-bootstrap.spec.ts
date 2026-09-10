@@ -131,4 +131,26 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     expect(manager.getInstance('founder-closed-nokey')).toBeUndefined();
     expect(manager.getInstances().size).toBe(0);
   }, 30_000);
+
+  it('a joiner WITH a party key comes up active immediately; the membership reconciler idles until rows arrive', async () => {
+    // The real reconciler is armed here (closed + party key), but this solo joiner
+    // has no founder rows and no staged invitation — so startStrand must resolve
+    // active with the loop merely waiting, having written nothing. This is the
+    // "bring-up never blocks on membership" half of the reconciler contract; the
+    // ladder itself is strand-membership-reconciler.spec.ts.
+    manager = new StrandInstanceManager();
+    const strandRow: StrandRow = { Id: 'joiner-reconciling', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null };
+
+    const instance = await manager.startStrand(startConfig(strandRow, false, await generateStrandMemberKey()));
+    expect(instance.status).toBe('active');
+
+    const db = instance.database!.getDatabase();
+    // Give the immediate (non-awaited) first pass a beat to run, then confirm it
+    // wrote nothing: no Member row means no binding is even attempted.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(await count(db, 'Member')).toBe(0);
+    for await (const row of db.eval('select count(1) as c from Strand.MemberPeer')) {
+      expect((row as { c: number }).c).toBe(0);
+    }
+  }, 30_000);
 });

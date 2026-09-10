@@ -10,6 +10,13 @@ import {
   readStrandRevocationRows,
   type StrandRevocationEnforcementConfig
 } from './strand-revocation-enforcer.js';
+import {
+  StrandMembershipReconciler,
+  type PendingMembershipInviteSource,
+  type StrandMembershipReconciliationConfig
+} from './strand-membership-reconciler.js';
+import { removeMemberPeer } from './strand-membership-writer.js';
+import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import type {
   StrandInstance,
@@ -129,6 +136,27 @@ export interface StartStrandConfig {
    * (a removed party's peers keep being served).
    */
   revocationEnforcement?: StrandRevocationEnforcementConfig;
+
+  /**
+   * The staged formation membership invitation for THIS strand — the seam the
+   * bring-up membership reconciler (`strand-membership-reconciler.ts`) reads to
+   * redeem the party's `Strand.Member` seat, and clears once the invitation is
+   * spent, burned, or dead. `CadreNode.launchStrand` wires it over its in-memory
+   * `pendingMembershipInvites` map; read lazily per pass, so a re-formation that
+   * replaces the entry between passes is picked up. Only consulted for closed
+   * strands launched with a {@link partyMemberPrivateKey}; harmless otherwise.
+   */
+  pendingMembershipInvite?: PendingMembershipInviteSource;
+
+  /**
+   * Tuning for the CLOSED-strand membership reconciler, forwarded from
+   * {@link CadreNodeConfig.strandMembershipReconciliation}. Armed only for
+   * closed strands launched with a {@link partyMemberPrivateKey};
+   * `{ enabled: false }` disarms the loop (test fixtures that hand-drive the
+   * membership writers). When it names no `pollIntervalMs` the reconciler
+   * mirrors {@link revocationEnforcement}'s cadence.
+   */
+  membershipReconciliation?: StrandMembershipReconciliationConfig;
 
   /**
    * Called when THIS node's own peer id turns up in the strand's revoked set —
@@ -253,6 +281,14 @@ export class StrandInstanceManager {
    * resume rebuilds it with a fresh (initially empty, fail-open) snapshot.
    */
   private revocationEnforcers: Map<string, StrandRevocationEnforcer> = new Map();
+  /**
+   * The per-strand membership reconciler (closed strands launched with a party
+   * key only), keyed by strand id. Same lifecycle rationale as {@link backfills}:
+   * created in `buildStrandRuntime`, stopped and dropped in `releaseRuntime`, so
+   * quiesce → resume rebuilds it and re-runs the idempotent join ladder (redeem a
+   * staged invitation, write this machine's own `MemberPeer` binding) from scratch.
+   */
+  private membershipReconcilers: Map<string, StrandMembershipReconciler> = new Map();
   /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
@@ -567,6 +603,43 @@ export class StrandInstanceManager {
       await strandDb.initialize();
       timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
 
+      // The membership reconciler: finish this party's join on every machine —
+      // redeem a staged formation invitation if one is pending, then write the
+      // durable machine→party binding (Strand.MemberPeer). Armed here, the one
+      // seam where the strand's transport peer id and a live Database both exist
+      // for launch AND hibernation resume, for closed strands that carry the
+      // party's own membership key. start() kicks an immediate pass WITHOUT
+      // awaiting it — a joiner at this instant has not synced the founder's rows
+      // and may lack write quorum, so bring-up is never blocked; the loop retries
+      // on the enforcer's cadence (the same configured pollIntervalMs) and stops
+      // once the member row and this machine's own binding are both in place.
+      if (config.strandRow.Type === 'c' && config.partyMemberPrivateKey
+        && config.membershipReconciliation?.enabled !== false) {
+        const reconciler = new StrandMembershipReconciler({
+          label: strandId,
+          partyMemberPrivateKey: config.partyMemberPrivateKey,
+          // Read per pass, never captured — same lifecycle argument as the
+          // enforcer's getNetwork: quiesce drops both handles.
+          getDatabase: () => instance.database?.getDatabase(),
+          getOwnPeerId: () => instance.libp2pNode?.peerId.toString(),
+          pendingInvite: config.pendingMembershipInvite,
+          // The enforcer's CURRENT snapshot view of this node's own peer id — the
+          // reconciler stops rather than fight a self-revocation. Absent when the
+          // gate is disarmed (fail-open: the loop just runs).
+          isSelfRevoked: revocationEnforcer
+            ? () => {
+                const ownPeerId = instance.libp2pNode?.peerId.toString();
+                return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
+              }
+            : undefined
+        }, {
+          pollIntervalMs: config.membershipReconciliation?.pollIntervalMs
+            ?? config.revocationEnforcement?.pollIntervalMs
+        });
+        this.membershipReconcilers.set(strandId, reconciler);
+        reconciler.start();
+      }
+
       // Arm the revoked-peer deny-set poll now that the database it reads
       // exists. start() kicks an immediate refresh WITHOUT awaiting it —
       // bring-up and resume are never blocked on a membership read; until the
@@ -647,6 +720,13 @@ export class StrandInstanceManager {
       revocationEnforcer.stop();
       this.revocationEnforcers.delete(instance.strandId);
     }
+    // The membership reconciler likewise: a resume rebuilds it and re-runs the
+    // idempotent ladder, which is what makes resume-after-partial-join heal.
+    const membershipReconciler = this.membershipReconcilers.get(instance.strandId);
+    if (membershipReconciler) {
+      membershipReconciler.stop();
+      this.membershipReconcilers.delete(instance.strandId);
+    }
     if (instance.database) {
       await instance.database.close();
       instance.database = undefined;
@@ -706,6 +786,54 @@ export class StrandInstanceManager {
       return;
     }
     await enforcer.refresh();
+  }
+
+  /**
+   * Best-effort removal of THIS machine's own `Strand.MemberPeer` binding — the
+   * self arm of `removeMemberPeer`, signed with the retained launch config's party
+   * key. Called by `CadreNode.unpublishStrand` BEFORE the local stop, while the
+   * strand database and transport are still live: after the unpublish commits, the
+   * party's `StrandPartyKey` control row is gone, so no restart could ever sign
+   * this removal again — the in-memory retained key is the last chance.
+   *
+   * Never throws. Quiet no-op for a strand that is untracked, open, or launched
+   * without a party key; a quiesced (hibernating) strand, or a strand whose write
+   * quorum is already unreachable, leaves the stale binding behind with a log —
+   * it grants nothing today (admission is not allowlist-gated) and only
+   * mis-credits diversity. The strand's own membership reconciler is stopped
+   * FIRST so a racing pass cannot re-register the binding just cleared.
+   *
+   * NOTE: deliberately NOT handled here (or anywhere yet): clearing the bindings
+   * of a machine removed from the CADRE at the control layer, or of a party's
+   * OTHER machines when the party unpublishes — the party still holds the key on
+   * every surviving machine and can clear from any of them, and the stale rows
+   * grant nothing while admission is deny-list only. Revisit when
+   * `feat-strand-member-allowlist-admission` lands and a stale binding starts
+   * granting admission rather than merely mis-crediting diversity.
+   */
+  async clearOwnMemberPeerBinding(strandId: string): Promise<void> {
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config || config.strandRow.Type !== 'c' || !config.partyMemberPrivateKey) {
+      return;
+    }
+    this.membershipReconcilers.get(strandId)?.stop();
+    const db = instance.database?.getDatabase();
+    const peerId = instance.libp2pNode?.peerId.toString();
+    if (!db || !peerId) {
+      log('clearOwnMemberPeerBinding: strand %s has no live runtime — own MemberPeer binding left in place', strandId);
+      return;
+    }
+    try {
+      await removeMemberPeer(db, {
+        memberKeyPair: strandMemberKeyPair(config.partyMemberPrivateKey),
+        peerId
+      });
+      log('clearOwnMemberPeerBinding: strand %s — own binding for peer %s cleared', strandId, peerId);
+    } catch (error) {
+      log('clearOwnMemberPeerBinding: strand %s — best-effort clear failed (strand may already be unreachable): %o',
+        strandId, error);
+    }
   }
 
   /**

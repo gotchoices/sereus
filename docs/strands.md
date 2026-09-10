@@ -130,18 +130,20 @@ relays, and is never locked out of its first address by replication ordering.
     lifetime, currently 15 min). Acceptable while a relay restart is rare and the strand
     recovers on its own; if relay restarts become routine — or that outage window starts
     mattering — the durable attestation below is the fix, not a shorter refresh interval.
-  - Half landed: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
-    PeerId)` row binding a member to its strand transport peerIds. The **revocation** half
-    of that binding now exists and is enforced: a row left orphaned by its member's removal
-    is exactly what a strand node denies that member's machines by, at the connection,
-    stream, dial and relay-reservation hooks
-    (`packages/cadre-core/src/strand-revocation-enforcer.ts`, and [Removing
+  - Mostly landed: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
+    PeerId)` row binding a member to its strand transport peerIds. The attestation is now
+    **written automatically**: every machine of a party registers its own `MemberPeer` row
+    when it brings the strand up, under the party's own membership identity (the background
+    membership reconciler, `packages/cadre-core/src/strand-membership-reconciler.ts`, which
+    retries until the strand's rows have replicated to it). The **revocation** half is
+    enforced: a row left orphaned by its member's removal is exactly what a strand node
+    denies that member's machines by, at the connection, stream, dial and relay-reservation
+    hooks (`packages/cadre-core/src/strand-revocation-enforcer.ts`, and [Removing
     Members](#removing-members) for what that guarantees in plain terms). The **admission**
     half — reading the same rows as an allowlist, so a strand admits only machines
-    positively bound to a live member — is still deferred, and now waits specifically on
-    per-party membership identity (`feat-strand-party-identity`): without it every party
-    presents the same founding member key and an allowlist would have nothing to tell them
-    apart. The relay's in-memory grant above is unaffected either way — it remains how a
+    positively bound to a live member — is still deferred
+    (`feat-strand-member-allowlist-admission`), so a stale or missing binding denies nobody
+    today. The relay's in-memory grant above is unaffected either way — it remains how a
     party's own strand nodes reserve on their own party's relay.
 
 - Before strand initialization, where (if anywhere) do peers publish reachability?
@@ -226,9 +228,16 @@ database, which Optimystic replicates to **every node the party owns**:
   same terms as the read secret; issuance failing rejects the redemption retryably
   *before* the formation token is spent, so a joiner is never admitted as an
   unmemberable half-member). The joiner's node stages the invitation in memory
-  (`getPendingMembershipInvite`) for strand bring-up to redeem — `consumeInvite`
-  seats the `Strand.Member` row under the joiner's own public key (the automatic
-  redemption + device binding is `strand-node-binds-member-peer`). Either party's
+  (`getPendingMembershipInvite`), and strand bring-up redeems it automatically: a
+  background membership reconciler on every machine of the party (launch and
+  hibernation wake alike) consumes the invitation — seating the `Strand.Member`
+  row under the joiner's own public key — then registers the machine's own device
+  record (`Strand.MemberPeer`), retrying on the enforcement cadence until the
+  strand's rows have replicated to it and never blocking bring-up. A machine that
+  finds the member row already seated (a sibling redeemed first, or a manager
+  admitted the party directly) instead *burns* its unspent invitation — files the
+  consumption record against the existing member — so the bearer credential can
+  never be spent by anyone else. Either party's
   key is **never** put on the formation wire, and the row is deleted — with its
   `Revocation` tombstone — in the same transaction that removes the `Strand` row
   (`unpublishStrand`).
@@ -385,7 +394,12 @@ Membership removal is governed by the same signed-approval discipline as admissi
   machine that is genuinely gone for good, or for a binding that should never have existed
   in the first place — tidying them up as routine housekeeping quietly re-opens the door.
   Anything reading those device records must still check membership separately rather than
-  treating a device record as proof of it.
+  treating a device record as proof of it. Device records are written automatically —
+  every machine registers its own at strand bring-up — and one case cleans up after
+  itself: the machine that issues a party-wide `unpublishStrand` clears its own record on
+  the way out (best-effort, while it can still sign). Its party's *other* machines
+  cannot — the same act destroys the identity key they would sign with — so their records
+  remain for a remaining member's manager to weigh by exactly the rule above.
 - **A device record can only be added or deleted, never edited.** Every field of the record
   is part of its identity, so re-binding is a delete plus a fresh add. Allowing an edit
   would let any member re-point someone else's device record at its own key — clearing a
@@ -466,13 +480,14 @@ no longer the case.
 
 #### What removal still does not do
 
-- **Per-party removal is not reachable from an app yet.** On a strand formed the way a real
-  deployment forms one today, every party presents the *same* founding member identity and
-  no device records are written at all — so there is no per-party member to remove and no
-  device record to deny it by. Everything above is built, and proved against strands whose
-  device records are registered explicitly by the test; giving each party its own membership
-  identity and its own device records is tracked as `feat-strand-party-identity`. Until that
-  lands, the enforcement machinery is in place and the identity it needs is not.
+- **Prove the whole journey on a real network.** Per-party removal now has real identities
+  and real device records behind it: each party presents its own membership identity (the
+  founder's minted at publish, a joiner's at formation), and every machine registers its
+  own device record automatically when it brings the strand up — nothing is written by
+  hand any more, so the housekeeping rules above describe records the runtime itself
+  creates. What remains unproven end-to-end is the full journey — form a strand with a
+  second party over the real network, remove that party, watch its machines get cut —
+  which is tracked as `strand-party-removal-via-formation-e2e`.
 - **It does not cut off past reads, and it does not rotate the member key** — the
   forward-looking bullet above.
 - **It does not cancel an unspent invitation**, so a removed party still holding one

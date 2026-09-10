@@ -130,14 +130,15 @@ from the strand's own header.
 The document verifies `Sig` against `Member.Key`. Two facts undermine that as a legal
 signature:
 
-- Every *joining* party on a production closed strand still presents the **same** member key
-  for its writes. `strand-party-member-key` gave the founding party its own
-  `CadreControl.StrandPartyKey` identity, and `strand-formation-membership-invite` now mints a
-  joiner's own identity at formation (plus a single-use `Strand.Invite` to seat it as a
-  `Member`) — but the automatic redemption + device binding
-  (`strand-node-binds-member-peer`) has not landed, so joining parties hold distinct
-  identities without `Member` rows. Until it does, `Signature.SignerKey` cannot distinguish
-  the joining parties, and "all current members signed" is one row.
+- ~~Every *joining* party on a production closed strand still presents the **same** member
+  key for its writes.~~ Resolved in three steps: `strand-party-member-key` gave the founding
+  party its own `CadreControl.StrandPartyKey` identity, `strand-formation-membership-invite`
+  mints a joiner's own identity at formation (plus a single-use `Strand.Invite` to seat it
+  as a `Member`), and `strand-node-binds-member-peer` redeems that invitation automatically
+  at the joiner's strand bring-up and binds each machine's own device record. Joining
+  parties on newly-formed closed strands now hold distinct `Member` rows, so
+  `Signature.SignerKey` can distinguish them; the real-network end-to-end proof is
+  `strand-party-removal-via-formation-e2e`.
 - That key is held **in plaintext on every node of the cadre**
   ([`strands.md`](strands.md) → Closed-Strand Member Key Handling), minted by software and
   rotated by remove-then-add. Appropriate for "this party's software authorized this write";

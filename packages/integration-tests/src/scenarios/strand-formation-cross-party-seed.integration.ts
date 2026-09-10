@@ -52,7 +52,6 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import {
 	CadreNode,
 	ControlFormationUsageRecorder,
-	consumeInvite,
 	generateStrandMemberKey,
 	strandMemberKeyPair,
 } from '@serfab/cadre-core';
@@ -215,15 +214,18 @@ describe('Cross-party strand seed carried by formation', () => {
 	}, 180_000);
 
 	/**
-	 * CLOSED-strand variant (`strand-formation-membership-invite`): the formation result
-	 * also carries the joiner's own single-use `Strand.Invite`, the joiner's node persists
-	 * its own party identity (`StrandPartyKey`) and stages the invitation, and redeeming
-	 * it on the joiner's replica seats a `Strand.Member` row under the JOINER's key —
-	 * distinct from the founder's. Redemption is explicit here (`consumeInvite`) to prove
-	 * the carried invitation is genuine; the automatic bring-up redemption is the next
-	 * ticket (`strand-node-binds-member-peer`).
+	 * CLOSED-strand variant (`strand-formation-membership-invite` +
+	 * `strand-node-binds-member-peer`): the formation result also carries the joiner's own
+	 * single-use `Strand.Invite`, the joiner's node persists its own party identity
+	 * (`StrandPartyKey`) and stages the invitation — and standing the strand up is ALL it
+	 * takes from there. The bring-up membership reconciler redeems the invitation
+	 * automatically once the host-issued `Strand.Invite` row replicates over the seeded
+	 * mesh (seating a `Strand.Member` row under the JOINER's key, distinct from the
+	 * founder's) and registers each machine's own `Strand.MemberPeer` binding. No
+	 * hand-rolled `consumeInvite`/`registerMemberPeer` anywhere in this test — that
+	 * absence is the assertion.
 	 */
-	it('carries a redeemable membership invitation for a closed strand', async () => {
+	it('redeems the carried membership invitation automatically at strand bring-up', async () => {
 		let host: CadreNode | undefined;
 		let joiner: CadreNode | undefined;
 		try {
@@ -273,6 +275,10 @@ describe('Cross-party strand seed carried by formation', () => {
 				partyId: `joiner-c-${runTag}`,
 				privateKey: joinerKey,
 				bootstrapNodes: controlAddrs(host),
+				// The membership reconciler mirrors this cadence: a fast retry keeps the
+				// "invite row not replicated yet → retry next pass" ladder inside the wait
+				// budget instead of the 30 s production default.
+				revocationPollMs: 2_000,
 			}));
 			await joiner.start();
 			await makeOwnOwner(joiner, joinerKey);
@@ -295,7 +301,7 @@ describe('Cross-party strand seed carried by formation', () => {
 			expect(joinerMemberKey).not.toBe(founderMemberKey);
 			expect(joiner.getPendingMembershipInvite(strandId)).toEqual(invite);
 
-			// ── Stand the strand up on the joiner and redeem the invitation there ──
+			// ── Stand the strand up on the joiner: bring-up finishes the join on its own ──
 			const joinerStrand = await joiner.addStrand({
 				strandRow: {
 					Id: strandId,
@@ -306,43 +312,14 @@ describe('Cross-party strand seed carried by formation', () => {
 				sAppConfig: sApp,
 			});
 			const joinerDb = joinerStrand.database!.getDatabase();
+			const joinerStrandPeerId = joinerStrand.libp2pNode!.peerId.toString();
 
-			// ConsumedInvite.InviteExists needs the host-issued Strand.Invite row visible on
-			// the joiner's replica — wait for it to converge over the freshly-seeded mesh.
+			// The reconciler waits out the host-issued Strand.Invite row replicating over
+			// the seeded mesh, then redeems it: a real Strand.Member row lands under the
+			// JOINER's own party key with no explicit consumeInvite anywhere in this test.
 			await waitUntil(
 				async () => {
-					for await (const row of joinerDb.eval('select Key from Strand.Invite')) {
-						if (row.Key === invite.inviteKey) return true;
-					}
-					return false;
-				},
-				{
-					timeoutMs: CONVERGE_MS,
-					intervalMs: 500,
-					description: "the issued Strand.Invite row replicates to the joiner's strand DB",
-				},
-			);
-
-			// Redeem: a real Strand.Member row lands under the JOINER's own party key.
-			await consumeInvite(joinerDb, {
-				inviteKey: invite.inviteKey,
-				invitePrivateKey: invite.invitePrivateKey,
-				memberKey: joinerMemberKey,
-			});
-
-			const memberKeys = new Set<string>();
-			for await (const row of joinerDb.eval('select Key from Strand.Member')) {
-				memberKeys.add(row.Key as string);
-			}
-			expect(memberKeys.has(joinerMemberKey)).toBe(true);
-			expect(memberKeys.has(founderMemberKey)).toBe(true);
-
-			// And the admission converges back to the FOUNDER's replica — the joiner is a
-			// member of the shared strand, not of a local fork.
-			const hostDb = founded.instance.database!.getDatabase();
-			await waitUntil(
-				async () => {
-					for await (const row of hostDb.eval('select Key from Strand.Member')) {
+					for await (const row of joinerDb.eval('select Key from Strand.Member')) {
 						if (row.Key === joinerMemberKey) return true;
 					}
 					return false;
@@ -350,7 +327,57 @@ describe('Cross-party strand seed carried by formation', () => {
 				{
 					timeoutMs: CONVERGE_MS,
 					intervalMs: 500,
-					description: "the joiner's Member row replicates back to the host",
+					description: "bring-up redeems the staged invitation — the joiner's own Member row appears",
+				},
+			);
+			const memberKeys = new Set<string>();
+			for await (const row of joinerDb.eval('select Key from Strand.Member')) {
+				memberKeys.add(row.Key as string);
+			}
+			expect(memberKeys.has(joinerMemberKey)).toBe(true);
+			expect(memberKeys.has(founderMemberKey)).toBe(true);
+
+			// The spent invitation is un-staged, and the joiner machine bound ITSELF: the
+			// durable machine→party record revocation enforcement keys on, written with no
+			// registerMemberPeer call here either.
+			await waitUntil(
+				async () => {
+					if (joiner!.getPendingMembershipInvite(strandId) !== undefined) return false;
+					for await (const row of joinerDb.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
+						if (row.MemberKey === joinerMemberKey && row.PeerId === joinerStrandPeerId) return true;
+					}
+					return false;
+				},
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 500,
+					description: "the joiner machine's own MemberPeer binding lands and the invitation is un-staged",
+				},
+			);
+
+			// And the admission converges back to the FOUNDER's replica — the joiner is a
+			// member of the shared strand, not of a local fork. The founder machine's own
+			// reconciler bound it too, so BOTH parties' bindings are visible there.
+			const hostDb = founded.instance.database!.getDatabase();
+			const hostStrandPeer = founded.instance.libp2pNode!.peerId.toString();
+			await waitUntil(
+				async () => {
+					let joinerMemberSeen = false;
+					for await (const row of hostDb.eval('select Key from Strand.Member')) {
+						if (row.Key === joinerMemberKey) joinerMemberSeen = true;
+					}
+					if (!joinerMemberSeen) return false;
+					const bindings = new Set<string>();
+					for await (const row of hostDb.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
+						bindings.add(`${row.MemberKey}|${row.PeerId}`);
+					}
+					return bindings.has(`${founderMemberKey}|${hostStrandPeer}`)
+						&& bindings.has(`${joinerMemberKey}|${joinerStrandPeerId}`);
+				},
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 500,
+					description: "the joiner's Member row and both machines' bindings replicate to the host",
 				},
 			);
 		} finally {

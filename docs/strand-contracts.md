@@ -636,16 +636,18 @@ Neither of these is optional, and the design does not work without them.
 
 ### Per-party strand identity
 
-`feat-strand-party-identity` is a **hard prerequisite**, and its first two quarters have landed.
+`feat-strand-party-identity` is a **hard prerequisite**, and its identity machinery has landed.
 `strand-party-member-key` gave the founding party its own membership identity in the
 control-layer `CadreControl.StrandPartyKey` table, so the founder's key is no longer derivable
-from `Strand.MemberPrivateKey`. `strand-formation-membership-invite` extends that to *joining*
-parties: a closed-strand formation now also carries a single-use `Strand.Invite` for the joiner,
-whose node mints and persists its own `StrandPartyKey` identity at `formStrand`. What remains is
-the automatic redemption — the joiner's strand bring-up consuming that invitation to seat its
-`Strand.Member` row and bind its devices (`strand-node-binds-member-peer`). Until that lands,
-production joiners hold distinct identities but no `Member` rows yet, so `SignerKey` still
-cannot distinguish the joining parties and "every required role has signed" collapses to one row.
+from `Strand.MemberPrivateKey`. `strand-formation-membership-invite` extended that to *joining*
+parties: a closed-strand formation also carries a single-use `Strand.Invite` for the joiner,
+whose node mints and persists its own `StrandPartyKey` identity at `formStrand`. And redemption
+is now automatic (`strand-node-binds-member-peer`): the joiner's strand bring-up consumes that
+invitation to seat its own `Strand.Member` row, and every machine of every party binds its own
+device record (`Strand.MemberPeer`), retrying in the background until the strand's rows have
+replicated. Production joiners on newly-formed closed strands therefore hold distinct member
+rows, and `SignerKey` can distinguish the parties; what remains before leaning on this in
+anger is the real-network end-to-end proof (`strand-party-removal-via-formation-e2e`).
 
 It also bounds what open strands can do. `Member` is closed-only by schema, so signature
 admissibility as specified above **does not work on an open strand at all**. Until an open
