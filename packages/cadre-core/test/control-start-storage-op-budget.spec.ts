@@ -76,7 +76,7 @@ const MEASURED_ON = '2026-09-10';
 /**
  * Cold: first-ever start against empty storage — 9 control tables and 1 index
  * created (StrandPartyKey joined the schema with the strand-party-member-key
- * ticket). 169 operations over 20 blocks: the genuine writes, one `getMetadata`
+ * ticket). 169 operations over 20 blocks: the 131 genuine writes, one `getMetadata`
  * per block, and a handful of cold list/read fills. History: 1541 uncached
  * (2026-08-12), 1983 after the upstream catalog re-read (2026-08-14), 172 over 21
  * blocks with the write-through cache wired (2026-08-17), 169 over 20 with the
@@ -86,10 +86,15 @@ const MEASURED_ON = '2026-09-10';
 const COLD: Budget = { ops: 169, blocks: 20, opBudget: 200, blockBudget: 24 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
- * hydrates instead of the schema being applied. 52 operations over 22 blocks: a
+ * hydrates instead of the schema being applied. 46 operations over 22 blocks: a
  * cold CACHE over a warm STORE, essentially one read per block plus the hydrate's
- * list fills. The distinct-block count is one above cold (22): the cold run had
- * not yet written the owner-key row this spec's genesis step leaves behind.
+ * list fills. The distinct-block count is two above cold (22 vs 20): the cold run had
+ * not yet written the owner-key row this spec's genesis step leaves behind, and the
+ * schema-apply path does not touch every block the hydrate then reads. NOTE: the
+ * per-table→per-block mapping is NOT one-to-one — adding the ninth control table
+ * (`StrandPartyKey`) moved cold DOWN from 172 ops / 21 blocks to 169 / 20, which is
+ * packing, not a saving to bank on. Re-measure rather than predict when the schema
+ * changes again.
  *
  * The second start deliberately gets a fresh storage IDENTITY over the shared
  * backing store (see the comment at the spec body): cadre-core's cache is memoized

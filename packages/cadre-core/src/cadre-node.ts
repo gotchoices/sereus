@@ -4113,6 +4113,16 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const { strandRow, sAppConfig, founder, partyMemberPrivateKey } = config;
+    if (partyMemberPrivateKey !== undefined && strandRow.Type !== 'c') {
+      // Only a closed strand seats a Member/Manager, so an open launch would drop this
+      // key silently. Refuse instead: the caller has confused the party identity key
+      // with something an open strand uses, and a silent drop hides that.
+      throw new Error(
+        `addStrand(${strandRow.Id}): partyMemberPrivateKey belongs to a CLOSED strand ` +
+        `(Type 'c'), but this row is Type '${strandRow.Type}' — an open strand seats no ` +
+        'Member/Manager, so the key would be ignored.'
+      );
+    }
 
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
@@ -4465,8 +4475,8 @@ export class CadreNode implements SAppIdLookup {
    * @returns The live party key: the one just seated, or the stored one.
    */
   async ensureStrandPartyKey(strandId: string, partyMemberPrivateKey?: string): Promise<string> {
-    const signingKey = this.requireOwnerSigningKey(`seat a party key for strand ${strandId}`);
     const trimmed = requireNonBlank(strandId, 'strand id');
+    const signingKey = this.requireOwnerSigningKey(`seat a party key for strand ${trimmed}`);
     const existing = await this.controlDatabase!.queryStrandPartyKey(trimmed);
     if (existing !== null) {
       if (partyMemberPrivateKey !== undefined && partyMemberPrivateKey !== existing) {
@@ -4507,6 +4517,14 @@ export class CadreNode implements SAppIdLookup {
    * the key split, or by a publish that was interrupted before its mint). Everyone else
    * resolves undefined: non-founding machines never mint (no mint race between a
    * party's machines), and only a founder bootstrap needs the key at all.
+   *
+   * NOTE: "founding machine" here is the ROW's provenance, not the launch's resolved
+   * `founder` flag — so an explicit `founder: false` over a row this machine published
+   * still mints, an owner-signed write a caller that said "I am not founding" did not ask
+   * for. Harmless (the party needs that identity for the strand either way, and the mint
+   * is insert-if-absent) and unreachable today: the one explicit `founder: false` caller
+   * passes a row with a null `FounderOwnerKey`. If a caller ever pairs `founder: false`
+   * with its own published row, gate the mint on the resolved flag too.
    */
   private async resolveStrandPartyKey(strand: StrandRow, explicitKey?: string): Promise<string | undefined> {
     if (explicitKey !== undefined) {

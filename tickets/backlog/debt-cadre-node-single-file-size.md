@@ -89,3 +89,9 @@ as everything else. They belong with the "strand launch and teardown" group in t
 above, which — with `addStrand`, `launchStrand`, `publishStrand`, `unpublishStrand`,
 `foundStrand`, `handleStrandAdded`, `handleStrandRemoved` and cohort-seed resolution — is
 now the largest of the seven jobs listed. Evidence for the existing ticket, not a new one.
+
+## Re-measured 2026-09-10 (review of `strand-party-member-key`)
+
+`wc -l` → **6496** `packages/cadre-core/src/cadre-node.ts`, **2803** `packages/cadre-core/src/control-database.ts`. The node file is up from the 6075 recorded above on 2026-09-09; the party-key work contributed ~160 lines as three more methods on the same class (`ensureStrandPartyKey`, `resolveStrandPartyKey`, plus the resolution threaded through `launchStrand`/`addStrand`/`publishStrand`). Again the "strand launch and teardown" group.
+
+Worth noting alongside it: `control-database.ts` is now the package's second-largest source file at 2803 lines, and the same pattern produced it — one class accumulating a method pair per control table (`queryX` / `queryXStampId` / `insertX` / `deleteX`), now nine tables' worth, plus the lock/retry/transaction machinery and the revocation sweep. The measurement table at the top of this ticket (which put the next-largest file at 535 lines) is stale by a wide margin; if a seam is ever cut in `CadreNode`, the per-table writer groups in `ControlDatabase` are the same kind of cut and worth considering in the same pass. Evidence for this ticket, not a new one.

@@ -62,6 +62,36 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
     return buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', [id, privateKey, stampId]);
   }
 
+  /** Run `statements` as one transaction, so a deferred CHECK decides at commit. */
+  async function inTransaction(statements: () => Promise<void>): Promise<void> {
+    await rawDb.beginTransaction();
+    try {
+      await statements();
+      await rawDb.commit();
+    } catch (error) {
+      // A failed commit() already tore the transaction down, so rollback() throws
+      // "no transaction active" — swallow that rather than masking the real cause.
+      await rawDb.rollback().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** The owner-signed `Revocation` tombstone a `StrandPartyKey` delete must carry. */
+  function tombstonePartyKey(rowKey: string, stampId: string): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values ('StrandPartyKey', ?, ?)`,
+      [
+        ownerPublicKey,
+        signMessage(
+          buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', rowKey, stampId])),
+        rowKey,
+        stampId,
+      ],
+    );
+  }
+
   function revocationRow(stampId: string): Promise<Record<string, unknown> | undefined> {
     return rawDb.get(
       'select TableName, RowKey, StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
@@ -200,6 +230,43 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
     const before = (await db.queryRevokedStamps('StrandPartyKey')).size;
     expect(await db.deleteStrandPartyKey('pk-absent-' + rand(), ownerPublicKey, signMessage)).toBe(false);
     expect((await db.queryRevokedStamps('StrandPartyKey')).size).toBe(before);
+  });
+
+  it('the INSERT approval cannot be replayed as a removal (AuthorizedDelete\'s distinct action tag)', async () => {
+    // The enrollment signature never expires, so the delete digest is tagged 'remove'
+    // rather than 'add'. The tombstone rides along in the same transaction so
+    // RevocationRecorded is satisfied and only AuthorizedDelete can reject.
+    const strandId = 'pk-addasdelete-' + rand();
+    const key = await generateStrandMemberKey();
+    await db.insertStrandPartyKey(strandId, key, ownerPublicKey, signMessage);
+    const stamp = await db.queryStrandPartyKeyStampId(strandId);
+    const addSig = signMessage(addMessage(strandId, key, stamp!));
+
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDb.exec(
+          `delete from CadreControl.StrandPartyKey
+             with context OwnerKey = ?, Signature = ?
+             where Id = ?`,
+          [ownerPublicKey, addSig, strandId],
+        );
+        await tombstonePartyKey(strandId, stamp!);
+      }),
+      'AuthorizedDelete',
+    );
+    expect(await db.queryStrandPartyKey(strandId)).toBe(key);
+  });
+
+  it('a tombstone cannot retire a party key whose row is still LIVE (Revocation.RowIsGone)', async () => {
+    // RowIsGone is what stops a standalone tombstone from retiring a stamp out from
+    // under a live row — the StrandPartyKey branch of it is new with this table.
+    const strandId = 'pk-rowlive-' + rand();
+    const key = await generateStrandMemberKey();
+    await db.insertStrandPartyKey(strandId, key, ownerPublicKey, signMessage);
+    const stamp = await db.queryStrandPartyKeyStampId(strandId);
+
+    await expectConstraintFailure(tombstonePartyKey(strandId, stamp!), 'RowIsGone');
+    expect(await db.queryStrandPartyKey(strandId)).toBe(key);
   });
 
   it('deleteStrand removes the strand AND its party key in one act, tombstoning both stamps', async () => {

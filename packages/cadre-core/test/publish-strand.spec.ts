@@ -642,6 +642,13 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     expect(await countRow(db, 'Header')).toBe(1);
     expect(await countRow(db, 'Member')).toBe(1);
     expect(await countRow(db, 'Manager')).toBe(1);
+    // The flip founds under the PUBLISH-minted party key that the joiner launch already
+    // resolved — not the shared read secret, and not a second freshly minted identity.
+    const partyKey = await node.getControlDatabase()!.queryStrandPartyKey(strandId);
+    expect(partyKey).not.toBeNull();
+    const member = await db.get('select Key from Strand.Member');
+    expect(member?.Key).toBe(strandMemberKeyPair(partyKey!).publicKeyB64);
+    expect(member?.Key).not.toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
   }, 60_000);
 
   it('foundStrand adopting a row published by a DIFFERENT machine attaches instead of founding', async () => {
@@ -808,5 +815,67 @@ describe('CadreNode.addStrand party-key heal at launch', () => {
     expect(instance.status).toBe('active');
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
     expect(await db.queryStrandPartyKey(strandId)).toBeNull();
+  }, 60_000);
+
+  it('a closed strand flipped to founder with NO party key throws rather than seating a wrong identity', async () => {
+    // The joiner→founder flip edge: the instance launched as a joiner (hand-built row,
+    // null FounderOwnerKey) against a strand that was NEVER published, so neither the
+    // launch nor the flip's re-read finds a StrandPartyKey row and no heal applies. The
+    // founding must fail loudly — seating Member/Manager under the shared read secret is
+    // exactly what the split removed.
+    ({ node } = await startSelfOwnerNode('party-key-heal-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'flip-nokey-' + rand5();
+    const sAppConfig = signedSApp();
+    const strandRow = {
+      Id: strandId, MemberPrivateKey: await generateStrandMemberKey(), Type: 'c' as const,
+      FounderOwnerKey: null,
+    };
+
+    const joined = await node.addStrand({ strandRow, sAppConfig });
+    expect(joined.status).toBe('active');
+    expect(await countRow(joined.database!.getDatabase(), 'Member')).toBe(0);
+
+    await expect(node.addStrand({ strandRow, sAppConfig, founder: true }))
+      .rejects.toThrow(/StrandPartyKey/i);
+    expect(await db.queryStrandPartyKey(strandId)).toBeNull();
+  }, 60_000);
+});
+
+describe('CadreNode.ensureStrandPartyKey (public mint-or-adopt seam)', () => {
+  let node: CadreNode | undefined;
+
+  const rand6 = (): string => Math.random().toString(36).slice(2);
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('adopts the stored key on a repeat, and refuses a CONFLICTING supplied key', async () => {
+    ({ node } = await startSelfOwnerNode('ensure-party-key-', { enrollOwner: true }));
+    const db = node.getControlDatabase()!;
+    const strandId = 'ensure-' + rand6();
+    const mine = await generateStrandMemberKey();
+    const other = await generateStrandMemberKey();
+
+    expect(await node.ensureStrandPartyKey(strandId, mine)).toBe(mine);
+    // Idempotent for the SAME key, and a bare call adopts what is stored.
+    expect(await node.ensureStrandPartyKey(strandId, mine)).toBe(mine);
+    expect(await node.ensureStrandPartyKey(strandId)).toBe(mine);
+
+    // A party has ONE identity per strand: a silent swap would orphan the membership
+    // already seated under the stored key, so rotation must be deliberate.
+    await expect(node.ensureStrandPartyKey(strandId, other)).rejects.toThrow(/already has a party key/i);
+    expect(await db.queryStrandPartyKey(strandId)).toBe(mine);
+  }, 60_000);
+
+  it('addStrand refuses a party key on an OPEN strand rather than dropping it silently', async () => {
+    ({ node } = await startSelfOwnerNode('ensure-party-key-', { enrollOwner: true }));
+    await expect(node.addStrand({
+      strandRow: { Id: 'open-with-key-' + rand6(), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+      sAppConfig: signedSApp(),
+      partyMemberPrivateKey: await generateStrandMemberKey(),
+    })).rejects.toThrow(/partyMemberPrivateKey belongs to a CLOSED strand/i);
   }, 60_000);
 });

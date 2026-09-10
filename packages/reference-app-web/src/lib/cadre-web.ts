@@ -492,7 +492,8 @@ export interface CreatedInvitation {
  * bring-up is one `foundStrand` call.
  *
  * `foundStrand` does both control-plane steps (publish + attach as founder, which
- * runs the one-time genesis bootstrap seating Header/Member/Owner from
+ * runs the one-time genesis bootstrap seating Header/Member/Owner from this party's
+ * own `StrandPartyKey` identity, minted by the publish — NOT from the shared
  * `MemberPrivateKey`) and is safe to re-run: a tab closed between them resumes
  * rather than failing forever on `UNIQUE constraint failed: Strand.Id`. The id
  * here is freshly minted per call, so the resume path is reached only if a caller

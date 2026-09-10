@@ -1295,6 +1295,11 @@ export class ControlDatabase {
    * digests, mandatory same-transaction tombstones); kept separate rather than
    * generalizing the shared body because no other guarded table has a companion row.
    *
+   * NOTE: that duplication is a drift risk, not a correctness one — a future tightening of
+   * {@link deleteGuardedRow}'s discipline (an extra precondition, a different digest shape)
+   * will NOT reach this body. Grep for both when you change either; if a second guarded
+   * table ever gains a companion row, generalize instead of copying this a third time.
+   *
    * Not wrapped in {@link withWriteLock} — the caller holds the (non-re-entrant) lock.
    */
   private async deleteStrandAndPartyKey(
@@ -1880,8 +1885,9 @@ export class ControlDatabase {
    *
    * Two rows are deliberately left alone:
    *
-   * - **Tables outside {@link REAPABLE_TABLES}** (`Strand`, `OwnerKey`) — no reap branch
-   *   exists on their `AuthorizedDelete`, so the delete would throw rather than no-op.
+   * - **Tables outside {@link REAPABLE_TABLES}** (`Strand`, `StrandPartyKey`, `OwnerKey`)
+   *   — no reap branch exists on their `AuthorizedDelete`, so the delete would throw
+   *   rather than no-op.
    * - **This node's OWN `CadrePeer` / `DeviceToken` row** (`selfPeerId`). Reaping it would
    *   fight this node's own re-registration: `registerSelf` / `retouchSelfDeviceToken` run
    *   on the heartbeat and the growth drain, and after a self-reap their insert-if-absent

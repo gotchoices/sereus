@@ -636,11 +636,14 @@ Neither of these is optional, and the design does not work without them.
 
 ### Per-party strand identity
 
-`feat-strand-party-identity` is a **hard prerequisite**. Today every party on a production
-closed strand presents the *same* member key: the founding key derived from
-`Strand.MemberPrivateKey` is handed to every joiner, and per-party member keys are minted only
-in tests. Until that lands, `SignerKey` cannot distinguish parties and "every required role has
-signed" collapses to one row.
+`feat-strand-party-identity` is a **hard prerequisite**, and only its *founder* half has landed
+(`strand-party-member-key`): the founding party now has its own membership identity in the
+control-layer `CadreControl.StrandPartyKey` table, so the founder's key is no longer derivable
+from `Strand.MemberPrivateKey`. A *joining* party still has none — formation hands it the shared
+`Strand.MemberPrivateKey` and nothing else, so on a production closed strand the joiners still
+present one indistinguishable key. Until the joiner half lands
+(`strand-formation-membership-invite`), `SignerKey` cannot distinguish parties and "every
+required role has signed" collapses to one row.
 
 It also bounds what open strands can do. `Member` is closed-only by schema, so signature
 admissibility as specified above **does not work on an open strand at all**. Until an open
