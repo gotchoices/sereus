@@ -314,3 +314,43 @@ already happened. Left alone here on purpose.
 > verdict `isolated`, and `unavailable: 'cohort-unreachable'` — a genuinely failed read, and the
 > fingerprint that kills `control-read-over-fresh-edge-stream-resets` at boot. Same numbers,
 > opposite outcome. **Record `silent` on the next capture before calling any of these lines benign.**
+
+## Measured 2026-09-10 — the same wait now fails under suite load, and it is contention, not a regression
+
+Full-suite run (`tickets/.logs/rel2-check.log`, sereus at the post-release-night HEAD, optimystic
+`1.0.0-beta.1`): three integration files red, and **two of them fail inside the same helper** —
+`bootControlTrio` (`packages/integration-tests/src/harness/control-trio.ts:249`), with
+
+```
+Error: Timeout waiting for B resolves C's signed CadrePeer address record after 45000ms
+```
+
+- `control-write-degraded-cohort-member.integration.ts` — dies in setup, so all 7 of its tests are
+  reported *skipped* rather than failed. They did not run; do not read that 7 as green.
+- `control-cohort-three-node-isolation.integration.ts` — one test failed. **This file passed on the
+  immediately preceding full run of the same optimystic build**, which made it look like a
+  regression from that night's work.
+
+It is not. Discriminated by running the two files together and then alone:
+
+| run | result | test time |
+| --- | --- | --- |
+| full suite | isolation file fails at `:65` | — |
+| the two files together | degraded-cohort passes 8/9; isolation file fails at `:110` — a *different* test | 333s |
+| isolation file alone, run 1 | **2/2 pass** | 25s |
+| isolation file alone, run 2 | **2/2 pass** | 20s |
+
+Two signals say contention rather than defect: the failing test *moves* between runs while the
+throw site stays fixed at the shared boot helper, and the same work takes 20-25s alone versus 333s
+beside `control-write-degraded-cohort-member`, which forces a 3-peer cohort and injects stalls.
+
+Also checked and cleared as a cause: that night's revocation work edited
+`packages/cadre-core/src/membership-connection-gater.ts`, which would be the obvious suspect for
+"B cannot reach C". The diff is comment-only plus one `export` — the revoked-peer denial composes
+onto CLOSED STRAND nodes only and never touches control-network gating.
+
+**Do not respond by raising the 45s timeout.** The wait is the measurement; a longer one would hide
+exactly the propagation delay this ticket exists to characterize. The harness-level problem — that
+a fixed wall-clock wait makes two files fail when scheduled next to a stall-injecting neighbour — is
+tracked separately as `debt-control-trio-boot-wait-is-contention-sensitive`.
+
