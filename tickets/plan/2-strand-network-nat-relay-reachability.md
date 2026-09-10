@@ -88,6 +88,31 @@ This is a future concern, not active work — promote to `plan/` when the
 single-party strand seeding lands and cross-party / NAT strand connectivity
 becomes the next priority.
 
+## Promoted to `plan/` 2026-09-09 — the mandate
+
+The owner named this as a release goal: *"a sereus release that unblocks sApp builders who are
+trying to get multiple nodes going in various ways"*, naming **phone -> cadre node -> phone** and
+**phone -> blind proxy -> phone** as the shapes that must work.
+
+Those are two different problems and the plan must keep them apart:
+
+- **phone -> cadre node -> phone** — the relaying machine is a node of the *same party*, so it is
+  party-private infrastructure and admission runs through `delegate-admission.ts`. This is really
+  phone -> cadre node -> phone, and the control-network half of it already has passing tests.
+- **phone -> blind proxy -> phone** — the relay is **strictly a relay**: not a cadre member, in no
+  cohort, holding no data, with no membership gate to lean on. A dedicated `ops/` relay. It must
+  never be counted as a serving machine for replication-breadth purposes.
+
+The second shape is the one with no product code behind it, and for two *different* users who each
+have only phones it is the only shape that works — a cadre-node relay does not help there, since
+the stranger path is admit-for-relay with a budget cap and control-DB streams are refused.
+
+Scope discipline for the planning pass: the measured section below is wide (per-strand NAT
+reachability, listen/announce inheritance, cross-party discovery). Split it into `prereq:`-chained
+implement tickets and put the blind-proxy strand path first — that is the one the release is for.
+Sections that turn out to need upstream `db-p2p` work go to `blocked/` as category (b) rather than
+growing an implement ticket.
+
 ## Measured 2026-09-07 — the gap is wider than "unverified", and it blocks the headline mobile case
 
 Audited every relay-touching test in the repo while assessing whether the integration suite covers
