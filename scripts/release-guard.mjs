@@ -94,7 +94,10 @@ export function alreadyFullyPublishedFailure(version, packages) {
 
 /** Cheap git facts about the tag the bump just made. A missing tag is a fact, not an exception. */
 function gitState(tagName) {
-	const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+	// `cwd: repoRoot`, matching where the version was read from: the script resolves the repository
+	// from its own location, so asking git about whatever directory the operator happened to be in
+	// could compare this repo's version against another repo's HEAD.
+	const git = (...args) => execFileSync('git', args, { encoding: 'utf8', cwd: repoRoot }).trim();
 	const headCommit = git('rev-parse', 'HEAD');
 	let tagCommit;
 	try {

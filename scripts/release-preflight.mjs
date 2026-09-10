@@ -148,7 +148,7 @@ export function warningsFor(facts, plannedTag, ghEnabled = true) {
 
 /** Cheap, objectively-determinable git facts. Never throws: a missing upstream is reported, not fatal. */
 function gitFacts() {
-	const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+	const git = (...args) => execFileSync('git', args, { encoding: 'utf8', cwd: repoRoot }).trim();
 	try {
 		return {
 			ok: true,
@@ -162,7 +162,15 @@ function gitFacts() {
 	}
 }
 
-/** Whether `gh` is usable at all, and whether it is logged in. A spawn failure is "missing". */
+/**
+ * Whether `gh` is usable at all, and whether it is logged in. A spawn failure is "missing".
+ *
+ * NOTE: spawned without a shell, so a `gh` installed as a `.cmd`/`.ps1` shim rather than a real
+ * executable answers EINVAL on Windows and reads here as "missing" — the same shim problem that
+ * kept `npm view` out of `release-support.mjs`. The official installers ship `gh.exe`, so this has
+ * not bitten anyone; if someone hits "`gh` could not be run" with `gh` plainly on PATH, that is
+ * what happened, and the fix is to resolve the shim's real path rather than to spawn via a shell.
+ */
 function ghAuthState() {
 	const result = spawnSync('gh', ['auth', 'status'], { encoding: 'utf8' });
 	if (result.error) return 'missing';

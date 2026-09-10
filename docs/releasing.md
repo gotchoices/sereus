@@ -102,6 +102,11 @@ nothing public to clean up. On 2026-09-10 a `v1.0.0-beta.1` tag was pushed to or
 then correctly refused it for having no dist-tag; the stray tag had to be deleted from origin by
 hand. That is the failure this ordering removes.
 
+> The sibling repos have not had this fix applied. As of 2026-09-10 both `../optimystic` and
+> `../quereus` still run `yarn bump && yarn pub`, and `bumpp` pushes by default — so releasing
+> either of them can still leave a public tag for a version npm went on to refuse. Fixing them is
+> work for those repos, not this one; until then, pass `--no-push` to their `bump` step by hand.
+
 ### 3.5 Guard the bumped state
 
 ```bash
@@ -157,8 +162,10 @@ every package. In order it:
 2. `gh release create v{version} --verify-tag --notes-file .release-notes.pending.md`, adding
    `--prerelease` for a semver prerelease and `--latest=false` when the packages went out under a
    dist-tag other than `latest`, so GitHub's "Latest" badge agrees with what `npm install` returns.
-3. Resets `.release-notes.pending.md` to its empty header and commits that as
-   `chore: open release notes after v{version}`, ready for the next release.
+3. Resets `.release-notes.pending.md` to its empty header, commits that as
+   `chore: open release notes after v{version}`, and pushes it — ready for the next release. The
+   push runs even when there was nothing to commit, so re-running `--notes-only` after a rejected
+   push sends the commit the first run made rather than reporting "already reset" and stopping.
 
 Write the notes into `.release-notes.pending.md` *before* releasing. The preflight refuses to start
 while that file is still just its header, which is what turns "GitHub release created with real

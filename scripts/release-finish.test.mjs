@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { FINISH_STEPS, ghReleaseArgs, parseFinishFlags, remainingCommands } from './release-finish.mjs';
+import { FINISH_STEPS, ghReleaseArgs, notesResetCommands, parseFinishFlags, remainingCommands } from './release-finish.mjs';
 
 test('a stable release under no dist-tag is the plain case: latest, not a prerelease', () => {
 	assert.deepEqual(ghReleaseArgs({ version: '0.14.0', tag: undefined }), [
@@ -93,6 +93,19 @@ test('an unknown step is a loud error, not an empty recovery list', () => {
 
 test('the steps run in the order the recovery text depends on', () => {
 	assert.deepEqual([...FINISH_STEPS], ['push-commit', 'push-tag', 'gh-release', 'reset-notes']);
+});
+
+test('the notes reset commits what it staged, then pushes it', () => {
+	assert.deepEqual(notesResetCommands('0.14.0', true), [
+		['commit', '-m', 'chore: open release notes after v0.14.0'],
+		['push', 'origin', 'HEAD'],
+	]);
+});
+
+test('the notes reset pushes even with nothing to commit, so a re-run cannot strand the commit', () => {
+	// `--notes-only` after a rejected push finds the file already reset. Skipping the push there
+	// would call the release finished while the reset commit is still only on this machine.
+	assert.deepEqual(notesResetCommands('0.14.0', false), [['push', 'origin', 'HEAD']]);
 });
 
 test('--notes-only is this script\'s own flag; everything else is left for the dist-tag parser', () => {

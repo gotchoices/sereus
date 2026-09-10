@@ -113,31 +113,53 @@ function run(command, args) {
 }
 
 /**
- * Open a fresh pending-notes file for the next release. Already-reset is a success, not an error:
- * `git commit` with nothing staged exits non-zero, and re-running `--notes-only` after a partial
- * recovery must not look like a new failure.
+ * Rewrite the pending-notes file to its empty header and stage it, answering whether that left
+ * anything to commit. Two ways it leaves nothing: the file is already reset, or its only difference
+ * was line endings, which normalize away on `git add`. Either way `git commit` would exit non-zero
+ * with nothing staged, which here would read as a failed release rather than a finished one.
  */
-function resetPendingNotes(version) {
+function stagePendingNotesReset() {
 	const path = join(repoRoot, PENDING_NOTES_FILE);
 	if (notesAreReset(readFileSync(path, 'utf8'))) {
 		stdout.write(`${PENDING_NOTES_FILE} is already reset — nothing to commit.\n`);
-		return;
+		return false;
 	}
 	writeFileSync(path, EMPTY_NOTES_HEADER, 'utf8');
 	run('git', ['add', PENDING_NOTES_FILE]);
-	// A file whose only difference was line endings normalizes away on `git add`, leaving nothing
-	// staged — and `git commit` with nothing staged exits non-zero, which here would read as a
-	// failed release rather than a finished one.
 	const staged = execFileSync('git', ['diff', '--cached', '--name-only', '--', PENDING_NOTES_FILE], {
 		encoding: 'utf8',
 		cwd: repoRoot,
 	}).trim();
 	if (staged === '') {
 		stdout.write(`${PENDING_NOTES_FILE} was already open for the next release — nothing to commit.\n`);
-		return;
+		return false;
 	}
-	run('git', ['commit', '-m', `chore: open release notes after v${version}`]);
-	run('git', ['push', 'origin', 'HEAD']);
+	return true;
+}
+
+/**
+ * The git commands the notes reset runs, given whether staging left anything to commit.
+ *
+ * The push is unconditional. A run whose commit landed but whose push was rejected (someone else
+ * pushed to `master` meanwhile — the failure this step is likeliest to hit) is told to re-run
+ * `--notes-only`, and by then the file *is* reset; skipping the push on that second run would
+ * report the release finished with the reset commit still sitting on this machine. `git push` with
+ * nothing to send is a no-op, so running it either way costs one round-trip.
+ */
+export function notesResetCommands(version, hasStagedChange) {
+	const commands = [];
+	if (hasStagedChange) {
+		commands.push(['commit', '-m', `chore: open release notes after v${version}`]);
+	}
+	commands.push(['push', 'origin', 'HEAD']);
+	return commands;
+}
+
+/** Open a fresh pending-notes file for the next release, and get it to origin. */
+function resetPendingNotes(version) {
+	for (const args of notesResetCommands(version, stagePendingNotesReset())) {
+		run('git', args);
+	}
 }
 
 function reportUnfinished(step, error, context) {
@@ -201,5 +223,11 @@ async function main() {
 // Guard so `scripts/release-finish.test.mjs` can import the pure decisions above without pushing
 // or creating a release as a side effect of loading the module.
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-	exit(await main());
+	exit(await main().catch((error) => {
+		// Only the setup ahead of the first step can land here — reading the root manifest, or a
+		// dist-tag `resolveDistTag` refuses. Nothing has been pushed at that point, so this is a
+		// plain failure and not an unfinished release; report it as one instead of as a stack trace.
+		stdout.write(`\nRelease finish could not start: ${error.message}\n\n`);
+		return 1;
+	}));
 }
