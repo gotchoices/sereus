@@ -200,6 +200,7 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 		Id: spec.strandId,
 		MemberPrivateKey: spec.memberPrivateKey ?? null,
 		Type: spec.type ?? 'o',
+		FounderOwnerKey: null,
 	};
 
 	const instances: StrandInstance[] = [];

@@ -32,6 +32,7 @@ function makeStubNode(memberPrivateKey: string | null = null) {
 		Id: strandId,
 		MemberPrivateKey: memberPrivateKey,
 		Type: type,
+		FounderOwnerKey: null,
 	});
 	return {
 		foundStrand: vi
@@ -39,6 +40,7 @@ function makeStubNode(memberPrivateKey: string | null = null) {
 			.mockImplementation(async (config) => ({
 				instance: stubInstance,
 				strandRow: stubRow(config.strandId, config.type ?? 'o'),
+				founded: true,
 			})),
 		addStrand: vi.fn<() => Promise<StrandInstance>>().mockResolvedValue(stubInstance),
 		peerId: { toString: () => 'p' },
@@ -89,7 +91,7 @@ describe('chat-strand caller: creation founds rather than attaches', () => {
 	it('joinChatStrand attaches without founding', async () => {
 		const { joinChatStrand } = await import('../src/chat-strand.js');
 		const node = makeStubNode();
-		const strandRow = { Id: 'join-id', MemberPrivateKey: null, Type: 'o' as const };
+		const strandRow = { Id: 'join-id', MemberPrivateKey: null, Type: 'o' as const, FounderOwnerKey: null };
 		await joinChatStrand(node as never, strandRow);
 		expect(node.addStrand).toHaveBeenCalledWith(
 			expect.not.objectContaining({ founder: true }),

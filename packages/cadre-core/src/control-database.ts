@@ -723,11 +723,12 @@ export class ControlDatabase {
   async queryStrands(): Promise<StrandRow[]> {
     this.ensureInitialized();
     const results: StrandRow[] = [];
-    for (const row of await this.readRows('select Id, MemberPrivateKey, Type from CadreControl.Strand', undefined, 'strands')) {
+    for (const row of await this.readRows('select Id, MemberPrivateKey, Type, FounderOwnerKey from CadreControl.Strand', undefined, 'strands')) {
       results.push({
         Id: row.Id as string,
         MemberPrivateKey: row.MemberPrivateKey as string | null,
         Type: row.Type as 'o' | 'c',
+        FounderOwnerKey: row.FounderOwnerKey as string | null,
       });
     }
     return results;
@@ -742,7 +743,7 @@ export class ControlDatabase {
   async queryStrand(strandId: string): Promise<StrandRow | null> {
     this.ensureInitialized();
     for (const row of await this.readRows(
-      'select Id, MemberPrivateKey, Type from CadreControl.Strand where Id = ?',
+      'select Id, MemberPrivateKey, Type, FounderOwnerKey from CadreControl.Strand where Id = ?',
       [strandId],
       'strand'
     )) {
@@ -750,6 +751,7 @@ export class ControlDatabase {
         Id: row.Id as string,
         MemberPrivateKey: row.MemberPrivateKey as string | null,
         Type: row.Type as 'o' | 'c',
+        FounderOwnerKey: row.FounderOwnerKey as string | null,
       };
     }
     return null;
@@ -1208,16 +1210,19 @@ export class ControlDatabase {
     const stampId = generateStampId(peerId);
 
     // Field order MUST match the schema's Strand `AuthorizedInsert` verify:
-    // Id, Type, MemberPrivateKey ('' when null), StampId.
+    // Id, Type, MemberPrivateKey ('' when null), StampId. FounderOwnerKey is
+    // deliberately NOT in the digest — the schema binds it by equality to the
+    // verified context.OwnerKey instead (see the constraint's comment).
     const message = buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, type, memberPrivateKey ?? '', stampId]);
     const signature = signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
+    // FounderOwnerKey must equal the signing owner or the constraint rejects the row.
     await this.execWrite(`
-      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
         with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId], 'strand-insert');
+        values (?, ?, ?, ?, ?)
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId, ownerKey], 'strand-insert');
 
     log('Strand inserted: %s', strandId);
   }
@@ -2272,11 +2277,13 @@ export class ControlDatabase {
       await this.inTransaction('redemption', async () => {
         // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
         //    still carrying a fresh unique StampId for the anti-replay column.
-        //    Hard-coded open + keyless: the consent branch admits no other shape.
+        //    Hard-coded open + keyless + explicit null FounderOwnerKey: the
+        //    consent branch admits no other shape (no signature means no
+        //    trustworthy founder machine to record — see the schema's NOTE).
         await this.db!.exec(`
-          insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+          insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
             with context OwnerKey = null, Signature = null
-            values (?, 'o', null, ?)
+            values (?, 'o', null, ?, null)
         `, [strandId, strandStampId]);
 
         // 2. FormationUsage row — authorised by the matching FormationInvite, and

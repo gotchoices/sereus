@@ -146,39 +146,46 @@ function blindOneStrandRead(db: ControlDatabase, strandId: string): () => boolea
 
 describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
   let node: CadreNode | undefined;
+  let ownerKey: { publicKeyB64: string } | undefined;
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
   afterEach(async () => {
     await node?.stop();
     node = undefined;
+    ownerKey = undefined;
   });
 
   it('returns the row it published, so a caller can carry the resolved content forward', async () => {
-    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
     const strandId = 'strand-' + rand();
 
+    // FounderOwnerKey records THIS machine (its owner key) as the row's publisher —
+    // the durable representation founder derivation reads.
     expect(await node.publishStrand(strandId, 'o')).toEqual({
       Id: strandId,
       Type: 'o',
       MemberPrivateKey: null,
+      FounderOwnerKey: ownerKey.publicKeyB64,
     });
   }, 60_000);
 
   it('repeat publish of identical OPEN content is a no-op and leaves exactly one row', async () => {
-    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-' + rand();
 
     await node.publishStrand(strandId, 'o');
     const second = await node.publishStrand(strandId, 'o');
 
-    expect(second).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+    expect(second).toEqual({
+      Id: strandId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: ownerKey.publicKeyB64,
+    });
     expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
   }, 60_000);
 
   it('repeat publish of identical CLOSED content is a no-op and keeps the stored key', async () => {
-    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-c-' + rand();
     const memberKey = 'member-key-' + rand();
@@ -186,13 +193,15 @@ describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
     await node.publishStrand(strandId, 'c', memberKey);
     const second = await node.publishStrand(strandId, 'c', memberKey);
 
-    expect(second).toEqual({ Id: strandId, Type: 'c', MemberPrivateKey: memberKey });
+    expect(second).toEqual({
+      Id: strandId, Type: 'c', MemberPrivateKey: memberKey, FounderOwnerKey: ownerKey.publicKeyB64,
+    });
     expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
     expect((await db.queryStrand(strandId))?.MemberPrivateKey).toBe(memberKey);
   }, 60_000);
 
   it('repeat publish with a DIFFERENT Type throws naming the mismatch and leaves the row intact', async () => {
-    ({ node } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('publish-strand-repeat-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-' + rand();
 
@@ -202,7 +211,9 @@ describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
     await expect(node.publishStrand(strandId, 'c')).rejects.toThrow(
       /Type is 'o', not the requested 'c'/,
     );
-    expect(await db.queryStrand(strandId)).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+    expect(await db.queryStrand(strandId)).toEqual({
+      Id: strandId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: ownerKey.publicKeyB64,
+    });
   }, 60_000);
 
   it('repeat publish with a DIFFERENT memberPrivateKey throws and keeps the stored key', async () => {
@@ -249,7 +260,7 @@ describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
   }, 60_000);
 
   it('losing a concurrent founding race on identical content re-reads and no-ops', async () => {
-    ({ node } = await startSelfOwnerNode('publish-strand-race-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('publish-strand-race-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-race-' + rand();
 
@@ -262,6 +273,7 @@ describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
       Id: strandId,
       Type: 'o',
       MemberPrivateKey: null,
+      FounderOwnerKey: ownerKey.publicKeyB64,
     });
     expect(blinded()).toBe(true);
     expect((await db.queryStrands()).filter((s) => s.Id === strandId)).toHaveLength(1);
@@ -318,7 +330,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     const memberPrivateKey = await generateStrandMemberKey();
 
     const instance = await node.addStrand({
-      strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
+      strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
       sAppConfig: signedSApp(),
       founder: true,
     });
@@ -341,7 +353,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     const strandId = 'addstrand-open-' + rand2();
 
     const instance = await node.addStrand({
-      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
       sAppConfig: signedSApp(),
       founder: true,
     });
@@ -362,7 +374,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
 
     await expect(
       node.addStrand({
-        strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'c' },
+        strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'c', FounderOwnerKey: null },
         sAppConfig: signedSApp(),
         founder: true,
       }),
@@ -380,27 +392,32 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
 
 describe('CadreNode.foundStrand (publish + found in one resumable call)', () => {
   let node: CadreNode | undefined;
+  let ownerKey: { publicKeyB64: string } | undefined;
 
   const rand3 = (): string => Math.random().toString(36).slice(2);
 
   afterEach(async () => {
     await node?.stop();
     node = undefined;
+    ownerKey = undefined;
   });
 
   it('open strand: publishes the row and seats the Header in one call', async () => {
-    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    ({ node, ownerKey } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
     const controlDb = node.getControlDatabase()!;
     const strandId = 'found-open-' + rand3();
 
-    const { instance, strandRow } = await node.foundStrand({
+    const { instance, strandRow, founded } = await node.foundStrand({
       strandId,
       type: 'o',
       sAppConfig: signedSApp(),
     });
 
     expect(instance.status).toBe('active');
-    expect(strandRow).toEqual({ Id: strandId, Type: 'o', MemberPrivateKey: null });
+    expect(founded).toBe(true);
+    expect(strandRow).toEqual({
+      Id: strandId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: ownerKey.publicKeyB64,
+    });
     expect(await controlDb.queryStrand(strandId)).toEqual(strandRow);
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
   }, 60_000);
@@ -520,29 +537,139 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     ).rejects.toThrow(/must be started/i);
   });
 
-  // Characterizes a KNOWN GAP rather than a wanted behaviour. `launchStrand` returns an
-  // already-tracked instance and drops the `founder` flag it was asked for, so whoever
-  // launches the strand first decides whether the bootstrap runs — and `foundStrand`
-  // reports success either way. The same shape is reachable without an explicit attach:
-  // the row is published before `addStrand`, so this node's own `StrandWatcher` can
-  // auto-launch it as a joiner during `launchStrand`'s `resolveCohortSeed` round.
-  //
-  // When founder-ness becomes persisted/observable and `foundStrand` can re-found here,
-  // this expectation flips to 1 — update it then; do NOT delete the case.
-  it('KNOWN GAP: founding a strand already ATTACHED as a joiner leaves it headerless', async () => {
+  // Guards the FIX for what used to be a known gap: `launchStrand` used to return an
+  // already-tracked instance and silently drop the `founder` flag, so whoever launched
+  // the strand first decided whether the bootstrap ran. Now a founder request against a
+  // tracked instance runs the (idempotent) bootstrap in place
+  // (`StrandInstanceManager.foundExistingStrand`), so founding after an attach still
+  // seats the `Strand.Header`. The attach below hand-builds a row with a null
+  // `FounderOwnerKey` — the shape of a joiner-side constructed row — which is what makes
+  // the first launch a genuine joiner launch rather than a derived founding.
+  it('founding a strand already ATTACHED as a joiner runs the bootstrap on the tracked instance', async () => {
     ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
     const strandId = 'found-attached-' + rand3();
     const sAppConfig = signedSApp();
 
     await node.publishStrand(strandId, 'o');
-    // What the reference RN app's `strand:discovered` handler does after a restart: nothing
-    // in the `Strand` row records who published it, so it can only attach.
+    // An app attaching from a hand-built row (no founder knowledge): launches as a joiner.
     await node.addStrand({
-      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
       sAppConfig,
     });
 
-    const { instance } = await node.foundStrand({ strandId, type: 'o', sAppConfig });
+    const { instance, founded } = await node.foundStrand({ strandId, type: 'o', sAppConfig });
+
+    expect(instance.status).toBe('active');
+    expect(founded).toBe(true);
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
+  }, 60_000);
+
+  it('closed strand attached first as a joiner: a later founding seats Header/Member/Manager', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'found-attached-closed-' + rand3();
+    const sAppConfig = signedSApp();
+    const memberPrivateKey = await generateStrandMemberKey();
+
+    await node.publishStrand(strandId, 'c', memberPrivateKey);
+    // The joiner-shaped attach (id + key from an invitation, no founder knowledge).
+    await node.addStrand({
+      strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
+      sAppConfig,
+    });
+
+    const { instance, founded } = await node.foundStrand({
+      strandId, type: 'c', memberPrivateKey, sAppConfig,
+    });
+
+    expect(founded).toBe(true);
+    const db = instance.database!.getDatabase();
+    expect(await countRow(db, 'Header')).toBe(1);
+    expect(await countRow(db, 'Member')).toBe(1);
+    expect(await countRow(db, 'Manager')).toBe(1);
+  }, 60_000);
+
+  it('foundStrand adopting a row published by a DIFFERENT machine attaches instead of founding', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    const strandId = 'found-foreign-' + rand3();
+
+    // Simulate a sibling machine having won the founding race: hand foundStrand's
+    // pre-read a row carrying ANOTHER machine's owner key. (Seating such a row for
+    // real needs a second enrolled owner; the read stub isolates the derivation.)
+    const realQueryStrand = controlDb.queryStrand.bind(controlDb);
+    controlDb.queryStrand = async (id: string) => id === strandId
+      ? { Id: strandId, Type: 'o' as const, MemberPrivateKey: null, FounderOwnerKey: 'sibling-owner-key-' + rand3() }
+      : await realQueryStrand(id);
+
+    const { instance, founded } = await node.foundStrand({
+      strandId, type: 'o', sAppConfig: signedSApp(),
+    });
+
+    // Attached, did not bootstrap: two machines founding one strand on separate
+    // replicas is the double-Header hazard the derivation exists to prevent.
+    expect(instance.status).toBe('active');
+    expect(founded).toBe(false);
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+  }, 60_000);
+});
+
+// ── founder derivation from the row (no explicit flag anywhere) ──────────────
+//
+// The representation fix: `Strand.FounderOwnerKey` records the publishing machine, so a
+// plain `addStrand` — the reference RN app's restart-orphan shape, and the same code path
+// the node's own `StrandWatcher` takes via `handleStrandAdded` — founds this machine's own
+// strands and joins everyone else's, with no caller passing any flag.
+
+describe('CadreNode.addStrand founder derivation from Strand.FounderOwnerKey', () => {
+  let node: CadreNode | undefined;
+
+  const rand4 = (): string => Math.random().toString(36).slice(2);
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('plain addStrand (no flag) on a row this node published founds it (Header written)', async () => {
+    ({ node } = await startSelfOwnerNode('derive-founder-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    const strandId = 'derive-own-' + rand4();
+
+    const published = await node.publishStrand(strandId, 'o');
+    // Read the row back the way a discovery handler would — it carries our owner key.
+    const row = await controlDb.queryStrand(strandId);
+    expect(row).toEqual(published);
+
+    const instance = await node.addStrand({ strandRow: row!, sAppConfig: signedSApp() });
+
+    expect(instance.status).toBe('active');
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
+  }, 60_000);
+
+  it('plain addStrand on a row carrying ANOTHER machine\'s key stays a joiner (no Header)', async () => {
+    ({ node } = await startSelfOwnerNode('derive-founder-', { enrollOwner: true }));
+    const strandId = 'derive-foreign-' + rand4();
+
+    const instance = await node.addStrand({
+      strandRow: {
+        Id: strandId, MemberPrivateKey: null, Type: 'o',
+        FounderOwnerKey: 'some-other-machine-owner-key-' + rand4(),
+      },
+      sAppConfig: signedSApp(),
+    });
+
+    expect(instance.status).toBe('active');
+    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+  }, 60_000);
+
+  it('a null FounderOwnerKey (consent-seated shape) stays a joiner without an explicit flag', async () => {
+    ({ node } = await startSelfOwnerNode('derive-founder-', { enrollOwner: true }));
+    const strandId = 'derive-null-' + rand4();
+
+    const instance = await node.addStrand({
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+      sAppConfig: signedSApp(),
+    });
 
     expect(instance.status).toBe('active');
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);

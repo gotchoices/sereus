@@ -47,8 +47,12 @@ export interface StartStrandConfig {
   /**
    * Whether this node founds the strand (vs. joins it). Forwarded to the
    * StrandDatabase so the founder bootstrap (Header, founding Member/Manager)
-   * runs once at bring-up. Joiners leave this unset and write nothing. See
-   * {@link StrandConfig.founder}.
+   * runs once at bring-up. Joiners leave this unset and write nothing. Callers
+   * resolve it BEFORE calling `startStrand` (`CadreNode.launchStrand` derives it
+   * from the row's `FounderOwnerKey` when no explicit flag is given — see
+   * {@link StrandConfig.founder}); a founder request that arrives while the
+   * instance is already tracked goes through {@link StrandInstanceManager.foundExistingStrand},
+   * never through a repeat `startStrand`.
    */
   founder?: boolean;
   /**
@@ -278,6 +282,14 @@ export class StrandInstanceManager {
     }
 
     if (this.instances.has(strandId)) {
+      // Callers resolve founder-ness BEFORE reaching here (CadreNode.launchStrand) and
+      // honor a founder request on a tracked instance via foundExistingStrand — so a
+      // founder flag arriving at this early return against a non-founder retained
+      // config is a dropped bootstrap, and must never again be silent.
+      if (config.founder === true && this.launchConfigs.get(strandId)?.founder !== true) {
+        log('startStrand: strand %s is already running but was NOT launched as founder — ' +
+          'this early return DROPS the founder request; use foundExistingStrand', strandId);
+      }
       log('Strand %s already running', strandId);
       return this.instances.get(strandId)!;
     }
@@ -655,6 +667,47 @@ export class StrandInstanceManager {
       log('Failed to resume strand %s: %s', strandId, instance.error);
       throw error;
     }
+  }
+
+  /**
+   * Honor a founder request against an ALREADY-TRACKED strand — the seam that
+   * closes the "whoever launches first decides whether the bootstrap runs" gap:
+   * an instance first launched as a joiner (an app's own attach, or a watcher
+   * poll winning the launch race) used to swallow a later founder request
+   * silently, leaving the strand active with no `Strand.Header`.
+   *
+   * Flips the RETAINED launch config's `founder` to true, so every later
+   * quiesce → resume rebuild founds as well (the bootstrap is insert-if-absent —
+   * {@link StrandDatabase.ensureFounderBootstrap} — so re-running it per rebuild
+   * writes nothing twice), and runs the bootstrap against the live database now.
+   *
+   * @returns how the request resolved:
+   * - `'already-founder'` — the retained config already founds; nothing to do.
+   * - `'bootstrapped'` — config flipped and the live database ran the bootstrap.
+   * - `'needs-resume'` — config flipped, but the instance is quiesced (no live
+   *   database), so the bootstrap could not run here: the CALLER must wake the
+   *   strand (`CadreNode.wakeStrand`, which owns the hibernation bookkeeping this
+   *   manager does not) so the rebuild — which now founds — runs it.
+   * @throws when the strand is not tracked — this seam exists only for the
+   *   tracked-instance launch path; an untracked id is a caller bug.
+   */
+  async foundExistingStrand(strandId: string): Promise<'already-founder' | 'bootstrapped' | 'needs-resume'> {
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config) {
+      throw new Error(`Cannot found strand ${strandId}: not tracked`);
+    }
+    if (config.founder === true) {
+      return 'already-founder';
+    }
+    // A fresh object rather than mutating in place: startStrand retains the CALLER'S
+    // config object, which is not ours to rewrite.
+    this.launchConfigs.set(strandId, { ...config, founder: true });
+    if (!instance.database) {
+      return 'needs-resume';
+    }
+    await instance.database.ensureFounderBootstrap();
+    return 'bootstrapped';
   }
 
   /**

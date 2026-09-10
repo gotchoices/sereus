@@ -142,6 +142,17 @@ declare schema CadreControl {
         Id text primary key,    -- UUID
         MemberPrivateKey text null unique,   -- Our private key as a member of this strand
         Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
+        FounderOwnerKey text null,  -- ed25519 (base64url) owner key of the MACHINE that published this row
+                                    -- (== insert context.OwnerKey; in the reference model each machine's
+                                    -- owner key is the key behind its PeerId, so this names the founding
+                                    -- machine — the one machine that runs the strand's one-time founder
+                                    -- bootstrap). cadre-core derives "am I the founder?" at launch by
+                                    -- comparing it to the node's own owner key (cadre-node.ts
+                                    -- launchStrand). Null on a consent-seated strand — the consent branch
+                                    -- of AuthorizedInsert carries no signature, so there is no
+                                    -- trustworthy signer to record (see the NOTE on that branch below).
+                                    -- Provenance, not content: cadre-node.ts strandRowMismatches
+                                    -- deliberately excludes it from the identical-content comparison.
         StampId text not null unique,   -- single-use authorization nonce (anti-replay).
                                         -- \`unique\` holds over LIVE rows only; a removed row's stamp is retired
                                         -- permanently into Revocation (NotRevoked below).
@@ -172,8 +183,16 @@ declare schema CadreControl {
         -- Mirrors OwnerKey.NoUpdate / FormationInvite.Immutable.
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
-            -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+            -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId.
+            -- FounderOwnerKey persists WHO published the row, so the founding machine can later
+            -- recognise its own strand (founder derivation, cadre-node.ts launchStrand). The
+            -- equality pins the stored column to the VERIFIED signer — same shape as
+            -- CadrePeer.VouchOwner — so a writer cannot record a founder it is not. Deliberately
+            -- NOT added to the signed digest: the equality already binds it to the signature's
+            -- context.OwnerKey, and widening the digest would churn every existing
+            -- insertStrand field-order contract for nothing.
+            (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+                and new.FounderOwnerKey = context.OwnerKey)
 
                 -- or authorized WITHOUT a signature by a redemption record naming THIS EXACT ROW: a
                 -- FormationUsage row carrying both this strand's Id and its one-off StampId
@@ -240,6 +259,15 @@ declare schema CadreControl {
                 or (
                     new.Type = 'o'
                     and new.MemberPrivateKey is null
+                    -- NOTE: a consent-seated strand records NO founder machine — this branch
+                    -- carries no signature, so there is no trustworthy signer to persist.
+                    -- Consequence: the restart-before-founding orphan shape (a relaunch cannot
+                    -- derive founder-ness from the row) persists for consent-formed strands
+                    -- only; the responder that provisions one must keep passing an explicit
+                    -- founder flag at launch. Revisit if consent-formed strands ever hit the
+                    -- empty-Header symptom in practice: FormationUsage names the redeeming
+                    -- peer (PeerKey), which is the candidate derivation source.
+                    and new.FounderOwnerKey is null
                     and exists (
                         select 1 from FormationUsage FU
                             where FU.StrandId = new.Id

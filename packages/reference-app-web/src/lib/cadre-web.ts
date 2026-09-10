@@ -620,6 +620,7 @@ export async function joinViaInvitation(
 			Id: result.strandId,
 			MemberPrivateKey: result.memberPrivateKey,
 			Type: 'c',
+			FounderOwnerKey: null,
 		},
 		sAppConfig: getChatSAppConfig(),
 	});
@@ -745,7 +746,7 @@ export async function addChatStrand(): Promise<StrandInstance> {
 	if (!node) throw new Error('CadreNode not started');
 	await openStores([CHAT_STRAND_ID]);
 	const instance = await node.addStrand({
-		strandRow: { Id: CHAT_STRAND_ID, MemberPrivateKey: null, Type: 'o' },
+		strandRow: { Id: CHAT_STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 		sAppConfig: getChatSAppConfig(),
 		founder: true,
 	});

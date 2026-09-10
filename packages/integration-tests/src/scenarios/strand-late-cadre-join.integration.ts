@@ -256,7 +256,7 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 	// bootstrap rows and is not wanted here.
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	const founderStrand = await founder.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 		sAppConfig: sApp,
 	});
 	expect(founderStrand.status).toBe('active');
@@ -352,7 +352,11 @@ async function joinDiscoveredStrand(fx: LateJoinFixture): Promise<JoinedStrand> 
 		description: "newcomer's watcher discovers the strand published before it existed",
 	});
 	const discoveredRow = events.discoveredRows[events.discovered.indexOf(strandId)]!;
-	expect(discoveredRow).toEqual({ Id: strandId, MemberPrivateKey: null, Type: 'o' });
+	// FounderOwnerKey carries the FOUNDER machine's owner key (any non-null string here);
+	// it is what keeps the newcomer's flagless addStrand below a JOIN, not a founding.
+	expect(discoveredRow).toEqual({
+		Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: expect.any(String),
+	});
 
 	// Join with THAT row — never a test-side copy, and never a hand-dial (rule 2).
 	let strand: StrandInstance;

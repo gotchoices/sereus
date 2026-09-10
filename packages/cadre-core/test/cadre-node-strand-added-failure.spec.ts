@@ -15,7 +15,7 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
  * Driven directly against a fake strand manager - no real libp2p node boots.
  */
 
-const STRAND_ROW: StrandRow = { Id: 'failing-strand', MemberPrivateKey: null, Type: 'o' };
+const STRAND_ROW: StrandRow = { Id: 'failing-strand', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 const SAPP_CONFIG: SAppConfig = { id: 'sapp-author', version: '1.0.0', schema: '' };
 
 function createConfig(): CadreNodeConfig {

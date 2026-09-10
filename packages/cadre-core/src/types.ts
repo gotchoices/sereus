@@ -737,6 +737,17 @@ export interface StrandRow {
   Id: string;
   MemberPrivateKey: string | null;
   Type: 'o' | 'c';
+  /**
+   * ed25519 (base64url) owner key of the MACHINE that published this row — the
+   * signer of the owner-signed `Strand` insert (`== context.OwnerKey`, pinned by
+   * the schema's `AuthorizedInsert`). Identifies the founding machine, so a
+   * launch with no explicit `founder` flag derives "am I the founder?" by
+   * comparing it to the node's own owner key (see `CadreNode.launchStrand`).
+   * `null` on a consent-seated strand (the unsigned `FormationUsage` branch
+   * records no trustworthy signer). Provenance, not content —
+   * `strandRowMismatches` excludes it from the identical-content comparison.
+   */
+  FounderOwnerKey: string | null;
 }
 
 /**
@@ -776,8 +787,12 @@ export interface StrandConfig {
    * paths; the same party that calls {@link CadreNode.publishStrand}). The founder
    * runs the one-time membership bootstrap at bring-up (writes `Strand.Header`, and
    * for a closed strand the founding `Member`+`Manager`). A joiner leaves this
-   * `false`/unset and writes nothing — it receives those rows via Optimystic sync.
-   * Defaults to `false`.
+   * unset and writes nothing — it receives those rows via Optimystic sync.
+   *
+   * When unset, founder-ness is DERIVED from the row: this node founds iff
+   * {@link StrandRow.FounderOwnerKey} equals its own owner key. An explicit
+   * `true`/`false` wins over the derivation — the formation/responder flows pass
+   * it deliberately, since a consent-seated row carries a null column.
    */
   founder?: boolean;
 }
@@ -820,6 +835,15 @@ export interface FoundStrandResult {
   instance: StrandInstance;
   /** The live control-plane row: freshly published, or the one already there. */
   strandRow: StrandRow;
+  /**
+   * Whether THIS machine actually founded (ran / will have run the one-time
+   * founder bootstrap). `false` when the resolved row was published by a
+   * DIFFERENT machine's owner key — e.g. a sibling won a concurrent founding
+   * race — in which case the call attached as a joiner instead, which is the
+   * correct outcome (two machines bootstrapping one strand on separate replicas
+   * is the double-`Header` hazard).
+   */
+  founded: boolean;
 }
 
 /**

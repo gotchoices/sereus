@@ -67,7 +67,7 @@ function fakeStorage(): IRawStorage {
 }
 
 function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
-  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
+  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
   const sAppConfig: SAppConfig = {
     id: authorPublicKey,
     version: testVersion,

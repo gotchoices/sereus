@@ -95,7 +95,7 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     // ── 3. Create the chat strand on both nodes ────────────────────────
 
-    const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o' };
+    const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
     const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
     expect(droneStrand.status).toBe('active');

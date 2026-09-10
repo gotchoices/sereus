@@ -96,7 +96,7 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			});
 			expect(formResult.strandId).toBeDefined();
 
-			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o' };
+			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 			const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig });
 			const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig });
 			expect(aliceStrand.status).toBe('active');

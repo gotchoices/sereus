@@ -185,7 +185,7 @@ async function expectWarmState(
 /** The embedder's launch call, under its own deadline. */
 function addStrand(
 	node: CadreNode,
-	strandRow: { Id: string; MemberPrivateKey: string | null; Type: 'o' | 'c' }
+	strandRow: { Id: string; MemberPrivateKey: string | null; Type: 'o' | 'c'; FounderOwnerKey: string | null }
 ): Promise<StrandInstance> {
 	return within(`addStrand(${strandRow.Type === 'c' ? 'closed' : 'open'})`, ADD_STRAND_TIMEOUT_MS,
 		() => node.addStrand({ strandRow, sAppConfig: signedSApp(), founder: true }));
@@ -222,7 +222,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// `initializeSeedBootstrap` — `addStrand` is the next thing called, so
 				// `resolveCohortSeed`'s `queryCadrePeers()` is the first control
 				// operation of this process that the app actually awaits.
-				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o' });
+				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
 
 				// The stale rows are what make this case different from the cold solo
 				// one: the seed resolution walks a real membership list and reaches
@@ -267,7 +267,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 					() => second.getControlDatabase()!.queryRevokedStamps('CadrePeer'));
 				expect(revoked.size).toBe(cohort.siblings.length);
 
-				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o' });
+				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
 				// Unlike the vanished case, the seed resolution walks a membership of
 				// ONE: the revocation join above hid both sibling rows, which is the
 				// state `expectWarmState` already pinned. What is under test here is
@@ -305,7 +305,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 
 				const memberPrivateKey = await generateStrandMemberKey();
 				const instance = await addStrand(second,
-					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c' });
+					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null });
 				expect(instance.status).toBe('active');
 
 				// The founder really is seated — a launch that resolved an empty seed
@@ -348,7 +348,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 					ownerPublicKey: cohort.ownerPublicKey
 				});
 
-				const instance = await addStrand(second, { Id: strandId('three'), MemberPrivateKey: null, Type: 'o' });
+				const instance = await addStrand(second, { Id: strandId('three'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -371,7 +371,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// Nothing has been written yet — this is the pre-genesis state.
 				expect(await within('hasOwnerKey() (pre-genesis)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(false);
 
-				const instance = await addStrand(node, { Id: strandId('cold'), MemberPrivateKey: null, Type: 'o' });
+				const instance = await addStrand(node, { Id: strandId('cold'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
 				expect(instance.status).toBe('active');
 
 				// And genesis still works AFTER the strand launched — the out-of-order

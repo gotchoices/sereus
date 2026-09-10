@@ -31,7 +31,8 @@ describe('StrandInstanceManager', () => {
     return {
       Id: id,
       MemberPrivateKey: type === 'c' ? 'test-key' : null,
-      Type: type
+      Type: type,
+      FounderOwnerKey: null
     };
   }
 

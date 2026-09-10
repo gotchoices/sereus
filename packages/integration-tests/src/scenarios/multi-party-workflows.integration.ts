@@ -99,6 +99,7 @@ async function setupStrandBetweenParties(
 		Id: strandId,
 		MemberPrivateKey: memberPrivateKey,
 		Type: opts.type ?? 'o',
+		FounderOwnerKey: null,
 	});
 
 	const strandA = await partyA.addStrand({ strandRow: strandRow(opts.memberPrivateKeyA ?? null), sAppConfig });

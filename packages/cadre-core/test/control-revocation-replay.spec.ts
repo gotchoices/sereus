@@ -240,11 +240,13 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     memberPrivateKey: string | null,
     stampId: string,
   ): Promise<void> {
+    // FounderOwnerKey must equal the context owner (the schema's AuthorizedInsert
+    // pins the stored column to the verified signer) or the insert is rejected.
     return rawDb.exec(
-      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?)`,
-      [contextOwner, signature, id, type, memberPrivateKey, stampId],
+         values (?, ?, ?, ?, ?)`,
+      [contextOwner, signature, id, type, memberPrivateKey, stampId, contextOwner],
     );
   }
 

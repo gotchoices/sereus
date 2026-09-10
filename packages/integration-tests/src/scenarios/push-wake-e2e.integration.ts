@@ -178,7 +178,7 @@ async function seedReceiverRecord(
 async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promise<void> {
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 	const strand = await Rx.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 		sAppConfig: sApp,
 	});
 	expect(strand.status).toBe('active');
@@ -396,7 +396,7 @@ describe('E2E push-wake over the control network', () => {
 			// ack round-trip), NOT the networked strand resume (see header note).
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const strand = await Rx.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
 			});
 			expect(strand.status).toBe('active');

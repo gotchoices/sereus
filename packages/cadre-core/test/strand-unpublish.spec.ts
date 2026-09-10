@@ -103,7 +103,7 @@ describe('CadreNode strand unpublish', () => {
     const schema = 'create table Test (id text primary key);';
     const version = '1.0.0';
     return {
-      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
       sAppConfig: {
         id: authorPublicKey,
         version,
@@ -175,7 +175,8 @@ describe('CadreNode strand unpublish', () => {
   });
 
   it('unpublishing a closed strand destroys the row and its MemberPrivateKey', async () => {
-    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
+    let ownerKey: { publicKeyB64: string };
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-closed-' + rand();
     const memberKey = await generateStrandMemberKey();
@@ -185,6 +186,7 @@ describe('CadreNode strand unpublish', () => {
       Id: strandId,
       MemberPrivateKey: memberKey,
       Type: 'c',
+      FounderOwnerKey: ownerKey.publicKeyB64,
     });
 
     await node.unpublishStrand(strandId);

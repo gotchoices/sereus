@@ -183,7 +183,7 @@ async function measureSoloStrand(): Promise<RunCost> {
 		let t0 = performance.now();
 		const instance = await within('addStrand()', LIFECYCLE_TIMEOUT_MS, () =>
 			node.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: signedSApp(),
 				founder: true
 			}));

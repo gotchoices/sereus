@@ -179,13 +179,16 @@ function requireNonBlank(value: string, label: string): string {
 /**
  * Is the live `Strand` row the one a publish of `desired` would have produced?
  *
- * "Identical content" can only mean `(Type, MemberPrivateKey)`: those plus `Id` and
- * `StampId` are the whole row (`control-schema.ts`), and `StampId` is a single-use nonce,
- * not content — nothing records WHO inserted the row, so "is this ours?" is unanswerable
- * after the fact and does not need to be. A live row matching on both columns is, by
- * construction, the state a repeat publish would have reached, whichever branch of
- * `Strand.AuthorizedInsert` seated it (owner-signed, or the unsigned consent branch an
- * invite redemption uses).
+ * "Identical content" means `(Type, MemberPrivateKey)` and deliberately NOT
+ * `FounderOwnerKey`: that column is provenance (WHICH machine published the row), not
+ * content. Two machines of one party racing to found the same id must keep resolving as
+ * "the winner's row stands" — the loser adopts the row and, since the winner's key is on
+ * it, correctly comes up as a joiner (see `launchStrand`'s founder derivation). Comparing
+ * it here would turn that benign race into a hard throw. `Id` is the lookup key and
+ * `StampId` is a single-use nonce, so the two compared columns are all the content there
+ * is. A live row matching on both is, by construction, the state a repeat publish would
+ * have reached, whichever branch of `Strand.AuthorizedInsert` seated it (owner-signed, or
+ * the unsigned consent branch an invite redemption uses).
  *
  * Returns the mismatching column names, empty when the row matches. The KEY's value is
  * deliberately never returned or logged — it is the closed strand's read-gating secret.
@@ -2097,6 +2100,21 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Does the `Strand` row name THIS machine as its founder — i.e. is its
+   * `FounderOwnerKey` this node's own owner key (the key behind its PeerId)?
+   * A null/absent column (a consent-seated strand, or a hand-built row) and a
+   * node with no owner key both derive `false`: without a positive match this
+   * machine must attach, never bootstrap. Pure key derivation, no I/O — cheap
+   * enough for {@link launchStrand}'s tracked-instance early return.
+   */
+  private isSelfFoundedRow(strand: StrandRow): boolean {
+    if (strand.FounderOwnerKey == null) {
+      return false;
+    }
+    return strand.FounderOwnerKey === this.getSelfSigningKey()?.publicKeyB64;
+  }
+
+  /**
    * The owner keypair (base64url Ed25519) derived from this node's resolved
    * identity key. In the single-key reference model the owner signing key is
    * *derived from* the node identity (see {@link ed25519KeyPairFromLibp2p}), so the
@@ -3996,6 +4014,10 @@ export class CadreNode implements SAppIdLookup {
    * This is the ATTACH half only — it starts the local instance and never publishes the
    * `Strand` row. A joiner (the row arrived over the control network) wants exactly this; a
    * FOUNDER wants {@link foundStrand}, which publishes and attaches in one resumable call.
+   * With no explicit `founder` flag, founder-ness is derived from the row's
+   * `FounderOwnerKey` (see {@link StrandConfig.founder}) — so attaching a row THIS machine
+   * published (e.g. re-attaching its own orphan after a restart) founds it, and attaching
+   * anyone else's row joins, without the caller needing to know which it is.
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
@@ -4015,10 +4037,12 @@ export class CadreNode implements SAppIdLookup {
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
     log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
-      strandRow.Id, sAppConfig.id, founder ?? false);
+      strandRow.Id, sAppConfig.id, founder ?? 'derived');
 
-    // `founder` only flows from the explicit addStrand path — the control-discovered
-    // join path never founds, so its rows arrive via sync (see handleStrandAdded).
+    // An unset `founder` is DERIVED from the row inside launchStrand (this node founds
+    // iff the row's FounderOwnerKey is its own owner key); an explicit flag wins — the
+    // formation/responder flows pass one deliberately, since their consent-seated rows
+    // carry a null column. See StrandConfig.founder.
     return await this.launchStrand(strandRow, sAppConfig, founder);
   }
 
@@ -4058,8 +4082,10 @@ export class CadreNode implements SAppIdLookup {
    *
    * The insert is signed with the ed25519 key behind this node's PeerId — which
    * {@link ed25519KeyPairFromLibp2p} also exposes as the node's owner keypair,
-   * so peer identity and owner key are one and the same. That key must be
-   * enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
+   * so peer identity and owner key are one and the same. That key is also persisted on the
+   * row as `FounderOwnerKey` (the schema pins the column to the verified signer), which is
+   * what later lets any launch derive "this machine is the founder" from the row alone.
+   * The key must be enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
    * at genesis) or the schema's `Strand.AuthorizedInsert` constraint rejects the write.
    * Failing loudly here is intentional: a silently-unpublished strand would run
    * as a local-only island that no peer could ever discover or join.
@@ -4080,7 +4106,14 @@ export class CadreNode implements SAppIdLookup {
     // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
     // trims too, and an untrimmed row would be unreachable by the same string.
     const trimmed = requireNonBlank(strandId, 'strand id');
-    const desired: StrandRow = { Id: trimmed, Type: type, MemberPrivateKey: memberPrivateKey ?? null };
+    // FounderOwnerKey records THIS machine as the row's publisher (the schema pins it to
+    // the signing owner), which is what later lets a relaunch derive founder-ness.
+    const desired: StrandRow = {
+      Id: trimmed,
+      Type: type,
+      MemberPrivateKey: memberPrivateKey ?? null,
+      FounderOwnerKey: signingKey.publicKeyB64,
+    };
 
     // Read first rather than leaning on the insert's collision for BOTH readings. The
     // ordinary resume (an app killed after its own publish committed) then needs no error
@@ -4145,26 +4178,21 @@ export class CadreNode implements SAppIdLookup {
    *   `MemberPrivateKey` wins over `config.memberPrivateKey`: a caller that mints a key per
    *   attempt (as the reference apps do) would otherwise present a key that does not match
    *   the membership already seated in the strand.
-   * - **instance already running** → `addStrand` returns the tracked instance untouched,
-   *   and the founder bootstrap is insert-if-absent, so re-founding writes nothing twice.
-   *   "Untouched" cuts both ways — see the NOTE below.
+   * - **instance already running** → the tracked instance is returned, and — because the
+   *   `Strand` row records its publishing machine (`FounderOwnerKey`) — a founder request
+   *   against an instance that was first launched as a joiner now runs the (idempotent,
+   *   insert-if-absent) founder bootstrap on it rather than silently skipping it
+   *   ({@link StrandInstanceManager.foundExistingStrand}). So a strand that something else
+   *   attached first — the reference RN app's `strand:discovered` handler after a restart,
+   *   or this node's own {@link StrandWatcher} poll winning `launchStrand`'s
+   *   `resolveCohortSeed` window — still ends up with its `Strand.Header` written.
    *
-   * Founds (`founder: true`) rather than attaching, which closes the other half of the
-   * interruption: attaching as a joiner leaves the strand `active` but with `Strand.Header`
-   * empty, so its provenance record (sApp id/version/schema/signature) is never written and
-   * nothing later remembers this node was the founder.
-   *
-   * NOTE: that half holds only while THIS call is the one that launches the instance.
-   * {@link launchStrand} returns an already-tracked instance and silently drops the
-   * `founder` flag it was asked for, and two things can get there first: an app that
-   * re-registered the sApp config and attached the strand itself (the reference RN app's
-   * `strand:discovered` handler does exactly this after a restart), or this node's own
-   * {@link StrandWatcher} — the row is published before `addStrand` runs, and
-   * `launchStrand` awaits `resolveCohortSeed` (network) between its tracked-instance check
-   * and `startStrand`, so a poll landing in that window launches the row as a JOINER. Then
-   * this method returns an active but HEADERLESS instance and reports success. Founder-ness
-   * is neither persisted nor observable on a tracked instance, so nothing here can detect
-   * it; closing it is a representation change, filed as backlog debt.
+   * Founder-ness is resolved FROM THE ROW, not assumed: this machine founds iff the
+   * resolved row's `FounderOwnerKey` is its own owner key. A fresh publish records this
+   * machine, so the common path founds; a machine that lost a concurrent founding race to
+   * a sibling adopts the sibling's row and ATTACHES instead — deliberately, since two
+   * machines bootstrapping the same strand on separate replicas is the double-`Header`
+   * hazard. The returned {@link FoundStrandResult.founded} says which happened.
    *
    * `Type` is compared, not adopted: a stored row of the other type means the caller and
    * the control plane disagree about what this strand IS, so it throws.
@@ -4184,8 +4212,16 @@ export class CadreNode implements SAppIdLookup {
     const strandRow = published
       ? this.adoptPublishedStrand(published, type, memberPrivateKey)
       : await this.publishStrand(trimmed, type, memberPrivateKey);
-    const instance = await this.addStrand({ strandRow, sAppConfig, founder: true });
-    return { instance, strandRow };
+    // Derived, not hardcoded `true`: adopting a row another machine published means that
+    // machine runs the bootstrap — this one must attach or it would write a second Header.
+    const founded = this.isSelfFoundedRow(strandRow);
+    if (!founded) {
+      log('foundStrand(%s): the stored row was published by a different machine ' +
+        '(FounderOwnerKey is not this node\'s owner key) — attaching as a joiner; ' +
+        'the founder bootstrap runs on the publishing machine', trimmed);
+    }
+    const instance = await this.addStrand({ strandRow, sAppConfig, founder: founded });
+    return { instance, strandRow, founded };
   }
 
   /**
@@ -4452,23 +4488,48 @@ export class CadreNode implements SAppIdLookup {
    * seed, starts the strand, and registers it with the hibernation manager
    * before emitting `strand:started`.
    *
-   * Idempotent no-op when the strand manager already tracks `strand.Id` — the
-   * ordinary founding sequence is `addStrand` (starts it locally) followed by
-   * `publishStrand` (makes it visible), so this node's own `StrandWatcher`
-   * rediscovers a row it already started and calls this again via
-   * `handleStrandAdded`. Without the guard that re-entry would resolve a fresh
+   * Founder-ness: an explicit `founder` argument wins (the formation/responder flows pass
+   * one deliberately — their consent-seated rows carry a null `FounderOwnerKey`); when
+   * unset it is DERIVED from the row, so the control-discovered path
+   * (`handleStrandAdded`) and a restart's re-attach found this machine's own strands
+   * without the caller having to know. The derivation is pure key comparison — no I/O.
+   *
+   * Idempotent when the strand manager already tracks `strand.Id` — the watcher
+   * rediscovers a row this node already started and calls this again via
+   * `handleStrandAdded`; without the guard that re-entry would resolve a fresh
    * (already-connected) cohort seed and re-emit `strand:started` for an
    * instance that never stopped. The guard runs before the cohort-seed RPC
-   * fan-out, so a rediscovery costs nothing beyond the map lookup.
+   * fan-out, so a rediscovery costs nothing beyond the map lookup plus the (pure)
+   * founder derivation. NOT a silent no-op any more when the launch resolves as a
+   * FOUNDER: the tracked instance may have been launched first as a joiner (an app
+   * attach, or this node's own watcher poll winning the `resolveCohortSeed` window
+   * below), which used to drop the founder request and leave the strand headerless —
+   * now the tracked instance is founded in place
+   * ({@link StrandInstanceManager.foundExistingStrand}), waking it first if quiesced
+   * so the bootstrap actually runs before this resolves.
    */
   private async launchStrand(
     strand: StrandRow,
     sAppConfig: SAppConfig,
     founder?: boolean
   ): Promise<StrandInstance> {
+    const resolvedFounder = founder ?? this.isSelfFoundedRow(strand);
     const existing = this.strandManager.getInstance(strand.Id);
     if (existing) {
-      log('launchStrand: strand %s already tracked locally — skipping re-launch', strand.Id);
+      if (resolvedFounder) {
+        const outcome = await this.strandManager.foundExistingStrand(strand.Id);
+        if (outcome === 'needs-resume') {
+          // Quiesced instance: the retained config now founds, but founding promises
+          // the bootstrap has RUN by the time the caller resolves — wake through the
+          // hibernation manager (coalesced with any in-flight wake, timer-aware) so
+          // the rebuild executes it now rather than at some eventual wake.
+          await this.wakeStrand(strand.Id);
+        }
+        log('launchStrand: strand %s already tracked — founder request honored (%s)',
+          strand.Id, outcome);
+      } else {
+        log('launchStrand: strand %s already tracked locally — skipping re-launch', strand.Id);
+      }
       return existing;
     }
 
@@ -4500,6 +4561,7 @@ export class CadreNode implements SAppIdLookup {
 
     const instance = await this.strandManager.startStrand({
       strandRow: strand,
+      // resolvedFounder (not the raw argument) — see the doc comment above.
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
@@ -4517,7 +4579,7 @@ export class CadreNode implements SAppIdLookup {
       // than merely weak. The full argument, and the count that will legitimately go here,
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
-      founder
+      founder: resolvedFounder
     });
 
     // The seed reached the node as `bootstrapNodes`, which only enters the

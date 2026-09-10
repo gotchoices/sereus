@@ -59,7 +59,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
   it('founder of a closed strand seats Header + founding Member/Manager from MemberPrivateKey', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
-    const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c' };
+    const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, true));
     expect(instance.status).toBe('active');
@@ -79,7 +79,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
   it('joiner of a closed strand writes nothing locally (founder:false)', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
-    const strandRow: StrandRow = { Id: 'joiner-closed', MemberPrivateKey: memberPrivateKey, Type: 'c' };
+    const strandRow: StrandRow = { Id: 'joiner-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, false));
     expect(instance.status).toBe('active');
@@ -93,7 +93,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
 
   it('founder of an open strand seats only a Header(o) — no Member/Manager', async () => {
     manager = new StrandInstanceManager();
-    const strandRow: StrandRow = { Id: 'founder-open', MemberPrivateKey: null, Type: 'o' };
+    const strandRow: StrandRow = { Id: 'founder-open', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, true));
     expect(instance.status).toBe('active');
@@ -109,7 +109,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
 
   it('founding a closed strand with no MemberPrivateKey fails and tears the runtime down', async () => {
     manager = new StrandInstanceManager();
-    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: null, Type: 'c' };
+    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: null, Type: 'c', FounderOwnerKey: null };
 
     await expect(manager.startStrand(startConfig(strandRow, true))).rejects.toThrow(/MemberPrivateKey/i);
 

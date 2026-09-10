@@ -278,7 +278,7 @@ describe('Two parties × two machines, one strand across all four', () => {
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 			// Open strand: this scenario is about replication and availability, not
 			// membership — the membership variant is `scenario-two-by-two-strand-membership`.
-			const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
+			const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
 			// a0 founds; the default barrier waits for a strand cohort of
 			// min(4, DEFAULT_STRAND_CLUSTER_SIZE) = 4 on every member — the first time any

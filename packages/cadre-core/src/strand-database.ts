@@ -155,6 +155,23 @@ export class StrandDatabase {
   }
 
   /**
+   * Run the founder membership bootstrap against an ALREADY-LIVE database — the
+   * seam {@link StrandInstanceManager.foundExistingStrand} uses when a founder
+   * request arrives for an instance that was first launched as a joiner.
+   * Idempotent: every bootstrap write is insert-if-absent
+   * ({@link bootstrapFounderMembership}), so calling it on an instance that
+   * already founded writes nothing. Also flips the captured config's `founder`,
+   * so this object's own record of how it was launched stays coherent with what
+   * actually ran (a construction-time `founder: false` is a statement about the
+   * launch, not a permanent identity).
+   */
+  async ensureFounderBootstrap(): Promise<void> {
+    this.ensureInitialized();
+    this.config.founder = true;
+    await this.bootstrapFounder();
+  }
+
+  /**
    * Get the underlying database for queries
    */
   getDatabase(): Database {

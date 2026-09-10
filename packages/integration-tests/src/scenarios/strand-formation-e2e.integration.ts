@@ -430,6 +430,7 @@ describe('E2E Strand Formation', () => {
 					Id: formResult.strandId,
 					MemberPrivateKey: null,
 					Type: 'o',
+					FounderOwnerKey: null,
 				};
 
 				// These tests manually wire strand-level libp2p connections below
@@ -534,8 +535,8 @@ describe('E2E Strand Formation', () => {
 				expect(resultA.strandId).not.toBe(resultB.strandId);
 
 				// Start strand instances on both sides
-				const strandRowA: StrandRow = { Id: resultA.strandId, MemberPrivateKey: null, Type: 'o' };
-				const strandRowB: StrandRow = { Id: resultB.strandId, MemberPrivateKey: null, Type: 'o' };
+				const strandRowA: StrandRow = { Id: resultA.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+				const strandRowB: StrandRow = { Id: resultB.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
 				// Manually-wired strands (see note in the first Phase 2 test): writes
 				// replicate over the dialed connections.
@@ -657,7 +658,7 @@ describe('E2E Strand Formation', () => {
 
 				// Start strand instances on all three parties using bob's strandId
 				// (in real use, the responder would return the same strandId for the same invitation)
-				const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
+				const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
 				// Manually-wired strands (see note in the first Phase 2 test): writes
 				// replicate over the dialed connections.
@@ -776,7 +777,7 @@ describe('E2E Strand Formation', () => {
 					await node.start();
 
 					const strandId = `strand-gate-${name}`;
-					const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
+					const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
 					await expect(
 						node.addStrand({ strandRow, sAppConfig: config }),

@@ -137,7 +137,7 @@ describe('E2E strand-addr seed convergence', () => {
 			// to answer with.
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const aStrand = await A.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
 			});
 			expect(aStrand.status).toBe('active');
@@ -179,7 +179,7 @@ describe('E2E strand-addr seed convergence', () => {
 			// strand node A's strand addrs — the same union the direct RPC above
 			// returned.
 			const bStrand = await B.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
 			});
 			expect(bStrand.status).toBe('active');

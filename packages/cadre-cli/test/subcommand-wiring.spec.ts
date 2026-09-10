@@ -24,8 +24,8 @@ const { validationKeyCommand } = await import('../src/commands/validation-key.js
 
 const STRAND_ID = 'strand-alpha';
 
-const openRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: null, Type: 'o' });
-const closedRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: 'secret-key', Type: 'c' });
+const openRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+const closedRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: 'secret-key', Type: 'c', FounderOwnerKey: null });
 
 interface FakeNode {
 	node: CadreNode;

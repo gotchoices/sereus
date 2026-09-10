@@ -504,7 +504,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		// founder derives the founding Member/Manager key from MemberPrivateKey.
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
-		const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' };
+		const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
 		// Both nodes run the network transactor (every strand does), so the manual
 		// strand dial below actually replicates rows across the two raw stores.

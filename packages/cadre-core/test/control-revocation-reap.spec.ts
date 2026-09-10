@@ -148,11 +148,13 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
   async function seatStrand(id: string): Promise<{ stamp: string }> {
     const stamp = freshStamp();
     const memberPrivateKey = 'member-key-' + Math.random().toString(36).slice(2);
+    // FounderOwnerKey must equal the context owner (the schema's AuthorizedInsert
+    // pins the stored column to the verified signer) or the insert is rejected.
     await rawDb.exec(
-      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?)`,
-      [founder.publicKey, signAs(founder, strandAddMessage(id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp],
+         values (?, ?, ?, ?, ?)`,
+      [founder.publicKey, signAs(founder, strandAddMessage(id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp, founder.publicKey],
     );
     return { stamp };
   }
