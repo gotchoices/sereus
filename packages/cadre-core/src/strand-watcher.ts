@@ -185,7 +185,12 @@ export class StrandWatcher {
           log('Error handling strand add for %s: %o', strand.Id, error);
           // A failed launch leaves nothing running (StrandInstanceManager drops the
           // record), so forget the strand and let a later poll retry it — gated by
-          // the backoff recorded here.
+          // the backoff recorded here. One case does leave something running: a row
+          // this machine published lands on an instance something else already
+          // attached, and honouring the founder request on it (CadreNode.launchStrand
+          // → StrandInstanceManager.foundExistingStrand) throws. The instance stays up
+          // as a joiner and the retry re-attempts the bootstrap on it, which is what
+          // should happen — but do not read the line above as "nothing is running".
           this.knownStrands.delete(strand.Id);
           this.provisional.delete(strand.Id);
           this.recordFailure(strand.Id);

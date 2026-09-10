@@ -2106,6 +2106,15 @@ export class CadreNode implements SAppIdLookup {
    * node with no owner key both derive `false`: without a positive match this
    * machine must attach, never bootstrap. Pure key derivation, no I/O — cheap
    * enough for {@link launchStrand}'s tracked-instance early return.
+   *
+   * NOTE: reads "one owner key per machine" — the reference model, where the owner
+   * key IS the key behind the PeerId. Two machines running the SAME identity key
+   * would both derive `true` and each bootstrap on its own replica, which is the
+   * double-`Header` hazard this derivation exists to avoid. Unreachable today: that
+   * configuration also gives both machines one PeerId, which already breaks control
+   * networking well before any strand launches. Revisit if machines ever share an
+   * owner key while holding distinct transport identities — the derivation would
+   * then need a per-machine discriminator (the `CadrePeer` PeerId) on the row.
    */
   private isSelfFoundedRow(strand: StrandRow): boolean {
     if (strand.FounderOwnerKey == null) {
@@ -4524,6 +4533,11 @@ export class CadreNode implements SAppIdLookup {
           // hibernation manager (coalesced with any in-flight wake, timer-aware) so
           // the rebuild executes it now rather than at some eventual wake.
           await this.wakeStrand(strand.Id);
+          // The wake's rebuild founds — UNLESS a wake was already in flight when the
+          // config flipped, in which case it had already read the pre-flip config and
+          // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
+          // (insert-if-absent) bootstrap so founding never resolves headerless.
+          await this.strandManager.ensureFounderBootstrap(strand.Id);
         }
         log('launchStrand: strand %s already tracked — founder request honored (%s)',
           strand.Id, outcome);
@@ -4561,7 +4575,6 @@ export class CadreNode implements SAppIdLookup {
 
     const instance = await this.strandManager.startStrand({
       strandRow: strand,
-      // resolvedFounder (not the raw argument) — see the doc comment above.
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
@@ -4579,6 +4592,7 @@ export class CadreNode implements SAppIdLookup {
       // than merely weak. The full argument, and the count that will legitimately go here,
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
+      // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder
     });
 

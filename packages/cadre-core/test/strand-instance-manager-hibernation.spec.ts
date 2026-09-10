@@ -15,12 +15,13 @@ const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
   const close = vi.fn(async () => {});
   const initialize = vi.fn(async () => {});
+  const ensureFounderBootstrap = vi.fn(async () => {});
   const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop }));
   // Use a non-arrow implementation so `new StrandDatabase(...)` is constructable.
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize, close };
+    return { initialize, close, ensureFounderBootstrap };
   });
-  return { stop, close, initialize, createLibp2pNode, StrandDatabase };
+  return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase };
 });
 
 vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
@@ -189,6 +190,84 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     // nothing left to tear down.
     expect(mocks.stop).toHaveBeenCalledTimes(1);
     expect(mocks.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** `founder` as seen by the most recent `new StrandDatabase(...)`. */
+function lastStrandDatabaseFounder(): boolean | undefined {
+  const calls = mocks.StrandDatabase.mock.calls as unknown[][];
+  return (calls[calls.length - 1]![0] as { founder?: boolean }).founder;
+}
+
+// The seam that closes "whoever launches the strand first decides whether the bootstrap
+// runs": a founder request arriving for an ALREADY-TRACKED instance. `CadreNode.launchStrand`
+// drives this; here the manager half is pinned directly, including the quiesced path that
+// the node-level suite cannot force.
+describe('StrandInstanceManager.foundExistingStrand', () => {
+  it('runs the bootstrap on a LIVE instance launched as a joiner, and flips the retained config', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('found-live'));
+    expect(lastStrandDatabaseFounder()).toBeUndefined();
+
+    expect(await manager.foundExistingStrand('found-live')).toBe('bootstrapped');
+    expect(mocks.ensureFounderBootstrap).toHaveBeenCalledTimes(1);
+
+    // The flip is RETAINED, so a later quiesce → resume rebuild founds too.
+    await manager.quiesceStrand('found-live');
+    await manager.resumeStrand('found-live');
+    expect(lastStrandDatabaseFounder()).toBe(true);
+  });
+
+  it('is a cheap no-op when the retained config already founds', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('found-already', { founder: true }));
+
+    expect(await manager.foundExistingStrand('found-already')).toBe('already-founder');
+    expect(mocks.ensureFounderBootstrap).not.toHaveBeenCalled();
+  });
+
+  it('reports needs-resume for a QUIESCED instance, and the resume rebuild founds', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('found-quiesced'));
+    await manager.quiesceStrand('found-quiesced');
+
+    // No live database to write to — the caller (CadreNode.launchStrand) must wake it.
+    expect(await manager.foundExistingStrand('found-quiesced')).toBe('needs-resume');
+    expect(mocks.ensureFounderBootstrap).not.toHaveBeenCalled();
+
+    await manager.resumeStrand('found-quiesced');
+    expect(lastStrandDatabaseFounder()).toBe(true);
+  });
+
+  it('rejects an untracked strand rather than silently swallowing the founder request', async () => {
+    const manager = new StrandInstanceManager();
+    await expect(manager.foundExistingStrand('ghost')).rejects.toThrow(/not tracked/);
+  });
+});
+
+// The post-wake re-run `CadreNode.launchStrand` performs. It exists because
+// `HibernationManager` coalesces wakes: a wake already in flight when the retained config
+// flipped rebuilt from the PRE-flip config, so the rebuild's own bootstrap never ran.
+describe('StrandInstanceManager.ensureFounderBootstrap', () => {
+  it('re-runs the bootstrap on a live instance even when the retained config already founds', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('ensure-live', { founder: true }));
+
+    await manager.ensureFounderBootstrap('ensure-live');
+
+    // Deliberately NOT gated on the config flag: after a coalesced wake the flag says
+    // "founder" while the rebuild that actually ran did not bootstrap.
+    expect(mocks.ensureFounderBootstrap).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws rather than silently skipping when the instance is quiesced or untracked', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('ensure-quiesced'));
+    await manager.quiesceStrand('ensure-quiesced');
+
+    await expect(manager.ensureFounderBootstrap('ensure-quiesced')).rejects.toThrow(/quiesced/);
+    await expect(manager.ensureFounderBootstrap('ghost')).rejects.toThrow(/not tracked/);
+    expect(mocks.ensureFounderBootstrap).not.toHaveBeenCalled();
   });
 });
 

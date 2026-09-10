@@ -39,3 +39,14 @@ change: it needs a browser run, which is out of reach for an agent working insid
 If the suite turns out to *fail* once the fixture founds properly, that failure is the
 finding — it means the invitation path has been passing for a reason unrelated to strand
 membership, and the resulting bug is the real ticket.
+
+## Arm added by the founder-provenance review (2026-09-09)
+
+The `Strand` control row now records the machine that published it
+(`FounderOwnerKey`), and `CadreNode` derives founder-ness from it when a caller passes no
+explicit flag. That makes the code half of this ticket smaller than it was: the fixture
+already calls `publishStrand`, so handing the row that call RETURNS to `addStrand` — instead
+of the hand-built row it builds today — is enough to make it found. The fixture was
+deliberately left attaching (its hand-built row now carries an explicit
+`FounderOwnerKey: null`, with a comment saying why) so that this ticket, not a review pass,
+owns the behaviour change and the Playwright run it still needs.

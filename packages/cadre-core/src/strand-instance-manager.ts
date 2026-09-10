@@ -706,8 +706,38 @@ export class StrandInstanceManager {
     if (!instance.database) {
       return 'needs-resume';
     }
-    await instance.database.ensureFounderBootstrap();
+    await this.ensureFounderBootstrap(strandId);
     return 'bootstrapped';
+  }
+
+  /**
+   * Run the (idempotent) founder bootstrap against a tracked strand's LIVE
+   * database, independently of what the retained launch config says.
+   *
+   * Separate from {@link foundExistingStrand} because a caller that resolved
+   * `'needs-resume'` and woke the strand must not assume the wake's own rebuild
+   * founded it: `HibernationManager` COALESCES wakes, so a wake already in flight
+   * when the config flipped had already read the PRE-flip config and rebuilt as a
+   * joiner. Re-running the bootstrap costs one insert-if-absent probe per table
+   * and is the only thing that makes "founding resolves once the Header is
+   * written" true on that path.
+   *
+   * @throws when the strand is not tracked, or is still quiesced (no live
+   *   database) — both mean the bootstrap did NOT run, which a founder request
+   *   must never swallow.
+   */
+  async ensureFounderBootstrap(strandId: string): Promise<void> {
+    const instance = this.instances.get(strandId);
+    if (!instance) {
+      throw new Error(`Cannot run the founder bootstrap for strand ${strandId}: not tracked`);
+    }
+    if (!instance.database) {
+      throw new Error(
+        `Cannot run the founder bootstrap for strand ${strandId}: it is quiesced, so there ` +
+        'is no live database to write to — resume it first.'
+      );
+    }
+    await instance.database.ensureFounderBootstrap();
   }
 
   /**

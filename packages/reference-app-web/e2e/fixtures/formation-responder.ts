@@ -220,7 +220,11 @@ export async function startFormationResponder(opts?: {
 		const memberKey = await generateStrandMemberKey();
 		await node.publishStrand(strandId, 'c', memberKey);
 		await node.addStrand({
-			strandRow: { Id: strandId, MemberPrivateKey: memberKey, Type: 'c' },
+			// FounderOwnerKey null (not the published row's own key) keeps this a JOINER
+			// attach, preserving the divergence the NOTE above describes rather than
+			// silently resolving it here: passing the row `publishStrand` returned would
+			// now derive founder-ness and seat Header/Member/Manager.
+			strandRow: { Id: strandId, MemberPrivateKey: memberKey, Type: 'c', FounderOwnerKey: null },
 			sAppConfig: getChatSAppConfig(),
 		});
 
