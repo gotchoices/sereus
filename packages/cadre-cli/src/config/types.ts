@@ -48,6 +48,14 @@ export interface CliConfigFile {
 
   /** Network configuration */
   network?: {
+    /**
+     * Addresses this machine's nodes bind. Only TCP, WebSocket (`/ws`, `/wss`) and
+     * circuit-relay addresses can be bound from a config file — a config file cannot
+     * express a libp2p transport factory, so anything else (`/quic-v1`, `/webrtc`,
+     * `/webtransport`) fails startup naming the address and the package it would need.
+     * A `/ws` entry brings its own transport. See `NetworkConfig.listenAddrs` in
+     * `@serfab/cadre-core`.
+     */
     listenAddrs?: string[];
     /**
      * Addresses to advertise INSTEAD OF `listenAddrs`, for a node reachable at a

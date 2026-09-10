@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { RELAY_SEARCH_LISTEN_ADDR, relayCircuitAddrs, resolveListenAddrs } from '../src/relay-addrs.js';
+import {
+  RELAY_SEARCH_LISTEN_ADDR,
+  relayCircuitAddrs,
+  resolveListenAddrs,
+  resolveTransportOptions,
+  UnbindableListenAddressError
+} from '../src/relay-addrs.js';
 import type { NetworkConfig } from '../src/types.js';
 
 /**
@@ -252,6 +258,152 @@ describe('resolveListenAddrs', () => {
       const listenAddrs = [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`];
 
       expect(resolveListenAddrs({ listenAddrs })).toEqual(listenAddrs);
+    });
+  });
+});
+
+/**
+ * The other half of the listen config: `listenAddrs` says WHERE to bind, and the
+ * transports the node will have say what it CAN bind. libp2p checks the two against
+ * each other only in the all-or-nothing sense — it drops every address no transport
+ * claims and raises only if that leaves none — so a `/ws` address paired with a TCP
+ * one used to disappear in silence. `resolveTransportOptions` is where the two halves
+ * meet, and it sits on the resolved list both node kinds pass through.
+ */
+describe('resolveTransportOptions', () => {
+  describe('WebSocket is derived', () => {
+    it('returns the wsPort switch when a listen entry names /ws', () => {
+      expect(resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4002/ws'])).toEqual({ wsPort: 0 });
+    });
+
+    /**
+     * `wsPort` is a SWITCH, not a port — it exists to make `@optimystic/db-p2p` add
+     * `webSockets()`, and the address it synthesizes from the value is discarded
+     * because `cadre-core` always supplies explicit `listenAddrs`. Scraping a real
+     * port would be a lie the moment a config names two WebSocket addresses, and the
+     * strand path zeroes fixed ports anyway.
+     */
+    it('is 0 regardless of the port the address names, and regardless of how many name one', () => {
+      expect(resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4402/ws'])).toEqual({ wsPort: 0 });
+      expect(resolveTransportOptions(undefined, [
+        '/ip4/0.0.0.0/tcp/4402/ws',
+        '/ip4/0.0.0.0/tcp/4403/ws'
+      ])).toEqual({ wsPort: 0 });
+    });
+
+    it('recognises every spelling of a WebSocket listener libp2p accepts', () => {
+      for (const addr of [
+        '/ip4/0.0.0.0/tcp/4002/ws',
+        '/ip4/0.0.0.0/tcp/443/wss',
+        '/ip6/::1/tcp/4002/ws',
+        '/dns4/host.example.com/tcp/443/tls/ws',
+        '/dns4/host.example.com/tcp/443/tls/sni/host.example.com/ws'
+      ]) {
+        expect(resolveTransportOptions(undefined, [addr])).toEqual({ wsPort: 0 });
+      }
+    });
+
+    /** The shipped React Native drone config: TCP for the LAN, WebSocket for the phone. */
+    it('derives the switch from a mixed set, which is the pairing that hid the bug', () => {
+      expect(resolveTransportOptions(undefined, [
+        '/ip4/0.0.0.0/tcp/4001',
+        '/ip4/0.0.0.0/tcp/4002/ws'
+      ])).toEqual({ wsPort: 0 });
+    });
+  });
+
+  describe('the default transports are enough', () => {
+    it('adds nothing for TCP, circuit-relay, or no listen entries at all', () => {
+      expect(resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4001'])).toEqual({});
+      expect(resolveTransportOptions(undefined, ['/ip6/::1/tcp/0'])).toEqual({});
+      expect(resolveTransportOptions(undefined, [RELAY_SEARCH_LISTEN_ADDR])).toEqual({});
+      expect(resolveTransportOptions(undefined, [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`])).toEqual({});
+      expect(resolveTransportOptions(undefined, [])).toEqual({});
+      expect(resolveTransportOptions(undefined, undefined)).toEqual({});
+    });
+  });
+
+  describe('an unbindable address is refused', () => {
+    /**
+     * Deriving these would mean `cadre-core` importing transport packages into every
+     * consumer including the React Native and browser bundles, and duplicating policy
+     * `@optimystic/db-p2p`'s `libp2p-node.ts` owns. So they are named and refused —
+     * the same fail-fast posture `network.relayAddrs` already has for a typo.
+     */
+    it('throws on a transport the default set does not bind, naming the address and the package', () => {
+      expect(() => resolveTransportOptions(undefined, ['/ip4/0.0.0.0/udp/4001/quic-v1']))
+        .toThrow(/\/ip4\/0\.0\.0\.0\/udp\/4001\/quic-v1 — needs @libp2p\/quic/);
+      expect(() => resolveTransportOptions(undefined, ['/ip4/0.0.0.0/udp/4001/webrtc-direct']))
+        .toThrow(/needs @libp2p\/webrtc/);
+      expect(() => resolveTransportOptions(undefined, ['/webrtc']))
+        .toThrow(/needs @libp2p\/webrtc/);
+    });
+
+    /** Outermost-first, so a layered address names the transport that actually terminates it. */
+    it('names the outermost transport, not the one it rides on', () => {
+      expect(() => resolveTransportOptions(undefined, ['/ip4/0.0.0.0/udp/4001/quic-v1/webtransport']))
+        .toThrow(/needs @libp2p\/webtransport/);
+    });
+
+    /**
+     * A `tcp` component in the stack must not wave an address through: `@libp2p/tcp`
+     * binds a bare TCP address and nothing layered on top of one.
+     */
+    it('refuses an unknown transport layered over tcp rather than reading it as TCP', () => {
+      expect(() => resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4001/http']))
+        .toThrow(/no transport for/);
+    });
+
+    it('refuses an address that names a host and no transport', () => {
+      expect(() => resolveTransportOptions(undefined, ['/ip4/1.2.3.4']))
+        .toThrow(/it names no transport component/);
+    });
+
+    it('reports every offending entry, not only the first', () => {
+      expect(() => resolveTransportOptions(undefined, [
+        '/ip4/0.0.0.0/tcp/4001',
+        '/ip4/0.0.0.0/udp/4001/quic-v1',
+        '/webrtc'
+      ])).toThrow(/quic-v1[\s\S]*webrtc/);
+    });
+
+    /**
+     * Same precedent as `isConfiguredCircuitListenAddr` and `ephemeralPortListenAddr`:
+     * libp2p reports a bad listen addr itself, so this check only ever ADDS a denial
+     * rather than re-reporting a parse failure in its own words.
+     */
+    it('passes an unparsable entry through untouched', () => {
+      expect(resolveTransportOptions(undefined, ['not-a-multiaddr'])).toEqual({});
+      expect(resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4002/ws', 'not-a-multiaddr']))
+        .toEqual({ wsPort: 0 });
+    });
+
+    it('is an UnbindableListenAddressError carrying the offending addresses', () => {
+      const listenAddrs = ['/ip4/0.0.0.0/udp/4001/quic-v1'];
+      try {
+        resolveTransportOptions(undefined, listenAddrs);
+        expect.unreachable('expected an UnbindableListenAddressError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(UnbindableListenAddressError);
+        expect((err as UnbindableListenAddressError).listenAddrs).toEqual(listenAddrs);
+      }
+    });
+  });
+
+  /**
+   * A programmatic embedder that supplies transport factories owns transport policy,
+   * and the factories are opaque — nothing can be inferred from them. This is what
+   * keeps the React Native phone, the web app, and the integration-test harness
+   * unaffected by either arm.
+   */
+  describe('network.transports set — the embedder owns the policy', () => {
+    // The value is never called; only its presence is read.
+    const transports = [(() => ({})) as never];
+
+    it('derives nothing and refuses nothing', () => {
+      expect(resolveTransportOptions({ transports }, ['/ip4/0.0.0.0/tcp/4002/ws'])).toEqual({});
+      expect(resolveTransportOptions({ transports }, ['/ip4/0.0.0.0/udp/4001/quic-v1'])).toEqual({});
+      expect(resolveTransportOptions({ transports, listenAddrs: [] }, [])).toEqual({});
     });
   });
 });

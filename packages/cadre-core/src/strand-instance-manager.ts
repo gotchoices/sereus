@@ -433,8 +433,10 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
-        // Listen entries only — a strand node announces nothing the operator configured
-        // (`strand-network-config.ts`). An inherited configured `/p2p-circuit` entry is
+        // Listen entries plus the WebSocket transport switch they imply — a strand node
+        // announces nothing the operator configured (`strand-network-config.ts`), and
+        // spreads AFTER `transports` above because the switch is a no-op whenever the
+        // embedder supplied its own factories. An inherited configured `/p2p-circuit` entry is
         // deliberate and survives the derivation untouched: it is what gives a NAT'd
         // strand node a reachable relay slot, and it works because the launch path
         // announces this strand's derived peerId to the relay first (delegate admission;

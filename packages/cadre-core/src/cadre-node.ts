@@ -102,7 +102,7 @@ import {
   peerStrandKey,
   type CircuitRelayTarget
 } from './delegate-admission.js';
-import { relayCircuitAddrs, resolveListenAddrs, RelayReservationFailedError } from './relay-addrs.js';
+import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -1482,6 +1482,11 @@ export class CadreNode implements SAppIdLookup {
     // the END of `start()`, so the control database is built while this node holds
     // zero control connections. See `relay-addrs.ts` and `start()`.
     const listenAddrs = resolveListenAddrs(network, 'search');
+    // The transports those listen entries imply. A `/ws` entry switches db-p2p's
+    // WebSocket transport on (without it the entry binds nothing and libp2p reports
+    // nothing); anything outside {tcp, ws/wss, p2p-circuit} throws here rather than
+    // being silently dropped at bring-up. See `relay-addrs.ts`.
+    const transportOptions = resolveTransportOptions(network, listenAddrs);
 
     const enableRelay = this.relayServerEnabled();
 
@@ -1515,6 +1520,10 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
+      // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
+      // `{}` when `network.transports` is set, since the embedder owns transport policy
+      // then. Spread NEXT to `transports` because the two answer the same question.
+      ...transportOptions,
       // Configured `listenAddrs`, plus the bare `/p2p-circuit` search listener when
       // `network.relayAddrs` is set — that listener registers the pending reservation
       // `driveControlRelayReservation` fills after bring-up.

@@ -472,6 +472,56 @@ describe('CadreNode control-network node options', () => {
       expect(options.connectionGater).toBeDefined();
       expect(options.authorizeInboundStream).toBeInstanceOf(Function);
     });
+
+    /**
+     * A listen address and the transports the node will actually have are two halves of
+     * the same config, and libp2p checks them only in the all-or-nothing sense: it drops
+     * every address no transport claims and raises only if that leaves none. A `/ws`
+     * address paired with a TCP one therefore used to vanish in silence — the shipped
+     * React Native drone config, and `cadre start --ws-port`, both bound no WebSocket
+     * listener at all. `wsPort` is db-p2p's switch for adding `webSockets()`; its VALUE
+     * is never bound (see `relay-addrs.ts`), which is why it is 0 rather than 4002.
+     */
+    it('turns db-p2p\'s WebSocket transport on when a listen address names /ws', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws'] }
+      })));
+
+      expect(options.wsPort).toBe(0);
+      // The operator's port lives in the ADDRESS, which is forwarded verbatim.
+      expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']);
+    });
+
+    it('leaves wsPort off when nothing names WebSocket', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] }
+      })));
+
+      expect('wsPort' in options).toBe(false);
+    });
+
+    /**
+     * QUIC, WebRTC and WebTransport stay unbindable by design — deriving them would pull
+     * transport packages into every `cadre-core` consumer including the browser and React
+     * Native bundles. Refusing to start names the address; the old behaviour named nothing.
+     */
+    it('refuses to build options for a listen address no default transport can bind', () => {
+      expect(() => controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/udp/4001/quic-v1'] }
+      })))).toThrow(/needs @libp2p\/quic/);
+    });
+
+    /** An embedder supplying its own factories owns transport policy — neither arm applies. */
+    it('neither derives nor refuses when network.transports is set', () => {
+      const transports = [{ fake: 'transport' }] as unknown as NonNullable<CadreNodeConfig['network']>['transports'];
+
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { transports, listenAddrs: ['/ip4/0.0.0.0/tcp/4002/ws', '/ip4/0.0.0.0/udp/4001/quic-v1'] }
+      })));
+
+      expect('wsPort' in options).toBe(false);
+      expect(options.transports).toBe(transports);
+    });
   });
 
   /**

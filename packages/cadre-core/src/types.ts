@@ -181,9 +181,16 @@ export interface NetworkConfig {
    * The machine runs one control node plus one node per strand, so a FIXED port here
    * can only belong to one of them. The control node binds it as configured; each
    * strand node binds the same entry with its port rewritten to `0`, keeping the
-   * interface and transport (`/ws`, `/quic-v1`, a specific-interface bind). A
+   * interface and transport (`/ws`, a specific-interface bind). A
    * `<relay>/p2p-circuit` entry is untouched — the port inside it is the relay's, not
    * a local bind. See `strand-network-config.ts`.
+   *
+   * **Only TCP, WebSocket (`/ws`, `/wss`) and circuit-relay addresses are bindable**
+   * unless {@link transports} supplies the factories for something else. A `/ws` entry
+   * switches the WebSocket transport on by itself; anything else — `/quic-v1`,
+   * `/webrtc`, `/webtransport` — refuses node start naming the address and the libp2p
+   * package it would need, rather than being dropped in silence by libp2p's transport
+   * manager. See `relay-addrs.ts` → `resolveTransportOptions`.
    */
   listenAddrs?: string[];
   /**

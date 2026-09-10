@@ -52,6 +52,14 @@ network:
   # node binds the same entries with the port rewritten to 0 (an OS-assigned one). So a
   # port forwarded through NAT reaches this machine's control node only — strand nodes
   # are reached through observed addresses on a reachable host, or through relayAddrs.
+  #
+  # Bindable from a config file: TCP, WebSocket ("/ws", "/wss"), and circuit-relay
+  # addresses. A "/ws" entry brings its own transport, so adding
+  # "/ip4/0.0.0.0/tcp/4002/ws" here is all a browser or React Native peer needs (this
+  # is also what "cadre start --ws-port 4002" appends). Anything else — "/quic-v1",
+  # "/webrtc", "/webtransport" — needs a libp2p transport factory, which YAML cannot
+  # express, so the node refuses to start and names the package it would need rather
+  # than coming up with that address silently unbound.
   listenAddrs:
     - "/ip4/0.0.0.0/tcp/4001"
     - "/ip6/::/tcp/4001"

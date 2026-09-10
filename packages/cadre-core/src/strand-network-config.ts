@@ -26,10 +26,16 @@
  * Everything else in `NetworkConfig` — `relayAddrs`, `transports`,
  * `connectionGater`, `enableRelay` — is inherited unchanged by the caller; this
  * module only owns the two host-endpoint fields above.
+ *
+ * It does carry one non-address option out with them: the WebSocket transport switch
+ * a `/ws` listen entry implies (`relay-addrs.ts` → `resolveTransportOptions`). That is
+ * DERIVED from the listen entries rather than inherited, so it has to be computed
+ * wherever they are, and a strand node whose listen entries reached libp2p without it
+ * would bind no WebSocket listener and report nothing.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
-import { resolveListenAddrs } from './relay-addrs.js';
+import { resolveListenAddrs, resolveTransportOptions } from './relay-addrs.js';
 import type { NetworkConfig } from './types.js';
 
 /**
@@ -53,6 +59,14 @@ export interface StrandNodeAddrs {
    * omits the option and inherits `@optimystic/db-p2p`'s own default.
    */
   listenAddrs?: string[];
+  /**
+   * The WebSocket transport switch those listen entries imply, present only when one
+   * of them names WebSocket (`relay-addrs.ts` → `resolveTransportOptions`). Not an
+   * address — it is deliberately `0` and nothing binds it — but it lives here because
+   * it is derived from, and must travel with, the listen entries above. Without it a
+   * `/ws` strand listen entry binds nothing and libp2p reports nothing.
+   */
+  wsPort?: number;
 }
 
 /**
@@ -80,7 +94,12 @@ export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeA
   }
   // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
   // empty — rewriting must never resurrect a direct listener that was opted out of.
-  return { listenAddrs: dedupe(listenAddrs.map(ephemeralPortListenAddr)) };
+  const rewritten = dedupe(listenAddrs.map(ephemeralPortListenAddr));
+  // Classified AFTER the ephemeral rewrite, so the check reads what this strand node
+  // will actually bind. Zeroing a port cannot change an entry's transport — only the
+  // `tcp`/`udp` component's value moves — so `/ip4/0.0.0.0/tcp/4002/ws` still resolves
+  // to WebSocket as `/ip4/0.0.0.0/tcp/0/ws`.
+  return { listenAddrs: rewritten, ...resolveTransportOptions(network, rewritten) };
 }
 
 /**

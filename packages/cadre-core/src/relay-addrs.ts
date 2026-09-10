@@ -119,6 +119,221 @@ export function resolveListenAddrs(
 }
 
 /**
+ * The transport-derived `createLibp2pNode` options a resolved listen set implies —
+ * see {@link resolveTransportOptions}.
+ */
+export interface ListenTransportOptions {
+  /**
+   * Present when some listen entry names WebSocket. Its VALUE is never bound; it is
+   * the switch that makes `@optimystic/db-p2p` add `webSockets()` — see
+   * {@link WS_TRANSPORT_SWITCH_PORT}.
+   */
+  wsPort?: number;
+}
+
+/**
+ * The `wsPort` value passed purely to turn `@optimystic/db-p2p`'s WebSocket transport
+ * ON. It is never bound, so it is deliberately `0` rather than a port scraped from a
+ * listen entry.
+ *
+ * WHY it is a switch and not a port: `createLibp2pNode`
+ * (`../optimystic/packages/db-p2p/src/libp2p-node.ts`) feeds `wsPort` into BOTH its
+ * default transports and its default listen addrs, and `createLibp2pNodeBase`
+ * (`libp2p-node-base.ts:490-491`) falls back to those two defaults INDEPENDENTLY:
+ *
+ * ```ts
+ * const listenAddrs = options.listenAddrs ?? defaults.listenAddrs;
+ * const transports  = options.transports  ?? defaults.transports;
+ * ```
+ *
+ * `cadre-core` always supplies explicit `listenAddrs` alongside it, so the synthesized
+ * `/ip4/<wsHost>/tcp/<wsPort>/ws` default ADDRESS is discarded while the `webSockets()`
+ * transport it added survives. A scraped port would also be a lie whenever a config
+ * names several WebSocket addresses on different ports, and the strand path rewrites
+ * fixed ports to `0` regardless (`strand-network-config.ts`).
+ *
+ * NOTE: db-p2p's own doc comment on `wsPort` (`libp2p-node-base.ts:170-172`) says it is
+ * "Ignored when `transports`/`listenAddrs` are explicitly provided" — true of the
+ * address half, NOT of the transport half, which is the half this depends on. Re-verify
+ * empirically rather than trusting that comment: `test/listen-transport-options.spec.ts`
+ * boots a real node and asserts a `/ws` multiaddr appears. If db-p2p ever makes the
+ * comment true of both halves, it needs an explicit `enableWebSockets` switch and this
+ * constant becomes unusable.
+ */
+const WS_TRANSPORT_SWITCH_PORT = 0;
+
+/**
+ * The transport-derived libp2p options `listenAddrs` implies, and the gate that stops a
+ * listen address the node has no transport for from being SILENTLY dropped.
+ *
+ * libp2p's transport manager sorts configured listen addresses by which transport claims
+ * them, discards the unclaimed ones, and raises `UnsupportedListenAddressesError` only
+ * when EVERY address was discarded. Pair a TCP address with a WebSocket one — which is
+ * exactly what the shipped configs do — and the TCP address carries the start while the
+ * missing WebSocket listener is never reported. Two halves of `NetworkConfig` that have
+ * to agree (`listenAddrs`, and the transports the node will actually have) were never
+ * checked against each other; this is that check, and it covers both node kinds because
+ * both resolve their listen set through {@link resolveListenAddrs}.
+ *
+ * The two transport classes are handled differently, on purpose:
+ *
+ * - **WebSocket is DERIVED.** It is the one non-TCP transport the shipped configs need
+ *   (the React Native reference app's companion drone; `cadre start --ws-port`), and
+ *   `@optimystic/db-p2p` already knows how to add it. `cadre-core` grows no dependency
+ *   and decides no transport policy — it flips db-p2p's own switch
+ *   ({@link WS_TRANSPORT_SWITCH_PORT}).
+ * - **Everything else is REFUSED.** Deriving `/quic-v1`, `/webrtc` or `/webtransport`
+ *   would mean importing transport packages into every `cadre-core` consumer including
+ *   the React Native and browser bundles (against the cross-platform rule in
+ *   `AGENTS.md`) and duplicating policy `libp2p-node.ts` owns. So name the address, name
+ *   the transport it needs, and refuse to start — matching how `network.relayAddrs` and
+ *   `network.announceAddrs` already treat an operator typo.
+ *
+ * Returns `{}` unconditionally when `network.transports` is set: a programmatic embedder
+ * supplying transport factories owns the policy, and the factories are opaque — nothing
+ * can be inferred from them. That is what keeps the RN phone, the web app, and the
+ * integration-test harness unaffected.
+ *
+ * NOTE: pairing this with {@link resolveListenAddrs} is a CONVENTION, not a structure —
+ * a third libp2p-node build site could resolve listen addrs and forget to call this,
+ * putting the original bug back on that path. Both existing sites are covered
+ * (`cadre-node.ts` → `buildControlNodeOptions`, `strand-network-config.ts` →
+ * `strandNodeAddrs`) and `createLibp2pNode` has exactly those two callers in this repo.
+ * If a third appears, fold the two functions into one that returns listen addrs and
+ * transport options together, so forgetting becomes impossible rather than merely
+ * unlikely.
+ *
+ * @param listenAddrs the ALREADY-resolved listen set — the output of
+ *   {@link resolveListenAddrs} after any per-node rewriting — so the check reads what
+ *   this node will actually bind.
+ * @throws {UnbindableListenAddressError} when a listen entry names a transport outside
+ *   {tcp, ws/wss, p2p-circuit}.
+ */
+export function resolveTransportOptions(
+  network: NetworkConfig | undefined,
+  listenAddrs: readonly string[] | undefined
+): ListenTransportOptions {
+  if (network?.transports) {
+    return {};
+  }
+  const kinds = (listenAddrs ?? []).map((addr) => [addr, listenTransportKind(addr)] as const);
+  const unsupported = kinds.filter(([, kind]) => kind === 'unsupported').map(([addr]) => addr);
+  if (unsupported.length > 0) {
+    throw new UnbindableListenAddressError(unsupported);
+  }
+  return kinds.some(([, kind]) => kind === 'websockets') ? { wsPort: WS_TRANSPORT_SWITCH_PORT } : {};
+}
+
+/**
+ * Thrown at config resolution when `network.listenAddrs` names an address none of the
+ * default transports can bind. Names each offending address alongside the libp2p
+ * transport package it would need — what the operator has without this is a node that
+ * starts and silently never listens there.
+ */
+export class UnbindableListenAddressError extends Error {
+  constructor(readonly listenAddrs: readonly string[]) {
+    super(
+      'network.listenAddrs names an address this node has no transport for: ' +
+      `${listenAddrs.map((a) => `${a} — ${unbindableReason(a)}`).join('; ')}. ` +
+      'Default transports bind TCP, WebSocket (/ws, /wss) and circuit-relay addresses only. ' +
+      'Either drop the address, or supply the transport programmatically via network.transports.'
+    );
+    this.name = 'UnbindableListenAddressError';
+  }
+}
+
+/**
+ * Which default transport claims `listenAddr`, or `'unsupported'` when none does.
+ *
+ * Classification is a multiaddr COMPONENT question, not a string question, so this
+ * parses and reads the transport stack — the component names left once the addressing
+ * and security layers are dropped. That stack is outermost-LAST
+ * (`/ip4/…/tcp/443/tls/ws` → `['tcp', 'ws']`), which is why its terminal entry decides.
+ *
+ * An unparsable entry is `'ignored'` and passes through untouched, following
+ * `isConfiguredCircuitListenAddr` below and `ephemeralPortListenAddr`
+ * (`strand-network-config.ts`): libp2p reports a bad listen addr itself, and this check
+ * must only ever ADD a denial.
+ */
+function listenTransportKind(listenAddr: string): 'tcp' | 'websockets' | 'circuit' | 'ignored' | 'unsupported' {
+  let stack: readonly string[];
+  try {
+    stack = transportStack(listenAddr);
+  } catch {
+    return 'ignored';
+  }
+  const outermost = stack.at(-1);
+  if (outermost === undefined) {
+    // Nothing but addressing components — a bare `/ip4/1.2.3.4`. No transport claims
+    // it, so it is dropped by exactly the same silent path this check exists to close.
+    return 'unsupported';
+  }
+  if (outermost === 'p2p-circuit') {
+    return 'circuit';
+  }
+  if (outermost === 'ws' || outermost === 'wss') {
+    return 'websockets';
+  }
+  // Only a BARE tcp stack is TCP. `/tcp/<port>/<anything else>` layers a transport
+  // `@libp2p/tcp` does not implement, and would otherwise be waved through because a
+  // `tcp` component happens to appear.
+  return stack.length === 1 && outermost === 'tcp' ? 'tcp' : 'unsupported';
+}
+
+/**
+ * Component names of `listenAddr` with the addressing and security layers removed, so
+ * what remains names transports. Host components (`ip4`, `dns4`, …) and the layers that
+ * ride inside a transport without being one (`tls`, `sni`, `certhash`, `p2p`) say
+ * nothing about which transport has to be configured.
+ */
+function transportStack(listenAddr: string): string[] {
+  return multiaddr(listenAddr).getComponents()
+    .map((component) => component.name)
+    .filter((name) => !NON_TRANSPORT_COMPONENTS.has(name));
+}
+
+/** Components that address or secure a connection rather than name its transport. */
+const NON_TRANSPORT_COMPONENTS = new Set([
+  'ip4', 'ip6', 'ip6zone', 'dns', 'dns4', 'dns6', 'dnsaddr',
+  'tls', 'sni', 'certhash', 'p2p', 'noise'
+]);
+
+/**
+ * Why `listenAddr` cannot be bound, phrased for the operator: the libp2p package that
+ * would make it bindable where one is known, and otherwise what is wrong with it.
+ *
+ * Read OUTERMOST-first (`/udp/…/quic-v1/webtransport` needs `@libp2p/webtransport`,
+ * not the `@libp2p/quic` it rides on), matching how `listenTransportKind` decides.
+ */
+function unbindableReason(listenAddr: string): string {
+  let stack: readonly string[];
+  try {
+    stack = transportStack(listenAddr);
+  } catch {
+    return 'not a parsable multiaddr';
+  }
+  if (stack.length === 0) {
+    return 'it names no transport component';
+  }
+  const pkg = [...stack].reverse().map((name) => TRANSPORT_PACKAGES[name]).find((p) => p !== undefined);
+  return pkg === undefined ? 'needs an unrecognized transport' : `needs ${pkg}`;
+}
+
+/**
+ * The libp2p package each unbindable transport component comes from. Naming the package
+ * is the actionable half of the refusal — the operator either drops the address or wires
+ * that package in through `network.transports`.
+ */
+const TRANSPORT_PACKAGES: Record<string, string> = {
+  'quic': '@libp2p/quic',
+  'quic-v1': '@libp2p/quic',
+  'webtransport': '@libp2p/webtransport',
+  'webrtc': '@libp2p/webrtc',
+  'webrtc-direct': '@libp2p/webrtc',
+  'unix': '@libp2p/tcp bound to a unix socket path'
+};
+
+/**
  * Thrown out of `CadreNode.start()` when the boot-path reservation drive for
  * `network.relayAddrs` produces no `/p2p-circuit` address on its FIRST attempt.
  *

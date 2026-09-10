@@ -417,7 +417,14 @@ export {
 // Thrown out of `CadreNode.start()` when a `network.relayAddrs` reservation does
 // not land on its first attempt — the fail-fast posture of that config field now
 // that the control node reserves AFTER control-database bring-up (relay-addrs.ts).
-export { RelayReservationFailedError, RELAY_SEARCH_LISTEN_ADDR } from './relay-addrs.js';
+// `UnbindableListenAddressError` is the same posture for the OTHER half of the listen
+// config: a `network.listenAddrs` entry whose transport the node will not have refuses
+// start instead of being silently dropped by libp2p's transport manager.
+export {
+  RelayReservationFailedError,
+  UnbindableListenAddressError,
+  RELAY_SEARCH_LISTEN_ADDR
+} from './relay-addrs.js';
 
 // Relay reservation via the bare `/p2p-circuit` search listener — the one route
 // every control node takes; `network.relayAddrs` is its fail-fast posture
