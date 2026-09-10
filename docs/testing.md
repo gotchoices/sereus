@@ -427,8 +427,17 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   live in `child-node-fixtures.ts`.
 - Relayed control plane (a control node with no inbound reachability of its own, reserving a
   circuit-relay slot on a sibling and being dialed through it) —
-  `relay-only-control-addr.integration.ts`. The control plane only — see the last uncovered
-  class below for the strand plane.
+  `relay-only-control-addr.integration.ts`. The control plane only; the strand plane is the
+  line below.
+- Relayed strand plane, one party, both machines relay-only (neither `CadreNode` listens at
+  all; a dedicated ungated relay — `harness/dedicated-relay.ts`, the loopback stand-in for the
+  `ops/docker/libp2p-infra` container — carries the control mesh, the strand-addr RPC, and the
+  strand mesh, with App rows replicating both ways over the circuit) —
+  `strand-circuit-same-party-e2e.integration.ts`. It also measures the relay-slot cost (one
+  reservation per node per network) and characterizes relay restart: control reservations
+  recover, strand reservations do not (ticket
+  `bug-strand-relay-reservation-not-resupervised`). Same party only — the cross-party relayed
+  strand shape is not covered.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
@@ -442,9 +451,10 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   claims only; the physical story for the shape stays with the line above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
-- **Uncovered**: relayed strand plane / per-strand NAT reachability (a strand node earning its
-  own relay reservation, separately from its control node's) — ticket
-  `strand-network-nat-relay-reachability`.
+- **Uncovered**: relayed strand plane ACROSS parties (two parties, each machine relay-only,
+  sharing one strand through a relay — formation handing the far party a relay-routed strand
+  address). The same-party half is covered by the line above; the cross-party half is queued as
+  `formation-carries-strand-addrs` / `blind-relay-phone-to-phone-e2e`.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology

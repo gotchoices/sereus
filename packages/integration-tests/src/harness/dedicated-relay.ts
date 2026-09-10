@@ -40,8 +40,21 @@ import { identify } from '@libp2p/identify';
 import { circuitRelayServer, type CircuitRelayService } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
+import type { Identify } from '@libp2p/identify';
 
-/** Generous slot cap, mirroring the ops container's raised default (500). */
+/** The relay node's service map, so `services.relay` needs no cast to reach. */
+interface RelayServices extends Record<string, unknown> {
+  identify: Identify;
+  relay: CircuitRelayService;
+}
+
+type RelayNode = Libp2p<RelayServices>;
+
+/**
+ * Generous slot cap — the same posture as the ops container's raised default
+ * (`RELAY_MAX_RESERVATIONS`, 500), sized down because no scenario runs anywhere
+ * near a hundred nodes and libp2p's own default of 15 is what we must clear.
+ */
 const DEFAULT_MAX_RESERVATIONS = 100;
 
 export interface DedicatedRelayOptions {
@@ -51,7 +64,7 @@ export interface DedicatedRelayOptions {
 
 export interface DedicatedRelay {
   /** The live relay libp2p node (rebuilt by {@link DedicatedRelay.restart}). */
-  readonly node: Libp2p;
+  readonly node: RelayNode;
   /** The relay's peerId — stable across {@link DedicatedRelay.restart}. */
   readonly peerId: string;
   /**
@@ -77,17 +90,12 @@ export interface DedicatedRelay {
   stop(): Promise<void>;
 }
 
-/** The relay's circuit-relay service, for the reservation store. */
-function relayService(node: Libp2p): CircuitRelayService {
-  return (node.services as { relay: CircuitRelayService }).relay;
-}
-
 async function createRelayNode(
   privateKey: PrivateKey,
   listenAddr: string,
   maxReservations: number
-): Promise<Libp2p> {
-  return await createLibp2p({
+): Promise<RelayNode> {
+  return await createLibp2p<RelayServices>({
     privateKey,
     addresses: { listen: [listenAddr] },
     transports: [webSockets()],
@@ -114,27 +122,38 @@ export async function startDedicatedRelay(opts: DedicatedRelayOptions = {}): Pro
   const privateKey = await generateKeyPair('Ed25519');
 
   let node = await createRelayNode(privateKey, '/ip4/127.0.0.1/tcp/0/ws', maxReservations);
+  const peerId = node.peerId.toString();
   const dialAddr = node.getMultiaddrs().map(String).find((a) => a.includes('/ws'));
-  if (dialAddr === undefined) {
-    await node.stop();
-    throw new Error('dedicated relay bound no WebSocket listener');
-  }
   // The OS-assigned listen entry, re-bound verbatim by restart() so dialAddr
-  // stays true. dialAddr is `<listen>/p2p/<peerId>`; strip the p2p suffix.
-  const listenAddr = dialAddr.slice(0, dialAddr.indexOf('/p2p/'));
+  // stays true. dialAddr is `<listen>/p2p/<peerId>`; strip the p2p suffix
+  // explicitly rather than by index, so a shape change fails loudly instead of
+  // silently yielding a truncated listen addr.
+  const p2pSuffix = `/p2p/${peerId}`;
+  if (dialAddr === undefined || !dialAddr.endsWith(p2pSuffix)) {
+    await node.stop();
+    throw new Error(`dedicated relay bound no dialable WebSocket listener (addrs: ${node.getMultiaddrs().map(String).join(', ') || 'none'})`);
+  }
+  const listenAddr = dialAddr.slice(0, -p2pSuffix.length);
 
   return {
     get node() {
       return node;
     },
-    peerId: node.peerId.toString(),
+    peerId,
     dialAddr,
     reservationCount() {
-      return relayService(node).reservations.size;
+      return node.services.relay.reservations.size;
     },
     async restart() {
       await node.stop();
       node = await createRelayNode(privateKey, listenAddr, maxReservations);
+      // A restart that silently landed elsewhere would look exactly like the
+      // fault the restart scenarios characterize (nobody re-reserves), so the
+      // re-bind is verified rather than assumed.
+      const rebound = node.getMultiaddrs().map(String);
+      if (!rebound.includes(dialAddr)) {
+        throw new Error(`dedicated relay restarted on a different address: expected ${dialAddr}, got ${rebound.join(', ') || 'none'}`);
+      }
     },
     async stop() {
       await node.stop();

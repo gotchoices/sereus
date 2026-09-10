@@ -917,7 +917,9 @@ per network** — two machines running one strand hold four slots (2 control +
 2 strand), so each additional strand a machine serves through a relay costs it
 one more slot.
 
-**Strand launch while the relay is down** is fail-then-retry, not fail-fast: the
+**Strand launch while the relay is down** is fail-then-retry, not fail-fast —
+read off the code, not measured by a scenario (unlike the two claims either side
+of it): the
 configured circuit listener dials the relay from inside `libp2p.start()`, so the
 launch throws, nothing is left tracked, and `StrandWatcher` re-attempts on its
 poll under a per-strand backoff (never abandoned — see `strand-watcher.ts`). The

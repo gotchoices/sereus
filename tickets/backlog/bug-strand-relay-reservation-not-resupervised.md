@@ -65,7 +65,14 @@ The control node's supervisor is per-libp2p-node machinery
 the likely fix is running one supervisor per strand node — but strand nodes
 reserve via the CONFIGURED listener, not the search listener, so the drive
 (`addRelay(peerId, 'discovered')` consuming a pending reservation id) does not
-apply as-is; either the strand node switches to a search listener plus an
-explicit drive, or a configured-route re-listen is added. Whichever way, the
+apply as-is: `#removeReservation` only re-queues a pending id when the removed
+reservation's `type` was `'discovered'`, and `addRelay(…, 'discovered')` throws
+`HadEnoughRelaysError` when the pending list is empty — which for a
+configured-only node it always is. Three candidate shapes, in rising cost:
+drive the strand node's re-reservation with `addRelay(peerId, 'configured')`
+instead (the same store call the configured listener itself makes, and it has
+no pending-id precondition — so `driveRelayReservation` would need the type as
+a parameter); or switch strand nodes to a search listener plus an explicit
+drive; or add a configured-route re-listen. Whichever way, the
 tripwire already exists: the scenario's inverted gate FAILS the day strand
 reservations start recovering, so this ticket becoming obsolete is self-flagging.

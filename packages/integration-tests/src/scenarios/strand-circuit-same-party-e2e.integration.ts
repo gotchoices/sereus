@@ -204,8 +204,12 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			const seed = await collectStrandAddrs(B.getControlNode()!, [{ peerId: aPeerId }], strandId);
 			expect(seed.length).toBeGreaterThan(0);
 			expect(seed[0]!).toContain('/p2p-circuit');
+			// Compared against A's LIVE strand addrs, sampled now — a snapshot taken
+			// before the RPC could go stale if A gained an addr in between, which
+			// would fail this on a timing accident rather than on a real mismatch.
+			const aStrandAddrsNow = aStrandNode.getMultiaddrs().map(String);
 			for (const addr of seed) {
-				expect(aStrandAddrs).toContain(addr);
+				expect(aStrandAddrsNow).toContain(addr);
 				expect(addr).not.toContain(aPeerId);
 			}
 
@@ -304,6 +308,14 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 				}),
 			).rejects.toThrow(/Timeout/);
 
+			// NOTE: 15 s is a window, not a proof of "never" — `waitUntil` also
+			// swallows a throwing condition, so the gate alone could pass for the
+			// wrong reason. The two assertions below are the non-swallowing half of
+			// the claim (client side and relay side). If a future libp2p ever
+			// re-reserves a configured route on a cadence SLOWER than this window,
+			// the gate starts passing vacuously — widen it then, and re-read
+			// `backlog/bug-strand-relay-reservation-not-resupervised`.
+			expect(strandRecovered()).toBe(false);
 			// Only the two control reservations came back.
 			expect(relay.reservationCount()).toBe(2);
 			console.log('[strand-circuit] relay reservations after restart: %d (control only — strand reservations did not recover)',
