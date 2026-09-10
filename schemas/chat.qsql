@@ -102,6 +102,10 @@ declare schema Chat {
         -- this schema, so the bare form reads as a table reference to a human. Clarity,
         -- not a behaviour change. (Inside a subquery the qualification IS load-bearing —
         -- see Invite.InsertValid.)
+        -- NOTE: the rename digest carries no nonce or version, so a previously
+        -- observed valid rename can be replayed verbatim to revert the name to an
+        -- older value. Worst case is reverting to a name the member once chose;
+        -- bind a monotonic value into the digest if that ever matters.
         constraint UpdateValid check on update (
             -- Only the name can change
             new.Id = old.Id and new.CanInvite = old.CanInvite
@@ -197,6 +201,10 @@ declare schema Chat {
         -- schemas/chat-simple.qsql uses a locally generated text UUID key instead.
         constraint IdValid check (new.Id >= 0 and (new.Id = 0 or exists (select 1 from Message M where M.Id = new.Id - 1))),
         -- Member authorized: the signing key must be one this member has registered.
+        -- NOTE: the digest binds (Id, MemberId, Content) but not Timestamp. A replayed
+        -- signature on the same Id is refused locally by the primary key, but under the
+        -- concurrent last-writer-wins hazard described above it could reseat a message
+        -- with a different timestamp; bind the timestamp if concurrency ever arrives.
         constraint MessageAuthorized check on insert (
             exists (select 1 from MemberKey K where K.Key = context.MemberKey and K.MemberId = new.MemberId)
                 and verify(digest(new.Id, new.MemberId, new.Content), context.MemberSignature, context.MemberKey, 'ed25519')

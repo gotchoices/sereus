@@ -575,6 +575,45 @@ describe('Chat reference schemas (write-through e2e)', () => {
 			[invite2.publicKey, m2KeySig, m2Key.publicKey],
 		);
 
+		// ── Cross-member forgery ──────────────────────────────────────────────────
+		// 'm2' holds a perfectly good REGISTERED key — and still cannot write in
+		// 'm1''s name. This is the case the sweep cannot express (its attacker key is
+		// unregistered): each authorization constraint must bind the signer to the
+		// AUTHOR, not merely to "some member". A constraint that degraded to the
+		// latter would pass the sweep and every author-signed positive above.
+		const forgedMsgSig = await signDigest(chatDb, '?, ?, ?', [3, 'm1', 'forged as alice'], m2Key.privateKey);
+		await expectRefusedBy(
+			() => chatDb.exec(
+				`insert into App.Message (Id, Timestamp, MemberId, Content)
+					with context MemberKey = ?, MemberSignature = ?, now = ?
+					values (3, ?, 'm1', 'forged as alice')`,
+				[m2Key.publicKey, forgedMsgSig, now, now],
+			),
+			'MessageAuthorized',
+		);
+		const forgedAttachSig = await signDigest(
+			chatDb, '?, ?, ?, ?, ?', [0, 5, 'text/plain', null, new Uint8Array([7])], m2Key.privateKey,
+		);
+		await expectRefusedBy(
+			() => chatDb.exec(
+				`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
+					with context now = ?, MemberKey = ?, MemberSignature = ?
+					values (0, 5, ?, 'text/plain', null, ?)`,
+				[now, m2Key.publicKey, forgedAttachSig, now, new Uint8Array([7])],
+			),
+			'AttachmentAuthorized',
+		);
+		const forgedResponseSig = await signDigest(chatDb, '?, ?', [0, 2], m2Key.privateKey);
+		await expectRefusedBy(
+			() => chatDb.exec(
+				`insert into App.Response (OriginalId, ResponseId)
+					with context MemberKey = ?, MemberSignature = ?
+					values (0, 2)`,
+				[m2Key.publicKey, forgedResponseSig],
+			),
+			'ResponseAuthorized',
+		);
+
 		// ── A one-time invitation cannot be redeemed twice ────────────────────────
 		// `invite2` is OneTime and already spent by 'm2'. `UsedInvite.ValidUsage` must
 		// compare its redemption count against a limit; the bare `count(1)` it used to
