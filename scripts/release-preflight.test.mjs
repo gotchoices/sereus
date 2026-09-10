@@ -14,6 +14,8 @@ import {
 	CHECK_STEPS,
 	CONFIRM_WORD,
 	isConfirmed,
+	notesState,
+	releaseBlockers,
 	resolveBypass,
 	resolvePlannedDistTag,
 	warningsFor,
@@ -89,7 +91,7 @@ test('unavailable git facts produce no tree warnings rather than throwing', () =
 	assert.equal(warningsFor({ ok: false }, undefined).length, 1);
 });
 
-test('being ahead of origin is not a warning — bump pushes', () => {
+test('being ahead of origin is not a warning — release-finish pushes at the end', () => {
 	const ahead = { ok: true, dirty: false, ahead: '5', behind: '0' };
 	assert.deepEqual(warningsFor(ahead, 'alpha'), []);
 });
@@ -107,4 +109,55 @@ test('the advertised check steps match the scripts a release actually depends on
 	for (const [command, purpose] of CHECK_STEPS) {
 		assert.ok(purpose.length > 0, `${command} has no stated purpose`);
 	}
+});
+
+test('notesState: missing, header-only, and header-plus-whitespace are all "not written yet"', () => {
+	assert.equal(notesState(undefined), 'missing');
+	assert.equal(notesState('# Release notes — pending\n'), 'empty');
+	// Whitespace after the header is still nobody having written anything.
+	assert.equal(notesState('# Release notes — pending\n\n   \n	\n'), 'empty');
+	assert.equal(notesState('# Release notes — pending\n\n- fixed the thing\n'), 'ok');
+});
+
+test('an unusable gh is refused before the bump, because it would fail after the publish', () => {
+	const missing = releaseBlockers({ ghEnabled: true, ghAuth: 'missing', notes: 'ok' });
+	assert.equal(missing.length, 1);
+	assert.match(missing[0], /`gh` could not be run/);
+	assert.match(missing[0], /SEREUS_GH_RELEASE=0/);
+
+	const loggedOut = releaseBlockers({ ghEnabled: true, ghAuth: 'unauthenticated', notes: 'ok' });
+	assert.equal(loggedOut.length, 1);
+	assert.match(loggedOut[0], /gh auth login/);
+});
+
+test('release notes nobody wrote are refused, whether the file is absent or still empty', () => {
+	const missing = releaseBlockers({ ghEnabled: true, ghAuth: 'ok', notes: 'missing' });
+	assert.equal(missing.length, 1);
+	assert.match(missing[0], /does not exist/);
+
+	const empty = releaseBlockers({ ghEnabled: true, ghAuth: 'ok', notes: 'empty' });
+	assert.equal(empty.length, 1);
+	assert.match(empty[0], /nothing beyond its header/);
+});
+
+test('both refusals fire together rather than one release attempt each', () => {
+	assert.equal(releaseBlockers({ ghEnabled: true, ghAuth: 'unauthenticated', notes: 'empty' }).length, 2);
+});
+
+test('a usable gh and written notes block nothing', () => {
+	assert.deepEqual(releaseBlockers({ ghEnabled: true, ghAuth: 'ok', notes: 'ok' }), []);
+});
+
+test('SEREUS_GH_RELEASE=0 is one hatch for both checks, not one per check', () => {
+	assert.deepEqual(releaseBlockers({ ghEnabled: false, ghAuth: 'missing', notes: 'missing' }), []);
+});
+
+test('skipping the GitHub release is reported prominently, as a warning of its own', () => {
+	const clean = { ok: true, dirty: false, ahead: '0', behind: '0' };
+	const warnings = warningsFor(clean, 'alpha', false);
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0], /SEREUS_GH_RELEASE=0/);
+	assert.match(warnings[0], /pending notes will be left untouched/);
+	// It is the most consequential fact about the run, so it comes first.
+	assert.match(warningsFor(clean, undefined, false)[0], /SEREUS_GH_RELEASE=0/);
 });

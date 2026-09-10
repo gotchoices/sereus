@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import semver from 'semver';
 
+import { registryHasVersion } from './lib/release-support.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(scriptDir, '..');
 
@@ -154,6 +156,25 @@ async function main() {
 	// four (with one..three already on npm under the resolved tag) costs a full
 	// rebuild and cannot undo what already published.
 	assertDistTagForPrerelease(manifest.name, manifest.version, tag);
+
+	// Resumability. `yarn pub` is five sequential publishes; if the third one fails its build, the
+	// first two are already on npm and npm refuses to publish over an existing version, so a naive
+	// re-run dies on package one and the release can never be finished. Skipping what is already
+	// there makes `yarn pub` pick up exactly where it stopped.
+	//
+	// `registryHasVersion` throws rather than answering when it cannot reach the registry: "could
+	// not ask" is not "not published", and treating it as such would skip a publish that never
+	// happened.
+	// NOTE: a skip is decided by version alone, not by which dist-tag the existing version carries.
+	// If a resumed `yarn pub` is run under a *different* SEREUS_DIST_TAG than the run it is resuming,
+	// the already-published packages keep the original tag while the rest get the new one. Fine
+	// today, because a resume means re-running the same command; if resuming ever becomes something
+	// a script does on the operator's behalf, compare the tag here too (`npm dist-tag ls`) rather
+	// than only the version.
+	if (await registryHasVersion(manifest.name, manifest.version)) {
+		console.log(`${manifest.name}@${manifest.version} is already on npm — skipping.`);
+		return;
+	}
 
 	console.log(`Publishing ${manifest.name}@${manifest.version} under dist-tag: ${tag ?? 'latest (npm default)'}`);
 
