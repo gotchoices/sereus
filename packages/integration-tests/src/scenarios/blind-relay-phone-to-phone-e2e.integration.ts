@@ -57,7 +57,7 @@
  * ── Out of scope, deliberately ──
  * TWO relays (A and B each reserved on a different relay, so the circuit path
  * crosses relay boundaries) is untested — this scenario proves the one-shared-
- * relay shape only. Reservation loss under a running strand is characterized by
+ * relay shape only; ticket `feat-scenario-two-relay-circuit`. Reservation loss under a running strand is characterized by
  * the same-party sibling and not repeated here.
  *
  * Lookup shape: App.Data reads scan and filter in JavaScript — a where-equality
@@ -282,6 +282,12 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 
 			// The control link the formation rode is relay-carried and unlimited,
 			// on BOTH ends — classified, not assumed.
+			// NOTE: this samples the formation connection immediately after
+			// `formStrand` resolves, so it assumes libp2p still holds it open.
+			// True today (stable over 8 consecutive runs); if a future libp2p —
+			// or a cadre-side change — ever closes formation connections eagerly,
+			// this goes FLAKY rather than wrong: re-express it as a gate that
+			// captures the classification while the stream is live.
 			expectAllPathsRelayed(B.getControlNode()!, aPeerId, 'B control');
 			expectAllPathsRelayed(A.getControlNode()!, bPeerId, 'A control');
 

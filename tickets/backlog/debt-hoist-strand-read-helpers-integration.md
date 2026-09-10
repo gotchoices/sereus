@@ -78,3 +78,32 @@ test that flips is a real regression.
 - `debt-hoist-strand-tombstone-helpers` is the same shaped problem in `packages/cadre-core/test`,
   and explicitly declares the `integration-tests` copies out of its scope. The two do not
   overlap and neither blocks the other.
+
+## Second arm: the relay-path assertion helpers (added 2026-09-10)
+
+The `blind-relay-phone-to-phone-e2e` review found the same class in a second family, and
+the drift arrived with the copy, exactly as above. Counted 2026-09-10 with
+`grep -ln "function expectAllPathsRelayed\|async function readDataRows" packages/integration-tests/src/scenarios/*.ts`:
+
+| helper | copies | where |
+| --- | --- | --- |
+| `expectAllPathsRelayed` | 2 | `strand-circuit-same-party-e2e.integration.ts:99`, `blind-relay-phone-to-phone-e2e.integration.ts:124` |
+| `readDataRows` | 5 | `blind-relay-phone-to-phone-e2e`, `strand-circuit-same-party-e2e`, `harness-topology`, `strand-late-cadre-join`, `strand-two-party-two-machine` |
+| `isCircuit` / `GATE` | 2 each | the two relay scenarios |
+
+The drift: the newer `expectAllPathsRelayed` additionally asserts `conn.limits` is
+`undefined` — the live half of the dedicated relay fixture's `applyDefaultLimit: false`
+parity contract with `ops/docker/libp2p-infra`. The older copy does not, so the same-party
+relay scenario would not name that regression if it happened; it would only time out on
+replication. Hoisting must keep the stronger body (the limits check holds for both, since
+both use the same ungated fixture).
+
+Why this was NOT fixed inline at review time: every module under
+`packages/integration-tests/src/harness/` deliberately avoids importing `vitest` and
+throws plain `Error`s instead (stated at `harness/control-trio.ts:37`). Hoisting an
+`expect`-based assertion helper therefore needs a decision — either import `vitest` into
+one harness module and say why, or restate these as throwing helpers and accept the loss
+of vitest's assertion diffs. That decision belongs to this ticket, not to a review pass on
+an unrelated scenario.
+
+`SIMPLE_SCHEMA` (now twelve copies) stays out of scope for the same reason given above.

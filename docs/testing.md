@@ -469,7 +469,7 @@ scenarios whose subject is a protocol or a service rather than a network shape a
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a
   DIFFERENT relay, so the path between them crosses relay boundaries. Both relay scenarios
-  above share one relay.
+  above share one relay. Ticket `feat-scenario-two-relay-circuit`.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology

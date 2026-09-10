@@ -80,9 +80,13 @@ same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
 (one party's two machines over the same fixture) additionally pins the reservation-loss
 asymmetry — see [architecture.md → Relay Integration](architecture.md#relay-integration).
-Still open: TWO relays (the parties reserved on different relays) is untested, and
-discovery and roaming remain unsolved — a party that moves to a different relay after
-formation has no way to say so, and no way to be found.
+Still open, and NOT covered by that scenario: TWO relays (the parties reserved on
+different relays, so the path between them crosses relay boundaries — the ordinary case
+once each phone picks its own relay) is untested
+(`backlog/feat-scenario-two-relay-circuit`); discovery and roaming remain unsolved — a
+party that moves to a different relay after formation has no way to say so, and no way to
+be found; and the last bullet above (rejoining with a new phone after losing the old one)
+has no mechanism and no test.
 
 Open question: what is “the DHT” here?
 - Is a **cadre** its own DHT overlay?
