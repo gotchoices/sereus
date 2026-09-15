@@ -26,8 +26,9 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * The resolution was upstream's write-through raw-storage cache, which cadre-core
  * wires over every embedder-supplied storage (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`): what reaches
  * the backend now is dominated by the genuine writes plus one cold read per block.
- * **This spec is the guard that keeps that so** — a broken or unwired cache reverts
- * the count to ~2000 and fails the ceiling loudly.
+ * **This spec is the guard that keeps that so** — a broken or unwired cache roughly
+ * doubles the cold count (88 against 45 on 2026-09-14, the difference almost all
+ * repeated `getMetadata` reads) and fails the ceiling loudly.
  *
  * Nothing else in the suite would notice a change that doubled the count: the only
  * other signal is wall clock, which stays green on an idle machine while the
@@ -72,21 +73,26 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-10';
+const MEASURED_ON = '2026-09-14';
 /**
  * Cold: first-ever start against empty storage — 9 control tables and 1 index
  * created (StrandPartyKey joined the schema with the strand-party-member-key
- * ticket). 169 operations over 20 blocks: the 131 genuine writes, one `getMetadata`
- * per block, and a handful of cold list/read fills. History: 1541 uncached
- * (2026-08-12), 1983 after the upstream catalog re-read (2026-08-14), 172 over 21
- * blocks with the write-through cache wired (2026-08-17), 169 over 20 with the
- * 9-table schema (2026-09-10) — so a run near 2000 means the cache has left the
- * path.
+ * ticket). 45 operations over 20 blocks: 21 genuine writes over 3 blocks, one
+ * `getMetadata` per block, and a handful of cold list fills. The 131 writes of
+ * earlier measurements went with upstream's `APPLY SCHEMA` batching
+ * (`schema-batch-catalog-coalescing` and `schema-batch-index-tree-flush-deferral`
+ * in `../optimystic`): the catalog is committed once per apply, and an index on an
+ * empty table no longer writes its empty tree. History: 1541 uncached (2026-08-12),
+ * 1983 after the upstream catalog re-read (2026-08-14), 172 over 21 blocks with
+ * the write-through cache wired (2026-08-17), 169 over 20 with the 9-table schema
+ * (2026-09-10), 45 over 20 with schema batching (2026-09-14). The same batched
+ * start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a run
+ * near 90 that is mostly `getMetadata` means the cache has left the path.
  */
-const COLD: Budget = { ops: 169, blocks: 20, opBudget: 200, blockBudget: 24 };
+const COLD: Budget = { ops: 45, blocks: 20, opBudget: 55, blockBudget: 24 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
- * hydrates instead of the schema being applied. 46 operations over 22 blocks: a
+ * hydrates instead of the schema being applied. 44 operations over 22 blocks: a
  * cold CACHE over a warm STORE, essentially one read per block plus the hydrate's
  * list fills. The distinct-block count is two above cold (22 vs 20): the cold run had
  * not yet written the owner-key row this spec's genesis step leaves behind, and the
@@ -105,9 +111,9 @@ const COLD: Budget = { ops: 169, blocks: 20, opBudget: 200, blockBudget: 24 };
  * cache, not a restart). A device restart kills the process and the cache with it;
  * the fresh identity reproduces that. History: 315 uncached (2026-08-12), 463
  * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17),
- * 46 with the 9-table schema (2026-09-10).
+ * 46 with the 9-table schema (2026-09-10), 44 with schema batching (2026-09-14).
  */
-const WARM: Budget = { ops: 46, blocks: 22, opBudget: 65, blockBudget: 25 };
+const WARM: Budget = { ops: 44, blocks: 22, opBudget: 55, blockBudget: 25 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -148,7 +154,7 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 		`${phase} start issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
 		+ 'Start duration is operations × per-operation storage latency, so this is a real slowdown on a loaded disk or a phone. '
 		+ 'This fires FIRST when a control table is added too — check the distinct-block budget below before reading it as pure slowdown. '
-		+ 'A count near 2000 means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
+		+ 'A count about double the measurement, mostly repeated getMetadata reads, means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
 		+ `History in tickets/complete/optimystic-block-read-amplification-on-control-start.md. ${breakdown}`
 	).toBeLessThanOrEqual(budget.opBudget);
 

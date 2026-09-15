@@ -66,23 +66,33 @@ const VERSION = '1.0.0';
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-08-17';
+const MEASURED_ON = '2026-09-14';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * membership schema (8 tables + 1 index) + the one-table sApp schema applied,
- * open-strand founder bootstrap (Header row only). 168 over 17 blocks: the same
- * 130 writes every earlier measurement carried, one `getMetadata` per block, and
- * a handful of cold fills. History: 1613 uncached (2026-08-13, when the retired
+ * open-strand founder bootstrap (Header row only). 78 over 17 blocks: 54 genuine
+ * writes over 6 blocks, one `getMetadata` per block, and a handful of cold fills.
+ * The 130 writes of earlier measurements went with upstream's `APPLY SCHEMA`
+ * batching (`schema-batch-catalog-coalescing` and
+ * `schema-batch-index-tree-flush-deferral` in `../optimystic`): the catalog is
+ * committed once per apply, and an index on an empty table no longer writes its
+ * empty tree. History: 1613 uncached (2026-08-13, when the retired
  * local-transactor baseline measured 1592 over the same blocks), 1979 after the
  * upstream catalog re-read (2026-08-14), 168 with cadre-core's write-through
- * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17) — a run near 2000 means the
+ * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17),
+ * 78 with schema batching (2026-09-14). The same batched launch measured 322
+ * uncached on 2026-09-14 (155 of them `getMetadata`) — a run near that means the
  * cache has left the path.
  */
-const LAUNCH: Budget = { ops: 168, blocks: 17, opBudget: 195, blockBudget: 20 };
+const LAUNCH: Budget = { ops: 78, blocks: 17, opBudget: 95, blockBudget: 20 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
- * 75 over 3 blocks — nearly all writes (the cache absorbs the transactor's
- * re-reads; 366 uncached on 2026-08-13).
+ * 86 over 3 blocks — nearly all writes (the cache absorbs the transactor's
+ * re-reads; 366 uncached on 2026-08-13). It was 75 on 2026-08-17. The 11-operation
+ * rise (mostly `saveMaterializedBlock`, 17 against 11 of each other commit step) showed up in the same
+ * upstream window as the launch drop and has not been attributed. It repeats
+ * exactly across runs and stays under the ceiling. With 4 operations of headroom,
+ * the next rise here should be explained before anyone raises the budget.
  */
 const INSERT: Budget = { ops: 75, blocks: 3, opBudget: 90, blockBudget: 5 };
 /**
@@ -97,7 +107,7 @@ const INSERT: Budget = { ops: 75, blocks: 3, opBudget: 90, blockBudget: 5 };
  * re-baseline rather than loosening — and note the insert phase's writes, which have
  * real slack, already carry the anti-vacuity duty for the spec as a whole.
  */
-const SELECT: Budget = { ops: 2, blocks: 2, opBudget: 15, blockBudget: 4 };
+const SELECT: Budget = { ops: 2, blocks: 1, opBudget: 15, blockBudget: 4 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
