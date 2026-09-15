@@ -206,7 +206,9 @@ export class PersistentBootstrapPeerStore implements BootstrapPeerStore {
 	 * (see `NodeLocalSnapshot.remove`).
 	 */
 	forget(peerId: string): Promise<void> {
-		log('bootstrap peer forgotten (party=%s, peer=%s)', this.partyId, peerId);
+		if (this.snapshot.has(peerId)) {
+			log('bootstrap peer forgotten (party=%s, peer=%s); persisting', this.partyId, peerId);
+		}
 		return this.snapshot.remove(peerId);
 	}
 }

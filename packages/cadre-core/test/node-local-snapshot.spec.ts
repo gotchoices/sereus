@@ -315,4 +315,25 @@ describe('PersistentBootstrapPeerStore over a DurableSlot', () => {
 		const reloaded = await PersistentBootstrapPeerStore.open(slot, PARTY);
 		expect([...reloaded.all().keys()].sort()).toEqual([a, b].sort());
 	});
+
+	it('forget() joins the same write chain as record(): one save at a time, the removal landing last', async () => {
+		const slot = new GatedSlot();
+		const store = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		const [kept, dropped] = [await realPeerId(), await realPeerId()];
+
+		const writes = [
+			store.record(kept, ['/ip4/1.1.1.1/tcp/1/ws']),
+			store.record(dropped, ['/ip4/2.2.2.2/tcp/2/ws']),
+			store.forget(dropped),
+		];
+		// untilSaveCount fails if a later write started its save before the earlier one landed.
+		for (let count = 1; count <= writes.length; count++) {
+			await untilSaveCount(slot, count);
+			slot.releaseNext();
+		}
+		await Promise.all(writes);
+
+		expect(Object.keys(JSON.parse(slot.saveCalls[2]).peers)).toEqual([kept]);
+		expect([...(await PersistentBootstrapPeerStore.open(slot, PARTY)).all().keys()]).toEqual([kept]);
+	});
 });

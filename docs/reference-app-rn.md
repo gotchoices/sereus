@@ -169,7 +169,7 @@ The set of owner public keys this device believes speak for its party — what s
 
 The anchor is not secret but it **is** trust-bearing — anything that can silently edit it can make this device trust a stranger — so it gets the most tamper-resistant store the app has, and shares the identity key's fate (including surviving an iOS reinstall, which is the desirable direction: same peer id, same trusted owners). The slot is ungated for the same headless reason as above, and `secureStoreSlot` **refuses** a gated slot outright: its "a `null` read means absent" mapping would misreport a biometric-invalidated anchor as empty, and the next snapshot write would make that permanent.
 
-### Cold-start bootstrap peers (app-private LevelDB)
+### Bootstrap dial targets (app-private LevelDB)
 
 The dial targets the node learned out of band: the owner peers of every seed it has applied, and every node it added (a lent cadre-host node, a provider drone). They are the only addresses a stranded node has to re-dial its way back into the party, and the only ones the phone has for a node it added until that node publishes a signed address record. Persisted by cadre-core's `PersistentBootstrapPeerStore` over a `kvStoreSlot`: one key of a `LevelDBKVStore` in the app-private `sereus-node-local` database, separate from any strand's database so clearing it cannot disturb replicated data.
 

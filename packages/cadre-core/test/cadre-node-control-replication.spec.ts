@@ -94,6 +94,10 @@ function inject(
       reauthorizePeer: async (peerId: string, updatedAt: number) => { seed.reauthorizeCalls.push({ peerId, updatedAt }); },
       removePeer: async (peerId: string) => { seed.removeCalls.push(peerId); },
       authorizePeer: async (o: { peerId: string }) => { seed.authorizeCalls.push(o.peerId); },
+      addDrone: async (o: { dronePeerId: string }) => {
+        seed.authorizeCalls.push(o.dronePeerId);
+        return { seed: {}, encodedSeed: '' };
+      },
       reissueRevocations: async (rows: readonly RevRow[], reissuedAt: number) => {
         if (seed.reissueRevocationsError) { throw seed.reissueRevocationsError; }
         seed.reissueRevocationsCalls.push({ rows: [...rows], reissuedAt });
@@ -134,7 +138,22 @@ const revRow = (stampId: string, reissuedAt = 0): RevRow =>
   ({ tableName: 'CadrePeer', rowKey: `row-of-${stampId}`, stampId, reissuedAt });
 
 describe('CadreNode write-while-alone re-replication', () => {
-  describe('queueing (noteControlWrite via authorizePeer / removePeer)', () => {
+  describe('queueing (noteControlWrite via authorizePeer / addDrone / removePeer)', () => {
+    it('queues an addDrone that committed while alone, as authorizePeer does', async () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 0 });
+      await node.addDrone({ dronePeerId: 'drone-X', droneMultiaddrs: [] });
+      expect(pending(node).get('drone-X')).toBe('authorize');
+    });
+
+    it('does NOT queue (and clears) an addDrone that committed while connected', async () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 1 });
+      pending(node).set('drone-X', 'authorize');
+      await node.addDrone({ dronePeerId: 'drone-X', droneMultiaddrs: [] });
+      expect(pending(node).has('drone-X')).toBe(false);
+    });
+
     it('queues an authorize that committed while alone (0 connections)', async () => {
       const node = new CadreNode(createConfig());
       inject(node, { connections: 0 });

@@ -1,58 +1,41 @@
-description: On a real Android phone the reference app cannot create a chat strand, because the Quereus SQL engine, as compiled for React Native, never releases its database lock when a query is stopped after its first row. The fix belongs to the Quereus project; this ticket waits for it to land, then needs someone with the phone to confirm strand creation works.
+description: On a real Android phone the reference app could not create a chat strand, because an outdated Babel helper (the code that compiles async loops for React Native) left the database locked. The helper is now upgraded; someone with the phone needs to confirm strand creation works, then close this ticket.
 files:
-  - ../quereus/tickets/implement/async-generator-finally-await-leaks-under-babel.md (the engine fix this waits on)
-  - ../quereus/tickets/implement/lint-async-generator-finally-tail-await.md (Quereus's lint rule for the same code shape)
-  - packages/cadre-core/src/strand-membership-writer.ts:256-283 (`strandTableCount`, `strandHasManagerRevocation` — the early-exit reads that trigger the hang)
-  - packages/cadre-core/src/strand-database.ts:142 (`bootstrapFounder`, whose insert waits forever)
+  - packages/reference-app-rn/package.json (`@babel/runtime` floor `^7.29.2`)
+  - yarn.lock (`@babel/core`, `@babel/helpers`, `@babel/runtime` all 7.29.7)
+  - ../quereus/tickets/review/eval-early-exit-leaks-exec-mutex-under-babel.md (Quereus's diagnosis and its fail-loud probe)
+  - packages/cadre-core/src/strand-database.ts:142 (`bootstrapFounder`, whose insert waited forever)
+  - packages/cadre-core/src/strand-membership-writer.ts:256-283 (`strandTableCount`, `strandHasManagerRevocation` — early-exit reads that triggered it)
   - packages/reference-app-rn/app/settings.tsx (Create Chat Strand handler)
-  - packages/reference-app-rn/metro.config.js (Metro reads the sibling `../quereus` checkout)
-  - docs/testing.md (§ Lint coverage — the tripwire recorded by this ticket)
+  - docs/testing.md (§ Lint coverage — Babel helper floor)
 repro: verified
 ----
 
-# Founding a strand on a solo phone hangs — waiting on the Quereus engine fix
+# Founding a strand on a solo phone hangs — fix landed, needs a device run
 
 ## Why this is blocked
 
-The defect is in `../quereus`, a separate repository, and confirming the fix needs a physical Android device. Nothing in this repo needs to change.
+Category (b), dependency outside the repo: confirming the fix needs a physical Android device, and none is attached to the agent machine (`adb devices` empty on 2026-09-15). **Unblock when** someone can drive the phone. If the run passes, move this ticket to `complete/`; no further code change is expected.
 
-**Unblock when** `../quereus` ticket `async-generator-finally-await-leaks-under-babel` has reached its `complete/` folder, or is listed in `../quereus/tickets/.pruned-tickets.jsonl`, **and** someone can drive the phone.
+## Root cause
 
-## Root cause (found 2026-09-15, on the device)
+- **The stuck step.** `StrandDatabase.bootstrapFounder` runs `db.exec('insert into Strand.Header …')`, which waited forever for Quereus's execution lock. The read just before it, `strandTableCount`, leaves its `for await (… of db.eval(…))` loop after the first row; that early exit never released the lock.
+- **The defect.** Hermes has no native async generators, so Metro's Babel compiles them using the `wrapAsyncGenerator` helper. In `@babel/runtime` and `@babel/helpers` up to 7.28.6, when the consumer stops iterating, the helper answers the first `await` inside the generator's `finally` with a second `return()`, dropping the rest of the cleanup. Quereus's `_evalGenerator` ends `finally { await stmt.finalize(); releaseMutex(); }`, so `releaseMutex()` never ran. Fixed upstream in 7.29.2 (2026-03-16). Node runs generators natively, which is why every headless run finished.
+- **Why the lockfile was old.** Every Expo/RN package declares `@babel/runtime` `^7.20.0`; the lockfile had simply never been refreshed past 7.28.6.
 
-- **The stuck step.** Strand founding runs `StrandDatabase.bootstrapFounder`, whose `db.exec('insert into Strand.Header …')` waits forever for Quereus's execution lock (`Database._acquireExecMutex`). The read just before it, `strandTableCount`, leaves its `for await (… of db.eval(…))` loop after the first row, and that early exit never released the lock.
-- **Why only on the phone.** Hermes has no native async generators, so Metro's Babel compiles them. With that compiled form, when a consumer stops iterating, the generator's `finally` block skips everything after an `await` that is not the block's last action. Quereus's `_evalGenerator` ends with `finally { if (stmt) { await stmt.finalize(); } releaseMutex(); }`, so `releaseMutex()` never runs. Node runs generators natively and releases normally, which is why every headless run finished.
-- **Evidence.** On the device: `execMutexDepth: 1`, with the pending chain `initialize` → `bootstrapFounder` → `exec` → `_withMutex` → `_acquireExecMutex`. A fresh in-memory Quereus database leaked the same way. Patching `Database.prototype.eval` in the live app so an early exit drains the iterator made a founding that always hung finish in 2.7 s (strand `active`, lock depth 0). Quereus's implement ticket adds a behaviour table measured with the Babel plugin alone, plus end-to-end runs of the engine under that compilation.
-- **Earlier hypotheses, all ruled out:** the tap never reaching the handler, slow CPU on Hermes (the JS thread idled at about 5 %), a stuck WebRTC, LevelDB or `AbortSignal` wait, and a swallowed error.
+## Fix (2026-09-15)
 
-## Checked in the fix stage (2026-09-15)
+- `reference-app-rn` declares `@babel/runtime` `^7.29.2`; `yarn up -R @babel/core @babel/helpers @babel/runtime` moved all three to 7.29.7 (`yarn why` confirms no older copy remains).
+- Babel-level check, compiling an eval-shaped generator (`await` then lock release in `finally`, consumer `break`s after the first row) with the app's `babel-preset-expo` and Metro caller settings for Android: before the bump `locked: true`, cleanup tail skipped; after the bump `locked: false`, cleanup tail ran. The compiled output imports `@babel/runtime/helpers/wrapAsyncGenerator`, so `@babel/runtime` is the package that matters at run time.
+- Quereus (`ac4b72bc8`, in its `review/`) adds a probe that throws `QuereusError` `UNSUPPORTED` naming the upgrade instead of hanging, and dropped its earlier plan to rewrite ~20 `finally` blocks and add a lint rule. Sereus does not need that release for this fix.
+- **Not run:** `yarn workspace @serfab/reference-app-rn test` stopped in its stale-build guard (`@optimystic/db-core` dist older than src, another session editing optimystic). The bump touches only Babel packages.
 
-- **Quereus has the fix designed.** Its fix stage produced two implement tickets, uncommitted in `../quereus` at `e2efeb2a4`:
-  - `async-generator-finally-await-leaks-under-babel`: rewrites the four unsafe `finally` blocks and adds a regression test that runs the engine compiled by Babel.
-  - `lint-async-generator-finally-tail-await`: a lint rule for the code shape. It lists this ticket's slug as a consumer, so keep the slug unchanged.
-- **`Database.get` does not hang, but it is not clean either.** `Statement.get` holds the lock in `_runWithMutex`, a regular async function, and only `break`s out of the row generator. A Babel model of that shape (the same `babel-preset-expo` 13.2.5 and `@babel/core` 7.29.0 that the RN app resolves, Node 24) showed:
+## Device run
 
-  | shape | native | Babel |
-  |---|---|---|
-  | `get`-style: lock held by a regular async function, `break` out of a generator whose `finally` awaits before clearing `busy` | lock released, both disconnects run, `busy` cleared | lock released; **no disconnects, `busy` stays true** |
-  | `eval`-style: the generator holds the lock and releases it after an `await` | lock released | **lock held** |
-
-  So rewriting Sereus reads to use `db.get` would avoid the hang, but still leak the statement's inner-scan connections. Quereus's ticket fixes that site (`statement.ts` `_iterateRowsRawInternal`) too.
-- **Sereus has no unsafe code of its own.** Its only async generator in shipping code is `scanMemberPeers` (`strand-membership-writer.ts:1154`), which has no `try/finally`. The RN app's own `db.eval` loops (`chat-operations.ts` `queryMembers`, `queryMessages`) read every row and never stop early.
-
-## Decisions
-
-- **No Sereus-side workaround.** The early-exit reads in cadre-core are all affected: founding, a second founding, manager resign, and the manager checks at `strand-membership-writer.ts:295, 330, 372, 376, 1597, 1680, 1686, 1759`. Draining each loop, or switching to `db.get`, touches every one of them for a problem the engine fix removes completely, and the `db.get` route still leaks as shown above.
-- **No lint guard copied into Sereus now.** With one async generator and no `try/finally` in shipping code, a copy of Quereus's rule (a custom rule plus rule tests) would guard nothing that exists here. Recorded instead as a tripwire bullet in `docs/testing.md` § Lint coverage, with the revisit condition: adopt Quereus's rule once Sereus code that runs on React Native gains an async generator with a `try/finally`.
-- **No Sereus regression test for the engine behaviour.** Quereus's Babel-compiled regression test owns it.
-
-## When unblocked
-
-- Build Quereus so Metro sees the fix: `yarn workspace @quereus/quereus build` in `../quereus` (Metro reads the sibling checkout's `dist` through the root `resolutions` link and `metro.config.js`; the Quereus root `build` also builds UI, VS Code and web targets, which are not needed). Record `git -C ../quereus log -1 --oneline` and `git -C ../optimystic log -1 --oneline`, and whether each tree was dirty.
+- Restart Metro with a clean cache: `yarn workspace @serfab/reference-app-rn start --clear`. The debug dev client loads JS from Metro, so the Babel change needs no native rebuild. Optionally `yarn workspace @quereus/quereus build` in `../quereus` first so the bundle includes Quereus's probe. Record `git -C ../quereus log -1 --oneline` and `git -C ../optimystic log -1 --oneline`.
 - On the phone: Connect with an empty party id, then Create Chat Strand. Expect a `[settings] create strand <id8> pressed` line, then `succeeded in <n> ms` in logcat. Development builds also print `sereus:cadre:timing` start and end lines for every founding step. The runtime-patched run took 2.7 s. Any step with a start line but no end line is a new stall; name it.
-- Exercise the other early-exit reads: create a second strand, send a message in the first, then force-stop, relaunch and Connect again and check that any strand the app brings back still accepts writes. This ticket did not check whether the app restores strands after a restart.
+- Exercise the other early-exit reads: create a second strand, send a message in the first, then force-stop, relaunch and Connect again and check that any strand the app brings back still accepts writes.
+- If Quereus's `UNSUPPORTED` probe error appears, Metro is still serving an old `@babel/runtime`: check `yarn why @babel/runtime` and the Metro cache.
 - If a hang remains, read lock depth and pending calls through the debugger (see below) before guessing.
-- Once Quereus publishes a release containing the fix, raise the `@quereus/quereus` range in every Sereus package to it. `yarn dep-check` (`scripts/check-dep-ranges.mjs`) requires the declared range to match the linked version, and `yarn upgrade:quereus` does the bump. Without the bump, an app installing `@serfab/cadre-core` from npm can still get an unfixed Quereus.
 
 ## Doing the device run — lessons from 2026-09-15
 

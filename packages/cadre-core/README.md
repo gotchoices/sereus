@@ -154,6 +154,10 @@ const { seed, encodedSeed } = await node.addDrone({
 
 // Send to provider for drone initialization
 await provider.initializeNode(droneInfo.containerId, encodedSeed);
+
+// Dial the drone now from the addresses addDrone kept (a drone cannot dial a
+// phone); otherwise the next reconcile pass, about every 15 s, does it
+await node.reconcileControlCohort();
 ```
 
 ## API Reference

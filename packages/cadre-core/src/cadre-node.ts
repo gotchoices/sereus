@@ -6460,6 +6460,10 @@ export class CadreNode implements SAppIdLookup {
     await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs });
     // Queue for re-replication if this committed local-only (no connected cohort).
     this.noteControlWrite(peerId, 'authorize');
+    // NOTE: unlike addDrone, `multiaddrs` is not retained as a dial target: the
+    // flows that vouch through here have the new peer reach this node (it applies a
+    // seed naming the owners, or it dialed in with an invite). If one ever vouches a
+    // peer that cannot reach this node, retain its addresses as addDrone does.
   }
 
   /**
@@ -6624,7 +6628,10 @@ export class CadreNode implements SAppIdLookup {
    *
    * Nothing is dialed here: the drone has not received the seed yet. After
    * delivering it, call {@link reconcileControlCohort} to dial straight away;
-   * otherwise the next timed reconcile pass does.
+   * otherwise the next timed reconcile pass does. A pass already in flight is
+   * joined rather than restarted, and one that listed siblings before this add
+   * does not dial the drone, so a caller waiting for the connection should allow
+   * for one more timed pass.
    */
   async addDrone(options: AddDroneOptions): Promise<DroneInitResult> {
     if (!this.seedBootstrapService) {
@@ -6633,6 +6640,9 @@ export class CadreNode implements SAppIdLookup {
     // The drone's `CadrePeer` insert notifies the membership hub on the way to the
     // seed, so the per-stream gate already admits it here.
     const result = await this.seedBootstrapService.addDrone(options);
+    // Same queueing as authorizePeer: a phone adding its first always-on node has
+    // no control connection, so the insert usually committed local-only.
+    this.noteControlWrite(options.dronePeerId, 'authorize');
     this.retainDialTarget(options.dronePeerId, options.droneMultiaddrs, 'addDrone');
     return result;
   }

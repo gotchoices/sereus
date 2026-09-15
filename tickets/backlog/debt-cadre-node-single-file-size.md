@@ -103,3 +103,7 @@ Worth noting alongside it: `control-database.ts` is now the package's second-lar
 ## Re-measured 2026-09-15 (review of `revocation-ledger-marker`)
 
 `wc -l` → **6895** `packages/cadre-core/src/cadre-node.ts`, **2937** `packages/cadre-core/src/control-database.ts`. The node file is up from 6828 earlier the same day; the ledger-marker work added ~60 lines (a process flag, `openRevocationLedgerIfDue`, and one more step in the reconcile pass), again periodic control-mesh maintenance riding `runReconcileControlCohort`. `control-database.ts` gained ~130 lines (`openRevocationLedger`, its guard and conflict classifier). Evidence for this ticket, not a new one.
+
+## Re-measured 2026-09-15 (review of `owner-keeps-dialing-node-it-added`)
+
+`wc -l packages/cadre-core/src/cadre-node.ts` → **7024** lines at the implement commit (6895 at its parent), 7034 after the review's fixes. The dial-target work added ~130 lines: `refreshDialHint`, `retainedDialAddrs`, `retainDialTarget`, a third fallback in `resolveControlDialAddrs`, and their docs, again control-mesh maintenance riding `runReconcileControlCohort`. Evidence for this ticket, not a new one.
