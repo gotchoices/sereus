@@ -68,6 +68,14 @@ const NODE_PORT_KEYS = ['health', 'metrics', 'p2p', 'admin', 'ws'] as const;
  * key. Reserving is `markUsed`, a documented no-op outside the range — which is
  * the production case for the owner node's libp2p port, and why reserving first
  * leaves every real port assignment unchanged.
+ *
+ * NOTE: an override is trusted, not checked — `markUsed` does not refuse a port
+ * another handle already holds, nor two keys naming the same port. Safe for
+ * today's callers: a re-spawn's overrides were released by its own handle drop
+ * with no `await` in between, and the owner's `libp2pPort` can only collide if an
+ * operator configures it inside the range onto a port a node already holds. If a
+ * caller ever passes ports it did not just release, refuse an override that
+ * `allocator.has()` or that repeats another key's port.
  */
 export function allocateNodePorts(
   allocator: PortAllocator,

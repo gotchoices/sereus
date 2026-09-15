@@ -195,4 +195,22 @@ describe('HostProcessOrchestrator.ensureOwnerNode', () => {
     expect(orch.listNodes()).toHaveLength(1);
     await waitFor(() => !isPidAlive(firstPid));
   });
+
+  // Like a lent node, the owner node comes back on its previous ports even when lower
+  // ones are free. Only its TCP port differs: the configured libp2pPort wins over the
+  // previous handle's, because the NAT mapping points at the configured one.
+  it('re-spawns on its previous ports, taking p2p from the current config', async () => {
+    const orch = makeOrchestrator(join(tmpRoot, 'f'));
+    await orch.init();
+    const lower = await orch.createContainer({ containerId: 'c0', partyId: 'party-c0', bootstrapNodes: [], profile: 'transaction' });
+    const first = await orch.ensureOwnerNode(CFG);
+    await waitFor(() => orch.isRunning(first.dockerId));
+
+    await orch.removeContainer(lower.dockerId);
+    await orch.stopOwnerNode();
+    const respawned = await orch.ensureOwnerNode({ ...CFG, libp2pPort: 4556 });
+
+    expect(respawned.dockerId).not.toBe(first.dockerId);
+    expect(respawned.ports).toEqual({ ...first.ports, p2p: 4556 });
+  });
 });
