@@ -20,22 +20,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
-import type { SAppConfig, StrandMembershipInvite } from '../src/types.js';
-import { generatePrivateKey, getPublicKey, sign } from '@optimystic/quereus-plugin-crypto';
+import type { StrandMembershipInvite } from '../src/types.js';
+import { sign } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { bootstrapFounderMembership, PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
-import { signSchema } from '../src/schema-verification.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { signedSApp } from './signed-sapp.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
 const rand = (): string => Math.random().toString(36).slice(2);
-
-function signedSApp(): SAppConfig {
-  const schema = 'create table Note (Id text primary key);';
-  const priv = generatePrivateKey('ed25519', 'base64url') as string;
-  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-  return { id: pub, version: '1.0.0', schema, signature: signSchema(schema, '1.0.0', priv) };
-}
 
 /** The private responder-side issuer, as the formation manager's wired hook calls it. */
 function issue(node: CadreNode, strandId: string): Promise<StrandMembershipInvite | null> {

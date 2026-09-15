@@ -47,8 +47,6 @@ export interface ConsultCounter {
 	 * `start()` for the control network's repo, after `foundStrand` for the strand's.
 	 */
 	labelUnlabeled(label: string): number;
-	/** How many repos carry `label`. */
-	instanceCount(label: string): number;
 	/**
 	 * Reinstate the methods that were installed before this counter. A no-op once it has
 	 * succeeded; throws (without marking itself restored) while a later patch is still
@@ -150,9 +148,6 @@ export function installConsultCounter(): ConsultCounter {
 				labelled++;
 			}
 			return labelled;
-		},
-		instanceCount(label: string): number {
-			return [...tallies.values()].filter((tally) => tally.label === label).length;
 		},
 		restore(): void {
 			if (restored) return;

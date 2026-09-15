@@ -1,13 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { IRawStorage } from '@optimystic/db-p2p';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { signSchema } from '../src/schema-verification.js';
 import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
+import { signedSApp } from './signed-sapp.js';
 import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, type OpSnapshot } from './storage-op-counter.js';
-import type { SAppConfig } from '../src/types.js';
 
 /**
  * **What this protects: the raw-storage cost of a SOLO strand — launch, insert,
@@ -55,9 +53,6 @@ const ROW_COUNT = 5;
 
 /** `within` scoped to this spec's failure label: `strand-write-budget control op <label> …`. */
 const within = scopedWithin('strand-write-budget');
-
-const SCHEMA = 'create table Note (Id text primary key);';
-const VERSION = '1.0.0';
 
 /**
  * The measured figures and the budgets sitting modestly above them.
@@ -133,19 +128,6 @@ interface RunCost {
 	select: PhaseCost;
 }
 
-/**
- * A self-consistent signed sApp config (same shape as
- * `control-database-solo-warm-start.spec.ts`'s): a throwaway key signs the
- * schema and doubles as the sApp id. `latencyHint: 'realtime'` turns
- * hibernation off (never idle, never hibernate) so no idle timer can fire
- * mid-measurement.
- */
-function signedSApp(): SAppConfig {
-	const priv = generatePrivateKey('ed25519', 'base64url') as string;
-	const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-	return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv), latencyHint: 'realtime' };
-}
-
 /** Print one phase's line under the greppable prefix. */
 function printPhase(phase: string, cost: PhaseCost): void {
 	console.log(`${formatSnapshot('strand-write-budget', phase, cost.snapshot)} — ${Math.round(cost.ms)}ms`);
@@ -194,7 +176,8 @@ async function measureSoloStrand(): Promise<RunCost> {
 		const instance = await within('addStrand()', LIFECYCLE_TIMEOUT_MS, () =>
 			node.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
-				sAppConfig: signedSApp(),
+				// `realtime` turns hibernation off, so no idle timer can fire mid-measurement.
+				sAppConfig: signedSApp({ latencyHint: 'realtime' }),
 				founder: true
 			}));
 		const launch: PhaseCost = { snapshot: counter.snapshot(), ms: performance.now() - t0 };

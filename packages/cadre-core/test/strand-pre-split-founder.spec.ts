@@ -3,10 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { StrandInstanceManager, type StartStrandConfig } from '../src/strand-instance-manager.js';
-import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
   addManager,
@@ -17,6 +15,7 @@ import {
 } from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
+import { signedSApp } from './signed-sapp.js';
 
 /**
  * A closed strand whose founding Member/Manager were seated BEFORE the per-party identity
@@ -31,15 +30,6 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
  * key — what a pre-split founder did. Every launch shares one in-memory store and one
  * transport key, so a relaunch or resume hydrates the rows the earlier launch wrote.
  */
-
-const SCHEMA = 'create table Note (Id text primary key);';
-const VERSION = '1.0.0';
-
-function signedSApp(): SAppConfig {
-  const priv = generatePrivateKey('ed25519', 'base64url') as string;
-  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-  return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
-}
 
 interface Fixture {
   strandRow: StrandRow;

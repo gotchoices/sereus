@@ -1,11 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
-import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
-import type { StrandRow, SAppConfig } from '../src/types.js';
+import type { StrandRow } from '../src/types.js';
+import { signedSApp } from './signed-sapp.js';
 
 /**
  * End-to-end plumbing test for the founder flag: `addStrand`/`startStrand`
@@ -24,15 +23,6 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
  * networked cadre it would instead receive the rows via Optimystic sync (covered by
  * the lifecycle/invite tickets, not here).
  */
-
-const SCHEMA = 'create table Note (Id text primary key);';
-const VERSION = '1.0.0';
-
-function signedSApp(): SAppConfig {
-  const priv = generatePrivateKey('ed25519', 'base64url') as string;
-  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-  return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
-}
 
 function startConfig(strandRow: StrandRow, founder: boolean, partyMemberPrivateKey?: string): StartStrandConfig {
   return {

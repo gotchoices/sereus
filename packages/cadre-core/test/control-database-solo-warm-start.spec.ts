@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { rmSync } from 'node:fs';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
 	controlNodeConfig,
@@ -16,7 +14,8 @@ import {
 	tempStorageDir,
 	type OfflinePeer
 } from './control-db-node-helpers.js';
-import type { CadreNodeConfig, SAppConfig, StrandInstance } from '../src/types.js';
+import { signedSApp } from './signed-sapp.js';
+import type { CadreNodeConfig, StrandInstance } from '../src/types.js';
 
 /**
  * A device that WAS in a cadre and is now the only one left, restarting on rows
@@ -85,20 +84,6 @@ const ADD_STRAND_TIMEOUT_MS = 60_000;
 
 /** `within` scoped to this spec's failure label: `solo-warm-start control op <label> …`. */
 const within = scopedWithin('solo-warm-start');
-
-const SCHEMA = 'create table Note (Id text primary key);';
-const VERSION = '1.0.0';
-
-/**
- * A self-consistent signed sApp config: a throwaway key signs the schema and
- * doubles as the sApp id, so the config passes `requireSignedSchemas` if a
- * caller ever turns it on. Same shape as `publish-strand.spec.ts`'s.
- */
-function signedSApp(): SAppConfig {
-	const priv = generatePrivateKey('ed25519', 'base64url') as string;
-	const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-	return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
-}
 
 /**
  * One device's persistent identity + block storage, reusable across restarts.

@@ -1,11 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import { sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { signedSApp } from './signed-sapp.js';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
@@ -329,15 +329,6 @@ describe('CadreNode.publishStrand (repeat publish / founding resume)', () => {
 });
 
 // ── CadreNode.addStrand founder bootstrap (node-level seam) ──────────────────
-
-const SCHEMA = 'create table Note (Id text primary key);';
-const VERSION = '1.0.0';
-
-function signedSApp() {
-  const priv = generatePrivateKey('ed25519', 'base64url') as string;
-  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-  return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
-}
 
 async function countRow(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {

@@ -1,13 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { IRawStorage } from '@optimystic/db-p2p';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { signSchema } from '../src/schema-verification.js';
 import type { StrandWatcher } from '../src/strand-watcher.js';
-import type { SAppConfig } from '../src/types.js';
 import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
+import { signedSApp } from './signed-sapp.js';
 import {
 	formatConsultSnapshot,
 	formatPerBlock,
@@ -227,19 +225,6 @@ interface StrandWatcherInternals {
 	initialPollTimer: ReturnType<typeof setTimeout> | null;
 }
 
-/**
- * A self-consistent signed sApp config, the same shape as `strand-solo-write-budget.spec.ts`'s:
- * a throwaway key signs the schema and doubles as the sApp id. `latencyHint: 'realtime'`
- * turns hibernation off, so no idle timer can fire mid-measurement.
- */
-function signedSApp(): SAppConfig {
-	const priv = generatePrivateKey('ed25519', 'base64url') as string;
-	const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-	const schema = 'create table Note (Id text primary key);';
-	const version = '1.0.0';
-	return { id: pub, version, schema, signature: signSchema(schema, version, priv), latencyHint: 'realtime' };
-}
-
 /** One `MemoryRawStorage` per storage id, memoised — the control network and the strand never share blocks. */
 function memoryStorageProvider(): (id: string) => IRawStorage {
 	const byId = new Map<string, IRawStorage>();
@@ -400,7 +385,8 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 		const strandId = `${SCOPE}-${Math.random().toString(36).slice(2)}`;
 		const founding = await measurePhase(counter, runStart, 'foundStrand()', 'strand', async () => {
 			const { instance, founded } = await within('foundStrand()', LIFECYCLE_TIMEOUT_MS,
-				() => node.foundStrand({ strandId, type: 'o', sAppConfig: signedSApp() }));
+								// `realtime` turns hibernation off, so no idle timer can fire mid-measurement.
+				() => node.foundStrand({ strandId, type: 'o', sAppConfig: signedSApp({ latencyHint: 'realtime' }) }));
 			expect(instance.status).toBe('active');
 			expect(founded).toBe(true);
 			// Strands run on the network transactor; a local one would consult nobody and read as a saving.
