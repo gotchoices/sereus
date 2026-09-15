@@ -2687,8 +2687,10 @@ export class CadreNode implements SAppIdLookup {
       // disconnected owner while another machine creates the same collection is exactly
       // that fork. Owner-only, and at most once per process — see openRevocationLedgerIfDue.
       //
-      // NOTE: accepted tradeoff — a solo founder never files the marker until its first
-      // sibling connects, so until then it keeps paying one local findCluster per read of
+      // NOTE: accepted tradeoff — a solo founder does not file the marker until it holds a
+      // control connection (normally its first sibling; a relay or bootstrap connection also
+      // counts — see getControlConnectionCount — and is the reap's same residual), so until
+      // then it keeps paying one local findCluster per read of
       // the missing Revocation block (0.009 ms each, measured upstream; no network work on
       // a cohort of one). Fork safety weighed over that and kept; revisit if findCluster
       // ever shows up as material in a device profile, or if a solo-founding marker can be

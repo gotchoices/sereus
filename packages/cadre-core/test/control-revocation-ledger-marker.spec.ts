@@ -132,11 +132,11 @@ describe('Revocation ledger marker', () => {
     // Modelled by filing the marker, then blinding the guard, so the insert reaches the
     // engine and is refused on the primary key.
     expect(await db.openRevocationLedger(founder.publicKey, signAsFounder)).toBe('opened');
-    const internals = db as unknown as { revocationLedgerFiled(retry: boolean): Promise<boolean> };
+    const internals = db as unknown as { revocationLedgerFiled(): Promise<boolean> };
     const guard = vi.spyOn(internals, 'revocationLedgerFiled').mockResolvedValue(false);
     try {
       expect(await db.openRevocationLedger(founder.publicKey, signAsFounder)).toBe('already-open');
-      expect(guard).toHaveBeenCalledWith(false);
+      expect(guard).toHaveBeenCalled();
     } finally {
       guard.mockRestore();
     }
@@ -162,6 +162,15 @@ describe('Revocation ledger marker', () => {
     expect(await service!.openRevocationLedger()).toBe('opened');
     expect(await service!.openRevocationLedger()).toBe('already-open');
     expect(await markerRows()).toHaveLength(1);
+  }, 60_000);
+
+  it('SeedBootstrapService.openRevocationLedger on a keyless (seed-listener) service throws before any write', async () => {
+    node.enableSeedListener();
+    const service = node.getSeedBootstrapService();
+    expect(service?.canAuthorize()).toBe(false);
+
+    await expect(service!.openRevocationLedger()).rejects.toThrow(/Owner private key required/);
+    expect(await markerRows()).toEqual([]);
   }, 60_000);
 
   // ── Schema refusals ────────────────────────────────────────────────────────

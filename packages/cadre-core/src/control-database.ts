@@ -2117,8 +2117,7 @@ export class ControlDatabase {
     ));
     try {
       return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
-        // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
-        if (await this.revocationLedgerFiled(false)) {
+        if (await this.revocationLedgerFiled()) {
           return 'already-open';
         }
         // Bare `exec`: already inside the write lock, which is NOT re-entrant.
@@ -2142,15 +2141,15 @@ export class ControlDatabase {
   /**
    * Whether the ledger marker is present locally: a scan of the `'Revocation'` rows with the
    * stamp compared in TypeScript (see {@link openRevocationLedger} for why not a seek).
-   * `retry` follows {@link readRows}' rule for reads inside a locked body.
+   * Called only inside the locked write body, so never retried (see queryStampId's NOTE).
    */
-  private async revocationLedgerFiled(retry: boolean): Promise<boolean> {
+  private async revocationLedgerFiled(): Promise<boolean> {
     const { tableName, stampId } = REVOCATION_LEDGER_MARKER;
     const rows = await this.readRows(
       'select StampId from CadreControl.Revocation where TableName = ?',
       [tableName],
       'revocation-ledger',
-      retry
+      false
     );
     return rows.some(row => row.StampId === stampId);
   }
