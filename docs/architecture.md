@@ -1164,8 +1164,8 @@ interface CadreNodeConfig {
     // list (`relay-addrs.ts`, adding `/ip4/0.0.0.0/tcp/0` when listenAddrs is unset) and
     // `CadreNode.start()` drives the reservation explicitly AFTER control-DB bring-up,
     // so the database is built while the node holds zero control connections. STRAND
-    // nodes inherit the older `<relay>/p2p-circuit` configured listener, which reserves
-    // from inside their own `libp2p.start()`. A relay named here also becomes a
+    // nodes take the same search shape, one bare listener plus one reservation
+    // supervisor per relay, fail-soft. A relay named here also becomes a
     // delegate-announce target, so this node's strand nodes can reserve on it too.
     //
     // FAIL-FAST: a malformed entry throws at config resolution, and a first

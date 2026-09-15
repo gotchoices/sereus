@@ -16,7 +16,7 @@
  * module. It is **fail-soft by construction**: nothing here throws.
  *
  * EVERY cadre CONTROL node now takes that route — `network.relayAddrs` resolves
- * to the bare search entry (`relay-addrs.ts` → `RelayListenRoute`) and
+ * to the bare search entry (`relay-addrs.ts` → `resolveListenAddrs`) and
  * `CadreNode.start()` drives this module once the control database is up. The
  * configured shape would dial the relay from inside `libp2p.start()`, putting a
  * sibling in this node's cohort before its own control database existed, and a

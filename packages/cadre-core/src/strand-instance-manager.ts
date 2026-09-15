@@ -722,6 +722,11 @@ export class StrandInstanceManager {
       // it). Fail-SOFT — a first attempt that lands nothing does not fail the launch.
       // The strand's database is up, and the supervisor keeps trying on its backoff;
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
+      //
+      // NOTE: a relay that is down costs this launch one full drive (10 s), and
+      // `StrandWatcher` launches strands one at a time — so N strands cost N × 10 s
+      // of bring-up during a relay outage. If that ever matters, stop awaiting here
+      // (the circuit addr then lands after `active`) rather than shortening the drive.
       t0 = performance.now();
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));

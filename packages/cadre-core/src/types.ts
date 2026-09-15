@@ -257,8 +257,9 @@ export interface NetworkConfig {
    * because a listener that dials its relay from inside `libp2p.start()` put a
    * sibling in this node's cohort before its own database existed, and a sibling
    * that had not yet replicated this node's membership row refused the bring-up.
-   * STRAND nodes inherit the older per-relay `<relay>/p2p-circuit` listener, which
-   * has no such ordering hazard. A relay named here also becomes a
+   * STRAND nodes take the same search shape, one bare listener plus one reservation
+   * supervisor PER relay, fail-soft (`strand-network-config.ts`,
+   * `strand-instance-manager.ts`). A relay named here also becomes a
    * delegate-announce target, so this node's strand nodes may reserve on it too
    * (see `delegate-admission.ts`).
    *

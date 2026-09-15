@@ -5101,10 +5101,10 @@ export class CadreNode implements SAppIdLookup {
    * Recorded OPTIMISTICALLY at announce time: `collectStrandAddrs` folds
    * per-peer failure to `[]` and reports no per-peer success, and threading
    * success out would change its API for little gain. A failed INITIAL announce
-   * is fatal-at-start anyway (the relay denies the reservation,
-   * `libp2p.start()` throws, and wake/check-in re-resume retries with a fresh
-   * announce); a failed REFRESH retries within `DELEGATE_GRANT_TTL_MS / 2`
-   * (15 min), still inside the 30 min TTL.
+   * costs the strand supervisor its first attempt only (the relay denies the
+   * reservation; every re-drive re-announces first through
+   * {@link announceDelegateToRelay}); a failed REFRESH retries within
+   * `DELEGATE_GRANT_TTL_MS / 2` (15 min), still inside the 30 min TTL.
    */
   private recordDelegateAnnounces(relayPeerIds: readonly string[], strandId: string, now = Date.now()): void {
     for (const relayPeerId of relayPeerIds) {
@@ -5171,6 +5171,14 @@ export class CadreNode implements SAppIdLookup {
    * re-drive attempt, bounded by the supervisor's backoff. Never throws on that
    * path; a relay addr that names no peer id is logged and skipped (the hook's
    * caller runs the drive regardless).
+   *
+   * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
+   * timeouts (10 s each: dial by peer id, then by addr) before the 10 s drive even
+   * starts, so one failed re-drive can hold the supervisor `driving` for ~30 s.
+   * Bounded and harmless while the relay is unreachable anyway; if recovery
+   * latency after a relay comes back ever matters, skip the announce when the
+   * control node holds no connection to the relay (the drive's own dial fails
+   * faster) rather than shortening the strand-addr timeout.
    */
   private async announceDelegateToRelay(strandId: string, relayAddr: string, delegatePeerId: string): Promise<void> {
     const controlNode = this.controlNode;

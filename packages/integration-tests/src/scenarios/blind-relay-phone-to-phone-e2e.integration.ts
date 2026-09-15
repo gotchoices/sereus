@@ -211,8 +211,8 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 			const aStrandNode = founded.instance.libp2pNode!;
 			const aStrandPeerId = aStrandNode.peerId.toString();
 			expect(aStrandPeerId).not.toBe(aPeerId);
-			// The strand node's configured-route reservation landed inside
-			// libp2p.start(): its announced addrs already include the circuit.
+			// The strand node's per-relay reservation supervisor landed its first attempt
+			// before foundStrand resolved: its announced addrs already include the circuit.
 			expect(aStrandNode.getMultiaddrs().map(String).some(isCircuit)).toBe(true);
 			expect(relay.reservationCount()).toBe(2);
 

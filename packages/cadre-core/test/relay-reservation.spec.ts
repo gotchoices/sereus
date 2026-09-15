@@ -15,6 +15,7 @@ import type { CadreNodeConfig } from '../src/types.js';
 import { trailingPeerId } from '../src/peer-record.js';
 import {
   circuitMultiaddrs,
+  circuitMultiaddrsVia,
   driveRelayReservation,
   findCircuitRelayTransport,
   resolveRelayReservationState,
@@ -38,6 +39,42 @@ const CIRCUIT_ADDR =
 function fakeNode(addrs: readonly string[]): Libp2p {
   return { getMultiaddrs: () => addrs.map((addr) => multiaddr(addr)) } as unknown as Libp2p;
 }
+
+/**
+ * The per-relay "held" question a strand node's one-supervisor-per-relay shape
+ * asks (pure): only a circuit addr THROUGH one of the supervisor's relays counts,
+ * matched by relay peer id rather than by spelling, and an entry that names no
+ * peer id falls back to every circuit addr rather than marking a live reservation
+ * lost.
+ */
+describe('circuitMultiaddrsVia (the per-relay held check)', () => {
+  const RELAY_A = '12D3KooWSHj3RRbBjD15g6wekV8y3mdevbrifQRQXMhQdgTrZQqR';
+  const RELAY_B = '12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
+  const viaA = `/ip4/127.0.0.1/tcp/4001/p2p/${RELAY_A}/p2p-circuit`;
+  const viaB = `/ip4/127.0.0.1/tcp/4002/p2p/${RELAY_B}/p2p-circuit`;
+  const direct = '/ip4/127.0.0.1/tcp/4003';
+
+  it('returns only the circuit addrs through the named relays', () => {
+    const node = fakeNode([direct, viaA, viaB]);
+    expect(circuitMultiaddrsVia(node, [`/ip4/127.0.0.1/tcp/4001/p2p/${RELAY_A}`])).toEqual([viaA]);
+    expect(circuitMultiaddrsVia(node, [`/ip4/127.0.0.1/tcp/4002/p2p/${RELAY_B}`])).toEqual([viaB]);
+  });
+
+  it("is empty when the only circuit addr is through another relay — the other supervisor's", () => {
+    expect(circuitMultiaddrsVia(fakeNode([direct, viaA]), [`/ip4/127.0.0.1/tcp/4002/p2p/${RELAY_B}`])).toEqual([]);
+  });
+
+  it('matches the relay by peer id, whatever its spelling or shape', () => {
+    const configuredShape = `/dns4/relay.example.com/tcp/443/wss/p2p/${RELAY_A}/p2p-circuit`;
+    expect(circuitMultiaddrsVia(fakeNode([viaA]), [configuredShape])).toEqual([viaA]);
+  });
+
+  it('falls back to every circuit addr when an entry names no relay peer id', () => {
+    const node = fakeNode([direct, viaA, viaB]);
+    expect(circuitMultiaddrsVia(node, ['/ip4/127.0.0.1/tcp/4001'])).toEqual([viaA, viaB]);
+    expect(circuitMultiaddrsVia(node, [`/ip4/127.0.0.1/tcp/4001/p2p/${RELAY_A}`, 'not-a-multiaddr'])).toEqual([viaA, viaB]);
+  });
+});
 
 describe('resolveRelayReservationState (precedence)', () => {
   it('reports none when no relay addrs were supplied, whatever else is true', () => {

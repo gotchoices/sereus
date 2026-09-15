@@ -363,9 +363,14 @@ export async function startCadre(): Promise<CadreNode> {
 			// same bare entry on the control node, but it is deliberately NOT set here:
 			// it makes a reservation that does not land on the first attempt FATAL to
 			// `start()`, and a browser tab must still boot solo when its relay is down.
-			// It would also give this tab's strand nodes a per-relay CONFIGURED circuit
-			// listener, which is fatal in the same way. So the tab keeps the explicit
-			// `reserveRelays` call below — same drive, fail-soft posture.
+			// So the tab keeps the explicit `reserveRelays` call below — same drive,
+			// fail-soft posture.
+			//
+			// NOTE: `reserveRelays` reaches the CONTROL node only. `network.relayAddrs` is
+			// what gives a strand node a supervised reservation of its own (one per relay,
+			// `strand-network-config.ts`); this tab's strand nodes inherit the bare entry
+			// below and nothing fills it, so they are reachable over `/webrtc` alone. See
+			// `tickets/plan/phone-reachable-for-strand-invitations`.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 			// Permissive dial gater. libp2p's browser default denies dialing
 			// insecure-WebSocket and private/loopback addresses, which blocks the
