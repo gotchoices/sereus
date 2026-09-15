@@ -11,15 +11,21 @@ and known pre-existing failures in [`tickets/.pre-existing-known.md`](../tickets
 
 ## Where measurements live
 
-Storage-operation budgets are pinned in the specs that assert them, each carrying its own
-`MEASURED_ON` date and the full history in its doc comment:
+Cost budgets are pinned in the specs that assert them, each carrying its own `MEASURED_ON` date
+and the full history in its doc comment:
 
-- `packages/cadre-core/test/control-start-storage-op-budget.spec.ts` — control-database start,
-  cold and warm.
-- `packages/cadre-core/test/strand-solo-write-budget.spec.ts` — solo strand launch/insert/select.
+- `packages/cadre-core/test/control-start-storage-op-budget.spec.ts` — raw-storage operations of
+  a control-database start, cold and warm.
+- `packages/cadre-core/test/strand-solo-write-budget.spec.ts` — raw-storage operations of a solo
+  strand launch/insert/select.
+- `packages/cadre-core/test/control-founding-consult-budget.spec.ts` — the cost above the storage
+  cache, which the two above cannot see: how often Optimystic's coordinator consults a block's
+  cohort, and how many commits it issues, across a solo party's cold start, genesis,
+  `foundStrand`, the per-request membership reads, and an idle reconcile pass.
 
-Both are two-sided (a ceiling as regression guard, a floor at half the measurement as
-anti-vacuity guard), and the operative consequence — that a control start's duration is
+All three are two-sided (a ceiling as regression guard, a floor at half the measurement as
+anti-vacuity guard; the consult spec also pins its per-call membership reads exactly). For the
+two storage budgets, the operative consequence — that a control start's duration is
 (raw-storage operations) × (device cost per operation), so the *count* is the thing worth
 pinning — is recorded as a `NOTE:` at `control-database.ts`'s `loadSchema` call site, which is
 where someone debugging a slow launch actually lands. Do not copy those numbers here; a second

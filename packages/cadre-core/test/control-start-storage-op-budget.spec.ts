@@ -48,9 +48,12 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * non-determinism is itself the finding; do not paper over it by widening the budget.
  *
  * Companions: `control-database-solo.spec.ts` (same cadre-of-one shape, asserting
- * behaviour rather than cost) and `control-database-solo-warm-start.spec.ts` (the
+ * behaviour rather than cost), `control-database-solo-warm-start.spec.ts` (the
  * file-backed warm start, whose per-operation deadlines are hang detectors — this
- * spec is the reason they should not have to be widened).
+ * spec is the reason they should not have to be widened), and
+ * `control-founding-consult-budget.spec.ts` (the other half of the cost: cohort
+ * consults and commits, which happen above the write-through cache and never reach
+ * the storage counted here — including the genesis this spec leaves unbudgeted).
  */
 
 /** `start()`/`stop()` bring libp2p up and down; a bounded budget, only a hang detector. */
