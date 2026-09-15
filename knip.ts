@@ -118,12 +118,10 @@ const config: KnipConfig = {
 			// Expo runtime resolves `expo-updates` / `@expo/vector-icons` from
 			// app.json + native config rather than from a static import knip sees.
 			ignoreDependencies: [
-				'@babel/core',
 				'@babel/runtime',
 				'buffer',
 				'@expo/vector-icons',
 				'expo-updates',
-				'@types/babel__core',
 			],
 		},
 

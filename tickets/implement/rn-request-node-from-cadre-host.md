@@ -60,7 +60,7 @@ Document in `docs/reference-app-rn.md` as a new section after the two-node start
 - The phone must be on the **same Wi-Fi LAN** as the PC for libp2p. `adb reverse` needs each port named up front, and the lent node's strand nodes listen on ports the OS picks at start, so reversing the control port alone is not a working setup. Allow `node.exe` through the Windows firewall on private networks when prompted.
 - Expected result: solo Connect → enter host URL and token → Request → stages advance to `connected`; the lent node's peer id appears among the phone's control connections.
 - Reconnect after relaunch on the device is observable only once the party id persists (`backlog/feat-rn-persist-node-start-options`). The headless scenario `donation-scenario-phone-shaped-requester` covers it meanwhile.
-- If the flow stalls at `authorizing`, check `blocked/rn-solo-founding-stall-on-device` first: that Quereus-on-Hermes lock leak hits early-exit reads, and `addDrone` writes to the control database.
+- If the flow stalls at `authorizing`, first run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and make sure Metro was restarted with `--clear`: the Babel helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after early-exit reads, and `addDrone` writes to the control database. The device confirmation of that fix is `blocked/rn-solo-founding-device-run`.
 
 ## Out of scope
 

@@ -345,6 +345,9 @@ packages/reference-app-rn/
 | `rn-leveldb` | npm | Native KV store (requires native compilation) |
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
+| `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
+
+**Babel helpers must be 7.29.2 or newer.** Hermes has no native async generators, so Metro's Babel transform rewrites them onto Babel's `wrapAsyncGenerator` helper, imported from `@babel/runtime` (or inlined from `@babel/helpers` for script sources). Before 7.29.2 that helper stopped a generator's `finally` at its first `await` when the consumer left a `for await` loop early. Quereus releases its execution lock in such a `finally`, so on the phone the first early-exit read (`strandTableCount`) left the lock held, and founding a strand hung at `StrandDatabase.bootstrapFounder`. Node runs async generators natively, so no headless test saw it. The app declares `@babel/runtime` `^7.29.2`, and `test/metro-babel/async-generator-cleanup.spec.ts` (Vitest project `metro-babel`) compiles an early-exit probe with the app's own Metro Babel transformer and fails, naming the upgrade, if any helper a bundle would use drops that cleanup. Upgrade inside Babel 7 with `yarn up -R @babel/runtime @babel/helpers` (a bare `yarn up` moves to Babel 8), then restart Metro with `--clear` so it recompiles.
 
 ### Metro Configuration
 
@@ -562,7 +565,7 @@ D ReactNativeJS: 'sereus:cadre:timing [buildStrandRuntime:%s] createLibp2pNode: 
 
 The trailing `+<n>ms` is `debug`'s time since that namespace's previous line. The last line shows how the older timing lines print on the device: they pass their values as `%s`/`%d` arguments, and React Native's console prints the placeholders unfilled with the values after them, rather than substituting them as a browser console does.
 
-The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device.
+The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device. The one such stall found so far, the Babel helper defect under Key Dependencies, has its own headless guard in `test/metro-babel/async-generator-cleanup.spec.ts`.
 
 ## Testing Strategy
 

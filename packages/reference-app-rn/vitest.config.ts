@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Two test projects, kept apart so the platform-agnostic core never drags the
- * React renderer (or, transitively, react-native) into its environment:
+ * Three test projects, kept apart so the platform-agnostic core never drags the
+ * React renderer (or, transitively, react-native) into its environment, and so
+ * the stale-build guard only gates the tests that run other packages' `dist`:
  *
  *  - **node** — plain-node unit tests for logic that depends only on injectable
  *    interfaces (`background-runner.ts`, `push-wake.ts`, key store, …). No React,
@@ -17,8 +18,13 @@ import { defineConfig } from 'vitest/config';
  *    the spec, so react-native is never loaded here either — node environment is
  *    enough for `react-test-renderer`.
  *
+ *  - **metro-babel** — compiles probes with the app's own Metro Babel transformer
+ *    and runs the output, to catch Babel helper defects that only exist in the
+ *    Hermes bundle (Node runs that syntax natively). It loads no compiled output
+ *    from other packages, so it carries no stale-build guard.
+ *
  * RN-coupled production modules (`app-state.ts`, screens) are not unit-targeted
- * by either project; they run under the Expo e2e harness (`scripts/run-e2e.mjs`).
+ * by any project; they run under the Expo e2e harness (`scripts/run-e2e.mjs`).
  */
 export default defineConfig({
   test: {
@@ -28,8 +34,15 @@ export default defineConfig({
           name: 'node',
           environment: 'node',
           include: ['test/**/*.spec.ts'],
-          exclude: ['test/react/**'],
+          exclude: ['test/react/**', 'test/metro-babel/**'],
           globalSetup: ['./test/global-setup.ts'],
+        },
+      },
+      {
+        test: {
+          name: 'metro-babel',
+          environment: 'node',
+          include: ['test/metro-babel/**/*.spec.ts'],
         },
       },
       {

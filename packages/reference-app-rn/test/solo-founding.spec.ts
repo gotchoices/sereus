@@ -19,9 +19,10 @@ import { FakeWriteBatch, fakeRNLevelDBOpener } from './fake-rn-leveldb.js';
  * A phone on its own founds strands promptly: the headless guard for the 2026-09-14
  * device report in which "Create Chat Strand" showed no result for minutes (fix ticket
  * `rn-solo-founding-stall-on-device`). It cannot reproduce that stall. The cause found
- * on the device is a lock Quereus leaves held when `for await` exits early, and it only
- * happens in Metro's Babel-compiled bundle; Node runs Quereus as published. Maestro
- * flow 4 is the device-side guard.
+ * on the device was Babel's async-generator helper before 7.29.2 skipping Quereus's lock
+ * release when `for await` exits early, which only happens in Metro's Babel-compiled
+ * bundle; Node runs Quereus as published. `metro-babel/async-generator-cleanup.spec.ts`
+ * guards that helper headlessly, and Maestro flow 4 is the device-side guard.
  *
  * The node is built by the app's own `buildPhoneNodeConfig` and `runOwnerGenesis`,
  * not a copy, so the config tested is the config the phone runs. Storage is the
