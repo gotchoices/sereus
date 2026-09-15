@@ -369,7 +369,8 @@ export async function startCadre(): Promise<CadreNode> {
 			// NOTE: `reserveRelays` reaches the CONTROL node only. `network.relayAddrs` is
 			// what gives a strand node a supervised reservation of its own (one per relay,
 			// `strand-network-config.ts`); this tab's strand nodes inherit the bare entry
-			// below and nothing fills it, so they are reachable over `/webrtc` alone. See
+			// below and nothing drives it, so they publish no circuit addr of their own and
+			// are not dialable inbound until that gap closes. See
 			// `tickets/plan/phone-reachable-for-strand-invitations`.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 			// Permissive dial gater. libp2p's browser default denies dialing

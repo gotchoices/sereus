@@ -37,7 +37,7 @@ Note also: owner genesis in `runOwnerGenesis` is fail-soft (`console.warn` only)
 - **A wait on the network that never comes.** A solo transaction-profile node with zero connections: check whether any step in `publishStrand` / `addStrand` (strand node start, strand database bring-up, a cohort consult, a relay or bootstrap dial with a long timeout) waits for a peer rather than taking the solo path.
 - **An error swallowed before the modal.** Confirm `createStrand` rejects to `handleCreateStrand` rather than being caught and logged somewhere below at a level logcat filtered out.
 
-A Hermes debugger attach works for this (Metro inspector proxy `ws://localhost:8081/inspector/debug?device=…&page=…`, `Runtime.evaluate`; note Hermes' eval rejects `async` functions, and `__r(<moduleId>)` reaches `src/cadre-phone.ts` → `getPhoneNode()` for the live node).
+A Hermes debugger attach works for this (Metro inspector proxy `ws://localhost:8081/inspector/debug?device=…&page=…`, `Runtime.evaluate`; Hermes' eval rejects `async` functions, so return a promise instead). **Do not reach app modules with `__r(<moduleId>)`** using ids read from a downloaded bundle: in the running dev client that id was unknown, and Metro's guarded require reported "Requiring unknown module" as a **fatal** error, crashing the app into the dev-launcher error screen (verified 2026-09-15). Metro also lists two inspector pages for the app; check which one is the live app runtime before evaluating anything.
 
 ## Expected behaviour
 
