@@ -78,6 +78,9 @@ async function main() {
 			enableRelay: true,
 		},
 		hibernation: { enabled: false },
+		// Same demo opt-out as the phone (src/cadre-phone.ts): the chat sApp config
+		// is unsigned, so the fail-closed schema policy would refuse the strand.
+		requireSignedSchemas: false,
 	});
 
 	node.on('strand:started', ({ strandId: sid }) => {

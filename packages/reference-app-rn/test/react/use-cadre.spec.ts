@@ -22,7 +22,8 @@ import * as React from 'react';
 import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useCadreInternal, type UseCadreResult } from '../../src/use-cadre';
 import { connectionBanner } from '../../src/connection-status';
-import type { PhoneNodeOptions } from '../../src/cadre-phone';
+import { createOpenInvitation, type PhoneNodeOptions } from '../../src/cadre-phone';
+import { createClosedChatStrand } from '../../src/chat-strand';
 
 // ── Shared test doubles (hoisted so the vi.mock factories below can close over
 //    them — vitest lifts vi.hoisted above the mocks). ─────────────────────────
@@ -59,6 +60,7 @@ const h = vi.hoisted(() => {
     running = true;
     controlConnected = true;
     hibernateAllCount = 0;
+    multiaddrs: string[] = [];
     private readonly handlers = new Map<string, Set<() => void>>();
     private readonly strands = new Map<string, unknown>();
 
@@ -70,6 +72,14 @@ const h = vi.hoisted(() => {
 
     getStrands(): Map<string, unknown> {
       return this.strands;
+    }
+
+    getMultiaddrs(): string[] {
+      return this.multiaddrs;
+    }
+
+    encodeInvitation(_invitation: unknown): string {
+      return `encoded-invite-${this.id}`;
     }
 
     async hibernateAll(): Promise<string[]> {
@@ -216,15 +226,56 @@ function bannerOf(renderer: ReactTestRenderer): { type: string; color: string; t
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('useCadreInternal — BackgroundRunner wiring', () => {
-  beforeEach(() => {
-    h.ctl.node = null;
-    h.ctl.appState = new h.FakeAppState();
-    h.ctl.startCount = 0;
-    h.ctl.nodeCounter = 0;
-    h.ctl.lastOpts = null;
-    vi.clearAllMocks();
+function resetHarness(): void {
+  h.ctl.node = null;
+  h.ctl.appState = new h.FakeAppState();
+  h.ctl.startCount = 0;
+  h.ctl.nodeCounter = 0;
+  h.ctl.lastOpts = null;
+  vi.clearAllMocks();
+}
+
+async function mountStarted(): Promise<Sink> {
+  const { sink } = mountCadre();
+  await act(async () => {
+    await sink.current!.start(OPTS);
+    await tick();
   });
+  return sink;
+}
+
+describe('useCadreInternal — closed-strand invite', () => {
+  beforeEach(resetHarness);
+
+  it('refuses before founding anything when the node has no reachable address', async () => {
+    const sink = await mountStarted();
+
+    await act(async () => {
+      await expect(sink.current!.createClosedStrandWithInvite()).rejects.toThrow(/no reachable address/);
+    });
+
+    // Refused up front: no orphaned closed strand, no invitation minted.
+    expect(createClosedChatStrand).not.toHaveBeenCalled();
+    expect(createOpenInvitation).not.toHaveBeenCalled();
+  });
+
+  it('founds the strand and returns the encoded invitation when the node is reachable', async () => {
+    const sink = await mountStarted();
+    h.ctl.node!.multiaddrs = ['/ip4/127.0.0.1/tcp/4002/ws/p2p/relay/p2p-circuit/p2p/peer-1'];
+    vi.mocked(createOpenInvitation).mockResolvedValue({ token: 'tok', expiration: new Date(0) } as never);
+
+    let encoded = '';
+    await act(async () => {
+      encoded = await sink.current!.createClosedStrandWithInvite();
+    });
+
+    expect(createClosedChatStrand).toHaveBeenCalledTimes(1);
+    expect(encoded).toBe('encoded-invite-1');
+  });
+});
+
+describe('useCadreInternal — BackgroundRunner wiring', () => {
+  beforeEach(resetHarness);
 
   it('creates the runner when the node starts and tears it down on unmount', async () => {
     const { sink, renderer } = mountCadre();

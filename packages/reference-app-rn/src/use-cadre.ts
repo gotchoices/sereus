@@ -341,6 +341,12 @@ export function useCadreInternal(): UseCadreResult {
   const createClosedStrandWithInvite = useCallback(async () => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
+    // The invitation's bootstrap is this node's own addresses, so an unreachable
+    // node cannot invite anyone — refuse BEFORE founding, or every attempt leaves an
+    // orphaned closed strand behind (see plan/phone-reachable-for-strand-invitations).
+    if (current.getMultiaddrs().length === 0) {
+      throw new Error('This device has no reachable address yet, so nobody could redeem an invitation. Connect through a relay or host node first.');
+    }
     const strandId = uuid();
     await createClosedChatStrand(current, strandId);
     setSelectedStrandId(strandId);
