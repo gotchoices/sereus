@@ -5,8 +5,10 @@ appId: ${MAESTRO_APP_ID}
 # Guards the 2026-09-14 device report (fix ticket rn-solo-founding-stall-on-device):
 # on a phone with no drone and no peers, "Create Chat Strand" showed no result for
 # minutes. This flow connects with an empty party id and no bootstrap address, so it
-# needs no drone fixture and does not use _setup.yaml. run-e2e.mjs still runs it with
-# the rest of maestro/flows/; the drone env vars it passes are unused here.
+# needs no drone fixture and does not use _setup.yaml. Both apps' run-e2e.mjs
+# (reference-app-rn and reference-app-ns) still run it with the rest of
+# maestro/flows/; the drone env vars they pass are unused here. Assert only elements
+# both apps expose.
 #
 # Standalone run (device or emulator with the dev client installed):
 #   maestro test -e MAESTRO_APP_ID=org.gotchoices.sereus.chat maestro/flows/4-solo-create-strand.yaml
@@ -41,9 +43,7 @@ appId: ${MAESTRO_APP_ID}
       id: "modal-title"
       text: "Strand created"
     timeout: 60000
-# The result reports how long founding took.
-- assertVisible:
-    id: "modal-detail"
-    text: "Created in .* s"
+# The React Native modal also shows the elapsed time (id "modal-detail"). It is not
+# asserted: the NativeScript app's modal has no such line.
 - tapOn:
     id: "btn-modal-ok"

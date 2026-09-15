@@ -2,8 +2,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { format } from 'node:util';
-import debug from 'debug';
 import {
 	MemoryEnrolledMachineStore,
 	PersistentEnrolledMachineStore,
@@ -11,6 +9,7 @@ import {
 } from '../src/enrolled-machine-store.js';
 import { FileEnrolledMachineStore } from '../src/enrolled-machine-store-file.js';
 import type { DurableSlot } from '../src/node-local-snapshot.js';
+import { captureDebugLog } from './capture-debug-log.js';
 
 /**
  * The node-local enrolled-machine count: the control network's block-repair
@@ -58,25 +57,9 @@ async function seedRaw(dir: string, partyId: string, body: unknown): Promise<voi
 	await writeFile(join(dir, `enrolled-machines.${partyId}.json`), JSON.stringify(body), 'utf8');
 }
 
-/**
- * Run `body` with this module's namespace enabled and debug's sink captured. Same
- * shape as `control-read-retry.spec.ts`'s helper — the namespace set and the sink
- * are process-global in `debug`, so both are restored even when `body` throws.
- */
-async function captureStoreLog(body: () => Promise<void>): Promise<string[]> {
-	const lines: string[] = [];
-	const previousNamespaces = debug.disable();
-	const previousLog = debug.log;
-	debug.enable('sereus:cadre:enrolled-machine-store');
-	debug.log = function (this: unknown, ...args: unknown[]): void { lines.push(format(...args)); };
-	try {
-		await body();
-	} finally {
-		debug.log = previousLog;
-		debug.disable();
-		if (previousNamespaces) debug.enable(previousNamespaces);
-	}
-	return lines;
+/** The lines this module's namespace emitted while `body` ran. */
+function captureStoreLog(body: () => Promise<void>): Promise<string[]> {
+	return captureDebugLog('sereus:cadre:enrolled-machine-store', body);
 }
 
 const backends: Backend[] = [

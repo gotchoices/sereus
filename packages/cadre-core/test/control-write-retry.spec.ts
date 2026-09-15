@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import debug from 'debug';
-import { format } from 'node:util';
 import {
 	CONTROL_WRITE_ATTEMPTS,
 	CONTROL_WRITE_RETRY_BUDGET_MS,
@@ -13,6 +11,7 @@ import {
 } from '../src/control-write-retry.js';
 import { ControlDatabase } from '../src/control-database.js';
 import type { ControlDatabaseConfig } from '../src/control-database.js';
+import { captureDebugLog } from './capture-debug-log.js';
 
 /**
  * The transient-control-write classifier and retry loop behind
@@ -563,25 +562,9 @@ async function runOneTransientFailure(options: ControlWriteRetryOptions): Promis
 	}, immediatePacing(options));
 }
 
-/**
- * Run `body` with `sereus:cadre:control-db` enabled and debug's sink captured, returning the
- * lines it emitted. Namespace set and sink are process-global in `debug`, so both are put
- * back even when `body` throws.
- */
-async function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
-	const lines: string[] = [];
-	const previousNamespaces = debug.disable();
-	const previousLog = debug.log;
-	debug.enable('sereus:cadre:control-db');
-	debug.log = function (this: unknown, ...args: unknown[]): void { lines.push(format(...args)); };
-	try {
-		await body();
-	} finally {
-		debug.log = previousLog;
-		debug.disable();
-		if (previousNamespaces) debug.enable(previousNamespaces);
-	}
-	return lines;
+/** The lines `sereus:cadre:control-db` emitted while `body` ran. */
+function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
+	return captureDebugLog('sereus:cadre:control-db', body);
 }
 
 /**

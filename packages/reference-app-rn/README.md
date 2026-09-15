@@ -271,7 +271,7 @@ The orchestrator (`scripts/run-e2e.mjs`):
 | `maestro/flows/1-connect-and-send.yaml` | Send a message; local echo appears |
 | `maestro/flows/2-drone-to-phone.yaml` | Drone HTTP insert → phone displays it |
 | `maestro/flows/3-round-trip.yaml` | Phone send → drone sees; drone send → phone sees; both visible |
-| `maestro/flows/4-solo-create-strand.yaml` | No drone: connect alone → create strand → result modal with elapsed time (does not use `_setup.yaml`) |
+| `maestro/flows/4-solo-create-strand.yaml` | No drone: connect alone → create strand → `Strand created` modal (does not use `_setup.yaml`) |
 
 ### Artifacts
 

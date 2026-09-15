@@ -16,9 +16,12 @@ import { uuid } from '../src/uuid.js';
 import { FakeWriteBatch, fakeRNLevelDBOpener } from './fake-rn-leveldb.js';
 
 /**
- * A phone on its own founds strands promptly: the regression guard for the
- * 2026-09-14 device report in which "Create Chat Strand" showed no result for minutes
- * (fix ticket `rn-solo-founding-stall-on-device`).
+ * A phone on its own founds strands promptly: the headless guard for the 2026-09-14
+ * device report in which "Create Chat Strand" showed no result for minutes (fix ticket
+ * `rn-solo-founding-stall-on-device`). It cannot reproduce that stall. The cause found
+ * on the device is a lock Quereus leaves held when `for await` exits early, and it only
+ * happens in Metro's Babel-compiled bundle; Node runs Quereus as published. Maestro
+ * flow 4 is the device-side guard.
  *
  * The node is built by the app's own `buildPhoneNodeConfig` and `runOwnerGenesis`,
  * not a copy, so the config tested is the config the phone runs. Storage is the
@@ -123,7 +126,9 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 			{ type: 'fulfilled', value: expect.objectContaining({ founded: true }) },
 		]);
 		// The owner-role insert into the new strand's database is best-effort and only
-		// warns when it fails, so a warning here is a failed write through the adapter.
-		expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('[chat-strand]'), expect.anything());
+		// warns when it is skipped or fails, so a warning here is a missing role row. Match
+		// on the first argument alone: the skip warning has no second one.
+		const chatStrandWarnings = warn.mock.calls.filter(([message]) => String(message).includes('[chat-strand]'));
+		expect(chatStrandWarnings).toEqual([]);
 	}, FOUNDING_DEADLINE_MS * 2);
 });

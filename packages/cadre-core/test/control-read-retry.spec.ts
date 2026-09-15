@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import debug from 'debug';
-import { format } from 'node:util';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import {
 	CONTROL_READ_ATTEMPTS,
@@ -15,6 +13,7 @@ import type { ControlWriteRetryOptions } from '../src/control-write-retry.js';
 import { ADMISSION_DECISION_TIMEOUT_MS } from '../src/membership-connection-gater.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { captureDebugLog } from './capture-debug-log.js';
 
 /**
  * The transient-control-read classifier and retry loop behind
@@ -287,25 +286,9 @@ describe('read retry budget vs admission deadline', () => {
 	});
 });
 
-/**
- * Run `body` with `sereus:cadre:control-db` enabled and debug's sink captured, returning
- * the lines it emitted. Same helper as `control-write-retry.spec.ts`'s — namespace set and
- * sink are process-global in `debug`, so both are put back even when `body` throws.
- */
-async function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
-	const lines: string[] = [];
-	const previousNamespaces = debug.disable();
-	const previousLog = debug.log;
-	debug.enable('sereus:cadre:control-db');
-	debug.log = function (this: unknown, ...args: unknown[]): void { lines.push(format(...args)); };
-	try {
-		await body();
-	} finally {
-		debug.log = previousLog;
-		debug.disable();
-		if (previousNamespaces) debug.enable(previousNamespaces);
-	}
-	return lines;
+/** The lines `sereus:cadre:control-db` emitted while `body` ran. */
+function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
+	return captureDebugLog('sereus:cadre:control-db', body);
 }
 
 /** Test-only window onto the self-registration timer these tests must neutralize. */

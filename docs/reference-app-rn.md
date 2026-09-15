@@ -540,7 +540,7 @@ Only when `rn-leveldb` or another native dependency version changes. Otherwise, 
 
 ### Tracing a strand founding
 
-Both create buttons in Settings show elapsed seconds while founding runs, are disabled until it settles, and add a "still running" hint after 30 s. Nothing gives up at that point: founding is resumable, so reporting a failure would leave a strand the user believes was never created. The result modal reports the elapsed time on a line under its title.
+While a strand is being created, the pressed create button in Settings shows elapsed seconds, both create buttons are disabled until it settles, and a "still running" hint appears under the pressed button after 30 s. Nothing gives up at that point: founding is resumable, so reporting a failure would leave a strand the user believes was never created. The result modal reports the elapsed time on a line under its title.
 
 Every build logs the Settings handler at both ends (`adb logcat -s ReactNativeJS`):
 
@@ -562,7 +562,7 @@ D ReactNativeJS: 'sereus:cadre:timing [buildStrandRuntime:%s] createLibp2pNode: 
 
 The trailing `+<n>ms` is `debug`'s time since that namespace's previous line. The last line shows how the older timing lines print on the device: they pass their values as `%s`/`%d` arguments, and React Native's console prints the placeholders unfilled with the values after them, rather than substituting them as a browser console does.
 
-The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline.
+The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device.
 
 ## Testing Strategy
 
