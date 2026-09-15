@@ -12,6 +12,10 @@
  *
  * A fake CLI records the vars under test from its environment to a file so
  * the scrub is observable without a real cadre node.
+ *
+ * The same record carries `CADRE_LISTEN_ADDRS`, one of the vars the orchestrator
+ * deliberately SETS: a child must be handed a WebSocket listener beside its TCP one,
+ * on the ports its handle holds, or a phone cannot reach it.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -35,6 +39,7 @@ if (tokenPath) {
     CADRE_PARTY_ID: process.env.CADRE_PARTY_ID ?? null,
     CADRE_STORAGE_PATH: process.env.CADRE_STORAGE_PATH ?? null,
     CADRE_ADMIN_PORT: process.env.CADRE_ADMIN_PORT ?? null,
+    CADRE_LISTEN_ADDRS: process.env.CADRE_LISTEN_ADDRS ?? null,
     DEBUG: process.env.DEBUG ?? null,
   };
   try { fs.writeFileSync(path.join(dir, 'env-seen.json'), JSON.stringify(record), 'utf8'); } catch (e) { console.error(e); }
@@ -136,5 +141,22 @@ describe('HostProcessOrchestrator child env scrub', () => {
       expect(seen.CADRE_ADMIN_PORT).toBeNull();
       expect(seen.DEBUG).toBe('some:value');
     }
+  });
+
+  it('hands each child a TCP and a WebSocket listen address on its own ports', async () => {
+    const rootDir = join(tmpRoot, 'b');
+    const orch = makeOrchestrator(rootDir);
+    await orch.init();
+
+    await orch.createContainer({
+      containerId: 'child-1',
+      partyId: 'party-1',
+      bootstrapNodes: [],
+      profile: 'storage',
+    });
+
+    const seen = JSON.parse(await waitForFile(join(rootDir, 'child-1', 'env-seen.json')));
+    const ports = orch.getNode('child-1')!.ports;
+    expect(seen.CADRE_LISTEN_ADDRS).toBe(`/ip4/0.0.0.0/tcp/${ports.p2p},/ip4/0.0.0.0/tcp/${ports.ws}/ws`);
   });
 });

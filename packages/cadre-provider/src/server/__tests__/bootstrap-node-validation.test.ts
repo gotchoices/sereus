@@ -2,11 +2,13 @@
  * The provider's `bootstrapNodes` rule — the control-network addresses a created
  * container is started with — exercised directly, and through `POST /containers`.
  *
- * The first suite is one half of a **manual tripwire**: cadre-host carries a
- * byte-identical copy of this rule (`packages/cadre-host/src/server/routes/bootstrap-node-validation.ts`)
- * and the table below is the same table
+ * The first suite is one half of a **manual tripwire**: cadre-host carries an
+ * identical copy of this rule's per-entry half (`packages/cadre-host/src/server/routes/bootstrap-node-validation.ts`)
+ * and the per-entry rows below are the same rows
  * `packages/cadre-host/src/server/__tests__/bootstrap-node-validation.test.ts`
- * pins that copy to. Neither suite can observe the other package — nothing here
+ * pins that copy to. The empty-list row differs on purpose: cadre-host accepts an
+ * empty list (a phone requester dials its lent node instead), this package still
+ * requires one. Neither suite can observe the other package — nothing here
  * imports cadre-host — so this does not detect a change made over there; what it
  * does is fail if *this* copy is changed, which is how an editor is landed on the
  * comment pointing at the other one.

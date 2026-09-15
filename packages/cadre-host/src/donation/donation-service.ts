@@ -78,7 +78,12 @@ export interface DonationProvisionRequest {
   grantToken: string;
   /** The REQUESTER's cadre — the party the donated node joins. */
   partyId: string;
-  /** Requester control-network bootstrap multiaddrs (dialable, with `/p2p/`). */
+  /**
+   * Requester control-network bootstrap multiaddrs (dialable, with `/p2p/`). Empty
+   * means the requester dials the node itself: a phone has no address to give, so it
+   * reaches the node at the WebSocket address {@link DonationService.getPeer} reports
+   * rather than being dialed by it.
+   */
   bootstrapNodes: string[];
   /**
    * The requester's owner public key(s), base64url. Pinned as cold-start
@@ -524,7 +529,9 @@ export class DonationService {
         `Donation ${id} cannot be respawned in status ${donation.status}`,
       );
     }
-    if (!donation.bootstrapNodes?.length || !donation.ownerKeys?.length) {
+    // An empty `bootstrapNodes` is a real spawn input (a requester that dials the node
+    // itself); only a missing field marks a record written before inputs were persisted.
+    if (donation.bootstrapNodes === undefined || !donation.ownerKeys?.length) {
       log('donation %s is not respawnable (record predates persisted spawn inputs)', id);
       return { outcome: 'not_respawnable' };
     }
@@ -613,7 +620,7 @@ export class DonationService {
    * (`<rootDir>/<containerId>`), reclaiming here would delete exactly what
    * `giveUp` meant to keep.
    *
-   * NOTE: that skipped reclaim leaks the new spawn's four ports — the record
+   * NOTE: that skipped reclaim leaks the new spawn's ports — the record
    * still names the *previous* `dockerId`, so a later `terminate` cleans up the
    * old handle, not this one. Unreachable today (`giveUp` is only called from
    * the supervisor's serialized pass, so it cannot overlap a respawn); if a

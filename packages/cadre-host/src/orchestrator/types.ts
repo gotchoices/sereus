@@ -42,13 +42,25 @@ export interface HostProcessConfig {
  */
 export type PushCredentialsResolver = () => Promise<PushCredentials | undefined>;
 
-/** Per-child allocated ports. `admin` carries the loopback admin channel (6.6). */
+/**
+ * Per-child allocated ports. `admin` carries the loopback admin channel (6.6).
+ *
+ * A handle read back from a `state.json` written by an older build lacks every key
+ * added since, whatever this type says — the node-set helpers in `port-allocator.ts`
+ * skip a missing key rather than reserving `undefined`.
+ */
 export interface NodePorts {
   health: number;
   metrics: number;
+  /** libp2p TCP listener. */
   p2p: number;
   /** Loopback admin-channel port. Bound only by the owner node. */
   admin: number;
+  /**
+   * libp2p WebSocket listener. The one a phone dials: a phone's node has no TCP
+   * transport, so the `p2p` port is unreachable to it.
+   */
+  ws: number;
 }
 
 /** In-memory record per managed child. */

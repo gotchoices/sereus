@@ -480,7 +480,7 @@ describe('DonationSupervisor start/stop', () => {
         status: 'stopped',
         spawnedAt: new Date(START_MS).toISOString(),
         workdir: '/fake/owner',
-        ports: { health: 0, metrics: 0, p2p: 0, admin: 0 },
+        ports: { health: 0, metrics: 0, p2p: 0, admin: 0, ws: 0 },
         owner: true,
       };
       h.orch.emit(ownerExit);

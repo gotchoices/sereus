@@ -2,12 +2,14 @@
  * The host's `bootstrapNodes` rule — the requester addresses a donated node is
  * started with — exercised directly.
  *
- * This is one half of a **manual tripwire**: cadre-provider carries a
- * byte-identical copy of this rule
- * (`packages/cadre-provider/src/server/bootstrap-node-validation.ts`) and the table
- * below is the same table
+ * This is one half of a **manual tripwire**: cadre-provider carries an identical
+ * copy of this rule's per-entry half
+ * (`packages/cadre-provider/src/server/bootstrap-node-validation.ts`) and the
+ * per-entry rows below are the same rows
  * `packages/cadre-provider/src/server/__tests__/bootstrap-node-validation.test.ts`
- * pins that copy to. Neither suite can observe the other package — nothing here
+ * pins that copy to. The empty-list row differs on purpose: this host accepts an
+ * empty list (a phone requester dials its lent node instead), the provider still
+ * requires one. Neither suite can observe the other package — nothing here
  * imports cadre-provider's server module — so this does not detect a change made
  * over there; what it does is fail if *this* copy is changed, which is how an
  * editor is landed on the comment pointing at the other one.
@@ -50,9 +52,11 @@ describe('validateBootstrapNodes (the host copy of the address rule)', () => {
     expect(validateBootstrapNodes([relayed])).toEqual({ nodes: [relayed] });
   });
 
-  it('treats an absent field and an empty list alike: the field is required', () => {
-    expect(errorOf(undefined)).toBe('bootstrapNodes is required');
-    expect(errorOf([])).toBe('bootstrapNodes is required');
+  // The one row that differs from cadre-provider's table: a requester with no address
+  // of its own (a phone) sends none and dials the lent node itself.
+  it('treats an absent field and an empty list alike: no addresses, nothing rejected', () => {
+    expect(validateBootstrapNodes(undefined)).toEqual({ nodes: [] });
+    expect(validateBootstrapNodes([])).toEqual({ nodes: [] });
   });
 
   it('rejects a non-array, and an array with a non-string element', () => {

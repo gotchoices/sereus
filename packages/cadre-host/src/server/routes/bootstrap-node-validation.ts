@@ -4,11 +4,27 @@
  * (written into the child's `cadre.json` as `controlNetwork.bootstrapNodes` by
  * `orchestrator/host-process-orchestrator.ts`) and hands to `@libp2p/bootstrap`.
  *
- * Its own module rather than part of `grants.ts`: the rule is a duplicate of
- * cadre-provider's copy (`packages/cadre-provider/src/server/bootstrap-node-validation.ts`)
+ * Its own module rather than part of `grants.ts`: the per-entry rule is a duplicate
+ * of cadre-provider's copy (`packages/cadre-provider/src/server/bootstrap-node-validation.ts`)
  * and must stay identical to it, so it is worth reading, testing and changing on
  * its own, without a routing file around it — the same arrangement cadre-provider
  * uses for its restatement of cadre-core's owner-key rule.
+ *
+ * ## An empty list is accepted — where this copy differs, on purpose
+ *
+ * The field may be absent or `[]`; cadre-provider's copy still requires at least one
+ * address. A lent node's requester is typically a phone, and a phone has no address
+ * to give — its node listens on nothing and can only dial out. Such a requester sends
+ * no addresses and dials the node itself, at the WebSocket address
+ * `GET /grants/:id/peer` reports. The node starts with no bootstrap peers and waits,
+ * and admits that first inbound connection because it holds no authorized members
+ * yet (`admitInboundControlConnection` / `authorizeInboundControlStream` in
+ * `cadre-core/src/cadre-node.ts`). A provider container has no such requester yet, so
+ * there an empty list is still the node-comes-up-alone failure described below
+ * (`backlog/feat-provider-drone-reachable-by-phone`).
+ *
+ * The difference is at the list level only: every entry that IS given must pass the
+ * rule below, which is identical in both packages.
  *
  * ## The rule, and why each clause is there
  *
@@ -58,21 +74,22 @@
  * this rule: cadre-provider joins its list with `,` into `CADRE_BOOTSTRAP_NODES`
  * and cadre-cli's env loader splits it back on `,`, so an entry containing a comma
  * would silently become two addresses there. This host writes JSON rather than an
- * env var and so is not exposed to that, but the two rules are kept identical —
- * see the note about manual upkeep below.
+ * env var and so is not exposed to that, but the two per-entry rules are kept
+ * identical — see the note about manual upkeep below.
  *
  * Reachability is deliberately NOT checked: a well-formed address for a peer that
  * happens to be down is indistinguishable here from one that is up, and no
  * boundary check can tell them apart. This validates the *shape* the child must be
  * able to parse, nothing more.
  *
- * Keeping the two copies in step is **manual** — neither package can see the
- * other's rule, so no test can compare them. What the tests give instead is a
+ * Keeping the two per-entry rules in step is **manual** — neither package can see
+ * the other's rule, so no test can compare them. What the tests give instead is a
  * tripwire on each side: `../__tests__/bootstrap-node-validation.test.ts` here and
  * `packages/cadre-provider/src/server/__tests__/bootstrap-node-validation.test.ts`
- * there each pin their own copy to the same accept/reject table, so changing
- * either rule fails that package's own suite — and the comment above the rule you
- * just changed is what points at the other copy.
+ * there each pin their own copy to the same per-entry accept/reject table (the
+ * empty-list row is the one that differs), so changing either rule fails that
+ * package's own suite — and the comment above the rule you just changed is what
+ * points at the other copy.
  */
 
 import debug from 'debug';
@@ -155,8 +172,10 @@ function validateBootstrapNode(value: string): { node: string } | { error: strin
 }
 
 /**
- * Validate the required `bootstrapNodes` field of a provision request: a non-empty
+ * Validate the optional `bootstrapNodes` field of a provision request: absent, or an
  * array of dialable control-network addresses (see {@link validateBootstrapNode}).
+ * Absent and `[]` alike mean the requester dials the node itself — see "An empty list
+ * is accepted" in the module comment.
  *
  * Provisioning is the last point at which the requester can still fix a typo, so
  * the shape is checked here: without it a bad address is answered 201 and then
@@ -167,11 +186,11 @@ function validateBootstrapNode(value: string): { node: string } | { error: strin
  * Every rejection names the offending entry: with several addresses in one
  * request the message is the only thing that says WHICH one.
  *
- * @returns the trimmed addresses, so the provision request carries exactly what was validated.
+ * @returns the trimmed addresses (`[]` when none were given), so the provision request carries exactly what was validated.
  */
 export function validateBootstrapNodes(value: unknown): { nodes: string[] } | { error: string } {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return { error: 'bootstrapNodes is required' };
+  if (value === undefined) {
+    return { nodes: [] };
   }
   if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string')) {
     return { error: 'bootstrapNodes must be an array of strings' };

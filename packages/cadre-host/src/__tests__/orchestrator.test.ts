@@ -14,9 +14,8 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
-import { allocateNodePorts, PortAllocator } from '../orchestrator/port-allocator.js';
 import { rotateOnDisk } from '../orchestrator/log-rotator.js';
-import { decodeDockerId, encodeDockerId } from '../orchestrator/types.js';
+import { decodeDockerId, encodeDockerId, type NodePorts } from '../orchestrator/types.js';
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { loadIdentity } from '../installer/identity.js';
@@ -165,7 +164,7 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
   // The donated-node respawn path calls createContainer again with the id of a
   // container the host still holds a (now dead) handle for. Handles are keyed by
   // the per-spawn dockerId, so without an explicit drop the old one would linger
-  // forever and its four ports would never come back.
+  // forever and its ports would never come back.
   it('drops the stale handle, releases its ports, and keeps the identity', async () => {
     const orch = makeOrchestrator();
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;
@@ -196,6 +195,58 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
     // Same workdir, same key → same peer id. This is what makes a respawn the
     // same node rather than a new one the borrower's cadre has never approved.
     expect(loadIdentity(identityPath).peerId).toBe(peerBefore);
+  });
+
+  // A requester that dials the node itself (a phone) knows it only by the address it
+  // was given, so a re-spawn must come back on the SAME ports even when the allocator
+  // has lower ones free. The test above cannot tell reuse from lowest-free: there the
+  // old ports are also the lowest free ones.
+  it('comes back on its own ports even when lower ones are free', async () => {
+    const orch = makeOrchestrator();
+
+    const lower = await orch.createContainer(makeRequest('c0'));
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    const portsBefore = orch.getNode('c1')!.ports;
+
+    await orch.removeContainer(lower.dockerId);
+    const { pid } = decodeDockerId(first.dockerId);
+    process.kill(pid, 'SIGKILL');
+    await waitFor(() => !isPidAlive(pid));
+
+    await orch.createContainer(makeRequest('c1'));
+    expect(orch.getNode('c1')!.ports).toEqual(portsBefore);
+  });
+
+  // A handle written to state.json before the WebSocket port existed has no `ws`.
+  // Rehydrating it must hold the ports it does have, and its re-spawn must keep those
+  // and gain a WebSocket port rather than trip over the missing key.
+  it('re-spawns a handle persisted without a ws port on its old ports plus a fresh ws', async () => {
+    const rootDir = join(tmpRoot, 'legacy');
+    const legacyPorts = { health: 18010, metrics: 18011, p2p: 18012, admin: 18013 };
+    new StateStore(rootDir).save({
+      version: 1,
+      handles: [{
+        containerId: 'c1',
+        dockerId: encodeDockerId(999999, 'deadbeef'),
+        pid: 999999,
+        startupToken: 'deadbeef',
+        workdir: join(rootDir, 'c1'),
+        ports: legacyPorts as NodePorts,
+        spawnedAt: new Date(0).toISOString(),
+        partyId: 'party-c1',
+        profile: 'transaction',
+      }],
+    });
+    const orch = makeOrchestrator({ rootDir });
+    await orch.init();
+
+    await orch.createContainer(makeRequest('c1'));
+
+    const ports = orch.getNode('c1')!.ports;
+    expect(ports).toMatchObject(legacyPorts);
+    // The lowest free port: nothing below 18010 was held, `undefined` included.
+    expect(ports.ws).toBe(18000);
   });
 });
 
@@ -261,7 +312,7 @@ describe('HostProcessOrchestrator failed launch', () => {
     rmSync(storage, { force: true });
     const second = await orch.createContainer(makeRequest('c1'));
 
-    // The restored handle held its four ports across the failure, and the
+    // The restored handle held its ports across the failure, and the
     // allocator hands back the lowest free port — so identical ports prove the
     // failed attempt neither leaked nor stole them.
     expect(second.p2pPort).toBe(first.p2pPort);
@@ -279,16 +330,16 @@ describe('HostProcessOrchestrator failed launch', () => {
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;
 
     await orch.createContainer(makeRequest('c1'));
-    expect(orch.getNode('c1')!.ports).toEqual({ health: 12000, metrics: 12001, p2p: 12002, admin: 12003 });
+    expect(orch.getNode('c1')!.ports).toEqual({ health: 12000, metrics: 12001, p2p: 12002, admin: 12003, ws: 12004 });
 
-    // No prior handle to restore here — the four ports are simply released.
+    // No prior handle to restore here — the five ports are simply released.
     mkdirSync(join(rootDir, 'c2'), { recursive: true });
     writeFileSync(join(rootDir, 'c2', 'storage'), 'not-a-directory', 'utf8');
     await expect(orch.createContainer(makeRequest('c2'))).rejects.toThrow();
 
     await orch.createContainer(makeRequest('c3'));
-    // With the leak these would start at 12008.
-    expect(orch.getNode('c3')!.ports).toEqual({ health: 12004, metrics: 12005, p2p: 12006, admin: 12007 });
+    // With the leak these would start at 12010.
+    expect(orch.getNode('c3')!.ports).toEqual({ health: 12005, metrics: 12006, p2p: 12007, admin: 12008, ws: 12009 });
   });
 
   it('leaves the owner node addressable on its original ports', async () => {
@@ -348,7 +399,7 @@ describe('HostProcessOrchestrator failed launch', () => {
     // persist must not reach the unwind that would delete it.
     expect(existsSync(join(rootDir, 'c1', 'identity.key'))).toBe(true);
 
-    // Its ports are still held: a fresh container gets four different ones.
+    // Its ports are still held: a fresh container gets different ones.
     const other = await orch.createContainer(makeRequest('c2'));
     expect(other.p2pPort).not.toBe(second.p2pPort);
     expect(orch.getNode('c2')!.ports).not.toEqual(orch.getNode('c1')!.ports);
@@ -361,8 +412,8 @@ describe('HostProcessOrchestrator failed launch', () => {
   // unwind then correctly declines to delete it. Exhausting the port range
   // fails the very next step instead, with the workdir genuinely fresh.
   it('discards the workdir a failed first spawn created', async () => {
-    // Exactly four ports — enough for one node and no more.
-    const orch = makeOrchestrator({ portRange: { start: 13000, end: 13003 } });
+    // Exactly five ports — enough for one node and no more.
+    const orch = makeOrchestrator({ portRange: { start: 13000, end: 13004 } });
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;
 
     await orch.createContainer(makeRequest('c1'));
@@ -701,65 +752,6 @@ describe('rotateOnDisk', () => {
     expect(fs.existsSync(path)).toBe(false);
     expect(fs.readFileSync(`${path}.1`, 'utf8')).toBe('only');
     expect(fs.existsSync(`${path}.2`)).toBe(false);
-  });
-});
-
-describe('PortAllocator', () => {
-  it('allocates sequentially, releases, and reuses', () => {
-    const a = new PortAllocator(100, 102);
-    expect(a.allocate()).toBe(100);
-    expect(a.allocate()).toBe(101);
-    expect(a.allocate()).toBe(102);
-    expect(() => a.allocate()).toThrow(/No available ports/);
-    a.release(101);
-    expect(a.allocate()).toBe(101);
-  });
-
-  it('markUsed reserves ports without allocating', () => {
-    const a = new PortAllocator(100, 102);
-    a.markUsed(101);
-    expect(a.allocate()).toBe(100);
-    expect(a.allocate()).toBe(102);
-    expect(() => a.allocate()).toThrow();
-  });
-});
-
-describe('allocateNodePorts', () => {
-  it('allocates the four ports in a fixed order', () => {
-    const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a)).toEqual({ health: 10000, metrics: 10001, p2p: 10002, admin: 10003 });
-  });
-
-  // A partial set left reserved would leak from a bounded range on every failed
-  // provision — the whole reason this helper exists rather than four allocates.
-  it('is all-or-nothing: an exhausted range releases everything it took', () => {
-    const a = new PortAllocator(13000, 13002);
-    expect(() => allocateNodePorts(a)).toThrow(/No available ports/);
-    expect(a.has(13000)).toBe(false);
-    expect(a.has(13001)).toBe(false);
-    expect(a.has(13002)).toBe(false);
-  });
-
-  // The owner node's p2p port is pinned by the NAT mapping, not allocated.
-  it('honours an override and reserves it', () => {
-    const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a, { p2p: 10005 })).toEqual({
-      health: 10000,
-      metrics: 10001,
-      p2p: 10005,
-      admin: 10002,
-    });
-    // Reserved, so no later allocation can hand it out again.
-    expect(a.has(10005)).toBe(true);
-  });
-
-  // An out-of-range override is the production case for the owner node: its
-  // libp2p port is chosen by NAT config, not by the allocator, so reserving it
-  // is a documented no-op rather than an error.
-  it('accepts an override outside the managed range without reserving it', () => {
-    const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a, { p2p: 40000 })).toMatchObject({ p2p: 40000, health: 10000 });
-    expect(a.has(40000)).toBe(false);
   });
 });
 

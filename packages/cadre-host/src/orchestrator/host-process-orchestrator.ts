@@ -24,7 +24,13 @@ import type {
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
-import { allocateNodePorts, PortAllocator } from './port-allocator.js';
+import {
+  allocateNodePorts,
+  PortAllocator,
+  releaseNodePorts,
+  reserveNodePorts,
+  reusedNodePorts,
+} from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
 import type { PushCredentials } from '@serfab/cadre-core';
@@ -73,6 +79,22 @@ function scrubbedParentEnv(): NodeJS.ProcessEnv {
     if (key.startsWith(CADRE_ENV_PREFIX)) delete env[key];
   }
   return env;
+}
+
+/**
+ * The libp2p listen addresses a managed child binds — its `CADRE_LISTEN_ADDRS`, one
+ * entry per element: TCP on the `p2p` port and WebSocket on the `ws` port, both on
+ * every interface.
+ *
+ * The WebSocket entry is what lets a phone reach the child. A phone's node carries
+ * WebSocket, circuit-relay and WebRTC transports but no TCP
+ * (`reference-app-rn/src/phone-node-config.ts`), and it listens on nothing, so the
+ * phone has to be the one that dials. Naming a `/ws` address is all the child needs:
+ * cadre-core adds the WebSocket transport for any listen entry that names one
+ * (`resolveTransportOptions` in `cadre-core/src/relay-addrs.ts`).
+ */
+export function childListenAddrs(ports: Pick<NodePorts, 'p2p' | 'ws'>): string[] {
+  return [`/ip4/0.0.0.0/tcp/${ports.p2p}`, `/ip4/0.0.0.0/tcp/${ports.ws}/ws`];
 }
 
 /** Fixed friendly id for the admin's owner node. */
@@ -250,8 +272,8 @@ export class HostProcessOrchestrator implements Orchestrator {
       // Identity BEFORE any port is reserved: it is the one step here that can
       // fail on its own (an unreadable or undecodable identity.key throws rather
       // than silently re-keying), and everything past the allocation is either
-      // infallible or releases the ports itself. Allocating first would leak four
-      // ports from a bounded range on every failed provision attempt.
+      // infallible or releases the ports itself. Allocating first would leak a
+      // node's worth of ports from a bounded range on every failed provision attempt.
       const identity = await ensureNodeIdentity(workdir);
       log('container %s identity peerId=%s', request.containerId, identity.peerId);
       // A node started with pinned owner keys belongs to a FOREIGN cadre (the
@@ -276,12 +298,11 @@ export class HostProcessOrchestrator implements Orchestrator {
       // `restoreDroppedHandles`'s documented precondition true even though the
       // `try` now opens further up. Do not add an `await` past this line.
       dropped = this.dropStaleHandle(request.containerId);
-      // NOTE: the p2p port is re-allocated per spawn, so a re-spawned donated
-      // node keeps its peer id but may announce a different port. Recoverable —
-      // it dials out to its retained bootstrap peers and republishes its own
-      // CadrePeer row once connected. If that reconnect ever proves too slow,
-      // pin the p2p port per containerId (see donated-node-respawn-core).
-      ports = allocateNodePorts(this.portAllocator);
+      // A re-spawn comes back on the ports the dropped handle held, not merely the
+      // lowest free ones: a requester that dials the node itself (a phone) knows it
+      // only by the address it was given. The drop above just released them, and
+      // nothing can have taken them since — see reusedNodePorts.
+      ports = allocateNodePorts(this.portAllocator, reusedNodePorts(dropped));
       return this.launchChild({
         containerId: request.containerId,
         partyId: request.partyId,
@@ -432,8 +453,10 @@ export class HostProcessOrchestrator implements Orchestrator {
     let ports: NodePorts | undefined;
     try {
       // The owner node must listen on the configured libp2p port so the NAT
-      // mapping (external → internal) lands on it — hence the p2p override.
-      ports = allocateNodePorts(this.portAllocator, { p2p: config.libp2pPort });
+      // mapping (external → internal) lands on it — hence the p2p override, which
+      // wins over the dropped handle's. Every other port comes back as it was, for
+      // the same reason as in createContainer.
+      ports = allocateNodePorts(this.portAllocator, { ...reusedNodePorts(dropped), p2p: config.libp2pPort });
       const result = this.launchChild({
         containerId: OWNER_CONTAINER_ID,
         partyId: config.partyId,
@@ -563,17 +586,19 @@ export class HostProcessOrchestrator implements Orchestrator {
       CADRE_STARTUP_TOKEN: token,
       CADRE_HEALTH_PORT: String(ports.health),
       CADRE_METRICS_PORT: String(ports.metrics),
-      CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${ports.p2p}`,
+      CADRE_LISTEN_ADDRS: childListenAddrs(ports).join(','),
       // NOTE: the scrub above drops every CADRE_* var and `extraEnv` is built only from
-      // pinnedOwnerKeys, so a managed child advertises only the port assigned to it here
+      // pinnedOwnerKeys, so a managed child advertises only the ports assigned to it here
       // — `CADRE_ANNOUNCE_ADDRS`/`CADRE_APPEND_ANNOUNCE_ADDRS` cannot reach it. Fine while
-      // children are reached at that port or through a relay; if a host is ever fronted by
-      // a proxy or DNS name, plumb an announce var through from host config. The port is
-      // the CHILD'S CONTROL NODE's alone: each strand node the child runs binds the same
-      // entry with an OS-assigned port instead, since one port cannot be held twice
-      // (`cadre-core/src/strand-network-config.ts`). A NAT forward of this port therefore
-      // reaches the control node only, and strand nodes are reached through observed
-      // addresses or a relay.
+      // children are reached at those ports or through a relay; if a host is ever fronted
+      // by a proxy or DNS name, plumb an announce var through from host config. The TCP
+      // and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand node the
+      // child runs binds the same two entries with OS-assigned ports instead, since one
+      // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). A NAT
+      // forward (the owner node's, via `NatService`) covers the TCP port only, so it
+      // reaches the control node over TCP alone; a phone outside the LAN, which needs the
+      // WebSocket port, and every strand node are reached through observed addresses or
+      // a relay.
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
@@ -687,7 +712,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * Drop any handle left over from a previous spawn of the same `containerId`
    * and release its ports. Handles are keyed by the per-spawn `dockerId`, so
    * without this a re-spawn (donated-node respawn) would strand the prior
-   * handle in the map forever, leaking four ports from a bounded range each
+   * handle in the map forever, leaking its ports from a bounded range each
    * time. Mirrors the same cleanup in `ensureOwnerNode`.
    *
    * DO NOT delete the workdir: the identity key and node-local stores
@@ -695,8 +720,9 @@ export class HostProcessOrchestrator implements Orchestrator {
    * the whole reason a respawn comes back as the same node. `launchChild`
    * reuses the same workdir.
    *
-   * NOTE: releasing the ports hands them straight back to the allocator, so a
-   * re-spawn while the *previous* child is still listening can bind-clash. Every
+   * NOTE: releasing the ports hands them straight back to the allocator, and the
+   * re-spawn then takes those same ports as overrides (`reusedNodePorts`), so a
+   * re-spawn while the *previous* child is still listening will bind-clash. Every
    * caller today re-spawns only a container it has established is not running
    * (`DonationService.respawn`, `ensureOwnerNode`). If a caller ever needs to
    * replace a live child, stop it first — or hold the ports until its exit.
@@ -723,7 +749,7 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Inverse of {@link dropStaleHandle}, for a spawn that then failed: put each
-   * handle back in the map and re-reserve its four ports, leaving host state
+   * handle back in the map and re-reserve its ports, leaving host state
    * exactly as the failed attempt found it.
    *
    * **Precondition: the drop → launch window is synchronous.** Restoring is
@@ -772,19 +798,11 @@ export class HostProcessOrchestrator implements Orchestrator {
    * launch then failed.
    */
   private reservePorts(ports: NodePorts): void {
-    this.portAllocator.markUsed(ports.health);
-    this.portAllocator.markUsed(ports.metrics);
-    this.portAllocator.markUsed(ports.p2p);
-    // `admin` is absent on handles persisted before this build; markUsed would
-    // otherwise put `undefined` in the used-set.
-    if (typeof ports.admin === 'number') this.portAllocator.markUsed(ports.admin);
+    reserveNodePorts(this.portAllocator, ports);
   }
 
   private releasePorts(ports: NodePorts): void {
-    this.portAllocator.release(ports.health);
-    this.portAllocator.release(ports.metrics);
-    this.portAllocator.release(ports.p2p);
-    this.portAllocator.release(ports.admin);
+    releaseNodePorts(this.portAllocator, ports);
   }
 
   async stopContainer(dockerId: string): Promise<void> {

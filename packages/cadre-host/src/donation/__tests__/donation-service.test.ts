@@ -129,6 +129,21 @@ describe('DonationService.provision', () => {
     expect(store.liveNodeCount(token)).toBe(1);
   });
 
+  // A phone has no address to give: it sends no bootstrap nodes and dials the lent
+  // node itself. The empty list is a real spawn input, forwarded and persisted as given.
+  it('provisions with no bootstrap nodes, forwarding and persisting the empty list', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const view = await svc.provision({ ...baseRequest(token), bootstrapNodes: [] });
+
+    expect(view.status).toBe('awaiting_seed');
+    expect(orch.createCalls[0].bootstrapNodes).toEqual([]);
+    expect(store.get(view.id)?.bootstrapNodes).toEqual([]);
+  });
+
   /**
    * The pins are checked before the grant is even validated, so a typo costs the
    * requester nothing: no orchestrator call, no record, and — the point — no quota
@@ -562,6 +577,49 @@ describe('DonationService.respawn', () => {
     await expect(svc.respawn('grn_legacy')).resolves.toEqual({ outcome: 'not_respawnable' });
     expect(orch.createCalls).toHaveLength(0);
     expect(store.get('grn_legacy')?.dockerId).toBe('dock_old');
+  });
+
+  // The empty list a phone requester provisions with is a persisted spawn input like
+  // any other, so that loan must come back too.
+  it('respawns a record provisioned with no bootstrap nodes, replaying the empty list', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision({ ...baseRequest(token), bootstrapNodes: [] });
+    store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
+
+    const result = await svc.respawn(provisioned.id);
+
+    expect(result).toMatchObject({ outcome: 'respawned' });
+    expect(orch.createCalls).toHaveLength(2);
+    expect(orch.createCalls[1].bootstrapNodes).toEqual([]);
+    expect(store.get(provisioned.id)?.dockerId).toBe('dock_2');
+  });
+
+  // Only the field's ABSENCE marks a record from before spawn inputs were persisted,
+  // so owner keys alone do not make a record replayable.
+  it('skips a record that has owner keys but no bootstrapNodes field', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    store.put({
+      id: 'grn_partial',
+      grantToken: token,
+      partyId: 'party-P',
+      ownerKeys: [OWNER_KEY],
+      profile: 'storage',
+      status: 'seeded',
+      dockerId: 'dock_old',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    await expect(svc.respawn('grn_partial')).resolves.toEqual({ outcome: 'not_respawnable' });
+    expect(orch.createCalls).toHaveLength(0);
   });
 
   it('refuses to resurrect a terminated loan', async () => {

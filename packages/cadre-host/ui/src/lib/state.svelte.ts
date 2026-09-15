@@ -29,7 +29,7 @@ export interface NodeInfo {
 	status: ContainerStatus;
 	spawnedAt: string;
 	workdir: string;
-	ports: { health: number; metrics: number; p2p: number };
+	ports: { health: number; metrics: number; p2p: number; ws: number };
 }
 
 export interface NodeStats {
@@ -259,7 +259,7 @@ export async function refreshStatus(): Promise<void> {
 				status: n.status,
 				spawnedAt: '',
 				workdir: '',
-				ports: { health: 0, metrics: 0, p2p: 0 },
+				ports: { health: 0, metrics: 0, p2p: 0, ws: 0 },
 			}));
 		}
 		recomputeStatus();

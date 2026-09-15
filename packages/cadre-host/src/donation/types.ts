@@ -149,7 +149,8 @@ export interface Donation {
   /** The REQUESTER's cadre (a foreign party this host merely hosts a node for). */
   partyId: string;
   /**
-   * Requester control-network bootstrap multiaddrs — replayed on respawn.
+   * Requester control-network bootstrap multiaddrs — replayed on respawn. Empty when
+   * the requester dials the node itself (see `DonationProvisionRequest.bootstrapNodes`).
    * Absent on records written before respawn support; those are not respawnable.
    */
   bootstrapNodes?: string[];

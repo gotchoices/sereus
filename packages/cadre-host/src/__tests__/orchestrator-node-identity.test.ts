@@ -162,12 +162,12 @@ describe('HostProcessOrchestrator node identity', () => {
   // The failure the identity step can actually produce is a damaged key file,
   // and `DonationService.provision` turns every such throw into an `error`
   // record and lets the grantee retry. If the spawn path reserved its ports
-  // before the step that throws, each retry would burn four more ports out of a
+  // before the step that throws, each retry would burn five more ports out of a
   // bounded range until provisioning stopped working altogether.
   it('reserves no ports when the identity step fails', async () => {
     const rootDir = join(tmpRoot, 'd');
-    // Exactly one node's worth of ports (health, metrics, p2p, admin).
-    const orch = makeOrchestrator(rootDir, { start: 18100, end: 18103 });
+    // Exactly one node's worth of ports (health, metrics, p2p, admin, ws).
+    const orch = makeOrchestrator(rootDir, { start: 18100, end: 18104 });
     await orch.init();
 
     mkdirSync(join(rootDir, 'donated-bad'), { recursive: true });
@@ -181,7 +181,7 @@ describe('HostProcessOrchestrator node identity', () => {
     };
     await expect(orch.createContainer({ ...request, containerId: 'donated-bad' })).rejects.toThrow();
 
-    // The whole range is still free, so a healthy container still gets its four.
+    // The whole range is still free, so a healthy container still gets its five.
     const ok = await orch.createContainer({ ...request, containerId: 'donated-good' });
     expect(ok.p2pPort).toBeGreaterThanOrEqual(18100);
   });

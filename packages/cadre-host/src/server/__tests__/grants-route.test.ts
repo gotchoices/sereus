@@ -182,7 +182,6 @@ describe('POST /grants', () => {
       // finds no transport for it, and the node is alone just the same.
       ['/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
       [''],
-      [],
     ];
     for (const bootstrapNodes of bad) {
       const res = await app.inject({
@@ -194,6 +193,20 @@ describe('POST /grants', () => {
 
     const list = await app.inject({ method: 'GET', url: '/grants', headers: bearer(token) });
     expect((list.json() as { data: { donations: unknown[] } }).data.donations).toHaveLength(0);
+  });
+
+  // A phone has no address to give, so it sends none and dials the lent node itself:
+  // leaving the field out, or sending an empty list, provisions a node with no
+  // bootstrap peers rather than being rejected.
+  it('provisions with bootstrapNodes absent or empty → 201, recording an empty list', async () => {
+    const { bootstrapNodes: _bootstrapNodes, ...withoutBootstrap } = body;
+    for (const payload of [withoutBootstrap, { ...body, bootstrapNodes: [] }]) {
+      const res = await app.inject({ method: 'POST', url: '/grants', headers: bearer(token), payload });
+      expect(res.statusCode, `expected 201 for ${JSON.stringify(payload)}`).toBe(201);
+      const donation = (res.json() as { data: { donation: { id: string; bootstrapNodes?: string[] } } }).data.donation;
+      expect(donation.bootstrapNodes).toEqual([]);
+      expect(store.get(donation.id)?.bootstrapNodes).toEqual([]);
+    }
   });
 
   it('rejects a non-string partyId → 400, rather than stringifying it into the child config', async () => {

@@ -220,6 +220,6 @@ function toNodeInfo(dockerId: string, child: FakeChild): ManagedNodeInfo {
     status: child.running ? 'running' : 'stopped',
     spawnedAt: new Date(0).toISOString(),
     workdir: `/fake/${child.containerId}`,
-    ports: { health: 0, metrics: 0, p2p: 0, admin: 0 },
+    ports: { health: 0, metrics: 0, p2p: 0, admin: 0, ws: 0 },
   };
 }
