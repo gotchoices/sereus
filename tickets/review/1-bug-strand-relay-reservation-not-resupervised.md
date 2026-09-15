@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-09-15T05:43:31.721Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\1-bug-strand-relay-reservation-not-resupervised.review.2026-09-15T05-43-31-718Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: A phone's shared workspaces used to lose their relay address for good whenever the relay connection dropped, and also about two hours after reserving with no network change at all; workspace nodes now run the same keep-it-alive loop the main node has, one per relay, so they stay reachable without an app restart.
 files: packages/cadre-core/src/relay-reservation.ts, packages/cadre-core/src/relay-addrs.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/test/relay-reservation.spec.ts, packages/cadre-core/test/strand-instance-manager-relay.spec.ts, packages/cadre-core/test/strand-network-config.spec.ts, packages/cadre-core/test/relay-addrs.spec.ts, packages/cadre-core/test/strand-instance-manager-network-addrs.spec.ts, packages/cadre-core/test/strand-listen-port-collision.spec.ts, packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts, docs/architecture.md, docs/strands.md, tickets/backlog/bug-relay-drive-not-cancellable.md
 difficulty: hard
