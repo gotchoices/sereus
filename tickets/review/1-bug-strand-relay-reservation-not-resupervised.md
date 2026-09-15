@@ -61,3 +61,7 @@ Updated derivation specs: `strand-network-config.spec.ts` (new `relays` describe
 ## Docs updated
 
 `docs/architecture.md` (strand relay shape paragraph, fail-soft launch, "Reservation loss recovers on every node", the strand-node inheritance table) and `docs/strands.md` (scenario pointer, delegate-grant-on-relay-restart bullet). Module docs in `relay-reservation.ts`, `relay-addrs.ts`, `strand-network-config.ts`, `strand-instance-manager.ts`.
+
+## Working note — `../optimystic` after the 2026-09-14 machine freeze (garden)
+
+The machine froze at about 23:58 while this review was running; its partial edits were salvaged under this ticket. The optimystic runner died at the same moment, in the middle of implementing `block-transfer-uses-node-only-buffer-global`, and left **uncommitted, unreviewed** edits in `../optimystic` (`packages/db-p2p/src/cluster/block-transfer-service.ts` and three block-transfer specs). Because those source files are newer than `db-p2p`'s build, the stale-build guard will ask for a rebuild of `@optimystic/db-p2p`, and that rebuild includes the half-finished change. Do not edit or revert `../optimystic`. If you rebuild it, record `git -C ../optimystic log -1 --oneline` and that the tree was dirty, and if a failure implicates block transfer or replication, suspect that in-flight change before this diff.

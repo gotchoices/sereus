@@ -44,3 +44,7 @@ A Hermes debugger attach works for this (Metro inspector proxy `ws://localhost:8
 - `Create Chat Strand` on a solo phone completes in a bounded time a user would accept (state the measured number and the budget you set).
 - While it runs, the button shows progress and cannot be re-tapped; if it fails or exceeds a timeout, the user sees the reason.
 - A regression guard exists for whichever cause is found (a founding wall-clock/consult budget if it is cost; a scenario with a zero-connection transaction-profile node if it is a network wait).
+
+## Working note — `../optimystic` state (garden, 2026-09-15)
+
+The optimystic runner died mid-implement in a machine freeze and left **uncommitted, unreviewed** edits in `../optimystic` (`packages/db-p2p/src/cluster/block-transfer-service.ts` and block-transfer specs) until its own runner is resumed. The stale-build guard will ask for a rebuild of `@optimystic/db-p2p`, and that rebuild includes the half-finished change. Do not edit or revert `../optimystic`. If you rebuild it, record `git -C ../optimystic log -1 --oneline` and whether the tree was dirty. The device observation above was made on sereus `311fb47` plus an optimystic build with the `block-latch.ts` static-block fix, so a headless reproduction on a different optimystic build is a different baseline; say which one you measured.
