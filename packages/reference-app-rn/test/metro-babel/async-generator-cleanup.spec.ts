@@ -117,7 +117,16 @@ const PROBE_DEADLINE_MS = 5_000;
 /** Loading Metro's config and Babel's preset cold takes a few seconds. */
 const BABEL_TIMEOUT_MS = 60_000;
 
-/** The options Expo CLI passes to Metro's transformer for an Android development bundle on Hermes. */
+/**
+ * The options Expo CLI passes to Metro's transformer for an Android development bundle on Hermes:
+ * `engine` and `unstable_transformProfile` as `@expo/cli` 0.24 sets them in
+ * `build/src/start/server/middleware/metroOptions.js`, `experimentalImportSupport` as the app's
+ * Metro `getTransformOptions` returns it.
+ *
+ * NOTE: copied by hand, not read from Expo. If an Expo upgrade changes how it signals Hermes, the
+ * probe can compile differently from the phone's bundle, and the helper-usage assertions only catch
+ * lowering that stops altogether; re-check these against that file when upgrading Expo.
+ */
 function hermesAndroidDevOptions(type: MetroSourceType): MetroTransformOptions {
 	return {
 		dev: true,
