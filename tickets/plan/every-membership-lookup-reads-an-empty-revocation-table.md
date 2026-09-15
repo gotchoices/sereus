@@ -47,6 +47,8 @@ This is an Optimystic-side property, tracked there as `plan/a-block-we-do-not-ho
 
 So the upstream defect is real and is being fixed there. **This ticket is the half that stays ours**: even with a perfect upstream fix, reading a revocation table before every membership lookup is more work than the question requires.
 
+> **Update 2026-09-14 (garden):** the upstream ticket completed in `../optimystic` on 2026-09-11 (review commit `b5a3cd38`) and is included in the `@optimystic/*` `1.0.0-beta.3` release that sereus links. Every number in the tables above was measured **before** it landed. Re-measure against the current linked build first; question 5 below is no longer hypothetical. Size the remaining work from the new numbers, not the old ones.
+
 ## Why it is hot — the call sites
 
 `queryRevokedStamps` is called **unconditionally, before the row read**, by both `queryCadrePeers` (`:872`) and `queryPeerRecord` (`:1069`). So every membership or address lookup pays an extra absent-block consult before it does its own work.
