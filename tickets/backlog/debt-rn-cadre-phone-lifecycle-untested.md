@@ -60,3 +60,7 @@ The React Native module reads `expo-secure-store` and `rn-leveldb` directly, wit
 no injection point, so deciding how to substitute them is part of the work — a
 test-only module mock, or a small seam added to the module, whichever reads
 better.
+
+## Related (2026-09-15)
+
+`implement/rn-create-strand-progress-and-founding-trace` moves the `CadreNodeConfig` assembly and `runOwnerGenesis` out of `cadre-phone.ts` into a native-free `src/phone-node-config.ts`, so a Node test can build the app's real config. That is half of the injection seam this ticket needs; the lifecycle-ordering tests described here are still unclaimed.
