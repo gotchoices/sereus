@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
 import { useChat } from '../src/use-chat';
-import { memberDisplayName, type ChatMessage } from '../src/chat-operations';
+import { memberDisplayName, parseStoredDatetime, type ChatMessage } from '../src/chat-operations';
 import { connectionBanner } from '../src/connection-status';
 import { TEST_IDS } from '../src/test-ids';
 
@@ -187,7 +187,7 @@ function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
       )}
       <Text style={styles.msgText}>{msg.Content}</Text>
       <Text style={styles.time}>
-        {new Date(msg.Timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        {parseStoredDatetime(msg.Timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </Text>
     </View>
   );

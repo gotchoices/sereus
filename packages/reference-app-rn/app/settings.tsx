@@ -187,7 +187,9 @@ export default function SettingsScreen() {
   const connected = cadre.status === 'connected';
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    // `handled`: a tap on a button while the keyboard is up presses it, instead of only
+    // dismissing the keyboard (Android swallowed the first Connect tap after typing).
+    <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       {/* Node info */}
       <Section title="Node">
         {connected ? (

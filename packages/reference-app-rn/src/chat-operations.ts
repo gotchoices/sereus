@@ -49,6 +49,17 @@ export function memberDisplayName(peerId: string): string {
   return `User-${peerId.slice(-4)}`;
 }
 
+/**
+ * The instant a stored `datetime` value records. A `datetime` column reads back as
+ * T-separated ISO with no zone (cadre-core `canonical-datetime.ts`), and messages are
+ * inserted from `toISOString()`, so the value is UTC. `new Date()` parses a zone-less
+ * date-time as LOCAL time, which shifted every message by the device's UTC offset;
+ * so treat it as UTC unless it already carries a zone.
+ */
+export function parseStoredDatetime(value: string): Date {
+  return new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`);
+}
+
 function getDb(strand: StrandInstance): Database {
   if (!strand.database) {
     throw new Error(`Strand ${strand.strandId} database not available (status: ${strand.status})`);
