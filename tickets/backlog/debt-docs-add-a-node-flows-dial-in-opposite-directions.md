@@ -38,3 +38,7 @@ Docker path, and whether the relay case changes the reachability column (it does
 
 Raised in an outside documentation review of the published `v0.11.0` tree (2026-08-19),
 item 7.
+
+## Arm: the donation flow gains the phone-dials direction (added 2026-09-15)
+
+The code half of this mismatch is being fixed by the tickets split from `phone-adds-cadre-host-node-to-its-cadre`: `implement/donated-node-reachable-by-phone` makes `bootstrapNodes` optional on `POST /grants`, and when it is empty the requester dials the lent node (the same direction as the reference-app flow). That ticket updates `docs/cadre-host.md` itself. The table above then has three rows, not two: cadre-host donation with `bootstrapNodes` (lent node dials the requester), cadre-host donation without them (requester dials the lent node), and the reference-app flow. `owner-keeps-dialing-node-it-added` documents the mechanism that makes "the phone dials the drone" actually happen, in `docs/architecture.md` → "Enrollment Flow: Phone Adds Provider Drone" — link to it rather than restating it.

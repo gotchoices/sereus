@@ -79,3 +79,7 @@ currently serves"). This is why the v1 donor path is loopback/LAN-only. This tic
   donated node.
 - Relay fallback for CGNAT (ties into `backlog/4-relay-bootstrap-infrastructure`).
 - Update the loopback-only caveat in `docs/cadre-host.md` once real WAN works.
+
+## Arm: a phone requester needs the WebSocket port, not the TCP one (added 2026-09-15)
+
+`implement/donated-node-reachable-by-phone` gives every cadre-host child node a second listen port, `/ip4/0.0.0.0/tcp/<ws>/ws`, because a React Native phone has no TCP transport, and makes the phone dial the lent node rather than the reverse. For a remote phone, the per-donated-node mapping above must therefore forward the `/ws` port, and whatever address the requester is given (the `GET /grants/:id/peer` multiaddrs, or an address resolver in the style of `NatService`'s invite resolver, which today substitutes only the TCP address) must carry the externally mapped `/ws` address. Mapping only the TCP port reaches cadre-cli requesters and no phone. The same applies to the founder-role owner node, which shares the spawn code.
