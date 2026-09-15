@@ -1,0 +1,49 @@
+appId: ${MAESTRO_APP_ID}
+---
+# Flow 4: a phone on its own founds a chat strand.
+#
+# Guards the 2026-09-14 device report (fix ticket rn-solo-founding-stall-on-device):
+# on a phone with no drone and no peers, "Create Chat Strand" showed no result for
+# minutes. This flow connects with an empty party id and no bootstrap address, so it
+# needs no drone fixture and does not use _setup.yaml. run-e2e.mjs still runs it with
+# the rest of maestro/flows/; the drone env vars it passes are unused here.
+#
+# Standalone run (device or emulator with the dev client installed):
+#   maestro test -e MAESTRO_APP_ID=org.gotchoices.sereus.chat maestro/flows/4-solo-create-strand.yaml
+
+- launchApp:
+    clearState: true
+
+- tapOn: "Settings"
+
+# ── Connect alone ─────────────────────────────────────────────────────────
+# Party id and bootstrap address stay empty: Settings generates a party id and the
+# node starts as a cadre of one.
+- tapOn:
+    id: "btn-connect"
+- extendedWaitUntil:
+    visible:
+      id: "btn-disconnect"
+    timeout: 30000
+
+# ── Create strand ─────────────────────────────────────────────────────────
+# The button is below the fold. Let the scroll settle before tapping: a tap during
+# scroll momentum only stops the scroll.
+- scrollUntilVisible:
+    element:
+      id: "btn-create-strand"
+    direction: DOWN
+- waitForAnimationToEnd
+- tapOn:
+    id: "btn-create-strand"
+- extendedWaitUntil:
+    visible:
+      id: "modal-title"
+      text: "Strand created"
+    timeout: 60000
+# The result reports how long founding took.
+- assertVisible:
+    id: "modal-detail"
+    text: "Created in .* s"
+- tapOn:
+    id: "btn-modal-ok"

@@ -251,7 +251,7 @@ describe('useCadreInternal — closed-strand invite', () => {
     const sink = await mountStarted();
 
     await act(async () => {
-      await expect(sink.current!.createClosedStrandWithInvite()).rejects.toThrow(/no reachable address/);
+      await expect(sink.current!.createClosedStrandWithInvite('closed-1')).rejects.toThrow(/no reachable address/);
     });
 
     // Refused up front: no orphaned closed strand, no invitation minted.
@@ -266,10 +266,12 @@ describe('useCadreInternal — closed-strand invite', () => {
 
     let encoded = '';
     await act(async () => {
-      encoded = await sink.current!.createClosedStrandWithInvite();
+      encoded = await sink.current!.createClosedStrandWithInvite('closed-1');
     });
 
     expect(createClosedChatStrand).toHaveBeenCalledTimes(1);
+    // The caller's id is the strand founded, so Settings' logs name the same strand.
+    expect(createClosedChatStrand).toHaveBeenCalledWith(expect.anything(), 'closed-1');
     expect(encoded).toBe('encoded-invite-1');
   });
 });

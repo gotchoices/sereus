@@ -5,6 +5,10 @@
  * - LevelDB-backed storage via db-p2p-storage-rn (rn-leveldb under the hood)
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
  * - Owner role: the phone holds the signing keys
+ *
+ * This module does the native wiring. The config it feeds (profile, listen policy,
+ * strand filter) and the owner genesis live in `phone-node-config.ts`, which has no
+ * native imports so a Node test can build the same node.
  */
 
 import {
@@ -18,7 +22,6 @@ import {
   peerKeySigner,
 } from '@serfab/cadre-core';
 import type {
-  CadreNodeConfig,
   ControlNetworkSeed,
   ApplySeedResult,
   StrandInstance,
@@ -48,6 +51,9 @@ import {
   NODE_LOCAL_KV_PREFIX,
 } from './node-local-slots';
 import { loadIceConfig } from './ice-config';
+import { buildPhoneNodeConfig, runOwnerGenesis, type PhoneNodeOptions } from './phone-node-config';
+
+export type { PhoneNodeOptions };
 
 /**
  * db-p2p's transport-factory element type. The `webRTC()` factory from
@@ -122,13 +128,6 @@ let node: CadreNode | null = null;
  * {@link stopPhoneNode} closes it.
  */
 let nodeLocalDb: ReturnType<typeof openLevelDb> | null = null;
-
-export interface PhoneNodeOptions {
-  /** Party ID — identifies this cadre. Generated on first run. */
-  partyId: string;
-  /** Bootstrap multiaddrs for the drone (WebSocket). */
-  bootstrapAddrs: string[];
-}
 
 /**
  * Get or create the CadreNode singleton.
@@ -226,51 +225,28 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // of re-fetching per resume.
   const iceServers = await loadIceConfig({ signer: peerKeySigner(identityKey) });
 
-  const config: CadreNodeConfig = {
-    // Identity comes from the secure enclave (load on present, generate+persist on
-    // first run). Mutually exclusive with `privateKey`.
+  node = new CadreNode(buildPhoneNodeConfig({
+    ...opts,
+    // Identity comes from the secure enclave (see `keyStore` above).
     keyStore,
-    identityKeyId: DEFAULT_IDENTITY_KEY_ID,
-    controlNetwork: {
-      partyId: opts.partyId,
-      bootstrapNodes: opts.bootstrapAddrs,
-    },
-    profile: 'transaction',
-    storage: {
-      provider: createStorage,
-    },
-    network: {
-      transports: [
-        webSockets(),
-        circuitRelayTransport(),
-        // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
-        // hole-punches to a direct `/webrtc` data path, dropping the drone out of
-        // the data path (relay stays signalling-only). Brand-skew bridge —
-        // runtime-safe, see TransportFactory above. No `connectionGater` override
-        // is added: the phone dials a real relay/drone over `wss` (not a
-        // private/loopback addr), so unlike the web reference's local insecure
-        // dials it should not be gated out by libp2p's default. (This is a
-        // Tier-B/device-verified assumption — see the review handoff.)
-        webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
-      ],
-      // Phones do NOT listen (`listenAddrs: []`). Unlike web, which conditionally
-      // listens on ['/p2p-circuit', '/webrtc'] when it holds a relay reservation,
-      // the phone's dialed circuit reservation + the `/webrtc` upgrade are
-      // advertised over the existing identify/cohort flow without a listen addr.
-      listenAddrs: [], // RN cannot listen for inbound connections
-    },
-    strandFilter: { mode: 'all' },
-    hibernation: { enabled: false },
-    trustedOwners: { store: trustedOwnerStore },
-    bootstrapPeers: { store: bootstrapPeerStore },
-    enrolledMachines: { store: enrolledMachineStore },
-    // Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
-    // ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
-    // policy so the demo can form strands. Production nodes must leave this unset.
-    requireSignedSchemas: false,
-  };
-
-  node = new CadreNode(config);
+    storageProvider: createStorage,
+    transports: [
+      webSockets(),
+      circuitRelayTransport(),
+      // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
+      // hole-punches to a direct `/webrtc` data path, dropping the drone out of
+      // the data path (relay stays signalling-only). Brand-skew bridge —
+      // runtime-safe, see TransportFactory above. No `connectionGater` override
+      // is added: the phone dials a real relay/drone over `wss` (not a
+      // private/loopback addr), so unlike the web reference's local insecure
+      // dials it should not be gated out by libp2p's default. (This is a
+      // Tier-B/device-verified assumption — see the review handoff.)
+      webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
+    ],
+    trustedOwnerStore,
+    bootstrapPeerStore,
+    enrolledMachineStore,
+  }));
   await node.start();
   // NOTE: this await is unbounded — runOwnerGenesis is fail-SOFT (it catches
   // errors) but a control call that never settles would wedge startPhoneNode
@@ -316,42 +292,6 @@ function initializeFormationResponder(cadre: CadreNode): void {
     });
   } catch (err) {
     console.warn('[cadre-phone] formation responder init failed:', err);
-  }
-}
-
-/**
- * Self-genesis the phone as its own party owner. A node must enroll an
- * owner key before it can author control-network writes — notably the
- * owner-signed `Strand` INSERT that {@link CadreNode.publishStrand} performs
- * when the phone creates a strand. This mirrors `cadre-cli start --owner`
- * and the web reference app's `runOwnerGenesis`: bridge the libp2p identity
- * into a base64url owner keypair, run the idempotent genesis `OwnerKey`
- * insert, then bring up seed-bootstrap (which also lets the node author its own
- * `CadrePeer` row via {@link CadreNode.registerSelf}).
- *
- * Owner model (demo): the FIRST node to enroll its key into the shared
- * control DB becomes the founding owner; `ensureOwnerKey` is then a
- * no-op for later joiners that have already synced it. A second phone can always
- * JOIN a discovered strand (joining needs no owner), but only an enrolled
- * owner can publish NEW strands.
- *
- * Fail-soft: a genesis failure is logged but does not abort startup — the phone
- * can still join discovered strands and sync. The failure resurfaces loudly at
- * {@link CadreNode.publishStrand} time if the phone later tries to create one.
- */
-async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
-  try {
-    // Source the owner pair from the node's resolved (secure-stored) identity
-    // rather than a key this module loaded itself — cadre-core owns the identity now.
-    const { privateKeyB64, publicKeyB64 } = cadre.getIdentityOwnerKey();
-    const controlDb = cadre.getControlDatabase();
-    if (!controlDb) {
-      throw new Error('control database unavailable after start; cannot run owner genesis');
-    }
-    await controlDb.ensureOwnerKey(publicKeyB64);
-    cadre.initializeSeedBootstrap(privateKeyB64);
-  } catch (err) {
-    console.warn('[cadre-phone] owner self-genesis failed:', err);
   }
 }
 

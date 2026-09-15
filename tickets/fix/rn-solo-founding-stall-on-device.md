@@ -1,5 +1,4 @@
-description: On a real Android phone running the reference app alone, creating a chat strand showed no result for minutes, while the same founding on a desktop finishes in well under a second. Once the app logs its founding steps, find out on the device which step stalls or crawls, then file the fix.
-prereq: rn-create-strand-progress-and-founding-trace
+description: On a real Android phone running the reference app alone, creating a chat strand never finishes. The cause is now known and lives in the Quereus SQL engine as the phone runs it: stopping a query after its first row never releases the database's lock, so the strand's next write waits forever. What remains here is to track the Quereus fix, verify on the device, and decide whether Sereus needs a guard of its own.
 files:
   - packages/reference-app-rn/app/settings.tsx:97-105 (handleCreateStrand)
   - packages/reference-app-rn/src/cadre-phone.ts:229-285 (phone node config, incl. webRTC transport)
@@ -13,6 +12,26 @@ repro: verified
 ----
 
 # Founding a strand on a solo phone: find the step that stalls
+
+## Root cause (found 2026-09-15, live on the device)
+
+- **The stuck step.** `StrandDatabase.bootstrapFounder` → `db.exec('insert into Strand.Header …')` waits forever on Quereus' execution mutex (`Database._acquireExecMutex`). The lock was left held by the read just before it: `strandTableCount` (`cadre-core/src/strand-membership-writer.ts:256-261`) leaves its `for await (… of db.eval(…))` loop after the first row.
+- **Why only on the phone.** Metro compiles Quereus with Babel. Babel's lowering of async generators drops the rest of a generator's `finally` after its first `await` when the generator is closed by `return()`, which is what an early exit from `for await` does. Quereus' `_evalGenerator` releases the mutex *after* `await stmt.finalize()` in its `finally`, so the release never runs. Node runs the generator natively and releases normally, which is why every headless run finished.
+- **Proof.**
+  - Live runtime state: `execMutexDepth: 1`, and the pending-call trace was `initialize` → `bootstrapFounder` → `exec(insert into Strand.Header…)` → `_withMutex` → `_acquireExecMutex`. No Optimystic transaction was in flight, and no storage call or ≥ 1 s timer was pending.
+  - A fresh in-memory Quereus `Database` on the device leaks the same way after `next()` + `return()`.
+  - A headless Node reproduction with the Expo/Hermes Babel transform isolates the `finally`-with-`await` shape.
+  - Patching `Database.prototype.eval` in the live app so an early `return()` drains the iterator made a founding that always hung **resolve in 2.7 s** (strand `active`, mutex depth 0).
+- **Where the fix lives.** The full evidence, variant table and the **20 affected sites in Quereus** (a scan of all three repos found none in sereus or optimystic) are in `../quereus/tickets/fix/eval-early-exit-leaks-exec-mutex-under-babel.md`. This is a dependency outside this repo.
+- **Hypotheses below are superseded.**
+  - H0 (tap never reached the handler): no.
+  - H1 (slow, CPU-bound): no — the JS thread idled at ~5 % throughout.
+  - H2 (a wait that never settles): yes, but it is the Quereus mutex, not WebRTC, LevelDB or `AbortSignal`.
+  - H3 (a swallowed error): no.
+- **What remains in this repo:**
+  - Once the Quereus fix is built into `../quereus/packages/quereus/dist`, re-run solo founding on the device.
+  - Decide whether cadre-core should carry the same lint guard, since the pattern could be introduced here later.
+  - Until the engine is fixed, other early-exit reads over `db.eval` in cadre-core (for example `strandHasManagerRevocation`, which returns on its first match) can hang other phone flows. A Sereus-side workaround (consume fully) is possible but is whack-a-mole next to the engine fix. Check whether `Database.get` → `Statement.get` is affected too before recommending it: `statement.ts:481` has the same shape.
 
 ## Observed
 
@@ -40,8 +59,8 @@ The trace from `rn-create-strand-progress-and-founding-trace` (a log line when t
 
 ## Doing the device run — lessons from 2026-09-15
 
-- **Make sure nobody else is driving the phone.** On 2026-09-15 another process was using it over adb: a touch at 09:27:41 that was not this session's, then `am force-stop` plus a relaunch of the dev client at 09:31:47 from the shell user. Check `adb logcat -d | grep "Force stopping org.gotchoices"` and the list of local sessions before tapping anything.
-- **Metro's inspector proxy stopped answering.** After the app reloaded, both pages listed at `http://localhost:8081/json/list` accepted a WebSocket but never answered `Runtime.enable` or `Runtime.evaluate("1+1")`, even after 45 s, while the JS thread was idle. Rely on logcat. If you do evaluate, read modules through `__r.getModules()` (`isInitialized` + `publicModule.exports`), never `__r(<id>)`, which crashed the app on 2026-09-15.
+- **Make sure nobody else is driving the phone.** On 2026-09-15 the touch at 09:27:41 and the `am force-stop` + dev-client relaunch at 09:31:47 were the interactive Claude session that filed the original ticket (it was debugging the same stall on the device at the same time), not an unknown process. The advice stands: check `adb logcat -d | grep "Force stopping org.gotchoices"` and the list of local sessions before tapping anything.
+- **Metro's inspector proxy admits ONE debugger client per device.** Connecting a second WebSocket closes the first (close code 1005). The non-answers seen on 2026-09-15 came right after the app had been crashed by a `__r(<id>)` probe and while clients were being opened in parallel; on a clean launch with a single client, page 1 (the app runtime) answered `Runtime.enable` in ~160 ms and `Runtime.evaluate` in 3–35 ms throughout the stall. **`__r.getModules()` does not exist in this Metro/Expo dev client** (only `importDefault`, `importAll`, `context`, `resolveWeak`, `unpackModuleId`, `packModuleId`), and `__r(<id>)` with an id read from a downloaded bundle reports a fatal "Requiring unknown module" — never use it. What works: walk React's fiber tree from `__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots(rendererId)` to the context provider whose `memoizedProps.value` has `node` + `createStrand`. Hermes' eval rejects `async` syntax, and RN's `Promise` polyfill is invisible to CDP `awaitPromise` — park async results on a global and poll it.
 - Find buttons by text via `adb shell uiautomator dump` rather than fixed coordinates, and let a scroll settle before tapping.
 - Take screenshots from bash (`adb exec-out screencap -p > file`). PowerShell `>` re-encodes the bytes and corrupts the PNG.
 

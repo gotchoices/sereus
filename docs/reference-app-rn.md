@@ -226,6 +226,7 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 
 | API | Required by | Notes |
 |-----|-------------|-------|
+| `process.env.DEBUG` (development builds only) | `debug`, for cadre-core's `sereus:cadre:timing` bring-up and founding timings | Set to `sereus:cadre:timing` as the file's first statement. Each bundled copy of `debug` reads the variable once when it loads, so it must be set before any library module loads. A value that is already set is left alone. See "Tracing a strand founding" |
 | `crypto.getRandomValues()` | @noble/hashes, @libp2p/crypto, @noble/curves | via `react-native-get-random-values` (native CSPRNG). No Math.random fallback — without the native module any libp2p key generation is unsafe, so we want loud breakage rather than silent insecurity |
 | `crypto.subtle.digest()` | multiformats/hashes/sha2-browser | Async SHA-256/SHA-512 via @noble/hashes |
 | `structuredClone()` | @optimystic/db-core (transform tracker, cache-source, coordinator) | via `@ungap/structured-clone` (spec-compliant); handles Date, Map, Set, circular refs |
@@ -537,6 +538,32 @@ Messages from the drone (if any are inserted programmatically) replicate back to
 
 Only when `rn-leveldb` or another native dependency version changes. Otherwise, JS-only iteration via the dev client.
 
+### Tracing a strand founding
+
+Both create buttons in Settings show elapsed seconds while founding runs, are disabled until it settles, and add a "still running" hint after 30 s. Nothing gives up at that point: founding is resumable, so reporting a failure would leave a strand the user believes was never created. The result modal reports the elapsed time on a line under its title.
+
+Every build logs the Settings handler at both ends (`adb logcat -s ReactNativeJS`):
+
+```
+I ReactNativeJS: [settings] create strand 1a2b3c4d pressed
+I ReactNativeJS: [settings] create strand 1a2b3c4d succeeded in 1400 ms
+```
+
+A failure is a `W` line, `failed after <n> ms:` followed by the error. No `pressed` line after a tap means the tap never reached the handler.
+
+Development builds also log cadre-core's `sereus:cadre:timing` lines as `D ReactNativeJS` (enabled in `polyfills/hermes.js`). Each awaited step of `CadreNode.foundStrand` and of the strand launch logs a line when it starts and another when it ends, so a step with a start and no end is the one that hung:
+
+```
+D ReactNativeJS: sereus:cadre:timing [foundStrand:<id>] publishStrand: start +0ms
+D ReactNativeJS: sereus:cadre:timing [foundStrand:<id>] publishStrand: 21ms +21ms
+D ReactNativeJS: sereus:cadre:timing [startOrFoundStrand:<id>] strandManager.startStrand: start +0ms
+D ReactNativeJS: 'sereus:cadre:timing [buildStrandRuntime:%s] createLibp2pNode: %dms +35ms', '<id>', 35
+```
+
+The trailing `+<n>ms` is `debug`'s time since that namespace's previous line. The last line shows how the older timing lines print on the device: they pass their values as `%s`/`%d` arguments, and React Native's console prints the placeholders unfilled with the values after them, rather than substituting them as a browser console does.
+
+The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline.
+
 ## Testing Strategy
 
 ### Phase 1: Manual Smoke Test
@@ -573,8 +600,9 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 | `flows/1-connect-and-send.yaml` | Cold launch → connect → seed → create strand → send message → local echo |
 | `flows/2-drone-to-phone.yaml` | Drone-side HTTP insert appears in phone chat within 5s |
 | `flows/3-round-trip.yaml` | Bidirectional: phone send seen by drone; drone send seen by phone; both visible |
+| `flows/4-solo-create-strand.yaml` | No drone: connect alone (empty party id and bootstrap) → create strand → result modal with its elapsed time |
 
-All three flows share `_setup.yaml` for the connect/seed/strand bootstrap.
+Flows 1–3 share `_setup.yaml` for the connect/seed/strand bootstrap. Flow 4 connects alone and does not use it; the orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
 
 Under the secure-default seed-trust policy (`anchoredTrustPolicy`), the cold
 phone would reject the drone's seed because the drone's owner key is not in its

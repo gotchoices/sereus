@@ -130,6 +130,31 @@ const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
 
 /**
+ * Await one step of a longer operation between two `sereus:cadre:timing` lines:
+ * `[<scope>:<id>] <step>: start` before it, then `<step>: <n>ms` — or
+ * `<step>: failed after <n>ms` — once it settles. The start line is what matters on a
+ * device: a step that never settles leaves a start with no matching end, so a trace
+ * names the step that hung rather than only the last one that finished.
+ *
+ * The text is built here rather than passed as `%s`/`%d` arguments: `debug`'s browser
+ * build, which React Native bundles, leaves placeholders for the console to fill, and
+ * RN's console prints them unfilled, so a device trace would read `[%s:%s] %s: start`.
+ */
+async function timedStep<T>(scope: string, id: string, step: string, op: () => Promise<T>): Promise<T> {
+  const label = `[${scope}:${id}] ${step}`;
+  timing(`${label}: start`);
+  const t0 = performance.now();
+  try {
+    const result = await op();
+    timing(`${label}: ${Math.round(performance.now() - t0)}ms`);
+    return result;
+  } catch (error) {
+    timing(`${label}: failed after ${Math.round(performance.now() - t0)}ms`);
+    throw error;
+  }
+}
+
+/**
  * Window (ms) within which a queued TURN-relay settlement is correlated to a
  * `connection:open`. Generous relative to the tight async gap between an
  * `RTCPeerConnection` reaching `connected` and libp2p surfacing the connection.
@@ -4373,11 +4398,14 @@ export class CadreNode implements SAppIdLookup {
     if (!this._running || !this.controlDatabase) {
       throw new Error(`CadreNode must be started before attempting to found strand ${strandId}`);
     }
+    const controlDatabase = this.controlDatabase;
     const trimmed = requireNonBlank(strandId, 'strand id');
-    const published = await this.controlDatabase.queryStrand(trimmed);
+    const timed = <T>(step: string, op: () => Promise<T>) => timedStep('foundStrand', trimmed, step, op);
+    const tTotal = performance.now();
+    const published = await timed('queryStrand', () => controlDatabase.queryStrand(trimmed));
     const strandRow = published
       ? this.adoptPublishedStrand(published, type, memberPrivateKey)
-      : await this.publishStrand(trimmed, type, memberPrivateKey);
+      : await timed('publishStrand', () => this.publishStrand(trimmed, type, memberPrivateKey));
     // Derived, not hardcoded `true`: adopting a row another machine published means that
     // machine runs the bootstrap — this one must attach or it would write a second Header.
     const founded = this.isSelfFoundedRow(strandRow);
@@ -4386,7 +4414,8 @@ export class CadreNode implements SAppIdLookup {
         '(FounderOwnerKey is not this node\'s owner key) — attaching as a joiner; ' +
         'the founder bootstrap runs on the publishing machine', trimmed);
     }
-    const instance = await this.addStrand({ strandRow, sAppConfig, founder: founded });
+    const instance = await timed('addStrand', () => this.addStrand({ strandRow, sAppConfig, founder: founded }));
+    timing(`[foundStrand:${trimmed}] total: ${Math.round(performance.now() - tTotal)}ms`);
     return { instance, strandRow, founded };
   }
 
@@ -4830,26 +4859,27 @@ export class CadreNode implements SAppIdLookup {
     resolvedFounder: boolean,
     explicitPartyKey: string | undefined
   ): Promise<StrandInstance> {
+    const timed = <T>(step: string, op: () => Promise<T>) => timedStep('startOrFoundStrand', strand.Id, step, op);
     const existing = this.strandManager.getInstance(strand.Id);
     if (existing) {
       if (resolvedFounder) {
         // The resolver runs only when the retained config lacks a party key for a
         // closed strand (see foundExistingStrand), so the common watcher re-entry
         // ('already-founder') still costs no control read.
-        const outcome = await this.strandManager.foundExistingStrand(strand.Id,
-          () => this.resolveStrandPartyKey(strand, explicitPartyKey));
+        const outcome = await timed('foundExistingStrand', () => this.strandManager.foundExistingStrand(strand.Id,
+          () => this.resolveStrandPartyKey(strand, explicitPartyKey)));
         if (outcome === 'needs-resume') {
           try {
             // Quiesced instance: the retained config now founds, but founding promises
             // the bootstrap has RUN by the time the caller resolves — wake through the
             // hibernation manager (coalesced with any in-flight wake, timer-aware) so
             // the rebuild executes it now rather than at some eventual wake.
-            await this.wakeStrand(strand.Id);
+            await timed('wakeStrand', () => this.wakeStrand(strand.Id));
             // The wake's rebuild founds — UNLESS a wake was already in flight when the
             // config flipped, in which case it had already read the pre-flip config and
             // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
             // (insert-if-absent) bootstrap so founding never resolves headerless.
-            await this.strandManager.ensureFounderBootstrap(strand.Id);
+            await timed('ensureFounderBootstrap', () => this.strandManager.ensureFounderBootstrap(strand.Id));
           } catch (error) {
             // The founding did not happen (e.g. the rebuild refused a pre-split strand and
             // rolled back, leaving the instance tracked with no runtime): withdraw the flip
@@ -4874,7 +4904,7 @@ export class CadreNode implements SAppIdLookup {
     // only a FOUNDER bootstrap needs the key, and that path throws loudly without one
     // (StrandDatabase).
     const partyMemberPrivateKey = strand.Type === 'c'
-      ? await this.resolveStrandPartyKey(strand, explicitPartyKey)
+      ? await timed('resolveStrandPartyKey', () => this.resolveStrandPartyKey(strand, explicitPartyKey))
       : undefined;
 
     // Each strand node gets its own transport identity, derived from the cadre
@@ -4892,8 +4922,9 @@ export class CadreNode implements SAppIdLookup {
     // identity is ever supported, fall back to `undefined` here — libp2p then
     // generates a random per-strand key, which still avoids the collision but
     // gives up peerId stability across restarts.
-    const transportKey = this.identityKey
-      ? await strandTransportKey(this.identityKey, strand.Id)
+    const identityKey = this.identityKey;
+    const transportKey = identityKey
+      ? await timed('strandTransportKey', () => strandTransportKey(identityKey, strand.Id))
       : undefined;
 
     // Derived BEFORE seed resolution so the seed pass doubles as the delegate
@@ -4901,9 +4932,9 @@ export class CadreNode implements SAppIdLookup {
     // `libp2p.start()` (the responder records the grant before replying; the
     // client awaits the replies).
     const delegatePeerId = transportKey ? peerIdFromPrivateKey(transportKey).toString() : undefined;
-    const bootstrapNodes = await this.resolveCohortSeed(strand.Id, delegatePeerId);
+    const bootstrapNodes = await timed('resolveCohortSeed', () => this.resolveCohortSeed(strand.Id, delegatePeerId));
 
-    const instance = await this.strandManager.startStrand({
+    const instance = await timed('strandManager.startStrand', () => this.strandManager.startStrand({
       strandRow: strand,
       sAppConfig,
       storage: this.config.storage,
@@ -4942,14 +4973,15 @@ export class CadreNode implements SAppIdLookup {
       // Retained with the launch config, so a hibernation wake rebuilds under the
       // same identity without re-reading the control DB.
       partyMemberPrivateKey
-    });
+    }));
 
     // The seed reached the node as `bootstrapNodes`, which only enters the
     // address book via @libp2p/bootstrap discovery. Merge it directly too, so a
     // sibling is dialable by bare peer id from the first moment (see
     // mergeStrandPeerAddrs; refreshStrandPeerAddrs keeps it warm from here on).
-    if (instance.libp2pNode) {
-      await this.mergeStrandPeerAddrs(instance.libp2pNode, bootstrapNodes, strand.Id);
+    const strandNode = instance.libp2pNode;
+    if (strandNode) {
+      await timed('mergeStrandPeerAddrs', () => this.mergeStrandPeerAddrs(strandNode, bootstrapNodes, strand.Id));
     }
 
     this.hibernationManager.trackStrand(instance);

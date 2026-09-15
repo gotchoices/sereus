@@ -35,7 +35,6 @@ import {
 import { pickActiveStrandId } from './strand-selection';
 import { createReactNativeAppState } from './app-state';
 import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './push-wake-native';
-import { uuid } from './uuid';
 
 /** How long a closed-strand invitation stays valid (24h). */
 const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
@@ -85,10 +84,12 @@ export interface UseCadreResult {
   /** Create a new chat strand and return its instance */
   createStrand: (strandId: string) => Promise<StrandInstance>;
   /**
-   * Create a CLOSED chat strand, mint + publish a formation invite bound to it,
-   * and return the encoded `OpenInvitation` to hand an invitee out-of-band.
+   * Create a CLOSED chat strand with the given id, mint + publish a formation invite
+   * bound to it, and return the encoded `OpenInvitation` to hand an invitee
+   * out-of-band. The caller picks the id so its own logs name the same strand as
+   * cadre-core's founding trace.
    */
-  createClosedStrandWithInvite: () => Promise<string>;
+  createClosedStrandWithInvite: (strandId: string) => Promise<string>;
   /**
    * Join a closed strand from an encoded `OpenInvitation`: run the consent
    * handshake (`formStrand`), then attach the host's closed strand using the
@@ -338,7 +339,7 @@ export function useCadreInternal(): UseCadreResult {
   // alone is handed out — it carries the formation token + the host's bootstrap
   // addrs; the strand id + membership key are delivered over the protocol after
   // consent, no side-channel envelope.
-  const createClosedStrandWithInvite = useCallback(async () => {
+  const createClosedStrandWithInvite = useCallback(async (strandId: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     // The invitation's bootstrap is this node's own addresses, so an unreachable
@@ -347,7 +348,6 @@ export function useCadreInternal(): UseCadreResult {
     if (current.getMultiaddrs().length === 0) {
       throw new Error('This device has no reachable address yet, so nobody could redeem an invitation. Connect through a relay or host node first.');
     }
-    const strandId = uuid();
     await createClosedChatStrand(current, strandId);
     setSelectedStrandId(strandId);
     const invitation = await createOpenInvitation(CHAT_SAPP_ID, INVITE_EXPIRY_MS);

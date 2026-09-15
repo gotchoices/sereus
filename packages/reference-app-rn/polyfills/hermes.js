@@ -4,6 +4,24 @@
 // React Native 0.76+ with New Architecture should provide crypto.getRandomValues
 // natively. These polyfills are fallbacks for environments where it is still missing.
 
+// ── Debug namespaces (development builds only) ──────────────────────────────
+// cadre-core logs bring-up and strand-founding phase timings under the `debug`
+// namespace `sereus:cadre:timing`. `debug`'s browser build decides what is enabled
+// once, when each copy of the module loads, and with no localStorage under RN it
+// reads `process.env.DEBUG`. The bundle carries several copies of `debug` (seven in a
+// 2026-09-15 export: the repo root's, quereus's, react-native-webrtc's and four under
+// ../optimystic), so calling `enable()` on one copy would miss the others; setting the
+// variable before any library module loads reaches all of them, which is why this is
+// the first statement of the first polyfill.
+// `process.env` already exists here — react-native's InitializeCore
+// (Libraries/Core/setUpGlobals.js) runs before the entry module and creates it — and
+// `__DEV__` is a Metro prelude global. The lines go to `console.debug`, which logcat
+// shows as `D/ReactNativeJS`. A DEBUG value that is already set is left alone.
+/* global __DEV__ */
+if (__DEV__ && !process.env.DEBUG) {
+	process.env.DEBUG = 'sereus:cadre:timing';
+}
+
 // Native CSPRNG — must be the very first import so globalThis.crypto.getRandomValues
 // is available before any library code. No-op if the native API already exists.
 // NOTE: requires native rebuild (EAS Build or local native build).  This is a

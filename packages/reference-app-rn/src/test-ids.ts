@@ -21,6 +21,8 @@ export const TEST_IDS = {
 		joinViaInviteBtn: 'btn-join-via-invite',
 		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
+		/** Elapsed-time line under the modal title; shown only for strand-creation results. */
+		modalDetail: 'modal-detail',
 		modalOkBtn: 'btn-modal-ok',
 	},
 	chat: {

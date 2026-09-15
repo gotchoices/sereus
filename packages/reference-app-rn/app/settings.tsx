@@ -2,7 +2,7 @@
  * Settings screen — connect to cadre, apply seed, create strand.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Modal,
   Pressable,
@@ -13,6 +13,15 @@ import {
   View,
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
+import {
+  foundingDetail,
+  isSlowFounding,
+  pendingLabel,
+  traceFounding,
+  type FoundingKind,
+  type FoundingOutcome,
+  type PendingFounding,
+} from '../src/founding-progress';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
 
@@ -25,10 +34,22 @@ export default function SettingsScreen() {
   const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
-  const [modal, setModal] = useState<{ title: string; message: string } | null>(null);
+  const [modal, setModal] = useState<{ title: string; message: string; detail?: string } | null>(null);
+  // The strand founding in progress, if any. Both create buttons found a strand, so
+  // both are disabled while either runs: one screen cannot start two foundings.
+  //
+  // NOTE: screen state. The tab navigator (app/_layout.tsx) keeps a visited screen
+  // mounted, so a founding in flight keeps the buttons disabled across tab switches.
+  // If Settings is ever unmounted on blur, a remount would re-enable them mid-founding;
+  // move this into the cadre context then.
+  const [founding, setFounding] = useState<PendingFounding | null>(null);
+  // Catches the same-frame double tap that `disabled` cannot: the prop only takes
+  // effect after the re-render `setFounding` schedules.
+  const foundingRef = useRef(false);
+  const foundingElapsedMs = useFoundingClock(founding);
 
-  const showAlert = useCallback((title: string, message: string) => {
-    setModal({ title, message });
+  const showAlert = useCallback((title: string, message: string, detail?: string) => {
+    setModal({ title, message, detail });
   }, []);
 
   // ── Connect / Disconnect ───────────────────────────────────────────────
@@ -92,26 +113,60 @@ export default function SettingsScreen() {
     }
   };
 
-  // ── Strand ─────────────────────────────────────────────────────────────
+  // ── Strand founding (both create buttons) ──────────────────────────────
+
+  // Run one founding with its progress state and log lines. Returns null, without
+  // running `op`, while another founding from this screen is still in flight.
+  //
+  // NOTE: accepted tradeoff — nothing here rejects or aborts a slow founding.
+  // `foundStrand` keeps running and is resumable, so reporting "failed" at a deadline
+  // would leave a strand the user believes was never created, and re-enable the button
+  // for a second founding. The UI bounds how long the user waits without an
+  // explanation (the slow-founding hint after FOUNDING_SLOW_HINT_MS), not how long
+  // founding takes. Revisit if founding ever becomes cancellable.
+  async function runFounding<T>(
+    kind: FoundingKind,
+    label: string,
+    op: () => Promise<T>,
+  ): Promise<FoundingOutcome<T> | null> {
+    if (foundingRef.current) {
+      console.info(`${label} ignored: another strand creation is still running`);
+      return null;
+    }
+    foundingRef.current = true;
+    setFounding({ kind, startedAt: performance.now() });
+    try {
+      return await traceFounding(label, op);
+    } finally {
+      foundingRef.current = false;
+      setFounding(null);
+    }
+  }
 
   const handleCreateStrand = async () => {
-    try {
-      const id = uuid();
-      await cadre.createStrand(id);
-      showAlert('Strand created', `ID: ${id.slice(0, 8)}…`);
-    } catch (err) {
-      showAlert('Strand creation failed', String(err));
+    const id = uuid();
+    const outcome = await runFounding('open', `[settings] create strand ${id.slice(0, 8)}`,
+      () => cadre.createStrand(id));
+    if (!outcome) return;
+    if (outcome.ok) {
+      showAlert('Strand created', `ID: ${id.slice(0, 8)}…`, foundingDetail(outcome));
+    } else {
+      showAlert('Strand creation failed', String(outcome.error), foundingDetail(outcome));
     }
   };
 
   // ── Closed strand (trust model) ─────────────────────────────────────────
 
   const handleCreateClosedStrand = async () => {
-    try {
-      const encoded = await cadre.createClosedStrandWithInvite();
-      showAlert('Closed strand + invite', encoded);
-    } catch (err) {
-      showAlert('Closed strand failed', String(err));
+    const id = uuid();
+    const outcome = await runFounding('closed', `[settings] create closed strand ${id.slice(0, 8)}`,
+      () => cadre.createClosedStrandWithInvite(id));
+    if (!outcome) return;
+    if (outcome.ok) {
+      // The invitation stays the whole message so it can be selected and copied as-is.
+      showAlert('Closed strand + invite', outcome.value, foundingDetail(outcome));
+    } else {
+      showAlert('Closed strand failed', String(outcome.error), foundingDetail(outcome));
     }
   };
 
@@ -194,7 +249,13 @@ export default function SettingsScreen() {
           {[...cadre.strands.entries()].map(([id, s]) => (
             <InfoRow key={id} label={id.slice(0, 8)} value={s.status} />
           ))}
-          <Btn label="Create Chat Strand" onPress={handleCreateStrand} testID={TEST_IDS.settings.createStrandBtn} />
+          <Btn
+            label={founding?.kind === 'open' ? pendingLabel(foundingElapsedMs) : 'Create Chat Strand'}
+            onPress={handleCreateStrand}
+            disabled={founding !== null}
+            testID={TEST_IDS.settings.createStrandBtn}
+          />
+          {founding?.kind === 'open' && isSlowFounding(foundingElapsedMs) && <SlowFoundingHint />}
         </Section>
       )}
 
@@ -206,7 +267,13 @@ export default function SettingsScreen() {
             Invitee: paste an invitation to consent + join. Requires the host
             reachable via a relay/drone.
           </Text>
-          <Btn label="Create Closed Strand + Invite" onPress={handleCreateClosedStrand} testID={TEST_IDS.settings.createClosedStrandBtn} />
+          <Btn
+            label={founding?.kind === 'closed' ? pendingLabel(foundingElapsedMs) : 'Create Closed Strand + Invite'}
+            onPress={handleCreateClosedStrand}
+            disabled={founding !== null}
+            testID={TEST_IDS.settings.createClosedStrandBtn}
+          />
+          {founding?.kind === 'closed' && isSlowFounding(foundingElapsedMs) && <SlowFoundingHint />}
           <LabelledInput label="Paste invite" value={inviteInput} onChangeText={setInviteInput} placeholder="base64url invitation" multiline testID={TEST_IDS.settings.inviteInput} />
           <Btn label="Join via Invite" onPress={handleJoinViaInvite} disabled={!inviteInput.trim()} testID={TEST_IDS.settings.joinViaInviteBtn} />
         </Section>
@@ -219,6 +286,9 @@ export default function SettingsScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle} testID={TEST_IDS.settings.modalTitle}>{modal?.title}</Text>
+            {modal?.detail ? (
+              <Text style={styles.modalDetail} testID={TEST_IDS.settings.modalDetail}>{modal.detail}</Text>
+            ) : null}
             <ScrollView style={styles.modalScroll}>
               <Text style={styles.modalMessage} selectable>{modal?.message}</Text>
             </ScrollView>
@@ -272,6 +342,31 @@ function Btn({ label, onPress, disabled, color, testID }: { label: string; onPre
   );
 }
 
+function SlowFoundingHint() {
+  return (
+    <Text style={styles.slowHint}>
+      Creating the strand is taking longer than expected. It is still running, and the
+      result will appear here when it finishes.
+    </Text>
+  );
+}
+
+/**
+ * Milliseconds since `founding` started, re-rendering once a second while one is in
+ * progress; 0 when none is. The interval stops when founding settles (`founding`
+ * becomes null) and when the screen unmounts.
+ */
+function useFoundingClock(founding: PendingFounding | null): number {
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    if (!founding) return;
+    setNow(performance.now());
+    const timer = setInterval(() => setNow(performance.now()), 1000);
+    return () => clearInterval(timer);
+  }, [founding]);
+  return founding ? Math.max(0, now - founding.startedAt) : 0;
+}
+
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
@@ -288,10 +383,12 @@ const styles = StyleSheet.create({
   btn: { borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
   btnDisabled: { opacity: 0.4 },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  slowHint: { color: '#ff9800', fontSize: 12, lineHeight: 17, marginTop: 6 },
   error: { color: '#f44336', textAlign: 'center', marginTop: 12 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
   modalBox: { backgroundColor: '#1e1e2e', borderRadius: 12, padding: 20, width: '85%', maxHeight: '60%' },
   modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
+  modalDetail: { color: '#aaa', fontSize: 13, marginTop: -6, marginBottom: 12 },
   modalScroll: { maxHeight: 200, marginBottom: 8 },
   modalMessage: { color: '#ccc', fontSize: 14, lineHeight: 20 },
 });
