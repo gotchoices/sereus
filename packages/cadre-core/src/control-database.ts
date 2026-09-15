@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord, CadrePeerRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
+import type { StrandRow, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
@@ -321,10 +321,38 @@ const STRAND_ID_CONFLICT = /UNIQUE constraint failed: Strand\.Id\b/i;
  * reword reddens there.
  */
 export function isStrandIdConflict(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return chainMessages(error).some(message => STRAND_ID_CONFLICT.test(message));
+  return errorChainMatches(error, STRAND_ID_CONFLICT);
+}
+
+/**
+ * The one `CadreControl.Revocation` row that retires nothing, filed once by an owner
+ * ({@link ControlDatabase.openRevocationLedger}) so the table is never a never-written
+ * block. The schema's table comment says why that matters and why the row can never read
+ * as a retirement; `RowIsGone` pins this exact triple.
+ */
+export const REVOCATION_LEDGER_MARKER = {
+  tableName: 'Revocation',
+  rowKey: 'ledger',
+  stampId: 'opened',
+} as const;
+
+/**
+ * The rejection a second insert of the ledger marker produces: the optimystic vtab's
+ * primary-key wording (see {@link STRAND_ID_CONFLICT}), naming both columns of
+ * `Revocation`'s composite key. Applied only to the marker's own insert, whose key
+ * ('Revocation', 'opened') no row but the marker can hold (`RowIsGone`), and `Revocation`
+ * has no other unique constraint.
+ */
+const REVOCATION_LEDGER_CONFLICT = /UNIQUE constraint failed: Revocation\.TableName, Revocation\.StampId\b/i;
+
+/** Did the ledger marker's insert fail because the marker is already filed? Text-matched, failing closed, like {@link isStrandIdConflict}. */
+function isRevocationLedgerConflict(error: unknown): boolean {
+  return errorChainMatches(error, REVOCATION_LEDGER_CONFLICT);
+}
+
+/** Whether any message in `error`'s cause chain matches `pattern`; false for a non-`Error`. */
+function errorChainMatches(error: unknown, pattern: RegExp): boolean {
+  return error instanceof Error && chainMessages(error).some(message => pattern.test(message));
 }
 
 /**
@@ -845,10 +873,12 @@ export class ControlDatabase {
    * {@link queryRevokedStamps} rather than inlining the SQL, so tests can interpose on
    * that seam to model the replicated live-row-plus-tombstone merge state.
    *
-   * NOTE: runs a second query (the retired-stamp set) per call, and this sits on the
-   * membership-gate refresh path; control tables are a handful of rows today, so this
-   * is cheap — if they ever grow, fold the exclusion into one statement or cache the
-   * retired-stamp set.
+   * NOTE: runs a second query (the retired-stamp set) per call, on the membership-gate
+   * refresh path. Its cost is storage consults, not rows (see {@link queryRevokedStamps}):
+   * while `Revocation` has never been written every call consults the cohort about it, and
+   * the ledger marker ({@link openRevocationLedger}) is what makes it a held block. Folding
+   * the exclusion into one statement would not help (it reads the same block), and caching
+   * the set would hide a tombstone arriving by replication.
    *
    * NOTE: this filter is HAND-MIRRORED by the gate suites' fake control databases
    * (`test/membership-gate-helpers.ts` and `test/cadre-node-authorized-surface.spec.ts`),
@@ -1008,9 +1038,15 @@ export class ControlDatabase {
    * ({@link queryCadrePeers}, {@link queryPeerRecord},
    * {@link CadreNode.resolveDeviceToken}) drop any row whose stamp appears here.
    *
-   * NOTE: re-reads the whole retired set on every call, and the caller runs per inbound
-   * gate request while the table only ever grows. Cheap today (a cadre removes peers
-   * rarely); if removals ever become routine, cache the set and invalidate it on write.
+   * NOTE: the per-call cost that matters is the storage layer's, not the row count. While
+   * `Revocation` has never been written, this node does not hold its block, and Optimystic
+   * consults a block's cohort on every read of a block it does not hold: 2 consults per
+   * call (measured), each a round trip to every other member on a multi-machine party. The
+   * ledger marker ({@link openRevocationLedger}) ends that — a held block is re-consulted
+   * at most once per read-repair window (10 s). Do not cache the set instead: a cache
+   * cannot see a tombstone arriving by replication, so it would delay a revocation. The
+   * row count only grows (append-only) but stays small while removals are rare; revisit if
+   * removals become routine and the scan itself shows up in a profile.
    *
    * `retry: false` is forwarded by {@link queryCadrePeers} for the one caller that reads
    * under the write lock — see that method's note.
@@ -1028,14 +1064,22 @@ export class ControlDatabase {
    * Every locally-held `CadreControl.Revocation` tombstone — identity triple plus its
    * `ReissuedAt` counter. Consumed by the cohort-growth re-issue sweep, which
    * enumerates what this node holds before {@link reissueRevocations} re-broadcasts
-   * it. Plain scan with no `where`, so the composite-primary-key point-lookup hazard
-   * (see the statement comment in {@link reissueRevocations}) does not arise. Unlocked,
-   * like every other read.
+   * it, and by the reap sweep ({@link reapRevokedRows}). Plain scan with no `where`, so
+   * the composite-primary-key point-lookup hazard (see the statement comment in
+   * {@link reissueRevocations}) does not arise. Unlocked, like every other read.
+   *
+   * Skips the ledger marker ({@link REVOCATION_LEDGER_MARKER}): it retires nothing, so
+   * neither sweep may reap or re-sign it, and skipping it keeps `RevocationRow.tableName`
+   * a {@link RevocableTable}. Filtered on `TableName` alone, in TypeScript: `RowIsGone`
+   * admits no other row under `'Revocation'`.
    */
   async queryRevocations(): Promise<RevocationRow[]> {
     this.ensureInitialized();
     const rows: RevocationRow[] = [];
     for (const row of await this.readRows('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation', undefined, 'revocations')) {
+      if (row.TableName === REVOCATION_LEDGER_MARKER.tableName) {
+        continue;
+      }
       rows.push({
         tableName: row.TableName as RevocableTable,
         rowKey: row.RowKey as string,
@@ -1907,8 +1951,11 @@ export class ControlDatabase {
    * skip-self rule is exercisable without one.
    *
    * NOTE: cost is O(tombstones), not O(live rows) — one {@link queryRevocations} scan plus
-   * one {@link queryStampId} point lookup per tombstone, and the empty-table early return
-   * makes the common case (a party that has never revoked anyone) a single scan per pass.
+   * one {@link queryStampId} point lookup per tombstone, and the empty early return makes
+   * the common case (a party that has never revoked anyone; {@link queryRevocations} skips
+   * the ledger marker) a single scan per pass. That scan consults the cohort on every pass
+   * only while `Revocation` has never been written; the ledger marker
+   * ({@link openRevocationLedger}), filed by the same connected pass, makes it a held block.
    * But `Revocation` is append-only and unbounded, so this is O(all tombstones ever) point
    * lookups on every reconcile tick. Fine while revocations stay rare for a cadre-sized
    * party; if the table ever grows, persist a node-local high-water mark of what has
@@ -2023,6 +2070,89 @@ export class ControlDatabase {
       log('Reissued %d revocation tombstone(s) at %d', executed, reissuedAt);
       return executed;
     }, {}, 'revocation-reissue');
+  }
+
+  /**
+   * Owner-signed filing of the singleton `Revocation` ledger marker
+   * ({@link REVOCATION_LEDGER_MARKER}), the one row in that table that retires nothing.
+   *
+   * Why it exists: while `Revocation` has never been written, this node does not hold its
+   * block, and Optimystic consults a block's cohort on EVERY read of a block it does not
+   * hold — and every membership lookup, and every guarded insert's `NotRevoked` check,
+   * reads this table. Once any row exists the block is held and re-checked at most once per
+   * read-repair window, like every other populated table. The schema's table comment says
+   * why the row can never read as a retirement.
+   *
+   * Insert-if-absent, shaped like {@link reissueRevocations}: the signature is minted
+   * OUTSIDE the locked body so a retried attempt re-presents the same one, and the guard
+   * runs INSIDE it so it sees a concurrent local writer's committed row. The guard scans
+   * the `'Revocation'` rows and compares the stamp in TypeScript rather than seeking the
+   * full composite primary key, which is served as a point lookup that can miss an existing
+   * row on a networked database (tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked).
+   *
+   * Two owners filing at once: the loser either sees the marker in its guard or is refused
+   * on the primary key, and both answer `'already-open'`. If the storage layer instead
+   * resolves a concurrent same-key insert as last-writer-wins
+   * (tickets/blocked/optimystic-concurrent-same-pk-insert-silent-lww.md), the two rows are
+   * byte-identical, so nothing is lost.
+   *
+   * The caller decides WHEN. A marker committed while the node is alone is local-only and
+   * can fork the collection, so {@link CadreNode} files it only while connected; this
+   * method does not look at connectivity.
+   *
+   * @param ownerKey - owner public key for the write context (`Revocation.Authorized`).
+   * @param signMessage - ed25519-signs the raw message bytes (no pre-hash) with that owner's
+   *   private key, returning a base64url signature.
+   * @returns `'opened'` when this call filed the marker, `'already-open'` when it was
+   *   already there.
+   */
+  async openRevocationLedger(
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<RevocationLedgerOpenResult> {
+    this.ensureInitialized();
+    const { tableName, rowKey, stampId } = REVOCATION_LEDGER_MARKER;
+    const signature = signMessage(buildAuthorizationMessage(
+      'CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]
+    ));
+    try {
+      return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
+        // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
+        if (await this.revocationLedgerFiled(false)) {
+          return 'already-open';
+        }
+        // Bare `exec`: already inside the write lock, which is NOT re-entrant.
+        await this.db!.exec(`
+          insert into CadreControl.Revocation (TableName, RowKey, StampId)
+            with context OwnerKey = ?, Signature = ?
+            values (?, ?, ?)
+        `, [ownerKey, signature, tableName, rowKey, stampId]);
+        log('Revocation ledger marker filed');
+        return 'opened';
+      }, {}, 'revocation-ledger-open');
+    } catch (error) {
+      if (!isRevocationLedgerConflict(error)) {
+        throw error;
+      }
+      log('Revocation ledger marker already filed (refused on the primary key, most likely by another owner filing first): %s', error);
+      return 'already-open';
+    }
+  }
+
+  /**
+   * Whether the ledger marker is present locally: a scan of the `'Revocation'` rows with the
+   * stamp compared in TypeScript (see {@link openRevocationLedger} for why not a seek).
+   * `retry` follows {@link readRows}' rule for reads inside a locked body.
+   */
+  private async revocationLedgerFiled(retry: boolean): Promise<boolean> {
+    const { tableName, stampId } = REVOCATION_LEDGER_MARKER;
+    const rows = await this.readRows(
+      'select StampId from CadreControl.Revocation where TableName = ?',
+      [tableName],
+      'revocation-ledger',
+      retry
+    );
+    return rows.some(row => row.StampId === stampId);
   }
 
   /**

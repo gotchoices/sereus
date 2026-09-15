@@ -1174,6 +1174,8 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
  * `ControlDatabase.queryRevocations`: the identity triple plus the `ReissuedAt`
  * counter an owner bumps (`ControlDatabase.reissueRevocations`) to re-write — and
  * therefore re-broadcast — a tombstone that committed while the node was alone.
+ * Never the ledger marker: that row names no guarded table, and `queryRevocations`
+ * skips it, which is what keeps `tableName` a {@link RevocableTable}.
  */
 export interface RevocationRow {
   /** Which guarded table's stamp was retired. */
@@ -1185,6 +1187,14 @@ export interface RevocationRow {
   /** Monotonic re-issue counter; carries no semantics (see the schema comment). */
   reissuedAt: number;
 }
+
+/**
+ * Outcome of `ControlDatabase.openRevocationLedger`: `'opened'` when this call filed the
+ * singleton `Revocation` ledger marker, `'already-open'` when it was already filed (seen
+ * by the in-lock guard, or filed first by another owner and refused on the primary key).
+ * Either way the marker exists afterwards.
+ */
+export type RevocationLedgerOpenResult = 'opened' | 'already-open';
 
 /**
  * Outcome of {@link CadreNode.registerSelf}, surfaced so callers (e.g. the CLI

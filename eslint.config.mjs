@@ -148,6 +148,9 @@ export default tseslint.config(
 			'packages/cadre-core/test/control-authorization-domain-separation.spec.ts',
 			'packages/cadre-core/test/control-revocation-replay.spec.ts',
 			'packages/cadre-core/test/control-revocation-reap.spec.ts',
+			// Plants a CadrePeer row whose stamp is literally the Revocation ledger marker's,
+			// which insertCadrePeer cannot do (it mints its own stamp).
+			'packages/cadre-core/test/control-revocation-ledger-marker.spec.ts',
 		],
 		rules: {
 			'no-restricted-syntax': 'off',

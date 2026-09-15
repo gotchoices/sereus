@@ -697,6 +697,14 @@ export class CadreNode implements SAppIdLookup {
    * exactly a "removals from before this lifetime" case).
    */
   private reissuedHeldRevocations = false;
+  /**
+   * Whether this process has seen the singleton `Revocation` ledger marker filed — its own
+   * `'opened'` or an `'already-open'` answer, in {@link openRevocationLedgerIfDue}. A
+   * record of work done, not a cached authorization answer: the marker can never be
+   * deleted (`NoDelete`), so this can only go stale if the database itself is replaced,
+   * which is why stop() clears it with the other per-process replication state.
+   */
+  private revocationLedgerOpened = false;
   /** This node's own `CadrePeer` self-write committed local-only (re-touched on growth). */
   private pendingSelfPeerWrite = false;
   /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
@@ -2383,6 +2391,7 @@ export class CadreNode implements SAppIdLookup {
     this.hasControlConnection = false;
     this.reconstructedLocalOnlyWrites = false;
     this.reissuedHeldRevocations = false;
+    this.revocationLedgerOpened = false;
     this.pendingPeerWrites.clear();
     this.pendingRevocations.clear();
     this.pendingSelfPeerWrite = false;
@@ -2602,8 +2611,12 @@ export class CadreNode implements SAppIdLookup {
     // CadrePeer query (two reads per pass), plus a third from
     // `refreshStrandPeerAddrs` on the passes where a strand is due AND this node
     // holds a control connection (one read for the whole pass, not one per
-    // strand); if those reads ever get costly, share one row-set across all
-    // three.
+    // strand). Each also reads Revocation first. Before the Revocation ledger
+    // marker exists (filed below, once connected) that block is missing, so every
+    // one of those reads consults the cohort about it; once the marker exists every
+    // block they touch is held and none of them does (both states pinned in
+    // control-founding-consult-budget.spec.ts). If those reads ever get costly,
+    // share one row-set across all three.
     await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
@@ -2663,6 +2676,25 @@ export class CadreNode implements SAppIdLookup {
         // outranks garbage collection, so a reap failure never aborts the reconcile.
         log('reconcileControlCohort: reap pass failed (continuing): %o', error);
       }
+      if (!this._running || !this.controlNode || !this.controlDatabase) {
+        return;
+      }
+
+      // File the Revocation ledger marker once, so that table stops being a never-written
+      // block, which the storage layer re-checks with the cohort on every read (and every
+      // membership lookup and guarded insert reads it). Connected-only for the reap's
+      // reason above: a marker committed alone is local-only, and one filed by a
+      // disconnected owner while another machine creates the same collection is exactly
+      // that fork. Owner-only, and at most once per process — see openRevocationLedgerIfDue.
+      //
+      // NOTE: accepted tradeoff — a solo founder never files the marker until its first
+      // sibling connects, so until then it keeps paying one local findCluster per read of
+      // the missing Revocation block (0.009 ms each, measured upstream; no network work on
+      // a cohort of one). Fork safety weighed over that and kept; revisit if findCluster
+      // ever shows up as material in a device profile, or if a solo-founding marker can be
+      // made fork-safe (e.g. filed inside the genesis transaction, before any other machine
+      // can hold the party's collections).
+      await this.openRevocationLedgerIfDue();
       if (!this._running || !this.controlNode || !this.controlDatabase) {
         return;
       }
@@ -2732,6 +2764,31 @@ export class CadreNode implements SAppIdLookup {
     }
     log('reconcileControlCohort: pass complete (siblings=%d, selected=%d, dialed=%d)',
       siblings.length, dials.length, dialed);
+  }
+
+  /**
+   * The owner-only half of the reconcile pass's ledger-marker step: file the singleton
+   * `Revocation` marker ({@link SeedBootstrapService.openRevocationLedger}) unless this
+   * process has already seen it filed. The connectivity gate is the caller's
+   * ({@link runReconcileControlCohort}); why the marker exists is on
+   * {@link ControlDatabase.openRevocationLedger}.
+   *
+   * Sets {@link revocationLedgerOpened} on `'opened'` or `'already-open'`. A node that
+   * cannot sign as an owner does nothing: it picks the owner's marker up the first time it
+   * reads the table, like any other replicated row. Best-effort like every step of the
+   * pass — a failure is logged and leaves the flag clear, so the next connected pass retries.
+   */
+  private async openRevocationLedgerIfDue(): Promise<void> {
+    if (this.revocationLedgerOpened || !this.seedBootstrapService?.canAuthorize()) {
+      return;
+    }
+    try {
+      const outcome = await this.seedBootstrapService.openRevocationLedger();
+      this.revocationLedgerOpened = true;
+      log('reconcileControlCohort: revocation ledger marker %s', outcome);
+    } catch (error) {
+      log('reconcileControlCohort: filing the revocation ledger marker failed (retrying next pass): %o', error);
+    }
   }
 
   /**

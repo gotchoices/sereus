@@ -804,8 +804,18 @@ declare schema CadreControl {
     -- A tombstone committed while the node was alone is local-only (never broadcast); the
     -- ReissuedAt counter below exists so an owner can re-write — and therefore re-broadcast —
     -- such a tombstone once peers are reachable, without changing what it means.
+    -- One row retires nothing: the singleton ledger marker ('Revocation', 'ledger', 'opened'),
+    -- filed once by an owner's connected reconcile pass (ControlDatabase.openRevocationLedger).
+    -- It exists only so this table is never a never-written block. The storage layer consults
+    -- a block's cohort on EVERY read of a block it does not hold, and every membership lookup
+    -- and every guarded insert (NotRevoked) reads this table; once any row exists the block is
+    -- held and re-checked on the storage layer's normal read-repair schedule, like every other
+    -- populated table. It cannot read as a retirement: every reader of this table filters on
+    -- its own guarded TableName, 'Revocation' is not one, and ControlDatabase.queryRevocations
+    -- skips the marker, so nothing reaps or re-issues it.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'DeviceToken' (confined by RowIsGone below)
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'DeviceToken',
+                                    -- or 'Revocation' for the ledger marker only (all confined by RowIsGone below)
         RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
                                     -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id / StrandPartyKey.Id
                                     -- Every guarded table's RevocationRecorded CHECK requires the
@@ -847,6 +857,11 @@ declare schema CadreControl {
         -- it, stamp1) then re-admitted (stamp2) would leave a node that converges on the
         -- re-add FIRST rejecting the stamp1 tombstone forever, never learning that stamp is
         -- retired. The stamp-only form passes there (stamp1 is not live).
+        -- The last branch admits the ledger marker (see the table comment) and nothing else under
+        -- TableName 'Revocation': the whole triple is pinned, so with the primary key
+        -- (TableName, StampId) it is a singleton and the append-only growth surface is unchanged.
+        -- 'opened' cannot collide with a real stamp (43 base64url characters, generateStampId),
+        -- and the primary key includes TableName anyway.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -854,6 +869,7 @@ declare schema CadreControl {
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
                 or (new.TableName = 'StrandPartyKey' and not exists (select 1 from StrandPartyKey K where K.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
+                or (new.TableName = 'Revocation' and new.RowKey = 'ledger' and new.StampId = 'opened')
         ),
         -- Appending a tombstone is an OWNER action, like every other write in this schema.
         -- Ungated, any writer that could reach the control database could retire a stamp:
@@ -887,6 +903,12 @@ declare schema CadreControl {
         -- than that one.
         -- RowIsGone and NoDelete are unchanged: they guard an owner retiring a stamp early
         -- or withdrawing one later, which authorization does not cover.
+        -- The ledger marker is signed under this same rule, over
+        -- digest('CadreControl.Revocation', 'remove', 'Revocation', 'ledger', 'opened'). The
+        -- 'remove' tag on a row that retires nothing is deliberate: reusing the one append rule
+        -- keeps every append owner-signed without adding an unsigned or differently tagged
+        -- branch, and a captured marker signature can only re-file the identical row, whose
+        -- primary key is already taken.
         constraint Authorized check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),

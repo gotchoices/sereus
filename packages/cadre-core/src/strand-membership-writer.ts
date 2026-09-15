@@ -272,6 +272,13 @@ async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Mana
  * scale; if membership churn ever makes that table large — the growth the
  * `Revocation` schema comment already flags, tracked by `debt-strand-tombstone-reap`
  * — this wants a stored "founding closed" marker rather than a scan per call.
+ *
+ * NOTE: on a strand that has never revoked anyone, `Strand.Revocation` has never been
+ * written, so this node does not hold its block, and the storage layer consults the
+ * block's cohort on every read of a block it does not hold — this scan and every
+ * `NotRevoked` insert check pay that per call. Not measured, and cheap while strand
+ * membership writes are rare; if they become frequent, file a singleton marker row in
+ * the strand schema the way the control schema does (`ControlDatabase.openRevocationLedger`).
  */
 async function strandHasManagerRevocation(db: Database): Promise<boolean> {
   for await (const row of db.eval('select TableName from Strand.Revocation')) {

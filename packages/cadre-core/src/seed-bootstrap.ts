@@ -19,7 +19,8 @@ import type {
   CadreInvite,
   PeerAddressRecord,
   DeviceTokenRecord,
-  RevocationRow
+  RevocationRow,
+  RevocationLedgerOpenResult
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
@@ -615,6 +616,29 @@ export class SeedBootstrapService {
     }
     return this.controlDatabase.reissueRevocations(
       rows, reissuedAt, ownerKey, message => this.signMessageBytes(message),
+    );
+  }
+
+  /**
+   * Owner filing of the singleton `Revocation` ledger marker, so the table is never a
+   * never-written block that the storage layer re-consults on every read.
+   *
+   * The signature, the insert-if-absent guard and the `'already-open'` mapping are
+   * {@link ControlDatabase.openRevocationLedger}'s. What stays here is the owner-key
+   * precondition.
+   *
+   * @throws if no owner private key is configured or the control database is not
+   *   initialized.
+   */
+  async openRevocationLedger(): Promise<RevocationLedgerOpenResult> {
+    // Fail fast on a keyless service before any DB work (see removePeer): a
+    // non-owner cannot sign the marker's append digest.
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return this.controlDatabase.openRevocationLedger(
+      ownerKey, message => this.signMessageBytes(message),
     );
   }
 

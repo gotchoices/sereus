@@ -816,6 +816,120 @@ describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Revocation ledger marker
+//
+// The step beside the reap, behind the same connectivity gate, that files the
+// singleton Revocation marker so that table stops being a never-written block the
+// storage layer re-consults on every read. The marker's schema rules and its
+// invisibility to readers are control-revocation-ledger-marker.spec.ts; its cost
+// effect is control-founding-consult-budget.spec.ts. These cover when the pass files it.
+// ══════════════════════════════════════════════════════════════════════════════
+
+type LedgerOutcome = 'opened' | 'already-open' | Error;
+
+/**
+ * Give the node a seed-bootstrap stand-in exposing only what the marker step reads.
+ * `outcomes` answers successive filings in order; the last one repeats.
+ */
+function injectLedgerOwner(
+  node: CadreNode,
+  opts: { canAuthorize?: boolean; outcomes?: LedgerOutcome[] } = {}
+): { filings: () => number } {
+  const outcomes = opts.outcomes ?? ['opened'];
+  let filings = 0;
+  (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+    canAuthorize: () => opts.canAuthorize ?? true,
+    openRevocationLedger: async () => {
+      const outcome = outcomes[Math.min(filings, outcomes.length - 1)];
+      filings++;
+      if (outcome instanceof Error) {
+        throw outcome;
+      }
+      return outcome;
+    }
+  };
+  return { filings: () => filings };
+}
+
+const SELF_AND_SIBLING = [
+  { peerId: 'self-peer', multiaddr: null },
+  { peerId: 'sibling-1', multiaddr: null }
+];
+
+describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => {
+  it('files the marker on a connected owner node, then never again in this process', async () => {
+    const node = new CadreNode(createConfig());
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    const { filings } = injectLedgerOwner(node);
+
+    await node.reconcileControlCohort();
+    await node.reconcileControlCohort();
+
+    expect(filings()).toBe(1);
+  });
+
+  it('does NOT file while alone (zero control connections)', async () => {
+    // The reap's gate, for the reap's reason: a marker committed alone is local-only, and
+    // one filed while another machine creates the same collection forks it.
+    const node = new CadreNode(createConfig());
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: [] });
+    const { filings } = injectLedgerOwner(node);
+
+    await node.reconcileControlCohort();
+
+    expect(filings()).toBe(0);
+  });
+
+  it('does NOT file on a node that cannot sign as an owner', async () => {
+    const node = new CadreNode(createConfig());
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    const { filings } = injectLedgerOwner(node, { canAuthorize: false });
+
+    await node.reconcileControlCohort();
+
+    expect(filings()).toBe(0);
+  });
+
+  it('an already-open answer also ends the attempts', async () => {
+    const node = new CadreNode(createConfig());
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    const { filings } = injectLedgerOwner(node, { outcomes: ['already-open'] });
+
+    await node.reconcileControlCohort();
+    await node.reconcileControlCohort();
+
+    expect(filings()).toBe(1);
+  });
+
+  it('a failed filing does not abort the pass, and the next connected pass retries', async () => {
+    const node = new CadreNode(createConfig());
+    const { dialCalls, reapCalls } = injectCohort(node, { members: SELF_AND_SIBLING, connections: ['some-other-peer'] });
+    const { filings } = injectLedgerOwner(node, { outcomes: [new Error('ledger boom'), 'opened'] });
+
+    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    expect(filings()).toBe(1);
+    expect(reapCalls).toEqual(['self-peer']);
+    expect(dialCalls).toHaveLength(1);
+
+    await node.reconcileControlCohort();
+    await node.reconcileControlCohort();
+    expect(filings()).toBe(2);
+  });
+
+  it('files even when the pass takes the no-siblings early return', async () => {
+    // The reap's position argument again: a connected node whose CadrePeer table names no
+    // sibling takes the cold-start early return at step 1, so the step must sit before it.
+    const node = new CadreNode(createConfig());
+    injectCohort(node, { members: [], connections: ['some-connected-peer'] });
+    const { filings } = injectLedgerOwner(node);
+
+    await node.reconcileControlCohort();
+
+    expect(filings()).toBe(1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Cold-start bootstrap retry
 //
 // The branch reconcileControlCohort takes when the CadrePeer table holds no
