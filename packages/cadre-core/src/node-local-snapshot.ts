@@ -104,9 +104,9 @@ export interface NodeLocalSnapshotSpec<E> {
  */
 export class NodeLocalSnapshot<E> {
 	/**
-	 * Serialises persists: every {@link put} snapshot-writes the full entry set,
-	 * so chaining writes keeps them ordered and the last landed snapshot
-	 * complete.
+	 * Serialises persists: every write ({@link put}, {@link remove}) snapshot-writes
+	 * the full entry set, so chaining writes keeps them ordered and the last landed
+	 * snapshot complete.
 	 */
 	private writeChain: Promise<void> = Promise.resolve();
 
@@ -145,15 +145,15 @@ export class NodeLocalSnapshot<E> {
 		return this.entries.has(key);
 	}
 
-	/** Fresh copy of the keys — a snapshot decoupled from later {@link put} calls. */
+	/** Fresh copy of the keys — a snapshot decoupled from later {@link put} / {@link remove} calls. */
 	keySnapshot(): Set<string> {
 		return new Set(this.entries.keys());
 	}
 
 	/**
 	 * Fresh copy of the `key -> entry` map — a snapshot decoupled from later
-	 * {@link put} calls. The entries themselves need no copy: {@link put}
-	 * REPLACES an entry rather than mutating it in place.
+	 * {@link put} / {@link remove} calls. The entries themselves need no copy:
+	 * {@link put} REPLACES an entry rather than mutating it in place.
 	 */
 	entrySnapshot(): Map<string, E> {
 		return new Map(this.entries);
@@ -164,12 +164,29 @@ export class NodeLocalSnapshot<E> {
 	 * synchronous caller may consult the store the moment this returns), then
 	 * the full snapshot is persisted. A persist failure rejects the returned
 	 * promise but leaves the entry in memory — this session's decision stands,
-	 * and any later successful {@link put} re-lands the complete set.
+	 * and any later successful write re-lands the complete set.
 	 */
 	put(key: string, entry: E): Promise<void> {
 		this.entries.set(key, entry);
+		return this.queuePersist();
+	}
+
+	/**
+	 * Remove an entry, with {@link put}'s contract: the in-memory map updates
+	 * SYNCHRONOUSLY, then the full snapshot is persisted. Removing an absent key
+	 * changes nothing, so it writes nothing.
+	 */
+	remove(key: string): Promise<void> {
+		if (!this.entries.delete(key)) {
+			return Promise.resolve();
+		}
+		return this.queuePersist();
+	}
+
+	/** Chain a full-snapshot write behind every earlier one (see {@link put}). */
+	private queuePersist(): Promise<void> {
 		const persist = this.writeChain.then(() => this.persistSnapshot());
-		// The chain itself must survive a failed persist (the next put retries the
+		// The chain itself must survive a failed persist (the next write retries the
 		// full snapshot); the caller still observes the rejection via `persist`.
 		this.writeChain = persist.catch((error) => {
 			log('%s: persist failed for party %s: %o', this.spec.label, this.partyId, error);

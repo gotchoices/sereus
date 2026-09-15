@@ -482,22 +482,25 @@ describe('CadreNode.reconcileControlCohort', () => {
 // be dropped before any write.
 // ══════════════════════════════════════════════════════════════════════════════
 
-describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling record', () => {
-  /** A signed record for a fresh Ed25519 peer carrying exactly `addrs`. */
-  async function signedSibling(addrs: (peerId: string) => string[]): Promise<{
-    peerId: string;
-    record: PeerAddressRecord;
-  }> {
-    const key = await generateKeyPair('Ed25519');
-    const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-    const peerId = peerIdFromPrivateKey(key).toString();
-    const record = signPeerRecord(
-      { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt: Date.now() },
-      privateKeyB64
-    );
-    return { peerId, record };
-  }
+/**
+ * A signed record for a fresh Ed25519 peer carrying exactly `addrs`, stamped
+ * `updatedAt` (now by default; an old stamp makes the record stale).
+ */
+async function signedSibling(addrs: (peerId: string) => string[], updatedAt = Date.now()): Promise<{
+  peerId: string;
+  record: PeerAddressRecord;
+}> {
+  const key = await generateKeyPair('Ed25519');
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
+  const peerId = peerIdFromPrivateKey(key).toString();
+  const record = signPeerRecord(
+    { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt },
+    privateKeyB64
+  );
+  return { peerId, record };
+}
 
+describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling record', () => {
   it('dials a sibling whose record mixes a suffixed circuit addr with a bare direct one', async () => {
     // The exact record shape push-wake-e2e seeds, and the one that made every
     // reconcile pass skip this sibling: `libp2p.dial([suffixed, unsuffixed])`
@@ -1170,5 +1173,160 @@ describe('CadreNode seed bootstrap-peer retention', () => {
     }).seedEventCallbacks().onSeedApplied?.('p', 1, seed);
 
     expect([...bootstrapPeers(node).keys()]).toEqual([owner]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// A sibling's retained dial target
+//
+// The steady-state pass's last dial fallback, after the signed record and the
+// address book: the addresses an owner was handed when it added the sibling
+// (`addDrone`, covered in cadre-node-bootstrap-peers.spec.ts). It is the only way
+// a node that cannot listen reaches a node it added, whose row stays unsigned until
+// that node self-publishes over the connection. These run the REAL
+// `resolvePeerAddrs` (the `records` option), so "the record does not resolve" is
+// the resolver's own verdict rather than a stub's.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** A memory store that counts `record` calls, to tell a rewrite from a no-op. */
+class CountingBootstrapPeerStore extends MemoryBootstrapPeerStore {
+  records = 0;
+
+  override async record(peerId: string, addrs: readonly string[]): Promise<void> {
+    this.records++;
+    return super.record(peerId, addrs);
+  }
+}
+
+/** An hour old: well past the signed record's freshness window. */
+const STALE_UPDATED_AT = Date.now() - 60 * 60_000;
+
+describe('CadreNode.reconcileControlCohort — retained dial target for a sibling', () => {
+  it('dials a sibling with no record and no address-book entry from its retained target, bound to its peer id', async () => {
+    // The phone that just added a lent node: the node's row is not resolvable and
+    // the phone never applied a seed naming it, so nothing else names an address.
+    const node = new CadreNode(createConfig());
+    const drone = await realPeerId();
+    const store = new MemoryBootstrapPeerStore('p');
+    await store.record(drone, ['/ip4/127.0.0.1/tcp/4001', '/ip4/192.168.1.20/tcp/4002/ws']);
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: drone, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map(),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
+    expect(dialedAddrs(dialCalls)).toEqual([
+      `/ip4/127.0.0.1/tcp/4001/p2p/${drone}`,
+      `/ip4/192.168.1.20/tcp/4002/ws/p2p/${drone}`,
+    ]);
+  });
+
+  it('dials from the retained target when the record is stale, and leaves the target as it was', async () => {
+    // The relaunch after more than fifteen minutes offline: the record verifies but
+    // is too old to resolve, and the address book did not survive the process.
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws'], STALE_UPDATED_AT);
+    const store = new CountingBootstrapPeerStore('p');
+    await store.record(peerId, ['/ip4/1.1.1.1/tcp/1/ws']);
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.1.1.1/tcp/1/ws/p2p/${peerId}`]);
+    expect(store.records).toBe(1);
+    expect(store.all().get(peerId)?.addrs).toEqual(['/ip4/1.1.1.1/tcp/1/ws']);
+  });
+
+  it('prefers the address book over the retained target', async () => {
+    const node = new CadreNode(createConfig());
+    const sibling = await realPeerId();
+    const store = new MemoryBootstrapPeerStore('p');
+    await store.record(sibling, ['/ip4/1.1.1.1/tcp/1/ws']);
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: sibling, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map(),
+      peerStoreGet: async () => ({ addresses: [{ multiaddr: multiaddr('/ip4/8.8.8.8/tcp/4001/ws') }] }),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/8.8.8.8/tcp/4001/ws/p2p/${sibling}`]);
+  });
+
+  it('dials a sibling whose record resolves from the record, not the retained target', async () => {
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws']);
+    const store = new MemoryBootstrapPeerStore('p');
+    await store.record(peerId, ['/ip4/1.1.1.1/tcp/1/ws']);
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`]);
+  });
+
+  it('replaces a retained target with the differing addresses the record resolves to, once', async () => {
+    // A port change seen while connected must be what the next relaunch dials.
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(() => ['/ip4/192.168.1.20/tcp/4102/ws']);
+    const store = new CountingBootstrapPeerStore('p');
+    await store.record(peerId, ['/ip4/192.168.1.20/tcp/4002/ws']);
+    injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      connections: [peerId],
+      bootstrapStore: store,
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+    expect(store.records).toBe(2);
+    expect(store.all().get(peerId)?.addrs).toEqual([`/ip4/192.168.1.20/tcp/4102/ws/p2p/${peerId}`]);
+
+    // Now equal: a second pass must not rewrite (and re-persist) it every tick.
+    await node.reconcileControlCohort();
+    expect(store.records).toBe(2);
+  });
+
+  it('does not rewrite a retained target that differs from the record only in suffixes and order', async () => {
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(() => ['/ip4/10.0.0.1/tcp/4001', '/ip4/10.0.0.2/tcp/4002/ws']);
+    const store = new CountingBootstrapPeerStore('p');
+    await store.record(peerId, [`/ip4/10.0.0.2/tcp/4002/ws`, `/ip4/10.0.0.1/tcp/4001/p2p/${peerId}`]);
+    injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(store.records).toBe(1);
+  });
+
+  it('never creates a retained target for a sibling that has none', async () => {
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws']);
+    const store = new MemoryBootstrapPeerStore('p');
+    injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      bootstrapStore: store,
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(store.all().size).toBe(0);
   });
 });

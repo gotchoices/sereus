@@ -1,16 +1,25 @@
 /**
- * Node-local, NON-replicated cold-start bootstrap-peer store: the dial targets a
- * node keeps so it can retry its way back into a party it has been seeded into
- * but never managed to connect to.
+ * Node-local, NON-replicated bootstrap-peer store: dial targets a node learned
+ * out of band, kept so it can dial those peers when nothing better is known.
+ * Two sources feed it:
  *
- * A newcomer applies a signed seed nominating the party's owner machines and the
- * addresses they answer on. `SeedBootstrapService.applySeed` dials those owners
- * exactly once, best-effort; when that dial fails (owner briefly down, relay
- * reservation not up, not yet vouched) the node has an empty `CadrePeer` table
- * and no connection, and `CadreNode.reconcileControlCohort`'s cold-start branch
- * is the only way back — it re-dials these retained addresses every pass. Held
- * only in memory, they die with the process and the node is stranded for good,
- * which is what this store exists to prevent.
+ *  - **A seed's owner peers.** A newcomer applies a signed seed nominating the
+ *    party's owner machines and the addresses they answer on.
+ *    `SeedBootstrapService.applySeed` dials those owners exactly once,
+ *    best-effort; when that dial fails (owner briefly down, relay reservation not
+ *    up, not yet vouched) the node has an empty `CadrePeer` table and no
+ *    connection, and `CadreNode.reconcileControlCohort`'s cold-start branch is
+ *    the only way back — it re-dials these retained addresses every pass.
+ *  - **Nodes this node added.** `CadreNode.addDrone` is handed the added node's
+ *    addresses, but that node's `CadrePeer` row stays unsigned, and therefore
+ *    unresolvable, until the node self-publishes — which needs a connection, and
+ *    a node that cannot listen (a phone) is never dialed by it. The steady-state
+ *    reconcile pass falls back to these addresses for a sibling whose signed
+ *    record and address-book entry both yield nothing, including after a
+ *    relaunch that outlived the record's freshness window.
+ *
+ * Held only in memory, either kind dies with the process and the node is left
+ * with no address to dial, which is what this store exists to prevent.
  *
  * Three implementations, mirroring `trusted-owner-store.ts` (read that first —
  * it solves the same "must outlive the process, storage differs per platform"
@@ -28,10 +37,11 @@
  *
  * **Nothing here is trust-bearing, and a loader must not try to re-verify it.**
  * Only *dial targets* are retained — never a seed, a signature, or an authority
- * claim. The seed was signature-checked against the node-local trusted-owner
- * anchor before its addresses were retained, and a dial grants no authority:
- * `CadreNode.bootstrapDialAddrs` binds every address to the peer id it was
- * retained under, so a dial cannot be redirected to whoever answers. What a
+ * claim. A seed was signature-checked against the node-local trusted-owner
+ * anchor before its addresses were retained, and an added node's addresses were
+ * supplied by the owner that chose to add it. Either way a dial grants no
+ * authority: `CadreNode.bootstrapDialAddrs` binds every address to the peer id it
+ * was retained under, so a dial cannot be redirected to whoever answers. What a
  * persistent backend's loader DOES owe is dropping structurally junk entries
  * (unparseable peer id, empty address list, non-string address) rather than
  * carrying them into the dial loop.
@@ -42,9 +52,12 @@ import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from 
 
 const log = debug('sereus:cadre:bootstrap-peer-store');
 
-/** One retained cold-start dial target: an owner peer a seed nominated. */
+/**
+ * One retained dial target learned out of band: an owner peer a seed nominated,
+ * or a node this node added.
+ */
 export interface BootstrapPeerEntry {
-	/** Multiaddr strings exactly as the seed carried them (parsed at dial time). */
+	/** Multiaddr strings exactly as they were handed over (parsed at dial time). */
 	addrs: string[];
 	/** Wall-clock ms the entry was last recorded (diagnostics / future eviction). */
 	recordedAt: number;
@@ -56,9 +69,9 @@ export interface BootstrapPeerStore {
 
 	/**
 	 * Every retained target, peerId -> entry. Every backend copies the map per call,
-	 * so the result is a snapshot decoupled from later {@link record} calls and is
-	 * safe to iterate while recording. The entry objects need no copy: `record`
-	 * REPLACES an entry rather than mutating it in place.
+	 * so the result is a snapshot decoupled from later {@link record} and
+	 * {@link forget} calls and is safe to iterate while recording. The entry objects
+	 * need no copy: `record` REPLACES an entry rather than mutating it in place.
 	 */
 	all(): ReadonlyMap<string, BootstrapPeerEntry>;
 
@@ -72,15 +85,26 @@ export interface BootstrapPeerStore {
 	 * `CadreNode.recordSeedBootstrapPeers` keep its signature while a file
 	 * backend persists in the background.
 	 *
-	 * NOTE: entries are never evicted, and a persistent backend's file therefore
-	 * grows across the node's whole lifetime rather than one process. Fine while a
-	 * seed nominates one or a few owners and entries are keyed by peer id; if a
-	 * node ever applies seeds naming many distinct owners, add eviction (oldest
-	 * {@link BootstrapPeerEntry.recordedAt} first, or a cap) rather than letting
-	 * the file grow unbounded — `recordedAt` exists so eviction has something to
-	 * sort by.
+	 * NOTE: entries are never evicted (only a local `removePeer` {@link forget}s
+	 * one), and a persistent backend's file therefore grows across the node's whole
+	 * lifetime rather than one process. Fine while a seed nominates one or a few
+	 * owners, a node adds a handful of machines, and entries are keyed by peer id;
+	 * if a node ever applies seeds naming many distinct owners or adds many
+	 * machines, add eviction (oldest {@link BootstrapPeerEntry.recordedAt} first, or
+	 * a cap) rather than letting the file grow unbounded — `recordedAt` exists so
+	 * eviction has something to sort by.
 	 */
 	record(peerId: string, addrs: readonly string[]): Promise<void>;
+
+	/**
+	 * Drop a peer's retained dial addresses — for a peer this node removed from the
+	 * party, which must not stay a dial target. Forgetting a peer with no entry is a
+	 * no-op.
+	 *
+	 * Same contract as {@link record}: the removal is reflected in {@link all}
+	 * SYNCHRONOUSLY, and the returned promise tracks durability only.
+	 */
+	forget(peerId: string): Promise<void>;
 }
 
 /**
@@ -100,6 +124,12 @@ export class MemoryBootstrapPeerStore implements BootstrapPeerStore {
 	async record(peerId: string, addrs: readonly string[]): Promise<void> {
 		this.peers.set(peerId, { addrs: [...addrs], recordedAt: Date.now() });
 		log('bootstrap peer retained (party=%s, peer=%s, addrs=%d)', this.partyId, peerId, addrs.length);
+	}
+
+	async forget(peerId: string): Promise<void> {
+		if (this.peers.delete(peerId)) {
+			log('bootstrap peer forgotten (party=%s, peer=%s)', this.partyId, peerId);
+		}
 	}
 }
 
@@ -168,5 +198,15 @@ export class PersistentBootstrapPeerStore implements BootstrapPeerStore {
 	record(peerId: string, addrs: readonly string[]): Promise<void> {
 		log('bootstrap peer retained (party=%s, peer=%s, addrs=%d); persisting', this.partyId, peerId, addrs.length);
 		return this.snapshot.put(peerId, { addrs: [...addrs], recordedAt: Date.now() });
+	}
+
+	/**
+	 * Drop a peer's dial addresses: gone from {@link all} synchronously, then the
+	 * full snapshot is persisted — unless there was no entry, which writes nothing
+	 * (see `NodeLocalSnapshot.remove`).
+	 */
+	forget(peerId: string): Promise<void> {
+		log('bootstrap peer forgotten (party=%s, peer=%s)', this.partyId, peerId);
+		return this.snapshot.remove(peerId);
 	}
 }

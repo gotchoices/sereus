@@ -571,37 +571,45 @@ export class CadreNode implements SAppIdLookup {
   private readonly strandLaunchRefusals = new Map<string, PreSplitStrandIdentityError>();
 
   /**
-   * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
-   * this node has applied, keyed by peer id, valued by the seed's multiaddr
-   * strings (parsed lazily, at dial time). Written by
-   * {@link recordSeedBootstrapPeers}; read only by
-   * {@link dialColdStartBootstrap} while the control database still has no
-   * siblings to dial.
+   * Dial targets learned out of band, keyed by peer id, valued by the multiaddr
+   * strings this node was handed (parsed lazily, at dial time). Two writers:
+   * {@link recordSeedBootstrapPeers} retains the owner-flagged peers of every seed
+   * this node applies, and {@link addDrone} retains the addresses of every node
+   * this node adds. Two readers: {@link dialColdStartBootstrap} dials every entry
+   * while the control database still has no siblings, and
+   * {@link resolveControlDialAddrs} falls back to a sibling's entry when neither
+   * its signed record nor the address book yields an address.
    *
    * A STORE rather than a plain map (see `bootstrap-peer-store.ts`), because the
    * targets must outlive the process: a node seeded into a party it could not
    * reach has nothing else on disk naming that party's addresses (`applySeed`
    * writes no control row, and `CadrePeer` fills in only after a connection
    * succeeds), so an in-memory-only set left it stranded permanently across a
-   * restart. Constructed (or adopted from `config.bootstrapPeers.store`) by
+   * restart. An owner that added a node it cannot be dialed by is in the same
+   * position: the added node's row stays unsigned, so unresolvable, until that
+   * node self-publishes over a connection only the owner can open. Constructed (or
+   * adopted from `config.bootstrapPeers.store`) by
    * {@link initializeBootstrapPeerStore} during {@link start}; deliberately NOT
    * cleared by {@link cleanup}, so it survives a stop()→start() cycle of the same
    * node instance — same lifecycle as {@link trustedOwnerStore}. Durability
-   * depends on the injected backend: Node gets a file-backed store from the CLI,
-   * RN/browser stay ephemeral for now.
+   * depends on the injected backend; the default is in-memory.
    *
    * Deliberately NOT the libp2p peer store, which {@link peerStoreAddrs} already
    * reads for the steady-state path. The peer store is shared with everything
    * libp2p discovers, so "dial every entry" would grow into dialing arbitrary
    * discovered peers as the node lives longer; this store holds exactly the peers
-   * an owner-signed, trust-anchored seed nominated as owners. `applySeed` merges
-   * the same addresses into the peer store as well, so the two never disagree —
-   * this one is just the precisely-scoped subset.
+   * an owner-signed, trust-anchored seed nominated as owners, and the nodes this
+   * node chose to add. `applySeed` also merges a seed's addresses into the peer
+   * store, where they age out; an added node's addresses are never merged there,
+   * because only verified addresses go into the address book (see
+   * {@link warmSiblingAddrBook}).
    *
-   * A later seed OVERWRITES an entry rather than merging, so a re-seed after an
+   * A later record OVERWRITES an entry rather than merging, so a re-seed after an
    * owner's address changes replaces the stale address instead of accumulating
-   * dead ones. Entries are never evicted: they are the node's only way back into
-   * the party if it is ever stranded again.
+   * dead ones, and {@link warmSiblingAddrBook} replaces an entry with the addresses
+   * the sibling's signed record resolves to when they differ. Only this node's own
+   * {@link removePeer} evicts an entry: otherwise they are the node's only way back
+   * to those peers if it is ever stranded again.
    */
   private bootstrapPeerStore: BootstrapPeerStore | null = null;
 
@@ -1320,10 +1328,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The node-local cold-start bootstrap-peer store (null before {@link start}) —
-   * the retained owner addresses {@link reconcileControlCohort}'s cold-start
-   * branch re-dials. Exposed for diagnostics and for a host that wants to show
-   * "what would this node dial if it is stranded?".
+   * The node-local bootstrap-peer store (null before {@link start}) — the dial
+   * targets learned out of band that {@link reconcileControlCohort} falls back to.
+   * Exposed for diagnostics and for a host that wants to show "what would this
+   * node dial if it is stranded?".
    */
   getBootstrapPeerStore(): BootstrapPeerStore | null {
     return this.bootstrapPeerStore;
@@ -2493,7 +2501,7 @@ export class CadreNode implements SAppIdLookup {
    * Applied by ALL THREE sources of control-dial candidates, so no call site
    * invents its own rule and none can produce a mixed list: the signed record
    * ({@link resolvePeerAddrs}), the libp2p address book
-   * ({@link peerStoreAddrs}), and a seed's retained owner addresses
+   * ({@link peerStoreAddrs}), and a retained out-of-band dial target
    * ({@link bootstrapDialAddrs}).
    *
    * An address naming a DIFFERENT trailing peer id is dropped: it does not reach
@@ -2521,14 +2529,14 @@ export class CadreNode implements SAppIdLookup {
    * way, never thrown, so every caller's list-shaping stays total.
    *
    * Used both to normalize addresses this node DIALS (a `CadrePeer` row, a
-   * seed-supplied bootstrap addr) and to normalize the ones it ANNOUNCES
+   * retained bootstrap addr) and to normalize the ones it ANNOUNCES
    * ({@link getStrandMultiaddrs}); the rule is the same either way — an address
    * that does not reach `peerId` is not an address for `peerId`.
    *
    * `withTrailingPeerId` encapsulates `/p2p/<peerId>`, which throws on a peer id
    * that does not parse. Unreachable for a `CadrePeer` row (the binding gate
    * above parsed it already) and for our own node's id, reachable for a
-   * seed-supplied one ({@link bootstrapDialAddrs}).
+   * retained one ({@link bootstrapDialAddrs}).
    */
   private bindAddrToPeer(addr: Multiaddr, peerId: string): Multiaddr | null {
     try {
@@ -2812,6 +2820,9 @@ export class CadreNode implements SAppIdLookup {
    * resolves to nothing (revoked, stale, untrusted) is not written at all, so its
    * existing entry ages out on its own.
    *
+   * The same resolution also keeps a sibling's retained out-of-band dial target
+   * current ({@link refreshDialHint}).
+   *
    * NOTE: this resolves EVERY sibling serially before the dial loop below runs,
    * so it costs one record query per sibling per reconcile pass (~15s) and each
    * one delays the pass's first dial. A cadre is a handful of devices, so today
@@ -2821,6 +2832,9 @@ export class CadreNode implements SAppIdLookup {
   private async warmSiblingAddrBook(siblings: CohortPeerRow[]): Promise<Map<string, Multiaddr[]>> {
     const resolved = new Map<string, Multiaddr[]>();
     const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
+    // One copy of the store's map for the whole loop; a refresh replaces an entry
+    // rather than mutating it, so the copy stays a consistent "before" view.
+    const hints = this.bootstrapPeerStore?.all();
     for (const sibling of siblings) {
       if (!this._running || !this.controlNode) {
         break;
@@ -2833,6 +2847,7 @@ export class CadreNode implements SAppIdLookup {
       if (!this._running || !controlNode) {
         break;
       }
+      this.refreshDialHint(sibling.peerId, addrs, hints?.get(sibling.peerId)?.addrs);
       // `mergePeerAddrs` owns the whole best-effort contract — including parsing
       // a malformed `CadrePeer.PeerId` — so one bad row cannot abort the pass.
       counts[await mergePeerAddrs(controlNode, sibling.peerId, addrs)]++;
@@ -2840,6 +2855,41 @@ export class CadreNode implements SAppIdLookup {
     log('reconcileControlCohort: address book warmed (siblings=%d, merged=%d, restamped=%d, skipped=%d, failed=%d)',
       resolved.size, counts.merged, counts.restamped, counts.skipped, counts.failed);
     return resolved;
+  }
+
+  /**
+   * Replace a sibling's retained out-of-band dial target (see
+   * {@link bootstrapPeerStore}) with the addresses its signed record just resolved
+   * to, when the two differ — so an address change this node saw while the record
+   * was fresh (a new port, a new LAN address) is what it dials after a relaunch
+   * that outlives the record's freshness window.
+   *
+   * Only a sibling that already HAS an entry (`retained`) is refreshed: the store
+   * holds peers learned out of band and must not grow into a copy of every
+   * sibling's addresses. An empty resolution leaves the entry alone — a stale or
+   * not-yet-signed record is exactly when the entry is needed. The comparison is
+   * order-insensitive and runs on the retained addresses after binding them to the
+   * peer id, so an entry recorded without `/p2p/` suffixes is not rewritten merely
+   * for lacking them.
+   *
+   * NOTE: replaces rather than merges, so the entry becomes exactly what the
+   * sibling announces. If a node's signed record ever lists fewer addresses this
+   * node can reach than it was added with (say an announce override naming only a
+   * public address, for a node added by its LAN address), a relaunch dials the
+   * worse set; merge the two lists here if that shows up.
+   */
+  private refreshDialHint(peerId: string, resolved: Multiaddr[], retained: string[] | undefined): void {
+    if (!retained || resolved.length === 0) {
+      return;
+    }
+    // Both lists are de-duplicated by `normalizeDialAddrs`, so equal size plus
+    // containment is set equality.
+    const current = resolved.map((addr) => addr.toString());
+    const previous = new Set(this.bootstrapDialAddrs(peerId, retained).map((addr) => addr.toString()));
+    if (current.length === previous.size && current.every((addr) => previous.has(addr))) {
+      return;
+    }
+    this.retainDialTarget(peerId, current, 'refreshDialHint');
   }
 
   /**
@@ -2905,20 +2955,60 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * A sibling's control-network dial addresses for the reconcile pass.
+   * A sibling's control-network dial addresses for the reconcile pass, from the
+   * first of three sources that yields any:
    *
-   * Primary (steady state): the signed, fresh, trust-gated control addresses
-   * `resolved` for it by {@link warmSiblingAddrBook} — passed in rather than
-   * re-resolved, so the pass makes one record query per sibling. Fallback (cold
-   * start): the libp2p peerStore entries `applySeed` populated, used only while
-   * the record is not yet resolvable. Returns `[]` (never throws) when neither
-   * yields an address — that sibling is skipped this pass.
+   *  1. the signed, fresh, trust-gated control addresses `resolved` for it by
+   *     {@link warmSiblingAddrBook} — passed in rather than re-resolved, so the
+   *     pass makes one record query per sibling;
+   *  2. the libp2p address book ({@link peerStoreAddrs}) — the entries `applySeed`
+   *     and identify put there, until they age out;
+   *  3. the sibling's retained out-of-band dial target ({@link retainedDialAddrs}).
+   *     For a node that cannot listen, this is the only source for a sibling it
+   *     added but has not yet connected to: the added node's row stays unsigned
+   *     until it self-publishes, which needs the connection this dial opens. It is
+   *     also what a relaunch that outlived the record's freshness window uses.
+   *
+   * Returns `[]` (never throws) when none yields an address — that sibling is
+   * skipped this pass.
+   *
+   * The list may name transports this node cannot dial (a lent node reports TCP
+   * and `/ws` addresses to a phone that dials WebSockets only). That needs no
+   * filtering here: libp2p's dial queue (`calculateMultiaddrs`, libp2p 3.1.3)
+   * drops every address no transport can dial before dialing, and fails only
+   * when none remain.
    */
   private async resolveControlDialAddrs(peerId: string, resolved: Multiaddr[]): Promise<Multiaddr[]> {
     if (resolved.length > 0) {
       return resolved;
     }
-    return this.peerStoreAddrs(peerId);
+    const booked = await this.peerStoreAddrs(peerId);
+    if (booked.length > 0) {
+      return booked;
+    }
+    return this.retainedDialAddrs(peerId);
+  }
+
+  /**
+   * A sibling's retained out-of-band dial target (see {@link bootstrapPeerStore}),
+   * bound to its peer id through {@link bootstrapDialAddrs}; `[]` when it has none.
+   *
+   * These addresses are never merged into the libp2p address book: they are
+   * unverified, and the address book takes only verified ones (see
+   * `mergePeerAddrs`). Layers that dial by bare peer id use the connection this
+   * dial opens, and after it drops the next reconcile pass dials again.
+   *
+   * NOTE: an entry is consulted here only for a current sibling, so a peer revoked
+   * by another owner is not dialed from it, even though the entry stays (only this
+   * node's own {@link removePeer} forgets one). The cold-start branch
+   * ({@link dialColdStartBootstrap}) still dials every entry while there are no
+   * siblings at all; if entries for revoked peers ever cause dial churn there,
+   * prune entries whose peer has a retired `CadrePeer` row during the membership
+   * refresh.
+   */
+  private retainedDialAddrs(peerId: string): Multiaddr[] {
+    const entry = this.bootstrapPeerStore?.all().get(peerId);
+    return entry ? this.bootstrapDialAddrs(peerId, entry.addrs) : [];
   }
 
   /**
@@ -2970,39 +3060,57 @@ export class CadreNode implements SAppIdLookup {
    * signature-checked against a trust-anchored signer before this runs, and the
    * flag only *selects a dial target*; a dial grants no authority.
    *
-   * Self is excluded. `createSeed` projects EVERY `CadrePeer` row, so an owner
-   * that applies a seed minted after it joined finds itself in the owner list;
-   * retaining that would make the cold-start pass dial this node forever (the
-   * steady-state pass filters self out of its sibling list for the same reason).
+   * Addressless peers and self are skipped by {@link retainDialTarget}.
    */
   private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
-    const store = this.bootstrapPeerStore;
-    if (!store) {
-      // Unreachable in production: start() builds the store before any network
-      // bring-up, and both intake paths need a started node (an uninitialized
-      // SeedBootstrapService rejects the seed, so noteAppliedSeed returns early).
-      log('recordSeedBootstrapPeers: no bootstrap-peer store yet; retaining nothing');
-      return;
-    }
-    const selfPeerId = this.controlNode?.peerId.toString();
     for (const peer of seed.peers) {
-      if (!peer.isOwner || peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
-        continue;
+      if (peer.isOwner) {
+        this.retainDialTarget(peer.peerId, peer.multiaddrs, 'recordSeedBootstrapPeers');
       }
-      // Sync-visible by contract; the promise tracks durability only. A persist
-      // failure costs restart survival, never this session's retry set — the same
-      // trade `SeedBootstrapService.anchorAcceptedSigner` makes — so log and carry
-      // on rather than failing the seed that was already accepted.
-      void store.record(peer.peerId, peer.multiaddrs).catch((error: unknown) => {
-        log('recordSeedBootstrapPeers: persisting bootstrap peer %s failed (retained in memory): %o',
-          peer.peerId, error);
-      });
     }
   }
 
   /**
-   * Cold-start branch of the reconcile pass: re-dial the seed's owner peers
-   * while the control database still has no siblings to dial.
+   * Retain (or replace) one peer's out-of-band dial target in
+   * {@link bootstrapPeerStore}. Shared by every writer: seed intake, {@link addDrone}
+   * and {@link refreshDialHint}.
+   *
+   * Fire-and-log: the entry is visible synchronously by the store's contract, and
+   * the promise tracks durability only. A persist failure costs restart survival,
+   * never this session's dial set — the same trade
+   * `SeedBootstrapService.anchorAcceptedSigner` makes — so it is logged rather than
+   * failing a seed or an add that has already been accepted.
+   *
+   * Two peers are never retained. One with no address: there is nothing to dial.
+   * And self: `createSeed` projects EVERY `CadrePeer` row, so an owner that applies
+   * a seed minted after it joined finds itself in the owner list, and `addDrone`
+   * could be handed this node's own id. Retaining self would make the cold-start
+   * pass dial this node forever (the steady-state pass filters self out of its
+   * sibling list for the same reason).
+   */
+  private retainDialTarget(peerId: string, addrs: readonly string[], caller: string): void {
+    const store = this.bootstrapPeerStore;
+    if (!store) {
+      // Unreachable in production: start() builds the store before any network
+      // bring-up, and every caller needs a started node (an uninitialized
+      // SeedBootstrapService rejects a seed or an add, and the reconcile pass
+      // needs a running one).
+      log('%s: no bootstrap-peer store yet; not retaining %s', caller, peerId);
+      return;
+    }
+    if (addrs.length === 0 || peerId === this.controlNode?.peerId.toString()) {
+      return;
+    }
+    void store.record(peerId, addrs).catch((error: unknown) => {
+      log('%s: persisting dial target %s failed (retained in memory): %o', caller, peerId, error);
+    });
+  }
+
+  /**
+   * Cold-start branch of the reconcile pass: re-dial every retained out-of-band
+   * dial target (see {@link bootstrapPeerStore}) — in practice the owner peers of
+   * the seeds this node applied — while the control database still has no
+   * siblings to dial.
    *
    * `SeedBootstrapService.applySeed` dials those owners exactly ONCE, best-effort.
    * When that single dial fails — owner momentarily down, relay reservation not
@@ -3057,13 +3165,14 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Bind a bootstrap peer's seed addresses to its peer id, so the dial
-   * authenticates the peer it is aiming at rather than trusting whoever answers.
+   * Bind a retained dial target's addresses (see {@link bootstrapPeerStore}) to
+   * its peer id, so the dial authenticates the peer it is aiming at rather than
+   * trusting whoever answers.
    *
    * The same {@link normalizeDialAddrs} rule the resolved and address-book paths
    * use, on the third and last source of control-dial candidates: an address that
    * already terminates in `/p2p/<id>` must carry THIS peer's id or it is dropped
-   * (a seed that disagrees with itself is not a dial target); one that does not —
+   * (an entry that disagrees with itself is not a dial target); one that does not —
    * a bare listen addr, or a relay hop with the destination missing — gets the id
    * encapsulated; an unencapsulatable one is dropped rather than dialed bare.
    */
@@ -6368,6 +6477,13 @@ export class CadreNode implements SAppIdLookup {
     await this.seedBootstrapService.removePeer(peerId);
     // Track + loudly flag a delete that committed local-only (security-relevant).
     this.noteControlWrite(peerId, 'remove');
+    // A removed peer is no longer a dial target, however this node learned its
+    // address. Gone from the store synchronously; a persist failure only lets the
+    // entry reappear after a restart, so it is logged rather than failing a
+    // removal that has already committed.
+    void this.bootstrapPeerStore?.forget(peerId).catch((error: unknown) => {
+      log('removePeer: persisting the removal of dial target %s failed (forgotten in memory): %o', peerId, error);
+    });
   }
 
   /**
@@ -6498,6 +6614,17 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Add a drone to the cadre (for phone/server adding provider-hosted node).
    * Creates authorization and seed for drone initialization.
+   *
+   * Also retains the drone's handed-over addresses as a durable dial target (see
+   * {@link bootstrapPeerStore}). The drone cannot dial an owner that does not
+   * listen (a phone), and its `CadrePeer` row stays unsigned — so unresolvable —
+   * until it self-publishes over a connection; this node therefore has to open
+   * that connection from the addresses it was handed, on this launch or a later
+   * one.
+   *
+   * Nothing is dialed here: the drone has not received the seed yet. After
+   * delivering it, call {@link reconcileControlCohort} to dial straight away;
+   * otherwise the next timed reconcile pass does.
    */
   async addDrone(options: AddDroneOptions): Promise<DroneInitResult> {
     if (!this.seedBootstrapService) {
@@ -6505,7 +6632,9 @@ export class CadreNode implements SAppIdLookup {
     }
     // The drone's `CadrePeer` insert notifies the membership hub on the way to the
     // seed, so the per-stream gate already admits it here.
-    return await this.seedBootstrapService.addDrone(options);
+    const result = await this.seedBootstrapService.addDrone(options);
+    this.retainDialTarget(options.dronePeerId, options.droneMultiaddrs, 'addDrone');
+    return result;
   }
 
   /**

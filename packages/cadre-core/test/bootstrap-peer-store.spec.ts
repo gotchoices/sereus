@@ -4,8 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from '../src/bootstrap-peer-store.js';
+import {
+	MemoryBootstrapPeerStore,
+	PersistentBootstrapPeerStore,
+	type BootstrapPeerStore
+} from '../src/bootstrap-peer-store.js';
 import { FileBootstrapPeerStore } from '../src/bootstrap-peer-store-file.js';
+import type { DurableSlot } from '../src/node-local-snapshot.js';
 
 const PARTY = 'party-alpha';
 
@@ -14,8 +19,30 @@ async function realPeerId(): Promise<string> {
 	return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 }
 
+/**
+ * An in-memory {@link DurableSlot}: reopening a store over the same slot reads back
+ * what the last save wrote. Counts saves, and rejects the next one on request.
+ */
+function memorySlot(): DurableSlot & { saves: number; failNextSave: boolean } {
+	let text: string | undefined;
+	const slot = {
+		saves: 0,
+		failNextSave: false,
+		load: async () => text,
+		save: async (next: string) => {
+			if (slot.failNextSave) {
+				slot.failNextSave = false;
+				throw new Error('save boom');
+			}
+			text = next;
+			slot.saves++;
+		}
+	};
+	return slot;
+}
+
 // Each backend supplies a fresh store and a teardown. The contract suite below
-// runs identically against both — the only difference is persistence medium.
+// runs identically against each — the only difference is persistence medium.
 interface Backend {
 	name: string;
 	make: (partyId?: string) => Promise<BootstrapPeerStore>;
@@ -47,6 +74,11 @@ const backends: Backend[] = [
 	{
 		name: 'MemoryBootstrapPeerStore',
 		make: async (partyId = PARTY) => new MemoryBootstrapPeerStore(partyId),
+		cleanup: async () => {}
+	},
+	{
+		name: 'PersistentBootstrapPeerStore',
+		make: async (partyId = PARTY) => PersistentBootstrapPeerStore.open(memorySlot(), partyId),
 		cleanup: async () => {}
 	},
 	{
@@ -105,6 +137,66 @@ describe.each(backends)('BootstrapPeerStore contract: $name', ({ make, cleanup }
 		expect(snapshot.has(b)).toBe(false);
 		expect(store.all().has(b)).toBe(true);
 	});
+
+	it('forget() drops a peer, reflected in all() synchronously', async () => {
+		const store = await make();
+		const [a, b] = [await realPeerId(), await realPeerId()];
+		await store.record(a, ['/ip4/1.1.1.1/tcp/1/ws']);
+		await store.record(b, ['/ip4/2.2.2.2/tcp/2/ws']);
+
+		const pending = store.forget(a);
+		expect([...store.all().keys()]).toEqual([b]);
+		await pending;
+	});
+
+	it('forget() of a peer with no entry is a no-op', async () => {
+		const store = await make();
+		const peer = await realPeerId();
+		await store.record(peer, ['/ip4/1.1.1.1/tcp/1/ws']);
+
+		await expect(store.forget(await realPeerId())).resolves.toBeUndefined();
+		expect([...store.all().keys()]).toEqual([peer]);
+	});
+});
+
+describe('PersistentBootstrapPeerStore specifics', () => {
+	it('a forget persists across open() over the same slot', async () => {
+		const slot = memorySlot();
+		const [kept, dropped] = [await realPeerId(), await realPeerId()];
+		const first = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		await first.record(kept, ['/ip4/1.1.1.1/tcp/1/ws']);
+		await first.record(dropped, ['/ip4/2.2.2.2/tcp/2/ws']);
+		await first.forget(dropped);
+
+		const reloaded = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		expect([...reloaded.all().keys()]).toEqual([kept]);
+	});
+
+	it('forgetting a peer with no entry writes nothing', async () => {
+		const slot = memorySlot();
+		const store = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		await store.record(await realPeerId(), ['/ip4/1.1.1.1/tcp/1/ws']);
+		const saves = slot.saves;
+
+		await store.forget(await realPeerId());
+		expect(slot.saves).toBe(saves);
+	});
+
+	it('a failed forget persist rejects, the peer stays forgotten, and the next write lands the removal', async () => {
+		const slot = memorySlot();
+		const [dropped, later] = [await realPeerId(), await realPeerId()];
+		const store = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		await store.record(dropped, ['/ip4/1.1.1.1/tcp/1/ws']);
+
+		slot.failNextSave = true;
+		await expect(store.forget(dropped)).rejects.toThrow('save boom');
+		expect(store.all().has(dropped)).toBe(false);
+
+		// Every write is a full snapshot, so the next one carries the removal too.
+		await store.record(later, ['/ip4/2.2.2.2/tcp/2/ws']);
+		const reloaded = await PersistentBootstrapPeerStore.open(slot, PARTY);
+		expect([...reloaded.all().keys()]).toEqual([later]);
+	});
 });
 
 describe('FileBootstrapPeerStore specifics', () => {
@@ -118,6 +210,18 @@ describe('FileBootstrapPeerStore specifics', () => {
 
 		const reloaded = await FileBootstrapPeerStore.open(dir, PARTY);
 		expect(reloaded.all().get(peer)?.addrs).toEqual(['/ip4/1.2.3.4/tcp/4001/ws']);
+	});
+
+	it('a forget persists across open() cycles', async () => {
+		const dir = await makeTmpDir();
+		const [kept, dropped] = [await realPeerId(), await realPeerId()];
+		const first = await FileBootstrapPeerStore.open(dir, PARTY);
+		await first.record(kept, ['/ip4/1.1.1.1/tcp/1/ws']);
+		await first.record(dropped, ['/ip4/2.2.2.2/tcp/2/ws']);
+		await first.forget(dropped);
+
+		const reloaded = await FileBootstrapPeerStore.open(dir, PARTY);
+		expect([...reloaded.all().keys()]).toEqual([kept]);
 	});
 
 	it('an absent directory is a cold start (empty), not a crash', async () => {

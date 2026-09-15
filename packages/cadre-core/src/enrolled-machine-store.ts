@@ -41,8 +41,8 @@
  * `Memory*` / `Persistent*` / `File*` split, same party scoping. It does NOT share
  * their `NodeLocalSnapshot` machinery, for two reasons:
  *
- *  - **Shape.** `NodeLocalSnapshot` is a `key -> entry` map with no delete. This
- *    record is one integer that must be able to go DOWN after a machine is removed.
+ *  - **Shape.** `NodeLocalSnapshot` is a `key -> entry` map. This record is one
+ *    integer that must be able to go DOWN after a machine is removed.
  *  - **Load policy — the important one.** `NodeLocalSnapshot.open` THROWS when the
  *    slot is present but unreadable. That is right for the anchor (a record that
  *    cannot be read in full is not a trust anchor) and right for the peer store (a

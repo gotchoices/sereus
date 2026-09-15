@@ -1157,6 +1157,13 @@ export class SeedBootstrapService {
    * 2. Creates a seed including all current peers
    * 3. Returns the seed for sending to provider API
    *
+   * Nothing here dials the drone or remembers its addresses beyond the unsigned
+   * `CadrePeer` row, which no resolver accepts. `CadreNode.addDrone` is the entry
+   * point that also retains them as a durable dial target, so the adder's
+   * reconcile pass can open the connection — the drone cannot dial an owner that
+   * does not listen. Call `CadreNode.reconcileControlCohort()` after delivering
+   * the seed to dial at once.
+   *
    * @param options - Drone peer info from provider API
    * @returns Seed and encoded seed for drone initialization
    */
