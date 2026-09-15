@@ -13,15 +13,30 @@ const mocks = vi.hoisted(() => {
   // Unlike the sibling specs' double, this one declares its parameter: the assertions
   // below ask whether a key is ABSENT, which needs the recorded call indexable rather
   // than only matchable with `expect.objectContaining`.
-  const createLibp2pNode = vi.fn(async (_options: Record<string, unknown>) => ({ coordinatedRepo: {}, stop }));
+  const createLibp2pNode = vi.fn(async (_options: Record<string, unknown>) => ({
+    coordinatedRepo: {},
+    stop,
+    peerId: { toString: () => 'strand-peer' }
+  }));
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
     return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) };
   });
-  return { stop, createLibp2pNode, StrandDatabase };
+  // The per-relay reservation supervisor is wiring the manager does over the node it
+  // built; `strand-instance-manager-relay.spec.ts` pins that wiring. Here it only has
+  // to be inert against the fake node above (no `getMultiaddrs`, no `dial`).
+  const superviseRelayReservation = vi.fn((_node: unknown, _addrs: readonly string[], _opts?: unknown) => ({
+    firstAttempt: Promise.resolve(),
+    driving: false,
+    retryAtMs: null,
+    lastError: null,
+    stop: vi.fn()
+  }));
+  return { stop, createLibp2pNode, StrandDatabase, superviseRelayReservation };
 });
 
 vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
+vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks.superviseRelayReservation }));
 
 /**
  * A strand node inherits the machine's one `NetworkConfig`, but NOT the two fields in
@@ -31,8 +46,11 @@ vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDataba
  * that `buildStrandRuntime` hands `createLibp2pNode` the derived view and nothing
  * else — the mistake it guards against is one of the two fields quietly coming back.
  *
- * `network.relayAddrs` is inherited the same way but resolves DIFFERENTLY here than on
- * the control node, and nothing else pins which of the two routes this caller takes.
+ * `network.relayAddrs` is inherited the same way and resolves to the same SEARCH shape
+ * the control node binds — one bare `/p2p-circuit` per relay here, one for all there —
+ * and the relay dial addrs it resolves beside them are runtime plumbing for the
+ * per-relay reservation supervisor, NOT a `createLibp2pNode` option: this file pins
+ * that they never reach the node builder.
  */
 describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
@@ -132,18 +150,23 @@ describe('StrandInstanceManager network-addrs wiring', () => {
   });
 
   /**
-   * Same inherited `NetworkConfig`, the other address list. The control node resolves
-   * `relayAddrs` on the `'search'` route — one bare `/p2p-circuit`, reserved explicitly
-   * after control-DB bring-up — and a strand node must NOT follow it there: nothing
-   * drives an explicit reservation for a strand node, so a search entry would register
-   * a pending reservation nobody fills and leave every NAT'd strand node undialable,
-   * silently. The resolution rules themselves are `relay-addrs.spec.ts`'s; the only
-   * thing pinned here is WHICH route this caller takes.
+   * Same inherited `NetworkConfig`, the other address list. A strand node binds the
+   * bare `/p2p-circuit` SEARCH entry — one per relay — and the manager fills each one
+   * with a reservation supervisor over that relay (`superviseRelayReservation`); it
+   * must never bind the configured `<relay>/p2p-circuit` shape, which libp2p reserves
+   * from inside `listen()` and never re-reserves after a loss. The resolution rules
+   * themselves are `strand-network-config.spec.ts`'s; pinned here is what reaches
+   * `createLibp2pNode`, and that the relay dial addrs resolved beside the listen
+   * entries do NOT.
    */
-  it('resolves an inherited relayAddrs on the CONFIGURED route, not the search route of the control node', async () => {
+  it('hands the strand node one bare /p2p-circuit per relay, and keeps the relay dial addrs out of the node options', async () => {
     const relay = '/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
     const options = await strandOptions({ listenAddrs: ['/ip4/0.0.0.0/tcp/0'], relayAddrs: [relay] });
 
-    expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0', `${relay}/p2p-circuit`]);
+    expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0', '/p2p-circuit']);
+    expect('relayAddrs' in options).toBe(false);
+    // The dial addr went to the supervisor instead.
+    expect(mocks.superviseRelayReservation).toHaveBeenCalledTimes(1);
+    expect(mocks.superviseRelayReservation.mock.calls[0]![1]).toEqual([relay]);
   });
 });

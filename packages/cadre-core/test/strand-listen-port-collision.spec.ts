@@ -34,7 +34,7 @@ afterEach(async () => {
 describe('fixed-port listenAddrs across the nodes one machine runs', () => {
   it('cannot start a second node on the control node\'s own resolved listen addrs', async () => {
     const network = await fixedPortNetwork();
-    const controlAddrs = resolveListenAddrs(network, 'search');
+    const controlAddrs = resolveListenAddrs(network);
 
     await startNode(controlAddrs);
 
@@ -45,9 +45,9 @@ describe('fixed-port listenAddrs across the nodes one machine runs', () => {
 
   it('starts the control node and two strand nodes on one machine, each on its own port', async () => {
     const network = await fixedPortNetwork();
-    const fixedPort = boundPorts(resolveListenAddrs(network, 'search') ?? [])[0]!;
+    const fixedPort = boundPorts(resolveListenAddrs(network) ?? [])[0]!;
 
-    const control = await startNode(resolveListenAddrs(network, 'search'));
+    const control = await startNode(resolveListenAddrs(network));
     const strandA = await startNode(strandNodeAddrs(network).listenAddrs);
     const strandB = await startNode(strandNodeAddrs(network).listenAddrs);
 

@@ -19,9 +19,11 @@
  *     `strand-addr-seed-convergence.integration.ts` — but here the RPC itself
  *     rides a relayed control connection and every address it can answer with
  *     is a `/p2p-circuit` address;
- *   - each STRAND node inherits the configured `<relay>/p2p-circuit` listener
- *     (`strand-network-config.ts`) and reserves its own slot from inside
- *     `libp2p.start()`;
+ *   - each STRAND node binds its own bare `/p2p-circuit` search listener for the
+ *     relay (`strand-network-config.ts`) and its per-relay reservation
+ *     supervisor fills it right after `libp2p.start()`
+ *     (`strand-instance-manager.ts`), so `addStrand` resolves with the circuit
+ *     addr published;
  *   - the strand mesh connection is asserted `relayed` by
  *     `summarizeConnectionPaths` — a direct fallback cannot pass for relayed
  *     success (neither end has a direct listener, and the classifier proves it);
@@ -31,17 +33,18 @@
  *   - the relay's reservation count is measured: 2 control + 2 strand = 4 —
  *     the first measurement of the per-strand relay-slot cost.
  *
- * The final phase characterizes RESERVATION LOSS (the relay restarts while the
- * strand runs): the CONTROL nodes recover on their own (the
- * `superviseRelayReservation` loop re-drives), while the STRAND nodes do NOT —
- * `@libp2p/circuit-relay-v2` re-drives a lost CONFIGURED reservation nowhere
- * (`connection:close` → `#removeReservation` → the listener clears its
- * addresses, and nothing ever calls `addRelay` again), and cadre-core runs no
- * supervisor for strand nodes. The inverted gate below (expecting the wait to
- * time out) pins today's behaviour and doubles as a tripwire: if a libp2p
- * upgrade or a strand-side supervisor ever makes strand reservations recover,
- * that assertion fails and `backlog/bug-strand-relay-reservation-not-resupervised`
- * is obsolete.
+ * The final phase proves RESERVATION LOSS RECOVERY (the relay restarts while
+ * the strand runs): the CONTROL nodes recover through `CadreNode`'s
+ * `superviseRelayReservation` loop, and the STRAND nodes recover through their
+ * own per-relay supervisors (`strand-instance-manager.ts`) — the relay comes
+ * back to all four reservations. Strand nodes used to take libp2p's CONFIGURED
+ * `<relay>/p2p-circuit` listener shape, which re-drives a lost reservation
+ * nowhere (`connection:close` → `#removeReservation` → the listener clears its
+ * addresses, and nothing ever calls `addRelay` again) — and also lost its
+ * address, with no network event at all, on libp2p's own reservation refresh;
+ * the loopback unit specs in `packages/cadre-core/test/relay-reservation.spec.ts`
+ * pin the hangup and refresh triggers, this scenario pins the restart one end
+ * to end.
  *
  * ── Topology: one party, ONE owner ──
  * Same single-owner shape as `strand-addr-seed-convergence.integration.ts` (see
@@ -182,7 +185,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			expect(await A.isAuthorizedMember(bPeerId)).toBe(true);
 			expect(await B.isAuthorizedMember(aPeerId)).toBe(true);
 
-			// ── Founder strand: the configured-route reservation actually lands ──
+			// ── Founder strand: the per-relay supervisor's first attempt lands ───
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const aStrand = await A.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
@@ -269,57 +272,47 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			// is gone; the configured addresses still name a live relay.
 			await relay.restart();
 
-			// FIRST gate on the loss being OBSERVED: the circuit listener clears
-			// its addresses when the relay connection closes, and sampling before
-			// those close events dispatch would make every recovery assertion
-			// below pass vacuously (seen in practice on a fast run). The strand
-			// side is the right place to watch — its loss is permanent, so this
-			// gate cannot race a recovery.
-			const strandCircuitAddrs = (node: Libp2p) => node.getMultiaddrs().map(String).filter(isCircuit);
-			await waitUntil(
-				() => strandCircuitAddrs(aStrandNode).length === 0 && strandCircuitAddrs(bStrandNode).length === 0,
-				{ ...GATE, description: 'both strand nodes observe the lost reservation (circuit addrs withdrawn)' },
-			);
+			// FIRST gate on the loss being OBSERVED at the RELAY: the restarted
+			// instance starts at zero reservations, so every count below is
+			// unambiguous, and a recovery gate sampled before the old state is gone
+			// would pass vacuously (seen in practice on a fast run). The clients'
+			// own view cannot serve as this gate any more — all four supervisors
+			// re-drive within seconds of the close events, so a withdrawn circuit
+			// addr may already be back by the time it is sampled.
+			expect(relay.reservationCount()).toBe(0);
 
-			// CONTROL nodes recover on their own: the reservation supervisor
-			// notices the lost circuit addr (5 s liveness cadence) and re-drives.
-			// Gated on the RELAY's view first — the restarted instance starts at
-			// zero reservations, so reaching 2 is unambiguous recovery — then on
-			// the clients republishing their circuit addrs.
+			// EVERY node recovers on its own: each reservation supervisor notices
+			// its lost circuit addr (5 s liveness cadence) and re-drives — the two
+			// control nodes through `CadreNode.reserveRelays`' loop, the two strand
+			// nodes through the per-relay supervisors `strand-instance-manager.ts`
+			// runs for them (the fix this scenario's earlier inverted gate was the
+			// tripwire for). Gated on the RELAY's view first — 4 = 2 control +
+			// 2 strand, reached from 0 — then on every client republishing.
 			await waitUntil(
-				() => relay!.reservationCount() === 2,
-				{ ...GATE, description: 'both control nodes re-reserve on the restarted relay (supervisor)' },
+				() => relay!.reservationCount() === 4,
+				{ ...GATE, description: 'all four nodes re-reserve on the restarted relay (2 control + 2 strand)' },
 			);
 			await waitUntil(
 				() => controlAddrs(A!).some(isCircuit) && controlAddrs(B!).some(isCircuit),
 				{ ...GATE, description: 'both control nodes republish a circuit address after the restart' },
 			);
-
-			// STRAND nodes do NOT: nothing re-drives a configured-route reservation
-			// (see the file header). The inverted gate pins that — and fails the
-			// day recovery starts working, flagging the backlog ticket obsolete.
-			const strandRecovered = () =>
-				strandCircuitAddrs(aStrandNode).length > 0 || strandCircuitAddrs(bStrandNode).length > 0;
-			await expect(
-				waitUntil(strandRecovered, {
-					timeoutMs: 15_000,
-					intervalMs: 500,
-					description: 'a strand node re-reserves after the relay restart (NOT expected today)',
-				}),
-			).rejects.toThrow(/Timeout/);
-
-			// NOTE: 15 s is a window, not a proof of "never" — `waitUntil` also
-			// swallows a throwing condition, so the gate alone could pass for the
-			// wrong reason. The two assertions below are the non-swallowing half of
-			// the claim (client side and relay side). If a future libp2p ever
-			// re-reserves a configured route on a cadence SLOWER than this window,
-			// the gate starts passing vacuously — widen it then, and re-read
-			// `backlog/bug-strand-relay-reservation-not-resupervised`.
-			expect(strandRecovered()).toBe(false);
-			// Only the two control reservations came back.
-			expect(relay.reservationCount()).toBe(2);
-			console.log('[strand-circuit] relay reservations after restart: %d (control only — strand reservations did not recover)',
+			const strandCircuitAddrs = (node: Libp2p) => node.getMultiaddrs().map(String).filter(isCircuit);
+			await waitUntil(
+				() => strandCircuitAddrs(aStrandNode).length > 0 && strandCircuitAddrs(bStrandNode).length > 0,
+				{ ...GATE, description: 'both strand nodes republish a circuit address after the restart' },
+			);
+			// The non-swallowing half of the claim (`waitUntil` absorbs a throwing
+			// condition): the relay holds exactly the four, and the strand mesh is
+			// still relay-carried across the restart — B's strand node can reach
+			// A's through the RE-reserved slot.
+			expect(relay.reservationCount()).toBe(4);
+			console.log('[strand-circuit] relay reservations after restart: %d (2 control + 2 strand — every node re-reserved)',
 				relay.reservationCount());
+			await waitUntil(
+				() => bStrandNode.getConnections().some((c) => c.remotePeer.toString() === aStrandPeerId),
+				{ ...GATE, description: "B's strand node reaches A's strand node again through the restarted relay" },
+			);
+			expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand after restart');
 		} finally {
 			await Promise.allSettled([B?.stop(), A?.stop()]);
 			await relay?.stop();

@@ -58,6 +58,7 @@ import {
   isPeerRecordFresh,
   orderSignalingFirst,
   isSignalingAddr,
+  trailingPeerId,
   withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
@@ -1488,9 +1489,8 @@ export class CadreNode implements SAppIdLookup {
    * operator whose relay slot is decorative may genuinely want only the announced
    * address, so this reports and proceeds.
    *
-   * Keyed off the RESOLVED listen addrs rather than `relayAddrs` alone, so a
-   * hand-written `/p2p-circuit` entry in `listenAddrs` — the same reservation by the
-   * longer route — is caught too.
+   * Keyed off `relayAddrs` AND `listenAddrs`, so a hand-written `/p2p-circuit` entry
+   * in `listenAddrs` — a reservation by the longer route — is caught too.
    *
    * NOTE: the only direct `console.*` in this library — a boot-time operator warning, not a
    * diagnostic trace (those use `debug`, which an operator never sees without `DEBUG=`). If a
@@ -1502,9 +1502,13 @@ export class CadreNode implements SAppIdLookup {
     if (!replacesAdvertisedAddrs(network)) {
       return;
     }
-    const listensOnCircuit = (resolveListenAddrs(network) ?? [])
-      .some((addr) => addr.includes('/p2p-circuit'));
-    if (!listensOnCircuit) {
+    // Read off the raw config, not the resolved listen set: the question is only
+    // "does this config name a relay", and the resolution throws on a hand-written
+    // `<relay>/p2p-circuit` listen entry — which still warrants this warning, and
+    // gets its own refusal a few lines later in `buildControlNodeOptions`.
+    const namesRelay = (network?.relayAddrs?.length ?? 0) > 0
+      || (network?.listenAddrs ?? []).some((addr) => addr.includes('/p2p-circuit'));
+    if (!namesRelay) {
       return;
     }
     console.warn(
@@ -1527,11 +1531,11 @@ export class CadreNode implements SAppIdLookup {
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
     const { controlNetwork, network, profile } = this.config;
     const identityKey = this.identityKey;
-    // `'search'`: `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH
-    // entry, which opens no connection — the reservation is driven explicitly at
-    // the END of `start()`, so the control database is built while this node holds
-    // zero control connections. See `relay-addrs.ts` and `start()`.
-    const listenAddrs = resolveListenAddrs(network, 'search');
+    // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
+    // opens no connection — the reservation is driven explicitly at the END of
+    // `start()`, so the control database is built while this node holds zero
+    // control connections. See `relay-addrs.ts` and `start()`.
+    const listenAddrs = resolveListenAddrs(network);
     // The transports those listen entries imply. A `/ws` entry switches db-p2p's
     // WebSocket transport on (without it the entry binds nothing and libp2p reports
     // nothing); anything outside {tcp, ws/wss, p2p-circuit} throws here rather than
@@ -4921,6 +4925,11 @@ export class CadreNode implements SAppIdLookup {
       revocationEnforcement: this.config.strandRevocationEnforcement,
       membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
+      // Re-announce the delegate to ONE relay before the strand node's reservation
+      // supervisor re-drives it (see announceDelegateToRelay). Retained with the
+      // launch config, so a hibernation wake's rebuilt supervisors get it too.
+      announceDelegateToRelay: (announcedStrandId, relayAddr, announcedDelegatePeerId) =>
+        this.announceDelegateToRelay(announcedStrandId, relayAddr, announcedDelegatePeerId),
       // The staged formation invitation seam for the bring-up membership
       // reconciler: read lazily per pass (a re-formation replaces the entry) and
       // cleared once spent, burned, or dead — see pendingMembershipInvites.
@@ -5139,6 +5148,47 @@ export class CadreNode implements SAppIdLookup {
     await Promise.all([...running].map(
       ([strandId, delegatePeerId]) => this.announceDelegateToDueRelays(strandId, delegatePeerId, relays, now)
     ));
+  }
+
+  /**
+   * Announce ONE strand's delegate peerId to ONE relay, UNTHROTTLED — the
+   * `beforeRedrive` hook of that strand node's per-relay reservation supervisor
+   * (`strand-instance-manager.ts` → `buildStrandRuntime`), run before every
+   * re-drive after the first attempt.
+   *
+   * Why a re-drive must re-announce first: a party control node running the relay
+   * server admits the strand node's derived peerId on an in-memory delegate grant
+   * (`delegate-admission.ts`), and a relay restart drops every grant it held
+   * without telling the announcer. {@link refreshDelegateGrants} would re-announce
+   * on its own at most every `DELEGATE_GRANT_TTL_MS / 2` (15 min) per (relay,
+   * strand) — far slower than the supervisor's backoff — so without this the first
+   * re-drives after a relay restart would be denied at the relay's connection gate.
+   * The throttle map is updated afterwards, so the periodic pass does not announce
+   * again right away.
+   *
+   * Against a dedicated ops relay (no strand-addr RPC) the request fails per-peer
+   * and `collectStrandAddrs` folds it to `[]`: one wasted protocol negotiation per
+   * re-drive attempt, bounded by the supervisor's backoff. Never throws on that
+   * path; a relay addr that names no peer id is logged and skipped (the hook's
+   * caller runs the drive regardless).
+   */
+  private async announceDelegateToRelay(strandId: string, relayAddr: string, delegatePeerId: string): Promise<void> {
+    const controlNode = this.controlNode;
+    if (!controlNode) {
+      return;
+    }
+    const relayPeerId = trailingPeerId(multiaddr(relayAddr));
+    if (relayPeerId === null) {
+      log('announceDelegateToRelay: relay addr %s names no peer id; strand %s not announced', relayAddr, strandId);
+      return;
+    }
+    await collectStrandAddrs(
+      controlNode,
+      [{ peerId: relayPeerId, addrs: [multiaddr(relayAddr)] }],
+      strandId,
+      { delegatePeerId }
+    );
+    this.recordDelegateAnnounces([relayPeerId], strandId);
   }
 
   /** One strand's share of {@link refreshDelegateGrants}: announce to the relays whose grant is due. */

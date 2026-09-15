@@ -11,17 +11,19 @@ import type { NetworkConfig } from '../src/types.js';
  * the two fields that describe a single endpoint on that host — see
  * `strand-network-config.ts`.
  *
- * Two rules, pinned here because everything downstream reads only the derived result:
- * a fixed DIRECT listen port becomes ephemeral, and the announce config is dropped
- * outright. Everything else is passed through byte-for-byte, including a
- * `/p2p-circuit` entry whose embedded port belongs to the relay rather than to this
- * host.
+ * Three rules, pinned here because everything downstream reads only the derived result:
+ * a fixed DIRECT listen port becomes ephemeral, the announce config is dropped
+ * outright, and every configured relay becomes one bare `/p2p-circuit` SEARCH listen
+ * entry plus a dial addr in `relayAddrs` for the per-relay reservation supervisor the
+ * strand runtime starts. Everything else is passed through byte-for-byte.
  */
 
 let RELAY: string;
+let RELAY_2: string;
 
 beforeAll(async () => {
   RELAY = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+  RELAY_2 = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 });
 
 /**
@@ -105,44 +107,105 @@ describe('strandNodeAddrs', () => {
     });
   });
 
-  describe('circuit entries', () => {
-    /**
-     * The port inside `<relay>/p2p-circuit` is the RELAY's — the address the strand
-     * node dials out to, not a socket it binds — so zeroing it would point the node at
-     * a relay port that does not exist.
-     */
-    it('passes a hand-written <relay>/p2p-circuit listen entry through unchanged', () => {
-      const circuit = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`;
+  /**
+   * A strand node reserves through the bare `/p2p-circuit` SEARCH listener — one per
+   * relay, each with a supervisor over that relay's dial addr — never through the
+   * configured `<relay>/p2p-circuit` shape, which loses its address on a relay
+   * restart, a hangup, or libp2p's own reservation refresh and recovers from none of
+   * them (`relay-addrs.ts`). The per-relay listener count is load-bearing: a search
+   * listener registers exactly one pending reservation, and libp2p fills each pending
+   * reservation with exactly one relay.
+   */
+  describe('relays: one search listener per relay, plus the dial addr to supervise', () => {
+    it('gives a relay-only config a bare search entry, the relay dial addr, and an ephemeral direct listener', () => {
+      const relay = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`;
 
-      expect(strandNodeAddrs({ listenAddrs: [circuit] }).listenAddrs).toEqual([circuit]);
+      expect(strandNodeAddrs({ relayAddrs: [relay] })).toEqual({
+        listenAddrs: ['/ip4/0.0.0.0/tcp/0', '/p2p-circuit'],
+        relayAddrs: [relay]
+      });
     });
 
-    it('leaves the circuit entries relayAddrs folds in untouched while rewriting the direct one', () => {
+    it('appends the search entry after the rewritten direct one', () => {
       const relay = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`;
 
       expect(strandNodeAddrs({
         listenAddrs: ['/ip4/0.0.0.0/tcp/4001'],
         relayAddrs: [relay]
-      }).listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0', `${relay}/p2p-circuit`]);
+      })).toEqual({
+        listenAddrs: ['/ip4/0.0.0.0/tcp/0', '/p2p-circuit'],
+        relayAddrs: [relay]
+      });
+    });
+
+    /** The React Native phone: no direct listener, ONLY the relay. */
+    it('leaves a listenAddrs: [] node with the search entry alone — its only listener', () => {
+      const relay = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`;
+
+      expect(strandNodeAddrs({ listenAddrs: [], relayAddrs: [relay] })).toEqual({
+        listenAddrs: ['/p2p-circuit'],
+        relayAddrs: [relay]
+      });
+    });
+
+    it('emits one IDENTICAL search entry per relay — the dedupe must not collapse them', () => {
+      const first = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`;
+      const second = `/ip4/5.6.7.8/tcp/4001/p2p/${RELAY_2}`;
+
+      expect(strandNodeAddrs({ listenAddrs: [], relayAddrs: [first, second] })).toEqual({
+        listenAddrs: ['/p2p-circuit', '/p2p-circuit'],
+        relayAddrs: [first, second]
+      });
+    });
+
+    /**
+     * A hand-written `<relay>/p2p-circuit` listen entry names a relay just as
+     * `relayAddrs` does, so it gets the same treatment: a search listener and a
+     * supervisor over its dial prefix — never an unsupervised configured listener.
+     * (The control node rejects the entry outright, so a strand only sees it when
+     * built straight from such a config.)
+     */
+    it('folds a hand-written <relay>/p2p-circuit listen entry into the supervised relay set', () => {
+      const relay = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`;
+
+      expect(strandNodeAddrs({ listenAddrs: ['/ip4/0.0.0.0/tcp/4001', `${relay}/p2p-circuit`] })).toEqual({
+        listenAddrs: ['/ip4/0.0.0.0/tcp/0', '/p2p-circuit'],
+        relayAddrs: [relay]
+      });
+    });
+
+    it('dedupes a relay named both ways by its peer id, first spelling winning', () => {
+      const relay = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`;
+
+      expect(strandNodeAddrs({
+        listenAddrs: [`/dns4/relay.example.com/tcp/4001/p2p/${RELAY}/p2p-circuit`],
+        relayAddrs: [relay]
+      })).toEqual({
+        listenAddrs: ['/p2p-circuit'],
+        relayAddrs: [relay]
+      });
     });
 
     /**
      * The shape `reference-app-web` ships (`src/lib/cadre-web.ts`): a BARE
-     * `/p2p-circuit` search entry beside `/webrtc`. Neither names a local port, so both
-     * have to reach the strand node byte-for-byte — zeroing or dropping either would
-     * cost a browser node its only two ways of being reached.
+     * `/p2p-circuit` search entry beside `/webrtc`, and NO relay named in config (the
+     * tab reserves at runtime through `CadreNode.reserveRelays`). Neither entry names
+     * a local port, so both reach the strand node byte-for-byte, and with no relay
+     * there is nothing to supervise.
      */
-    it('passes the browser shape — bare /p2p-circuit beside /webrtc — through unchanged', () => {
+    it('passes the browser shape — bare /p2p-circuit beside /webrtc — through unchanged, supervising nothing', () => {
       const browser = ['/p2p-circuit', '/webrtc'];
 
-      expect(strandNodeAddrs({ transports: EMBEDDER_TRANSPORTS, listenAddrs: browser }).listenAddrs).toEqual(browser);
+      expect(strandNodeAddrs({ transports: EMBEDDER_TRANSPORTS, listenAddrs: browser })).toEqual({ listenAddrs: browser });
     });
 
-    it('gives a relay-only config its circuit entry and an ephemeral direct listener', () => {
-      const relay = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`;
+    it('absorbs a hand-written bare search entry into the per-relay ones once a relay is named', () => {
+      const relay = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`;
 
-      expect(strandNodeAddrs({ relayAddrs: [relay] }).listenAddrs)
-        .toEqual(['/ip4/0.0.0.0/tcp/0', `${relay}/p2p-circuit`]);
+      expect(strandNodeAddrs({ listenAddrs: ['/p2p-circuit'], relayAddrs: [relay] })).toEqual({
+        listenAddrs: ['/p2p-circuit'],
+        relayAddrs: [relay]
+      });
     });
   });
 
@@ -258,6 +321,12 @@ describe('strandNodeAddrs transport derivation', () => {
     expect(strandNodeAddrs({ listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] }))
       .toEqual({ listenAddrs: ['/ip4/0.0.0.0/tcp/0'] });
     expect(strandNodeAddrs({ relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`] }).wsPort).toBeUndefined();
+  });
+
+  /** A `/ws` RELAY addr is dialed, not bound: it must not switch the WebSocket LISTENER on by itself. */
+  it('does not derive the switch from a relay dial addr — the search entry is a circuit listener', () => {
+    expect(strandNodeAddrs({ listenAddrs: [], relayAddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${RELAY}`] }).wsPort)
+      .toBeUndefined();
   });
 
   it('refuses a listen address no default transport can bind, on this path too', () => {

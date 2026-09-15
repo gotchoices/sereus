@@ -840,6 +840,348 @@ describe('superviseRelayReservation', () => {
   }, 60_000);
 });
 
+/**
+ * A relay with a SHORT reservation TTL, so libp2p's client-side refresh timer —
+ * `max(expiry − 5 min, 30 s)` — fires at its 30 s floor inside a test, and a relay
+ * that can be restarted at the same identity and port.
+ */
+async function startFixedRelayWithTtl(id: FixedIdentity, reservationTtl: number): Promise<Libp2p> {
+  const node = await createLibp2p({
+    ...fixedNodeBase(id),
+    services: { identify: identify(), relay: circuitRelayServer({ reservations: { reservationTtl } }) }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/**
+ * A CADRE-shaped search client: identify under a prefix the stock-identify relay
+ * does not speak, so the two never identify and libp2p's own relay discovery
+ * cannot nominate the relay for the FIRST reservation. `listeners` bare
+ * `/p2p-circuit` entries, one per relay the client will be supervised against.
+ *
+ * Not enough on its own for a spec about a LOST reservation — see
+ * {@link forgetRelayProtocol}.
+ */
+async function startNamespacedSearchClient(listeners = 1): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: Array.from({ length: listeners }, () => '/p2p-circuit') },
+    transports: [tcp(), circuitRelayTransport()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify({ protocolPrefix: 'sereus-test' }) }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/**
+ * Forget that `relay` speaks the hop protocol, so libp2p's relay discovery cannot
+ * refill a freed slot and the spec proves the SUPERVISOR does.
+ *
+ * Measured, not assumed: libp2p 3.1.3's `connection.newStream` records every
+ * protocol OUR OWN outbound stream negotiated into the peer store — so the explicit
+ * reservation request itself writes `/libp2p/circuit/relay/0.2.0/hop` against the
+ * relay, identify or no identify, and the next `relay:not-enough-relays` (a hangup
+ * while the relay is up) has discovery re-reserving within ~25 ms. That is fine in
+ * production (two mechanisms beat one) but confounds a spec, which would pass with
+ * the supervisor deleted.
+ */
+async function forgetRelayProtocol(client: Libp2p, relay: Libp2p): Promise<void> {
+  await client.peerStore.patch(relay.peerId, { protocols: [] });
+}
+
+/**
+ * A flag that flips once `client` observes its connection to `relay` close —
+ * libp2p's public event, and the moment its reservation store forgets the
+ * reservation. The deterministic "loss observed" gate: polling the client's
+ * addrs for a 0 can miss a loss the supervisor repairs within one poll interval.
+ */
+function watchRelayConnectionClose(client: Libp2p, relay: Libp2p): () => boolean {
+  let closed = false;
+  client.addEventListener('connection:close', (evt) => {
+    if (evt.detail.remotePeer.equals(relay.peerId)) {
+      closed = true;
+    }
+  });
+  return () => closed;
+}
+
+/** The client's circuit addrs THROUGH `relayPeerId` — a per-relay view of {@link circuitMultiaddrs}. */
+function circuitAddrsVia(node: Libp2p, relayPeerId: string): string[] {
+  return circuitMultiaddrs(node).filter((addr) => addr.includes(`/p2p/${relayPeerId}/p2p-circuit`));
+}
+
+/**
+ * Wait until the loss has been OBSERVED (circuit addrs through `relayPeerId` reach
+ * 0) before anything asserts recovery — a recovery gate sampled while the old addr
+ * is still published passes vacuously. For a loss the supervisor can repair within
+ * a poll interval, gate on {@link watchRelayConnectionClose} instead.
+ */
+async function waitForLoss(node: Libp2p, relayPeerId: string): Promise<void> {
+  await waitFor(() => circuitAddrsVia(node, relayPeerId).length === 0, `the reservation via ${relayPeerId} to be lost`);
+}
+
+describe('superviseRelayReservation — the strand-node shapes', () => {
+  /**
+   * The phone case: no relay restart at all, just the relay connection dropping —
+   * from the client's side here. `connection:close` makes libp2p's reservation
+   * store forget the reservation and the listener withdraw its addr. With discovery
+   * out of the way (see {@link forgetRelayProtocol}) the supervisor is the only
+   * thing that asks again, so the recovery is gated on it having RE-DRIVEN
+   * (`beforeRedrive` ran) and not merely on the addr being present.
+   */
+  it('gets the reservation back after the CLIENT hangs up the relay connection', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelay(id);
+    const client = await startNamespacedSearchClient();
+    const relayPeerId = relay.peerId.toString();
+
+    let redrives = 0;
+    const supervisor = superviseRelayReservation(client, [id.addr], {
+      ...FAST_SUPERVISOR,
+      beforeRedrive: () => { redrives += 1; }
+    });
+    try {
+      await supervisor.firstAttempt;
+      expect(circuitAddrsVia(client, relayPeerId).length).toBeGreaterThan(0);
+      await forgetRelayProtocol(client, relay);
+      const closed = watchRelayConnectionClose(client, relay);
+
+      await client.hangUp(relay.peerId);
+      await waitFor(closed, 'the relay connection to close');
+
+      await waitFor(
+        () => redrives >= 1 && circuitAddrsVia(client, relayPeerId).length > 0,
+        'the supervisor to re-drive the reservation',
+        30_000
+      );
+      expect(relayFilterHas(client, id.addr)).toBe(false);
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  /** Same loss from the RELAY's side — the relay drops the client, the relay stays up. */
+  it('gets the reservation back after the RELAY hangs up the client connection', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelay(id);
+    const client = await startNamespacedSearchClient();
+    const relayPeerId = relay.peerId.toString();
+
+    let redrives = 0;
+    const supervisor = superviseRelayReservation(client, [id.addr], {
+      ...FAST_SUPERVISOR,
+      beforeRedrive: () => { redrives += 1; }
+    });
+    try {
+      await supervisor.firstAttempt;
+      expect(circuitAddrsVia(client, relayPeerId).length).toBeGreaterThan(0);
+      await forgetRelayProtocol(client, relay);
+      const closed = watchRelayConnectionClose(client, relay);
+
+      await relay.hangUp(client.peerId);
+      await waitFor(closed, 'the relay connection to close');
+
+      await waitFor(
+        () => redrives >= 1 && circuitAddrsVia(client, relayPeerId).length > 0,
+        'the supervisor to re-drive the reservation',
+        30_000
+      );
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  /**
+   * The trigger that needs NO network event: libp2p's own reservation refresh. The
+   * client refreshes at `max(expiry − 5 min, 30 s)`, and `addRelay` REMOVES the
+   * existing reservation (withdrawing the listener's addr) before re-creating it.
+   * A configured `<relay>/p2p-circuit` listener never republishes after that — at
+   * the production relay's 2 h TTL every such node went undialable ~1 h 55 min after
+   * reserving. A search listener republishes on `relay:created-reservation` for
+   * its own re-queued pending id, and the supervisor covers any window in between.
+   * Pinned at a 40 s relay TTL so the refresh fires at its 30 s floor.
+   */
+  it('still holds the circuit addr across libp2p\'s own reservation refresh', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelayWithTtl(id, 40_000);
+    const client = await startNamespacedSearchClient();
+    const relayPeerId = relay.peerId.toString();
+
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
+    try {
+      await supervisor.firstAttempt;
+      expect(circuitAddrsVia(client, relayPeerId).length).toBeGreaterThan(0);
+
+      // Past the 30 s refresh, with slack for the refresh to complete.
+      await sleep(45_000);
+      expect(circuitAddrsVia(client, relayPeerId).length).toBeGreaterThan(0);
+      // And the relay still counts the reservation — it was refreshed, not dropped.
+      const server = relay.services.relay as { reservations: Map<string, unknown> };
+      expect(server.reservations.size).toBe(1);
+    } finally {
+      supervisor.stop();
+    }
+  }, 120_000);
+
+  /**
+   * Two relays, two search listeners, two supervisors — the strand-node shape for a
+   * config naming two relays. "Held" is judged PER RELAY: losing relay 1 must
+   * re-drive relay 1 and ONLY relay 1, and relay 2's addr must never be withdrawn.
+   * Supervisor 2 never driving is observed through its `beforeRedrive` hook, which
+   * runs before every re-drive.
+   */
+  it('re-drives only the lost relay when a node holds one reservation per relay', async () => {
+    const id1 = await fixedIdentity();
+    const id2 = await fixedIdentity();
+    const relay1 = await startFixedRelay(id1);
+    const relay2 = await startFixedRelay(id2);
+    const client = await startNamespacedSearchClient(2);
+    const relay1PeerId = relay1.peerId.toString();
+    const relay2PeerId = relay2.peerId.toString();
+
+    let redrives1 = 0;
+    let redrives2 = 0;
+    const supervisor1 = superviseRelayReservation(client, [id1.addr], {
+      ...FAST_SUPERVISOR,
+      beforeRedrive: () => { redrives1 += 1; }
+    });
+    const supervisor2 = superviseRelayReservation(client, [id2.addr], {
+      ...FAST_SUPERVISOR,
+      beforeRedrive: () => { redrives2 += 1; }
+    });
+    try {
+      await Promise.all([supervisor1.firstAttempt, supervisor2.firstAttempt]);
+      expect(circuitAddrsVia(client, relay1PeerId).length).toBeGreaterThan(0);
+      expect(circuitAddrsVia(client, relay2PeerId).length).toBeGreaterThan(0);
+      await forgetRelayProtocol(client, relay1);
+      await forgetRelayProtocol(client, relay2);
+
+      // A relay STOP, not a hangup: the loss is observable directly, since nothing
+      // can re-reserve until the relay is back.
+      await relay1.stop();
+      await waitForLoss(client, relay1PeerId);
+      // Relay 2's addr survives relay 1's loss.
+      expect(circuitAddrsVia(client, relay2PeerId).length).toBeGreaterThan(0);
+
+      await startFixedRelay(id1);
+      await waitFor(() => circuitAddrsVia(client, relay1PeerId).length > 0, 'relay 1 to come back', 30_000);
+      expect(redrives1).toBeGreaterThanOrEqual(1);
+      expect(circuitAddrsVia(client, relay2PeerId).length).toBeGreaterThan(0);
+      expect(redrives2).toBe(0);
+      expect(supervisor2.lastError).toBeNull();
+    } finally {
+      supervisor1.stop();
+      supervisor2.stop();
+    }
+  }, 90_000);
+
+  /**
+   * The per-relay held check, isolated: a supervisor over relay 2 sees relay 1's
+   * addr on the same node and must NOT count it as its own.
+   */
+  it('is not satisfied by another relay\'s circuit addr on the same node', async () => {
+    const id1 = await fixedIdentity();
+    const id2 = await fixedIdentity();
+    const relay1 = await startFixedRelay(id1);
+    const client = await startNamespacedSearchClient(2);
+
+    const supervisor1 = superviseRelayReservation(client, [id1.addr], FAST_SUPERVISOR);
+    // Nothing is listening at `id2.addr`, so this one cannot land.
+    const supervisor2 = superviseRelayReservation(client, [id2.addr], FAST_SUPERVISOR);
+    try {
+      await Promise.all([supervisor1.firstAttempt, supervisor2.firstAttempt]);
+      expect(circuitAddrsVia(client, relay1.peerId.toString()).length).toBeGreaterThan(0);
+      expect(supervisor1.lastError).toBeNull();
+      // Relay 1's addr is live on the node; supervisor 2 still reports a failure and
+      // keeps retrying rather than idling on a reservation that is not its own.
+      expect(supervisor2.lastError).not.toBeNull();
+      expect(supervisor2.retryAtMs).not.toBeNull();
+    } finally {
+      supervisor1.stop();
+      supervisor2.stop();
+    }
+  }, 60_000);
+
+  describe('beforeRedrive', () => {
+    it('is not run before the first attempt, and runs before every re-drive', async () => {
+      const id = await fixedIdentity();
+      const client = await startNamespacedSearchClient();
+      const calls: number[] = [];
+
+      // Nothing at `id.addr`, so every attempt fails and the loop keeps re-driving.
+      const supervisor = superviseRelayReservation(client, [id.addr], {
+        ...FAST_SUPERVISOR,
+        beforeRedrive: () => { calls.push(Date.now()); }
+      });
+      try {
+        await supervisor.firstAttempt;
+        expect(calls).toEqual([]);
+
+        await waitFor(() => calls.length >= 2, 'two re-drives to be preceded by the hook', 30_000);
+      } finally {
+        supervisor.stop();
+      }
+    }, 60_000);
+
+    it('runs before the re-drive, not after it', async () => {
+      const id = await fixedIdentity();
+      const client = await startNamespacedSearchClient();
+      let hookRan = false;
+      let relayStarted = false;
+
+      // The hook is what brings the relay up: if the re-drive ran BEFORE the hook,
+      // it would find nothing listening and the reservation would land one backoff
+      // later at the earliest — so a reservation appearing promptly after the hook
+      // pins the order.
+      const supervisor = superviseRelayReservation(client, [id.addr], {
+        ...FAST_SUPERVISOR,
+        beforeRedrive: async () => {
+          hookRan = true;
+          if (!relayStarted) {
+            relayStarted = true;
+            await startFixedRelay(id);
+          }
+        }
+      });
+      try {
+        await supervisor.firstAttempt;
+        expect(hookRan).toBe(false);
+        await waitFor(() => circuitMultiaddrs(client).length > 0, 'the reservation to land after the hook', 30_000);
+        expect(hookRan).toBe(true);
+      } finally {
+        supervisor.stop();
+      }
+    }, 60_000);
+
+    it('drives anyway when the hook throws or rejects', async () => {
+      const id = await fixedIdentity();
+      const client = await startNamespacedSearchClient();
+      let calls = 0;
+
+      const supervisor = superviseRelayReservation(client, [id.addr], {
+        ...FAST_SUPERVISOR,
+        beforeRedrive: async () => {
+          calls += 1;
+          throw new Error(calls % 2 === 0 ? 'rejected' : 'thrown');
+        }
+      });
+      try {
+        await supervisor.firstAttempt;
+        await waitFor(() => calls >= 1, 'a re-drive to run the hook');
+
+        // The relay appears; a supervisor whose hook failure stopped the drive
+        // would never notice it.
+        await startFixedRelay(id);
+        await waitFor(() => circuitMultiaddrs(client).length > 0, 'the reservation to land past the failing hook', 30_000);
+      } finally {
+        supervisor.stop();
+      }
+    }, 60_000);
+  });
+});
+
 describe('CadreNode relay reservation against a live relay', () => {
   /**
    * The wiring the free-function specs above cannot reach: `CadreNode` handing its

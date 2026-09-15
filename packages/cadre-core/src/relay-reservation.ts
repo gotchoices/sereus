@@ -29,7 +29,27 @@
  * nothing (fail-fast, the operator asked for this relay), while a node that calls
  * `CadreNode.reserveRelays()` itself gets a non-`reserved` status and stays up
  * (fail-soft, the browser-tab posture). Configuring both is now redundant, not
- * fatal. STRAND nodes still take the configured shape — see `relay-addrs.ts`.
+ * fatal.
+ *
+ * STRAND nodes take the same route, ONE supervisor PER RELAY
+ * (`strand-instance-manager.ts` → `buildStrandRuntime`): each configured relay
+ * gets its own bare `/p2p-circuit` listener (`strand-network-config.ts`) and its
+ * own {@link superviseRelayReservation} over just that relay's addr, fail-soft
+ * like the browser tab. The configured shape they used to take
+ * (`<relay>/p2p-circuit`, reserved from inside `libp2p.start()`) is gone from
+ * cadre-built nodes entirely, because it loses its address and never recovers in
+ * three situations — the relay restarts, either side hangs up the relay
+ * connection, and libp2p's OWN reservation refresh (which removes the reservation
+ * before re-creating it, and a configured listener republishes only from inside
+ * its own `listen()`). The last one needs no network event at all: at the relay
+ * default TTL of two hours every configured-shape node went undialable ~1 h 55 min
+ * after reserving. A search listener republishes on `relay:created-reservation`
+ * for its own pending id, which the refresh re-queues, and the supervisor covers
+ * the other two.
+ *
+ * Because a strand node runs one supervisor per relay, "is the reservation held"
+ * is asked PER RELAY ({@link circuitMultiaddrsVia}): relay X's supervisor must not
+ * be satisfied by relay Y's circuit addr, or it would never re-drive X.
  *
  * ⚠️ WHY THE RESERVATION IS REQUESTED EXPLICITLY RATHER THAN LEFT TO DISCOVERY.
  * libp2p fills a search listener's pending reservation from `RelayDiscovery`,
@@ -60,6 +80,19 @@
  * so {@link driveRelayReservation} stays a single-shot primitive and
  * {@link superviseRelayReservation} owns the retry cadence on top of it. That
  * loop is what makes a lost reservation recover without a page reload.
+ *
+ * One measured refinement to "out of reach": libp2p 3.1.3's `connection.newStream`
+ * records every protocol OUR OWN outbound stream negotiated into the peer store, so
+ * the explicit reservation request writes the relay-hop protocol id against the
+ * relay itself. From then on, discovery CAN refill a freed slot on its own — but
+ * only when the relay answers at that moment (a hangup while the relay stays up;
+ * measured at ~25 ms). A relay that is down when the slot frees fails that one
+ * discovery attempt, which poisons the store's `relayFilter` against it, and
+ * nothing in libp2p tries again: a relay RESTART still needs the supervisor, which
+ * un-poisons the filter before every attempt ({@link clearRelayFilterEntry}). Two
+ * mechanisms in production, one guarantee; the specs disable discovery's half
+ * (`forgetRelayProtocol` in `relay-reservation.spec.ts`) so they prove the
+ * supervisor's.
  */
 
 import debug from 'debug';
@@ -164,6 +197,48 @@ export function circuitMultiaddrs(node: Libp2p): string[] {
 }
 
 /**
+ * The node's `/p2p-circuit` multiaddrs THROUGH the relays `addrs` name — the ones
+ * whose `/p2p/<relayPeerId>/p2p-circuit` component names one of them. This is the
+ * "held" question a supervisor over a SUBSET of the node's relays has to ask: a
+ * strand node runs one supervisor per relay, and relay X's supervisor must not be
+ * satisfied by relay Y's addr, or a lost X is never re-driven.
+ *
+ * Falls back to EVERY circuit addr when any entry names no relay peer id (no
+ * `/p2p/` component, or unparsable): such an addr can still be dialed and reserved
+ * through, but the addr it earns cannot be attributed to it, so "any circuit addr"
+ * is the only answer that does not mark a live reservation as lost. The control
+ * node passes its whole relay list, so its answer is the same either way.
+ */
+export function circuitMultiaddrsVia(node: Libp2p, addrs: readonly string[]): string[] {
+  const held = circuitMultiaddrs(node);
+  const relayIds = addrs.map(relayPeerIdOf);
+  if (relayIds.some((id) => id === null)) {
+    return held;
+  }
+  return held.filter((circuit) => relayIds.includes(relayPeerIdOf(circuit)));
+}
+
+/**
+ * The NORMALIZED peer id of the relay `addr` names: the `/p2p/` component just
+ * before `/p2p-circuit` when there is one, else the trailing `/p2p/` component
+ * (a relay DIAL addr). `null` when there is none, or `addr` does not parse.
+ *
+ * Normalized through `peerIdFromString(…).toString()` so a relay written in a
+ * different encoding than libp2p publishes (a CID form, say) still matches.
+ */
+function relayPeerIdOf(addr: string): string | null {
+  try {
+    const components = multiaddr(addr).getComponents();
+    const circuitIdx = components.findIndex((c) => c.name === 'p2p-circuit');
+    const relayScope = circuitIdx >= 0 ? components.slice(0, circuitIdx) : components;
+    const raw = trailingPeerId(multiaddr(relayScope));
+    return raw === null ? null : peerIdFromString(raw).toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The running node's circuit-relay transport, or `null` when it has none.
  *
  * There is no public libp2p API for "reserve on THIS specific relay", so this
@@ -248,7 +323,7 @@ export async function driveRelayReservation(
   // `fatal`). So a misconfigured node reports its now-legible reason a full
   // `timeoutMs` late. If startup latency on that path ever matters, shorten the
   // wait once every connected relay has rejected — do not skip it outright.
-  if (!attempt.fatal && (await waitForCircuitReservation(node, deadline, pollMs))) {
+  if (!attempt.fatal && (await waitForCircuitReservation(node, addrs, deadline, pollMs))) {
     return { error: null };
   }
   return {
@@ -461,7 +536,8 @@ function describeReservationFailure(err: unknown, addr: string): string {
 }
 
 /**
- * Poll until the node advertises a `/p2p-circuit` address, or the deadline passes.
+ * Poll until the node advertises a `/p2p-circuit` address through one of `addrs`'
+ * relays ({@link circuitMultiaddrsVia}), or the deadline passes.
  *
  * Still a poll even though the reservation is now requested explicitly: `addRelay`
  * resolving means the RELAY accepted, while the listen address is published a tick
@@ -474,11 +550,12 @@ function describeReservationFailure(err: unknown, addr: string): string {
  */
 async function waitForCircuitReservation(
   node: Libp2p,
+  addrs: readonly string[],
   deadline: number,
   pollMs: number
 ): Promise<boolean> {
   for (;;) {
-    if (circuitMultiaddrs(node).length > 0) {
+    if (circuitMultiaddrsVia(node, addrs).length > 0) {
       return true;
     }
     if (Date.now() >= deadline) {
@@ -506,6 +583,19 @@ export interface RelayReservationSupervisorOptions extends RelayReserveOptions {
   minBackoffMs?: number;
   /** Backoff ceiling. Default 60_000. */
   maxBackoffMs?: number;
+  /**
+   * Awaited before every drive AFTER the first — never before the first attempt,
+   * which the caller has typically prepared for already. A hook that throws or
+   * rejects is logged and the drive still runs: the hook is preparation, and a
+   * failed preparation must not cost the attempt itself.
+   *
+   * What a strand node uses it for: re-announcing its delegate peer id to the relay
+   * about to be re-dialed. A party control node running the relay server admits a
+   * strand node on an in-memory delegate grant, and a relay restart drops every
+   * grant it held — so a re-drive that did not re-announce first would be denied
+   * at the relay's connection gate.
+   */
+  beforeRedrive?: () => Promise<void> | void;
 }
 
 /**
@@ -550,6 +640,12 @@ export interface RelayReservationSupervisor {
  *    {@link clearRelayFilterEntry}) and run ONE {@link driveRelayReservation}.
  *    If that lands a reservation, rejoin the healthy path above; if not, sleep
  *    the current backoff and double it up to `maxBackoffMs`.
+ *
+ * "Held" is judged PER RELAY — a circuit addr through one of `addrs`' relays
+ * ({@link circuitMultiaddrsVia}) — so several loops over one node, one relay each
+ * (a strand node), each re-drive exactly the relay they own. Every drive after the
+ * first is preceded by the optional `beforeRedrive` hook
+ * ({@link RelayReservationSupervisorOptions}).
  *
  * Starts immediately; the first tick runs before this returns.
  */
@@ -615,6 +711,8 @@ class RelayReservationLoop implements RelayReservationSupervisor {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private inFlight = false;
+  /** Drives started so far — the `beforeRedrive` hook runs from the second one on. */
+  private drives = 0;
   private nextTickAtMs: number | null = null;
   private failure: string | null = null;
   private settleFirstAttempt: () => void = () => {};
@@ -689,8 +787,9 @@ class RelayReservationLoop implements RelayReservationSupervisor {
     this.scheduleBackoff();
   }
 
+  /** Per relay: only a circuit addr THROUGH one of this loop's relays counts. */
   private reservationHeld(): boolean {
-    return circuitMultiaddrs(this.node).length > 0;
+    return circuitMultiaddrsVia(this.node, this.addrs).length > 0;
   }
 
   /** Healthy tick: nothing to request, so only reset and re-check later. */
@@ -704,6 +803,15 @@ class RelayReservationLoop implements RelayReservationSupervisor {
   private async driveOnce(): Promise<void> {
     this.inFlight = true;
     try {
+      if (this.drives > 0) {
+        await this.runBeforeRedrive();
+        // A stop that arrived while the hook ran: nothing follows it, so do not dial
+        // a node that is being torn down.
+        if (this.stopped) {
+          return;
+        }
+      }
+      this.drives += 1;
       this.unpoisonRelayFilter();
       const { error } = await driveRelayReservation(this.node, this.addrs, this.opts);
       if (!this.stopped) {
@@ -729,6 +837,19 @@ class RelayReservationLoop implements RelayReservationSupervisor {
     const wait = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
     this.schedule(wait);
+  }
+
+  /** The caller's `beforeRedrive` hook, contained: a throw or rejection is logged, never propagated. */
+  private async runBeforeRedrive(): Promise<void> {
+    const hook = this.opts.beforeRedrive;
+    if (hook === undefined) {
+      return;
+    }
+    try {
+      await hook();
+    } catch (err) {
+      log('beforeRedrive hook failed (%o); driving the reservation anyway: %o', this.addrs, err);
+    }
   }
 
   private unpoisonRelayFilter(): void {

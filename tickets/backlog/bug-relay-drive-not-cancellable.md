@@ -92,3 +92,7 @@ Nothing here is new behaviour to design; the same `AbortSignal` on
 `driveRelayReservation`, tripped from `RelayReservationSupervisor.stop()`, covers
 it, because `CadreNode.stop()`/`cleanup()` already stop the supervisor. Recorded
 so the "how to confirm" step above also exercises the start path.
+
+## Third instance: one supervisor per strand-node relay (2026-09-14)
+
+`bug-strand-relay-reservation-not-resupervised` gave every STRAND node one reservation supervisor per configured relay (`strand-instance-manager.ts` → `buildStrandRuntime`), stopped first in `releaseRuntime`. Same root cause, wider exposure: each strand stop or quiesce during a relay outage can now leave one in-flight drive per relay running to its 10 s deadline against the stopped strand node, on top of the control node's one. Same fix covers it — the strand runtime already calls `stop()` on every supervisor before tearing the node down.

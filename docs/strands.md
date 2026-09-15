@@ -78,8 +78,9 @@ reservations for the pair sharing one strand (2 control + 2 strand) — one slot
 per network, so every strand a NAT'd node joins costs one extra relay slot per node. The
 same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
-(one party's two machines over the same fixture) additionally pins the reservation-loss
-asymmetry — see [architecture.md → Relay Integration](architecture.md#relay-integration).
+(one party's two machines over the same fixture) additionally pins reservation-loss
+recovery on every node (control and strand alike re-reserve after the relay restarts) —
+see [architecture.md → Relay Integration](architecture.md#relay-integration).
 Still open, and NOT covered by that scenario: TWO relays (the parties reserved on
 different relays, so the path between them crosses relay boundaries — the ordinary case
 once each phone picks its own relay) is untested
@@ -125,11 +126,14 @@ that never reserves is dropped after a few seconds. So a single-node NAT'd (SN) 
 finds a willing relay in its own party's storage nodes, or in the ungated dedicated
 relays, and is never locked out of its first address by replication ordering.
   - Grants live only in the relay's memory, so a relay **restart** drops them all and the
-    announcing member is not told. A strand node whose reservation re-dials in that window
-    is denied until the announcer's next refresh pass re-announces (at most half the grant
-    lifetime, currently 15 min). Acceptable while a relay restart is rare and the strand
-    recovers on its own; if relay restarts become routine — or that outage window starts
-    mattering — the durable attestation below is the fix, not a shorter refresh interval.
+    announcing member is not told. A strand node's relay-reservation supervisor therefore
+    re-announces FIRST: before every re-drive it runs `CadreNode.announceDelegateToRelay`,
+    an unthrottled announce of that strand's delegate peer id to exactly the relay about to
+    be re-dialed, so the re-drive meets a fresh grant rather than the connection gate. The
+    periodic refresh pass (at most half the grant lifetime, currently 15 min) still runs as
+    the backstop for a grant that lapses while the reservation itself survives. If relay
+    restarts become routine, the durable attestation below is still the better fix than
+    leaning harder on re-announcing.
   - Mostly landed: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
     PeerId)` row binding a member to its strand transport peerIds. The attestation is now
     **written automatically**: every machine of a party registers its own `MemberPeer` row

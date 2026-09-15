@@ -19,16 +19,32 @@
  * The reachability model this rests on: **a strand node is not separately dialable
  * at a published fixed address.** It is reached through (a) its ephemeral direct
  * listener plus the addresses peers observe for it, and (b) circuit relay —
- * `network.relayAddrs` resolves to per-relay `<relay>/p2p-circuit` listen entries
- * that strand nodes DO inherit correctly, because the port inside such an entry is
- * the relay's, not a local bind (`relay-addrs.ts`).
+ * `network.relayAddrs` resolves to ONE bare `/p2p-circuit` SEARCH listen entry PER
+ * relay, and the strand runtime (`strand-instance-manager.ts`) runs one
+ * reservation supervisor per relay over the dial addrs this module returns beside
+ * them ({@link StrandNodeAddrs.relayAddrs}). The same route the control node takes,
+ * for the same reason the configured `<relay>/p2p-circuit` shape was retired
+ * everywhere (`relay-addrs.ts`): a configured listener loses its address on a relay
+ * restart, on either side hanging up, and on libp2p's own reservation refresh, and
+ * recovers from none of them. One search entry per relay rather than one for all,
+ * because a search listener registers exactly ONE pending reservation and libp2p
+ * fills a pending reservation with exactly one relay — so N relays need N listeners,
+ * each with a supervisor that owns it.
  *
- * Everything else in `NetworkConfig` — `relayAddrs`, `transports`,
- * `connectionGater`, `enableRelay` — is inherited by the caller; this module
- * only owns the two host-endpoint fields above. One caveat on `connectionGater`:
- * an OPEN strand's node gets it unchanged, while a CLOSED strand's node composes
- * revoked-peer denial onto it in `strand-instance-manager.ts` (every supplied
- * hook still honored — see `strand-revocation-enforcer.ts`).
+ * A hand-written `<relay>/p2p-circuit` entry in `listenAddrs` counts as a relay
+ * (its dial prefix is supervised like a `relayAddrs` entry) — the control node
+ * rejects that entry outright, so in production it never reaches here, but a
+ * strand built straight from such a config must not get an unsupervised configured
+ * listener either. A hand-written BARE `/p2p-circuit` (the browser shape,
+ * `reference-app-web`) passes through unchanged when no relay is named, and is
+ * absorbed by the per-relay entries when one is.
+ *
+ * Everything else in `NetworkConfig` — `transports`, `connectionGater`,
+ * `enableRelay` — is inherited by the caller; this module only owns the two
+ * host-endpoint fields above and the relay listen shape. One caveat on
+ * `connectionGater`: an OPEN strand's node gets it unchanged, while a CLOSED strand's
+ * node composes revoked-peer denial onto it in `strand-instance-manager.ts` (every
+ * supplied hook still honored — see `strand-revocation-enforcer.ts`).
  *
  * It does carry one non-address option out with them: the WebSocket transport switch
  * a `/ws` listen entry implies (`relay-addrs.ts` → `resolveTransportOptions`). That is
@@ -38,7 +54,14 @@
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
-import { resolveListenAddrs, resolveTransportOptions } from './relay-addrs.js';
+import {
+  DEFAULT_DIRECT_LISTEN_ADDR,
+  RELAY_SEARCH_LISTEN_ADDR,
+  isConfiguredCircuitListenAddr,
+  relayCircuitAddrs,
+  resolveTransportOptions
+} from './relay-addrs.js';
+import { extractCircuitRelayTargets } from './delegate-admission.js';
 import type { NetworkConfig } from './types.js';
 
 /**
@@ -59,7 +82,9 @@ export interface StrandNodeAddrs {
   /**
    * Listen entries for this strand node, or `undefined` when the operator
    * configured neither `listenAddrs` nor `relayAddrs` — in which case the caller
-   * omits the option and inherits `@optimystic/db-p2p`'s own default.
+   * omits the option and inherits `@optimystic/db-p2p`'s own default. Carries one
+   * bare `/p2p-circuit` entry per entry of {@link relayAddrs}, deliberately NOT
+   * deduplicated: each one is its own listener with its own pending reservation.
    */
   listenAddrs?: string[];
   /**
@@ -70,14 +95,28 @@ export interface StrandNodeAddrs {
    * `/ws` strand listen entry binds nothing and libp2p reports nothing.
    */
   wsPort?: number;
+  /**
+   * The relays this strand node reserves through, as DIRECT dial addrs
+   * (`<host>/p2p/<relayPeerId>`, no `/p2p-circuit`), one per relay, in config order,
+   * deduplicated by relay peer id — the union of `network.relayAddrs` and any
+   * hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs`. Present only
+   * when at least one relay is named.
+   *
+   * NOT a `createLibp2pNode` option: the caller (`strand-instance-manager.ts`)
+   * destructures it off before spreading the rest, and starts one
+   * `superviseRelayReservation` per entry over the node it built.
+   */
+  relayAddrs?: string[];
 }
 
 /**
- * The strand-node view of `network`: the control node's resolved listen entries with
- * every fixed direct port rewritten to an ephemeral one, and no announce fields.
+ * The strand-node view of `network`: the operator's direct listen entries with every
+ * fixed port rewritten to an ephemeral one, one bare `/p2p-circuit` search entry per
+ * relay, the relay dial addrs those entries are supervised against, and no announce
+ * fields.
  *
- * Validation is unchanged and still fail-fast — `resolveListenAddrs` throws here on a
- * malformed `relayAddrs` entry exactly as it does for the control node.
+ * Validation is fail-fast exactly as it is for the control node — `relayCircuitAddrs`
+ * throws here on a malformed `relayAddrs` entry.
  *
  * NOTE: announce entries are no longer validated on this path at all; the CONTROL
  * node's own build (`cadre-node.ts`) is the only thing that parses them, and it runs
@@ -87,22 +126,61 @@ export interface StrandNodeAddrs {
  * would then go unreported until the control node's own build.
  */
 export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeAddrs {
-  // The default `'configured'` relay route, deliberately NOT the control node's
-  // `'search'` route: nothing drives an explicit reservation for a strand node, so a
-  // bare `/p2p-circuit` search entry would register a pending reservation nobody fills
-  // and leave every NAT'd strand node undialable. See `relay-addrs.ts`.
-  const listenAddrs = resolveListenAddrs(network);
-  if (!listenAddrs) {
+  const relayAddrs = strandRelayAddrs(network);
+  const configured = network?.listenAddrs;
+  if (!configured && relayAddrs.length === 0) {
     return {};
   }
   // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
   // empty — rewriting must never resurrect a direct listener that was opted out of.
-  const rewritten = dedupe(listenAddrs.map(ephemeralPortListenAddr));
+  // Naming a relay with no `listenAddrs` keeps the direct listener the control node
+  // keeps in that case (`relay-addrs.ts`), so a relay ADDS reachability rather than
+  // replacing it.
+  const direct = configured ?? [DEFAULT_DIRECT_LISTEN_ADDR];
+  // Every circuit entry — the configured shape (now a relay in `relayAddrs`) and a
+  // hand-written bare search entry alike — is replaced by the per-relay search entries
+  // once a relay is named; with none, the operator's entries pass through as written.
+  const kept = relayAddrs.length > 0 ? direct.filter((addr) => !isCircuitListenAddr(addr)) : direct;
+  // The search entries are appended AFTER the dedupe on purpose: they are identical
+  // strings, and each one must survive as its own listener (see the module doc).
+  //
+  // NOTE: every bare entry also makes libp2p start its own relay discovery whenever
+  // that listener's slot is empty (launch, and every loss). Measured on a node with
+  // no peer router: one peer-store scan plus a random walk that fails at once
+  // (`NoPeerRoutersError`) per loss event — no dial churn. If strand nodes ever get
+  // a peer router (a DHT), that walk turns into real dials on every relay loss;
+  // cap or disable `circuitRelayTransport`'s discovery then.
+  const listenAddrs = [
+    ...dedupe(kept.map(ephemeralPortListenAddr)),
+    ...relayAddrs.map(() => RELAY_SEARCH_LISTEN_ADDR)
+  ];
   // Classified AFTER the ephemeral rewrite, so the check reads what this strand node
   // will actually bind. Zeroing a port cannot change an entry's transport — only the
   // `tcp`/`udp` component's value moves — so `/ip4/0.0.0.0/tcp/4002/ws` still resolves
-  // to WebSocket as `/ip4/0.0.0.0/tcp/0/ws`.
-  return { listenAddrs: rewritten, ...resolveTransportOptions(network, rewritten) };
+  // to WebSocket as `/ip4/0.0.0.0/tcp/0/ws`; a bare `/p2p-circuit` is `'circuit'`.
+  return {
+    listenAddrs,
+    ...resolveTransportOptions(network, listenAddrs),
+    ...(relayAddrs.length > 0 && { relayAddrs })
+  };
+}
+
+/**
+ * The relays a strand node built from `network` reserves through, as direct dial
+ * addrs: every `relayAddrs` entry (validated — a malformed one throws, naming the
+ * field) plus the relay named by any hand-written `<relay>/p2p-circuit` listen entry,
+ * deduplicated by relay PEER ID with the first spelling winning — two spellings of one
+ * relay would otherwise get two supervisors fighting over one reservation slot.
+ */
+function strandRelayAddrs(network: NetworkConfig | undefined): string[] {
+  const configured = relayCircuitAddrs(network?.relayAddrs ?? []);
+  const handWritten = (network?.listenAddrs ?? []).filter(isConfiguredCircuitListenAddr);
+  return extractCircuitRelayTargets([...configured, ...handWritten]).map((relay) => relay.relayAddr);
+}
+
+/** Any `/p2p-circuit` listen entry — bare or configured; an unparsable entry is not one. */
+function isCircuitListenAddr(listenAddr: string): boolean {
+  return listenAddr === RELAY_SEARCH_LISTEN_ADDR || isConfiguredCircuitListenAddr(listenAddr);
 }
 
 /**

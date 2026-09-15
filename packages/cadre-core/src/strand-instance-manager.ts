@@ -32,6 +32,7 @@ import type {
 } from './types.js';
 import { resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
+import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -168,6 +169,22 @@ export interface StartStrandConfig {
    * this node's behalf — what to do about it is the app's call.
    */
   onSelfRevoked?: (strandId: string) => void;
+
+  /**
+   * Re-announce this strand's delegate peer id (`delegatePeerId` — the strand
+   * node's own transport peer id) to ONE relay (`relayAddr`, a direct dial addr
+   * with a trailing `/p2p/<relayPeerId>`), unthrottled. Awaited before every
+   * relay-reservation RE-drive of that relay — never before the first attempt,
+   * which the launch/resume seed pass has already announced for.
+   *
+   * Why: a party control node running the relay server admits the strand node on
+   * an in-memory delegate grant that a relay restart drops, so a re-drive that did
+   * not re-announce first would be denied at the relay's gate. `CadreNode` wires
+   * its own control-mesh announce here; a throw or rejection is logged by the
+   * supervisor and the re-drive still runs. Retained with the launch config, so a
+   * hibernation wake's rebuilt supervisors carry it too.
+   */
+  announceDelegateToRelay?: (strandId: string, relayAddr: string, delegatePeerId: string) => Promise<void>;
 }
 
 /**
@@ -289,6 +306,18 @@ export class StrandInstanceManager {
    * staged invitation, write this machine's own `MemberPeer` binding) from scratch.
    */
   private membershipReconcilers: Map<string, StrandMembershipReconciler> = new Map();
+  /**
+   * The per-strand relay-reservation supervisors — ONE PER CONFIGURED RELAY, each
+   * over the node's own bare `/p2p-circuit` listener for that relay
+   * (`strand-network-config.ts`) — keyed by strand id. Same lifecycle rationale as
+   * {@link backfills}: started in `buildStrandRuntime` right after the libp2p node
+   * exists, stopped FIRST and dropped in `releaseRuntime` (before the database
+   * closes and the node stops, so no re-drive dials a node being torn down), so
+   * quiesce → resume rebuilds them over the new node. What makes a strand node's
+   * lost relay slot come back on its own — the control node has the same loop in
+   * `CadreNode.reserveRelays`.
+   */
+  private relaySupervisors: Map<string, RelayReservationSupervisor[]> = new Map();
   /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
@@ -467,20 +496,19 @@ export class StrandInstanceManager {
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes.
     const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
-    // The CONFIGURED relay route (the default), deliberately NOT the control node's
-    // `'search'` route: nothing drives an explicit reservation for a strand node, so
-    // a bare `/p2p-circuit` search entry would register a pending reservation that
-    // never gets filled and leave the strand node undialable. The ordering hazard
-    // that pushed the control node onto the search route does not exist here — a
-    // strand node's protocol ids are namespaced `/optimystic/strand-<id>/…`, so a
-    // relay dialed from inside `libp2p.start()` is never in the strand's cohort and
-    // cannot refuse its database bring-up. See `relay-addrs.ts`.
-    //
     // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
     // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
-    // bind one port) and the announce config is dropped (it names the control node's
-    // address). See `strand-network-config.ts` for both, and for the tradeoff.
-    const addrOptions = strandNodeAddrs(config.network);
+    // bind one port), the announce config is dropped (it names the control node's
+    // address), and every configured relay becomes one bare `/p2p-circuit` SEARCH
+    // listener plus a dial addr in `relayAddrs` for the per-relay supervisor started
+    // below — the same route the control node takes, because the configured
+    // `<relay>/p2p-circuit` shape loses its address on a relay restart, a hangup, or
+    // libp2p's own reservation refresh and recovers from none of them. See
+    // `strand-network-config.ts` for all three, and `relay-reservation.ts`.
+    //
+    // `relayAddrs` is destructured OFF: it is not a `createLibp2pNode` option, and
+    // spreading it would hand db-p2p a key it does not know.
+    const { relayAddrs: relayDialAddrs = [], ...addrOptions } = strandNodeAddrs(config.network);
 
     // The CLOSED-strand revoked-peer gate (see strand-revocation-enforcer.ts).
     // Constructed BEFORE the libp2p node because the node's options embed its
@@ -562,13 +590,12 @@ export class StrandInstanceManager {
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the
-        // embedder supplied its own factories. An inherited configured `/p2p-circuit` entry is
-        // deliberate and survives the derivation untouched: it is what gives a NAT'd
-        // strand node a reachable relay slot, and it works because the launch path
-        // announces this strand's derived peerId to the relay first (delegate admission;
-        // see cadre-node.ts). Those circuit entries come either from a hand-written
-        // `network.listenAddrs` or from `network.relayAddrs`, which the resolution folds
-        // into the same list on the configured route this call takes (see above).
+        // embedder supplied its own factories. The bare `/p2p-circuit` entries (one per
+        // relay) open no connection here; each registers a pending reservation that the
+        // matching supervisor below fills, which is what gives a NAT'd strand node a
+        // reachable relay slot — and works against a party-run relay because the launch
+        // path announced this strand's derived peerId to it first (delegate admission;
+        // see cadre-node.ts).
         ...addrOptions,
         // The raw configured gater (open strands), or the revocation-composed
         // gater plus the fail-closed per-stream revoked-peer gate (closed
@@ -578,6 +605,15 @@ export class StrandInstanceManager {
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 
       instance.libp2pNode = node;
+
+      // One reservation supervisor PER RELAY, started now so the first attempts
+      // overlap the database bring-up below (the relay is never in a strand's
+      // Optimystic cohort — its protocol ids are namespaced `/optimystic/strand-<id>/…`
+      // — so an open relay connection cannot disturb that bring-up). Their first
+      // attempts are awaited before the strand goes `active`, below. Registered in the
+      // map immediately so the failure rollback (releaseRuntime) stops them like every
+      // other runtime component.
+      this.relaySupervisors.set(strandId, this.startRelaySupervisors(strandId, node, relayDialAddrs, config));
 
       // Create and initialize the StrandDatabase.
       //
@@ -680,6 +716,16 @@ export class StrandInstanceManager {
         }
       }
 
+      // The relay supervisors' FIRST attempts, all of them, before `active`: the happy
+      // path still publishes its circuit addr before `addStrand` resolves (the
+      // strand-addr RPC answers read it, and the same-party circuit scenario asserts
+      // it). Fail-SOFT — a first attempt that lands nothing does not fail the launch.
+      // The strand's database is up, and the supervisor keeps trying on its backoff;
+      // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
+      t0 = performance.now();
+      await this.awaitFirstRelayAttempts(strandId);
+      timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
+
       instance.status = 'active';
       instance.lastActivity = new Date();
     } catch (error) {
@@ -695,17 +741,30 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Release an instance's strand-network runtime: close the StrandDatabase, then
-   * stop the libp2p node (construction order in reverse), clearing both fields
-   * and zeroing connectedPeers. Tolerant of partially-built state — either handle
-   * may be absent — so it doubles as rollback for a failed `buildStrandRuntime`.
-   * Shared by `quiesceStrand`, `stopStrand`, and that rollback path.
+   * Release an instance's strand-network runtime: stop the relay supervisors and
+   * the other background loops, close the StrandDatabase, then stop the libp2p
+   * node (construction order in reverse), clearing both fields and zeroing
+   * connectedPeers. Tolerant of partially-built state — either handle may be
+   * absent — so it doubles as rollback for a failed `buildStrandRuntime`. Shared
+   * by `quiesceStrand`, `stopStrand`, and that rollback path.
    *
    * Leaves `strandStorages` untouched by design — the store outlives the runtime it
    * was built into, which is what makes a resume warm. Only `stopStrand` disposes it.
    */
   private async releaseRuntime(instance: StrandInstance): Promise<void> {
-    // Backfill first — before the database closes and the libp2p node stops — so
+    // Relay supervisors FIRST of all — before anything below is torn down — so no
+    // re-drive is scheduled against a node being stopped. `stop()` is synchronous
+    // and never awaits a drive, so a relay that is down cannot delay this teardown.
+    // NOTE: a drive ALREADY in flight cannot be aborted (the drive takes no
+    // AbortSignal — `backlog/bug-relay-drive-not-cancellable`); it fails soft
+    // against the stopped node within its own 10 s deadline and its result is
+    // discarded.
+    const relaySupervisors = this.relaySupervisors.get(instance.strandId);
+    if (relaySupervisors) {
+      relaySupervisors.forEach((supervisor) => supervisor.stop());
+      this.relaySupervisors.delete(instance.strandId);
+    }
+    // Backfill next — before the database closes and the libp2p node stops — so
     // no NEW catch-up push is issued against a torn-down transport. A push already
     // in flight is not awaited; it fails into the module's own per-chunk catch.
     const backfill = this.backfills.get(instance.strandId);
@@ -736,6 +795,53 @@ export class StrandInstanceManager {
       instance.libp2pNode = undefined;
     }
     instance.connectedPeers = 0;
+  }
+
+  /**
+   * One {@link superviseRelayReservation} per relay dial addr, each over exactly
+   * that relay so "held" is judged per relay (`circuitMultiaddrsVia`) and losing
+   * one relay re-drives only that one. Default timings — the control node's (2 s
+   * doubling to 60 s between failed attempts, a 5 s liveness check while held).
+   *
+   * Each supervisor's `beforeRedrive` is the caller's
+   * {@link StartStrandConfig.announceDelegateToRelay} for THIS relay and THIS
+   * node's peer id, so a re-drive after a relay restart is preceded by a fresh
+   * delegate grant on the relay about to be dialed. Returns `[]` when no relay is
+   * configured — the strand then simply has no circuit listener to fill.
+   */
+  private startRelaySupervisors(
+    strandId: string,
+    node: Libp2pNodeWithRepo,
+    relayDialAddrs: readonly string[],
+    config: StartStrandConfig
+  ): RelayReservationSupervisor[] {
+    if (relayDialAddrs.length === 0) {
+      return [];
+    }
+    const announce = config.announceDelegateToRelay;
+    const delegatePeerId = node.peerId.toString();
+    return relayDialAddrs.map((relayAddr) => superviseRelayReservation(node, [relayAddr], {
+      ...(announce && { beforeRedrive: () => announce(strandId, relayAddr, delegatePeerId) })
+    }));
+  }
+
+  /**
+   * Wait for every relay supervisor's first attempt to settle, concurrently, and log
+   * the ones that landed nothing. Never throws — a strand whose relay is unreachable
+   * at launch still comes up, with its supervisors retrying in the background.
+   */
+  private async awaitFirstRelayAttempts(strandId: string): Promise<void> {
+    const supervisors = this.relaySupervisors.get(strandId) ?? [];
+    if (supervisors.length === 0) {
+      return;
+    }
+    await Promise.all(supervisors.map((supervisor) => supervisor.firstAttempt));
+    supervisors.forEach((supervisor) => {
+      if (supervisor.lastError !== null) {
+        log('Strand %s: relay reservation not held after the first attempt (retrying in the background): %s',
+          strandId, supervisor.lastError);
+      }
+    });
   }
 
   /**

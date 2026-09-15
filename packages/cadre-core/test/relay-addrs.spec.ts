@@ -11,16 +11,17 @@ import {
 import type { NetworkConfig } from '../src/types.js';
 
 /**
- * `relayAddrs` resolves to a `/p2p-circuit` entry in `listenAddrs`, and WHICH entry
- * depends on the caller's route:
+ * `relayAddrs` resolves to a `/p2p-circuit` entry in `listenAddrs` — for the CONTROL
+ * node, ONE bare `/p2p-circuit` search entry, which opens no connection;
+ * `CadreNode.start()` drives the reservation after the control database is up. The
+ * per-relay CONFIGURED shape (`<relay>/p2p-circuit`, reserved from inside `listen()`)
+ * is no longer producible from a config at all: `relayCircuitAddrs` still builds it
+ * as the VALIDATED form of `relayAddrs` (the delegate announce and the strand-node
+ * relay list read it), but nothing listens on it. Strand nodes derive their own
+ * listen set — one search entry per relay — in `strand-network-config.ts`, pinned by
+ * `strand-network-config.spec.ts`.
  *
- *  - `'configured'` (the default; strand nodes) — `<relay>/p2p-circuit` per relay,
- *    which libp2p dials and reserves on from inside `listen()`.
- *  - `'search'` (the control node) — one bare `/p2p-circuit`, which opens no
- *    connection; `CadreNode.start()` drives the reservation after the control
- *    database is up.
- *
- * These tests pin both translations, since every consumer reads the resolved list and
+ * These tests pin the translation, since every consumer reads the resolved list and
  * nothing else.
  */
 
@@ -104,7 +105,7 @@ describe('relayCircuitAddrs', () => {
   });
 });
 
-describe('resolveListenAddrs', () => {
+describe("resolveListenAddrs (the control node's listen set)", () => {
   it('returns undefined when neither field is set, so callers omit listenAddrs entirely', () => {
     expect(resolveListenAddrs(undefined)).toBeUndefined();
     expect(resolveListenAddrs({})).toBeUndefined();
@@ -120,16 +121,20 @@ describe('resolveListenAddrs', () => {
     expect(resolveListenAddrs({ listenAddrs: [] })).toEqual([]);
   });
 
-  it('appends the relay circuit after the configured listen addrs', () => {
+  /**
+   * A configured circuit listener dials its relay from inside `libp2p.start()`, which
+   * put a sibling in the node's Optimystic cohort before `ControlDatabase.initialize()`
+   * ran — and a sibling that has not yet replicated the booting node's membership row
+   * refuses every control-DB stream, so bring-up died. The search entry opens no
+   * connection, so bring-up runs solo.
+   */
+  it('appends ONE bare search entry after the configured listen addrs, however many relays are named', () => {
     const resolved = resolveListenAddrs({
       listenAddrs: ['/ip4/0.0.0.0/tcp/4001'],
-      relayAddrs: [`/dns4/relay.example.com/tcp/4001/p2p/${RELAY}`]
+      relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`, `/ip4/5.6.7.8/tcp/4001/p2p/${RELAY_2}`]
     });
 
-    expect(resolved).toEqual([
-      '/ip4/0.0.0.0/tcp/4001',
-      `/dns4/relay.example.com/tcp/4001/p2p/${RELAY}/p2p-circuit`
-    ]);
+    expect(resolved).toEqual(['/ip4/0.0.0.0/tcp/4001', RELAY_SEARCH_LISTEN_ADDR]);
   });
 
   /**
@@ -140,29 +145,25 @@ describe('resolveListenAddrs', () => {
   it('keeps a direct listener when relayAddrs is set but listenAddrs is not', () => {
     const resolved = resolveListenAddrs({ relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`] });
 
-    expect(resolved).toEqual([
-      '/ip4/0.0.0.0/tcp/0',
-      `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`
-    ]);
+    expect(resolved).toEqual(['/ip4/0.0.0.0/tcp/0', RELAY_SEARCH_LISTEN_ADDR]);
   });
 
-  it('gives a listenAddrs: [] node its circuit listener — the point of naming a relay', () => {
+  it('leaves a listenAddrs: [] node with the search entry alone — its only address', () => {
     const resolved = resolveListenAddrs({
       listenAddrs: [],
       relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`]
     });
 
-    expect(resolved).toEqual([`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`]);
+    expect(resolved).toEqual([RELAY_SEARCH_LISTEN_ADDR]);
   });
 
-  it('dedupes a relay whose circuit addr is already hand-written into listenAddrs', () => {
-    const circuit = `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`;
+  it('dedupes against a hand-written bare /p2p-circuit entry', () => {
     const resolved = resolveListenAddrs({
-      listenAddrs: ['/ip4/0.0.0.0/tcp/4001', circuit],
+      listenAddrs: [RELAY_SEARCH_LISTEN_ADDR],
       relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`]
     });
 
-    expect(resolved).toEqual(['/ip4/0.0.0.0/tcp/4001', circuit]);
+    expect(resolved).toEqual([RELAY_SEARCH_LISTEN_ADDR]);
   });
 
   it('is stable across repeated calls — restarts bind the same list', () => {
@@ -175,90 +176,35 @@ describe('resolveListenAddrs', () => {
   });
 
   /**
-   * The route the CONTROL node takes. A configured circuit listener dials its relay
-   * from inside `libp2p.start()`, which put a sibling in the node's Optimystic cohort
-   * before `ControlDatabase.initialize()` ran — and a sibling that has not yet
-   * replicated the booting node's membership row refuses every control-DB stream, so
-   * bring-up died. The search entry opens no connection, so bring-up runs solo.
+   * The search entry discards the resolved circuit addrs, but an operator typo must
+   * still fail at config resolution — that is the half of `relayAddrs`' fail-fast
+   * contract libp2p's listener never owned.
    */
-  describe("route: 'search'", () => {
-    it('replaces the per-relay circuit listeners with ONE bare search entry', () => {
-      const resolved = resolveListenAddrs({
-        listenAddrs: ['/ip4/0.0.0.0/tcp/4001'],
-        relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`, `/ip4/5.6.7.8/tcp/4001/p2p/${RELAY_2}`]
-      }, 'search');
+  it('still throws on a malformed relayAddrs entry', () => {
+    expect(() => resolveListenAddrs({ relayAddrs: ['/ip4/1.2.3.4/tcp/4001'] }))
+      .toThrow(/network\.relayAddrs entry names no relay peerId/);
+    expect(() => resolveListenAddrs({ relayAddrs: ['not-a-multiaddr'] }))
+      .toThrow(/network\.relayAddrs entry is not a valid multiaddr/);
+  });
 
-      expect(resolved).toEqual(['/ip4/0.0.0.0/tcp/4001', RELAY_SEARCH_LISTEN_ADDR]);
-    });
+  /**
+   * A hand-written `<relay>/p2p-circuit` listen entry is the CONFIGURED shape, and
+   * it cannot work on the control node: libp2p dials the relay from inside `listen()`,
+   * the bring-up quiet period denies that dial, and the transport manager's
+   * `FATAL_ALL` turns the refusal into `UnsupportedListenAddressesError` out of
+   * `libp2p.start()` — a failure naming nothing an operator could act on. So the
+   * surface is closed here, loudly, pointing at the field that does work.
+   */
+  it('rejects a hand-written configured circuit entry in listenAddrs', () => {
+    expect(() => resolveListenAddrs({
+      listenAddrs: ['/ip4/0.0.0.0/tcp/4001', `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`]
+    })).toThrow(/Move the relay to network\.relayAddrs/);
+  });
 
-    it('keeps the direct-listener default when listenAddrs is unset', () => {
-      const resolved = resolveListenAddrs({ relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`] }, 'search');
-
-      expect(resolved).toEqual(['/ip4/0.0.0.0/tcp/0', RELAY_SEARCH_LISTEN_ADDR]);
-    });
-
-    it('leaves a listenAddrs: [] node with the search entry alone — its only address', () => {
-      const resolved = resolveListenAddrs({
-        listenAddrs: [],
-        relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`]
-      }, 'search');
-
-      expect(resolved).toEqual([RELAY_SEARCH_LISTEN_ADDR]);
-    });
-
-    it('dedupes against a hand-written bare /p2p-circuit entry', () => {
-      const resolved = resolveListenAddrs({
-        listenAddrs: [RELAY_SEARCH_LISTEN_ADDR],
-        relayAddrs: [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}`]
-      }, 'search');
-
-      expect(resolved).toEqual([RELAY_SEARCH_LISTEN_ADDR]);
-    });
-
-    it('adds nothing when no relay is named', () => {
-      expect(resolveListenAddrs({ listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] }, 'search'))
-        .toEqual(['/ip4/0.0.0.0/tcp/4001']);
-      expect(resolveListenAddrs({}, 'search')).toBeUndefined();
-    });
-
-    /**
-     * The search entry discards the resolved circuit addrs, but an operator typo must
-     * still fail at config resolution — that is the half of `relayAddrs`' fail-fast
-     * contract libp2p's listener never owned.
-     */
-    it('still throws on a malformed relayAddrs entry', () => {
-      expect(() => resolveListenAddrs({ relayAddrs: ['/ip4/1.2.3.4/tcp/4001'] }, 'search'))
-        .toThrow(/network\.relayAddrs entry names no relay peerId/);
-      expect(() => resolveListenAddrs({ relayAddrs: ['not-a-multiaddr'] }, 'search'))
-        .toThrow(/network\.relayAddrs entry is not a valid multiaddr/);
-    });
-
-    /**
-     * A hand-written `<relay>/p2p-circuit` listen entry is the CONFIGURED shape, and
-     * it cannot work on this route: libp2p dials the relay from inside `listen()`,
-     * the bring-up quiet period denies that dial, and the transport manager's
-     * `FATAL_ALL` turns the refusal into `UnsupportedListenAddressesError` out of
-     * `libp2p.start()` — a failure naming nothing an operator could act on. So the
-     * surface is closed here, loudly, pointing at the field that does work.
-     */
-    it('rejects a hand-written configured circuit entry in listenAddrs', () => {
-      expect(() => resolveListenAddrs({
-        listenAddrs: ['/ip4/0.0.0.0/tcp/4001', `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`]
-      }, 'search')).toThrow(/Move the relay to network\.relayAddrs/);
-    });
-
-    it('leaves the bare search entry and every non-circuit entry alone', () => {
-      expect(resolveListenAddrs({
-        listenAddrs: [RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']
-      }, 'search')).toEqual([RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']);
-    });
-
-    /** Strand nodes take the configured route, which is where that entry belongs. */
-    it('accepts the same entry on the configured route', () => {
-      const listenAddrs = [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`];
-
-      expect(resolveListenAddrs({ listenAddrs })).toEqual(listenAddrs);
-    });
+  it('leaves the bare search entry and every non-circuit entry alone', () => {
+    expect(resolveListenAddrs({
+      listenAddrs: [RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']
+    })).toEqual([RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']);
   });
 });
 

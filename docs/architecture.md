@@ -900,11 +900,21 @@ fail-fast contract from the two places it can still be enforced: a malformed
 entry throws at config resolution, and a first reservation attempt that lands
 nothing throws out of `start()`.
 
-**Strand** nodes still take the configured shape — they inherit the control
-node's `NetworkConfig`, nothing drives an explicit reservation for them, and
-their relay connection cannot disturb anything, since a strand node's protocol
-ids are namespaced `/optimystic/strand-<id>/…` and the relay is never in its
-cohort.
+**Strand** nodes take the same search shape, one listener and one supervisor
+PER relay: `strand-network-config.ts` resolves the inherited `relayAddrs` to one
+bare `/p2p-circuit` entry per relay (a search listener registers exactly one
+pending reservation, and libp2p fills each with exactly one relay), and
+`strand-instance-manager.ts` starts one `superviseRelayReservation` per relay
+right after the strand's libp2p node exists, awaiting every first attempt before
+the strand goes `active` — fail-soft, unlike the control node: a relay that is
+down at launch does not fail the launch, the strand's database comes up and the
+supervisor keeps trying. "Held" is judged per relay (a circuit addr through
+*that* relay's peer id), so losing one relay re-drives only that one. The
+supervisors are stopped first in `releaseRuntime`, so quiesce, stop, a failed
+launch's rollback and removal after revocation all end them before the node
+they supervise is torn down. The configured `<relay>/p2p-circuit` shape strand
+nodes used to inherit is no longer producible from a `NetworkConfig` at all —
+see "Reservation loss recovers on every node" below for why.
 
 **Proven end to end over a standalone relay** (same party, both machines
 relay-only):
@@ -913,8 +923,8 @@ runs one party's two `CadreNode`s with `listenAddrs: []` and only a dedicated
 ungated relay (`harness/dedicated-relay.ts`, config-parity with the
 `ops/docker/libp2p-infra` container). The control mesh forms over the circuit,
 the joiner resolves the founder's strand address via the strand-addr RPC alone
-(no hand-dial), both strand nodes' configured-route reservations land
-(`getMultiaddrs()` gains `/p2p-circuit`), the strand connection classifies as
+(no hand-dial), both strand nodes' per-relay supervisors land their reservations
+before `addStrand` resolves (`getMultiaddrs()` gains `/p2p-circuit`), the strand connection classifies as
 `relayed` per `summarizeConnectionPaths`, and App rows replicate both ways
 across the circuit. Relay-slot cost, measured there: **one reservation per node
 per network** — two machines running one strand hold four slots (2 control +
@@ -939,23 +949,44 @@ path is a non-participant against a dedicated relay (it speaks no strand-addr
 RPC, so the announce folds to a no-op). Untested: the two-relay shape, where
 each party reserved on a different relay.
 
-**Strand launch while the relay is down** is fail-then-retry, not fail-fast —
-read off the code, not measured by a scenario (unlike the two claims either side
-of it): the
-configured circuit listener dials the relay from inside `libp2p.start()`, so the
-launch throws, nothing is left tracked, and `StrandWatcher` re-attempts on its
-poll under a per-strand backoff (never abandoned — see `strand-watcher.ts`). The
-strand comes up on the first poll after the relay is back.
+**Strand launch while the relay is down** is fail-SOFT: the strand's libp2p
+node binds its search listener without dialing anything, its database comes up,
+the per-relay supervisor's first attempt lands nothing, and the strand goes
+`active` anyway with the supervisor retrying on the control node's backoff (2 s
+doubling to 60 s). The circuit addr appears on the first successful re-drive
+after the relay is back, with no relaunch. Pinned at the manager level by
+`packages/cadre-core/test/strand-instance-manager-relay.spec.ts` (over a
+supervisor double), not yet measured by a scenario. It used to be
+fail-then-retry — the configured listener dialed the relay from inside
+`libp2p.start()`, the launch threw, and `StrandWatcher` re-attempted on its
+poll.
 
-**Reservation loss is asymmetric — measured, not designed.** When the relay
-restarts under a running strand, the control nodes re-reserve on their own (the
-supervisor below re-drives) while the strand nodes never do:
-`@libp2p/circuit-relay-v2` re-drives a lost *configured* reservation nowhere,
-and cadre-core runs no supervisor for strand nodes. A hibernating strand
-self-heals on its next wake (the rebuild re-reserves from inside `listen()`); a
-realtime strand stays undialable. Tracked in
-`tickets/backlog/bug-strand-relay-reservation-not-resupervised.md`; the
-scenario's inverted gate fails the day recovery starts working.
+**Reservation loss recovers on every node — measured.** Three triggers
+withdraw a node's `/p2p-circuit` addr: the relay restarts, either side hangs up
+the relay connection, and — with no network event at all — libp2p's own
+reservation refresh, which removes the reservation before re-creating it. A
+CONFIGURED `<relay>/p2p-circuit` listener recovers from none of them (it
+republishes only from inside its own `listen()`, and after a refresh the store
+still holds the reservation so even a repeated `listen()` does nothing); at the
+production relay's default 2 h TTL every configured-shape node went undialable
+about 1 h 55 min after reserving, which is why that shape is gone from every
+cadre-built node. A SEARCH listener republishes on `relay:created-reservation`
+for its own pending id (which the refresh and the loss both re-queue), and the
+per-node supervisors cover the two connection-loss triggers. The loopback specs
+in `packages/cadre-core/test/relay-reservation.spec.ts` pin all three on a
+cadre-shaped client (namespaced identify, so libp2p's own relay discovery cannot
+refill the slot and mask a missing supervisor); the same-party circuit scenario
+pins the restart end to end — all four reservations (2 control + 2 strand) come
+back on the restarted relay and the strand mesh reconnects through it. A
+hibernating strand rebuilds fresh supervisors on wake.
+
+A re-drive against a *party-run* relay has one extra step: that relay admits the
+strand node on an in-memory delegate grant (`delegate-admission.ts`) which a
+relay restart drops, so each strand supervisor's `beforeRedrive` hook is
+`CadreNode.announceDelegateToRelay` — an unthrottled announce of this strand's
+delegate peer id to exactly the relay about to be re-dialed. Against a dedicated
+ops relay (no strand-addr RPC) the announce folds to `[]` at the cost of one
+protocol negotiation per re-drive attempt, bounded by the backoff.
 
 **What a strand node does NOT inherit: the host's one endpoint.** A machine runs
 one control node plus one node per strand, all built from the same operator
@@ -966,7 +997,8 @@ them:
 | field | control node | strand node |
 | --- | --- | --- |
 | `listenAddrs`, direct entry with a fixed port | binds as configured | same entry, port rewritten to `0` |
-| `listenAddrs`, `<relay>/p2p-circuit` entry | — (control takes the bare search entry) | inherited verbatim; the port in it is the relay's |
+| `listenAddrs`, `<relay>/p2p-circuit` entry | rejected at config resolution (move it to `relayAddrs`) | folded into the supervised relay set: one bare `/p2p-circuit` listener plus a supervisor over the relay's dial prefix |
+| `relayAddrs` | one bare `/p2p-circuit` for the whole list; `CadreNode.start()` drives it | one bare `/p2p-circuit` PER relay, each with its own supervisor |
 | `listenAddrs: []` | binds nothing | binds nothing |
 | `announceAddrs` / `appendAnnounceAddrs` | advertised | dropped |
 
