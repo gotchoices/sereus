@@ -1,9 +1,9 @@
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * Chat strand round-trip. The chat sApp (Member + Message) is append-only — the
+ * Chat strand round-trip. The chat sApp (Participant + Message) is append-only — the
  * old edit/delete CRUD belonged to the `@optimystic/demo` MessageApp, which the
- * cadre strand replaced. This spec covers register-member-on-first-send →
+ * cadre strand replaced. This spec covers register-participant-on-first-send →
  * insert message → it renders in the list.
  */
 
@@ -28,7 +28,7 @@ test.describe('Tier 1 / solo / chat strand round-trip', () => {
 		const tag = `solo-${Date.now()}`;
 		const row = await sendOne(page, 'alice', tag + '-hello');
 
-		// The row carries the text (UUID) Message.Id and shows the member name + body.
+		// The row carries the text (UUID) Message.Id and shows the participant name + body.
 		const id = await row.getAttribute('data-message-id');
 		expect(id, 'message row should carry data-message-id').toBeTruthy();
 		await expect(row.getByTestId('message-body')).toHaveText(tag + '-hello');

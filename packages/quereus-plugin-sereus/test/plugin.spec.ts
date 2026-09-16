@@ -8,6 +8,7 @@ import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
 import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
+import { ReservedTableNameError, assertNoReservedTableNames, strandReservedTableNames } from '../src/reserved-table-names.js';
 import {
 	CONTROL_CLUSTER_POLICY,
 	CONTROL_REPLICATION_BREADTH,
@@ -518,6 +519,106 @@ describe('connectToStrand', () => {
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		const mockNode = await vi.mocked(createLibp2pNode).mock.results[0].value;
 		expect(mockNode.stop).toHaveBeenCalled();
+	});
+});
+
+describe('reserved strand table names', () => {
+	let db: Database;
+
+	beforeEach(async () => {
+		db = new Database();
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		vi.mocked(createLibp2pNode).mockClear();
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	/** The error `promise` rejected with, asserted to be a ReservedTableNameError. */
+	async function refusal(promise: Promise<unknown>): Promise<ReservedTableNameError> {
+		const error = await promise.then(() => undefined, (err: unknown) => err);
+		expect(error).toBeInstanceOf(ReservedTableNameError);
+		return error as ReservedTableNameError;
+	}
+
+	it('reserves every table the strand schema declares, read from the schema itself', () => {
+		expect(strandReservedTableNames()).toEqual(expect.arrayContaining([
+			'Header', 'Invite', 'ConsumedInvite', 'CancelledInvite', 'Member', 'MemberPeer', 'Manager', 'Revocation',
+		]));
+	});
+
+	it('refuses an sApp table named like a strand table, naming the table and the reserved list', async () => {
+		const error = await refusal(connectToStrand(db, {
+			strandId: 'test-strand-reserved',
+			transactor: 'local',
+			schema: 'table Member (Id text primary key, Name text)',
+		}));
+
+		expect(error.tables).toEqual(['Member']);
+		expect(error.message).toContain('Member');
+		for (const name of strandReservedTableNames()) {
+			expect(error.message).toContain(name);
+		}
+	});
+
+	it('compares case-insensitively and reports every colliding table as spelled', async () => {
+		const error = await refusal(connectToStrand(db, {
+			strandId: 'test-strand-reserved-case',
+			transactor: 'test',
+			schema: 'table header (Id text primary key); table Note (Id text primary key); table MEMBERPEER (Id text primary key)',
+		}));
+
+		expect(error.tables).toEqual(['header', 'MEMBERPEER']);
+	});
+
+	it('refuses the `create table` spelling too', () => {
+		expect(() => assertNoReservedTableNames('create table Manager (Id text primary key);'))
+			.toThrow(ReservedTableNameError);
+	});
+
+	it('refuses before anything is applied, created or claimed', async () => {
+		const storage = { getStoreIdentity: () => 'test://reserved-table-refusal' } as unknown as IRawStorage;
+		const storesBefore = defaultCachePool().stats().stores.length;
+
+		await refusal(connectToStrand(db, {
+			strandId: 'test-strand-reserved-nothing',
+			transactor: 'local',
+			storage,
+			schema: 'table Revocation (Id text primary key)',
+		}));
+
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		expect(createLibp2pNode).not.toHaveBeenCalled();
+		expect(defaultCachePool().stats().stores.length).toBe(storesBefore);
+		// The Strand schema is applied unconditionally on every successful compose; its
+		// absence shows the refusal ran before any DDL did.
+		await expect(async () => {
+			for await (const _row of db.eval('select * from Strand.Header')) {
+				// should not reach
+			}
+		}).rejects.toThrow();
+	});
+
+	it('composes a schema whose table names only contain a reserved name', async () => {
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-reserved-pass',
+			transactor: 'test',
+			schema: 'table Participant (Id text primary key); table ChatMember (Id text primary key); table InviteNote (Id text primary key)',
+		});
+
+		const rows: Array<Record<string, SqlValue>> = [];
+		for await (const row of db.eval('select * from App.ChatMember')) {
+			rows.push(row);
+		}
+		expect(rows).toHaveLength(0);
+
+		await result.shutdown();
+	});
+
+	it('passes an absent or empty schema', () => {
+		expect(() => assertNoReservedTableNames(undefined)).not.toThrow();
+		expect(() => assertNoReservedTableNames('')).not.toThrow();
 	});
 });
 

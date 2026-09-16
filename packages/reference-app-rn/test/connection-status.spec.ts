@@ -17,17 +17,17 @@ function input(overrides: Partial<ConnectionBannerInput> = {}): ConnectionBanner
     status: 'connected',
     error: null,
     strandCount: 0,
-    memberCount: 0,
+    participantCount: 0,
     relayStatus: 'reserved',
     ...overrides,
   };
 }
 
 describe('connectionBanner', () => {
-  it('renders a connected banner with strand + member counts', () => {
-    expect(connectionBanner(input({ strandCount: 2, memberCount: 3 }))).toEqual({
+  it('renders a connected banner with strand + participant counts', () => {
+    expect(connectionBanner(input({ strandCount: 2, participantCount: 3 }))).toEqual({
       color: '#4caf50',
-      text: 'Connected · 2 strand(s) · 3 member(s)',
+      text: 'Connected · 2 strand(s) · 3 participant(s)',
     });
   });
 
@@ -89,25 +89,25 @@ describe('connectionBanner', () => {
   });
 
   it('says so when no relay is configured — the phone cannot be dialed, so it cannot invite', () => {
-    expect(connectionBanner(input({ relayStatus: 'none', strandCount: 1, memberCount: 1 }))).toEqual({
+    expect(connectionBanner(input({ relayStatus: 'none', strandCount: 1, participantCount: 1 }))).toEqual({
       // Still green: the connection is healthy and everything except inviting works.
       color: '#4caf50',
-      text: 'Connected · 1 strand(s) · 1 member(s) · no relay — can’t invite',
+      text: 'Connected · 1 strand(s) · 1 participant(s) · no relay — can’t invite',
     });
   });
 
   it('distinguishes a relay that is still being reserved from one that is not answering', () => {
     expect(connectionBanner(input({ relayStatus: 'dialing' })).text)
-      .toBe('Connected · 0 strand(s) · 0 member(s) · reserving relay…');
+      .toBe('Connected · 0 strand(s) · 0 participant(s) · reserving relay…');
     expect(connectionBanner(input({ relayStatus: 'retrying' })).text)
-      .toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+      .toBe('Connected · 0 strand(s) · 0 participant(s) · relay offline — can’t invite');
     expect(connectionBanner(input({ relayStatus: 'error' })).text)
-      .toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+      .toBe('Connected · 0 strand(s) · 0 participant(s) · relay offline — can’t invite');
   });
 
   it('says nothing about the relay once one is held', () => {
     expect(connectionBanner(input({ relayStatus: 'reserved' })).text)
-      .toBe('Connected · 0 strand(s) · 0 member(s)');
+      .toBe('Connected · 0 strand(s) · 0 participant(s)');
   });
 
   it('keeps the relay out of the line entirely when not connected', () => {

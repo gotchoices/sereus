@@ -159,10 +159,10 @@ The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/
 
 ## Simplified Chat Schema
 
-`schemas/chat.qsql` is the fuller design — invitations, per-member keys and ed25519 signature verification on every write: tables are insert-only (Member additionally allows a signed self-rename and refuses deletes), and every insert after the founding transaction must carry a signature. No app loads it. The reference app runs `schemas/chat-simple.qsql`, a permissionless schema that lets anyone insert/update/delete freely:
+`schemas/chat.qsql` is the fuller design — invitations, per-participant keys and ed25519 signature verification on every write: tables are insert-only (Participant additionally allows a signed self-rename and refuses deletes), and every insert after the founding transaction must carry a signature. No app loads it. The reference app runs `schemas/chat-simple.qsql`, a permissionless schema that lets anyone insert/update/delete freely:
 
 ```sql
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),
     -- App-level role (owner | member), assigned on closed-strand create/join.
@@ -175,15 +175,17 @@ table Message (
     -- NOT safe here: a concurrent duplicate-key insert is silently
     -- last-writer-wins, not refused, so the losing row is lost with no error.
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 ```
 
 `schemas/chat-simple.qsql` is the source of record for the above; `composeStrand` supplies the
-`declare schema App { ... }` wrapper, so the file itself is a bare table list.
+`declare schema App { ... }` wrapper, so the file itself is a bare table list. The chat table is
+`Participant` rather than `Member` because app tables may not reuse the built-in `Strand` schema's
+table names ([`docs/strands.md` → Reserved Table Names](strands.md#reserved-table-names)).
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 
@@ -584,7 +586,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 1. On the phone's **Settings** tab, tap **Create Strand**
 2. This calls `createChatStrand(cadreNode, uuid())` which:
    - Creates a `StrandRow` with `Type: 'o'` (open)
-   - Registers the simplified chat sApp schema (Member + Message tables)
+   - Registers the simplified chat sApp schema (Participant + Message tables)
    - Starts a strand-specific libp2p network (`strand-<strandId>`)
 3. The drone (with `strandFilter: all`) automatically detects the new strand and joins
 

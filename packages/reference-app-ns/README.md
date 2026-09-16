@@ -32,10 +32,10 @@ src/
   ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands (← use-cadre + cadre-context)
-  chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, member auto-register (← use-chat)
+  chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, participant auto-register (← use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN)
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
-  chat-operations.ts insert/query members + messages (ported)
+  chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic)
 webpack.config.js   node shims + react-native/browser conditions + @libp2p/crypto browser rewrite
 nativescript.config.ts

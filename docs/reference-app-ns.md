@@ -136,10 +136,10 @@ src/
   ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands  (← RN use-cadre + cadre-context)
-  chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, member auto-register  (← RN use-chat)
+  chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN src/test-ids.ts)
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
-  chat-operations.ts insert/query members + messages (ported)
+  chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic helper, no UI)
 webpack.config.js   node shims + react-native/browser conditions + @libp2p/crypto browser rewrite + esbuild downlevel
 nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
@@ -458,7 +458,7 @@ is identical to RN's — see
 
 ## Shared protocol material
 
-The seed bootstrap flow, the simplified Chat sApp schema (`Member` + `Message`,
+The seed bootstrap flow, the simplified Chat sApp schema (`Participant` + `Message`,
 no signature verification), peer-identity persistence, open-vs-closed strands, and
 the multi-party strand topology are identical to the RN reference and documented
 once in [`reference-app-rn.md`](reference-app-rn.md). The NS app differs only in

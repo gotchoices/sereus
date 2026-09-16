@@ -15,20 +15,23 @@ import type {
   FormStrandResult,
 } from '@serfab/cadre-core';
 import { generateStrandMemberKey } from '@serfab/cadre-core';
-import { insertMember, memberDisplayName, type ChatRole } from './chat-operations';
+import { insertParticipant, participantDisplayName, type ChatRole } from './chat-operations';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
 // Matches schemas/chat-simple.qsql.  Embedded as a string constant so the RN
 // bundler doesn't need filesystem access.
 //
-// `Member.Role` is an APP-LEVEL role (`owner` | `member`). Sereus's control
+// `Participant.Role` is an APP-LEVEL role (`owner` | `member`). Sereus's control
 // network has no first-class per-strand RBAC primitive — strand membership is
 // `MemberPrivateKey`-granular (member vs non-member). The role lives here, in
 // the chat schema, and is assigned on create/join. See the README "Trust model"
 // section for where this boundary sits.
+//
+// The table is `Participant`, not `Member`: `Member` is a table of the built-in
+// `Strand` schema, and app tables may not reuse `Strand` table names.
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),
     Role text not null default 'member' check (Role in ('owner', 'member'))
@@ -36,10 +39,10 @@ table Member (
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 
@@ -159,7 +162,7 @@ export async function createClosedChatStrand(
     );
   }
 
-  await assignLocalMemberRole(cadreNode, instance, 'owner');
+  await assignLocalParticipantRole(cadreNode, instance, 'owner');
 
   return { instance, memberPrivateKey: strandRow.MemberPrivateKey };
 }
@@ -192,7 +195,7 @@ export async function joinClosedChatStrand(
     sAppConfig: getChatSAppConfig(),
   });
 
-  await assignLocalMemberRole(cadreNode, instance, 'member');
+  await assignLocalParticipantRole(cadreNode, instance, 'member');
 
   return instance;
 }
@@ -224,13 +227,13 @@ export async function joinClosedChatStrandFromFormation(
 }
 
 /**
- * Insert the local node as a chat `Member` with the given role. `insert or
+ * Insert the local node as a chat `Participant` with the given role. `insert or
  * ignore` keeps this idempotent and lets an earlier role assignment (e.g.
  * `owner`) win over the default-`member` insert {@link useChat} performs on
  * first attach. Best-effort: a failure is logged, not thrown, so a role hiccup
  * never blocks strand bring-up.
  */
-async function assignLocalMemberRole(
+async function assignLocalParticipantRole(
   cadreNode: CadreNode,
   instance: StrandInstance,
   role: ChatRole,
@@ -241,7 +244,7 @@ async function assignLocalMemberRole(
     return;
   }
   try {
-    await insertMember(instance, id, memberDisplayName(id), role);
+    await insertParticipant(instance, id, participantDisplayName(id), role);
   } catch (err) {
     console.warn(`[chat-strand] failed to assign ${role} role:`, err);
   }

@@ -16,14 +16,14 @@ times, each hand-typed:
 - `docs/reference-app-rn.md` — a fenced SQL block in the "Simplified Chat Schema" section
 
 Nothing compares any of them to the file, or to each other. Two have already fallen behind:
-the `Member.Role` column (`text not null default 'member' check (Role in ('owner','member'))`)
+the `Participant.Role` column (the table was named `Member` until `strand-app-table-names-collide-with-strand-tables` renamed it in every copy; `text not null default 'member' check (Role in ('owner','member'))`)
 is present in `schemas/chat-simple.qsql` and in the React Native copy, and **absent** from
 both the web and NativeScript copies. The documentation copy had drifted the same way and was
 brought back in line during the review of `repair-the-chat-reference-schema`; the three code
 copies were left alone because reconciling them is this ticket's job, not that one's.
 
 Nothing is broken *today*: neither the web nor the NativeScript app reads or writes
-`Member.Role` (`grep -rn '\bRole\b' packages/reference-app-web/src packages/reference-app-ns/src`
+`Participant.Role` (`grep -rn '\bRole\b' packages/reference-app-web/src packages/reference-app-ns/src`
 returns nothing). It breaks the moment either app grows the owner/member behaviour the RN app
 already has — a schema that does not declare the column, against code that expects it.
 

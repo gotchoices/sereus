@@ -6,6 +6,7 @@ import type { ControlDatabase } from '../src/control-database.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
+import { ReservedTableNameError } from '@serfab/quereus-plugin-sereus';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
@@ -574,6 +575,18 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     await expect(
       node.foundStrand({ strandId: '   ', type: 'o', sAppConfig: signedSApp() }),
     ).rejects.toThrow(/required/i);
+    expect(await controlDb.queryStrands()).toEqual([]);
+  }, 60_000);
+
+  it('refuses an sApp table named like a strand table before publishing the row', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    // Unsigned is fine: the refusal runs before the signature check would.
+    const sAppConfig = { id: 'sapp-author', version: '1.0.0', schema: 'table Member (Id text primary key);' };
+
+    await expect(
+      node.foundStrand({ strandId: 'found-reserved-' + rand3(), type: 'o', sAppConfig }),
+    ).rejects.toThrow(ReservedTableNameError);
     expect(await controlDb.queryStrands()).toEqual([]);
   }, 60_000);
 

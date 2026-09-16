@@ -201,6 +201,22 @@ side after it moves" — still expected to want a strand-overlay DHT and/or the 
 
 _(TODO: not yet documented here. See the strand-formation and seed-bootstrap coverage in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
 
+## Reserved Table Names
+
+Every strand database holds two engine schemas: `Strand`, the built-in membership tables ([`schemas/strand.qsql`](../schemas/strand.qsql), embedded at runtime as `STRAND_SCHEMA`), and `App`, the sApp's own tables. **An sApp may not declare a table whose name matches a `Strand` table**, compared case-insensitively. Today those are `Header`, `Invite`, `ConsumedInvite`, `CancelledInvite`, `Member`, `MemberPeer`, `Manager` and `Revocation`. The list is read from the strand schema itself with Quereus's parser (`strandReservedTableNames()`), so a table added to the strand schema is reserved without a separate edit.
+
+Why: a table declared without an explicit `using optimystic('<uri>')` is stored at optimystic's default location, `tree://default/<TableName>`, which does not include the schema name. So `App.Member` and `Strand.Member` would be one collection. Each reads the other's rows through its own columns (the chat app, which used to name its participant table `Member`, showed null-id phantom participants), and a write can report success yet never read back. Nothing lower down refuses the pairing while both tables are still empty, which is exactly their state at strand bring-up.
+
+Where it is enforced:
+
+- `composeStrand` (`@serfab/quereus-plugin-sereus`) refuses such a schema with `ReservedTableNameError`, naming each offending table and the reserved list, before it touches storage, registers a plugin, creates a node or applies any schema. Every strand bring-up (Node, browser and cadre-core's `StrandDatabase`) passes through it.
+- `CadreNode.foundStrand` runs the same check before publishing the `Strand` row, so a refused schema never leaves a cadre-wide row that no machine can launch.
+- `assertNoReservedTableNames` is exported from `@serfab/quereus-plugin-sereus` for authoring tools that want to check a schema at publish time. `signSchema` does not check: it signs arbitrary text.
+
+The reference chat schemas use `Participant` (and `schemas/chat.qsql` also `Invitation`) for this reason.
+
+- NOTE: the root cause is in optimystic: its default storage location drops the engine schema name, and its schema catalog is keyed by bare table name. If optimystic makes both schema-qualified, the refusal stops being load-bearing and is kept only for its clearer error.
+
 ## Inviting Parties
 
 _(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_

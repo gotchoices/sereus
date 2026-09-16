@@ -22,17 +22,17 @@ import type { SAppConfig } from '@serfab/cadre-core';
 // ── Embedded schema (matches schemas/chat-simple.qsql + the RN reference) ─────
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100)
 );
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 

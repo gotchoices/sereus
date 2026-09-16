@@ -22,6 +22,15 @@ export async function loadSimpleSApp(): Promise<string> {
 }
 
 /**
+ * Load `schemas/chat-simple.qsql` — the chat schema the reference apps run — from its
+ * canonical copy at the repo root, so a scenario exercises the real schema rather than
+ * a hand-kept duplicate. A bare table list: feed it straight into an SAppConfig.schema.
+ */
+export async function loadChatSimpleSchema(): Promise<string> {
+  return readFile(resolve(fixturesDir, '..', '..', '..', 'schemas', 'chat-simple.qsql'), 'utf-8');
+}
+
+/**
  * Even simpler app logic for basic connectivity tests
  */
 export const MINIMAL_SAPP_LOGIC = `

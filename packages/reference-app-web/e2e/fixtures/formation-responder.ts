@@ -48,7 +48,7 @@ import { getChatSAppConfig, CHAT_SAPP_ID } from '../../src/lib/chat-strand.js';
 import { insertChatMessage, selectChatMessages } from '../../src/lib/chat-dml.js';
 
 /** Author display name the responder seeds its known message under. */
-const SEED_MEMBER = 'responder';
+const SEED_PARTICIPANT = 'responder';
 
 /** How long the responder waits for its strand DB to seed when none has connected. */
 const DEFAULT_SEED_TIMEOUT_MS = 20_000;
@@ -110,7 +110,7 @@ export interface FormationResponderHandle {
 	 */
 	seedMessage(): Promise<{ id: string; content: string }>;
 	/** All `App.Message` rows in the strand, reduced to the convergence-assertion shape. */
-	readStrandMessages(): Promise<Array<{ id: string; memberId: string; content: string }>>;
+	readStrandMessages(): Promise<Array<{ id: string; participantId: string; content: string }>>;
 	/** `FormationUsage` rows on the responder's control DB (asserted after redemption). */
 	readFormationUsage(): Promise<FormationUsageReadback[]>;
 	/** Stop the node and release its strand/control resources. */
@@ -273,7 +273,7 @@ export async function startFormationResponder(opts?: {
 			if (!seedPromise) {
 				seedPromise = (async () => {
 					const db = requireStrandDatabase(node, strandId);
-					const id = await insertChatMessage(db, SEED_MEMBER, seedContent);
+					const id = await insertChatMessage(db, SEED_PARTICIPANT, seedContent);
 					seededMessage.id = id;
 					return { id, content: seedContent };
 				})().catch((err: unknown) => {
@@ -305,7 +305,7 @@ export async function startFormationResponder(opts?: {
 			seedMessage: () => seedWithTimeout(ensureSeeded, DEFAULT_SEED_TIMEOUT_MS),
 			readStrandMessages: async () => {
 				const rows = await selectChatMessages(requireStrandDatabase(node, strandId));
-				return rows.map((r) => ({ id: r.id, memberId: r.memberId, content: r.content }));
+				return rows.map((r) => ({ id: r.id, participantId: r.participantId, content: r.content }));
 			},
 			readFormationUsage: () => readFormationUsage(controlDb.getDatabase()),
 			stop: async () => {

@@ -529,8 +529,8 @@ export interface CreatedInvitation {
  * Host side of closed-strand formation: mint a membership key, publish the
  * `Strand` row (`Type:'c'`) under this node's owner, and attach the local
  * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
- * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no member
- * role column, so unlike RN there is no owner/member role assignment to mirror —
+ * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no participant
+ * `Role` column, so unlike RN there is no owner/member role assignment to mirror —
  * bring-up is one `foundStrand` call.
  *
  * `foundStrand` does both control-plane steps (publish + attach as founder, which
@@ -904,27 +904,27 @@ export function getStrandConnectionCount(strandId: string): number {
 }
 
 /**
- * Upsert the author `Member` row then append an `App.Message` into the FORMED
+ * Upsert the author `Participant` row then append an `App.Message` into the FORMED
  * strand's database (`getStrand(strandId)`), NOT the solo chat strand. Returns the
  * new message id. Reuses the shared chat DML so the write is byte-identical to the
- * Messages UI path (including the load-bearing Member-before-Message FK ordering).
+ * Messages UI path (including the load-bearing Participant-before-Message FK ordering).
  */
 export async function writeChatMessage(
 	strandId: string,
-	message: { memberName: string; content: string },
+	message: { participantName: string; content: string },
 ): Promise<string> {
-	return insertChatMessage(requireStrandDatabase(strandId), message.memberName, message.content);
+	return insertChatMessage(requireStrandDatabase(strandId), message.participantName, message.content);
 }
 
 /**
  * Read all `App.Message` rows from the FORMED strand's database, reduced to the
- * `{ id, memberId, content }` shape the e2e convergence assertion needs.
+ * `{ id, participantId, content }` shape the e2e convergence assertion needs.
  */
 export async function readChatMessages(
 	strandId: string,
-): Promise<Array<{ id: string; memberId: string; content: string }>> {
+): Promise<Array<{ id: string; participantId: string; content: string }>> {
 	const rows = await selectChatMessages(requireStrandDatabase(strandId));
-	return rows.map((r) => ({ id: r.id, memberId: r.memberId, content: r.content }));
+	return rows.map((r) => ({ id: r.id, participantId: r.participantId, content: r.content }));
 }
 
 // ── Debug hook ────────────────────────────────────────────────────────────────
@@ -956,7 +956,7 @@ function exposeDebugHook(cadre: CadreNode): void {
 		getStrandMultiaddrs: (strandId: string) => getStrandMultiaddrs(strandId),
 		dialStrandPeer: (strandId: string, addr: string) => dialStrandPeer(strandId, addr),
 		getStrandConnectionCount: (strandId: string) => getStrandConnectionCount(strandId),
-		writeChatMessage: (strandId: string, message: { memberName: string; content: string }) =>
+		writeChatMessage: (strandId: string, message: { participantName: string; content: string }) =>
 			writeChatMessage(strandId, message),
 		readChatMessages: (strandId: string) => readChatMessages(strandId),
 	};

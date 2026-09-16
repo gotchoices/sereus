@@ -33,12 +33,12 @@ interface CadreHooks {
 	getFormedStrands(): Array<{ strandId: string; memberKey: string; type: 'o' | 'c' }>;
 	dialStrandPeer(strandId: string, addr: string): Promise<void>;
 	getStrandConnectionCount(strandId: string): number;
-	readChatMessages(strandId: string): Promise<Array<{ id: string; memberId: string; content: string }>>;
-	writeChatMessage(strandId: string, message: { memberName: string; content: string }): Promise<string>;
+	readChatMessages(strandId: string): Promise<Array<{ id: string; participantId: string; content: string }>>;
+	writeChatMessage(strandId: string, message: { participantName: string; content: string }): Promise<string>;
 }
 
 type FormedStrandInfo = { strandId: string; memberKey: string; type: 'o' | 'c' };
-type ChatRow = { id: string; memberId: string; content: string };
+type ChatRow = { id: string; participantId: string; content: string };
 
 // `page.evaluate` callbacks run in the BROWSER, so each must resolve `window.__cadre`
 // inline (it cannot close over a Node-side helper). These thin Node wrappers keep that
@@ -78,7 +78,7 @@ async function readChatMessages(page: Page, strandId: string): Promise<ChatRow[]
 async function writeChatMessage(
 	page: Page,
 	strandId: string,
-	message: { memberName: string; content: string },
+	message: { participantName: string; content: string },
 ): Promise<void> {
 	await page.evaluate(async ([sid, m]) => {
 		const hooks = (window as unknown as { __cadre?: CadreHooks }).__cadre;
@@ -205,7 +205,7 @@ test.describe('Tier 2 / formation → convergence', () => {
 		// it should be downgraded to `test.fixme`. Over loopback with a connected
 		// 2-member cohort it exercises the same commit path the forward step proved.
 		const browserMessageContent = `browser-${seed.id.slice(0, 8)}`;
-		await writeChatMessage(page, strandId, { memberName: 'initiator', content: browserMessageContent });
+		await writeChatMessage(page, strandId, { participantName: 'initiator', content: browserMessageContent });
 		await expect
 			.poll(
 				async () => {

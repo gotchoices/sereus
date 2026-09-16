@@ -1,11 +1,11 @@
 // drone-insert.js — POST a message to the drone sidecar.
-// Reads from per-step env: CONTENT, MEMBER_ID
+// Reads from per-step env: CONTENT, PARTICIPANT_ID
 // Reads from flow env: SIDECAR_URL, STRAND_ID
 
 const url = `${SIDECAR_URL}/message/insert`;
 const body = json.stringify({
 	strandId: STRAND_ID,
-	memberId: MEMBER_ID,
+	participantId: PARTICIPANT_ID,
 	content: CONTENT,
 });
 

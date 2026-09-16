@@ -1,13 +1,17 @@
--- The fuller of the two chat schemas: invitations, per-member keys and ed25519
--- signature verification on every write. Every table is insert-only (Member
--- additionally allows a signed self-rename and refuses deletes), and every
--- insert after the founding transaction must carry a signature: a member key
--- signs messages, attachments, responses, additional device keys and new
--- invitations; the invitation's own key signs a member's admission, the
--- invitation's redemption, and that member's first device key.
+-- The fuller of the two chat schemas: invitations, per-participant keys and
+-- ed25519 signature verification on every write. Every table is insert-only
+-- (Participant additionally allows a signed self-rename and refuses deletes), and
+-- every insert after the founding transaction must carry a signature: a
+-- participant key signs messages, attachments, responses, additional device keys
+-- and new invitations; the invitation's own key signs a participant's admission,
+-- the invitation's redemption, and that participant's first device key.
+--
+-- Table names avoid the strand's own reserved names (`Invite`, `Member`, ...): an
+-- app table may not reuse a strand table name (docs/strands.md "Reserved Table
+-- Names").
 
 declare schema Chat {
-    table Invite (
+    table Invitation (
         Key string, --public key of invitation, part of private/public key pair
         OneTime boolean,
         CanInvite boolean,
@@ -15,51 +19,52 @@ declare schema Chat {
         constraint InsertOnly check on update, delete (false),
         constraint InsertValid check on insert (
             -- Bootstrap: the FOUNDING transaction — the one whose PRE-transaction
-            -- state holds no invitations and no members — mints the first invitation
-            -- with no signature. A CHECK is evaluated with the new row ALREADY
-            -- present, so `not exists (select 1 from Invite)` is false even for the
-            -- very first row and would make the schema unstartable. Compare the
+            -- state holds no invitations and no participants — mints the first
+            -- invitation with no signature. A CHECK is evaluated with the new row
+            -- ALREADY present, so `not exists (select 1 from Invitation)` is false even
+            -- for the very first row and would make the schema unstartable. Compare the
             -- committed (pre-image) state against zero and the live (post-image)
             -- state against one instead — the idiom of schemas/strand.qsql's
             -- Member.Authorized. Both counts are load-bearing: the committed counts
             -- switch the branch off once anything is committed, and the live `<= 1`
             -- keeps one founding transaction from minting an unbounded unsigned
             -- invitation set.
-            ((select count(1) from committed.Invite) = 0
-                and (select count(1) from Invite) <= 1
-                and (select count(1) from committed.Member) = 0
-                and context.MemberKey is null and context.MemberSignature is null)
-                -- Otherwise an existing member holding the invite privilege signs the
-                -- NEW invitation's own (Key, OneTime, CanInvite).
+            ((select count(1) from committed.Invitation) = 0
+                and (select count(1) from Invitation) <= 1
+                and (select count(1) from committed.Participant) = 0
+                and context.ParticipantKey is null and context.ParticipantSignature is null)
+                -- Otherwise an existing participant holding the invite privilege signs
+                -- the NEW invitation's own (Key, OneTime, CanInvite).
                 --
                 -- Every reference to the inserted row is `new.`-qualified and every
                 -- mutation-context value `context.`-qualified. That is load-bearing
                 -- here, not cosmetic: this subquery's own `from` clause supplies a
-                -- `Key` column (MemberKey K) and a `CanInvite` column (Member M), so
-                -- bare `Key` / `CanInvite` would bind to the INVITING member's key and
-                -- privilege instead of the new invitation's — and then no correctly
-                -- produced signature could ever match.
+                -- `Key` column (ParticipantKey K) and a `CanInvite` column
+                -- (Participant M), so bare `Key` / `CanInvite` would bind to the
+                -- INVITING participant's key and privilege instead of the new
+                -- invitation's — and then no correctly produced signature could ever
+                -- match.
                 or exists (
-                    select 1 from MemberKey K join Member M on K.MemberId = M.Id
-                        where K.Key = context.MemberKey and M.CanInvite
-                            and verify(digest(new.Key, new.OneTime, new.CanInvite), context.MemberSignature, context.MemberKey, 'ed25519')
+                    select 1 from ParticipantKey K join Participant M on K.ParticipantId = M.Id
+                        where K.Key = context.ParticipantKey and M.CanInvite
+                            and verify(digest(new.Key, new.OneTime, new.CanInvite), context.ParticipantSignature, context.ParticipantKey, 'ed25519')
                 )
         )
     )
-        with context (MemberKey string null, MemberSignature string null);
+        with context (ParticipantKey string null, ParticipantSignature string null);
 
-    -- Redeeming an invitation is ONE transaction that inserts both the UsedInvite row
-    -- and the Member row: UsedInvite.MemberValid requires the Member row to exist and
-    -- Member.InsertValid requires the matching UsedInvite row, so neither can be
-    -- written first on its own. Both constraints carry a subquery and therefore
-    -- auto-defer to commit, by which point both rows are live and each sees the other.
-    -- Written as two separate auto-commit statements, in either order, the first one
-    -- always fails. (The founding member is the exception — its bootstrap branch needs
-    -- no invitation at all.)
-    table UsedInvite (
+    -- Redeeming an invitation is ONE transaction that inserts both the UsedInvitation
+    -- row and the Participant row: UsedInvitation.ParticipantValid requires the
+    -- Participant row to exist and Participant.InsertValid requires the matching
+    -- UsedInvitation row, so neither can be written first on its own. Both
+    -- constraints carry a subquery and therefore auto-defer to commit, by which point
+    -- both rows are live and each sees the other. Written as two separate auto-commit
+    -- statements, in either order, the first one always fails. (The founding
+    -- participant is the exception — its bootstrap branch needs no invitation at all.)
+    table UsedInvitation (
         Key string, --The invite key that was used
-        MemberId string,
-        primary key (Key, MemberId),
+        ParticipantId string,
+        primary key (Key, ParticipantId),
         constraint InsertOnly check on update, delete (false),
         -- A one-time invitation is redeemable EXACTLY once. The count must be compared
         -- against a limit, not used as a bare boolean: the CHECK sees the in-flight row,
@@ -69,27 +74,27 @@ declare schema Chat {
         -- earlier transaction; live `<= 1` refuses two redemptions inside one
         -- transaction.
         constraint ValidUsage check (
-            exists (select 1 from Invite I where I.Key = new.Key
+            exists (select 1 from Invitation I where I.Key = new.Key
                 and (not I.OneTime
-                    or ((select count(1) from committed.UsedInvite U where U.Key = new.Key) = 0
-                        and (select count(1) from UsedInvite U where U.Key = new.Key) <= 1)))
+                    or ((select count(1) from committed.UsedInvitation U where U.Key = new.Key) = 0
+                        and (select count(1) from UsedInvitation U where U.Key = new.Key) <= 1)))
         ),
-        constraint MemberValid check (exists (select 1 from Member M where M.Id = new.MemberId)),
+        constraint ParticipantValid check (exists (select 1 from Participant M where M.Id = new.ParticipantId)),
         -- Redemption needs the invitation holder's consent: the redemption is signed
         -- with the invitation's PRIVATE key, and the invitation's public key IS
         -- new.Key, so no extra context variable is needed to name the verifier.
         -- Without this, anyone could pair an unspent one-time invitation with any
-        -- already-seated member, spending it so the real invitee can never join.
+        -- already-seated participant, spending it so the real invitee can never join.
         constraint RedemptionAuthorized check on insert (
-            verify(digest(new.Key, new.MemberId), context.InviteSignature, new.Key, 'ed25519')
+            verify(digest(new.Key, new.ParticipantId), context.InvitationSignature, new.Key, 'ed25519')
         )
     )
-        with context (InviteSignature string null);
+        with context (InvitationSignature string null);
 
-    -- See the UsedInvite comment above: a non-founding member row and its UsedInvite
-    -- row must be inserted in a single transaction, because each one's constraint
-    -- requires the other.
-    table Member (
+    -- See the UsedInvitation comment above: a non-founding participant row and its
+    -- UsedInvitation row must be inserted in a single transaction, because each one's
+    -- constraint requires the other.
+    table Participant (
         Id string,
         Name string check (length(Name) between 1 and 255),
         CanInvite boolean,   -- The user can invite others
@@ -98,89 +103,92 @@ declare schema Chat {
         -- Quereus registers BOTH `X` and `context.X` for every declared mutation-context
         -- variable, and registers them ahead of column symbols, so the bare spelling
         -- resolves to the context value and always did. This file qualifies every one of
-        -- them anyway, purely for the reader: `MemberKey` is also the name of a table in
-        -- this schema, so the bare form reads as a table reference to a human. Clarity,
+        -- them anyway, purely for the reader: `ParticipantKey` is also the name of a table
+        -- in this schema, so the bare form reads as a table reference to a human. Clarity,
         -- not a behaviour change. (Inside a subquery the qualification IS load-bearing —
-        -- see Invite.InsertValid.)
+        -- see Invitation.InsertValid.)
         -- NOTE: the rename digest carries no nonce or version, so a previously
         -- observed valid rename can be replayed verbatim to revert the name to an
-        -- older value. Worst case is reverting to a name the member once chose;
+        -- older value. Worst case is reverting to a name the participant once chose;
         -- bind a monotonic value into the digest if that ever matters.
         constraint UpdateValid check on update (
             -- Only the name can change
             new.Id = old.Id and new.CanInvite = old.CanInvite
-                -- Change must be from a valid key held by this member
-                and exists (select 1 from MemberKey M where M.MemberId = new.Id and context.MemberKey = M.Key)
+                -- Change must be from a valid key held by this participant
+                and exists (select 1 from ParticipantKey M where M.ParticipantId = new.Id and context.ParticipantKey = M.Key)
                 -- Signature must be valid
-                and verify(digest(new.Id, new.Name, new.CanInvite), context.MemberSignature, context.MemberKey, 'ed25519')),
+                and verify(digest(new.Id, new.Name, new.CanInvite), context.ParticipantSignature, context.ParticipantKey, 'ed25519')),
         constraint InsertValid check on insert (
-            -- Bootstrap: the founding member needs no invitation. Same committed/live
-            -- pair as Invite.InsertValid above, and for the same reason — the CHECK
-            -- already sees this row, so a plain `not exists (select 1 from Member)`
-            -- rejects the very first member and leaves the schema unstartable.
-            ((select count(1) from committed.Member) = 0 and (select count(1) from Member) <= 1)
-                -- Subsequent members must redeem a valid invitation whose holder signed
-                -- this member's (Id, Name, CanInvite). An invitation without CanInvite
-                -- cannot seat a member who has it.
+            -- Bootstrap: the founding participant needs no invitation. Same
+            -- committed/live pair as Invitation.InsertValid above, and for the same
+            -- reason — the CHECK already sees this row, so a plain
+            -- `not exists (select 1 from Participant)` rejects the very first
+            -- participant and leaves the schema unstartable.
+            ((select count(1) from committed.Participant) = 0 and (select count(1) from Participant) <= 1)
+                -- Subsequent participants must redeem a valid invitation whose holder
+                -- signed this participant's (Id, Name, CanInvite). An invitation
+                -- without CanInvite cannot seat a participant who has it.
                 or exists (
-                    select 1 from Invite I
-                        join UsedInvite U on I.Key = U.Key and U.MemberId = new.Id
-                        where I.Key = context.InviteKey and (I.CanInvite or not new.CanInvite)
-                            and verify(digest(new.Id, new.Name, new.CanInvite), context.InviteSignature, context.InviteKey, 'ed25519')
+                    select 1 from Invitation I
+                        join UsedInvitation U on I.Key = U.Key and U.ParticipantId = new.Id
+                        where I.Key = context.InvitationKey and (I.CanInvite or not new.CanInvite)
+                            and verify(digest(new.Id, new.Name, new.CanInvite), context.InvitationSignature, context.InvitationKey, 'ed25519')
                 )
         )
     )
-        with context (InviteKey string null, InviteSignature string null, MemberKey string null, MemberSignature string null);
+        with context (InvitationKey string null, InvitationSignature string null, ParticipantKey string null, ParticipantSignature string null);
 
 
-    -- Seating a member who joined by invitation, in the one transaction both
-    -- constraints require. InviteSignature is over digest(Id, Name, CanInvite),
+    -- Seating a participant who joined by invitation, in the one transaction both
+    -- constraints require. InvitationSignature is over digest(Id, Name, CanInvite),
     -- produced with the invitation's PRIVATE key:
     --
     --   begin;
-    --   insert into Member (Id, Name, CanInvite)
-    --       with context InviteKey = '<invite public key>', InviteSignature = '<signature>'
+    --   insert into Participant (Id, Name, CanInvite)
+    --       with context InvitationKey = '<invitation public key>',
+    --           InvitationSignature = '<signature>'
     --       values ('m2', 'John Doe', false);
-    --   insert into UsedInvite (Key, MemberId) values ('<invite public key>', 'm2');
+    --   insert into UsedInvitation (Key, ParticipantId)
+    --       values ('<invitation public key>', 'm2');
     --   commit;
 
     -- NOTE: the key set is append-only and there is no revocation or recovery
-    -- path — a member who loses every private key can never register another,
+    -- path — a participant who loses every private key can never register another,
     -- because the first-key branch below is closed once any key is committed.
     -- That is the honest consequence of an append-only key set and the right
     -- default for a reference schema, but it is permanent lockout by design.
-    table MemberKey (
-        MemberId string,
-        Key string, --public key of member, part of private/public key pair
-        primary key (MemberId, Key),
+    table ParticipantKey (
+        ParticipantId string,
+        Key string, --public key of participant, part of private/public key pair
+        primary key (ParticipantId, Key),
         constraint InsertOnly check on update, delete (false),
         constraint InsertValid check on insert (
-            -- First key: authorized by the invitation this member joined under.
-            -- Same committed/live counting pair as Invite.InsertValid, and both
+            -- First key: authorized by the invitation this participant joined under.
+            -- Same committed/live counting pair as Invitation.InsertValid, and both
             -- counts are load-bearing for the same reason: a CHECK sees the new
             -- row already present, so `committed` = 0 is what restricts this
-            -- branch to the member's FIRST key (a spent invitation secret is not
-            -- a permanent credential), and live `<= 1` is what stops one
+            -- branch to the participant's FIRST key (a spent invitation secret is
+            -- not a permanent credential), and live `<= 1` is what stops one
             -- transaction registering an unbounded set of keys through it.
-            (exists (select 1 from UsedInvite U where U.MemberId = new.MemberId and U.Key = context.InviteKey)
-                and (select count(1) from committed.MemberKey K where K.MemberId = new.MemberId) = 0
-                and (select count(1) from MemberKey K where K.MemberId = new.MemberId) <= 1
-                and verify(digest(new.MemberId, new.Key), context.InviteSignature, context.InviteKey, 'ed25519'))
-            -- Additional device: signed by a key the member ALREADY holds. The existing
-            -- key is read from committed. — the live table already holds the row being
-            -- judged, so a live read would let the new key vouch for itself.
-            or (exists (select 1 from committed.MemberKey K where K.MemberId = new.MemberId and K.Key = context.MemberKey)
-                and verify(digest(new.MemberId, new.Key), context.MemberSignature, context.MemberKey, 'ed25519'))
+            (exists (select 1 from UsedInvitation U where U.ParticipantId = new.ParticipantId and U.Key = context.InvitationKey)
+                and (select count(1) from committed.ParticipantKey K where K.ParticipantId = new.ParticipantId) = 0
+                and (select count(1) from ParticipantKey K where K.ParticipantId = new.ParticipantId) <= 1
+                and verify(digest(new.ParticipantId, new.Key), context.InvitationSignature, context.InvitationKey, 'ed25519'))
+            -- Additional device: signed by a key the participant ALREADY holds. The
+            -- existing key is read from committed. — the live table already holds the
+            -- row being judged, so a live read would let the new key vouch for itself.
+            or (exists (select 1 from committed.ParticipantKey K where K.ParticipantId = new.ParticipantId and K.Key = context.ParticipantKey)
+                and verify(digest(new.ParticipantId, new.Key), context.ParticipantSignature, context.ParticipantKey, 'ed25519'))
         )
     )
-        with context (InviteKey string null, InviteSignature string null, MemberKey string null, MemberSignature string null);
+        with context (InvitationKey string null, InvitationSignature string null, ParticipantKey string null, ParticipantSignature string null);
 
-    index MemberKeyByKey on MemberKey (Key);
+    index ParticipantKeyByKey on ParticipantKey (Key);
 
     table Message (
         Id integer,    -- ID is the sequence of the message
-        Timestamp datetime,  -- Timestamp of the message as represented by the inserting member
-        MemberId string,  -- ID of the member who sent the message
+        Timestamp datetime,  -- Timestamp of the message as represented by the inserting participant
+        ParticipantId string,  -- ID of the participant who sent the message
         Content string,  -- Content of the message
         primary key (Id),
         -- A chat message may not be edited or deleted: the simplest rule and the
@@ -200,17 +208,19 @@ declare schema Chat {
         -- docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)";
         -- schemas/chat-simple.qsql uses a locally generated text UUID key instead.
         constraint IdValid check (new.Id >= 0 and (new.Id = 0 or exists (select 1 from Message M where M.Id = new.Id - 1))),
-        -- Member authorized: the signing key must be one this member has registered.
-        -- NOTE: the digest binds (Id, MemberId, Content) but not Timestamp. A replayed
-        -- signature on the same Id is refused locally by the primary key, but under the
-        -- concurrent last-writer-wins hazard described above it could reseat a message
-        -- with a different timestamp; bind the timestamp if concurrency ever arrives.
+        -- Participant authorized: the signing key must be one this participant has
+        -- registered.
+        -- NOTE: the digest binds (Id, ParticipantId, Content) but not Timestamp. A
+        -- replayed signature on the same Id is refused locally by the primary key, but
+        -- under the concurrent last-writer-wins hazard described above it could reseat a
+        -- message with a different timestamp; bind the timestamp if concurrency ever
+        -- arrives.
         constraint MessageAuthorized check on insert (
-            exists (select 1 from MemberKey K where K.Key = context.MemberKey and K.MemberId = new.MemberId)
-                and verify(digest(new.Id, new.MemberId, new.Content), context.MemberSignature, context.MemberKey, 'ed25519')
+            exists (select 1 from ParticipantKey K where K.Key = context.ParticipantKey and K.ParticipantId = new.ParticipantId)
+                and verify(digest(new.Id, new.ParticipantId, new.Content), context.ParticipantSignature, context.ParticipantKey, 'ed25519')
         )
     )
-        with context (MemberKey string, MemberSignature string, now datetime);
+        with context (ParticipantKey string, ParticipantSignature string, now datetime);
 
     table Attachment (
         MessageId integer,  -- ID of the message this attachment belongs to
@@ -231,12 +241,12 @@ declare schema Chat {
         -- report AttachmentAuthorized instead — and the suite's MessageExists
         -- negative case would silently start proving something else.
         constraint AttachmentAuthorized check on insert (
-            exists (select 1 from Message M join MemberKey K on K.MemberId = M.MemberId
-                where M.Id = new.MessageId and K.Key = context.MemberKey)
-                and verify(digest(new.MessageId, new.Sequence, new.Type, new.Filename, new.Content), context.MemberSignature, context.MemberKey, 'ed25519')
+            exists (select 1 from Message M join ParticipantKey K on K.ParticipantId = M.ParticipantId
+                where M.Id = new.MessageId and K.Key = context.ParticipantKey)
+                and verify(digest(new.MessageId, new.Sequence, new.Type, new.Filename, new.Content), context.ParticipantSignature, context.ParticipantKey, 'ed25519')
         )
     )
-        with context (now datetime, MemberKey string null, MemberSignature string null);
+        with context (now datetime, ParticipantKey string null, ParticipantSignature string null);
 
     table Response (
         OriginalId integer,   -- ID of the original message
@@ -250,10 +260,10 @@ declare schema Chat {
         -- the referential constraints above must keep winning the report when a
         -- statement violates both.
         constraint ResponseAuthorized check on insert (
-            exists (select 1 from Message M join MemberKey K on K.MemberId = M.MemberId
-                where M.Id = new.ResponseId and K.Key = context.MemberKey)
-                and verify(digest(new.OriginalId, new.ResponseId), context.MemberSignature, context.MemberKey, 'ed25519')
+            exists (select 1 from Message M join ParticipantKey K on K.ParticipantId = M.ParticipantId
+                where M.Id = new.ResponseId and K.Key = context.ParticipantKey)
+                and verify(digest(new.OriginalId, new.ResponseId), context.ParticipantSignature, context.ParticipantKey, 'ed25519')
         )
     )
-        with context (MemberKey string null, MemberSignature string null);
+        with context (ParticipantKey string null, ParticipantSignature string null);
 }

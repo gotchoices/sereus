@@ -8,12 +8,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { StrandInstance } from '@serfab/cadre-core';
 import {
-  insertMember,
+  insertParticipant,
   insertMessage,
   queryMessages,
-  queryMembers,
+  queryParticipants,
   type ChatMessage,
-  type ChatMember,
+  type ChatParticipant,
 } from './chat-operations';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -21,10 +21,10 @@ import {
 export interface UseChatOptions {
   /** The active strand instance (null if not yet created/joined) */
   strand: StrandInstance | null;
-  /** Local member ID (e.g. peerId) */
-  memberId: string | null;
+  /** Local participant ID (e.g. peerId) */
+  participantId: string | null;
   /** Local display name */
-  memberName?: string;
+  participantName?: string;
   /** Polling interval in ms (default 2000) */
   pollIntervalMs?: number;
 }
@@ -32,8 +32,8 @@ export interface UseChatOptions {
 export interface UseChatResult {
   /** Chat messages, oldest first */
   messages: ChatMessage[];
-  /** Known members */
-  members: ChatMember[];
+  /** Known participants */
+  participants: ChatParticipant[];
   /** Whether the initial load is in progress */
   loading: boolean;
   /** Last error */
@@ -47,10 +47,10 @@ export interface UseChatResult {
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useChat(opts: UseChatOptions): UseChatResult {
-  const { strand, memberId, memberName, pollIntervalMs = 2000 } = opts;
+  const { strand, participantId, participantName, pollIntervalMs = 2000 } = opts;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [members, setMembers] = useState<ChatMember[]>([]);
+  const [participants, setParticipants] = useState<ChatParticipant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,58 +58,58 @@ export function useChat(opts: UseChatOptions): UseChatResult {
   const strandRef = useRef(strand);
   strandRef.current = strand;
 
-  const memberIdRef = useRef(memberId);
-  memberIdRef.current = memberId;
+  const participantIdRef = useRef(participantId);
+  participantIdRef.current = participantId;
 
-  // ── Register local member on first attach ──────────────────────────────
+  // ── Register local participant on first attach ─────────────────────────
 
   // Keyed by strandId, not a single boolean: switching to a second strand via
-  // the picker must register the local member there too (register once per strand).
+  // the picker must register the local participant there too (register once per strand).
   const registeredStrandsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!strand || !memberId) return;
+    if (!strand || !participantId) return;
     const sid = strand.strandId;
     if (registeredStrandsRef.current.has(sid)) return;
 
     (async () => {
       try {
-        await insertMember(strand, memberId, memberName ?? memberId);
+        await insertParticipant(strand, participantId, participantName ?? participantId);
         registeredStrandsRef.current.add(sid);
       } catch (err) {
-        console.warn('Failed to register member:', err);
+        console.warn('Failed to register participant:', err);
       }
     })();
-  }, [strand, memberId, memberName]);
+  }, [strand, participantId, participantName]);
 
   // ── Reset view on strand switch ─────────────────────────────────────────
 
-  // Clear the previous strand's messages/members (and re-enter loading) the
+  // Clear the previous strand's messages/participants (and re-enter loading) the
   // moment the active strand id changes, so the list never renders the wrong
   // conversation in the gap before the new strand's first poll completes.
   useEffect(() => {
     setMessages([]);
-    setMembers([]);
+    setParticipants([]);
     setLoading(true);
   }, [strand?.strandId]);
 
-  // ── Fetch messages + members ───────────────────────────────────────────
+  // ── Fetch messages + participants ──────────────────────────────────────
 
   const refresh = useCallback(async () => {
     const s = strandRef.current;
     if (!s?.database) return;
 
     try {
-      const [msgs, mems] = await Promise.all([
+      const [msgs, parts] = await Promise.all([
         queryMessages(s),
-        queryMembers(s),
+        queryParticipants(s),
       ]);
       // A switch may have landed while this query was in flight. Applying a
       // previous strand's rows now would re-bleed the very conversation the
       // reset-on-switch effect just cleared, so drop the stale result.
       if (strandRef.current !== s) return;
       setMessages(msgs);
-      setMembers(mems);
+      setParticipants(parts);
       setError(null);
     } catch (err) {
       if (strandRef.current !== s) return;
@@ -139,16 +139,16 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   const send = useCallback(async (content: string) => {
     const s = strandRef.current;
-    const mid = memberIdRef.current;
+    const pid = participantIdRef.current;
     if (!s) throw new Error('No strand attached');
-    if (!mid) throw new Error('No member ID');
+    if (!pid) throw new Error('No participant ID');
 
-    const msg = await insertMessage(s, mid, content);
+    const msg = await insertMessage(s, pid, content);
     // Optimistic update — append immediately, next poll will reconcile
     setMessages(prev => [...prev, msg]);
     setError(null);
   }, []);
 
-  return { messages, members, loading, error, send, refresh };
+  return { messages, participants, loading, error, send, refresh };
 }
 

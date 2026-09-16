@@ -29,7 +29,7 @@ const HTTP_PORT = parseInt(process.env.DRONE_HTTP_PORT ?? '4080', 10);
 // ── Chat sApp (mirrors src/chat-strand.ts) ─────────────────────────────────
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),
     Role text not null default 'member' check (Role in ('owner', 'member'))
@@ -37,10 +37,10 @@ table Member (
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 
@@ -118,10 +118,10 @@ async function main() {
 	});
 	console.log(`  Strand created: ${strandId}`);
 
-	// Register the drone as a member
+	// Register the drone as a chat participant
 	const droneDb = strand.database.getDatabase();
 	await droneDb.exec(
-		'insert or ignore into App.Member (Id, Name) values (?, ?)',
+		'insert or ignore into App.Participant (Id, Name) values (?, ?)',
 		['drone', 'Test Drone'],
 	);
 

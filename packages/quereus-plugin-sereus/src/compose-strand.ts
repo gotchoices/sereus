@@ -6,6 +6,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage, NodeOptions } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
+import { assertNoReservedTableNames } from './reserved-table-names.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 
@@ -141,7 +142,8 @@ export interface StrandPlatform {
  * (browser), and `cadre-core`'s `StrandDatabase` all flow through here, so the
  * hydrate-before-apply fix and any future schema wiring land in one place.
  *
- * Steps: resolve transactor + storage, register crypto + optimystic plugins,
+ * Steps: refuse an sApp schema that reuses a strand table name, resolve transactor +
+ * storage, register crypto + optimystic plugins,
  * acquire (inject or create) the libp2p node, set optimystic as the default
  * vtab, hydrate the catalog, then apply the sApp schema.
  */
@@ -163,6 +165,10 @@ export async function composeStrand(
 	// Resolve (and validate) up front so a nonsense value fails before any plugin
 	// registration or node creation has happened.
 	const clusterSize = resolveStrandClusterSize(options.clusterSize);
+	// Likewise an sApp table named like a strand table (it would share that table's
+	// storage — see ReservedTableNameError): refused before storage is touched, so a
+	// refused strand writes nothing.
+	assertNoReservedTableNames(schema);
 
 	// The storage engine every write and read below goes through — see
 	// `StrandConnectionOptions.transactor`. Named separately from the option so

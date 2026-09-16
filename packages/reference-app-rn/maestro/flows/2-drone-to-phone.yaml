@@ -14,7 +14,7 @@ appId: ${MAESTRO_APP_ID}
     file: ../_helpers/drone-insert.js
     env:
       CONTENT: "Hello from drone"
-      MEMBER_ID: "drone-test"
+      PARTICIPANT_ID: "drone-test"
       STRAND_ID: ${WORKING_STRAND_ID}
 
 # Chat polls every 2s; allow up to 5s for the next poll + render.
@@ -22,6 +22,6 @@ appId: ${MAESTRO_APP_ID}
     visible: "Hello from drone"
     timeout: 5000
 
-# Member rendering for non-own message: MessageBubble shows MemberName ?? MemberId.
-# Sidecar inserts member as (memberId, memberId) so MemberName === 'drone-test'.
+# Participant rendering for non-own message: MessageBubble shows ParticipantName ?? ParticipantId.
+# Sidecar inserts participant as (participantId, participantId) so ParticipantName === 'drone-test'.
 - assertVisible: "drone-test"

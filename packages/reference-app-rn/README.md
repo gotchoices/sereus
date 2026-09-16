@@ -15,7 +15,7 @@ CadreNode (transaction profile)  ←────→ CadreNode (storage profile)
 
 The phone runs a **transaction-profile** node (lightweight, intermittent) while the drone runs a **storage-profile** node (always-on, persists data). They sync over a shared control network identified by a Party ID.
 
-**Strands** are isolated P2P databases. Each chat strand has `Member` and `Message` tables running on Optimystic (distributed serializable transactions) with Quereus as the SQL engine.
+**Strands** are isolated P2P databases. Each chat strand has `Participant` and `Message` tables running on Optimystic (distributed serializable transactions) with Quereus as the SQL engine.
 
 ## Prerequisites
 
@@ -215,14 +215,14 @@ through an explicit host→invitee consent handshake. The Settings screen's
    open free-for-all.
 
 4. **Role assignment.** The creator is assigned the app-level role `owner`; a
-   joiner is assigned `member` (the `Member.Role` column in the chat schema).
+   joiner is assigned `member` (the `Participant.Role` column in the chat schema).
 
 ### Where the boundaries are (honest scope)
 
 - **Role granularity is app-level, not cadre-level.** Sereus's control network
   has **no first-class per-strand RBAC primitive** — membership is
   `MemberPrivateKey`-granular (member vs non-member). `owner`/`member` therefore
-  lives in the chat `Member.Role` column and is assigned on create/join, *not* in
+  lives in the chat `Participant.Role` column and is assigned on create/join, *not* in
   the control network. Fine-grained strand RBAC as a cadre-core primitive is not
   yet implemented.
 
@@ -316,7 +316,7 @@ reference-app-rn/
 │   ├── use-cadre.ts        #   React hook: node lifecycle & strand events
 │   ├── use-chat.ts         #   React hook: message polling & send
 │   ├── chat-strand.ts      #   Strand creation with embedded chat schema
-│   └── chat-operations.ts  #   SQL helpers (insert/query members & messages)
+│   └── chat-operations.ts  #   SQL helpers (insert/query participants & messages)
 ├── polyfills/              # Hermes runtime polyfills (see "Hermes Polyfills" section below)
 ├── drone.cadre.yaml        # Drone server config for local development
 ├── metro.config.js         # Bundler config (workspace symlinks + Node.js polyfills)

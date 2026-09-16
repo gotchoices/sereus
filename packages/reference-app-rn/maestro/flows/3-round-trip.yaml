@@ -27,7 +27,7 @@ appId: ${MAESTRO_APP_ID}
     file: ../_helpers/drone-insert.js
     env:
       CONTENT: "Drone replies"
-      MEMBER_ID: "drone-test"
+      PARTICIPANT_ID: "drone-test"
       STRAND_ID: ${WORKING_STRAND_ID}
 
 - extendedWaitUntil:

@@ -21,17 +21,17 @@ import { waitUntil, controlNodeConfig } from '../harness/index.js';
 // ── Chat schema (mirrors reference-app-rn/src/chat-strand.ts) ──────────────
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100)
 );
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 
@@ -118,11 +118,11 @@ describe('WebSocket Chat (server-to-server)', () => {
     );
     console.log('Strand nodes connected');
 
-    // ── 4. Insert a member + message on the drone ──────────────────────
+    // ── 4. Insert a participant + message on the drone ──────────────────────
 
     const droneDb = droneStrand.database!.getDatabase();
     await droneDb.exec(
-      "insert into App.Member (Id, Name) values ('drone-1', 'Drone')",
+      "insert into App.Participant (Id, Name) values ('drone-1', 'Drone')",
     );
     // Quereus datetime columns coerce any valid input to T-separated ISO form on read.
     const now = new Date().toISOString();
@@ -130,7 +130,7 @@ describe('WebSocket Chat (server-to-server)', () => {
     // a fixed text id keeps the replication assertions below deterministic.
     const messageId = 'msg-drone-1';
     await droneDb.exec(
-      `insert into App.Message (Id, MemberId, Content, Timestamp)
+      `insert into App.Message (Id, ParticipantId, Content, Timestamp)
        values ('${messageId}', 'drone-1', 'Hello from drone', '${now}')`,
     );
 

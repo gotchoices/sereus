@@ -21,7 +21,7 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
   `StrandInstanceManager` verifies the signature on start
   (`assertSchemaSignature`), so the browser exercises the schema-signature gate
   the RN reference currently skips.
-- **Strand database** — the chat `Member`/`Message` tables backed by Quereus over
+- **Strand database** — the chat `Participant`/`Message` tables backed by Quereus over
   Optimystic. A solo node coordinates its own writes, so DML lands on the
   strand's IndexedDB-backed storage with no peers needed.
 
@@ -55,7 +55,7 @@ and starts the cadre node. Reload preserves the peer ID and party ID. Each
 control/strand network gets its own IndexedDB database:
 
 - `sereus-strand-control` — control network blocks + identity + party id.
-- `sereus-strand-sereus-web-chat` — the chat strand's blocks (members/messages).
+- `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages).
 
 Delete those databases from DevTools → Application → Storage to reset identity
 and stored messages.
@@ -67,7 +67,7 @@ and stored messages.
   the **strand-formation panel**: create an invitation (responder) / join via a
   pasted invitation (initiator), showing the resulting strand id + membership type.
 - `#/messages` — compose / list chat messages backed by the strand's
-  `App.Member` / `App.Message` tables (Quereus SQL). The chat sApp is
+  `App.Participant` / `App.Message` tables (Quereus SQL). The chat sApp is
   append-only — there is no edit/delete (that belonged to the old demo app).
 - `#/log` — **Activity** — a CadreNode lifecycle event log
   (`control:*`, `strand:*`, `seed:*`, owner genesis), newest first.

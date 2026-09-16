@@ -11,7 +11,7 @@
 
 import { startSolo } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
-import { insertMember, insertMessage, queryMessages, type ChatMessage } from './chat-operations';
+import { insertParticipant, insertMessage, queryMessages, type ChatMessage } from './chat-operations';
 
 const DEFAULT_PARTY_ID = 'reference-chat-party-ns';
 
@@ -36,9 +36,9 @@ export async function runSoloSmoke(message = 'hello'): Promise<SoloSmokeResult> 
 	const strandId = crypto.randomUUID();
 	const strand = await createChatStrand(node, strandId);
 
-	const memberId = crypto.randomUUID();
-	await insertMember(strand, memberId, 'NS Solo');
-	await insertMessage(strand, memberId, message);
+	const participantId = crypto.randomUUID();
+	await insertParticipant(strand, participantId, 'NS Solo');
+	await insertMessage(strand, participantId, message);
 
 	const messages = await queryMessages(strand);
 	const echoed = messages.some((m) => m.Content === message);

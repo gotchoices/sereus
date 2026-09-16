@@ -17,7 +17,7 @@ import { extractDeclareSchemaBody } from '../helpers/qsql-body.js';
  * constraints, so a call to a function that does not exist, a name that binds to
  * the wrong table, and a wrong signature curve all LOAD perfectly and only fail
  * when somebody writes a row. `schemas/chat.qsql` shipped for a long time with all
- * three, plus bootstrap branches that made it impossible to seat the first member,
+ * three, plus bootstrap branches that made it impossible to seat the first participant,
  * because nothing in the product ever loaded it and no test ever wrote through it.
  * A load-only guard would have stayed green through every one of those defects but
  * the missing primary-key column. So this suite drives real writes through every
@@ -186,7 +186,7 @@ async function inTransaction(db: Database, fn: () => Promise<void>): Promise<voi
 
 /** What `seedChat` leaves behind, for the caller to sign follow-on writes with. */
 interface SeededChat {
-	/** The founding member 'm1''s registered signing key. */
+	/** The founding participant 'm1''s registered signing key. */
 	founderKey: KeyPair;
 	/** The spent bootstrap invitation 'm1' joined under. */
 	invite1: KeyPair;
@@ -200,7 +200,7 @@ interface SeededChat {
 
 /**
  * Seed a freshly connected chat strand with one populated row per table:
- * the bootstrap invitation, the founding member 'm1' with its first key,
+ * the bootstrap invitation, the founding participant 'm1' with its first key,
  * messages 0..2, an attachment on message 0, a response (0 -> 1), and a second
  * one-time invitation left unspent. Shared between the lifecycle test (which
  * continues the story from here) and the sweep (which needs populated tables —
@@ -212,45 +212,47 @@ async function seedChat(chatDb: Database): Promise<SeededChat> {
 	const invite2 = newKeyPair();
 
 	// ── Bootstrap ─────────────────────────────────────────────────────────────
-	// The first invitation is unsigned: no member exists yet to sign it. A CHECK
-	// sees the row it is judging, so this only passes because `Invite.InsertValid`
-	// tests the COMMITTED invite/member counts against zero rather than asking
-	// `not exists (select 1 from Invite)` — which is false even for row one.
+	// The first invitation is unsigned: no participant exists yet to sign it. A
+	// CHECK sees the row it is judging, so this only passes because
+	// `Invitation.InsertValid` tests the COMMITTED invitation/participant counts
+	// against zero rather than asking `not exists (select 1 from Invitation)` —
+	// which is false even for row one.
 	await chatDb.exec(
-		`insert into App.Invite (Key, OneTime, CanInvite)
-			with context MemberKey = null, MemberSignature = null
+		`insert into App.Invitation (Key, OneTime, CanInvite)
+			with context ParticipantKey = null, ParticipantSignature = null
 			values (?, true, true)`,
 		[invite1.publicKey],
 	);
 
-	// The founding member, likewise unsigned, redeeming the bootstrap invitation.
-	// Member and UsedInvite go in ONE transaction: each table's constraint requires
-	// the other's row, so neither can be written first on its own. The redemption
-	// itself IS signed — `UsedInvite.RedemptionAuthorized` demands the invitation's
-	// own private key over digest(Key, MemberId), bootstrap or not.
+	// The founding participant, likewise unsigned, redeeming the bootstrap
+	// invitation. Participant and UsedInvitation go in ONE transaction: each table's
+	// constraint requires the other's row, so neither can be written first on its
+	// own. The redemption itself IS signed — `UsedInvitation.RedemptionAuthorized`
+	// demands the invitation's own private key over digest(Key, ParticipantId),
+	// bootstrap or not.
 	const m1RedemptionSig = await signDigest(chatDb, '?, ?', [invite1.publicKey, 'm1'], invite1.privateKey);
 	await inTransaction(chatDb, async () => {
 		await chatDb.exec(
-			`insert into App.Member (Id, Name, CanInvite)
-				with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null
+			`insert into App.Participant (Id, Name, CanInvite)
+				with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null
 				values ('m1', 'Alice', true)`,
 		);
 		await chatDb.exec(
-			`insert into App.UsedInvite (Key, MemberId)
-				with context InviteSignature = ?
+			`insert into App.UsedInvitation (Key, ParticipantId)
+				with context InvitationSignature = ?
 				values (?, ?)`,
 			[m1RedemptionSig, invite1.publicKey, 'm1'],
 		);
 	});
 
 	// ── The founder's first key ───────────────────────────────────────────────
-	// A member's FIRST key is vouched for by the invitation they joined under
-	// (`MemberKey.InsertValid`, first branch): the invitation's private key signs
-	// digest(MemberId, Key).
+	// A participant's FIRST key is vouched for by the invitation they joined under
+	// (`ParticipantKey.InsertValid`, first branch): the invitation's private key signs
+	// digest(ParticipantId, Key).
 	const m1FirstKeySig = await signDigest(chatDb, '?, ?', ['m1', founderKey.publicKey], invite1.privateKey);
 	await chatDb.exec(
-		`insert into App.MemberKey (MemberId, Key)
-			with context InviteKey = ?, InviteSignature = ?, MemberKey = null, MemberSignature = null
+		`insert into App.ParticipantKey (ParticipantId, Key)
+			with context InvitationKey = ?, InvitationSignature = ?, ParticipantKey = null, ParticipantSignature = null
 			values ('m1', ?)`,
 		[invite1.publicKey, m1FirstKeySig, founderKey.publicKey],
 	);
@@ -261,8 +263,8 @@ async function seedChat(chatDb: Database): Promise<SeededChat> {
 	for (const [id, content] of [[0, 'hello'], [1, 'replying'], [2, 'third']] as const) {
 		const sig = await signDigest(chatDb, '?, ?, ?', [id, 'm1', content], founderKey.privateKey);
 		await chatDb.exec(
-			`insert into App.Message (Id, Timestamp, MemberId, Content)
-				with context MemberKey = ?, MemberSignature = ?, now = ?
+			`insert into App.Message (Id, Timestamp, ParticipantId, Content)
+				with context ParticipantKey = ?, ParticipantSignature = ?, now = ?
 				values (?, ?, 'm1', ?)`,
 			[founderKey.publicKey, sig, now, id, now, content],
 		);
@@ -275,27 +277,27 @@ async function seedChat(chatDb: Database): Promise<SeededChat> {
 	);
 	await chatDb.exec(
 		`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-			with context now = ?, MemberKey = ?, MemberSignature = ?
+			with context now = ?, ParticipantKey = ?, ParticipantSignature = ?
 			values (0, 0, ?, 'text/plain', 'note.txt', ?)`,
 		[now, founderKey.publicKey, attachSig, now, attachmentContent],
 	);
 	const responseSig = await signDigest(chatDb, '?, ?', [0, 1], founderKey.privateKey);
 	await chatDb.exec(
 		`insert into App.Response (OriginalId, ResponseId)
-			with context MemberKey = ?, MemberSignature = ?
+			with context ParticipantKey = ?, ParticipantSignature = ?
 			values (0, 1)`,
 		[founderKey.publicKey, responseSig],
 	);
 
-	// ── A second, member-signed invitation, left unspent ──────────────────────
+	// ── A second, participant-signed invitation, left unspent ─────────────────
 	// The digest covers the NEW invitation's own (Key, OneTime, CanInvite). Before
-	// the repair those names bound to the INVITING member's key and CanInvite flag
+	// the repair those names bound to the INVITING participant's key and CanInvite flag
 	// (both are columns of the constraint subquery's own `from` clause), so no
 	// correctly produced signature could ever match.
 	const invite2Sig = await signDigest(chatDb, '?, true, false', [invite2.publicKey], founderKey.privateKey);
 	await chatDb.exec(
-		`insert into App.Invite (Key, OneTime, CanInvite)
-			with context MemberKey = ?, MemberSignature = ?
+		`insert into App.Invitation (Key, OneTime, CanInvite)
+			with context ParticipantKey = ?, ParticipantSignature = ?
 			values (?, true, false)`,
 		[founderKey.publicKey, invite2Sig, invite2.publicKey],
 	);
@@ -349,7 +351,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 	it('applies schemas/chat-simple.qsql cleanly', async () => {
 		const chatDb = await connectWithSchema(await loadChatSimpleSchema());
 
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(0);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Participant')).toBe(0);
 		expect(await selectCount(chatDb, 'select count(*) as c from App.Message')).toBe(0);
 	});
 
@@ -358,7 +360,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 
 		// Every table the file declares. `Attachment` is the one that used to fail the
 		// whole load — its primary key named a `Sequence` column that did not exist.
-		for (const table of ['Invite', 'UsedInvite', 'Member', 'MemberKey', 'Message', 'Attachment', 'Response']) {
+		for (const table of ['Invitation', 'UsedInvitation', 'Participant', 'ParticipantKey', 'Message', 'Attachment', 'Response']) {
 			expect(await selectCount(chatDb, `select count(*) as c from App.${table}`)).toBe(0);
 		}
 	});
@@ -367,9 +369,9 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		const chatDb = await connectWithSchema(await loadChatSchemaBody());
 		const { founderKey, invite1, invite2, now, nowMs } = await seedChat(chatDb);
 
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Invite')).toBe(2);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(1);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.UsedInvite')).toBe(1);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Invitation')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Participant')).toBe(1);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.UsedInvitation')).toBe(1);
 		expect(await selectCount(chatDb, 'select count(*) as c from App.Message')).toBe(3);
 
 		// An hour off the collective clock — outside every `± 5 min` TimeValid window.
@@ -379,11 +381,11 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		const renameSig = await signDigest(chatDb, '?, ?, true', ['m1', 'Alicia'], founderKey.privateKey);
 		// `with context` on an UPDATE goes before `set` or after `where`, never between.
 		await chatDb.exec(
-			`update App.Member set Name = ? where Id = ?
-				with context InviteKey = null, InviteSignature = null, MemberKey = ?, MemberSignature = ?`,
+			`update App.Participant set Name = ? where Id = ?
+				with context InvitationKey = null, InvitationSignature = null, ParticipantKey = ?, ParticipantSignature = ?`,
 			['Alicia', 'm1', founderKey.publicKey, renameSig],
 		);
-		const renamed = await evalOne(chatDb, 'select Name from App.Member where Id = ?', ['m1']);
+		const renamed = await evalOne(chatDb, 'select Name from App.Participant where Id = ?', ['m1']);
 		expect(renamed.Name).toBe('Alicia');
 
 		// A rename signed with the WRONG key is refused — proof the verify(...) gate is
@@ -392,8 +394,8 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		const forgedSig = await signDigest(chatDb, '?, ?, true', ['m1', 'Mallory'], impostor.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`update App.Member set Name = ? where Id = ?
-					with context InviteKey = null, InviteSignature = null, MemberKey = ?, MemberSignature = ?`,
+				`update App.Participant set Name = ? where Id = ?
+					with context InvitationKey = null, InvitationSignature = null, ParticipantKey = ?, ParticipantSignature = ?`,
 				['Mallory', 'm1', founderKey.publicKey, forgedSig],
 			),
 			'UpdateValid',
@@ -405,8 +407,8 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		const msg5Sig = await signDigest(chatDb, '?, ?, ?', [5, 'm1', 'skipped ahead'], founderKey.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.Message (Id, Timestamp, MemberId, Content)
-					with context MemberKey = ?, MemberSignature = ?, now = ?
+				`insert into App.Message (Id, Timestamp, ParticipantId, Content)
+					with context ParticipantKey = ?, ParticipantSignature = ?, now = ?
 					values (5, ?, 'm1', 'skipped ahead')`,
 				[founderKey.publicKey, msg5Sig, now, now],
 			),
@@ -414,12 +416,12 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		);
 		// A message whose timestamp is an hour off the collective clock is refused, even
 		// though its Id is next in sequence and its signature is good — the signature
-		// covers (Id, MemberId, Content) and never the timestamp.
+		// covers (Id, ParticipantId, Content) and never the timestamp.
 		const msg3Sig = await signDigest(chatDb, '?, ?, ?', [3, 'm1', 'time traveller'], founderKey.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.Message (Id, Timestamp, MemberId, Content)
-					with context MemberKey = ?, MemberSignature = ?, now = ?
+				`insert into App.Message (Id, Timestamp, ParticipantId, Content)
+					with context ParticipantKey = ?, ParticipantSignature = ?, now = ?
 					values (3, ?, 'm1', 'time traveller')`,
 				[founderKey.publicKey, msg3Sig, now, staleNow],
 			),
@@ -434,7 +436,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-					with context now = ?, MemberKey = null, MemberSignature = null
+					with context now = ?, ParticipantKey = null, ParticipantSignature = null
 					values (99, 0, ?, 'text/plain', null, ?)`,
 				[now, now, new Uint8Array([1])],
 			),
@@ -445,7 +447,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-					with context now = ?, MemberKey = null, MemberSignature = null
+					with context now = ?, ParticipantKey = null, ParticipantSignature = null
 					values (0, 1, ?, 'text/plain', null, ?)`,
 				[now, staleNow, new Uint8Array([1])],
 			),
@@ -461,7 +463,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		);
 		await chatDb.exec(
 			`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-				with context now = ?, MemberKey = ?, MemberSignature = ?
+				with context now = ?, ParticipantKey = ?, ParticipantSignature = ?
 				values (1, 0, ?, 'text/plain', null, ?)`,
 			[now, founderKey.publicKey, nullFileSig, now, nullFileContent],
 		);
@@ -473,7 +475,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Response (OriginalId, ResponseId)
-					with context MemberKey = null, MemberSignature = null
+					with context ParticipantKey = null, ParticipantSignature = null
 					values (99, 2)`,
 			),
 			'OriginalExists',
@@ -481,34 +483,34 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Response (OriginalId, ResponseId)
-					with context MemberKey = null, MemberSignature = null
+					with context ParticipantKey = null, ParticipantSignature = null
 					values (0, 42)`,
 			),
 			'ResponseExists',
 		);
 
 		// ── Additional device keys ────────────────────────────────────────────────
-		// A second key for 'm1', signed by a key the member ALREADY holds
-		// (`MemberKey.InsertValid`, second branch), is accepted.
+		// A second key for 'm1', signed by a key the participant ALREADY holds
+		// (`ParticipantKey.InsertValid`, second branch), is accepted.
 		const m1Device = newKeyPair();
 		const deviceSig = await signDigest(chatDb, '?, ?', ['m1', m1Device.publicKey], founderKey.privateKey);
 		await chatDb.exec(
-			`insert into App.MemberKey (MemberId, Key)
-				with context InviteKey = null, InviteSignature = null, MemberKey = ?, MemberSignature = ?
+			`insert into App.ParticipantKey (ParticipantId, Key)
+				with context InvitationKey = null, InvitationSignature = null, ParticipantKey = ?, ParticipantSignature = ?
 				values ('m1', ?)`,
 			[founderKey.publicKey, deviceSig, m1Device.publicKey],
 		);
-		expect(await selectCount(chatDb, "select count(*) as c from App.MemberKey where MemberId = 'm1'")).toBe(2);
+		expect(await selectCount(chatDb, "select count(*) as c from App.ParticipantKey where ParticipantId = 'm1'")).toBe(2);
 
 		// A brand-new key vouching for ITSELF is refused: the second branch reads the
-		// existing key from `committed.MemberKey`, where the in-flight row is not yet
+		// existing key from `committed.ParticipantKey`, where the in-flight row is not yet
 		// visible.
 		const selfVoucher = newKeyPair();
 		const selfVouchSig = await signDigest(chatDb, '?, ?', ['m1', selfVoucher.publicKey], selfVoucher.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.MemberKey (MemberId, Key)
-					with context InviteKey = null, InviteSignature = null, MemberKey = ?, MemberSignature = ?
+				`insert into App.ParticipantKey (ParticipantId, Key)
+					with context InvitationKey = null, InvitationSignature = null, ParticipantKey = ?, ParticipantSignature = ?
 					values ('m1', ?)`,
 				[selfVoucher.publicKey, selfVouchSig, selfVoucher.publicKey],
 			),
@@ -516,76 +518,76 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		);
 
 		// A spent invitation secret is NOT a permanent credential: the first-key
-		// branch is closed once any key is committed for the member, so invite1
+		// branch is closed once any key is committed for the participant, so invite1
 		// cannot add 'm1' a further key.
 		const extraKey = newKeyPair();
 		const spentInviteKeySig = await signDigest(chatDb, '?, ?', ['m1', extraKey.publicKey], invite1.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.MemberKey (MemberId, Key)
-					with context InviteKey = ?, InviteSignature = ?, MemberKey = null, MemberSignature = null
+				`insert into App.ParticipantKey (ParticipantId, Key)
+					with context InvitationKey = ?, InvitationSignature = ?, ParticipantKey = null, ParticipantSignature = null
 					values ('m1', ?)`,
 				[invite1.publicKey, spentInviteKeySig, extraKey.publicKey],
 			),
 			'InsertValid',
 		);
 
-		// ── An invitation signed by a non-member is refused ───────────────────────
+		// ── An invitation signed by a non-participant is refused ──────────────────
 		const rogueInvite = newKeyPair();
 		const rogueSig = await signDigest(chatDb, '?, true, false', [rogueInvite.publicKey], impostor.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.Invite (Key, OneTime, CanInvite)
-					with context MemberKey = ?, MemberSignature = ?
+				`insert into App.Invitation (Key, OneTime, CanInvite)
+					with context ParticipantKey = ?, ParticipantSignature = ?
 					values (?, true, false)`,
 				[impostor.publicKey, rogueSig, rogueInvite.publicKey],
 			),
 			'InsertValid',
 		);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Invite')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Invitation')).toBe(2);
 
-		// ── The second member joins ───────────────────────────────────────────────
+		// ── The second participant joins ──────────────────────────────────────────
 		// The joiner's row is signed with the INVITATION's private key — possession of
 		// the invite secret is what admits them — and so is the redemption itself.
 		const m2Sig = await signDigest(chatDb, '?, ?, false', ['m2', 'Bob'], invite2.privateKey);
 		const m2RedemptionSig = await signDigest(chatDb, '?, ?', [invite2.publicKey, 'm2'], invite2.privateKey);
 		await inTransaction(chatDb, async () => {
 			await chatDb.exec(
-				`insert into App.Member (Id, Name, CanInvite)
-					with context InviteKey = ?, InviteSignature = ?, MemberKey = null, MemberSignature = null
+				`insert into App.Participant (Id, Name, CanInvite)
+					with context InvitationKey = ?, InvitationSignature = ?, ParticipantKey = null, ParticipantSignature = null
 					values ('m2', 'Bob', false)`,
 				[invite2.publicKey, m2Sig],
 			);
 			await chatDb.exec(
-				`insert into App.UsedInvite (Key, MemberId)
-					with context InviteSignature = ?
+				`insert into App.UsedInvitation (Key, ParticipantId)
+					with context InvitationSignature = ?
 					values (?, ?)`,
 				[m2RedemptionSig, invite2.publicKey, 'm2'],
 			);
 		});
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Participant')).toBe(2);
 
 		// 'm2''s first key, vouched for by the invitation it joined under.
 		const m2Key = newKeyPair();
 		const m2KeySig = await signDigest(chatDb, '?, ?', ['m2', m2Key.publicKey], invite2.privateKey);
 		await chatDb.exec(
-			`insert into App.MemberKey (MemberId, Key)
-				with context InviteKey = ?, InviteSignature = ?, MemberKey = null, MemberSignature = null
+			`insert into App.ParticipantKey (ParticipantId, Key)
+				with context InvitationKey = ?, InvitationSignature = ?, ParticipantKey = null, ParticipantSignature = null
 				values ('m2', ?)`,
 			[invite2.publicKey, m2KeySig, m2Key.publicKey],
 		);
 
-		// ── Cross-member forgery ──────────────────────────────────────────────────
+		// ── Cross-participant forgery ─────────────────────────────────────────────
 		// 'm2' holds a perfectly good REGISTERED key — and still cannot write in
 		// 'm1''s name. This is the case the sweep cannot express (its attacker key is
 		// unregistered): each authorization constraint must bind the signer to the
-		// AUTHOR, not merely to "some member". A constraint that degraded to the
+		// AUTHOR, not merely to "some participant". A constraint that degraded to the
 		// latter would pass the sweep and every author-signed positive above.
 		const forgedMsgSig = await signDigest(chatDb, '?, ?, ?', [3, 'm1', 'forged as alice'], m2Key.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.Message (Id, Timestamp, MemberId, Content)
-					with context MemberKey = ?, MemberSignature = ?, now = ?
+				`insert into App.Message (Id, Timestamp, ParticipantId, Content)
+					with context ParticipantKey = ?, ParticipantSignature = ?, now = ?
 					values (3, ?, 'm1', 'forged as alice')`,
 				[m2Key.publicKey, forgedMsgSig, now, now],
 			),
@@ -597,7 +599,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-					with context now = ?, MemberKey = ?, MemberSignature = ?
+					with context now = ?, ParticipantKey = ?, ParticipantSignature = ?
 					values (0, 5, ?, 'text/plain', null, ?)`,
 				[now, m2Key.publicKey, forgedAttachSig, now, new Uint8Array([7])],
 			),
@@ -607,7 +609,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => chatDb.exec(
 				`insert into App.Response (OriginalId, ResponseId)
-					with context MemberKey = ?, MemberSignature = ?
+					with context ParticipantKey = ?, ParticipantSignature = ?
 					values (0, 2)`,
 				[m2Key.publicKey, forgedResponseSig],
 			),
@@ -615,7 +617,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		);
 
 		// ── A one-time invitation cannot be redeemed twice ────────────────────────
-		// `invite2` is OneTime and already spent by 'm2'. `UsedInvite.ValidUsage` must
+		// `invite2` is OneTime and already spent by 'm2'. `UsedInvitation.ValidUsage` must
 		// compare its redemption count against a limit; the bare `count(1)` it used to
 		// carry is truthy on every redemption, which made a one-time invite reusable
 		// forever. The redemption is correctly signed so the refusal can only be
@@ -625,49 +627,50 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		await expectRefusedBy(
 			() => inTransaction(chatDb, async () => {
 				await chatDb.exec(
-					`insert into App.Member (Id, Name, CanInvite)
-						with context InviteKey = ?, InviteSignature = ?, MemberKey = null, MemberSignature = null
+					`insert into App.Participant (Id, Name, CanInvite)
+						with context InvitationKey = ?, InvitationSignature = ?, ParticipantKey = null, ParticipantSignature = null
 						values ('m3', 'Carol', false)`,
 					[invite2.publicKey, m3Sig],
 				);
 				await chatDb.exec(
-					`insert into App.UsedInvite (Key, MemberId)
-						with context InviteSignature = ?
+					`insert into App.UsedInvitation (Key, ParticipantId)
+						with context InvitationSignature = ?
 						values (?, ?)`,
 					[m3RedemptionSig, invite2.publicKey, 'm3'],
 				);
 			}),
 			'ValidUsage',
 		);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(2);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.UsedInvite')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Participant')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.UsedInvitation')).toBe(2);
 
-		// Minting an invitation at all requires the INVITING member to hold `CanInvite`
-		// (`Invite.InsertValid` joins through `Member M ... and M.CanInvite`). 'm2' joined
-		// through a `CanInvite = false` invitation, so it holds none and is refused even
-		// for an invitation that would itself grant nothing.
+		// Minting an invitation at all requires the INVITING participant to hold
+		// `CanInvite` (`Invitation.InsertValid` joins through
+		// `Participant M ... and M.CanInvite`). 'm2' joined through a
+		// `CanInvite = false` invitation, so it holds none and is refused even for an
+		// invitation that would itself grant nothing.
 		const m2InviteAttempt = newKeyPair();
 		const m2InviteSig = await signDigest(chatDb, '?, true, false', [m2InviteAttempt.publicKey], m2Key.privateKey);
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`insert into App.Invite (Key, OneTime, CanInvite)
-					with context MemberKey = ?, MemberSignature = ?
+				`insert into App.Invitation (Key, OneTime, CanInvite)
+					with context ParticipantKey = ?, ParticipantSignature = ?
 					values (?, true, false)`,
 				[m2Key.publicKey, m2InviteSig, m2InviteAttempt.publicKey],
 			),
 			'InsertValid',
 		);
 
-		// ── Members are never deleted ─────────────────────────────────────────────
+		// ── Participants are never deleted ────────────────────────────────────────
 		await expectRefusedBy(
 			() => chatDb.exec(
-				`delete from App.Member where Id = ?
-					with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null`,
+				`delete from App.Participant where Id = ?
+					with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null`,
 				['m2'],
 			),
 			'CantDelete',
 		);
-		expect(await selectCount(chatDb, 'select count(*) as c from App.Member')).toBe(2);
+		expect(await selectCount(chatDb, 'select count(*) as c from App.Participant')).toBe(2);
 	});
 
 	it('refuses an unauthenticated insert, update and delete on every declared table', async () => {
@@ -675,7 +678,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		const seed = await seedChat(chatDb);
 
 		// The attacker holds a real key pair and signs everything correctly — with a
-		// key no member has registered. "Unauthenticated" means unauthorized by the
+		// key no participant has registered. "Unauthenticated" means unauthorized by the
 		// schema, not malformed.
 		const attacker = newKeyPair();
 		const attackerMsgSig = await signDigest(chatDb, '?, ?, ?', [3, 'm1', 'forged'], attacker.privateKey);
@@ -695,104 +698,105 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		// CHECK runs and the cell would prove nothing about the constraints.
 		// Deletes carry no new row, reference no context, and need none.
 		const cells: Record<string, Record<'insert' | 'update' | 'delete', SweepCell>> = {
-			Invite: {
+			Invitation: {
 				insert: {
 					constraint: 'InsertValid',
-					sql: `insert into App.Invite (Key, OneTime, CanInvite)
-						with context MemberKey = null, MemberSignature = null
+					sql: `insert into App.Invitation (Key, OneTime, CanInvite)
+						with context ParticipantKey = null, ParticipantSignature = null
 						values (?, true, true)`,
 					params: [attacker.publicKey],
 				},
 				update: {
 					constraint: 'InsertOnly',
-					sql: `update App.Invite set CanInvite = false where Key = ?
-						with context MemberKey = null, MemberSignature = null`,
+					sql: `update App.Invitation set CanInvite = false where Key = ?
+						with context ParticipantKey = null, ParticipantSignature = null`,
 					params: [seed.invite2.publicKey],
 				},
 				delete: {
 					constraint: 'InsertOnly',
-					sql: `delete from App.Invite where Key = ?
-						with context MemberKey = null, MemberSignature = null`,
+					sql: `delete from App.Invitation where Key = ?
+						with context ParticipantKey = null, ParticipantSignature = null`,
 					params: [seed.invite2.publicKey],
 				},
 			},
-			UsedInvite: {
+			UsedInvitation: {
 				insert: {
-					// Burning the unspent invite2 against an existing member: ValidUsage and
-					// MemberValid both pass, so only the missing holder consent refuses it.
+					// Burning the unspent invite2 against an existing participant: ValidUsage
+					// and ParticipantValid both pass, so only the missing holder consent
+					// refuses it.
 					constraint: 'RedemptionAuthorized',
-					sql: `insert into App.UsedInvite (Key, MemberId)
-						with context InviteSignature = null
+					sql: `insert into App.UsedInvitation (Key, ParticipantId)
+						with context InvitationSignature = null
 						values (?, 'm1')`,
 					params: [seed.invite2.publicKey],
 				},
 				update: {
 					constraint: 'InsertOnly',
-					sql: `update App.UsedInvite set MemberId = 'intruder' where Key = ?
-						with context InviteSignature = null`,
+					sql: `update App.UsedInvitation set ParticipantId = 'intruder' where Key = ?
+						with context InvitationSignature = null`,
 					params: [seed.invite1.publicKey],
 				},
 				delete: {
 					constraint: 'InsertOnly',
-					sql: `delete from App.UsedInvite where Key = ?
-						with context InviteSignature = null`,
+					sql: `delete from App.UsedInvitation where Key = ?
+						with context InvitationSignature = null`,
 					params: [seed.invite1.publicKey],
 				},
 			},
-			Member: {
+			Participant: {
 				insert: {
 					constraint: 'InsertValid',
-					sql: `insert into App.Member (Id, Name, CanInvite)
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null
+					sql: `insert into App.Participant (Id, Name, CanInvite)
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null
 						values ('intruder', 'Eve', true)`,
 				},
 				update: {
 					constraint: 'UpdateValid',
-					sql: `update App.Member set Name = 'tampered' where Id = 'm1'
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null`,
+					sql: `update App.Participant set Name = 'tampered' where Id = 'm1'
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null`,
 				},
 				delete: {
 					constraint: 'CantDelete',
-					sql: `delete from App.Member where Id = 'm1'
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null`,
+					sql: `delete from App.Participant where Id = 'm1'
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null`,
 				},
 			},
-			MemberKey: {
+			ParticipantKey: {
 				insert: {
 					// The hole that used to defeat the whole signature scheme: registering
 					// the attacker's key in 'm1''s name.
 					constraint: 'InsertValid',
-					sql: `insert into App.MemberKey (MemberId, Key)
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null
+					sql: `insert into App.ParticipantKey (ParticipantId, Key)
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null
 						values ('m1', ?)`,
 					params: [attacker.publicKey],
 				},
 				update: {
 					constraint: 'InsertOnly',
-					sql: `update App.MemberKey set Key = ? where MemberId = 'm1'
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null`,
+					sql: `update App.ParticipantKey set Key = ? where ParticipantId = 'm1'
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null`,
 					params: [attacker.publicKey],
 				},
 				delete: {
 					constraint: 'InsertOnly',
-					sql: `delete from App.MemberKey where MemberId = 'm1'
-						with context InviteKey = null, InviteSignature = null, MemberKey = null, MemberSignature = null`,
+					sql: `delete from App.ParticipantKey where ParticipantId = 'm1'
+						with context InvitationKey = null, InvitationSignature = null, ParticipantKey = null, ParticipantSignature = null`,
 				},
 			},
 			Message: {
 				insert: {
 					// Gapless next Id, in-window timestamp, correctly signed — by a key no
-					// member registered.
+					// participant registered.
 					constraint: 'MessageAuthorized',
-					sql: `insert into App.Message (Id, Timestamp, MemberId, Content)
-						with context MemberKey = ?, MemberSignature = ?, now = ?
+					sql: `insert into App.Message (Id, Timestamp, ParticipantId, Content)
+						with context ParticipantKey = ?, ParticipantSignature = ?, now = ?
 						values (3, ?, 'm1', 'forged')`,
 					params: [attacker.publicKey, attackerMsgSig, seed.now, seed.now],
 				},
 				update: {
 					constraint: 'InsertOnly',
 					sql: `update App.Message set Content = 'tampered' where Id = 0
-						with context MemberKey = ?, MemberSignature = ?, now = ?`,
+						with context ParticipantKey = ?, ParticipantSignature = ?, now = ?`,
 					params: [attacker.publicKey, attackerMsgSig, seed.now],
 				},
 				delete: {
@@ -804,7 +808,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 				insert: {
 					constraint: 'AttachmentAuthorized',
 					sql: `insert into App.Attachment (MessageId, Sequence, Timestamp, Type, Filename, Content)
-						with context now = ?, MemberKey = null, MemberSignature = null
+						with context now = ?, ParticipantKey = null, ParticipantSignature = null
 						values (0, 5, ?, 'text/plain', null, ?)`,
 					params: [seed.now, seed.now, new Uint8Array([9])],
 				},
@@ -814,7 +818,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 					// missing variable before InsertOnly ever runs.
 					constraint: 'InsertOnly',
 					sql: `update App.Attachment set Type = 'image/png' where MessageId = 0 and Sequence = 0
-						with context now = ?, MemberKey = null, MemberSignature = null`,
+						with context now = ?, ParticipantKey = null, ParticipantSignature = null`,
 					params: [seed.now],
 				},
 				delete: {
@@ -828,18 +832,18 @@ describe('Chat reference schemas (write-through e2e)', () => {
 					// refusal is the missing authorship proof.
 					constraint: 'ResponseAuthorized',
 					sql: `insert into App.Response (OriginalId, ResponseId)
-						with context MemberKey = null, MemberSignature = null
+						with context ParticipantKey = null, ParticipantSignature = null
 						values (0, 2)`,
 				},
 				update: {
 					constraint: 'InsertOnly',
 					sql: `update App.Response set OriginalId = 1 where ResponseId = 1
-						with context MemberKey = null, MemberSignature = null`,
+						with context ParticipantKey = null, ParticipantSignature = null`,
 				},
 				delete: {
 					constraint: 'InsertOnly',
 					sql: `delete from App.Response where ResponseId = 1
-						with context MemberKey = null, MemberSignature = null`,
+						with context ParticipantKey = null, ParticipantSignature = null`,
 				},
 			},
 		};

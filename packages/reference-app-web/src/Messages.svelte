@@ -115,7 +115,7 @@
 				{#each msgs.messages as msg (msg.Id)}
 					<li data-testid="message-row" data-message-id={msg.Id}>
 						<div class="msg-head">
-							<span class="author">{msg.MemberName ?? msg.MemberId}</span>
+							<span class="author">{msg.ParticipantName ?? msg.ParticipantId}</span>
 							<span class="ts">{formatWhen(msg.Timestamp)}</span>
 						</div>
 						<p class="body" data-testid="message-body">{msg.Content}</p>

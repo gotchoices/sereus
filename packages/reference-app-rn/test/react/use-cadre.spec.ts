@@ -223,7 +223,7 @@ function CadreHarness({ sink }: { sink: Sink }): React.ReactElement {
     status: cadre.status,
     error: cadre.error,
     strandCount: cadre.strands.size,
-    memberCount: 0,
+    participantCount: 0,
     relayStatus: cadre.relayStatus,
   });
   return React.createElement('status', { color: banner.color }, banner.text);
@@ -732,7 +732,7 @@ describe('useCadreInternal — relay posture polling', () => {
         await sink.current!.start(OPTS);
         await tick();
       });
-      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s) · no relay — can’t invite');
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 participant(s) · no relay — can’t invite');
 
       // cadre-core's supervisor lands the reservation. Nothing tells the app.
       h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: ['/p2p-circuit/p2p/peer-1'] };
@@ -741,14 +741,14 @@ describe('useCadreInternal — relay posture polling', () => {
       });
 
       expect(sink.current!.relayStatus).toBe('reserved');
-      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s)');
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 participant(s)');
 
       // …and the other direction: a reservation lost mid-session says so again.
       h.ctl.relay = { ...h.noRelay(), status: 'retrying', error: 'relay closed the connection' };
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);
       });
-      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 participant(s) · relay offline — can’t invite');
     } finally {
       vi.useRealTimers();
     }

@@ -3,7 +3,7 @@
  * database.
  *
  * Replaces the old `@optimystic/demo` `MessageApp` wiring. Reads/writes the
- * `App.Member` / `App.Message` tables of the active chat strand directly via
+ * `App.Participant` / `App.Message` tables of the active chat strand directly via
  * Quereus SQL, mirroring `reference-app-rn/src/chat-operations.ts`. The strand
  * coordinates its own writes on a solo node, so writes land on the strand's
  * IndexedDB with no peers needed.
@@ -21,10 +21,10 @@ const REFRESH_INTERVAL_MS = 4_000;
 export interface ChatMessage {
 	/** Globally-unique text id (UUID) — generated locally, collision-free across peers. */
 	Id: string;
-	MemberId: string;
+	ParticipantId: string;
 	Content: string;
 	Timestamp: string;
-	MemberName?: string;
+	ParticipantName?: string;
 }
 
 interface MessagesState {
@@ -94,10 +94,10 @@ export async function refresh(): Promise<void> {
 		const rows = await selectChatMessages(db(strand));
 		state.messages = rows.map((r) => ({
 			Id: r.id,
-			MemberId: r.memberId,
+			ParticipantId: r.participantId,
 			Content: r.content,
 			Timestamp: r.timestamp,
-			MemberName: r.memberName,
+			ParticipantName: r.participantName,
 		}));
 		state.ready = true;
 		state.error = null;
@@ -111,9 +111,9 @@ export async function refresh(): Promise<void> {
 }
 
 /**
- * Register (idempotently) the author as a member, then append a message.
- * Member.Id = the author name keeps the demo single-field while still
- * exercising the Member↔Message foreign-key join.
+ * Register (idempotently) the author as a participant, then append a message.
+ * Participant.Id = the author name keeps the demo single-field while still
+ * exercising the Participant↔Message foreign-key join.
  */
 export async function sendMessage(author: string, content: string): Promise<void> {
 	const strand = activeStrand();

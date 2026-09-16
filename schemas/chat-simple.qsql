@@ -1,7 +1,9 @@
 -- The chat schema the reference app actually runs. Deliberately omits application-level
 -- crypto: no signature verification, no invite flow, no authorization constraints.
 
-table Member (
+-- Not `Member`: that name belongs to the strand's own membership table, and an app table
+-- may not reuse a strand table name (docs/strands.md "Reserved Table Names").
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),
     -- App-level role (owner | member). Not a cadre-core RBAC primitive: strand
@@ -17,13 +19,13 @@ table Message (
     -- here, not refused, so the losing row is lost with no error. See
     -- docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)".
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     -- NOTE: client-asserted, not server-verified — the engine has no server-assigned
     -- alternative (non-deterministic functions like current-time are rejected by the
     -- determinism validator at schema definition time). See docs/schema-guide.md
     -- "Ordering Events (There Is No Commit-Order Column)".
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 

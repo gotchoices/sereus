@@ -33,17 +33,17 @@ import {
 // ── Schemas ────────────────────────────────────────────────────────────────
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100)
 );
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 
@@ -189,13 +189,13 @@ describe('Multi-Party Strand Workflows', () => {
 					{ type: 'c', memberPrivateKeyA: aPrivateKey, memberPrivateKeyB: formResult.invitePrivateKey },
 				);
 
-				// Party A inserts a member + message
+				// Party A inserts a participant + message
 				const dbA = strandA.database!.getDatabase();
-				await dbA.exec("insert into App.Member (Id, Name) values ('a-1', 'Alice')");
+				await dbA.exec("insert into App.Participant (Id, Name) values ('a-1', 'Alice')");
 				// Message.Id is a text primary key (collision-free across concurrent
 				// peers); fixed text ids keep these replication assertions deterministic.
 				await dbA.exec(
-					`insert into App.Message (Id, MemberId, Content, Timestamp)
+					`insert into App.Message (Id, ParticipantId, Content, Timestamp)
 					 values ('msg-a-1', 'a-1', 'Hello from Party A', '${nowTimestamp()}')`,
 				);
 
@@ -210,9 +210,9 @@ describe('Multi-Party Strand Workflows', () => {
 				);
 
 				// Party B inserts a reply
-				await dbB.exec("insert into App.Member (Id, Name) values ('b-1', 'Bob')");
+				await dbB.exec("insert into App.Participant (Id, Name) values ('b-1', 'Bob')");
 				await dbB.exec(
-					`insert into App.Message (Id, MemberId, Content, Timestamp)
+					`insert into App.Message (Id, ParticipantId, Content, Timestamp)
 					 values ('msg-b-1', 'b-1', 'Reply from Party B', '${nowTimestamp()}')`,
 				);
 

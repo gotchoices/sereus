@@ -4,7 +4,7 @@
  * Replaces reference-app-rn's `use-chat.ts`. Optimystic doesn't yet expose
  * reactive subscriptions, so this polls the active strand's Quereus database on
  * a fixed interval (default 2000 ms), exposes an `ObservableArray` of message
- * rows for the ListView, registers the local member on first attach, and does an
+ * rows for the ListView, registers the local participant on first attach, and does an
  * optimistic append on send. Reads the active strand + local peer id from the
  * shared `CadreViewModel` (`cadre-vm.ts`).
  */
@@ -12,10 +12,10 @@
 import { Observable, ObservableArray } from '@nativescript/core';
 import type { StrandInstance } from '@serfab/cadre-core';
 import {
-	insertMember,
+	insertParticipant,
 	insertMessage,
 	queryMessages,
-	queryMembers,
+	queryParticipants,
 	type ChatMessage,
 } from './chat-operations';
 import { getCadreVm, type CadreViewModel } from './cadre-vm';
@@ -55,10 +55,10 @@ export class ChatViewModel extends Observable {
 	private _draft = '';
 	private _loading = true;
 	private _error = '';
-	private _memberCount = 0;
+	private _participantCount = 0;
 
 	private strand: StrandInstance | null = null;
-	private memberId: string | null = null;
+	private participantId: string | null = null;
 	private registered = false;
 	private timer: ReturnType<typeof setInterval> | undefined;
 
@@ -101,10 +101,10 @@ export class ChatViewModel extends Observable {
 		return this._error ? 'visible' : 'collapse';
 	}
 
-	/** Chat status-bar text — combines connection status with member count. */
+	/** Chat status-bar text — combines connection status with participant count. */
 	get statusText(): string {
 		if (this.cadre.connected) {
-			return `Connected · ${this.cadre.strandCount} strand(s) · ${this._memberCount} member(s)`;
+			return `Connected · ${this.cadre.strandCount} strand(s) · ${this._participantCount} participant(s)`;
 		}
 		if (this.cadre.connecting) {
 			return 'Connecting…';
@@ -141,25 +141,25 @@ export class ChatViewModel extends Observable {
 
 	// ── Internals ───────────────────────────────────────────────────────────
 
-	/** (Re)read the active strand + member id from the cadre VM. */
+	/** (Re)read the active strand + participant id from the cadre VM. */
 	private attach(): void {
 		const strand = this.cadre.getFirstStrand();
-		const memberId = this.cadre.getPeerId();
-		const changed = strand !== this.strand || memberId !== this.memberId;
+		const participantId = this.cadre.getPeerId();
+		const changed = strand !== this.strand || participantId !== this.participantId;
 		// A new strand instance (e.g. after reconnect) needs a fresh registration.
 		if (strand !== this.strand) {
 			this.registered = false;
 		}
 		this.strand = strand;
-		this.memberId = memberId;
+		this.participantId = participantId;
 
-		if (strand && memberId && !this.registered) {
-			const name = `User-${memberId.slice(-4)}`;
-			insertMember(strand, memberId, name)
+		if (strand && participantId && !this.registered) {
+			const name = `User-${participantId.slice(-4)}`;
+			insertParticipant(strand, participantId, name)
 				.then(() => {
 					this.registered = true;
 				})
-				.catch((err) => console.warn('[chat-vm] member register failed:', err));
+				.catch((err) => console.warn('[chat-vm] participant register failed:', err));
 		}
 
 		if (changed) {
@@ -169,7 +169,7 @@ export class ChatViewModel extends Observable {
 
 	private async refresh(): Promise<void> {
 		// A strand may be created after the chat screen is already open.
-		if (!this.strand || !this.memberId) {
+		if (!this.strand || !this.participantId) {
 			this.attach();
 		}
 		const strand = this.strand;
@@ -179,12 +179,12 @@ export class ChatViewModel extends Observable {
 		}
 
 		try {
-			const [messages, members] = await Promise.all([
+			const [messages, participants] = await Promise.all([
 				queryMessages(strand),
-				queryMembers(strand),
+				queryParticipants(strand),
 			]);
 			this.setMessages(messages);
-			this.setMemberCount(members.length);
+			this.setParticipantCount(participants.length);
 			this.setError('');
 		} catch (err) {
 			this.setError(errMessage(err));
@@ -198,22 +198,22 @@ export class ChatViewModel extends Observable {
 		const text = this._draft.trim();
 		if (!text) return;
 		const strand = this.strand;
-		const memberId = this.memberId;
+		const participantId = this.participantId;
 		if (!strand) throw new Error('No strand attached');
-		if (!memberId) throw new Error('No member id');
+		if (!participantId) throw new Error('No participant id');
 
 		this.draft = '';
-		const message = await insertMessage(strand, memberId, text);
-		this._messages.push(this.toRow(message, memberId));
+		const message = await insertMessage(strand, participantId, text);
+		this._messages.push(this.toRow(message, participantId));
 		this.setError('');
 	}
 
 	private toRow(message: ChatMessage, ownId: string | null): ChatRow {
-		const isOwn = message.MemberId === ownId;
+		const isOwn = message.ParticipantId === ownId;
 		return {
 			id: message.Id,
 			content: message.Content,
-			sender: message.MemberName ?? message.MemberId.slice(-6),
+			sender: message.ParticipantName ?? message.ParticipantId.slice(-6),
 			time: formatTime(message.Timestamp),
 			isOwn,
 			senderVisibility: isOwn ? 'collapse' : 'visible',
@@ -222,14 +222,14 @@ export class ChatViewModel extends Observable {
 	}
 
 	private setMessages(messages: ChatMessage[]): void {
-		const rows = messages.map((m) => this.toRow(m, this.memberId));
+		const rows = messages.map((m) => this.toRow(m, this.participantId));
 		// Replace in place so the ListView diffs against the same array instance.
 		this._messages.splice(0, this._messages.length, ...rows);
 	}
 
-	private setMemberCount(count: number): void {
-		if (count === this._memberCount) return;
-		this._memberCount = count;
+	private setParticipantCount(count: number): void {
+		if (count === this._participantCount) return;
+		this._participantCount = count;
 		this.notifyPropertyChange('statusText', this.statusText);
 	}
 

@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
 import { useChat } from '../src/use-chat';
-import { memberDisplayName, parseStoredDatetime, type ChatMessage } from '../src/chat-operations';
+import { participantDisplayName, parseStoredDatetime, type ChatMessage } from '../src/chat-operations';
 import { connectionBanner } from '../src/connection-status';
 import { TEST_IDS } from '../src/test-ids';
 
@@ -26,8 +26,8 @@ export default function ChatScreen() {
 
   const chat = useChat({
     strand: activeStrand,
-    memberId: cadre.peerId,
-    memberName: cadre.peerId ? memberDisplayName(cadre.peerId) : undefined,
+    participantId: cadre.peerId,
+    participantName: cadre.peerId ? participantDisplayName(cadre.peerId) : undefined,
   });
 
   const [draft, setDraft] = useState('');
@@ -57,7 +57,7 @@ export default function ChatScreen() {
     status: cadre.status,
     error: cadre.error,
     strandCount: cadre.strands.size,
-    memberCount: chat.members.length,
+    participantCount: chat.participants.length,
     relayStatus: cadre.relayStatus,
   });
 
@@ -95,7 +95,7 @@ export default function ChatScreen() {
         renderItem={({ item }) => (
           <MessageBubble
             msg={item}
-            isOwn={item.MemberId === cadre.peerId}
+            isOwn={item.ParticipantId === cadre.peerId}
           />
         )}
         contentContainerStyle={styles.list}
@@ -184,7 +184,7 @@ function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
   return (
     <View testID={TEST_IDS.chat.messageRow(msg.Id)} style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
       {!isOwn && (
-        <Text style={styles.sender}>{msg.MemberName ?? msg.MemberId.slice(-6)}</Text>
+        <Text style={styles.sender}>{msg.ParticipantName ?? msg.ParticipantId.slice(-6)}</Text>
       )}
       <Text style={styles.msgText}>{msg.Content}</Text>
       <Text style={styles.time}>

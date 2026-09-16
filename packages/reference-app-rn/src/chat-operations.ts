@@ -15,22 +15,22 @@ import { uuid } from './uuid';
 export interface ChatMessage {
   /** Globally-unique text id (UUID) — generated locally, collision-free across peers. */
   Id: string;
-  MemberId: string;
+  ParticipantId: string;
   Content: string;
   Timestamp: string;
-  /** Joined from Member table when available */
-  MemberName?: string;
+  /** Joined from Participant table when available */
+  ParticipantName?: string;
 }
 
 /**
  * App-level chat role. NOT a cadre-core RBAC primitive — strand membership is
  * `MemberPrivateKey`-granular at the control-network layer; this role lives in
- * the chat `Member` table only. `owner` is assigned to the closed-strand
+ * the chat `Participant` table only. `owner` is assigned to the closed-strand
  * creator; everyone else is a `member`.
  */
 export type ChatRole = 'owner' | 'member';
 
-export interface ChatMember {
+export interface ChatParticipant {
   Id: string;
   Name: string;
   Role: ChatRole;
@@ -40,12 +40,12 @@ export interface ChatMember {
 
 /**
  * Friendly display name for a peer. The chat UI and the closed-strand role
- * assignment both register the local member, and `insertMember` is idempotent on
+ * assignment both register the local participant, and `insertParticipant` is idempotent on
  * `Id` — whichever runs first pins the `Name`. Deriving the name from the peerId
  * here (instead of each call site passing the raw peerId or its own format) keeps
- * the member list consistent no matter which insert lands first.
+ * the participant list consistent no matter which insert lands first.
  */
-export function memberDisplayName(peerId: string): string {
+export function participantDisplayName(peerId: string): string {
   return `User-${peerId.slice(-4)}`;
 }
 
@@ -67,21 +67,21 @@ function getDb(strand: StrandInstance): Database {
   return strand.database.getDatabase();
 }
 
-// ── Member operations ────────────────────────────────────────────────────────
+// ── Participant operations ───────────────────────────────────────────────────
 
 /**
- * Register a member in the chat strand.
+ * Register a participant in the chat strand.
  *
- * `insert or ignore` is idempotent on the member `Id`, so a role assigned at
+ * `insert or ignore` is idempotent on the participant `Id`, so a role assigned at
  * create/join time (e.g. `owner`) is NOT clobbered by a later default-`member`
  * registration. Omit `role` to take the schema default (`member`).
  *
  * @param strand  Active strand instance
- * @param id      Unique member identifier (typically peerId or a UUID)
+ * @param id      Unique participant identifier (typically peerId or a UUID)
  * @param name    Display name
  * @param role    App-level role (defaults to `member` via the schema)
  */
-export async function insertMember(
+export async function insertParticipant(
   strand: StrandInstance,
   id: string,
   name: string,
@@ -90,31 +90,31 @@ export async function insertMember(
   const db = getDb(strand);
   if (role) {
     await db.exec(
-      'insert or ignore into App.Member (Id, Name, Role) values (?, ?, ?)',
+      'insert or ignore into App.Participant (Id, Name, Role) values (?, ?, ?)',
       [id, name, role],
     );
     return;
   }
   await db.exec(
-    'insert or ignore into App.Member (Id, Name) values (?, ?)',
+    'insert or ignore into App.Participant (Id, Name) values (?, ?)',
     [id, name],
   );
 }
 
 /**
- * Query all members.
+ * Query all participants.
  */
-export async function queryMembers(strand: StrandInstance): Promise<ChatMember[]> {
+export async function queryParticipants(strand: StrandInstance): Promise<ChatParticipant[]> {
   const db = getDb(strand);
-  const members: ChatMember[] = [];
-  for await (const row of db.eval('select Id, Name, Role from App.Member')) {
-    members.push({
+  const participants: ChatParticipant[] = [];
+  for await (const row of db.eval('select Id, Name, Role from App.Participant')) {
+    participants.push({
       Id: row.Id as string,
       Name: row.Name as string,
       Role: (row.Role as ChatRole) ?? 'member',
     });
   }
-  return members;
+  return participants;
 }
 
 // ── Message operations ───────────────────────────────────────────────────────
@@ -122,14 +122,14 @@ export async function queryMembers(strand: StrandInstance): Promise<ChatMember[]
 /**
  * Insert a chat message.
  *
- * @param strand    Active strand instance
- * @param memberId  The sending member's Id
- * @param content   Message text
- * @returns         The inserted message
+ * @param strand         Active strand instance
+ * @param participantId  The sending participant's Id
+ * @param content        Message text
+ * @returns              The inserted message
  */
 export async function insertMessage(
   strand: StrandInstance,
-  memberId: string,
+  participantId: string,
   content: string,
 ): Promise<ChatMessage> {
   const db = getDb(strand);
@@ -144,21 +144,21 @@ export async function insertMessage(
   const id = uuid();
 
   await db.exec(
-    `insert into App.Message (Id, MemberId, Content, Timestamp)
+    `insert into App.Message (Id, ParticipantId, Content, Timestamp)
      values (?, ?, ?, ?)`,
-    [id, memberId, content, now],
+    [id, participantId, content, now],
   );
 
   return {
     Id: id,
-    MemberId: memberId,
+    ParticipantId: participantId,
     Content: content,
     Timestamp: now,
   };
 }
 
 /**
- * Query messages, most recent last.  Optionally join member names.
+ * Query messages, most recent last.  Optionally join participant names.
  *
  * @param strand  Active strand instance
  * @param limit   Max messages to return (default 100)
@@ -179,19 +179,19 @@ export async function queryMessages(
   // engine exposes no commit-order column. See docs/schema-guide.md
   // "Ordering Events (There Is No Commit-Order Column)".
   for await (const row of db.eval(
-    `select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
+    `select M.Id, M.ParticipantId, M.Content, M.Timestamp, P.Name as ParticipantName
      from App.Message M
-     left join App.Member Mem on Mem.Id = M.MemberId
+     left join App.Participant P on P.Id = M.ParticipantId
      order by M.Timestamp asc, M.Id asc
      limit ?`,
     [limit],
   )) {
     messages.push({
       Id: row.Id as string,
-      MemberId: row.MemberId as string,
+      ParticipantId: row.ParticipantId as string,
       Content: row.Content as string,
       Timestamp: row.Timestamp as string,
-      MemberName: (row.MemberName as string) ?? undefined,
+      ParticipantName: (row.ParticipantName as string) ?? undefined,
     });
   }
 

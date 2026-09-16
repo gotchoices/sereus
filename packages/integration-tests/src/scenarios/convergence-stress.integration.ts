@@ -25,17 +25,17 @@ import { randomUUID } from 'node:crypto';
 // ── Chat schema (mirrors websocket-chat.integration.ts) ─────────────────
 
 const CHAT_SCHEMA = `
-table Member (
+table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100)
 );
 
 table Message (
     Id text primary key,
-    MemberId text not null,
+    ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
-    foreign key (MemberId) references Member(Id)
+    foreign key (ParticipantId) references Participant(Id)
 );
 `;
 
@@ -84,7 +84,7 @@ async function insertBatch(
 	const db = strand.database!.getDatabase();
 	for (let i = 0; i < count; i++) {
 		await db.exec(
-			`insert into App.Message (Id, MemberId, Content, Timestamp)
+			`insert into App.Message (Id, ParticipantId, Content, Timestamp)
 			 values (?, ?, ?, ?)`,
 			[randomUUID(), memberId, `${prefix}-${i}`, nowTimestamp()],
 		);
@@ -124,8 +124,8 @@ async function assertIdenticalMessages(
 	const dbA = strandA.database!.getDatabase();
 	const dbB = strandB.database!.getDatabase();
 
-	const rowsA = await queryAll(dbA, 'select Id, MemberId, Content from App.Message order by Content');
-	const rowsB = await queryAll(dbB, 'select Id, MemberId, Content from App.Message order by Content');
+	const rowsA = await queryAll(dbA, 'select Id, ParticipantId, Content from App.Message order by Content');
+	const rowsB = await queryAll(dbB, 'select Id, ParticipantId, Content from App.Message order by Content');
 
 	expect(rowsA.length).toBe(expectedCount);
 	expect(rowsB.length).toBe(expectedCount);
@@ -199,27 +199,27 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 		{ timeoutMs: 10_000, description: 'drone strand sees inbound connection' },
 	);
 
-	// Seed both sides with a member
+	// Seed both sides with a participant
 	const droneDb = droneStrand.database!.getDatabase();
-	await droneDb.exec("insert into App.Member (Id, Name) values ('drone-1', 'Drone')");
+	await droneDb.exec("insert into App.Participant (Id, Name) values ('drone-1', 'Drone')");
 
 	const phoneDb = phoneStrand.database!.getDatabase();
-	await phoneDb.exec("insert into App.Member (Id, Name) values ('phone-1', 'Phone')");
+	await phoneDb.exec("insert into App.Participant (Id, Name) values ('phone-1', 'Phone')");
 
-	// Wait for member replication both ways
+	// Wait for participant replication both ways
 	await waitUntil(
 		async () => {
-			const row = await phoneDb.get("select Id from App.Member where Id = 'drone-1'");
+			const row = await phoneDb.get("select Id from App.Participant where Id = 'drone-1'");
 			return row?.Id === 'drone-1';
 		},
-		{ timeoutMs: 15_000, intervalMs: 250, description: 'drone member replicates to phone' },
+		{ timeoutMs: 15_000, intervalMs: 250, description: 'drone participant replicates to phone' },
 	);
 	await waitUntil(
 		async () => {
-			const row = await droneDb.get("select Id from App.Member where Id = 'phone-1'");
+			const row = await droneDb.get("select Id from App.Participant where Id = 'phone-1'");
 			return row?.Id === 'phone-1';
 		},
-		{ timeoutMs: 15_000, intervalMs: 250, description: 'phone member replicates to drone' },
+		{ timeoutMs: 15_000, intervalMs: 250, description: 'phone participant replicates to drone' },
 	);
 
 	return { drone, phone, droneStrand, phoneStrand };
@@ -295,14 +295,14 @@ describe('Convergence Stress Tests', () => {
 				if (i % 2 === 1) {
 					await queryAll(droneDb, 'select Id from App.Message');
 					await droneDb.exec(
-						`insert into App.Message (Id, MemberId, Content, Timestamp)
+						`insert into App.Message (Id, ParticipantId, Content, Timestamp)
 						 values (?, 'drone-1', ?, ?)`,
 						[randomUUID(), `interleaved-${i}`, nowTimestamp()],
 					);
 				} else {
 					await queryAll(phoneDb, 'select Id from App.Message');
 					await phoneDb.exec(
-						`insert into App.Message (Id, MemberId, Content, Timestamp)
+						`insert into App.Message (Id, ParticipantId, Content, Timestamp)
 						 values (?, 'phone-1', ?, ?)`,
 						[randomUUID(), `interleaved-${i}`, nowTimestamp()],
 					);

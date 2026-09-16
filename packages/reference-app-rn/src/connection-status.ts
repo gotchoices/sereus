@@ -23,8 +23,8 @@ export interface ConnectionBannerInput {
   error: string | null;
   /** Number of attached strands (shown when connected). */
   strandCount: number;
-  /** Number of members in the active strand (shown when connected). */
-  memberCount: number;
+  /** Number of chat participants in the active strand (shown when connected). */
+  participantCount: number;
   /**
    * Relay-reservation posture. Anything but `reserved` means this phone has no
    * address a stranger could dial, so it cannot hand out an invitation.
@@ -60,11 +60,11 @@ function bannerColor({ resuming, degraded, status }: ConnectionBannerInput): str
 }
 
 function bannerText(input: ConnectionBannerInput): string {
-  const { resuming, degraded, status, error, strandCount, memberCount } = input;
+  const { resuming, degraded, status, error, strandCount, participantCount } = input;
   if (resuming) return 'Resuming — syncing…';
   if (degraded) return 'Offline — reconnecting…';
   switch (status) {
-    case 'connected': return `Connected · ${strandCount} strand(s) · ${memberCount} member(s)${reachabilitySuffix(input)}`;
+    case 'connected': return `Connected · ${strandCount} strand(s) · ${participantCount} participant(s)${reachabilitySuffix(input)}`;
     case 'connecting': return 'Connecting…';
     default: return error ?? 'Not connected — go to Settings';
   }

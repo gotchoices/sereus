@@ -11,4 +11,5 @@ export {
 	strandClusterPolicy
 } from './cluster-size.js';
 export { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
+export { assertNoReservedTableNames, strandReservedTableNames, ReservedTableNameError } from './reserved-table-names.js';
 export type { StrandConnectionOptions, SereusPluginResult, StrandTransactor } from './types.js';

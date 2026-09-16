@@ -47,13 +47,13 @@ export function createSidecar(node, sAppConfig) {
 
 			if (method === 'POST' && url.pathname === '/message/insert') {
 				const body = await readBody(req);
-				if (!body.strandId || !body.memberId || !body.content) {
+				if (!body.strandId || !body.participantId || !body.content) {
 					return send(res, 400, {
-						error: 'strandId, memberId, and content are required',
+						error: 'strandId, participantId, and content are required',
 					});
 				}
 				const message = await insertMessage(
-					node, body.strandId, body.memberId, body.content,
+					node, body.strandId, body.participantId, body.content,
 				);
 				return send(res, 200, { message });
 			}
@@ -65,11 +65,11 @@ export function createSidecar(node, sAppConfig) {
 				return send(res, 200, { messages });
 			}
 
-			const membersMatch = url.pathname.match(/^\/members\/(.+)$/);
-			if (method === 'GET' && membersMatch) {
-				const strandId = decodeURIComponent(membersMatch[1]);
-				const members = await queryMembers(node, strandId);
-				return send(res, 200, { members });
+			const participantsMatch = url.pathname.match(/^\/participants\/(.+)$/);
+			if (method === 'GET' && participantsMatch) {
+				const strandId = decodeURIComponent(participantsMatch[1]);
+				const participants = await queryParticipants(node, strandId);
+				return send(res, 200, { participants });
 			}
 
 			send(res, 404, { error: 'Not found' });
@@ -107,13 +107,13 @@ function getStrandDb(node, strandId) {
 	return strand.database.getDatabase();
 }
 
-async function insertMessage(node, strandId, memberId, content) {
+async function insertMessage(node, strandId, participantId, content) {
 	const db = getStrandDb(node, strandId);
 
-	// Auto-register member if absent
+	// Auto-register participant if absent
 	await db.exec(
-		'insert or ignore into App.Member (Id, Name) values (?, ?)',
-		[memberId, memberId],
+		'insert or ignore into App.Participant (Id, Name) values (?, ?)',
+		[participantId, participantId],
 	);
 
 	// Quereus datetime columns coerce any valid input to T-separated ISO form on read.
@@ -124,41 +124,41 @@ async function insertMessage(node, strandId, memberId, content) {
 	const id = randomUUID();
 
 	await db.exec(
-		'insert into App.Message (Id, MemberId, Content, Timestamp) values (?, ?, ?, ?)',
-		[id, memberId, content, now],
+		'insert into App.Message (Id, ParticipantId, Content, Timestamp) values (?, ?, ?, ?)',
+		[id, participantId, content, now],
 	);
 
-	return { Id: id, MemberId: memberId, Content: content, Timestamp: now };
+	return { Id: id, ParticipantId: participantId, Content: content, Timestamp: now };
 }
 
 async function queryMessages(node, strandId) {
 	const db = getStrandDb(node, strandId);
 	const messages = [];
 	for await (const row of db.eval(
-		`select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
+		`select M.Id, M.ParticipantId, M.Content, M.Timestamp, P.Name as ParticipantName
 		 from App.Message M
-		 left join App.Member Mem on Mem.Id = M.MemberId
+		 left join App.Participant P on P.Id = M.ParticipantId
 		 order by M.Timestamp asc, M.Id asc
 		 limit 1000`,
 	)) {
 		messages.push({
 			Id: row.Id,
-			MemberId: row.MemberId,
+			ParticipantId: row.ParticipantId,
 			Content: row.Content,
 			Timestamp: row.Timestamp,
-			MemberName: row.MemberName ?? undefined,
+			ParticipantName: row.ParticipantName ?? undefined,
 		});
 	}
 	return messages;
 }
 
-async function queryMembers(node, strandId) {
+async function queryParticipants(node, strandId) {
 	const db = getStrandDb(node, strandId);
-	const members = [];
-	for await (const row of db.eval('select Id, Name from App.Member')) {
-		members.push({ Id: row.Id, Name: row.Name });
+	const participants = [];
+	for await (const row of db.eval('select Id, Name from App.Participant')) {
+		participants.push({ Id: row.Id, Name: row.Name });
 	}
-	return members;
+	return participants;
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────
