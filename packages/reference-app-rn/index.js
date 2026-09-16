@@ -6,6 +6,10 @@ import './polyfills/hermes';
 import './polyfills/webrtc';
 import './polyfills/intl-pluralrules';
 import './polyfills/event';
+// Prints the native / polyfilled / gap / MISSING table under __DEV__. Its position
+// here is the point: after every polyfill, before the router evaluates the app tree,
+// so the table beats any import-time crash caused by a global that is not there.
+import './polyfills/audit';
 
 // Hand off to Expo Router's standard entry.
 import 'expo-router/entry';

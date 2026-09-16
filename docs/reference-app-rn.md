@@ -234,11 +234,15 @@ Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-bi
 The app uses a custom entry point (`index.js`) that imports global polyfills before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time. The import order matters:
 
 ```js
-import './polyfills/hermes';          // Runtime globals (crypto, structuredClone, etc.)
+import './polyfills/hermes';           // Runtime globals (crypto, AbortSignal, WebSocket, structuredClone, …)
+import './polyfills/webrtc';           // react-native-webrtc registerGlobals() — after hermes, before app code
 import './polyfills/intl-pluralrules'; // Intl.PluralRules for moat-maker
 import './polyfills/event';            // Event, CustomEvent, EventTarget for libp2p
-import 'expo-router/entry';           // App code starts here
+import './polyfills/audit';            // Prints the boot audit table under __DEV__ (below)
+import 'expo-router/entry';            // App code starts here
 ```
+
+`polyfills/audit.js` is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
 
 #### Required polyfill dependencies
 
@@ -258,7 +262,7 @@ The following dependencies **must** be listed as direct dependencies in your app
 
 Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
 
-`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2')` inside `crypto.subtle.digest`) and `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2'`). It currently resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously — the polyfills use the v2 import path, so the direct dep must be pinned `^2.0.0`.
+`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It currently resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously — the polyfills use the v2 import path, so the direct dep must be pinned `^2.0.0`.
 
 #### Global polyfills (`polyfills/hermes.js`)
 
@@ -275,6 +279,11 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 | `Promise.withResolvers()` | @libp2p/utils, @chainsafe/libp2p-yamux, it-queue, mortice, abort-error | ES2024 API |
 | `AbortSignal.prototype.throwIfAborted()` | libp2p, @libp2p/utils, @libp2p/circuit-relay-v2, it-pushable, p-retry | DOM spec addition |
 | Timer `.ref()` / `.unref()` | @optimystic/db-p2p, undici, libp2p internals | Wraps Hermes numeric timer IDs in objects; also patches `clearTimeout`/`clearInterval` to unwrap (see `hermes.js` `// ── Timer .ref() / .unref() ──` section) |
+| `TextDecoder` | `uint8arrays` (via libp2p / multiformats / yamux) | UTF-8 only; throws `RangeError` for any other encoding. No-op on Expo SDK 52+, which has it natively |
+| `AbortSignal.timeout()` | libp2p's dial queue, connection pruner and registrar; @libp2p/circuit-relay-v2 reservations; @libp2p/websockets; @libp2p/identify | Without it every dial that carries no signal of its own throws `TypeError: AbortSignal.timeout is not a function` |
+| `AbortSignal.any()` | @optimystic/db-p2p's repo client, `p-wait-for`, @quereus/quereus | Detaches its listeners from every input once the combined signal settles — callers pair a long-lived signal with a fresh per-request one on each RPC, so a version that only relied on `{ once: true }` accumulated one listener per call |
+| `AbortSignal` abort reasons | everything that calls `controller.abort(err)` | React Native installs `abort-controller` 3.0.0, whose `abort()` takes no argument (below) |
+| `WebSocket.prototype.bufferedAmount` | @libp2p/websockets | Reports `0`. React Native hands each frame straight to the native socket and keeps no JS-side queue, so nothing is ever pending from the caller's point of view (below) |
 
 #### Other global polyfills
 
@@ -295,6 +304,9 @@ These APIs are natively available in the target Hermes/Expo versions used by thi
 | `TextDecoder` | Expo SDK 52+ (UTF-8 only) | Bare RN (non-Expo) Hermes through at least 0.85 does NOT ship this — `polyfills/hermes.js` has a UTF-8-only fallback. For non-UTF-8 encodings, use the `text-encoding` package. |
 | `BigInt` | Hermes since RN 0.70 | |
 | `crypto.getRandomValues` | RN 0.76+ with New Architecture | `react-native-get-random-values` still recommended as safety net |
+| `queueMicrotask` | React Native, `Libraries/Core/setUpTimers.js` | Read by @libp2p/utils, @libp2p/circuit-relay-v2 and @libp2p/webrtc |
+| `performance.now` | React Native, `Libraries/Core/setUpPerformance.js` | Read by `p-retry`, Quereus and cadre-core |
+| `AbortController` / `AbortSignal` | React Native, `Libraries/Core/setUpXHR.js` | From the `abort-controller` npm package, which React Native installs over whatever the engine had. Missing `reason`, `timeout`, `any` and `throwIfAborted` — all four are added in `polyfills/hermes.js` |
 
 > **Do not add `fast-text-encoding`.** Hermes has native `TextEncoder` in all Expo SDK 49+ versions. Adding the polyfill wastes bundle size (~4 KB) and can cause subtle double-encoding bugs when the polyfill's `TextEncoder` replaces the native one with slightly different `Uint8Array` subclass behavior. If your app currently depends on it, remove it.
 
@@ -363,9 +375,12 @@ packages/reference-app-rn/
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
   polyfills/
-    hermes.js                 # Runtime globals: crypto, structuredClone, Promise.withResolvers, etc.
+    hermes.js                 # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
+    webrtc.js                 # react-native-webrtc registerGlobals() for @libp2p/webrtc
     intl-pluralrules.js       # Intl.PluralRules for moat-maker
     event.js                  # Event, CustomEvent, EventTarget globals for Hermes
+    registry.js               # Records which globals each polyfill actually patched
+    audit.js                  # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
     node-os.js                # Minimal os module shim for libp2p
     node-crypto.js            # createHash() shim via @noble/hashes
   schemas/
@@ -388,6 +403,39 @@ packages/reference-app-rn/
 | `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
 
 **Babel helpers must be 7.29.2 or newer.** Hermes has no native async generators, so Metro's Babel transform rewrites them onto Babel's `wrapAsyncGenerator` helper, imported from `@babel/runtime` (or inlined from `@babel/helpers` for script sources). Before 7.29.2 that helper stopped a generator's `finally` at its first `await` when the consumer left a `for await` loop early. Quereus releases its execution lock in such a `finally`, so on the phone the first early-exit read (`strandTableCount`) left the lock held, and founding a strand hung at `StrandDatabase.bootstrapFounder`. Node runs async generators natively, so no headless test saw it. The app declares `@babel/runtime` `^7.29.2`, and `test/metro-babel/async-generator-cleanup.spec.ts` (Vitest project `metro-babel`) compiles an early-exit probe with the app's own Metro Babel transformer and fails, naming the upgrade, if any helper a bundle would use drops that cleanup. Upgrade inside Babel 7 with `yarn up -R @babel/runtime @babel/helpers` (a bare `yarn up` moves to Babel 8), then restart Metro with `--clear` so it recompiles.
+
+#### The web APIs the phone's connectivity depends on
+
+**Three of them decide whether the phone can dial at all.** Hermes provides no `AbortSignal.timeout`, no `AbortSignal.any`, and React Native's WebSocket has no `bufferedAmount` — on the instance or on the prototype — and libp2p reads all three on the dial path. `connection-manager/dial-queue.js` calls `AbortSignal.timeout(this.dialTimeout)` for any dial that does not carry its own signal, so without it every such dial threw `TypeError: AbortSignal.timeout is not a function`. `@libp2p/websockets` gates each write on `websocket.bufferedAmount < 4194304`, and `undefined < 4194304` is `false` — so the transport concluded the socket was full, waited for a drain event that could never arrive, and the dial died on the ten-second timeout as `AbortError: The operation was aborted` with nothing naming the cause. `polyfills/hermes.js` supplies all three. With them, a device session on 2026-09-16 connected in 1.6 s, held a relay reservation for the first time, and completed a cross-party `formStrand` through that relay.
+
+**React Native drops abort reasons, which is why that failure was opaque.** `Libraries/Core/setUpXHR.js` installs the `abort-controller` npm package (3.0.0) as the global `AbortController`/`AbortSignal`, unconditionally replacing whatever the engine had. That release predates the DOM's `reason`: its `abort()` takes no argument and nothing ever defines `signal.reason`. Every `controller.abort(err)` in the bundle therefore lost its error, and `throwIfAborted` fell back to a generic `AbortError`. `polyfills/hermes.js` records the reason on the signal before delegating, so a dial timeout now surfaces as `TimeoutError` and a cancelled operation carries whatever the caller passed.
+
+**`crypto.subtle` provides `digest` and nothing else.** The polyfill defines a `crypto.subtle` object with a single `digest` method. `@libp2p/crypto`'s `keys/index.js` calls `crypto.subtle.importKey` and `exportKey` for ECDSA and RSA keys, and `@libp2p/keychain` calls the AES-GCM surface (`encrypt`, `decrypt`, `deriveKey`) through `ciphers/aes-gcm.browser.js`. None of those exist, so any of them throws a `TypeError` the moment it is reached. The phone does not reach them: it uses Ed25519, whose browser variant is pure `@noble/curves`, and it does not use the libp2p keychain. This is a dormant path, not a working one — adding a second key type, or anything that wants the keychain, breaks immediately and needs real WebCrypto first.
+
+**Checked during the same audit and found not to be gaps.** Each was read out of installed sources, and several were confirmed against the string table of an exported Android bundle (`dist/_expo/static/js/android/index-*.hbc` from `yarn test:bundle`) — a string that a module would have to contain is decisive about whether Metro bundled that module.
+
+| API | Why it is not a gap |
+|-----|---------------------|
+| `queueMicrotask` | React Native installs it in `Libraries/Core/setUpTimers.js`, before the entry module runs |
+| `performance.now` | React Native installs it in `Libraries/Core/setUpPerformance.js` |
+| `BroadcastChannel` | Only `mortice`'s `browser` build needs it. `mortice` also ships `dist/src/react-native.js` and declares it in its package.json `react-native` field — a bare `TypedEventEmitter` with no channel at all — and Metro's default `resolverMainFields` puts `react-native` first. The exported bundle carries no `BroadcastChannel` string. (The NativeScript app resolves the `browser` variant instead, which is why it polyfills this and the RN app does not.) |
+| `WebAssembly` | `@chainsafe/as-sha256` and `@chainsafe/as-chacha20poly1305` reach the graph only through `@chainsafe/libp2p-noise`, whose package.json `browser` field maps `crypto/index.js` to `crypto/index.browser.js` — noble ciphers and hashes, no WebAssembly. The exported bundle contains `pureJsCrypto` and neither `as-sha256` nor `as-chacha20poly1305` |
+| `navigator.userAgent` | `libp2p`'s `user-agent.browser.js` reads it with no guard, but libp2p's package.json `react-native` field points at `user-agent.react-native.js` instead, which uses `Platform.OS`. The exported bundle contains `react-native/` and no `browser/`, so identify announces `libp2p/<version> react-native/android-<version>` |
+
+Those last three all depend on Metro applying a package's `browser`/`react-native` subpath map to that package's own internal relative imports. `metro.config.js` hand-rewrites that map for `@libp2p/crypto` and `@libp2p/webrtc` because package `exports` resolution made it unreliable for them — so if a future bundle ever fails to resolve `@chainsafe/as-*`, or announces `browser/undefined` in identify, this is the mechanism that slipped.
+
+**One question a headless test cannot answer.** `libp2p/dist/src/connection-manager/dial-queue.js` throws `new AggregateError(errors, 'All multiaddr dials failed')` when every address for a peer fails. Whether Hermes (`hermes-2025-06-04-RNv0.79.3`) provides `AggregateError` cannot be determined from this repo — it holds the `hermesc` compiler, not a Hermes VM. If it is absent, a completely failed dial raises a `ReferenceError` from the throw statement itself and the per-address causes are lost, which looks exactly like the silence described above. The boot audit below probes it on the device.
+
+#### Guards
+
+| What | Where | What it catches |
+|------|-------|-----------------|
+| Behaviour of `polyfills/hermes.js` | `test/polyfills/hermes-polyfills.spec.ts` (Vitest project `polyfills`) | Evaluates the polyfill against a fake Hermes + React Native surface, then drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. Deleting any arm fails a test rather than a phone |
+| The next missing global | `test/polyfills/dependency-globals.spec.ts` | Reads a listed set of dependency `dist` trees and fails when a global that nothing provides starts appearing. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
+| The real runtime | `polyfills/audit.js`, imported by `index.js` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively, and the only thing that can answer the `AggregateError` question |
+
+The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at.
+
 
 ### Metro Configuration
 

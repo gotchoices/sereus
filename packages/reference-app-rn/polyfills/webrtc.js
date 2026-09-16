@@ -24,5 +24,9 @@
 // (expo-dev-client), so it does not regress Expo Go support (never had it).
 // Media (camera/mic) is unused — Sereus uses data channels only.
 import { registerGlobals } from 'react-native-webrtc';
+import { markPolyfilled } from './registry';
 
 registerGlobals();
+// Unconditional: registerGlobals() overwrites whatever was there, so the audit should
+// never call the WebRTC surface native.
+markPolyfilled('RTCPeerConnection');

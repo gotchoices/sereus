@@ -5,6 +5,8 @@
  * ship Intl.PluralRules, so we provide a lightweight English-only shim.
  */
 
+import { markPolyfilled } from './registry';
+
 if (typeof Intl !== 'undefined' && typeof Intl.PluralRules === 'undefined') {
 	const ordinalRules = (n) => {
 		const mod10 = n % 10;
@@ -37,4 +39,5 @@ if (typeof Intl !== 'undefined' && typeof Intl.PluralRules === 'undefined') {
 	}
 
 	Intl.PluralRules = PluralRules;
+	markPolyfilled('Intl.PluralRules');
 }

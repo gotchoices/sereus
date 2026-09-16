@@ -22,6 +22,11 @@ if (__DEV__ && !process.env.DEBUG) {
 	process.env.DEBUG = 'sereus:cadre:timing';
 }
 
+// Which patches below actually fired, for the at-boot audit in polyfills/audit.js.
+// Reading `typeof X === 'undefined'` at audit time cannot tell a native API from one
+// of ours; this can.
+const { markPolyfilled } = require('./registry');
+
 // Native CSPRNG — must be the very first import so globalThis.crypto.getRandomValues
 // is available before any library code. No-op if the native API already exists.
 // NOTE: requires native rebuild (EAS Build or local native build).  This is a
@@ -44,7 +49,13 @@ if (!globalThis.crypto.subtle) {
 	const _hashCache = {};
 	function getHash(name) {
 		if (_hashCache[name]) return _hashCache[name];
-		const mod = require('@noble/hashes/sha2');
+		// The `.js` suffix matters: @noble/hashes 2.x lists only "./sha2.js" in its
+		// package.json `exports`, and Expo SDK 52+ turns on Metro's
+		// `unstable_enablePackageExports`. A bare '@noble/hashes/sha2' is not an exported
+		// subpath — Metro still resolves it, by falling back to file-based resolution and
+		// logging a warning on every bundle, but that fallback is explicitly a transition
+		// aid and the exported path costs nothing.
+		const mod = require('@noble/hashes/sha2.js');
 		_hashCache['SHA-256'] = mod.sha256;
 		_hashCache['SHA-512'] = mod.sha512;
 		return _hashCache[name];
@@ -57,6 +68,7 @@ if (!globalThis.crypto.subtle) {
 			return Promise.resolve(fn(new Uint8Array(data)).buffer);
 		},
 	};
+	markPolyfilled('crypto.subtle.digest');
 }
 
 // ── TextDecoder (UTF-8 only) ───────────────────────────────────────────────
@@ -116,6 +128,7 @@ if (typeof globalThis.TextDecoder === 'undefined') {
 		}
 	}
 	globalThis.TextDecoder = TextDecoderPolyfill;
+	markPolyfilled('TextDecoder');
 }
 
 // ── structuredClone ─────────────────────────────────────────────────────────
@@ -127,6 +140,7 @@ if (typeof globalThis.structuredClone !== 'function') {
 	globalThis.structuredClone = function structuredClone(value) {
 		return _structuredClone(value);
 	};
+	markPolyfilled('structuredClone');
 }
 
 // ── Symbol.asyncIterator ───────────────────────────────────────────────────
@@ -149,6 +163,7 @@ if (typeof Symbol !== 'undefined' && typeof Symbol.asyncIterator === 'undefined'
 		// Best-effort fallback for runtimes that disallow defineProperty on Symbol.
 		Symbol.asyncIterator = Symbol.for('Symbol.asyncIterator');
 	}
+	markPolyfilled('Symbol.asyncIterator');
 }
 
 // ── Web Streams API ────────────────────────────────────────────────────────
@@ -160,6 +175,7 @@ if (typeof globalThis.ReadableStream === 'undefined') {
 	globalThis.ReadableStream = webStreams.ReadableStream;
 	globalThis.WritableStream = webStreams.WritableStream;
 	globalThis.TransformStream = webStreams.TransformStream;
+	markPolyfilled('ReadableStream');
 }
 
 // ── Promise.withResolvers ───────────────────────────────────────────────────
@@ -176,6 +192,7 @@ if (typeof Promise.withResolvers !== 'function') {
 		});
 		return { promise, resolve, reject };
 	};
+	markPolyfilled('Promise.withResolvers');
 }
 
 // ── AbortSignal.prototype.throwIfAborted ────────────────────────────────────
@@ -186,9 +203,10 @@ if (typeof Promise.withResolvers !== 'function') {
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.prototype.throwIfAborted !== 'function') {
 	AbortSignal.prototype.throwIfAborted = function throwIfAborted() {
 		if (this.aborted) {
-			throw this.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+			throw this.reason ?? abortReason('The operation was aborted.', 'AbortError');
 		}
 	};
+	markPolyfilled('AbortSignal.prototype.throwIfAborted');
 }
 
 // ── AbortSignal.timeout / AbortSignal.any ──────────────────────────────────
@@ -215,35 +233,103 @@ function abortReason(message, name) {
 	}
 }
 
+// ── AbortController abort reasons ──────────────────────────────────────────
+// React Native installs `abort-controller` 3.0.0 as AbortController/AbortSignal
+// (Libraries/Core/setUpXHR.js, via polyfillGlobal — it replaces whatever the engine
+// had). That release predates the DOM's `reason`: its `abort()` takes no argument and
+// nothing ever defines `signal.reason`, so every `controller.abort(err)` anywhere in
+// the bundle silently drops its error and `throwIfAborted` above falls back to a
+// generic AbortError. That is why a failed dial on the phone reported only
+// "AbortError: The operation was aborted" with no cause, and it would equally hide the
+// TimeoutError that `AbortSignal.timeout` below aborts with.
+//
+// Record the reason on the signal, then delegate. `AbortSignal.prototype` defines only
+// `aborted`, and signals are ordinary extensible objects, so a plain own property is
+// all this needs.
+
+if (typeof AbortController === 'function'
+	&& typeof AbortSignal !== 'undefined'
+	&& !('reason' in AbortSignal.prototype)) {
+	const _origAbort = AbortController.prototype.abort;
+	AbortController.prototype.abort = function abort(reason) {
+		const signal = this.signal;
+		if (!signal.aborted) {
+			signal.reason = reason ?? abortReason('This operation was aborted', 'AbortError');
+		}
+		return _origAbort.call(this);
+	};
+	markPolyfilled('AbortSignal.reason');
+}
+
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'function') {
 	AbortSignal.timeout = function timeout(ms) {
 		const controller = new AbortController();
-		// Deliberately the raw timer: this runs before the .ref()/.unref() wrapper below,
-		// and nothing here needs the handle.
-		setTimeout(() => {
+		// `setTimeout` is resolved against the global at CALL time, and by the time
+		// anything dials, the bottom of this file has already replaced it with the
+		// .ref()/.unref() wrapper — so this is the wrapper, and `handle` is an object,
+		// not a number. `clearTimeout` is patched to unwrap exactly that.
+		const handle = setTimeout(() => {
 			controller.abort(abortReason('The operation timed out.', 'TimeoutError'));
 		}, ms);
+		// Nothing but the timer above can abort this signal — the controller is never
+		// handed out — so today this only collapses the already-fired case, and the timer
+		// still runs to completion after a caller has finished with the signal, holding
+		// the controller and every listener attached to it for the rest of the timeout.
+		// That is bounded by the timeout (10 s for a dial) rather than growing, and it is
+		// not fixable from here: the DOM's own AbortSignal.timeout is cancelled by the
+		// platform and we have no equivalent hook. Registered so that the timer is
+		// released the moment an abort path does appear.
+		controller.signal.addEventListener('abort', () => { clearTimeout(handle); }, { once: true });
 		return controller.signal;
 	};
+	markPolyfilled('AbortSignal.timeout');
 }
+
+// The listeners this attaches have to come back off the inputs when the combined
+// signal settles. `{ once: true }` only removes the listener that actually fired; the
+// ones on the inputs that did NOT abort stay attached for as long as those inputs
+// live, and callers routinely combine a long-lived signal with a fresh per-request
+// one — Optimystic's repo client does it on every remote block RPC
+// (../optimystic/packages/db-p2p/src/repo/client.ts), and `p-wait-for` (pulled in by
+// libp2p, @libp2p/websockets, @libp2p/circuit-relay-v2, @libp2p/webrtc and
+// @libp2p/tcp) does it in its own `index.js`. One listener per call would otherwise
+// accumulate on the long-lived signal for as long as the phone runs. libp2p's own
+// internals mostly use the `any-signal` package instead, which already detaches.
 
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any !== 'function') {
 	AbortSignal.any = function any(signals) {
 		const controller = new AbortController();
 		const list = Array.from(signals);
-		const forward = (signal) => {
-			if (controller.signal.aborted) return;
-			controller.abort(signal.reason ?? abortReason('The operation was aborted.', 'AbortError'));
-		};
+		const reasonOf = (signal) => signal.reason ?? abortReason('The operation was aborted.', 'AbortError');
+		// An input that has already aborted settles the result before anything is
+		// registered, so there is nothing to detach.
 		for (const signal of list) {
 			if (signal.aborted) {
-				forward(signal);
-				break;
+				controller.abort(reasonOf(signal));
+				return controller.signal;
 			}
-			signal.addEventListener('abort', () => forward(signal), { once: true });
 		}
+		// Pairs, not a Map keyed by signal: the same signal may legitimately appear
+		// twice in `signals`, and a Map would collapse the two registrations and leave
+		// one attached.
+		const attached = [];
+		for (const signal of list) {
+			const listener = () => {
+				if (controller.signal.aborted) return;
+				controller.abort(reasonOf(signal));
+			};
+			attached.push([signal, listener]);
+			signal.addEventListener('abort', listener, { once: true });
+		}
+		controller.signal.addEventListener('abort', () => {
+			for (const [signal, listener] of attached) {
+				signal.removeEventListener('abort', listener);
+			}
+			attached.length = 0;
+		}, { once: true });
 		return controller.signal;
 	};
+	markPolyfilled('AbortSignal.any');
 }
 
 // ── WebSocket.bufferedAmount ───────────────────────────────────────────────
@@ -270,6 +356,7 @@ if (typeof globalThis.WebSocket === 'function'
 		get() { return 0; },
 		configurable: true,
 	});
+	markPolyfilled('WebSocket.prototype.bufferedAmount');
 }
 
 // ── Timer .ref() / .unref() ────────────────────────────────────────────────
@@ -318,3 +405,5 @@ globalThis.clearTimeout = function patchedClearTimeout(handle) {
 globalThis.clearInterval = function patchedClearInterval(handle) {
 	return _origClearInterval.call(this, unwrapTimer(handle));
 };
+
+markPolyfilled('setTimeout.ref');

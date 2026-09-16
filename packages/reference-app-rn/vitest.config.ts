@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Three test projects, kept apart so the platform-agnostic core never drags the
+ * Four test projects, kept apart so the platform-agnostic core never drags the
  * React renderer (or, transitively, react-native) into its environment, and so
  * the stale-build guard only gates the tests that run other packages' `dist`:
  *
@@ -23,6 +23,15 @@ import { defineConfig } from 'vitest/config';
  *    Hermes bundle (Node runs that syntax natively). It loads no compiled output
  *    from other packages, so it carries no stale-build guard.
  *
+ *  - **polyfills** — guards `polyfills/hermes.js`: evaluates it in a controlled
+ *    scope against a fake Hermes + React Native global surface (so it patches that
+ *    object instead of the test runner's own globals) and asserts the behaviour the
+ *    phone depends on, plus a drift guard over the globals our dependencies read.
+ *    Its own project for the same reason as `metro-babel`: it runs none of the
+ *    `node` project's stale-build guard over sibling `dist` output, so
+ *    `vitest run --project polyfills` stays runnable while a sibling is unbuilt.
+ *    It does read dependency `dist` trees, but only as text.
+ *
  * RN-coupled production modules (`app-state.ts`, screens) are not unit-targeted
  * by any project; they run under the Expo e2e harness (`scripts/run-e2e.mjs`).
  */
@@ -34,7 +43,7 @@ export default defineConfig({
           name: 'node',
           environment: 'node',
           include: ['test/**/*.spec.ts'],
-          exclude: ['test/react/**', 'test/metro-babel/**'],
+          exclude: ['test/react/**', 'test/metro-babel/**', 'test/polyfills/**'],
           globalSetup: ['./test/global-setup.ts'],
         },
       },
@@ -43,6 +52,13 @@ export default defineConfig({
           name: 'metro-babel',
           environment: 'node',
           include: ['test/metro-babel/**/*.spec.ts'],
+        },
+      },
+      {
+        test: {
+          name: 'polyfills',
+          environment: 'node',
+          include: ['test/polyfills/**/*.spec.ts'],
         },
       },
       {

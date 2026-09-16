@@ -11,6 +11,7 @@
  */
 
 import 'event-target-polyfill';
+import { markPolyfilled } from './registry';
 
 if (typeof globalThis.CustomEvent === 'undefined') {
 	globalThis.CustomEvent = class CustomEvent extends Event {
@@ -19,4 +20,5 @@ if (typeof globalThis.CustomEvent === 'undefined') {
 			this.detail = params?.detail ?? null;
 		}
 	};
+	markPolyfilled('CustomEvent');
 }
