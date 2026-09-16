@@ -71,6 +71,30 @@ Two consequences for whoever picks this up:
    hypothesis to re-test if these timeouts persist after any optimystic change, and it is a better
    explanation than contention if they ever appear on an idle machine.
 
+### The fourth renderer, checked and cleared
+
+Upstream raised (2026-09-16) that `network-transactor.ts` has **four** `[block:` renderers, not
+three — `get` (290), `pend` (577), `dischargeCancel` (1142) — and warned that a cancel
+misclassified as a safe-to-retry get/pend is what the regex cannot see. Traced; **it cannot
+happen**, and the reason is structural rather than lucky:
+
+- The positive matcher is a **conjunction inside one message**:
+  `TRANSACTOR_AGGREGATE.test(message) && message.includes('[block:')` (`control-write-retry.ts:176`),
+  applied per message, not across the chain (`:321`, `messages.some(message => …)`).
+- `dischargeCancel` does not raise that prefix. Its aggregate reads
+  `Cancel of action <id> did not discharge <n> block(s): …; peers: …` (`network-transactor.ts:1143`).
+  Only lines 293, 583 and 931 raise `Some peers did not complete:` — so the source comment's
+  "three sites" is right about the aggregate, even though four places render the token.
+- A cancel fault does not replace the real error anyway: `TransactorSource.transact` attaches it as
+  `cancelError`.
+- And `reportsIndeterminateCommit` vetoes the whole cause chain on any `[blocks:` before any
+  matcher runs (`:318`), so a commit-phase failure carrying a cancel aggregate is already excluded.
+
+Recorded because the check is cheap and the conclusion is not obvious from either repo alone: the
+discriminator is the prefix-plus-token conjunction, **not** the token. Anyone tempted to relax that
+matcher to "contains `[block:`" would make the cancel path reachable and this is where to read why
+that is unsafe.
+
 ## Do not confuse this with the vacuity fix
 
 The third failure in the same two runs, `control-bring-up-quiet-period`, was a different problem
