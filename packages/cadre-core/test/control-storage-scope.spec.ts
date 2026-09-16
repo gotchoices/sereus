@@ -135,7 +135,8 @@ describe('control storage scope', () => {
 
 	it('recognizes its own keys and rejects strand ids', () => {
 		expect(isControlStorageScope(controlStorageScope('party-a'))).toBe(true);
-		// A strand scope is a strand id, and a uuid never starts with `control-`.
+		// A strand scope is a strand id; every id cadre-core mints is `strand-`-prefixed.
+		expect(isControlStorageScope('strand-1789519231669-k3f9qz')).toBe(false);
 		expect(isControlStorageScope('11111111-2222-4333-8444-555555555555')).toBe(false);
 		// The pre-fix literal is not a control scope either: a provider still special-
 		// casing it is looking for a key cadre-core no longer mints.

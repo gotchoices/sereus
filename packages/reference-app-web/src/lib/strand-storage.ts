@@ -69,7 +69,9 @@ const storages = new Map<string, IRawStorage>();
  * Pre-open (and cache) an IndexedDB handle + `IndexedDBRawStorage` for each key.
  * Idempotent per key — a key already open is skipped. Must be awaited before the
  * synchronous {@link storageProvider} is invoked for that key (i.e. before
- * `node.start()` for `'control'` and before `node.addStrand(...)` for a strand).
+ * `node.start()` for the party-scoped control key, and before `node.addStrand(...)`
+ * for a strand). {@link NODE_LOCAL_STORE_KEY} goes through here too, but is opened
+ * for `cadre-web.ts` to read directly rather than for cadre-core to ask for.
  */
 export async function openStores(keys: string[]): Promise<void> {
 	for (const key of keys) {

@@ -1423,19 +1423,22 @@ A provider is a factory cadre-core calls once per **scope**, and the argument it
 
 | Scope | Key | Minted by |
 |-------|-----|-----------|
-| A strand | the strand id (a uuid) | the caller who founded or joined the strand |
+| A strand | the strand id (`strand-<digits>-<base36>` or `strand-<hex>` as cadre-core mints them) | the node that founded the strand — which may be another node in the party, the row having replicated in |
 | The control database | `control-<base64url of the party id>` | `controlStorageScope(partyId)` (`cadre-core/src/storage-scope.ts`) |
 
 Two properties an embedder may rely on, and must not undermine:
 
-- **A scope key is opaque and already safe as a name.** Every key cadre-core mints stays within `[A-Za-z0-9._-]`, so it can be concatenated straight into a file path, a directory name or a database name with no escaping. Do not parse it; `controlStorageScope` and `isControlStorageScope` are the supported way to mint and recognize the control key. The base64url encoding is what makes this true for the control key: a party id is arbitrary text (nothing validates its shape, and the React Native reference app lets a user type one in), so an unencoded one containing `/` or `..` would escape the directory it was meant to name.
+- **A scope key is opaque and already safe as a name.** Every key cadre-core mints stays within `[A-Za-z0-9._-]`, so it can be concatenated straight into a file path, a directory name or a database name with no escaping. Do not parse it; `controlStorageScope` and `isControlStorageScope` are the supported way to mint and recognize the control key. The base64url encoding is what makes this true for the control key: a party id is arbitrary text (nothing validates its shape, and the React Native reference app lets a user type one in), so an unencoded one containing `/` or `..` would escape the directory it was meant to name. **The strand half of this rule is intended but not yet enforced:** a strand id cadre-core mints satisfies the charset, but a strand row replicated in from another node in the party carries that node's id verbatim and nothing checks it before the provider sees it — `tickets/backlog/bug-strand-scope-key-charset-unenforced` closes the gap.
 - **The control scope is per-party.** The control database holds one party's own records — its strands, owner keys, peers, invitations, revocations — so two parties on one device ask for two different keys and must get two different stores. A single `IRawStorage` instance handed to every scope shares one store across every strand *and* every party by construction; an embedder that can serve more than one party must use the factory form.
 
 To read a party id back off a device — from, say, a LevelDB file named `sereus-control-MTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1`:
 
 ```js
-atob(key.slice('control-'.length).replace(/-/g, '+').replace(/_/g, '/'))
+const b64 = key.slice('control-'.length).replace(/-/g, '+').replace(/_/g, '/');
+new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
 ```
+
+The `TextDecoder` step is not optional: `atob` alone yields one character per *byte*, so a party id containing any non-ASCII character decodes to mojibake.
 
 #### Node.js (Servers, CLI)
 

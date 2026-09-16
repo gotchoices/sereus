@@ -35,7 +35,7 @@ import {
 	type OwnerGateProbe,
 } from './cadre-web.js';
 import type { Libp2p, Connection } from '@libp2p/interface';
-import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
+import { IndexedDBRawStorage, type OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import {
 	summarizeConnectionPaths,
@@ -684,6 +684,27 @@ function storageBackendLabel(storage: IRawStorage | null): string | null {
 	return 'unknown';
 }
 
+/**
+ * Count `names` on `db` into `counts`, or append one message to `errors` and leave the
+ * counts already gathered intact. A closed or not-yet-opened handle is not an error —
+ * the panel reports what is open, which is the state it exists to show.
+ */
+async function countInto(
+	counts: Record<string, number>,
+	errors: string[],
+	db: OptimysticWebDBHandle | null,
+	names: readonly Parameters<OptimysticWebDBHandle['count']>[0][],
+): Promise<void> {
+	if (!db) return;
+	try {
+		for (const name of names) {
+			counts[name] = await db.count(name);
+		}
+	} catch (err) {
+		errors.push(err instanceof Error ? err.message : String(err));
+	}
+}
+
 async function collectStorage(): Promise<StorageInfo> {
 	const storage = getControlStorage();
 	const db = getControlDbHandle();
@@ -716,23 +737,16 @@ async function collectStorage(): Promise<StorageInfo> {
 		}
 	}
 
-	let storeCounts: Record<string, number> | null = null;
-	let storesError: string | null = null;
-	const nodeLocalDb = getNodeLocalDbHandle();
-	if (db) {
-		try {
-			const counts: Record<string, number> = {};
-			for (const name of BLOCK_STORE_NAMES) {
-				counts[name] = await db.count(name);
-			}
-			if (nodeLocalDb) {
-				counts[NODE_LOCAL_STORE_NAME] = await nodeLocalDb.count(NODE_LOCAL_STORE_NAME);
-			}
-			storeCounts = counts;
-		} catch (err) {
-			storesError = err instanceof Error ? err.message : String(err);
-		}
-	}
+	// Two databases since the control block store became party-scoped, counted
+	// independently: they open at different moments (the node-local one before the party
+	// id is known, the block one after), so neither an unopened nor a failing handle may
+	// suppress the other's counts.
+	const counts: Record<string, number> = {};
+	const countErrors: string[] = [];
+	await countInto(counts, countErrors, db, BLOCK_STORE_NAMES);
+	await countInto(counts, countErrors, getNodeLocalDbHandle(), [NODE_LOCAL_STORE_NAME]);
+	const storeCounts = Object.keys(counts).length > 0 ? counts : null;
+	const storesError = countErrors.length > 0 ? countErrors.join('; ') : null;
 
 	return {
 		backend,
