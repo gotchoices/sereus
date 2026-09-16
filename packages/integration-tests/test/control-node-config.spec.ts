@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { MemoryBootstrapPeerStore } from '@serfab/cadre-core';
 import type { CadreNodeConfig, RawStorageProvider } from '@serfab/cadre-core';
 import { controlNodeConfig, wsTransports, type ControlNodeOpts } from '../src/harness/node-fixtures.js';
 
@@ -123,6 +124,19 @@ describe('controlNodeConfig', () => {
 		it('forwards pinnedOwnerKeys under trustedOwners', () => {
 			expect(controlNodeConfig({ partyId: 'p', pinnedOwnerKeys: ['k'] }).trustedOwners)
 				.toEqual({ pinnedKeys: ['k'] });
+		});
+
+		it('uses bootstrapPeerStore verbatim, so a caller can pin ONE store across a restart', () => {
+			const store = new MemoryBootstrapPeerStore('p');
+			expect(controlNodeConfig({ partyId: 'p', bootstrapPeerStore: store }).bootstrapPeers?.store)
+				.toBe(store);
+		});
+
+		// Left off, the node must get cadre-core's own default rather than an empty
+		// `bootstrapPeers` object — a scenario that restarts a node would otherwise see its
+		// retained dial targets silently vanish and still go green off another dial source.
+		it('omits bootstrapPeers entirely when no store is supplied', () => {
+			expect(controlNodeConfig({ partyId: 'p' }).bootstrapPeers).toBeUndefined();
 		});
 	});
 

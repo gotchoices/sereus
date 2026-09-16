@@ -442,6 +442,18 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   node into a second, externally-founded party), `cadre-host-owner-node.integration.ts`,
   `provider-seed-accepted.integration.ts`; the identity/bootstrap/store fixtures those share
   live in `child-node-fixtures.ts`.
+- Node donation to a requester that **cannot be dialed** (the phone direction) —
+  `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as
+  `cadre-host-node-donation.integration.ts`, but the requester is an in-process `CadreNode`
+  in the shape `reference-app-rn` runs: `listenAddrs: []`, WebSocket and circuit-relay
+  transports only, no TCP, its own party owner. It provisions with `bootstrapNodes: []`,
+  dials the lent node's `/ws` address itself, and keeps that connection across a node
+  respawn (same WebSocket port) and across its own restart (same identity key, control
+  storage and node-local dial-target store, and no second donation request). It is the only
+  scenario that proves the dial-in direction end-to-end; the two prerequisite halves are
+  unit-tested in `cadre-host` and `cadre-core`. Strand replication onto a lent node is
+  deliberately not asserted — see
+  `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`.
 - Relayed control plane (a control node with no inbound reachability of its own, reserving a
   circuit-relay slot on a sibling and being dialed through it) —
   `relay-only-control-addr.integration.ts`. The control plane only; the strand plane is the

@@ -16,7 +16,7 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
-import type { CadreNodeConfig, EnrolledMachineStore, RawStorageProvider, SAppConfig } from '@serfab/cadre-core';
+import type { BootstrapPeerStore, CadreNodeConfig, EnrolledMachineStore, RawStorageProvider, SAppConfig } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
@@ -119,6 +119,19 @@ export interface ControlNodeOpts {
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
+   * Becomes `bootstrapPeers.store` verbatim — the node-local, never-replicated
+   * store of out-of-band dial targets (a seed's owner peers, and the addresses
+   * handed to `CadreNode.addDrone`). Left unset the node gets the cadre-core
+   * default, a fresh `MemoryBootstrapPeerStore` that dies with the node.
+   *
+   * Pass one when a scenario restarts a node and the restarted node must still
+   * hold what the first incarnation retained — the production shape for a phone,
+   * whose store is file/IndexedDB-backed. Hand BOTH incarnations the same
+   * instance, exactly as {@link ControlNodeOpts.storageProvider} is reused across
+   * a stop/start cycle.
+   */
+  bootstrapPeerStore?: BootstrapPeerStore;
+  /**
    * Node-local enrolled-machine record this node declares its block-repair
    * yardstick from at bring-up. Build one with {@link enrolledMachineStoreWith}.
    *
@@ -193,6 +206,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       ...(opts.connectionGater ? { connectionGater: opts.connectionGater } : {})
     },
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
+    ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },
   };
 }
