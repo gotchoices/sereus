@@ -187,3 +187,7 @@ described (by me) as being on the read path and therefore unrelated to optimysti
 changes in `6.41-write-durability-reaches-the-writer`. The stack shows it entering
 `Collection.updateInternal`, so that reasoning does not hold. No claim that 6.41 caused it — there
 is no before/after measurement — but the two have not been separated either.
+
+## Update 2026-09-16 — the phone report turned out to be a different cause
+
+`fix/cross-party-strand-messages-do-not-converge` ran the committed-read experiment headlessly (two `CadreNode`s, closed strand formed with `formStrand`). The joiner's lost message was **not** hidden by the live read: a committed read did not serve it either, because the row was really gone. That report splits into two independent defects, now `implement/strand-app-table-names-collide-with-strand-tables` (the chat app's `App.Member` shares storage with `Strand.Member`) and `implement/joining-machine-writes-before-first-sync-fork-tables` (a joiner writing before its first sync forks the table). Neither involves the live-versus-committed read choice, so the device evidence above does not bear on this ticket; treat this one as standing on its own `Revocation` scenario.
