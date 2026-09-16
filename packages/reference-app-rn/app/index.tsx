@@ -58,6 +58,7 @@ export default function ChatScreen() {
     error: cadre.error,
     strandCount: cadre.strands.size,
     memberCount: chat.members.length,
+    relayStatus: cadre.relayStatus,
   });
 
   return (

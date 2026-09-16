@@ -19,10 +19,12 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as React from 'react';
+// Type-only: the runtime module is `vi.mock`ed below, and this import is erased.
+import type { RelayReservationState } from '@serfab/cadre-core';
 import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useCadreInternal, type UseCadreResult } from '../../src/use-cadre';
 import { connectionBanner } from '../../src/connection-status';
-import { createOpenInvitation, type PhoneNodeOptions } from '../../src/cadre-phone';
+import { createOpenInvitation, getRelayState, type PhoneNodeOptions } from '../../src/cadre-phone';
 import { createClosedChatStrand, joinChatStrand } from '../../src/chat-strand';
 import { requestHostNode } from '../../src/host-node-request';
 
@@ -122,6 +124,10 @@ const h = vi.hoisted(() => {
     }
   }
 
+  /** The relay posture `getRelayState()` reports. `none` is the default phone posture. */
+  const noRelay = (): RelayReservationState =>
+    ({ status: 'none', addrs: [], circuitAddrs: [], error: null, retryAtMs: null });
+
   // Mutable controller shared by the mocks + the test body. Reset per-test.
   const ctl: {
     node: MockNode | null;
@@ -129,9 +135,13 @@ const h = vi.hoisted(() => {
     startCount: number;
     nodeCounter: number;
     lastOpts: unknown;
-  } = { node: null, appState: new FakeAppState(), startCount: 0, nodeCounter: 0, lastOpts: null };
+    relay: RelayReservationState;
+  } = {
+    node: null, appState: new FakeAppState(), startCount: 0, nodeCounter: 0, lastOpts: null,
+    relay: noRelay(),
+  };
 
-  return { FakeAppState, MockNode, ctl };
+  return { FakeAppState, MockNode, ctl, noRelay };
 });
 
 // ── Module mocks (keep react-native / expo / libp2p out of this env) ──────────
@@ -155,6 +165,9 @@ vi.mock('../../src/cadre-phone', () => ({
     h.ctl.node = null;
   }),
   getOwnerPublicKey: () => (h.ctl.node ? `authpub-${h.ctl.node.id}` : null),
+  // Live read in production; here, whatever the test set. `vi.fn` so a test can also
+  // assert the guard read it at the moment of the tap rather than off cached state.
+  getRelayState: vi.fn(() => h.ctl.relay),
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),
@@ -211,6 +224,7 @@ function CadreHarness({ sink }: { sink: Sink }): React.ReactElement {
     error: cadre.error,
     strandCount: cadre.strands.size,
     memberCount: 0,
+    relayStatus: cadre.relayStatus,
   });
   return React.createElement('status', { color: banner.color }, banner.text);
 }
@@ -224,7 +238,7 @@ function mountCadre(): { sink: Sink; renderer: ReactTestRenderer } {
   return { sink, renderer };
 }
 
-const OPTS: PhoneNodeOptions = { partyId: 'demo', bootstrapAddrs: [] };
+const OPTS: PhoneNodeOptions = { partyId: 'demo', bootstrapAddrs: [], relayAddrs: [] };
 
 /** Drain queued microtasks (the hook + runner chain several awaits). */
 async function tick(): Promise<void> {
@@ -252,6 +266,7 @@ function resetHarness(): void {
   h.ctl.startCount = 0;
   h.ctl.nodeCounter = 0;
   h.ctl.lastOpts = null;
+  h.ctl.relay = h.noRelay();
   vi.clearAllMocks();
 }
 
@@ -279,9 +294,54 @@ describe('useCadreInternal — closed-strand invite', () => {
     expect(createOpenInvitation).not.toHaveBeenCalled();
   });
 
+  it('names the Settings field when the reason is that no relay is configured', async () => {
+    const sink = await mountStarted();
+
+    await act(async () => {
+      await expect(sink.current!.createClosedStrandWithInvite('closed-1'))
+        .rejects.toThrow(/No relay is configured — set one in Settings under "Relay"/);
+    });
+
+    expect(createClosedChatStrand).not.toHaveBeenCalled();
+    expect(createOpenInvitation).not.toHaveBeenCalled();
+  });
+
+  it('names the status and the recorded error when the relay is not answering', async () => {
+    const sink = await mountStarted();
+    h.ctl.relay = {
+      status: 'retrying',
+      addrs: ['/ip4/10.0.0.9/tcp/4002/ws/p2p/12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5'],
+      circuitAddrs: [],
+      error: 'no circuit reservation within 10000ms',
+      retryAtMs: Date.now() + 2000,
+    };
+
+    await act(async () => {
+      await expect(sink.current!.createClosedStrandWithInvite('closed-1'))
+        .rejects.toThrow(/relay is not answering \(retrying: no circuit reservation within 10000ms\)/);
+    });
+
+    expect(createClosedChatStrand).not.toHaveBeenCalled();
+    expect(createOpenInvitation).not.toHaveBeenCalled();
+  });
+
+  it('reads the posture at the moment of the tap, not off the polled banner state', async () => {
+    const sink = await mountStarted();
+    // The poll has already run at least once; clear it so the count below is the
+    // guard's own read.
+    vi.mocked(getRelayState).mockClear();
+
+    await act(async () => {
+      await expect(sink.current!.createClosedStrandWithInvite('closed-1')).rejects.toThrow();
+    });
+
+    expect(getRelayState).toHaveBeenCalled();
+  });
+
   it('founds the strand and returns the encoded invitation when the node is reachable', async () => {
     const sink = await mountStarted();
     h.ctl.node!.multiaddrs = ['/ip4/127.0.0.1/tcp/4002/ws/p2p/relay/p2p-circuit/p2p/peer-1'];
+    h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: h.ctl.node!.multiaddrs };
     vi.mocked(createOpenInvitation).mockResolvedValue({ token: 'tok', expiration: new Date(0) } as never);
 
     let encoded = '';

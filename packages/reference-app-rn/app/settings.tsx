@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { RelayReservationStatus } from '@serfab/cadre-core';
 import { useCadre } from '../src/cadre-context';
 import {
   foundingDetail,
@@ -23,8 +24,22 @@ import {
   type PendingFounding,
 } from '../src/founding-progress';
 import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
+import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
+
+/**
+ * Plain-language label for the relay-reservation posture, shown on the connected
+ * Node card. `reserved` is the only posture in which this phone has an address a
+ * stranger could dial, which is what "Create Closed Strand + Invite" needs.
+ */
+const RELAY_STATUS_LABEL: Record<RelayReservationStatus, string> = {
+  reserved: 'Yes — via relay',
+  dialing: 'Reserving a relay slot…',
+  retrying: 'No — relay not answering (retrying)',
+  error: 'No — relay reservation gave up',
+  none: 'No — no relay configured',
+};
 
 /** Plain-language label for each stage of a host-node request, for the progress line. */
 const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
@@ -41,6 +56,10 @@ export default function SettingsScreen() {
 
   const [partyId, setPartyId] = useState('');
   const [bootstrapAddr, setBootstrapAddr] = useState('');
+  // Prefilled from the build-time default (`EXPO_PUBLIC_RELAY_ADDR`) so a build that
+  // ships one needs no typing, and editable so a device can be pointed elsewhere.
+  // Computed once on mount — re-resolving per render would fight the user's edits.
+  const [relayAddr, setRelayAddr] = useState(() => resolveRelayAddrs().join(', '));
   const [seedInput, setSeedInput] = useState('');
   const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
@@ -74,8 +93,13 @@ export default function SettingsScreen() {
     const pid = partyId.trim() || uuid();
     setPartyId(pid);
     const addrs = bootstrapAddr.trim() ? [bootstrapAddr.trim()] : [];
+    // The typed value wins over the build-time default; an emptied field means "no
+    // relay", which starts fine and only costs the ability to invite. A malformed
+    // entry is rejected by cadre-core at config resolution, so it surfaces below as
+    // "Connection failed" and the field can be corrected and Connect retried.
+    const relayAddrs = resolveRelayAddrs(splitRelayAddrs(relayAddr));
     try {
-      await cadre.start({ partyId: pid, bootstrapAddrs: addrs });
+      await cadre.start({ partyId: pid, bootstrapAddrs: addrs, relayAddrs });
     } catch (err) {
       showAlert('Connection failed', String(err));
     }
@@ -250,6 +274,7 @@ export default function SettingsScreen() {
               testID={TEST_IDS.settings.ownerKeyRow}
             />
             <InfoRow label="Strands" value={String(cadre.strands.size)} />
+            <InfoRow label="Reachable" value={RELAY_STATUS_LABEL[cadre.relayStatus]} color={cadre.relayStatus === 'reserved' ? '#4caf50' : '#ff9800'} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
         ) : (
@@ -257,6 +282,12 @@ export default function SettingsScreen() {
             <InfoRow label="Status" value={cadre.status} color="#ff9800" />
             <LabelledInput label="Party ID" value={partyId} onChangeText={setPartyId} placeholder="auto-generated if empty" testID={TEST_IDS.settings.partyIdInput} />
             <LabelledInput label="Bootstrap addr" value={bootstrapAddr} onChangeText={setBootstrapAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" testID={TEST_IDS.settings.bootstrapAddrInput} />
+            <LabelledInput label="Relay" value={relayAddr} onChangeText={setRelayAddr} placeholder="/ip4/…/tcp/…/ws/p2p/… (comma-separated)" testID={TEST_IDS.settings.relayAddrInput} />
+            <Text style={styles.hint}>
+              A phone cannot accept incoming connections, so the only address other
+              people can dial it at is one a relay forwards. Without a relay this app
+              still works — it just cannot invite anyone into a private chat.
+            </Text>
             <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
           </>
         )}

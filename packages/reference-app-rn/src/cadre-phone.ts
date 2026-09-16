@@ -29,6 +29,7 @@ import type {
   ConnectionPathSummary,
   OpenInvitation,
   FormStrandResult,
+  RelayReservationState,
   StrandFormationDisclosure,
   KeyStore,
 } from '@serfab/cadre-core';
@@ -394,6 +395,22 @@ export async function dialPeer(addr: string): Promise<void> {
 export function getConnectionPaths(settleWindowMs?: number): ConnectionPathSummary {
   if (!node) throw new Error('Phone node not started');
   return node.getConnectionPaths(settleWindowMs);
+}
+
+/**
+ * The node's relay-reservation posture — whether this phone currently holds a
+ * `/p2p-circuit` address, and if not, whether anything is still trying. Read LIVE
+ * from the node on every call: a reservation can be lost after start (the relay
+ * restarts, the connection drops), and a cached `reserved` would let the app
+ * promise an invitation nobody could redeem.
+ *
+ * Unlike {@link getConnectionPaths} beside it, this does NOT throw before the node
+ * starts — it is read by the chat banner, which renders in every lifecycle state,
+ * so "no node" is answered as the posture it is. Mirrors `getRelayState` in
+ * `reference-app-web/src/lib/cadre-web.ts`.
+ */
+export function getRelayState(): RelayReservationState {
+  return node?.getRelayReservationState() ?? { status: 'none', addrs: [], circuitAddrs: [], error: null, retryAtMs: null };
 }
 
 // ── Strand helpers ───────────────────────────────────────────────────────────

@@ -8,6 +8,8 @@ export const TEST_IDS = {
 	settings: {
 		partyIdInput: 'input-party-id',
 		bootstrapAddrInput: 'input-bootstrap-addr',
+		/** Circuit-relay multiaddr(s) this phone reserves through — what makes it invitable. */
+		relayAddrInput: 'input-relay-addr',
 		connectBtn: 'btn-connect',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',

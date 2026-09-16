@@ -8,12 +8,19 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { CadreNode } from '@serfab/cadre-core';
-import type { StrandInstance, CadreNodeEvents, StrandFormationDisclosure } from '@serfab/cadre-core';
+import type {
+  StrandInstance,
+  CadreNodeEvents,
+  RelayReservationState,
+  RelayReservationStatus,
+  StrandFormationDisclosure,
+} from '@serfab/cadre-core';
 import {
   startPhoneNode,
   stopPhoneNode,
   getPhoneNode,
   getOwnerPublicKey,
+  getRelayState,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
@@ -43,6 +50,42 @@ import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './p
 
 /** How long a closed-strand invitation stays valid (24h). */
 const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How often the relay posture surfaced to the UI is re-read while the app is in the
+ * foreground. Nothing announces a reservation gained or lost — `CadreNode` exposes it
+ * only as a live read — so the banner polls. Foreground only, so a backgrounded phone
+ * adds no wakeups of its own (the reservation supervisor inside cadre-core keeps its own
+ * liveness check running regardless — see the NOTE beside `relayAddrs` in
+ * `phone-node-config.ts`).
+ *
+ * The invite guard does NOT use this value: it reads {@link getRelayState} at the
+ * moment of the tap, so a stale poll can never let a doomed invitation through.
+ */
+const RELAY_POSTURE_POLL_MS = 5_000;
+
+/**
+ * Why an invitation cannot be minted, phrased for the person holding the phone and
+ * naming the thing they can actually change. The guard itself is `getMultiaddrs()`
+ * being empty — the precondition `createOpenInvitation` really has; the posture only
+ * explains WHY it is empty.
+ */
+function unreachableInviteMessage(relay: RelayReservationState): string {
+  const lead = 'This device has no reachable address yet, so nobody could redeem an invitation.';
+  switch (relay.status) {
+    case 'none':
+      return `${lead} No relay is configured — set one in Settings under "Relay", then reconnect.`;
+    case 'dialing':
+      return `${lead} Still reserving a slot on the relay — try again in a moment.`;
+    case 'retrying':
+    case 'error':
+      return `${lead} The relay is not answering (${relay.status}${relay.error ? `: ${relay.error}` : ''}).`;
+    default:
+      // `reserved` with no multiaddrs should not happen — a held reservation IS a
+      // `/p2p-circuit` address. Say something true rather than something confident.
+      return `${lead} Connect through a relay or a host node first.`;
+  }
+}
 
 /**
  * How long {@link UseCadreResult.stop} waits for a cancelled host-node request to
@@ -103,6 +146,13 @@ export interface UseCadreResult {
   resuming: boolean;
   /** True after a resume settled without the control network reconnecting (offline/degraded). */
   degraded: boolean;
+  /**
+   * Relay-reservation posture, polled while the app is in the foreground. Anything
+   * other than `reserved` means this phone has no address a stranger could dial, so
+   * it cannot hand out an invitation — which the chat banner says out loud, before
+   * the user taps Invite and finds out.
+   */
+  relayStatus: RelayReservationStatus;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -168,6 +218,7 @@ export function useCadreInternal(): UseCadreResult {
   const [runnerState, setRunnerState] = useState<RunnerState>('foreground');
   const [resuming, setResuming] = useState(false);
   const [degraded, setDegraded] = useState(false);
+  const [relayStatus, setRelayStatus] = useState<RelayReservationStatus>(() => getRelayState().status);
 
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
@@ -334,6 +385,27 @@ export function useCadreInternal(): UseCadreResult {
     };
   }, [node, ensureNode]);
 
+  // ── Relay posture (dialability) ─────────────────────────────────────────
+
+  // Poll the node's relay posture so the banner can say "not reachable" before an
+  // invite is attempted, and stop saying it once a down relay comes back — the
+  // supervisor re-drives on its own backoff, with no event to subscribe to.
+  //
+  // Polling stops while backgrounded, so this timer costs nothing when the screen is
+  // off. cadre-core's own reservation supervisor does keep running there — see the
+  // NOTE beside `relayAddrs` in `phone-node-config.ts`.
+  useEffect(() => {
+    if (!node) {
+      setRelayStatus('none');
+      return;
+    }
+    if (runnerState !== 'foreground') return;
+    const sync = () => setRelayStatus(getRelayState().status);
+    sync();
+    const timer = setInterval(sync, RELAY_POSTURE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [node, runnerState]);
+
   // ── Actions ────────────────────────────────────────────────────────────
 
   const start = useCallback(async (opts: PhoneNodeOptions) => {
@@ -441,9 +513,13 @@ export function useCadreInternal(): UseCadreResult {
     if (!current) throw new Error('Node not started');
     // The invitation's bootstrap is this node's own addresses, so an unreachable
     // node cannot invite anyone — refuse BEFORE founding, or every attempt leaves an
-    // orphaned closed strand behind (see plan/phone-reachable-for-strand-invitations).
+    // orphaned closed strand behind. A phone is reachable only through a relay; see
+    // `relay-config.ts` for where that address comes from.
     if (current.getMultiaddrs().length === 0) {
-      throw new Error('This device has no reachable address yet, so nobody could redeem an invitation. Connect through a relay or host node first.');
+      // Read the posture LIVE rather than off `relayStatus`: a relay that came back
+      // seconds ago must not be reported as down, and one lost seconds ago must not be
+      // reported as held.
+      throw new Error(unreachableInviteMessage(getRelayState()));
     }
     await createClosedChatStrand(current, strandId);
     setSelectedStrandId(strandId);
@@ -519,7 +595,7 @@ export function useCadreInternal(): UseCadreResult {
   return {
     status, node, peerId, ownerPublicKey, strands,
     selectedStrandId, activeStrand, selectStrand,
-    error, runnerState, resuming, degraded,
+    error, runnerState, resuming, degraded, relayStatus,
     start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite, requestHostNode,
   };

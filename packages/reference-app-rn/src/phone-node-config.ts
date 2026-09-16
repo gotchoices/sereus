@@ -25,6 +25,16 @@ export interface PhoneNodeOptions {
 	partyId: string;
 	/** Bootstrap multiaddrs for the drone (WebSocket). */
 	bootstrapAddrs: string[];
+	/**
+	 * Circuit-relay multiaddrs this phone reserves a slot on, resolved by
+	 * `relay-config.ts`. Empty is supported and is the default: the node starts and
+	 * works, but it has no address anyone can dial, so it cannot mint an invitation
+	 * (`use-cadre.ts` → `createClosedStrandWithInvite` refuses, naming the reason).
+	 *
+	 * Typed into Settings on every launch alongside `partyId` and `bootstrapAddrs` —
+	 * nothing persists start options yet (backlog `feat-rn-persist-node-start-options`).
+	 */
+	relayAddrs: string[];
 }
 
 /** What {@link buildPhoneNodeConfig} takes from the platform wiring. */
@@ -46,8 +56,9 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 
 /**
  * The phone node's config: transaction profile (Ring Zulu only, intermittent
- * connectivity), no listen address, every strand the control network lists, no
- * hibernation, and the demo's unsigned chat schema allowed.
+ * connectivity), no listen address, reachability through the configured relays (if
+ * any) but never a hard requirement for one, every strand the control network
+ * lists, no hibernation, and the demo's unsigned chat schema allowed.
  */
 export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeConfig {
 	return {
@@ -65,11 +76,41 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 		},
 		network: {
 			transports: inputs.transports,
-			// Phones do NOT listen (`listenAddrs: []`). Unlike web, which conditionally
-			// listens on ['/p2p-circuit', '/webrtc'] when it holds a relay reservation,
-			// the phone's dialed circuit reservation + the `/webrtc` upgrade are
-			// advertised over the existing identify/cohort flow without a listen addr.
-			listenAddrs: [], // RN cannot listen for inbound connections
+			// Phones do NOT listen (`listenAddrs: []`) — RN cannot accept an inbound
+			// connection. The ONLY address a phone ever has is the `/p2p-circuit` addr a
+			// relay reservation earns it, so `relayAddrs` below is what makes it dialable
+			// at all; with none, `getMultiaddrs()` stays empty and the node can dial out
+			// but nobody can dial in.
+			//
+			// An explicitly empty `listenAddrs` stays empty through cadre-core's
+			// derivation, and naming a relay ADDS the bare `/p2p-circuit` search entry to
+			// it rather than replacing it (`cadre-core/src/relay-addrs.ts` →
+			// `resolveListenAddrs`) — which is exactly the shape wanted here.
+			listenAddrs: [],
+			// The relays the control node AND every strand node reserve through. This
+			// config field, rather than `CadreNode.reserveRelays()`: that call reaches
+			// the control node only, and formation has the invitee dial the control node
+			// first and then the strand nodes, so both need a circuit address.
+			//
+			// NOTE: naming a relay starts a reservation supervisor that keeps running for
+			// as long as the control node does — including while the app is backgrounded,
+			// since backgrounding hibernates strands (`background-runner.ts`) but never
+			// stops the control node. While the reservation HOLDS that is a 5 s timer
+			// doing one local `getMultiaddrs()` read, no network. While it does NOT hold
+			// it is a dial every backoff interval, growing 2 s → 60 s. If background
+			// battery use ever becomes a complaint, raise `checkMs`/`maxBackoffMs` in
+			// cadre-core — every embedder pays this — rather than stopping the supervisor
+			// here, which would mean a phone that silently stopped being invitable.
+			relayAddrs: inputs.relayAddrs,
+			// A phone must come up with its relay down — on a plane, on a dead Wi-Fi, or
+			// with nothing configured at all. `requireRelay: false` softens only the
+			// RESERVATION half of `relayAddrs`' fail-fast contract: a first attempt that
+			// lands nothing is logged and the supervisor keeps retrying in the
+			// background, instead of throwing `RelayReservationFailedError` out of
+			// `start()`. A MALFORMED entry still throws at config resolution whatever
+			// the posture — a typo is a user error, and the Settings screen shows it as
+			// "Connection failed" so the field can be corrected and Connect retried.
+			requireRelay: false,
 			// Permissive dial gater, for the same reason the web reference app sets one
 			// (`reference-app-web/src/lib/cadre-web.ts`). libp2p's `connection-gater`
 			// package points its `react-native` field at the BROWSER build, which refuses

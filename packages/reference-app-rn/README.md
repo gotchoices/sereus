@@ -170,6 +170,16 @@ Sereus's actual trust model is **invitation-only** strands (`Type:'c'`) formed
 through an explicit host→invitee consent handshake. The Settings screen's
 **"Closed Strand (Invite-Only)"** section demonstrates all four pillars:
 
+> **Inviting requires a relay.** An invitation embeds the inviter's own addresses,
+> and a phone has none of its own — React Native cannot open a listener, so the only
+> address a phone ever has is the `/p2p-circuit` address a circuit-relay reservation
+> earns it. Set one in Settings under **Relay** (or ship a build with
+> `EXPO_PUBLIC_RELAY_ADDR`) before using "Create Closed Strand + Invite"; without
+> one the app refuses up front, naming that field, and founds nothing. *Joining*
+> someone else's invitation needs no relay — the invitee is the side that dials. See
+> "Reachability: configuring a relay" in
+> [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md).
+
 1. **FormationInvite issuance (host).** *"Create Closed Strand + Invite"*:
    - mints a `MemberPrivateKey` and creates a closed strand in one resumable call
      (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig })`, which
@@ -192,9 +202,11 @@ through an explicit host→invitee consent handshake. The Settings screen's
    `ControlFormationUsageRecorder` backed by the live
    `FormationInvite`/`FormationUsage` tables), writes the `FormationUsage` consent
    row against the bound strand, and returns the host's real strand id + membership
-   key in the `FormStrandResult`. The handshake **requires the host reachable**
-   (over a relay/drone), so it correctly fails on a single device with no peer —
-   you cannot join a closed strand without the host's consent.
+   key in the `FormStrandResult`. The handshake **requires the host reachable** — on a
+   phone that means a held relay reservation, since the invitee dials the host's
+   control node and then its strand nodes at the addresses the invitation carried. So
+   it correctly fails on a single device with no peer — you cannot join a closed
+   strand without the host's consent.
 
 3. **Schema-gated join.** After consent, the invitee attaches the host's closed
    strand using the id + membership key the `FormStrandResult` now carries

@@ -9,6 +9,7 @@
  * actually reaches the banner without rendering the full react-native screen.
  */
 
+import type { RelayReservationStatus } from '@serfab/cadre-core';
 import type { CadreStatus } from './use-cadre';
 
 export interface ConnectionBannerInput {
@@ -24,6 +25,11 @@ export interface ConnectionBannerInput {
   strandCount: number;
   /** Number of members in the active strand (shown when connected). */
   memberCount: number;
+  /**
+   * Relay-reservation posture. Anything but `reserved` means this phone has no
+   * address a stranger could dial, so it cannot hand out an invitation.
+   */
+  relayStatus: RelayReservationStatus;
 }
 
 export interface ConnectionBanner {
@@ -58,8 +64,28 @@ function bannerText(input: ConnectionBannerInput): string {
   if (resuming) return 'Resuming — syncing…';
   if (degraded) return 'Offline — reconnecting…';
   switch (status) {
-    case 'connected': return `Connected · ${strandCount} strand(s) · ${memberCount} member(s)`;
+    case 'connected': return `Connected · ${strandCount} strand(s) · ${memberCount} member(s)${reachabilitySuffix(input)}`;
     case 'connecting': return 'Connecting…';
     default: return error ?? 'Not connected — go to Settings';
+  }
+}
+
+/**
+ * What to append to the connected line when this phone is not dialable, so "you
+ * cannot invite anyone" is visible BEFORE the user taps Invite rather than only as
+ * the refusal afterwards.
+ *
+ * Deliberately text-only: {@link bannerColor} keeps meaning connection health
+ * (green connected / amber settling / red offline), and a phone with no relay is
+ * connected and fully usable for everything except inviting. Colouring it amber
+ * would report a healthy node as degraded — and no-relay is the default posture, so
+ * that amber would be permanent for most users and quickly learned as noise.
+ */
+function reachabilitySuffix({ relayStatus }: ConnectionBannerInput): string {
+  switch (relayStatus) {
+    case 'reserved': return '';
+    case 'none': return ' · no relay — can’t invite';
+    case 'dialing': return ' · reserving relay…';
+    default: return ' · relay offline — can’t invite';
   }
 }

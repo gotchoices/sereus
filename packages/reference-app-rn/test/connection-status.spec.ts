@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { connectionBanner, type ConnectionBannerInput } from '../src/connection-status';
 
-/** Baseline: connected, nothing settling. Tests override only what they vary. */
+/** Baseline: connected and reachable, nothing settling. Tests override only what they vary. */
 function input(overrides: Partial<ConnectionBannerInput> = {}): ConnectionBannerInput {
   return {
     resuming: false,
@@ -18,6 +18,7 @@ function input(overrides: Partial<ConnectionBannerInput> = {}): ConnectionBanner
     error: null,
     strandCount: 0,
     memberCount: 0,
+    relayStatus: 'reserved',
     ...overrides,
   };
 }
@@ -85,5 +86,35 @@ describe('connectionBanner', () => {
       color: '#ff9800',
       text: 'Resuming — syncing…',
     });
+  });
+
+  it('says so when no relay is configured — the phone cannot be dialed, so it cannot invite', () => {
+    expect(connectionBanner(input({ relayStatus: 'none', strandCount: 1, memberCount: 1 }))).toEqual({
+      // Still green: the connection is healthy and everything except inviting works.
+      color: '#4caf50',
+      text: 'Connected · 1 strand(s) · 1 member(s) · no relay — can’t invite',
+    });
+  });
+
+  it('distinguishes a relay that is still being reserved from one that is not answering', () => {
+    expect(connectionBanner(input({ relayStatus: 'dialing' })).text)
+      .toBe('Connected · 0 strand(s) · 0 member(s) · reserving relay…');
+    expect(connectionBanner(input({ relayStatus: 'retrying' })).text)
+      .toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+    expect(connectionBanner(input({ relayStatus: 'error' })).text)
+      .toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+  });
+
+  it('says nothing about the relay once one is held', () => {
+    expect(connectionBanner(input({ relayStatus: 'reserved' })).text)
+      .toBe('Connected · 0 strand(s) · 0 member(s)');
+  });
+
+  it('keeps the relay out of the line entirely when not connected', () => {
+    // A disconnected phone has a more pressing problem than its reachability.
+    expect(connectionBanner(input({ status: 'idle', relayStatus: 'none' })).text)
+      .toBe('Not connected — go to Settings');
+    expect(connectionBanner(input({ resuming: true, relayStatus: 'none' })).text)
+      .toBe('Resuming — syncing…');
   });
 });

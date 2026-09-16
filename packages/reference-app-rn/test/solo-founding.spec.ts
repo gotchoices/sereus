@@ -40,6 +40,17 @@ import { FakeWriteBatch, fakeRNLevelDBOpener } from './fake-rn-leveldb.js';
 const FOUNDING_DEADLINE_MS = 10_000;
 /** `start()` and `stop()` bring libp2p up and down: a looser bound, still finite. */
 const LIFECYCLE_DEADLINE_MS = 30_000;
+/**
+ * The same two bounds for a node whose relay is configured but unreachable. Each adds
+ * roughly one relay drive — `DEFAULT_RELAY_RESERVE_TIMEOUT_MS` (10 s), which a refused
+ * dial spends polling in case libp2p's own discovery lands a reservation anyway.
+ * `start()` waits out the control node's first attempt, and every strand launch waits
+ * out its own supervisors' (`strand-instance-manager.ts` → `awaitFirstRelayAttempts`).
+ * That ~10 s per strand launch is a real, accepted regression in founding latency on a
+ * phone whose relay is down; the deadlines here are sized for it rather than hiding it.
+ */
+const RELAY_LIFECYCLE_DEADLINE_MS = 45_000;
+const RELAY_FOUNDING_DEADLINE_MS = 30_000;
 
 /** Fail naming `label` when `op` has not settled within `ms`, rather than hitting vitest's anonymous timeout. */
 async function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> {
@@ -73,6 +84,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 		const cadre = new CadreNode(buildPhoneNodeConfig({
 			partyId,
 			bootstrapAddrs: [],
+			relayAddrs: [],
 			keyStore: new InMemoryKeyStore(),
 			storageProvider: phoneStorageOverFakeNative(),
 			transports: [webSockets(), circuitRelayTransport()],
@@ -132,4 +144,85 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 		const chatStrandWarnings = warn.mock.calls.filter(([message]) => String(message).includes('[chat-strand]'));
 		expect(chatStrandWarnings).toEqual([]);
 	}, FOUNDING_DEADLINE_MS * 2);
+});
+
+/**
+ * A relay named but unreachable is the everyday phone case — the relay is down, or
+ * the phone is on a dead network — and `buildPhoneNodeConfig`'s `requireRelay: false`
+ * is what keeps it a working phone rather than a phone that will not start. Nothing
+ * here needs a relay server: an address nothing is listening on exercises the whole
+ * fail-soft path.
+ *
+ * What this does NOT prove: that a phone with a WORKING relay can be dialed. No test in
+ * this package puts the phone's config on a wire against a real relay.
+ * `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`
+ * proves the behaviour for a node of this shape (`listenAddrs: []` + `relayAddrs`), and
+ * `test/phone-node-config.spec.ts` proves the phone's config resolves to that shape —
+ * but the two are joined by inspection, not by a test.
+ */
+describe('solo phone founding with a relay configured but unreachable', () => {
+	const partyId = `rn-relay-down-founding-${uuid()}`;
+	/** Nothing listens on port 1, so every dial is refused at once. The peer id is real (it must parse); the host is not. */
+	const UNREACHABLE_RELAY = '/ip4/127.0.0.1/tcp/1/ws/p2p/12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
+	let node: CadreNode | undefined;
+	/** The posture the instant `start()` resolved — see the assertion for why it is captured rather than re-read. */
+	let postureAfterStart: ReturnType<CadreNode['getRelayReservationState']> | undefined;
+
+	function running(): CadreNode {
+		if (!node) throw new Error('the node was never constructed; see the beforeAll failure');
+		return node;
+	}
+
+	beforeAll(async () => {
+		const cadre = new CadreNode(buildPhoneNodeConfig({
+			partyId,
+			bootstrapAddrs: [],
+			relayAddrs: [UNREACHABLE_RELAY],
+			keyStore: new InMemoryKeyStore(),
+			storageProvider: phoneStorageOverFakeNative(),
+			transports: [webSockets(), circuitRelayTransport()],
+			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
+			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
+			enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
+		}));
+		node = cadre;
+		await within('node.start() with a dead relay', RELAY_LIFECYCLE_DEADLINE_MS, () => cadre.start());
+		postureAfterStart = cadre.getRelayReservationState();
+		await within('runOwnerGenesis()', LIFECYCLE_DEADLINE_MS, () => runOwnerGenesis(cadre));
+	}, RELAY_LIFECYCLE_DEADLINE_MS * 2);
+
+	afterAll(async () => {
+		if (node) await within('node.stop()', LIFECYCLE_DEADLINE_MS, () => running().stop());
+	}, LIFECYCLE_DEADLINE_MS);
+
+	it('starts anyway, and keeps trying for the reservation in the background', () => {
+		// Sampled at the instant `start()` returned: the first drive has just failed and
+		// the supervisor has scheduled its retry, so this moment is deterministic.
+		// Re-reading later is not — the supervisor alternates between a 10 s drive
+		// (`dialing`) and its backoff (`retrying`), which is why the live read below
+		// accepts either.
+		expect(postureAfterStart?.status).toBe('retrying');
+		expect(postureAfterStart?.addrs).toEqual([UNREACHABLE_RELAY]);
+		expect(postureAfterStart?.circuitAddrs).toEqual([]);
+		expect(postureAfterStart?.error).toEqual(expect.any(String));
+	});
+
+	it('has no address anyone could dial, so an invitation would be refused', () => {
+		// The precondition `CadreNode.createOpenInvitation` actually has, and the guard
+		// `use-cadre.ts` → `createClosedStrandWithInvite` checks before founding anything.
+		expect(running().getMultiaddrs()).toEqual([]);
+		// Still trying — never `error` (nobody is trying) and never `none` (nothing configured).
+		expect(['retrying', 'dialing']).toContain(running().getRelayReservationState().status);
+	});
+
+	it('founds a chat strand regardless — a phone with no relay is still a working phone', async () => {
+		const cadre = running();
+		const strandId = uuid();
+
+		const instance = await within('createChatStrand() with a dead relay', RELAY_FOUNDING_DEADLINE_MS,
+			() => createChatStrand(cadre, strandId));
+
+		expect(instance.strandId).toBe(strandId);
+		expect(instance.status).toBe('active');
+	}, RELAY_FOUNDING_DEADLINE_MS * 2);
 });

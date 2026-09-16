@@ -109,12 +109,49 @@ The phone supplies WebSocket + circuit relay transports via `CadreNodeConfig.net
 ```typescript
 network: {
   transports: [webSockets(), circuitRelayTransport(), webRTC({ rtcConfiguration: { iceServers } })],
-  listenAddrs: [],  // Cannot listen in RN
+  listenAddrs: [],              // Cannot listen in RN
+  relayAddrs: [...],            // Resolved by src/relay-config.ts; may be empty
+  requireRelay: false,          // Must still start when the relay is down
   connectionGater: { denyDialMultiaddr: () => false },
 }
 ```
 
+`relayAddrs` and `requireRelay` are what make the phone dialable without making a relay a condition of starting — see "Reachability: configuring a relay" below.
+
 `denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
+
+
+### Reachability: configuring a relay
+
+A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a node borrowed from a cadre-host, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: an invitation embeds the inviter's own addresses as its bootstrap list, so a phone with no address cannot mint one (`CadreNode.createOpenInvitation` throws `No multiaddrs available for invitation`).
+
+The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable.
+
+Two ways to supply it, both resolved by [`src/relay-config.ts`](../packages/reference-app-rn/src/relay-config.ts):
+
+| source | how | when to use it |
+| --- | --- | --- |
+| `EXPO_PUBLIC_RELAY_ADDR` | build-time env var, comma-separated; Expo inlines `EXPO_PUBLIC_`-prefixed vars into the bundle | a build that should work with no typing |
+| Settings → **Relay** | typed per device, comma-separated | pointing one device elsewhere; overrides the env var |
+
+The field is prefilled from the env var on launch, so a build that ships one needs no typing. A value typed into it wins; clearing it falls back to the env var, and with neither the phone runs with no relay.
+
+The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooW…`. `ops/` has the relay container this repo ships.
+
+**What the phone can and cannot do without one**
+
+| | with a relay reserved | without |
+| --- | --- | --- |
+| Start, found strands, read and write them locally | yes | yes |
+| Dial a drone / a borrowed cadre-host node, sync, chat | yes | yes |
+| Join a closed strand from someone else's invitation | yes | yes |
+| **Create a closed strand + invite** | yes | **no** — refused before anything is founded, with a message naming this field |
+
+**It never blocks startup.** The config sets `requireRelay: false`, so a relay that is unreachable at launch is logged and retried in the background instead of failing `start()` — a phone has to work on a dead network. The posture is visible as **Reachable** on the Settings Node card and in the chat screen's connection banner, and it is read live at the moment Invite is tapped, so a relay that comes back mid-session starts working with no restart.
+
+**Two costs worth knowing.** A configured-but-unreachable relay adds about ten seconds to `start()` and about ten more to **every** strand launch: cadre-core waits out each reservation supervisor's first attempt (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s), and a refused dial spends that whole budget polling in case libp2p's own discovery lands a reservation anyway. Nothing fails — founding is just slower while the relay is down, which the Settings screen's slow-founding hint will surface.
+
+**One relay per phone, and both ends are assumed to share it.** Two people configuring *different* relays is untested and out of scope (backlog `feat-scenario-two-relay-circuit`). Relaying through the phone's own always-on cadre node instead of third-party infrastructure is the intended end state but is blocked on two cadre-core defects — see backlog `feat-phone-relays-through-its-own-always-on-node`.
 
 ### How It Connects
 

@@ -462,11 +462,20 @@ export {
 // `UnbindableListenAddressError` is the same posture for the OTHER half of the listen
 // config: a `network.listenAddrs` entry whose transport the node will not have refuses
 // start instead of being silently dropped by libp2p's transport manager.
+//
+// `resolveListenAddrs` and `strandNodeAddrs` are the derivations themselves — what a
+// `NetworkConfig` actually turns into for the control node and for each strand node.
+// Exported so an embedder that hand-writes a `network` block (the React Native and web
+// reference apps) can assert on the resulting SHAPE rather than on its own field names,
+// which is the difference between a test that proves reachability and one that proves a
+// spelling.
 export {
   RelayReservationFailedError,
   UnbindableListenAddressError,
-  RELAY_SEARCH_LISTEN_ADDR
+  RELAY_SEARCH_LISTEN_ADDR,
+  resolveListenAddrs
 } from './relay-addrs.js';
+export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';
 
 // Relay reservation via the bare `/p2p-circuit` search listener — the one route
 // every control node takes; `network.relayAddrs` is its fail-fast posture

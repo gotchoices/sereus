@@ -13,11 +13,20 @@ is never stated:
 | relay **server** (forwarding for others) | implemented, default-on for the storage profile ([`docs/strands.md`](../../docs/strands.md)) |
 | relay **client reservation** (making a NAT'd node reachable) — cadre-cli | implemented (`CADRE_RELAY_ADDRS` / `network.relayAddrs`) |
 | relay **client reservation** — cadre-host | deferred ([`docs/cadre-host.md`](../../docs/cadre-host.md), "Circuit-relay client (deferred)") |
-| relay **client reservation** — the phone apps | never used |
+| relay **client reservation** — the web reference app | implemented (`VITE_RELAY_ADDR` / `localStorage "relay-addr"`, via `CadreNode.reserveRelays`) |
+| relay **client reservation** — the React Native reference app | implemented (`EXPO_PUBLIC_RELAY_ADDR` / Settings → Relay, via `network.relayAddrs`) |
 
 A reader who takes "relay is supported" at face value plans an architecture where a phone
-is dialed through a relay. Nothing supports that today, and the sentence that would have
-told them so is in a different document about a different package.
+is dialed through a relay. The sentence that would have told them where that does and does
+not work is in a different document about a different package.
+
+> **Updated 2026-09-15** by `phone-becomes-reachable-through-a-relay`: the single "the phone
+> apps — never used" row above became false and has been corrected in place, split into one
+> row per reference app. Both now reserve as relay clients, and `docs/reference-app-rn.md`
+> gained a "Reachability: configuring a relay" section. What this ticket still owns is
+> unchanged: no single document states the matrix, `cadre-host` is still the deferred half,
+> and `architecture.md` still does not say where inbound-to-phone works. The two
+> `cadre-host.md` fixes below are also untouched.
 
 `cadre-host.md` is honest in its own section; the problem is that no document states the
 matrix, and the two documents a phone developer reads (`architecture.md`,
@@ -26,8 +35,9 @@ matrix, and the two documents a phone developer reads (`architecture.md`,
 ## The work
 
 State the split once, where a reader deciding an architecture will meet it, and cross-link
-from the per-package documents. Say explicitly that **inbound-to-phone is not available**,
-so nobody plans on it.
+from the per-package documents. Say explicitly where inbound-to-phone **does** work (both
+reference apps, given a configured relay) and where it does not (`cadre-host`), so nobody
+plans on the wrong half.
 
 Two small fixes to make while in there:
 
