@@ -33,6 +33,11 @@ appId: ${MAESTRO_APP_ID}
     id: "input-bootstrap-addr"
 - inputText: ${BOOTSTRAP_ADDR}
 - hideKeyboard
+# NOTE: the Node section has grown (the "Relay" field + its hint sit between the
+# bootstrap field and this button) and only this section renders while disconnected.
+# If this tap ever starts missing on a short screen, the button has gone below the
+# fold — add a `scrollUntilVisible` for `btn-connect` here rather than trimming the
+# screen. Unverified: no device harness was available when the field was added.
 - tapOn:
     id: "btn-connect"
 - extendedWaitUntil:

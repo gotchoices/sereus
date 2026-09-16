@@ -108,8 +108,9 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// lands nothing is logged and the supervisor keeps retrying in the
 			// background, instead of throwing `RelayReservationFailedError` out of
 			// `start()`. A MALFORMED entry still throws at config resolution whatever
-			// the posture — a typo is a user error, and the Settings screen shows it as
-			// "Connection failed" so the field can be corrected and Connect retried.
+			// the posture — a typo is a user error, and the Settings screen shows it (the
+			// node goes to `status: 'error'` with the message under the Node card) so the
+			// field can be corrected and Connect retried.
 			requireRelay: false,
 			// Permissive dial gater, for the same reason the web reference app sets one
 			// (`reference-app-web/src/lib/cadre-web.ts`). libp2p's `connection-gater`

@@ -30,9 +30,9 @@ describe('splitRelayAddrs', () => {
 	});
 
 	it('passes a malformed entry through — validation is cadre-core\'s, at config resolution', () => {
-		// `relayCircuitAddrs` throws naming `network.relayAddrs`, which is what surfaces
-		// a typo as "Connection failed" on the Settings screen. Silently dropping it here
-		// would instead start a node that is quietly unreachable.
+		// `relayCircuitAddrs` throws naming `network.relayAddrs`, which is what puts the
+		// typo on the Settings screen (status `error`, message under the Node card).
+		// Silently dropping it here would instead start a node that is quietly unreachable.
 		expect(splitRelayAddrs('not-a-multiaddr')).toEqual(['not-a-multiaddr']);
 	});
 });

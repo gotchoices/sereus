@@ -713,3 +713,87 @@ describe('useCadreInternal — requesting a node from a cadre-host', () => {
     expect(h.ctl.node).toBeNull();
   });
 });
+
+/**
+ * The relay posture the UI shows is POLLED — `CadreNode` announces neither a
+ * reservation gained nor one lost — so the poll is the whole mechanism behind the
+ * claim that a relay coming back mid-session starts working with no app restart
+ * (`docs/reference-app-rn.md` → "Reachability: configuring a relay"). These cover the
+ * wiring; `connection-status.spec.ts` covers the wording it produces.
+ */
+describe('useCadreInternal — relay posture polling', () => {
+  beforeEach(resetHarness);
+
+  it('picks up a relay that lands after start, with no user action', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sink, renderer } = mountCadre();
+      await act(async () => {
+        await sink.current!.start(OPTS);
+        await tick();
+      });
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s) · no relay — can’t invite');
+
+      // cadre-core's supervisor lands the reservation. Nothing tells the app.
+      h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: ['/p2p-circuit/p2p/peer-1'] };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+
+      expect(sink.current!.relayStatus).toBe('reserved');
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s)');
+
+      // …and the other direction: a reservation lost mid-session says so again.
+      h.ctl.relay = { ...h.noRelay(), status: 'retrying', error: 'relay closed the connection' };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(bannerOf(renderer).text).toBe('Connected · 0 strand(s) · 0 member(s) · relay offline — can’t invite');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll while backgrounded, and re-reads on the way back', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sink } = mountCadre();
+      await act(async () => {
+        await sink.current!.start(OPTS);
+        await tick();
+      });
+
+      await actFlush(() => h.ctl.appState.fire('background'));
+      vi.mocked(getRelayState).mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      // A screen-off phone adds no wakeups of its own — the supervisor inside
+      // cadre-core keeps its own liveness check, which is not this timer.
+      expect(getRelayState).not.toHaveBeenCalled();
+
+      h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: ['/p2p-circuit/p2p/peer-1'] };
+      await actFlush(() => h.ctl.appState.fire('active'));
+      expect(getRelayState).toHaveBeenCalled();
+      expect(sink.current!.relayStatus).toBe('reserved');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('falls back to "no relay" once the node is stopped', async () => {
+    const sink = await mountStarted();
+    h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: ['/p2p-circuit/p2p/peer-1'] };
+    await actFlush(() => {
+      void sink.current!.relayStatus;
+    });
+
+    await act(async () => {
+      await sink.current!.stop();
+      await tick();
+    });
+
+    // No node, no posture to report — and nothing left polling a dead one.
+    expect(sink.current!.relayStatus).toBe('none');
+  });
+});

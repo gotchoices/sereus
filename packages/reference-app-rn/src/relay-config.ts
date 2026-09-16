@@ -32,9 +32,9 @@
  *
  * Framework-free by design: no `@serfab/cadre-core`, no native imports, no
  * validation. A malformed entry is cadre-core's to reject — `relayCircuitAddrs`
- * throws at config resolution naming the field, which is what surfaces a typo as
- * "Connection failed" on the Settings screen rather than as a node that silently
- * came up unreachable.
+ * throws at config resolution naming the field, which is what surfaces a typo on the
+ * Settings screen — the node goes to `status: 'error'` and the message renders under
+ * the Node card — rather than as a node that silently came up unreachable.
  */
 
 /** Read the build-time relay addrs (`EXPO_PUBLIC_RELAY_ADDR`, comma-separated). */

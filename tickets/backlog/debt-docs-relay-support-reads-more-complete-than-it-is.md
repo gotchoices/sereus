@@ -15,6 +15,7 @@ is never stated:
 | relay **client reservation** — cadre-host | deferred ([`docs/cadre-host.md`](../../docs/cadre-host.md), "Circuit-relay client (deferred)") |
 | relay **client reservation** — the web reference app | implemented (`VITE_RELAY_ADDR` / `localStorage "relay-addr"`, via `CadreNode.reserveRelays`) |
 | relay **client reservation** — the React Native reference app | implemented (`EXPO_PUBLIC_RELAY_ADDR` / Settings → Relay, via `network.relayAddrs`) |
+| relay **client reservation** — the NativeScript reference app (`packages/reference-app-ns`) | never used; that app also has no invitation flow at all, so it is dial-out only |
 
 A reader who takes "relay is supported" at face value plans an architecture where a phone
 is dialed through a relay. The sentence that would have told them where that does and does
@@ -22,7 +23,8 @@ not work is in a different document about a different package.
 
 > **Updated 2026-09-15** by `phone-becomes-reachable-through-a-relay`: the single "the phone
 > apps — never used" row above became false and has been corrected in place, split into one
-> row per reference app. Both now reserve as relay clients, and `docs/reference-app-rn.md`
+> row per reference app (three, once the review pass added the NativeScript one the split had
+> dropped). The web and React Native apps now reserve as relay clients, and `docs/reference-app-rn.md`
 > gained a "Reachability: configuring a relay" section. What this ticket still owns is
 > unchanged: no single document states the matrix, `cadre-host` is still the deferred half,
 > and `architecture.md` still does not say where inbound-to-phone works. The two

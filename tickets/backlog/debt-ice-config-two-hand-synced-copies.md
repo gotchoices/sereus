@@ -63,6 +63,12 @@ Out of scope here: the server copy in `ops/docker/turn-credential-issuer/` is a
 standalone npm project outside the monorepo build and cannot share code with the
 packages; its agreement with the clients stays enforced by the pinned vector.
 
+## A second, much smaller instance of the same pattern
+
+Added 2026-09-15 by the review of `phone-becomes-reachable-through-a-relay`, as evidence rather than as separate work: `packages/reference-app-web/src/lib/relay-config.ts` (63 lines) and `packages/reference-app-rn/src/relay-config.ts` (70 lines) are now the same kind of hand-synced pair — same resolution order (explicit argument → build-time env var → nothing), same comma-split-and-trim rule, differing only in the env accessor (`import.meta.env.VITE_RELAY_ADDR` vs `process.env.EXPO_PUBLIC_RELAY_ADDR`) and in the web copy's extra `localStorage` source.
+
+The shared logic is about fifteen lines and holds nothing security-sensitive, so on its own it would not be worth a ticket. It is recorded here so that whoever picks the ice-config work chooses a shape that can absorb this file too — two config resolvers per app is the thing that keeps growing, not one of them.
+
 ## Priority
 
 Low urgency, not zero. Nothing is broken today and the tests cover the highest-risk

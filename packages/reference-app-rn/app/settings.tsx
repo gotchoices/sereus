@@ -93,10 +93,13 @@ export default function SettingsScreen() {
     const pid = partyId.trim() || uuid();
     setPartyId(pid);
     const addrs = bootstrapAddr.trim() ? [bootstrapAddr.trim()] : [];
-    // The typed value wins over the build-time default; an emptied field means "no
-    // relay", which starts fine and only costs the ability to invite. A malformed
-    // entry is rejected by cadre-core at config resolution, so it surfaces below as
-    // "Connection failed" and the field can be corrected and Connect retried.
+    // The typed value wins over the build-time default. Emptying the field asks for
+    // that default BACK rather than for "no relay" — `resolveRelayAddrs` falls through
+    // to `EXPO_PUBLIC_RELAY_ADDR` — so a build that ships none is the only way to run
+    // with none. A malformed entry is rejected by cadre-core at config resolution;
+    // `cadre.start` records that as `status: 'error'` plus the red message under this
+    // card (it does not throw), so the field can be corrected and Connect retried
+    // without a restart.
     const relayAddrs = resolveRelayAddrs(splitRelayAddrs(relayAddr));
     try {
       await cadre.start({ partyId: pid, bootstrapAddrs: addrs, relayAddrs });

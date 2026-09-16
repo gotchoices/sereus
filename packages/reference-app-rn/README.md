@@ -295,7 +295,7 @@ The orchestrator (`scripts/run-e2e.mjs`):
 
 - **"adb reverse" warning**: emulator not running, or wrong device default —
   run `adb devices` to confirm and `emulator -avd <name>` to start one.
-- **Connection fails / "Connection failed" modal**: the WS dial from the
+- **Connection fails** (Settings shows `Status: error` with the message in red under the Node card): the WS dial from the
   emulator's `127.0.0.1:4002` did not tunnel to host. Verify
   `adb reverse --list` shows both rules; if `adb reverse` is not supported on
   the device, override `BOOTSTRAP_ADDR` to use `10.0.2.2:4002` instead and
