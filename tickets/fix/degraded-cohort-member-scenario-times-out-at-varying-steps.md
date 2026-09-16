@@ -41,6 +41,36 @@ The second is more likely, given 45 000 and 15 000 are both round numbers. Estab
 changing a number, and if a deadline is raised, say in a comment what the new figure is derived
 from — otherwise the next person on a busier machine raises it again.
 
+## This file is a cross-repo tripwire, so a red here costs more than a red test
+
+Found while checking something else, and it raises this ticket's priority above "a flaky timing
+scenario".
+
+`control-write-retry.ts` classifies which transactor failures are safe to re-present, and it
+discriminates the commit phase from the pend/get phases by a **formatting detail of another
+repo**: optimystic's per-batch aggregate text renders `<peer>[block:<id>](<status>)` for `get` and
+`pend`, and `<peer>[blocks:<count>](<status>)` for `commitBlocks`. `[block:` cannot occur inside
+`[blocks:`, so the tokens separate the phases. That file's own NOTE says the coupling fails
+CLOSED: if optimystic reformats, the aggregate stops matching, and control writes simply **stop
+being retried**, silently losing the absorption.
+
+The guard against that silent loss is this scenario — it asserts the `[block:` token against the
+live failure object (line 253), not against a fixture. So while this file is red, nobody is
+checking whether the classifier still matches reality.
+
+Two consequences for whoever picks this up:
+
+1. **Check the tokens first — it is a two-minute check and it reframes everything else.** Verified
+   2026-09-15 23:55 against optimystic `c56c2bd4`: `network-transactor.ts` still renders `[block:`
+   at lines 290, 577 and 1142, and `[blocks:` at 928. So the discriminator is intact and the
+   current failures are NOT an upstream reformat.
+2. **Consider whether lost retry absorption explains the timeouts at all.** If control writes ever
+   stop being retried, an operation that needed one attempt more never converges and hits exactly
+   this scenario's deadlines — which would look like the timeouts observed, at varying steps,
+   rather than like a single defect. Point 1 rules that out for *this* build, but it is the first
+   hypothesis to re-test if these timeouts persist after any optimystic change, and it is a better
+   explanation than contention if they ever appear on an idle machine.
+
 ## Do not confuse this with the vacuity fix
 
 The third failure in the same two runs, `control-bring-up-quiet-period`, was a different problem
