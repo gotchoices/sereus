@@ -43,6 +43,8 @@ const PROBES = [
 	{ path: 'process.env' },
 	{ path: 'queueMicrotask' },
 	{ path: 'performance.now' },
+	// polyfills/event.js imports event-target-polyfill, which installs EventTarget when
+	// absent without marking the registry, so `native` here cannot rule that out.
 	{ path: 'EventTarget' },
 	{ path: 'WebSocket' },
 	{ path: 'AbortController' },
@@ -88,16 +90,30 @@ const PROBES = [
 ];
 
 /**
+ * Whether a dotted global path resolves to something.
+ *
+ * The last segment is read inside a try: `WebSocket.prototype.bufferedAmount` is read
+ * off the prototype, not an instance, and a native accessor there may throw an
+ * illegal-invocation error. That is exactly the upgrade this audit is meant to
+ * notice, so a throwing getter counts as present instead of crashing boot.
+ *
  * @param {string} path
- * @returns {unknown}
+ * @returns {boolean}
  */
-function resolve(path) {
+function isPresent(path) {
+	const parts = path.split('.');
+	const last = /** @type {string} */ (parts.pop());
 	let obj = /** @type {unknown} */ (globalThis);
-	for (const part of path.split('.')) {
-		if (obj == null) return undefined;
+	for (const part of parts) {
+		if (obj == null) return false;
 		obj = /** @type {Record<string, unknown>} */ (obj)[part];
 	}
-	return obj;
+	if (obj == null) return false;
+	try {
+		return /** @type {Record<string, unknown>} */ (obj)[last] != null;
+	} catch {
+		return last in Object(obj);
+	}
 }
 
 /**
@@ -105,7 +121,7 @@ function resolve(path) {
  * @returns {'native' | 'polyfilled' | 'gap' | 'MISSING'}
  */
 function statusOf(probe) {
-	if (resolve(probe.path) == null) return probe.gap ? 'gap' : 'MISSING';
+	if (!isPresent(probe.path)) return probe.gap ? 'gap' : 'MISSING';
 	if (probe.key && wasPolyfilled(probe.key)) return 'polyfilled';
 	return 'native';
 }

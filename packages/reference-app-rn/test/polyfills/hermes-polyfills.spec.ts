@@ -182,16 +182,19 @@ function evaluatePolyfill(): PolyfillRun {
 
 	// React Native's surface as the entry module sees it: TextEncoder but no
 	// TextDecoder, no structuredClone, no web streams, a WebSocket without
-	// bufferedAmount, and `crypto` carrying only what react-native-get-random-values
-	// installed.
+	// bufferedAmount, `crypto` carrying only what react-native-get-random-values
+	// installed, and timers that return numeric ids. Node's own timers return
+	// objects that already have ref()/unref(), which the wrapper passes through
+	// untouched, so they are coerced to their numeric id here — Node's clear
+	// functions accept that id back.
 	const globals: Record<string, unknown> = {
 		WebSocket,
 		TextEncoder,
 		crypto: { getRandomValues: (array: Uint8Array) => array },
-		setTimeout: globalThis.setTimeout.bind(globalThis),
-		setInterval: globalThis.setInterval.bind(globalThis),
-		clearTimeout: globalThis.clearTimeout.bind(globalThis),
-		clearInterval: globalThis.clearInterval.bind(globalThis),
+		setTimeout: (...args: Parameters<typeof setTimeout>) => Number(setTimeout(...args)),
+		setInterval: (...args: Parameters<typeof setInterval>) => Number(setInterval(...args)),
+		clearTimeout: (id: number) => clearTimeout(id),
+		clearInterval: (id: number) => clearInterval(id),
 	};
 
 	const moduleRequire: ModuleRequire = (id) => {
@@ -490,14 +493,17 @@ describe('polyfills/hermes.js under a fake Hermes + React Native runtime', () =>
 		await expect(promise).resolves.toBe('ok');
 	});
 
-	it('returns timer handles that answer to ref() and unref()', () => {
+	it('returns timer handles that answer to ref() and unref(), and clears them', async () => {
 		const set = run.globals.setTimeout as (fn: () => void, ms: number) => { ref(): unknown; unref(): unknown };
 		const clear = run.globals.clearTimeout as (handle: unknown) => void;
-		const handle = set(() => { }, 10_000);
-		expect(typeof handle.ref).toBe('function');
-		expect(typeof handle.unref).toBe('function');
+		let fired = false;
+		const handle = set(() => { fired = true; }, 10);
+		expect(typeof handle).toBe('object');
+		expect(handle.unref()).toBe(handle);
 		// The wrapper wraps a number; clearTimeout has to unwrap it again or React
 		// Native's native clear silently does nothing.
 		clear(handle);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(fired).toBe(false);
 	});
 });

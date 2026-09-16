@@ -434,8 +434,7 @@ Those last three all depend on Metro applying a package's `browser`/`react-nativ
 | The next missing global | `test/polyfills/dependency-globals.spec.ts` | Reads a listed set of dependency `dist` trees and fails when a global that nothing provides starts appearing. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
 | The real runtime | `polyfills/audit.js`, imported by `index.js` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively, and the only thing that can answer the `AggregateError` question |
 
-The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at.
-
+The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at. Two limits on that: `EventTarget` comes from the `event-target-polyfill` package, which does not mark the registry, so it always reads `native`; and a row the audit cannot read (a native getter that throws when read off a prototype) counts as present rather than crashing boot.
 
 ### Metro Configuration
 
