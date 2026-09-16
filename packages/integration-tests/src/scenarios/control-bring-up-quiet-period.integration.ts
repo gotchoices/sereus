@@ -69,13 +69,28 @@ import {
 const BOOTSTRAP_DISCOVERY_TIMEOUT_MS = 1_000;
 
 /**
- * Sleep per raw-storage operation. A cold control start issues a few hundred
- * operations against the backend, so single-digit milliseconds is already several
- * seconds of bring-up — comfortably past the fuse above without making the suite
- * slow. The assertion on elapsed time below fails loudly if this ever stops being
- * enough, rather than letting the scenario quietly go vacuous.
+ * Sleep per raw-storage operation. Bring-up duration is operations × this delay, so
+ * the delay has to be chosen against the OPERATION COUNT, and that count is not ours
+ * — it is a property of the linked optimystic build.
+ *
+ * It has already moved once. At 12 ms this scenario was written when a cold control
+ * start issued ~169 operations (~2 s of bring-up, twice the fuse). Optimystic's
+ * schema batching then cut the cold count to 45, and 45 × 12 ms measured 730 ms —
+ * UNDER the fuse. The anti-vacuity assertion below caught it as a red run on
+ * 2026-09-15; on a loaded machine the same code passed, so the scenario had become
+ * load-dependent as well as nearly vacuous. Neither state is one to leave.
+ *
+ * So the delay is chosen against the FLOOR of the operation count rather than
+ * today's measurement. `control-start-storage-op-budget.spec.ts` pins cold start at
+ * 45 operations and fails below half that, so 23 is the lowest count that can reach
+ * here without something else going red first. At 50 ms: 23 × 50 ms = 1150 ms at
+ * that floor, 45 × 50 ms = 2250 ms as measured today — past the fuse either way, and
+ * about 1.5 s of added wall clock for one node.
+ *
+ * If optimystic cuts the operation count again, this fails loudly rather than going
+ * quietly vacuous, and the fix is to raise the delay — not to lower the assertion.
  */
-const STORAGE_OP_DELAY_MS = 12;
+const STORAGE_OP_DELAY_MS = 50;
 
 describe('E2E control-database bring-up holds no control connections', () => {
 	it('a bootstrap-configured node whose party has not authorized it still starts, then converges', async () => {
