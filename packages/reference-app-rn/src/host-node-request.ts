@@ -81,7 +81,13 @@ export interface HostNodeRequestBudgets {
 	 * does (see {@link putSeed}).
 	 */
 	seedRetryMs: number;
-	/** Wait for the control connection to the lent node to come up. */
+	/**
+	 * Wait for the control connection to the lent node to come up, counted from
+	 * before the first dial. 60 s is two full dials of the lent node at cadre-core's
+	 * per-peer limit (30 s, `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`): room for a
+	 * first dial that finds nothing answering yet and a second one after it. See
+	 * {@link connectToNode}.
+	 */
 	connectMs: number;
 	/** Gap between polls in each of the waits above. */
 	pollIntervalMs: number;
@@ -118,7 +124,7 @@ export interface HostNodeRequestResult {
 const DEFAULT_BUDGETS: HostNodeRequestBudgets = {
 	nodeStartupMs: 90_000,
 	seedRetryMs: 30_000,
-	connectMs: 30_000,
+	connectMs: 60_000,
 	pollIntervalMs: 1_000,
 	cleanupMs: 10_000,
 };
@@ -318,9 +324,9 @@ async function readPeer(flow: Flow, res: Response): Promise<LentNodePeer> {
  * Vouch the lent node into this cadre and mint the seed that proves it.
  *
  * The address list is MIXED — TCP as well as WebSocket, loopback as well as LAN —
- * and is passed through unfiltered. cadre-core normalises it and libp2p's dial
- * queue drops whatever this device has no transport for; filtering here would
- * only risk dropping the one address that works.
+ * and is passed through unfiltered. cadre-core normalises it and dials each
+ * address on its own, and one this device has no transport for fails at once;
+ * filtering here would only risk dropping the one address that works.
  */
 async function authorizeNode(flow: Flow, peer: LentNodePeer): Promise<string> {
 	try {
@@ -361,29 +367,35 @@ async function putSeed(flow: Flow, donationId: string, encodedSeed: string): Pro
 /**
  * Dial the lent node and wait for the connection.
  *
- * `reconcileControlCohort` dials now rather than at the next timed pass. The
- * match is on the lent node's own peer id, not "any connection": a phone can hold
- * unrelated connections (a relay, in future), and counting one of those would
- * report success for a node that never answered.
+ * The dialing is `reconcileControlCohort`: it finds the lent node among the
+ * cadre's members and dials the addresses `addDrone` retained, each address on
+ * its own time limit so an unreachable one cannot use up the time the others
+ * needed. It is also what reconnects after a restart, so the flow uses the same
+ * path rather than a dial of its own. The match is on the lent node's own peer
+ * id, not "any connection": a phone can hold unrelated connections (a relay, in
+ * future), and counting one of those would report success for a node that never
+ * answered.
  *
- * NOTE: one reconcile call, then a 30 s wait. cadre-core JOINS a pass already in
- * flight rather than restarting it, and a pass that listed siblings before the
- * `addDrone` above does not dial the new node — so the wait has to outlast one
- * further timed pass (15 s today, `CadreNode`'s control-cohort cadence). If that
- * cadence is ever raised past `connectMs`, this step starts reporting failure for
- * nodes that were about to connect: re-drive the reconcile inside the loop, or
- * raise the budget with it.
+ * The whole step is bounded by `connectMs`, counted from before the first pass.
+ * Whenever a pass ends without the connection — one that listed the cadre's
+ * members before `addDrone` ran, or one whose dial found nothing answering yet —
+ * the next starts at the following poll rather than waiting for the node's timed
+ * pass. `reconcileControlCohort` runs one pass at a time and a call made during a
+ * pass joins it, so this never dials twice at once.
+ *
+ * NOTE: a pass dials the cadre's members one after another, owners first, and an
+ * unreachable member costs up to cadre-core's per-peer limit (30 s) before the
+ * lent node's turn. A cadre with an offline owner device can therefore use most
+ * of `connectMs` before this node is dialed. If that shows up, dial the lent node
+ * ahead of the pass rather than raising the budget again.
  */
 async function connectToNode(flow: Flow, dronePeerId: string): Promise<void> {
-	try {
-		await flow.deps.node.reconcileControlCohort();
-	} catch (err) {
-		throw nodeError(flow, 'This phone could not start dialling the lent node.', err);
-	}
-
 	const deadline = Date.now() + flow.budgets.connectMs;
+	const passes = reconcilePasses(flow.deps.node);
 	for (;;) {
 		if (isConnectedTo(flow.deps.node, dronePeerId)) return;
+		const failure = passes.failure();
+		if (failure) throw nodeError(flow, 'This phone could not dial the lent node.', failure.error);
 		if (Date.now() >= deadline) {
 			throw new HostNodeRequestError(
 				flow.stage,
@@ -391,8 +403,34 @@ async function connectToNode(flow: Flow, dronePeerId: string): Promise<void> {
 				+ 'Check that the phone and the host are on the same Wi-Fi network.',
 			);
 		}
+		passes.ensureRunning();
 		await delay(flow, flow.budgets.pollIntervalMs);
 	}
+}
+
+/**
+ * Keeps a `reconcileControlCohort` pass going for {@link connectToNode}.
+ * `ensureRunning` starts a pass unless one this flow started is still running; a
+ * pass that throws is kept, and every later call to `ensureRunning` does nothing,
+ * so the caller reports that failure instead of retrying it.
+ */
+function reconcilePasses(node: HostNodeRequestNode): {
+	ensureRunning(): void;
+	failure(): { error: unknown } | undefined;
+} {
+	let running = false;
+	let failed: { error: unknown } | undefined;
+	return {
+		ensureRunning() {
+			if (running || failed) return;
+			running = true;
+			void node.reconcileControlCohort().then(
+				() => { running = false; },
+				(error: unknown) => { failed = { error }; },
+			);
+		},
+		failure: () => failed,
+	};
 }
 
 /** Does the control node hold an open connection to `dronePeerId` right now? */

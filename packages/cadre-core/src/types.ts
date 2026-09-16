@@ -405,7 +405,8 @@ export interface NetworkConfig {
    * Every field is optional; omit for the defaults
    * ({@link DEFAULT_CONTROL_COHORT_TARGET_DEGREE} /
    * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS} /
-   * {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} / `STRAND_PEER_ADDR_REFRESH_MS`).
+   * {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} /
+   * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS} / `STRAND_PEER_ADDR_REFRESH_MS`).
    */
   controlCohort?: {
     /**
@@ -420,12 +421,20 @@ export interface NetworkConfig {
      */
     reconcileMs?: number;
     /**
-     * Budget for ONE sibling's proactive dial, in ms. Bounds a pass at
-     * (dialed siblings) × this, instead of leaving it to each address's own
-     * libp2p attempt timeout multiplied by address fan-out and relay hops.
-     * Defaults to {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS}.
+     * Limit on dialing ONE peer — all of its candidate addresses together — in
+     * ms. Bounds a reconcile pass at (dialed siblings) × this. The same limit
+     * applies to the owner dials of `applySeed` and to `dialInvite`. Defaults to
+     * {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS}.
      */
     dialTimeoutMs?: number;
+    /**
+     * Limit on ONE candidate address's dial attempt, in ms, inside
+     * {@link dialTimeoutMs}. Each address is dialed on its own under this limit,
+     * so an address that never answers cannot use up the time the peer's other
+     * addresses needed. Defaults to
+     * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}.
+     */
+    perAddressDialTimeoutMs?: number;
     /**
      * How often each running strand re-resolves its siblings' strand-network
      * addresses into its own libp2p address book — a step of the reconcile pass,

@@ -5,6 +5,7 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { dialPeerAddrs, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -122,6 +123,22 @@ function seedRejected(error: string): ApplySeedResult {
 }
 
 /**
+ * Parse each address, dropping (and logging) any that is malformed, so one bad
+ * entry cannot keep a peer's valid addresses from being dialed.
+ */
+function parseDialAddrs(addrs: readonly string[]): Multiaddr[] {
+  const parsed: Multiaddr[] = [];
+  for (const addr of addrs) {
+    try {
+      parsed.push(multiaddr(addr));
+    } catch (error) {
+      log('Skipping malformed dial address %s: %o', addr, error);
+    }
+  }
+  return parsed;
+}
+
+/**
  * Configuration for the SeedBootstrapService
  */
 export interface SeedBootstrapConfig {
@@ -184,6 +201,14 @@ export interface SeedBootstrapConfig {
    * direction than the receiver knobs above.
    */
   seedDeliverTimeoutMs?: number;
+  /**
+   * Time limits for each peer this service dials from a list of addresses —
+   * {@link SeedBootstrapService.applySeed}'s owner dials and
+   * {@link SeedBootstrapService.dialInvite} — per address and per peer (see
+   * `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
+   * passes its `network.controlCohort` limits.
+   */
+  dialBudget?: PeerDialBudget;
 }
 
 /**
@@ -221,6 +246,7 @@ export class SeedBootstrapService {
   private readonly seedReadTimeoutMs: number;
   private readonly maxConcurrentSeeds: number;
   private readonly seedDeliverTimeoutMs: number;
+  private readonly dialBudget: PeerDialBudget;
   /** In-flight inbound seed streams, used to enforce {@link maxConcurrentSeeds}. */
   private activeStreams = 0;
   private eventCallbacks: SeedEventCallbacks = {};
@@ -231,6 +257,7 @@ export class SeedBootstrapService {
     this.seedReadTimeoutMs = config.seedReadTimeoutMs ?? DEFAULT_SEED_READ_TIMEOUT_MS;
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
     this.seedDeliverTimeoutMs = config.seedDeliverTimeoutMs ?? DEFAULT_SEED_DELIVER_TIMEOUT_MS;
+    this.dialBudget = config.dialBudget ?? DEFAULT_PEER_DIAL_BUDGET;
 
     // Derive public key from private key if not provided
     if (config.ownerPrivateKey && !config.ownerPublicKey) {
@@ -780,6 +807,9 @@ export class SeedBootstrapService {
     // throws, which would report a healthy owner as "seeded but stranded".
     // Optional-chained: partial libp2p handles (unit-test doubles) omit `peerId`,
     // and an undefined self simply matches nothing.
+    // Every one of an owner's addresses is a candidate, each on its own time limit
+    // (`dialPeerAddrs`), so an owner whose first address never answers neither
+    // stalls seed application nor goes undialed at its other addresses.
     const selfPeerId = this.libp2pNode.peerId?.toString();
     let ownerDialsAttempted = 0;
     let ownerDialsFailed = 0;
@@ -789,10 +819,10 @@ export class SeedBootstrapService {
       }
       ownerDialsAttempted++;
       try {
-        const addr = multiaddr(peer.multiaddrs[0]);
+        const addrs = parseDialAddrs(peer.multiaddrs);
 
-        log('Dialing owner peer: %s', peer.peerId);
-        await this.libp2pNode.dial(addr);
+        log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
+        await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, `Owner dial of ${peer.peerId} via`);
       } catch (error) {
         ownerDialsFailed++;
         log('Failed to dial peer %s: %o', peer.peerId, error);
@@ -1358,21 +1388,14 @@ export class SeedBootstrapService {
 
     log('Dialing invite owner with %d addresses', invite.ownerAddrs.length);
 
-    // Try each owner address until one succeeds
-    let lastError: Error | null = null;
-    for (const addrStr of invite.ownerAddrs) {
-      try {
-        const addr = multiaddr(addrStr);
-        await this.libp2pNode.dial(addr);
-        log('Connected to owner at: %s', addrStr);
-        return;
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        log('Failed to dial %s: %o', addrStr, error);
-      }
+    const addrs = parseDialAddrs(invite.ownerAddrs);
+    if (addrs.length === 0) {
+      throw new Error('No owner addresses available');
     }
-
-    throw lastError ?? new Error('No owner addresses available');
+    // Each address on its own time limit, so one that never answers cannot hold
+    // the invitee back from the rest (`dialPeerAddrs`).
+    const connection = await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, 'Invite owner dial via');
+    log('Connected to owner at: %s', connection.remoteAddr.toString());
   }
 }
 

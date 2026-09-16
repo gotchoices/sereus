@@ -156,6 +156,15 @@ class FakeNode implements HostNodeRequestNode {
 	removePeerError: Error | undefined;
 	/** When true (the default), a reconcile pass brings the lent node's connection up. */
 	connectOnReconcile = true;
+	/** How many passes end WITHOUT the connection before one brings it up. */
+	passesBeforeConnect = 0;
+	/** How long each reconcile pass takes, in ms. */
+	reconcileMs = 0;
+	/** Set to make every reconcile pass reject. */
+	reconcileError: Error | undefined;
+	/** The most passes that were ever running at the same moment. */
+	maxConcurrentPasses = 0;
+	private runningPasses = 0;
 	/** Appended to by the test so assertions can check node and host calls interleave correctly. */
 	order: string[] = [];
 
@@ -179,7 +188,17 @@ class FakeNode implements HostNodeRequestNode {
 	async reconcileControlCohort(): Promise<void> {
 		this.order.push('reconcile');
 		this.reconcileCount++;
-		if (this.connectOnReconcile) this.connections.push(connection(DRONE_PEER));
+		this.runningPasses++;
+		this.maxConcurrentPasses = Math.max(this.maxConcurrentPasses, this.runningPasses);
+		try {
+			if (this.reconcileMs > 0) await new Promise((resolve) => setTimeout(resolve, this.reconcileMs));
+			if (this.reconcileError) throw this.reconcileError;
+			if (this.connectOnReconcile && this.reconcileCount > this.passesBeforeConnect) {
+				this.connections.push(connection(DRONE_PEER));
+			}
+		} finally {
+			this.runningPasses--;
+		}
 	}
 
 	getControlNode(): { getConnections(): ReadonlyArray<FakeConnection> } | null {
@@ -436,7 +455,8 @@ describe('requestHostNode — connecting', () => {
 
 		expect(err.stage).toBe('connecting');
 		expect(err.message).toContain('could not reach it');
-		expect(node.reconcileCount).toBe(1);
+		// Re-driven the whole time it stayed unconnected, not tried once.
+		expect(node.reconcileCount).toBeGreaterThan(1);
 		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
 	});
@@ -450,6 +470,72 @@ describe('requestHostNode — connecting', () => {
 		const err = await rejection('a closed connection to the lent node', run(host, node));
 
 		expect(err.stage).toBe('connecting');
+	});
+
+	it('starts another reconcile pass whenever one ends without the connection', async () => {
+		// A pass that listed the cadre's members before `addDrone`, or whose dial found
+		// nothing answering yet, must not leave the flow waiting for a timed pass.
+		const host = happyHost();
+		const node = new FakeNode();
+		node.passesBeforeConnect = 2;
+
+		const result = await run(host, node);
+
+		expect(result.peerId).toBe(DRONE_PEER);
+		expect(node.reconcileCount).toBe(3);
+	});
+
+	it('never runs a second pass while the first is still going', async () => {
+		const host = happyHost();
+		const node = new FakeNode();
+		node.connectOnReconcile = false;
+		// Many polls fit inside one pass (2 ms apart); none of them may start another.
+		node.reconcileMs = 60;
+
+		await rejection('a lent node that never connects', run(host, node));
+
+		expect(node.maxConcurrentPasses).toBe(1);
+		expect(node.reconcileCount).toBeGreaterThan(1);
+	});
+
+	it('counts connectMs from before the first pass, not from when it ends', async () => {
+		// The device run that found this: the step's real length was the pass PLUS the
+		// budget, while the message still named the budget alone.
+		const host = happyHost();
+		const node = new FakeNode();
+		node.connectOnReconcile = false;
+		node.reconcileMs = 2_000;
+		let connectingAt = 0;
+
+		const err = await rejection('a pass slower than the whole budget', requestHostNode(HOST, TOKEN, {
+			fetch: host.fetch,
+			node,
+			budgets: FAST,
+			onStage: (stage) => {
+				if (stage === 'connecting') connectingAt = Date.now();
+			},
+		}));
+		const connectStep = Date.now() - connectingAt;
+
+		expect(err.stage).toBe('connecting');
+		expect(err.message).toContain('could not reach it');
+		expect(connectingAt).toBeGreaterThan(0);
+		// FAST.connectMs is 300; waiting out the 2 s pass first would take over 2 s.
+		expect(connectStep).toBeLessThan(1_500);
+	});
+
+	it('reports a pass that throws as this phone failing to dial, without retrying it', async () => {
+		const host = happyHost();
+		const node = new FakeNode();
+		node.reconcileError = new Error('control node stopped');
+
+		const err = await rejection('a reconcile pass that throws', run(host, node));
+
+		expect(err.stage).toBe('connecting');
+		expect(err.message).toBe('This phone could not dial the lent node.');
+		expect(err.detail).toBe('control node stopped');
+		expect(node.reconcileCount).toBe(1);
+		expect(node.removedPeers).toEqual([DRONE_PEER]);
 	});
 });
 

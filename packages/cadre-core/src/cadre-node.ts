@@ -77,11 +77,15 @@ import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
-  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE
 } from './control-cohort.js';
-import { withDeadline } from './control-stream.js';
+import {
+  dialPeerAddrs,
+  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
+  DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  type PeerDialBudget
+} from './peer-dial.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -2945,17 +2949,23 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Budget for ONE proactive dial of the reconcile pass — steady-state sibling
+   * Time limits for dialing ONE control-network peer from its candidate
+   * addresses ({@link dialPeerAddrs}): the reconcile pass's steady-state sibling
    * ({@link dialControlSibling}) and cold-start bootstrap peer
-   * ({@link dialBootstrapPeer}) alike, since both feed a whole address list to
-   * one `dial()` and both run in a sequential loop that the next entry waits on.
+   * ({@link dialBootstrapPeer}) dials, and — handed to every
+   * {@link SeedBootstrapService} this node builds — `applySeed`'s owner dials and
+   * `dialInvite`.
    *
-   * See {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} for why the pass bounds
-   * this itself rather than inheriting each address's libp2p attempt timeout.
+   * See {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} for why a peer's dial is
+   * bounded as a whole, and {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}
+   * for why each address is bounded as well.
    */
-  private controlDialTimeoutMs(): number {
-    return this.config.network?.controlCohort?.dialTimeoutMs
-      ?? DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS;
+  private controlDialBudget(): PeerDialBudget {
+    const cohort = this.config.network?.controlCohort;
+    return {
+      perAddressMs: cohort?.perAddressDialTimeoutMs ?? DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+      totalMs: cohort?.dialTimeoutMs ?? DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
+    };
   }
 
   /**
@@ -2963,8 +2973,8 @@ export class CadreNode implements SAppIdLookup {
    * whether a dial was attempted (false when no address resolves).
    *
    * A per-peer failure (NAT, offline, relay down, connection-gater denial, or
-   * the {@link controlDialTimeoutMs} budget expiring) is logged and swallowed so
-   * one unreachable sibling never aborts the pass — exactly like
+   * the {@link controlDialBudget} expiring) is logged and swallowed so one
+   * unreachable sibling never aborts the pass — exactly like
    * {@link SeedBootstrapService.applySeed}'s owner-dial loop. A failed dial is
    * simply retried on the next pass.
    */
@@ -2980,10 +2990,11 @@ export class CadreNode implements SAppIdLookup {
     }
     try {
       log('reconcileControlCohort: dialing sibling %s (%d addr(s))', sibling.peerId, addrs.length);
-      await withDeadline(
-        this.controlDialTimeoutMs(),
-        `reconcileControlCohort dial of sibling ${sibling.peerId}`,
-        (signal) => controlNode.dial(addrs, { signal })
+      await dialPeerAddrs(
+        controlNode,
+        addrs,
+        this.controlDialBudget(),
+        `reconcileControlCohort dial of sibling ${sibling.peerId} via`
       );
       return true;
     } catch (error) {
@@ -3013,8 +3024,14 @@ export class CadreNode implements SAppIdLookup {
    * The list may name transports this node cannot dial (a lent node reports TCP
    * and `/ws` addresses to a phone that dials WebSockets only). That needs no
    * filtering here: libp2p's dial queue (`calculateMultiaddrs`, libp2p 3.1.3)
-   * drops every address no transport can dial before dialing, and fails only
-   * when none remain.
+   * rejects an address no transport can dial before touching the network, so
+   * such an address costs a log line.
+   *
+   * The list is NOT handed to one `dial()`. libp2p tries a multi-address dial's
+   * addresses one after another under a single deadline, with no limit per
+   * address, and sorts loopback addresses last — so one or two addresses that
+   * never answer used up the whole deadline before the address that worked was
+   * tried. {@link dialPeerAddrs} dials each address on its own time limit instead.
    */
   private async resolveControlDialAddrs(peerId: string, resolved: Multiaddr[]): Promise<Multiaddr[]> {
     if (resolved.length > 0) {
@@ -3231,10 +3248,11 @@ export class CadreNode implements SAppIdLookup {
     }
     try {
       log('reconcileControlCohort(cold-start): dialing bootstrap peer %s (%d addr(s))', peerId, parsed.length);
-      await withDeadline(
-        this.controlDialTimeoutMs(),
-        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId}`,
-        (signal) => controlNode.dial(parsed, { signal })
+      await dialPeerAddrs(
+        controlNode,
+        parsed,
+        this.controlDialBudget(),
+        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId} via`
       );
       return true;
     } catch (error) {
@@ -6109,6 +6127,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       ownerPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
+      dialBudget: this.controlDialBudget(),
       trustPolicy: this.config.seedTrustPolicy,
       // Seed trust anchors on the node-local store (seeded just above with this
       // node's own genesis key), never on the replicated OwnerKey table.
@@ -6361,6 +6380,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       // No owner key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
+      dialBudget: this.controlDialBudget(),
       trustPolicy: this.config.seedTrustPolicy,
       // A listener-only node accepts a wire-delivered seed solely against this
       // anchor (there is no per-call override on the inbound handler): with no
@@ -6603,6 +6623,7 @@ export class CadreNode implements SAppIdLookup {
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
         trustPolicy: this.config.seedTrustPolicy,
+        dialBudget: this.controlDialBudget(),
         // The anchor is node-scoped, not service-scoped: a throwaway service
         // must consult (and persist an accepted signer into) the SAME store the
         // persistent one would, or a cold-start enrollment via this path would
@@ -6797,6 +6818,7 @@ export class CadreNode implements SAppIdLookup {
       const tempService = new SeedBootstrapService({
         partyId: invite.partyId,
         trustPolicy: this.config.seedTrustPolicy,
+        dialBudget: this.controlDialBudget(),
       });
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });

@@ -30,7 +30,8 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
-import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, writeFrame, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { tryAddrsInTurn } from './peer-dial.js';
 
 const log = debug('sereus:cadre:strand-wake');
 
@@ -60,8 +61,10 @@ const DEFAULT_WAKE_TIMEOUT_MS = 10_000;
  *
  * This makes the TARGET PEER the unit rather than the address — the same
  * decision, for the same reason, as
- * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `control-cohort.ts`, and the same
- * chosen number. 20 s is deliberately wider than one attempt timeout so a
+ * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `peer-dial.ts`, though not the same
+ * number: that one is sized to fit several dead addresses ahead of a working one,
+ * while a wake target is expected to be awake and reachable on its first or second
+ * address. 20 s is deliberately wider than one attempt timeout so a
  * reachable peer whose signaling address is stale still gets a genuine try at
  * its direct one; a peer needing longer than that is not "asleep and reachable",
  * which is the only case a wake is for. The last attempt inside the budget gets
@@ -271,12 +274,6 @@ export interface DialWakeOptions {
   protocolId?: string;
 }
 
-/** One candidate's outcome, kept so the thrown error can name every attempt. */
-interface WakeDialFailure {
-  addr: Multiaddr;
-  error: Error;
-}
-
 /**
  * Sender side: dial a target's control-network address(es), send a
  * {@link WakeRequest} over `WAKE_PROTOCOL`, and return the peer's {@link WakeAck}.
@@ -289,16 +286,18 @@ interface WakeDialFailure {
  * dropped.
  *
  * Throws if no address is dialable — with an error naming EVERY candidate and
- * why it failed, not merely the last one. That distinction is not cosmetic:
- * with only the last candidate's message the failure that mattered (usually the
- * signaling address, tried first) is invisible outside a debug log, and the
- * surfaced message points at whichever address happened to be tried last.
+ * why it failed, not merely the last one ({@link tryAddrsInTurn}). That
+ * distinction is not cosmetic: with only the last candidate's message the
+ * failure that mattered (usually the signaling address, tried first) is
+ * invisible outside a debug log, and the surfaced message points at whichever
+ * address happened to be tried last.
  *
  * The candidate loop is deliberately explicit rather than one
  * `dialProtocol(addrs)` call. libp2p sorts any multi-address dial with
  * `defaultAddressSorter`, whose `circuitRelayAddressesLast` pass would demote
  * exactly the signaling address this ordering puts first — silently inverting
- * it, with no per-dial sorter override to opt out of.
+ * it, with no per-dial sorter override to opt out of. For the same reason this
+ * does not use `dialPeerAddrs`, which puts relayed addresses last.
  */
 export async function dialWake(
   node: Libp2p,
@@ -310,58 +309,14 @@ export async function dialWake(
     throw new Error('No dialable address for wake target');
   }
   const protocolId = options.protocolId ?? WAKE_PROTOCOL;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS;
-  const budgetMs = options.budgetMs ?? DEFAULT_WAKE_DIAL_BUDGET_MS;
-  const deadline = Date.now() + budgetMs;
-
-  const failures: WakeDialFailure[] = [];
-  for (const addr of addrs) {
-    // Whatever is left of the whole-call budget caps this attempt, so the last
-    // candidate inside the budget still gets a real (if shortened) try.
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      failures.push({ addr, error: new Error(`not tried — the ${budgetMs}ms wake dial budget was spent on earlier addresses`) });
-      continue;
-    }
-    const attemptMs = Math.min(timeoutMs, remaining);
-    try {
-      // One deadline per attempt: its signal aborts the in-flight dialProtocol and
-      // resets the live stream, so neither the connect nor the ack-read leaks.
-      return await withDeadline(
-        attemptMs,
-        `Wake dial ${addr.toString()}`,
-        (signal) => sendWake(node, addr, protocolId, request, attemptMs, signal),
-      );
-    } catch (err) {
-      failures.push({ addr, error: err instanceof Error ? err : new Error(String(err)) });
-      log('Wake dial to %s failed: %o', addr.toString(), err);
-    }
-  }
-  throw wakeDialError(failures);
-}
-
-/**
- * Fold every candidate's failure into the one error {@link dialWake} throws.
- *
- * A single candidate throws its own error unchanged, so a one-address wake reads
- * exactly as it always has (and `rejects.toThrow(/timed out/)` still means what
- * it says). Several candidates produce one message naming each address and its
- * cause, with the FIRST failure as `cause` — the first candidate is the
- * signaling address, which is the one that matters when a relayed peer goes
- * unreachable.
- */
-function wakeDialError(failures: WakeDialFailure[]): Error {
-  if (failures.length === 0) {
-    return new Error('Wake dial failed');
-  }
-  if (failures.length === 1) {
-    return failures[0].error;
-  }
-  const detail = failures.map((f) => `${f.addr.toString()} — ${f.error.message}`).join('; ');
-  return new Error(
-    `Wake dial failed for all ${failures.length} candidate addresses: ${detail}`,
-    { cause: failures[0].error },
-  );
+  const budget = {
+    perAddressMs: options.timeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS,
+    totalMs: options.budgetMs ?? DEFAULT_WAKE_DIAL_BUDGET_MS,
+  };
+  // The attempt's signal aborts the in-flight dialProtocol and resets the live
+  // stream, so neither the connect nor the ack-read leaks.
+  return await tryAddrsInTurn(addrs, budget, 'Wake dial', (addr, signal, attemptMs) =>
+    sendWake(node, addr, protocolId, request, attemptMs, signal));
 }
 
 /**

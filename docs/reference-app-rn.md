@@ -653,7 +653,7 @@ Reconnecting to the lent node after the app relaunches is only observable on a d
 ### If the flow stalls
 
 - **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is ticket `rn-solo-founding-device-run`, which has since landed.
-- **Stuck at "Connecting to the node"**, then failing after 30 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall.
+- **Stuck at "Connecting to the node"**, then failing after 60 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 8 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection.
 
 ### Not covered here
 

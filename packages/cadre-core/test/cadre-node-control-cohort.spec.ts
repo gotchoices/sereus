@@ -32,37 +32,19 @@ interface MergeCall { peerId: string; addrs: string[] }
 interface FakeControlOpts {
   selfPeerId?: string;
   connections?: string[];
+  /** One entry per `dial()` call — the pass dials one address per call. */
   dialCalls: Array<unknown>;
+  /**
+   * Make every dial reject, so the pass tries EVERY candidate address of a peer
+   * rather than stopping at the first — how a test sees the whole candidate list
+   * and its order.
+   */
+  dialFails?: boolean;
   mergeCalls: MergeCall[];
   /** Make every address-book write reject, to prove the pass survives it. */
   mergeThrows?: boolean;
   /** Cold-start fallback source; the default misses (no entry). */
   peerStoreGet?: () => Promise<unknown>;
-}
-
-/**
- * libp2p's own precondition on a multi-address dial, reproduced from
- * `libp2p/dist/src/get-peer.js` (`getPeerAddress`): the addresses handed to ONE
- * `dial()` must either all name the same peer id or none may name one, judged by
- * each address's LAST `/p2p/` component. A mixed list throws before any
- * transport is touched.
- *
- * The fake enforces it so these tests fail the way production does: a sibling
- * whose record mixed a `…/p2p-circuit/p2p/<sibling>` address with a bare direct
- * one was skipped on every reconcile pass, forever, with the pass reporting
- * `dialed=0` and only a debug line to show for it.
- */
-function assertDialableTogether(addrs: unknown): void {
-  if (!Array.isArray(addrs)) {
-    return;
-  }
-  const ids = (addrs as Multiaddr[]).map((addr) => {
-    const p2p = multiaddr(addr.toString()).getComponents().filter((c) => c.name === 'p2p');
-    return p2p.length > 0 ? (p2p[p2p.length - 1].value ?? null) : null;
-  });
-  if (new Set(ids).size > 1) {
-    throw new Error('Multiaddrs must all have the same peer id or have no peer id');
-  }
 }
 
 /** A stand-in relay peer id, for the circuit addresses these tests build. */
@@ -74,7 +56,12 @@ function fakeControlNode(opts: FakeControlOpts): unknown {
     peerId: { toString: () => opts.selfPeerId ?? 'self-peer' },
     getConnections: () =>
       (opts.connections ?? []).map((id) => ({ remotePeer: { toString: () => id } })),
-    dial: async (addrs: unknown) => { assertDialableTogether(addrs); opts.dialCalls.push(addrs); },
+    dial: async (addr: unknown) => {
+      opts.dialCalls.push(addr);
+      if (opts.dialFails) {
+        throw new Error('fake dial failure');
+      }
+    },
     peerStore: {
       // Cold-start fallback target; unused when resolvePeerAddrs returns addrs.
       get: opts.peerStoreGet ?? (async () => { throw new Error('peerStore miss'); }),
@@ -119,6 +106,8 @@ function injectCohort(
     reapThrows?: boolean;
     /** Make every address-book write reject, to prove the pass survives it. */
     mergeThrows?: boolean;
+    /** See {@link FakeControlOpts.dialFails}. */
+    dialFails?: boolean;
     /** Cold-start fallback source; the default misses (no entry). */
     peerStoreGet?: () => Promise<unknown>;
     /**
@@ -150,6 +139,7 @@ function injectCohort(
     selfPeerId: opts.selfPeerId ?? 'self-peer',
     connections: opts.connections,
     dialCalls,
+    dialFails: opts.dialFails,
     mergeCalls,
     mergeThrows: opts.mergeThrows,
     peerStoreGet: opts.peerStoreGet
@@ -303,13 +293,14 @@ describe('CadreNode.reconcileControlCohort', () => {
     // The address book is not a tidier source than the record — it is a messier
     // one. `@libp2p/peer-store` strips a trailing `/p2p/<peerId>` only when that
     // id is the address's FIRST `/p2p/` component, so a direct address comes back
-    // bare while a relayed one keeps its suffix. Handing both to one `dial()` is
-    // the same InvalidParametersError that skipped the whole sibling — on the
-    // cold-start path, where the signed record is not resolvable yet and this
-    // fallback is the ONLY way in.
+    // bare while a relayed one keeps its suffix. Both must reach the dial bound to
+    // the sibling — a bare one would accept whoever answers — on the cold-start
+    // path, where the signed record is not resolvable yet and this fallback is the
+    // ONLY way in. The dial tries the direct address before the relayed one.
     const node = new CadreNode(createConfig());
     const sibling = await realPeerId();
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: sibling, multiaddr: null }],
       peerStoreGet: async () => ({
         addresses: [
@@ -323,10 +314,9 @@ describe('CadreNode.reconcileControlCohort', () => {
 
     await node.reconcileControlCohort();
 
-    expect(dialCalls).toHaveLength(1);
-    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
-      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${sibling}`,
+    expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${sibling}`,
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${sibling}`,
     ]);
   });
 
@@ -503,8 +493,10 @@ async function signedSibling(addrs: (peerId: string) => string[], updatedAt = Da
 describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling record', () => {
   it('dials a sibling whose record mixes a suffixed circuit addr with a bare direct one', async () => {
     // The exact record shape push-wake-e2e seeds, and the one that made every
-    // reconcile pass skip this sibling: `libp2p.dial([suffixed, unsuffixed])`
-    // throws InvalidParametersError before touching a transport.
+    // reconcile pass skip this sibling while the pass handed the whole list to one
+    // `libp2p.dial([suffixed, unsuffixed])`, which throws InvalidParametersError
+    // before touching a transport. Each address is dialed on its own now, but both
+    // must still be bound to the sibling. Direct first, relayed second.
     const { peerId, record } = await signedSibling((self) => [
       `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${self}`,
       '/ip4/10.255.0.1/tcp/4001/ws',
@@ -512,25 +504,25 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
     const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
       records: new Map([[peerId, record]]),
     });
 
     await node.reconcileControlCohort();
 
-    // dialed=1, not merely "the pass did not throw": the fake dial applies
-    // libp2p's all-or-none peer-id precondition, so a mixed list records nothing.
-    expect(dialCalls).toHaveLength(1);
-    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
-      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
+    expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/10.255.0.1/tcp/4001/ws/p2p/${peerId}`,
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
     ]);
   });
 
-  it('normalizes a relay hop whose destination is missing, keeping signaling first', async () => {
+  it('normalizes a relay hop whose destination is missing', async () => {
     // `…/p2p/<relay>/p2p-circuit` names the RELAY, not the sibling — the shape
     // `groupAddrsByPeerId` drops rather than misattribute. Resolution completes
     // it to the sibling instead of leaving a third handling of the same input.
+    // (Resolution puts the relayed address first, for `dialWake`; the reconcile
+    // dial then tries the direct one first — `directBeforeRelayed`.)
     const { peerId, record } = await signedSibling(() => [
       '/ip4/9.9.9.9/tcp/4001/ws',
       `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`,
@@ -538,16 +530,16 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
     const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
       records: new Map([[peerId, record]]),
     });
 
     await node.reconcileControlCohort();
 
-    expect(dialCalls).toHaveLength(1);
-    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
-      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
+    expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
     ]);
   });
 
@@ -562,14 +554,14 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
     const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
       records: new Map([[peerId, record]]),
     });
 
     await node.reconcileControlCohort();
 
-    expect(dialCalls).toHaveLength(1);
-    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+    expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
     ]);
   });
@@ -583,14 +575,14 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
     const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
       records: new Map([[peerId, record]]),
     });
 
     await node.reconcileControlCohort();
 
-    expect(dialCalls).toHaveLength(1);
-    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+    expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
     ]);
   });
@@ -961,9 +953,9 @@ function bootstrapPeers(node: CadreNode): ReadonlyMap<string, BootstrapPeerEntry
   return (node as unknown as { bootstrapPeerStore: BootstrapPeerStore }).bootstrapPeerStore.all();
 }
 
-/** Flatten the multiaddrs handed to the fake control node's dial() into strings. */
+/** The addresses handed to the fake control node's dial(), one per call, as strings. */
 function dialedAddrs(dialCalls: Array<unknown>): string[] {
-  return dialCalls.flatMap((call) => (call as Array<{ toString(): string }>).map((a) => a.toString()));
+  return dialCalls.map(String);
 }
 
 describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () => {
@@ -1060,8 +1052,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     injectCohort(node, { members: [] });
     const attempted: string[] = [];
     (node as unknown as { controlNode: { dial(a: unknown): Promise<void> } }).controlNode.dial =
-      async (addrs: unknown) => {
-        attempted.push((addrs as Array<{ toString(): string }>)[0].toString());
+      async (addr: unknown) => {
+        attempted.push(String(addr));
         throw new Error('dial boom');
       };
     recordSeed(node, seedWith([
@@ -1079,8 +1071,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     injectCohort(node, { members: [] });
     const attempted: string[] = [];
     (node as unknown as { controlNode: { dial(a: unknown): Promise<void> } }).controlNode.dial =
-      async (addrs: unknown) => {
-        attempted.push((addrs as Array<{ toString(): string }>)[0].toString());
+      async (addr: unknown) => {
+        attempted.push(String(addr));
         (node as unknown as { _running: boolean })._running = false;
       };
     recordSeed(node, seedWith([
@@ -1210,6 +1202,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
     const store = new MemoryBootstrapPeerStore('p');
     await store.record(drone, ['/ip4/127.0.0.1/tcp/4001', '/ip4/192.168.1.20/tcp/4002/ws']);
     const { dialCalls } = injectCohort(node, {
+      dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: drone, multiaddr: null }],
       bootstrapStore: store,
       records: new Map(),
@@ -1217,7 +1210,6 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
 
     await node.reconcileControlCohort();
 
-    expect(dialCalls).toHaveLength(1);
     expect(dialedAddrs(dialCalls)).toEqual([
       `/ip4/127.0.0.1/tcp/4001/p2p/${drone}`,
       `/ip4/192.168.1.20/tcp/4002/ws/p2p/${drone}`,

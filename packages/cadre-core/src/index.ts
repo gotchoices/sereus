@@ -387,11 +387,23 @@ export {
 // the cadence/degree defaults the proactive reconcile routine reads.
 export {
   selectControlCohortDials,
-  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   type ControlCohortSelection
 } from './control-cohort.js';
+
+// Dialing one peer from several candidate addresses, each under its own time
+// limit, so an address that never answers cannot starve the rest.
+export {
+  dialPeerAddrs,
+  tryAddrsInTurn,
+  directBeforeRelayed,
+  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
+  DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  DEFAULT_PEER_DIAL_BUDGET,
+  type PeerDialBudget,
+  type AddrDialer
+} from './peer-dial.js';
 
 // Seed trust policy (trust anchor for incoming seeds)
 export {

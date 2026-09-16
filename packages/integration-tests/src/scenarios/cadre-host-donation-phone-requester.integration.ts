@@ -292,10 +292,11 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     // unsigned (it has never had a connection to self-publish over), so the retained
     // entry is the only source `resolveControlDialAddrs` can answer from.
     //
-    // The retained list is MIXED and is handed to `dial()` unfiltered: libp2p's dial
-    // queue drops the TCP entries this node has no transport for. A failure here reading
-    // "no valid addresses" is a defect in that path, NOT something to work around by
-    // filtering the list in this test.
+    // The retained list is MIXED and is dialed unfiltered, one address per `dial()`
+    // (`dialPeerAddrs`): a TCP entry this node has no transport for is rejected at once
+    // and the next address tried. A failure here reading "no valid addresses" for EVERY
+    // candidate is a defect in that path, NOT something to work around by filtering the
+    // list in this test.
     await requester!.reconcileControlCohort();
 
     await waitUntil(() => hasOutboundTo(requester!, dronePeerId), {
