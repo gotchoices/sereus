@@ -257,7 +257,13 @@ async function provisionNode(flow: Flow): Promise<string> {
 	const body = await readJson(flow, res) as { data?: { donation?: { id?: unknown } } };
 	const id = body.data?.donation?.id;
 	if (typeof id !== 'string' || id.length === 0) {
-		throw new HostNodeRequestError(flow.stage, 'The host accepted the request but did not say which node it lent.');
+		// The one leak `cleanup` cannot close: the host provisioned a node and this
+		// reply is how its id was to arrive, so there is nothing to `DELETE` by. Say so,
+		// because the only remedy is on the host side.
+		throw new HostNodeRequestError(
+			flow.stage,
+			'The host accepted the request but did not say which node it lent, so the app cannot manage it. End the loan from the host.',
+		);
 	}
 	return id;
 }
@@ -400,15 +406,20 @@ function isConnectedTo(node: HostNodeRequestNode, dronePeerId: string): boolean 
  *
  * Both halves matter and neither may replace the original error:
  *
- * - `DELETE /grants/:id` frees the grant's node-quota slot and the host's ports.
- *   Skipping it means a grant that allows one node is used up by a node nobody
- *   has.
  * - `removePeer` drops the authorization row `addDrone` wrote. Leaving it means
  *   the phone keeps an authorized member — and a dial hint — for a node that no
  *   longer exists, and every seed it later mints names that ghost.
+ * - `DELETE /grants/:id` frees the grant's node-quota slot and the host's ports.
+ *   Skipping it means a grant that allows one node is used up by a node nobody
+ *   has.
+ *
+ * `removePeer` goes FIRST because it is the only half that needs the phone's own
+ * node to still be running, and the usual reason this runs is that the node is
+ * being stopped (`use-cadre.ts`'s `stop` aborts, then waits for this to finish —
+ * a wait it bounds, so a `DELETE` to a host that has gone quiet must not be what
+ * the local removal is queued behind). `endLoan` needs only the network.
  */
 async function cleanup(flow: Flow, donationId?: string, dronePeerId?: string): Promise<void> {
-	if (donationId) await endLoan(flow, donationId);
 	if (dronePeerId) {
 		try {
 			await flow.deps.node.removePeer(dronePeerId);
@@ -416,6 +427,7 @@ async function cleanup(flow: Flow, donationId?: string, dronePeerId?: string): P
 			console.warn('[host-node-request] could not remove the lent node’s authorization row:', err);
 		}
 	}
+	if (donationId) await endLoan(flow, donationId);
 }
 
 /** The `DELETE` half of {@link cleanup}, on its own deadline and its own signal. */

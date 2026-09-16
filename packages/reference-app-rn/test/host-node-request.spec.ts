@@ -309,6 +309,21 @@ describe('requestHostNode — the happy path', () => {
 		}]);
 	});
 
+	it('leaves an address that already names the peer alone', async () => {
+		const host = happyHost()
+			.route('GET /grants/:id/peer', ok({
+				ok: true,
+				data: { peerId: DRONE_PEER, multiaddrs: [`/ip4/127.0.0.1/tcp/20345/ws/p2p/${DRONE_PEER}`] },
+			}));
+		const node = new FakeNode();
+
+		await run(host, node);
+
+		// Appending a second `/p2p/…` would make the address unparseable, so the host
+		// already having named the peer has to be a no-op rather than a concatenation.
+		expect(node.addDroneArgs[0]!.droneMultiaddrs).toEqual([`/ip4/127.0.0.1/tcp/20345/ws/p2p/${DRONE_PEER}`]);
+	});
+
 	it('trims the host URL and strips a trailing slash before joining paths', async () => {
 		const host = happyHost();
 		await run(host, new FakeNode(), { hostUrl: `  ${HOST}/  ` });
@@ -514,6 +529,69 @@ describe('requestHostNode — failures with nothing, or everything, to undo', ()
 		expect(err.message).toContain('loan ended while this request was still running');
 		expect(warnings.some((m) => m.includes('could not end loan donation-1'))).toBe(true);
 		expect(warnings.some((m) => m.includes('could not remove the lent node'))).toBe(true);
+	});
+
+	it('drops the local authorization row BEFORE it ends the loan on the host', async () => {
+		const host = happyHost()
+			.route('PUT /grants/:id/seed', fail(409, 'invalid_state', 'Donation ended (terminated)'));
+		const node = new FakeNode();
+		// Interleave the host's calls into the node's own log, so one array shows the order.
+		host.onCall = (call) => { node.order.push(`${call.method} ${generalize(call.path)}`); };
+
+		await rejection('a seed against an ended loan', run(host, node));
+
+		// `removePeer` is the only half that needs the phone's node still running, and
+		// the usual reason cleanup runs at all is that the node is being stopped — so it
+		// must not be queued behind a DELETE to a host that may have gone quiet.
+		expect(node.order.slice(-2)).toEqual(['removePeer', 'DELETE /grants/:id']);
+	});
+
+	it('says the host named no node when the accept reply carries no donation id', async () => {
+		const host = happyHost().route('POST /grants', created({ ok: true, data: { donation: {} } }));
+		const node = new FakeNode();
+
+		const err = await rejection('an accept with no id', run(host, node));
+
+		expect(err.stage).toBe('requesting');
+		expect(err.message).toContain('did not say which node it lent');
+		// Nothing to undo BY: the id was what this reply was carrying. The message has
+		// to say so, because only the host can end that loan.
+		expect(err.message).toContain('End the loan from the host');
+		expect(host.sequence()).toEqual(['POST /grants']);
+	});
+
+	it('rejects a peer reply with no address to dial', async () => {
+		const host = happyHost()
+			.route('GET /grants/:id/peer', ok({ ok: true, data: { peerId: DRONE_PEER, multiaddrs: [] } }));
+		const node = new FakeNode();
+
+		const err = await rejection('a peer with no addresses', run(host, node));
+
+		expect(err.message).toContain('without an address to reach it at');
+		expect(node.addDroneArgs).toEqual([]);
+		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+	});
+
+	it('rejects a success reply this app cannot read', async () => {
+		const host = happyHost().route('POST /grants', { status: 201, body: undefined });
+
+		const err = await rejection('an unreadable 201', run(host, new FakeNode()));
+
+		expect(err.message).toContain('could not read');
+	});
+
+	it('describes a failure by its status when the body is not the host’s envelope', async () => {
+		// A reverse proxy's own error page, say — no `{ ok:false, error:{ code } }`.
+		const host = happyHost().route('PUT /grants/:id/seed', { status: 502, body: undefined });
+		const node = new FakeNode();
+
+		const err = await rejection('a proxy error page', run(host, node));
+
+		expect(err.code).toBeUndefined();
+		expect(err.message).toContain('HTTP 502');
+		// Not retried: without the `seed_failed` code there is no reason to believe
+		// waiting helps, and the retry window would only delay the real failure.
+		expect(host.countOf('PUT /grants/donation-1/seed')).toBe(1);
 	});
 
 	it('reports a node that stopped mid-request rather than blaming the host', async () => {

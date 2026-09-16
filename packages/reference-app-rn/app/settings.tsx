@@ -134,6 +134,12 @@ export default function SettingsScreen() {
   // Errors carry a message written for a person plus the host's own wording as
   // `detail`; show both, because the detail is what makes a bug report useful.
   // The hook holds the real re-entry guard — this only disables the button.
+  //
+  // NOTE: leaving this screen does not cancel a running request, and today it need
+  // not: the tab navigator keeps Settings mounted and the hook lives at the app
+  // root, so the request and its progress state outlive the tab switch either way.
+  // If Settings ever moves behind a stack route that unmounts it, add an unmount
+  // effect that cancels — otherwise the request runs on with nothing showing it.
   const handleRequestHostNode = async () => {
     setHostNodeStage('requesting');
     try {
@@ -391,7 +397,14 @@ function LabelledInput(props: { label: string; value: string; onChangeText: (t: 
   return (
     <View style={{ marginBottom: 8 }}>
       <Text style={styles.label}>{props.label}</Text>
-      <TextInput style={styles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} testID={props.testID} />
+      {/*
+        Every field on this screen takes an identifier, an address or a token —
+        never prose. RN's defaults (`autoCapitalize="sentences"`, autocorrect on)
+        would upper-case the first character and offer word substitutions, which
+        silently turns a pasted grant token into a 401 and `http://…` into
+        `Http://…`. Off for all of them.
+      */}
+      <TextInput style={styles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} autoCapitalize="none" autoCorrect={false} testID={props.testID} />
     </View>
   );
 }

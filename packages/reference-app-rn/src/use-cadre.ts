@@ -44,6 +44,33 @@ import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './p
 /** How long a closed-strand invitation stays valid (24h). */
 const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long {@link UseCadreResult.stop} waits for a cancelled host-node request to
+ * finish undoing itself before the node comes down anyway. Bounded because the
+ * abort cannot interrupt a node call the request is already inside (a cohort
+ * reconcile dials peers and can take tens of seconds), and logging out must not
+ * wait that out — the cost of giving up is a logged cleanup failure, not a hang.
+ */
+const HOST_REQUEST_CANCEL_WAIT_MS = 5_000;
+
+/** A host-node request in flight: the handle {@link stop} cancels through, and its settle. */
+interface InFlightHostRequest {
+  abort: AbortController;
+  /** Resolves once the request has returned or thrown — which is after its cleanup ran. */
+  settled: Promise<void>;
+}
+
+/** Resolve when `settled` does, or after `ms`, whichever comes first. */
+function waitBounded(settled: Promise<void>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    void settled.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type CadreStatus = 'idle' | 'connecting' | 'connected' | 'error';
@@ -154,7 +181,7 @@ export function useCadreInternal(): UseCadreResult {
   // Non-null exactly while a host-node request is in flight, so it doubles as the
   // re-entry guard and as the handle `stop` cancels through. A ref, not state: the
   // guard has to hold against a same-frame second tap, which a re-render cannot.
-  const hostRequestRef = useRef<AbortController | null>(null);
+  const hostRequestRef = useRef<InFlightHostRequest | null>(null);
 
   // ── Strand event sync ──────────────────────────────────────────────────
 
@@ -333,10 +360,16 @@ export function useCadreInternal(): UseCadreResult {
   }, []);
 
   const stop = useCallback(async () => {
-    // Cancel a host-node request first: everything it does from here on needs a
-    // running node, and its cleanup (ending the loan on the host, dropping the
-    // authorization row) has to run while the node is still up.
-    hostRequestRef.current?.abort();
+    // Cancel a host-node request first, and give it a bounded moment to unwind:
+    // the first thing its cleanup does is drop the lent node's authorization row,
+    // which needs this node still running. Aborting without waiting would leave
+    // that removal racing the teardown below (see HOST_REQUEST_CANCEL_WAIT_MS for
+    // why the wait is bounded rather than open-ended).
+    const hostRequest = hostRequestRef.current;
+    if (hostRequest) {
+      hostRequest.abort.abort();
+      await waitBounded(hostRequest.settled, HOST_REQUEST_CANCEL_WAIT_MS);
+    }
     // Clear the DeviceToken row + drop the rotation listener before stopping, so a
     // logged-out phone is no longer push-wake addressable. Best-effort (logs on
     // failure); must run before stopPhoneNode tears the node down.
@@ -466,7 +499,10 @@ export function useCadreInternal(): UseCadreResult {
     if (!current) throw new Error('Node not started');
     if (hostRequestRef.current) throw new Error('A host node request is already running');
     const abort = new AbortController();
-    hostRequestRef.current = abort;
+    // `settled` is what `stop` waits on. It resolves in the `finally` below, which
+    // runs only after the flow's own cleanup has — that is the point of the wait.
+    let settle!: () => void;
+    hostRequestRef.current = { abort, settled: new Promise<void>((resolve) => { settle = resolve; }) };
     try {
       return await runHostNodeRequest(hostUrl, grantToken, {
         fetch,
@@ -476,6 +512,7 @@ export function useCadreInternal(): UseCadreResult {
       });
     } finally {
       hostRequestRef.current = null;
+      settle();
     }
   }, []);
 

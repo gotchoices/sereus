@@ -624,7 +624,7 @@ describe('useCadreInternal — requesting a node from a cadre-host', () => {
     });
   });
 
-  it('aborts an in-flight request when the node is stopped', async () => {
+  it('aborts an in-flight request when the node is stopped, and waits for it to unwind', async () => {
     const sink = await mountStarted();
     const request = pendingRequest();
 
@@ -634,18 +634,22 @@ describe('useCadreInternal — requesting a node from a cadre-host', () => {
     });
     expect(request.deps.signal!.aborted).toBe(false);
 
-    await act(async () => {
-      await sink.current!.stop();
-      await tick();
+    let stopping!: Promise<void>;
+    await actFlush(() => {
+      stopping = sink.current!.stop();
     });
 
-    // Aborted BEFORE the node came down, so the flow's cleanup — ending the loan on
-    // the host, dropping the local authorization row — still had a live node to use.
     expect(request.deps.signal!.aborted).toBe(true);
+    // The load-bearing half: the node is STILL UP while the aborted request unwinds,
+    // because its cleanup drops the lent node's authorization row through that node.
+    // Without the wait the removal would race `stopPhoneNode` and lose.
+    expect(h.ctl.node).not.toBeNull();
 
     await act(async () => {
       request.release();
       await inFlight;
+      await stopping;
     });
+    expect(h.ctl.node).toBeNull();
   });
 });

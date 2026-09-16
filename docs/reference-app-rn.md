@@ -562,17 +562,19 @@ Two things `adb reverse` does **not** cover:
 
 Expected result: the stages reach `connected`, and the lent node's peer id appears among the phone's control connections.
 
-Reconnecting to the lent node after the app relaunches is only observable on a device once the party id persists across restarts (`tickets/backlog/feat-rn-persist-node-start-options`). Until then the headless proof of that reconnect is the integration scenario named above.
+Disconnecting (Settings → Disconnect) while a request is running cancels it: the app drops the authorization it had given the lent node and asks the host to end the loan, then brings the node down. It waits a few seconds for that to finish — not indefinitely, so a host that has gone quiet cannot hold up a logout. If the wait runs out, the loan is left for the host's own UI or `cadre-host` CLI to end.
+
+Reconnecting to the lent node after the app relaunches is only observable on a device once the party id persists across restarts (ticket `feat-rn-persist-node-start-options`). Until then the headless proof of that reconnect is the integration scenario named above.
 
 ### If the flow stalls
 
-- **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is `tickets/blocked/rn-solo-founding-device-run`.
+- **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is ticket `rn-solo-founding-device-run`, which has since landed.
 - **Stuck at "Connecting to the node"**, then failing after 30 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall.
 
 ### Not covered here
 
-- Strands on the lent node. A lent node launches no strand of its own — whether it should is `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run`.
-- Reaching a host across the internet rather than a home LAN: `tickets/backlog/feat-cadre-host-wan-grant-reachability`.
+- Strands on the lent node. A lent node launches no strand of its own — whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
+- Reaching a host across the internet rather than a home LAN: ticket `feat-cadre-host-wan-grant-reachability`.
 - Listing loans or ending one from the app. The host's own UI and `cadre-host` CLI do that.
 
 
