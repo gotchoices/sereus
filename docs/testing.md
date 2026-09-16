@@ -440,7 +440,8 @@ scenarios whose subject is a protocol or a service rather than a network shape a
 - Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
   and the provider launch them) — `cadre-host-node-donation.integration.ts` (a host donating a
   node into a second, externally-founded party), `cadre-host-owner-node.integration.ts`,
-  `provider-seed-accepted.integration.ts`; the identity/bootstrap/store fixtures those share
+  `provider-seed-accepted.integration.ts` and `cadre-host-donation-phone-requester.integration.ts`
+  (the bullet below); the identity/bootstrap/store fixtures the first three share
   live in `child-node-fixtures.ts`.
 - Node donation to a requester that **cannot be dialed** (the phone direction) —
   `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as

@@ -25,8 +25,8 @@
  *   2. `provision` accepts `bootstrapNodes: []` and the record keeps it empty
  *   3. the spawned child reports a real `/ws` listen address from `GET .../peer`
  *   4. the requester vouches + seeds the node over the host's loopback channel
- *   5. the requester DIALS IN — an outbound connection on its side, a live control
- *      connection in the requester's party on the node's side
+ *   5. the requester DIALS IN — an outbound connection on its side, a live WEBSOCKET
+ *      control connection in the requester's party on the node's side
  *   6. rows cross in BOTH directions (the node self-publishes and its signed record
  *      reaches the requester)
  *   7. the node respawns onto the SAME `/ws` port and the requester reconnects with no
@@ -306,18 +306,31 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
       description: 'requester holds an OUTBOUND control connection to the lent node',
     });
 
-    // The node's own view: it is in the REQUESTER's party and has a live control
-    // connection. If the connection is admitted and then dropped, run with
-    // `DEBUG=sereus:*` and read both nodes' gate decisions rather than adding sleeps.
+    // The node's own view: it is in the REQUESTER's party, and the connection it holds
+    // is a WEBSOCKET one. The transport is the strongest complement to the requester-side
+    // `direction === 'outbound'` that this surface can give — `/status` drops the
+    // per-connection `paths[]` array to stay cheap (`cadre-cli/src/server/health.ts`), so
+    // it exposes counts by transport but no per-connection direction. A bare
+    // `total >= 1` would leave "the requester reached it over `/ws`" an inference from
+    // the requester's transport list rather than something the node confirms.
+    //
+    // If the connection is admitted and then dropped, run with `DEBUG=sereus:*` and read
+    // both nodes' gate decisions rather than adding sleeps.
     const health = hostOrch.getNode(donationId)!.ports.health;
     await waitUntil(async () => {
       const res = await fetch(`http://127.0.0.1:${health}/status`);
       if (!res.ok) return false;
       const status = (await res.json()) as {
-        node?: { partyId?: string; connectionPaths?: { total?: number } };
+        node?: {
+          partyId?: string;
+          connectionPaths?: { total?: number; byTransport?: Partial<Record<string, number>> };
+        };
       };
-      return status.node?.partyId === partyId && (status.node?.connectionPaths?.total ?? 0) >= 1;
-    }, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: 'lent node reports a live control connection in party P' });
+      const paths = status.node?.connectionPaths;
+      return status.node?.partyId === partyId
+        && (paths?.total ?? 0) >= 1
+        && (paths?.byTransport?.['websocket'] ?? 0) >= 1;
+    }, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: 'lent node reports a live WEBSOCKET control connection in party P' });
 
     // Re-assert the premise AFTER the connection exists: a regression that silently gave
     // the requester a listener would otherwise let the lent node dial out and satisfy
