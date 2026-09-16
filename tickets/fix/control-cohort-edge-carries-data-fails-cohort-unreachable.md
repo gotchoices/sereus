@@ -63,6 +63,33 @@ That third possibility is why this is filed as a fix rather than a flaky-test ti
 or out first**, because if it holds, the same read fails in the field whenever a party is
 partitioned, and a phone on a flaky network is a partitioned party.
 
+## The strongest lead, from upstream — try a committed read first
+
+`optimystic-tend` read the plugin's source after receiving this stack (`../optimystic` commit
+`cfbcdfea`, ticket `backlog/more-design/a-live-read-on-an-isolated-node-fails-instead-of-serving-what-it-holds`).
+`OptimysticVirtualTable.runQuery` has **two arms**:
+
+- a **committed** read pins a moment and deliberately never refreshes — its own comment says a
+  mid-constraint pull would defeat the point of reading committed state;
+- a **live** read calls `Tree.update()` first. That is the arm `readRowsOnce` takes, and it is the
+  `Tree.update` in the stack above.
+
+So the composed behaviour is that an isolated node cannot answer a live query **at all**, including
+for rows already on its own disk, where the committed arm would have served them.
+
+That makes the first experiment cheap and specific: **does the same read succeed as a committed
+read while B is isolated?** If it does, the sereus-side question is which arm control-database reads
+should take, and the answer may simply be "committed" — a read during a known partition can hardly
+insist on a fresh view, and membership lookups tolerate a slightly stale one by design (they already
+run under `retryControlOperation`). Establish that before building any workaround, and before
+treating this as an upstream defect to wait on.
+
+Upstream is treating it as a design question rather than a defect, with three candidate answers
+recorded: it is intended and wants documentation plus a legible error; the refresh degrades and
+reports that the answer is local (a read-side counterpart to the `WriteDurability` that 6.41 added
+on the write side); or the error carries enough for a caller to retry as committed without
+string-matching. Whichever lands, the sereus side of the decision is the same one above.
+
 ## Why load is not the explanation
 
 Both runs overlapped two SiteCAD ticket agents (`C:\projects\SiteCAD_branch` since 22:44,
