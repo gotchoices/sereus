@@ -66,7 +66,7 @@
 
 import { toString as u8ToString } from 'uint8arrays';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import type { ClusterPeers } from '@optimystic/db-core';
+import type { ClusterPeers, RoutingKey } from '@optimystic/db-core';
 import type { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import type { CadreNode } from '@serfab/cadre-core';
 import type { TestCadreNode } from './types.js';
@@ -167,7 +167,7 @@ export function forceFullCohort(nodes: readonly CohortNodeSource[]): ForcedCohor
 
 	// Substitutes rather than wraps, so the installed `findCluster` is deliberately unused.
 	const patch = patchKeyNetwork('forceFullCohort', 'findCluster', () =>
-		async function (_key: Uint8Array): Promise<ClusterPeers> {
+		async function (_key: RoutingKey): Promise<ClusterPeers> {
 			calls++;
 			sizes.push(Object.keys(cohort).length);
 			// Fresh copy per call: callers may mutate the returned map.
@@ -231,7 +231,7 @@ export function pinCoordinator(candidates: readonly CohortNodeSource[]): PinnedC
 	let calls = 0;
 
 	const coordinatorPatch = patchKeyNetwork('pinCoordinator', 'findCoordinator', () =>
-		async function (_key: Uint8Array, options?: Parameters<FindCoordinator>[1]): Promise<PeerId> {
+		async function (_key: RoutingKey, options?: Parameters<FindCoordinator>[1]): Promise<PeerId> {
 			calls++;
 			const excluded = new Set((options?.excludedPeers ?? []).map((p) => p.toString()));
 			const pick = candidatePeerIds.find((p) => !excluded.has(p.toString()));
@@ -240,7 +240,7 @@ export function pinCoordinator(candidates: readonly CohortNodeSource[]): PinnedC
 		});
 
 	const clusterPatch = patchKeyNetwork('pinCoordinator', 'findCluster', (inner) =>
-		async function (this: Libp2pKeyPeerNetwork, key: Uint8Array): Promise<ClusterPeers> {
+		async function (this: Libp2pKeyPeerNetwork, key: RoutingKey): Promise<ClusterPeers> {
 			const found = await inner.call(this, key);
 			// Same members, candidates keyed first — steers set-cover assignment only.
 			const reordered: ClusterPeers = {};

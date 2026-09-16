@@ -57,7 +57,8 @@
 import debug from 'debug';
 import type { Libp2p } from '@libp2p/interface';
 import type { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
-import type { ClusterPeers } from '@optimystic/db-core';
+import { routingKeyForBlock } from '@optimystic/db-core';
+import type { ClusterPeers, RoutingKey } from '@optimystic/db-core';
 import { waitUntil } from './wait-utils.js';
 import type { WaitOptions } from './wait-utils.js';
 import type { TestParty, TestCadreNode } from './types.js';
@@ -69,9 +70,15 @@ const log = debug('sereus:integration:cohort');
  * The key every probe in this module asks about. See the file header for why the
  * choice does not matter in a party smaller than `CONTROL_REPLICATION_BREADTH` nodes.
  * Treat as immutable — it is shared by every caller.
+ *
+ * Minted through `routingKeyForBlock` rather than hand-encoded because that is the only
+ * sanctioned way to obtain a `RoutingKey`: the key network hashes the key it is handed
+ * exactly once, so a probe that pre-hashed (or that was smuggled past the brand with a
+ * cast) would land on a different ring coordinate than a real write's and stop being
+ * representative of one. The bytes are the same utf8 the previous literal produced.
  */
-export const CONTROL_COHORT_PROBE_KEY: Uint8Array =
-	new TextEncoder().encode('sereus-control-cohort-probe');
+export const CONTROL_COHORT_PROBE_KEY: RoutingKey =
+	routingKeyForBlock('sereus-control-cohort-probe');
 
 /** A generous multiple of the measured ring convergence (see the file header). */
 const DEFAULT_COHORT_TIMEOUT_MS = 15_000;
@@ -272,7 +279,7 @@ export function observeControlCohorts(): ControlCohortObserverHandle {
 	const sizes: number[] = [];
 
 	const patch = patchKeyNetwork('observeControlCohorts', 'findCluster', (inner) =>
-		async function (this: Libp2pKeyPeerNetwork, key: Uint8Array): Promise<ClusterPeers> {
+		async function (this: Libp2pKeyPeerNetwork, key: RoutingKey): Promise<ClusterPeers> {
 			calls++;
 			const found = await inner.call(this, key);
 			sizes.push(Object.keys(found).length);
