@@ -55,7 +55,7 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		const totalMs = 2 * PER_ADDRESS_MS + 2 * SLACK_MS;
 
 		const started = Date.now();
-		const connection = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial via');
+		const connection = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
 		const elapsed = Date.now() - started;
 
 		expect(connection.remotePeer.toString()).toBe(target.peerId.toString());
@@ -86,11 +86,11 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		const totalMs = 2.5 * PER_ADDRESS_MS;
 
 		const started = Date.now();
-		const error = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial via')
+		const error = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial')
 			.then(() => null, (err: unknown) => err as Error);
 		const elapsed = Date.now() - started;
 
-		expect(error?.message).toMatch(/test dial via failed for all 4 candidate addresses/);
+		expect(error?.message).toMatch(/test dial failed for all 4 candidate addresses/);
 		expect(error?.message).toContain(`${addrs[3].toString()} — not tried`);
 		expect(elapsed).toBeGreaterThanOrEqual(totalMs - 50);
 		expect(elapsed).toBeLessThan(totalMs + SLACK_MS);
@@ -113,7 +113,7 @@ describe('dialPeerAddrs — a list naming a transport the dialer lacks', () => {
 		expect(tcpFirst[0].toString()).not.toContain('/ws');
 
 		const started = Date.now();
-		const connection = await dialPeerAddrs(phone, tcpFirst, { perAddressMs: 5_000, totalMs: 10_000 }, 'test dial via');
+		const connection = await dialPeerAddrs(phone, tcpFirst, { perAddressMs: 5_000, totalMs: 10_000 }, 'test dial');
 
 		expect(connection.remotePeer.toString()).toBe(lent.peerId.toString());
 		expect(connection.remoteAddr.toString()).toContain('/ws');

@@ -810,6 +810,10 @@ export class SeedBootstrapService {
     // Every one of an owner's addresses is a candidate, each on its own time limit
     // (`dialPeerAddrs`), so an owner whose first address never answers neither
     // stalls seed application nor goes undialed at its other addresses.
+    // NOTE: `handleSeedStream` acks only after this loop, so an unreachable owner
+    // can hold the ack for up to `dialBudget.totalMs` (30 s) each, past a sender's
+    // 10 s `seedDeliverTimeoutMs`; the seed is still applied. If senders start
+    // reporting accepted seeds as timed out, ack before dialing.
     const selfPeerId = this.libp2pNode.peerId?.toString();
     let ownerDialsAttempted = 0;
     let ownerDialsFailed = 0;
@@ -822,7 +826,7 @@ export class SeedBootstrapService {
         const addrs = parseDialAddrs(peer.multiaddrs);
 
         log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
-        await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, `Owner dial of ${peer.peerId} via`);
+        await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
       } catch (error) {
         ownerDialsFailed++;
         log('Failed to dial peer %s: %o', peer.peerId, error);
@@ -1394,7 +1398,7 @@ export class SeedBootstrapService {
     }
     // Each address on its own time limit, so one that never answers cannot hold
     // the invitee back from the rest (`dialPeerAddrs`).
-    const connection = await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, 'Invite owner dial via');
+    const connection = await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, 'Invite owner dial');
     log('Connected to owner at: %s', connection.remoteAddr.toString());
   }
 }

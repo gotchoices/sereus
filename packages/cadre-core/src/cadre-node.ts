@@ -2994,7 +2994,7 @@ export class CadreNode implements SAppIdLookup {
         controlNode,
         addrs,
         this.controlDialBudget(),
-        `reconcileControlCohort dial of sibling ${sibling.peerId} via`
+        `reconcileControlCohort dial of sibling ${sibling.peerId}`
       );
       return true;
     } catch (error) {
@@ -3252,7 +3252,7 @@ export class CadreNode implements SAppIdLookup {
         controlNode,
         parsed,
         this.controlDialBudget(),
-        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId} via`
+        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId}`
       );
       return true;
     } catch (error) {

@@ -116,7 +116,8 @@ interface AddrAttemptFailure {
  * Throws when no address connects — see {@link tryAddrsInTurn} for the error.
  *
  * @param label Names the dial in timeout messages and logs, e.g.
- *   `reconcileControlCohort dial of sibling <peerId> via`.
+ *   `reconcileControlCohort dial of sibling <peerId>`; each attempt reads
+ *   `<label> via <addr>`.
  */
 export function dialPeerAddrs(
 	dialer: AddrDialer,
@@ -163,7 +164,7 @@ export async function tryAddrsInTurn<T>(
 	for (const addr of addrs) {
 		const remaining = deadline - Date.now();
 		if (remaining <= 0) {
-			failures.push({ addr, error: new Error(`not tried — the ${budget.totalMs}ms ${label} budget was spent on earlier addresses`) });
+			failures.push({ addr, error: new Error(`not tried — the ${budget.totalMs}ms budget for ${label} was spent on earlier addresses`) });
 			continue;
 		}
 		if (failures.length > 0) {
@@ -171,11 +172,11 @@ export async function tryAddrsInTurn<T>(
 		}
 		const attemptMs = Math.min(budget.perAddressMs, remaining);
 		try {
-			return await withDeadline(attemptMs, `${label} ${addr.toString()}`, (signal) => attempt(addr, signal, attemptMs));
+			return await withDeadline(attemptMs, `${label} via ${addr.toString()}`, (signal) => attempt(addr, signal, attemptMs));
 		} catch (err) {
 			const error = err instanceof Error ? err : new Error(String(err));
 			failures.push({ addr, error });
-			log('%s %s failed: %o', label, addr.toString(), error);
+			log('%s via %s failed: %o', label, addr.toString(), error);
 		}
 	}
 	throw allAttemptsFailed(label, failures);
