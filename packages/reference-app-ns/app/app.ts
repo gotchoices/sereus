@@ -5,18 +5,12 @@
  * pages (via cadre-vm → cadre-phone) on navigation, after the audit below runs.
  */
 
-// 1. Runtime globals (Buffer, crypto.subtle.digest, TextDecoder, streams, …).
+// Runtime globals (Buffer, crypto.subtle.digest, TextDecoder, streams, AbortSignal,
+// WebSocket via @valor/nativescript-websockets, …).
 import '../src/polyfills';
-// 2. Global `WebSocket` for @libp2p/websockets (NativeScript has none natively).
-import '@valor/nativescript-websockets';
 
 import { Application } from '@nativescript/core';
 import { runPolyfillAudit } from '../src/polyfills/audit';
-import { patchWebSocketBufferedAmount } from '../src/polyfills/hermes';
-
-// 3. `WebSocket.prototype.bufferedAmount` — must run after step 2, since the
-// global WebSocket does not exist until `@valor/nativescript-websockets` sets it.
-patchWebSocketBufferedAmount();
 
 // Make the real V8/JSC surface visible (native vs polyfilled) before libp2p loads.
 runPolyfillAudit();

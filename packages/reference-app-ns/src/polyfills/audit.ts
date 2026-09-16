@@ -3,8 +3,8 @@
  *
  * Logs which globals the libp2p / Optimystic stack needs and whether each is
  * `native`, `polyfilled` (patched by src/polyfills/*), or `MISSING`. Run this
- * from app/app.ts AFTER the polyfills + @valor/nativescript-websockets imports
- * and BEFORE any cadre/libp2p code, so the real V8/JSC surface is visible and
+ * from app/app.ts AFTER the polyfills import (which also loads
+ * @valor/nativescript-websockets) and BEFORE any cadre/libp2p code, so the real V8/JSC surface is visible and
  * a regression (an API silently going missing) surfaces loudly at startup.
  *
  * packages/reference-app-rn/polyfills/audit.js is the same audit for the React
@@ -33,6 +33,8 @@ const PROBES: readonly Probe[] = [
 	{ path: 'TextDecoder', key: 'TextDecoder' },
 	{ path: 'structuredClone', key: 'structuredClone' },
 	{ path: 'WebSocket' },
+	// NOTE: read off the prototype; if the plugin ever ships a real accessor that throws
+	// without an instance, catch it in resolve() as reference-app-rn/polyfills/audit.js does.
 	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
 	{ path: 'ReadableStream', key: 'ReadableStream' },
 	{ path: 'WritableStream', key: 'ReadableStream' },

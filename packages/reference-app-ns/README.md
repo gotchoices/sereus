@@ -22,13 +22,13 @@ resolver config, the startup order, and the testing strategy — is in
 
 ```
 app/
-  app.ts            ENTRY: polyfills + @valor/nativescript-websockets FIRST, then audit + Application.run
+  app.ts            ENTRY: polyfills (incl. @valor/nativescript-websockets) FIRST, then audit + Application.run
   app-root.xml      TabView → Chat + Settings (each a Frame defaultPage)
   app.css           dark theme shared by both screens
   chat/             chat screen: status bar, message ListView, composer (binds getChatVm())
   settings/         settings screen: connect/seed/add-peer/create-strand/modal (SettingsViewModel → cadre-vm)
 src/
-  polyfills/        V8/JSC-audited globals (hermes, event, intl, node-crypto, node-os, buffer-global, audit)
+  polyfills/        V8/JSC-audited globals (hermes, event, abort, intl, websocket, node-crypto, node-os, buffer-global, audit)
   ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands (← use-cadre + cadre-context)
