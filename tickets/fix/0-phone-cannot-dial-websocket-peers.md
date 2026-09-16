@@ -19,6 +19,21 @@ Galaxy Note 9, debug `reference-app-rn`. **Settings → Dial Peer** against a le
 With `DEBUG=libp2p:*` on the phone, the dial reached `libp2p:websockets connected`, then repeated
 `buffered amount now undefined` until the abort.
 
+## Audit item found reviewing the committed fix (not a device finding)
+
+`AbortSignal.any` as written attaches an `abort` listener to every input signal and never removes
+them once the combined signal settles. libp2p combines a short-lived per-operation signal with
+long-lived ones (a shutdown or component signal), so on a phone left running the listeners on the
+long-lived signal accumulate — one per dial, per reservation refresh, per stream. The fix is to
+drop the listeners when the returned signal aborts, and to skip the whole registration when it is
+already aborted.
+
+**Deliberately not changed here.** The committed version is the one verified on the device, and
+the audit has no phone to re-verify against; a leak that grows over hours is not worth risking the
+change that made dialling work at all. Whoever takes this ticket has the guard in place and should
+fix it then — and should check the same question for the `AbortSignal.timeout` shim, whose timer
+keeps running after the signal is no longer referenced.
+
 ## Cause
 
 Three APIs libp2p expects are absent under React Native / Hermes:

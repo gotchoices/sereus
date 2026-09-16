@@ -63,6 +63,24 @@ That third possibility is why this is filed as a fix rather than a flaky-test ti
 or out first**, because if it holds, the same read fails in the field whenever a party is
 partitioned, and a phone on a flaky network is a partitioned party.
 
+## This shape was then confirmed on a phone, against real product behaviour
+
+`fix/cross-party-strand-messages-do-not-converge` (filed from the device run a few hours after this
+ticket) hits the same error on the `Message` table:
+`Block default/Message is unavailable (cohort-unreachable)`. Two parties form a closed strand, each
+sees the other as a member, and **no message crosses in either direction**.
+
+One detail there makes the experiment below more than a test-harness question: **the joiner could
+not read back its own insert.** It wrote a `Message` row, the write reported success, and its very
+next read of its own local database returned 0 rows, then began failing with this error. If a
+committed read would have served that row, these two tickets have one cause and one fix. If it
+would not, they diverge and this one is about the read arm while that one is about cohort
+provisioning.
+
+**Whoever takes either ticket should run the committed-read experiment first** — it is cheap, it
+discriminates between the two, and it is the same experiment in both cases. Coordinate rather than
+duplicating it.
+
 ## The strongest lead, from upstream — try a committed read first
 
 `optimystic-tend` read the plugin's source after receiving this stack (`../optimystic` commit

@@ -55,6 +55,50 @@ silent.
   (`optimystic backlog/more-design/a-live-read-on-an-isolated-node-fails-instead-of-serving-what-it-holds`).
   That explains the shape of the error, not why the cohort is unreachable while a circuit is up.
 
+## The same error shape reached the integration suite hours earlier
+
+`fix/control-cohort-edge-carries-data-fails-cohort-unreachable` (filed 2026-09-15 23:12, from the
+first full suite run in days) has this error on the `Revocation` table, in a three-node scenario
+with one node deliberately isolated. That ticket carries a read-only investigation which bears
+directly on the "party B could not read back its own insert" symptom here:
+
+- Sereus **already** selects a committed read when a writer's transaction is open
+  (`control-database.ts:674`, `readConcurrency: 'committed'`), so the plumbing exists and only the
+  trigger is missing.
+- The plugin's live arm does `await mainTree.update()` — a network refresh — before reading; the
+  committed arm pins a moment and never refreshes (`optimystic-module.ts:1204-1221`).
+- So a node that cannot reach its cohort fails a live read **even for rows it already holds**,
+  which is exactly what "wrote a row, next read returned 0, then errored" looks like.
+- `retryControlOperation` re-presents the same live read, so retrying cannot converge while the
+  cohort is unreachable.
+
+**Run the committed-read experiment before anything else here**, because it splits this ticket in
+two different directions and the split matters:
+
+- if a committed read returns party B's own row, then the missing-data symptom is (at least partly)
+  the read arm, shared with that ticket, and the cross-party question narrows to why the cohort is
+  unreachable while a circuit is up;
+- if it does not, the write never landed anywhere readable, this is cohort provisioning in
+  `formStrand`, and the two tickets are independent.
+
+Assert **which** revision or row comes back, not merely that rows come back — a committed read can
+serve stale-but-real rows and look like success.
+
+**Run the experiment against the `Member` collection as well as the failing one.** Membership
+crossed the same path fine while `Message` did not, and that asymmetry is more informative than
+either case alone: two collections, one circuit, one resolving and one not. If the `Message`
+collection's cohort resolves to nobody reachable, a committed read cannot save it either — there
+would be nothing local to serve — and the answer is cohort resolution rather than read arm. Point
+raised by `optimystic-tend`, which filed the upstream counterpart as
+`fix/1-a-second-party-cannot-read-the-messages-it-just-wrote` and deliberately kept it separate
+from the isolated-read design ticket, on the grounds that these two parties were *connected*: a
+failure with a live circuit is a different question from a failure under partition. Merge the two
+families only on evidence.
+
+One caution carried over: some control reads gate authorization, and a committed fallback that is
+right for `Message` may be wrong for `Revocation` (a revocation that has not replicated reads as
+"not revoked"). Do not generalize a fix from this table to the read funnel as a whole.
+
 ## Reproducing without a phone
 
 The phone is not essential — what it provides is a relay-only, no-listener party. A headless version
