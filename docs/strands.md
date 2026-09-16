@@ -216,6 +216,7 @@ Where it is enforced:
 The reference chat schemas use `Participant` (and `schemas/chat.qsql` also `Invitation`) for this reason.
 
 - NOTE: the root cause is in optimystic: its default storage location drops the engine schema name, and its schema catalog is keyed by bare table name. If optimystic makes both schema-qualified, the refusal stops being load-bearing and is kept only for its clearer error.
+- NOTE: only names are checked, not explicit locations. An app table given `using optimystic('tree://default/Member')`, or two app tables given the same explicit URI, would still share storage; if sApps ever start declaring explicit locations, check the resolved URI instead of the name.
 
 ## Inviting Parties
 

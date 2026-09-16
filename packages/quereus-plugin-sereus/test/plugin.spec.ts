@@ -616,6 +616,11 @@ describe('reserved strand table names', () => {
 		await result.shutdown();
 	});
 
+	it('throws the parser error, not a refusal, for a body that does not parse', () => {
+		expect(() => assertNoReservedTableNames('table Member (')).toThrow();
+		expect(() => assertNoReservedTableNames('table Member (')).not.toThrow(ReservedTableNameError);
+	});
+
 	it('passes an absent or empty schema', () => {
 		expect(() => assertNoReservedTableNames(undefined)).not.toThrow();
 		expect(() => assertNoReservedTableNames('')).not.toThrow();

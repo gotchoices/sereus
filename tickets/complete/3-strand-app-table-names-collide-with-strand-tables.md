@@ -2,7 +2,7 @@ description: An app table named like one of a strand's built-in membership table
 files:
   - packages/quereus-plugin-sereus/src/reserved-table-names.ts (new: `assertNoReservedTableNames`, `strandReservedTableNames`, `ReservedTableNameError`)
   - packages/quereus-plugin-sereus/src/compose-strand.ts (check runs first, beside the cluster-size validation)
-  - packages/quereus-plugin-sereus/src/index.ts (exports)
+  - packages/quereus-plugin-sereus/src/index.ts (exports), packages/quereus-plugin-sereus/README.md
   - packages/quereus-plugin-sereus/test/plugin.spec.ts ("reserved strand table names" block)
   - packages/cadre-core/src/cadre-node.ts (`foundStrand` runs the check before publishing), packages/cadre-core/test/publish-strand.spec.ts
   - packages/integration-tests/src/scenarios/strand-chat-participants-converge.integration.ts (new), packages/integration-tests/src/fixtures/index.ts (`loadChatSimpleSchema`)
@@ -57,3 +57,29 @@ A strand database holds two engine schemas, `Strand` (membership) and `App` (the
 - **Cost not measured:** bring-up now parses the sApp schema once more (the apply parses it again), plus `STRAND_SCHEMA` once per process. Expected to be negligible next to apply/hydrate, but no timing was taken.
 - **Browser bundle:** `compose-strand` now imports `Parser` from `@quereus/quereus`, which the bundle treats as external. The bundle already imported other runtime values from it (`QuereusError`, `FunctionFlags`, …), so no new kind of dependency. The comments in `build-browser.mjs` and `connect-browser.ts` claiming the bundle has no runtime `@quereus/quereus` import were already inaccurate before this change and are untouched.
 - **Board edits:** the table name was updated in `backlog/debt-chat-simple-schema-copies-drift-unguarded`. The sibling ticket `implement/joining-machine-writes-before-first-sync-fork-tables` now points to the new fixture and scenario as its base.
+
+## Review findings
+
+Read the implement diff (`c8692f7`) first, then the handoff.
+
+**Checked, no change needed:**
+- *Correctness of the check.* `STRAND_SCHEMA` is a body (not already wrapped), so wrapping it in `declare schema App { ... }` parses the same items the apply sees. The wrapper puts a newline before `}`, so a trailing `--` comment in the sApp body can't swallow it. The check runs before cluster-size-dependent work, storage wrapping and DDL in `composeStrand`, and before `queryStrand`/publish in `foundStrand`. Every bring-up path (Node, browser, cadre-core `StrandDatabase`, Quoomb plugin loader) goes through `composeStrand`.
+- *Leftover collisions.* Grepped `.ts/.qsql/.mjs/.js/.svelte/.tsx/.md` outside `node_modules`/`dist` for `table <reserved name>`. Only hits: the strand schema itself, the control schema's own `Revocation` (a different database, not an sApp), and the new refusal tests. The only other `table Member` hit is a stale NativeScript Android build output under `platforms/` (build artifact, not source). No leftover `MemberId`/`App.Member`/`/members/`/`MEMBER_ID` in the reference apps, integration tests, schemas or docs.
+- *Type safety / modularity.* No `any`. The module is small and single-purpose. Importing the `Parser` value from `@quereus/quereus` plus types from the `./parser` subpath matches that package's `exports`.
+- *Resource cleanup / error handling.* The refusal happens before anything is acquired, so nothing needs releasing. A parse failure propagates the parser's own error instead of being swallowed.
+- *Performance.* One extra parse of the sApp body per bring-up, and `STRAND_SCHEMA` once per process. Not measured. Left as is: it's small next to hydrate/apply, and no measurement exists that argues otherwise.
+- *Strand-membership names kept* (`MemberPrivateKey`, role `'member'`, etc.): correct. Those refer to strand membership, not the app table.
+
+**Fixed in this pass (minor):**
+- `packages/quereus-plugin-sereus/README.md`: the `StrandConnectionOptions.schema` row didn't mention the new refusal. It now names `ReservedTableNameError` and links to `docs/strands.md#reserved-table-names`.
+- Added a unit test (`plugin.spec.ts`): a body that doesn't parse throws the parser's error, not `ReservedTableNameError`. That behaviour was documented but untested. Plugin suite now has 120 passed + 1 todo.
+
+**Tripwires recorded:**
+- Only table names are checked, not explicit `using optimystic('<uri>')` locations. An explicit URI that points at a strand table's collection, or two app tables that share one URI, would still collide. No sApp uses explicit locations today. Parked as a `NOTE:` bullet in `docs/strands.md` → "Reserved Table Names".
+- Once optimystic puts the schema name into its default location and catalog keys, the refusal is no longer needed to prevent corruption. That `NOTE:` already exists in the `reserved-table-names.ts` docblock and in `docs/strands.md`. No ticket filed: the fix belongs in `../optimystic`, and this repo is protected by the refusal.
+
+**Not filed / accepted as reported by implement:**
+- Old on-device chat strands created under the `Member` schema are treated as corrupt, to be recreated. Repo policy is no backwards compatibility yet, so no migration ticket.
+- Not re-run here: web Playwright e2e, RN Maestro flows, NS bundle/device e2e, the full integration suite. They need devices or browsers, or take a long wall-clock time. The implement stage ran the four affected integration scenarios.
+
+**Validation (this pass):** `yarn lint` clean. `@serfab/quereus-plugin-sereus` test: 10 files, 120 passed + 1 todo. `@serfab/cadre-core` `publish-strand.spec.ts`: 40 passed.

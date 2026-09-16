@@ -277,7 +277,7 @@ on shutdown.
 |---|---|---|---|
 | `strandId` | string | *required* | UUID of the strand to connect to |
 | `bootstrapNodes` | string[] | `[]` | Bootstrap multiaddrs for peer discovery |
-| `schema` | string | — | sApp schema DDL to apply |
+| `schema` | string | — | sApp schema DDL to apply. May not declare a table named like a strand table (`Member`, `Invite`, `Header`, …; case-insensitive) — refused with `ReservedTableNameError` before anything is created ([Reserved Table Names](../../docs/strands.md#reserved-table-names)) |
 | `sAppId` | string | `'unknown'` | sApp author public key |
 | `sAppVersion` | string | `'1.0.0'` | sApp version |
 | `port` | number | `0` | libp2p listening port (0 = random) |
