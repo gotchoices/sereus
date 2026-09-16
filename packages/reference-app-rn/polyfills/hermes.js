@@ -191,6 +191,87 @@ if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.prototype.throwIfAb
 	};
 }
 
+// ── AbortSignal.timeout / AbortSignal.any ──────────────────────────────────
+// Static DOM additions Hermes does not implement.
+// Required by: libp2p itself — `connection-manager/dial-queue.js` does
+// `signal: options.signal ?? AbortSignal.timeout(this.dialTimeout)`, so WITHOUT this
+// every dial that does not carry its own signal throws
+// `TypeError: AbortSignal.timeout is not a function` and the phone cannot dial anyone.
+// Also used by @libp2p/circuit-relay-v2 (reservations — i.e. whether the phone is
+// invitable at all), @libp2p/websockets, @libp2p/identify and libp2p's connection,
+// registrar and pruner paths. Found on the device 2026-09-16: Settings → Dial Peer
+// reported it, and it is why borrowing a node from a cadre-host failed at "connecting".
+//
+// `DOMException` is not guaranteed here, so the abort reason falls back to a plain
+// Error carrying the spec's `name`, which is what callers branch on.
+
+function abortReason(message, name) {
+	try {
+		return new DOMException(message, name);
+	} catch {
+		const err = new Error(message);
+		err.name = name;
+		return err;
+	}
+}
+
+if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'function') {
+	AbortSignal.timeout = function timeout(ms) {
+		const controller = new AbortController();
+		// Deliberately the raw timer: this runs before the .ref()/.unref() wrapper below,
+		// and nothing here needs the handle.
+		setTimeout(() => {
+			controller.abort(abortReason('The operation timed out.', 'TimeoutError'));
+		}, ms);
+		return controller.signal;
+	};
+}
+
+if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any !== 'function') {
+	AbortSignal.any = function any(signals) {
+		const controller = new AbortController();
+		const list = Array.from(signals);
+		const forward = (signal) => {
+			if (controller.signal.aborted) return;
+			controller.abort(signal.reason ?? abortReason('The operation was aborted.', 'AbortError'));
+		};
+		for (const signal of list) {
+			if (signal.aborted) {
+				forward(signal);
+				break;
+			}
+			signal.addEventListener('abort', () => forward(signal), { once: true });
+		}
+		return controller.signal;
+	};
+}
+
+// ── WebSocket.bufferedAmount ───────────────────────────────────────────────
+// React Native's WebSocket implements neither the property nor a prototype accessor
+// (verified on device: absent from the instance AND from WebSocket.prototype).
+// Required by: @libp2p/websockets. `websocket-to-conn.js` gates sending on
+// `websocket.bufferedAmount < maxBufferedAmount` — `undefined < n` is false, so it
+// stops sending — and then waits for a poll to see `bufferedAmount === 0`, which never
+// happens. The socket opens, the handshake is never written, and every outbound dial
+// dies on the dial timeout instead.
+//
+// Found on the device 2026-09-16: the phone could not dial a lent cadre-host node over
+// WebSocket, while the same address dialled from the PC in 37 ms; the phone's libp2p log
+// showed "buffered amount now undefined" repeating until the 10 s abort.
+//
+// Reporting 0 is the honest answer here: React Native hands each frame to the native
+// socket on `send()` and keeps no JS-side queue to report, so from the caller's point of
+// view nothing is ever pending.
+
+if (typeof globalThis.WebSocket === 'function'
+	&& globalThis.WebSocket.prototype != null
+	&& !('bufferedAmount' in globalThis.WebSocket.prototype)) {
+	Object.defineProperty(globalThis.WebSocket.prototype, 'bufferedAmount', {
+		get() { return 0; },
+		configurable: true,
+	});
+}
+
 // ── Timer .ref() / .unref() ────────────────────────────────────────────────
 // Node.js timers return objects with .ref()/.unref(); Hermes returns numbers.
 // Required by: @optimystic/db-p2p (cluster-repo), undici, libp2p internals
