@@ -55,19 +55,49 @@ class AbortSignalPolyfill extends EventTarget {
 
 	static timeout(ms: number): AbortSignalPolyfill {
 		const signal = new AbortSignalPolyfill();
+		// NOTE: the timer always runs its full `ms` — only it can abort this signal, and no
+		// API tells a signal its caller is finished. Nothing to clear on abort: the timer
+		// firing is what caused the abort in the first place.
 		setTimeout(() => signal[ABORT](abortError('signal timed out', 'TimeoutError')), ms);
 		return signal;
 	}
 
+	// The listeners this attaches come back off the inputs once the combined signal
+	// settles. A combination whose inputs never abort keeps its listeners for as long as
+	// the inputs live — the DOM holds dependent signals weakly, and this runtime gives no
+	// hook to do the same. Optimystic's repo client
+	// (../optimystic/packages/db-p2p/src/repo/client.ts) hits this on every RPC that
+	// succeeds — its deadline controller is cleared, not aborted — see backlog ticket
+	// bug-abortsignal-any-leaks-listeners-on-hermes.
 	static any(signals: Iterable<AbortSignalPolyfill>): AbortSignalPolyfill {
 		const combined = new AbortSignalPolyfill();
-		for (const source of signals) {
+		const list = Array.from(signals);
+		// An input that has already aborted settles the result before anything is
+		// registered, so there is nothing to detach.
+		for (const source of list) {
 			if (source.aborted) {
 				combined[ABORT](source.reason);
-				break;
+				return combined;
 			}
-			source.addEventListener('abort', () => combined[ABORT](source.reason), { once: true });
 		}
+		// Pairs, not a Map keyed by signal: the same signal may legitimately appear twice
+		// in `signals`, and a Map would collapse the two registrations and leave one
+		// attached.
+		const attached: Array<[AbortSignalPolyfill, () => void]> = [];
+		for (const source of list) {
+			const listener = (): void => {
+				if (combined.aborted) return;
+				combined[ABORT](source.reason);
+			};
+			attached.push([source, listener]);
+			source.addEventListener('abort', listener, { once: true });
+		}
+		combined.addEventListener('abort', () => {
+			for (const [source, listener] of attached) {
+				source.removeEventListener('abort', listener);
+			}
+			attached.length = 0;
+		}, { once: true });
 		return combined;
 	}
 }

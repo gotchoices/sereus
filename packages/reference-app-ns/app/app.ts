@@ -12,6 +12,11 @@ import '@valor/nativescript-websockets';
 
 import { Application } from '@nativescript/core';
 import { runPolyfillAudit } from '../src/polyfills/audit';
+import { patchWebSocketBufferedAmount } from '../src/polyfills/hermes';
+
+// 3. `WebSocket.prototype.bufferedAmount` — must run after step 2, since the
+// global WebSocket does not exist until `@valor/nativescript-websockets` sets it.
+patchWebSocketBufferedAmount();
 
 // Make the real V8/JSC surface visible (native vs polyfilled) before libp2p loads.
 runPolyfillAudit();

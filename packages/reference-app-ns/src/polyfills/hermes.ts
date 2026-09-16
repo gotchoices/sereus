@@ -171,6 +171,43 @@ if (typeof Promise.withResolvers !== 'function') {
 // ./abort — the NativeScript V8/JSC runtime ships no base AbortSignal at all, so
 // they cannot be patched onto an existing global the way Hermes/browsers allow.
 
+// ── WebSocket.bufferedAmount ─────────────────────────────────────────────────
+// `@valor/nativescript-websockets` declares `bufferedAmount?: number` on its
+// `WebSocket` class (websocket.d.ts) but never assigns it — a search across every
+// `.js` in the installed package finds the name only in that type declaration, so
+// at runtime it reads `undefined`. Required by @libp2p/websockets:
+// `websocket-to-conn.js` gates sending on `websocket.bufferedAmount <
+// maxBufferedAmount` — `undefined < n` is false, so it stops sending — then waits
+// for a poll to see `bufferedAmount === 0`, which never happens. The socket opens,
+// the handshake is never written, and every outbound dial dies on the dial
+// timeout instead.
+//
+// This is the same gap fixed for React Native in
+// packages/reference-app-rn/polyfills/hermes.js (commit 7a0fd6c, 2026-09-16); ported
+// here from source inspection, not a device run — see docs/reference-app-ns.md.
+//
+// Reporting 0 is the honest answer here: like RN, `@valor/nativescript-websockets`
+// hands each frame to the native socket on `send()` and keeps no JS-side queue to
+// report, so from the caller's point of view nothing is ever pending.
+//
+// Unlike every other patch in this file, this one cannot run at module-evaluation
+// time here: NativeScript has no native WebSocket, so `globalThis.WebSocket` does
+// not exist until `@valor/nativescript-websockets` is imported — which app.ts does
+// (deliberately) AFTER this polyfill barrel, so libp2p never observes an
+// unpatched WebSocket global. Call this from app.ts right after that import.
+
+export function patchWebSocketBufferedAmount(): void {
+	if (typeof globalThis.WebSocket === 'function'
+		&& globalThis.WebSocket.prototype != null
+		&& !('bufferedAmount' in globalThis.WebSocket.prototype)) {
+		Object.defineProperty(globalThis.WebSocket.prototype, 'bufferedAmount', {
+			get() { return 0; },
+			configurable: true,
+		});
+		markPolyfilled('WebSocket.prototype.bufferedAmount');
+	}
+}
+
 // ── Timer .ref() / .unref() ──────────────────────────────────────────────────
 // Node timers return objects with .ref()/.unref(); NativeScript returns numbers.
 // Required by @optimystic/db-p2p (cluster-repo), undici, libp2p internals. Also

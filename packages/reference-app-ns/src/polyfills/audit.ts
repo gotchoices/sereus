@@ -33,6 +33,7 @@ const PROBES: readonly Probe[] = [
 	{ path: 'TextDecoder', key: 'TextDecoder' },
 	{ path: 'structuredClone', key: 'structuredClone' },
 	{ path: 'WebSocket' },
+	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
 	{ path: 'ReadableStream', key: 'ReadableStream' },
 	{ path: 'WritableStream', key: 'ReadableStream' },
 	{ path: 'TransformStream', key: 'ReadableStream' },

@@ -171,14 +171,24 @@ import '@valor/nativescript-websockets'; // 2. global WebSocket (@libp2p/websock
 
 import { Application } from '@nativescript/core';
 import { runPolyfillAudit } from '../src/polyfills/audit';
+import { patchWebSocketBufferedAmount } from '../src/polyfills/hermes';
 
-runPolyfillAudit();                   // 3. log the real V8/JSC surface (native vs polyfilled vs ✗) before libp2p
-Application.run({ moduleName: 'app-root' }); // 4. start the app (TabView)
+patchWebSocketBufferedAmount();       // 3. WebSocket.prototype.bufferedAmount — needs step 2's global to exist first
+runPolyfillAudit();                   // 4. log the real V8/JSC surface (native vs polyfilled vs ✗) before libp2p
+Application.run({ moduleName: 'app-root' }); // 5. start the app (TabView)
 ```
 
 The polyfill barrel (`src/polyfills/index.ts`) enforces the intra-polyfill order:
 `buffer-global` (sets `globalThis.Buffer`) → `hermes` (runtime shims) →
 `intl-pluralrules` → `event` (`EventTarget`/`Event`/`CustomEvent`).
+
+`hermes.ts`'s `WebSocket.prototype.bufferedAmount` patch is the one exception to
+"every polyfill runs at barrel-import time": NativeScript has no native
+`WebSocket`, so `globalThis.WebSocket` does not exist until
+`@valor/nativescript-websockets` (step 2) sets it — a patch attempted during the
+barrel import (step 1) would silently no-op against a global that does not exist
+yet. `hermes.ts` exports `patchWebSocketBufferedAmount` for app.ts to call
+right after step 2 instead.
 
 ## Runtime Polyfills (re-audited for V8/JSC)
 
@@ -202,6 +212,7 @@ natively than Hermes does**, so several Hermes polyfills become no-ops here.
 | `TextEncoder` | **native** | native (Hermes) |
 | `TextDecoder` | **∙ polyfilled** if absent (UTF-8 only) | polyfilled (Expo SDK 52+ has it; bare RN does not) |
 | `WebSocket` | **plugin** (`@valor/nativescript-websockets`) | native (RN) |
+| `WebSocket.prototype.bufferedAmount` | **∙ polyfilled** — the plugin declares the field in its type but never assigns it | polyfilled (fixed 2026-09-16, commit `7a0fd6c` — the phone could not dial anyone until then) |
 
 ### Polyfilled on NativeScript (`src/polyfills/`)
 
@@ -214,6 +225,7 @@ natively than Hermes does**, so several Hermes polyfills become no-ops here.
 | `ReadableStream` / `WritableStream` / `TransformStream` | `hermes.ts` | `web-streams-polyfill` | streaming libraries | installed together when `ReadableStream` is absent |
 | `Promise.withResolvers` | `hermes.ts` | inline | @libp2p/utils, yamux, it-queue, mortice, abort-error | ES2024, version-dependent on V8/JSC |
 | `AbortSignal.prototype.throwIfAborted` | `hermes.ts` | inline | libp2p, it-pushable, p-retry, circuit-relay-v2 | DOM spec addition |
+| `WebSocket.prototype.bufferedAmount` | `hermes.ts` (`patchWebSocketBufferedAmount`, called from app.ts after step 2) | inline, returns `0` | `@libp2p/websockets` (`websocket-to-conn.js` gates sending on it) | `@valor/nativescript-websockets` declares the field but never assigns it; without this every outbound WebSocket dial died on the 10 s dial timeout — same defect fixed for RN in commit `7a0fd6c` |
 | Timer `.ref()` / `.unref()` | `hermes.ts` | object-wrap | @optimystic/db-p2p, undici, libp2p internals | NS timers return numbers; wraps the id in an object and patches `clear{Timeout,Interval}` to unwrap. Probes a real timer first and only wraps if native timers aren't already objects |
 | `Buffer` (global) | `buffer-global.ts` | `buffer` (npm) | libp2p transitive deps reaching for the Node `Buffer` global | the webpack `buffer` *module* alias doesn't register a global |
 | `CustomEvent` | `event.ts` | shim over `event-target-polyfill` | libp2p `safeDispatchEvent` | `event-target-polyfill` installs spec-complete `EventTarget`/`Event` but omits `CustomEvent` |

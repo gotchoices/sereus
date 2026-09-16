@@ -11,7 +11,10 @@
  *   process        → globalThis.process (env/nextTick — `debug` reads env at load)
  *   buffer-global  → globalThis.Buffer
  *   hermes         → crypto.subtle.digest, TextDecoder, structuredClone,
- *                    web streams, Promise.withResolvers, timers
+ *                    web streams, Promise.withResolvers, timers. Also exports
+ *                    `patchWebSocketBufferedAmount`, which app.ts calls AFTER
+ *                    `@valor/nativescript-websockets` (below) — no WebSocket
+ *                    global exists yet at this barrel's import time.
  *   intl-pluralrules → Intl.PluralRules (moat-maker); also creates the Intl ns
  *   intl-datetimeformat → Intl.DateTimeFormat/NumberFormat/Locale + IANA tz data
  *                    (Quereus temporal-polyfill); needs the Intl ns above
