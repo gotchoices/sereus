@@ -27,9 +27,9 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * and `FileRawStorage` agreed on the same figure. So no file-backed arm here.
  *
  * ONLY THE STRAND'S STORAGE IS COUNTED. The `CadreNodeConfig.storage.provider`
- * is called with `'control'` for the control node and with the strandId for the
- * strand, and the counting wrapper goes on the strandId branch alone — the
- * control database's ~1500-operation start would otherwise swamp the
+ * is called with the party's control scope key for the control node and with the
+ * strandId for the strand, and the counting wrapper goes on the strandId branch
+ * alone — the control database's ~1500-operation start would otherwise swamp the
  * measurement. The zero-ops assertion before `addStrand` makes a wrong wrap
  * fail loudly rather than inflate a budget.
  *
@@ -144,20 +144,22 @@ async function measureSoloStrand(): Promise<RunCost> {
 	const keyStore = new InMemoryKeyStore();
 	const counter = new StorageOpCounter();
 	const strandId = `budget-${Math.random().toString(36).slice(2)}`;
-	// Count ONLY the strand's storage: the provider is called with 'control' for
-	// the control node and with the strandId for the strand — the counting
-	// wrapper goes on the strand branch alone.
+	// Count ONLY the strand's storage: the provider is called with the party's
+	// control scope key for the control node and with the strandId for the strand —
+	// the counting wrapper goes on the strand branch alone. Keyed on the strand id
+	// rather than on "not the control key", so nothing here depends on how the
+	// control scope is spelled.
 	//
-	// Memoised per id for the same reason `fileStorageProvider` is: `CadreNode`
-	// asks once per id today, but a second call handing back a fresh (empty)
+	// Memoised per scope for the same reason `fileStorageProvider` is: `CadreNode`
+	// asks once per scope today, but a second call handing back a fresh (empty)
 	// store would split the strand's blocks across two views rather than
 	// measuring one.
-	const byId = new Map<string, IRawStorage>();
-	const provider = (id: string): IRawStorage => {
-		let storage = byId.get(id);
+	const byScope = new Map<string, IRawStorage>();
+	const provider = (scope: string): IRawStorage => {
+		let storage = byScope.get(scope);
 		if (!storage) {
-			storage = id === strandId ? new CountingRawStorage(new MemoryRawStorage(), counter) : new MemoryRawStorage();
-			byId.set(id, storage);
+			storage = scope === strandId ? new CountingRawStorage(new MemoryRawStorage(), counter) : new MemoryRawStorage();
+			byScope.set(scope, storage);
 		}
 		return storage;
 	};
@@ -166,7 +168,7 @@ async function measureSoloStrand(): Promise<RunCost> {
 	try {
 		await within('start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 		// The control start must not have touched the counted storage — a provider
-		// that wrapped 'control' too would inflate every budget below by ~1500 ops.
+		// that wrapped the control scope too would inflate every budget below by ~1500 ops.
 		expect(counter.snapshot().total,
 			'strand storage counter saw operations BEFORE addStrand — the provider is wrapping the control storage too'
 		).toBe(0);

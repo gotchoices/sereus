@@ -41,6 +41,7 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
+import { controlStorageScope } from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
@@ -325,10 +326,11 @@ export class CadreNode implements SAppIdLookup {
   private _running = false;
   /**
    * The control database's own raw storage (cache-wrapped), resolved once per
-   * `start()` and released in {@link cleanup}. Owning it is what keeps
-   * `config.storage.provider('control')` a once-per-runtime call: a `stop()` then
-   * `start()` cycle on this object re-resolves against a live cache, and never
-   * orphans the previous wrapper's registration in the shared cache pool.
+   * `start()` and released in {@link cleanup}. Owning it is what keeps the
+   * provider call for the control scope — `controlStorageScope(partyId)`, see
+   * `storage-scope.ts` — a once-per-runtime call: a `stop()` then `start()` cycle
+   * on this object re-resolves against a live cache, and never orphans the
+   * previous wrapper's registration in the shared cache pool.
    */
   private controlStorage: IRawStorage | null = null;
   /**
@@ -1490,8 +1492,12 @@ export class CadreNode implements SAppIdLookup {
     if (!provider) {
       return undefined;
     }
-    const resolved = typeof provider === 'function' ? provider('control') : provider;
-    this.controlStorage = wrapStorageWithCache(resolved, 'control');
+    // Party-scoped, not the bare literal 'control': the control database holds THIS
+    // party's records, so two parties on one device must not land in one store.
+    // Same key as the cache label, which also makes the shared pool's `stats()` readable.
+    const scope = controlStorageScope(this.config.controlNetwork.partyId);
+    const resolved = typeof provider === 'function' ? provider(scope) : provider;
+    this.controlStorage = wrapStorageWithCache(resolved, scope);
     return this.controlStorage;
   }
 

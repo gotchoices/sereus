@@ -141,6 +141,7 @@ import {
 	isStrandSealed,
 	signStrandApproval,
 	generateStrandStampId,
+	isControlStorageScope,
 	type Ed25519KeyPair,
 } from '@serfab/cadre-core';
 import type { StrandRow, StrandInstance } from '@serfab/cadre-core';
@@ -1056,8 +1057,10 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// If cadre-core ever stops calling the provider with the strand id, `forStrand`
 			// in the bring-up already throws — this pins the control scope too, so a
 			// collapse of the two scopes into one store cannot slip through unnamed.
+			// The control key is party-scoped (`controlStorageScope`), so this asks whether
+			// SOME scope is a control scope rather than naming a literal.
 			for (const [who, capture] of [['founder', founderCapture], ['joiner', joinerCapture]] as const) {
-				expect(capture.scopes(), `${who} provider scopes`).toContain('control');
+				expect(capture.scopes().filter(isControlStorageScope), `${who} control scopes`).toHaveLength(1);
 				expect(capture.scopes(), `${who} provider scopes`).toContain(strandId);
 			}
 

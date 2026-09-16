@@ -76,13 +76,30 @@ and stored messages.
 ## Storage bridge (`lib/strand-storage.ts`)
 
 `CadreNodeConfig.storage.provider` is a **synchronous** factory
-`(key) => IRawStorage`, and cadre-core partitions data by key (`'control'` for
-the control network, the strand id for each strand). `IndexedDBRawStorage`
-wraps an **already-open** handle (the opener is async) with no per-key
-namespacing. The bridge pre-opens one IndexedDB database per key
-(`sereus-strand-<key>`) **before** the synchronous provider is hit — the app
-drives control bring-up and `addStrand` explicitly, so every key is known ahead
-of time — and the provider returns a cached `IndexedDBRawStorage` per key.
+`(scope) => IRawStorage`, and cadre-core partitions data by scope key: the strand
+id for each strand, and `controlStorageScope(partyId)` — `control-<base64url party
+id>` — for the control database. `IndexedDBRawStorage` wraps an **already-open**
+handle (the opener is async) with no per-scope namespacing. The bridge pre-opens one
+IndexedDB database per key (`sereus-strand-<key>`) **before** the synchronous
+provider is hit — the app drives control bring-up and `addStrand` explicitly, so
+every key is known ahead of time — and the provider returns a cached
+`IndexedDBRawStorage` per key.
+
+### Two databases, not one
+
+The tab's **node-local** `kv` records — its Ed25519 identity, its persisted party id,
+the trusted-owner anchor, the bootstrap peers, the enrolled-machine count — stay in the
+database historically named `sereus-strand-control` (`NODE_LOCAL_STORE_KEY`). They
+cannot move into the party-scoped control database, because the party id that names it
+is one of the records read out of them. So `startCadre` opens the node-local database
+first, reads the party id, and only then opens `sereus-strand-control-<encoded party
+id>` for the control **blocks**.
+
+A tab upgraded across this change keeps its identity, party id and trust anchor, and
+comes up with an **empty control block store** — strands it founded before the upgrade
+are not carried over. `runOwnerGenesis` re-anchors on every start, so the tab still
+boots. The old unscoped blocks are left in place, unread and undeleted: they belong to
+a party that was never recorded alongside them, which is the defect the scoping fixed.
 
 ## Solo cadre (Phase 1)
 
@@ -264,7 +281,7 @@ src/
   main.css               # global styles
   lib/
     cadre-web.ts             # CadreNode lifecycle (control net, owner genesis, chat strand)
-    strand-storage.ts        # per-strand IndexedDB IRawStorage provider (pre-open bridge)
+    strand-storage.ts        # per-scope IndexedDB IRawStorage provider (pre-open bridge)
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
     network.svelte.ts        # strand-formation panel state (create / join invitation)

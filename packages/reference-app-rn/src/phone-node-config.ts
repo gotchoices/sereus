@@ -31,8 +31,12 @@ export interface PhoneNodeOptions {
 export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	/** Holds the node identity; the node loads it on start, generating it on first run. */
 	keyStore: KeyStore;
-	/** Raw block storage per network id: `'control'` for the control network, the strand id for each strand. */
-	storageProvider: (id: string) => IRawStorage;
+	/**
+	 * Raw block storage per cadre-core storage scope: `controlStorageScope(partyId)` for
+	 * the control network, the strand id for each strand. The key is opaque and already
+	 * safe as a database-name segment — use it verbatim, do not parse it.
+	 */
+	storageProvider: (scope: string) => IRawStorage;
 	/** libp2p transport factories. The phone never listens, so these only dial. */
 	transports: Libp2pTransports;
 	trustedOwnerStore: TrustedOwnerStore;

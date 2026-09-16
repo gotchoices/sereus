@@ -14,6 +14,14 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
  *
  * Shared by every command that constructs a `CadreNode` — the long-running `start` and the
  * one-shot commands alike — so the memory/file provider mapping has exactly one home.
+ *
+ * The file provider maps a cadre-core storage scope key straight onto a subdirectory of
+ * `storage.path`: the strand id for each strand, `controlStorageScope(partyId)` for the
+ * control database. Every key cadre-core mints is within `[A-Za-z0-9._-]`, so it is safe
+ * as a path segment as-is — which is also why a party id containing `/` or `..` can no
+ * longer escape this directory. Two config files naming two parties over one
+ * `storage.path` therefore get two control directories (`control-<encoded party id>`)
+ * rather than sharing one.
  */
 export function resolveStorageConfig(config: ResolvedConfig['storage']): StorageConfig | undefined {
   if (!config) return undefined;
@@ -30,7 +38,7 @@ export function resolveStorageConfig(config: ResolvedConfig['storage']): Storage
       throw new Error('Storage path is required for file storage type');
     }
     return {
-      provider: (strandId: string) => new FileRawStorage(`${config.path}/${strandId}`),
+      provider: (scope: string) => new FileRawStorage(`${config.path}/${scope}`),
       quotaBytes: config.quotaBytes,
     };
   }

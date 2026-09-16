@@ -1,5 +1,5 @@
 /**
- * node-local-slots.ts — `DurableSlot` factory over the control database's
+ * node-local-slots.ts — `DurableSlot` factory over the node-local database's
  * `kv` IndexedDB object store, for the browser's node-local records: the
  * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
  * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`)
@@ -7,12 +7,19 @@
  * each under its own key.
  *
  * All three records go in the SAME database as the tab's Ed25519 identity and
- * party id (`strand-storage.ts`'s `CONTROL_STORE_KEY` database, `kv` store) —
+ * party id (`strand-storage.ts`'s `NODE_LOCAL_STORE_KEY` database, `kv` store) —
  * not a separate one. The decisive property is shared fate: "Clear site data"
  * must wipe identity, anchor, and dial targets together so the tab cold-starts
  * as a genuinely fresh node, rather than leaving a half-cleared state where a
  * regenerated identity inherits a stale anchor, or a retained identity loses
  * its anchor silently. See `cadre-web.ts` (`startCadre`) for the wiring.
+ *
+ * That database is NOT cadre-core's control block store, which is keyed by party
+ * id (`controlStorageScope`). These records are read BEFORE the party id is known
+ * — the party id itself is one of them — so they cannot live behind a name derived
+ * from it. Each record still carries its own `partyId` and fails closed on a
+ * mismatch, which is what keeps the shared database from re-introducing the
+ * cross-party bleed the block-store scoping fixed.
  */
 import type { DurableSlot } from '@serfab/cadre-core';
 import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';

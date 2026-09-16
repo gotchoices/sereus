@@ -142,11 +142,11 @@ export function tempStorageDir(tag: string): string {
 }
 
 /**
- * A `(id) => IRawStorage` factory backed by real files under `baseDir`, one
- * subdirectory per id — `'control'` for the control network (see
- * `CadreNode.startControlNetwork`), the strand id for each strand.
+ * A `(scope) => IRawStorage` factory backed by real files under `baseDir`, one
+ * subdirectory per scope — `controlStorageScope(partyId)` for the control network
+ * (see `CadreNode.startControlNetwork`), the strand id for each strand.
  *
- * The instance per id is MEMOISED, so two calls for the same id hand back the
+ * The instance per scope is MEMOISED, so two calls for the same scope hand back the
  * same handle rather than two views of one directory. `CadreNode` asks once per
  * node instance, so a restart against the same `baseDir` gets a *new*
  * `FileRawStorage` reading the rows the previous run left on disk — which is the
@@ -154,15 +154,16 @@ export function tempStorageDir(tag: string): string {
  * warm start that only appears to work because the old object was still around
  * cannot pass.
  */
-export function fileStorageProvider(baseDir: string): (id: string) => IRawStorage {
-	const byId = new Map<string, IRawStorage>();
-	return (id: string) => {
-		let storage = byId.get(id);
+export function fileStorageProvider(baseDir: string): (scope: string) => IRawStorage {
+	const byScope = new Map<string, IRawStorage>();
+	return (scope: string) => {
+		let storage = byScope.get(scope);
 		if (!storage) {
-			// encodeURIComponent: strand ids are caller-supplied and reach the
-			// filesystem here, and `FileStoreDriver` does no escaping of its own.
-			storage = new FileRawStorage(join(baseDir, encodeURIComponent(id)));
-			byId.set(id, storage);
+			// encodeURIComponent: cadre-core's own scope keys are already path-safe, but
+			// a test may pass a hand-written strand id, and `FileStoreDriver` does no
+			// escaping of its own.
+			storage = new FileRawStorage(join(baseDir, encodeURIComponent(scope)));
+			byScope.set(scope, storage);
 		}
 		return storage;
 	};

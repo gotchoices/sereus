@@ -163,7 +163,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		},
 		profile: 'transaction',
 		storage: {
-			provider: (strandId: string) => makeLazyNsStorage(strandId),
+			provider: (scope: string) => makeLazyNsStorage(scope),
 		},
 		network: {
 			transports: [webSockets(), circuitRelayTransport()],

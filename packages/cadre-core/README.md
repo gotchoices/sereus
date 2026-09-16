@@ -65,8 +65,9 @@ const node = new CadreNode({
   },
   profile: 'storage',  // 'storage' for servers, 'transaction' for mobile
   storage: {
-    // Storage provider factory - called with strandId for strand-isolated storage
-    provider: (strandId) => new FileRawStorage(`/data/sereus/${strandId}`),
+    // Storage provider factory - called once per scope (each strand id, plus this
+    // party's control database) for per-scope isolation
+    provider: (scope) => new FileRawStorage(`/data/sereus/${scope}`),
     quotaBytes: 10 * 1024 * 1024 * 1024  // 10 GB
   }
 });
@@ -213,8 +214,8 @@ const node = new CadreNode({
   profile: 'transaction',  // Mobile devices typically use transaction profile
   strandFilter: { mode: 'sAppId', sAppId: 'com.example.myapp' },
   storage: {
-    // RN storage provider creates strand-isolated AsyncStorage
-    provider: (strandId) => new RNRawStorage(strandId)
+    // RN storage provider creates per-scope AsyncStorage
+    provider: (scope) => new RNRawStorage(scope)
   },
   network: {
     // TCP doesn't work in React Native — use WebSocket transport instead
@@ -227,8 +228,15 @@ const node = new CadreNode({
 ### Storage Provider Pattern
 
 The `storage.provider` option accepts either:
-- **An `IRawStorage` instance** - Shared storage for all strands
-- **A factory function** `(strandId: string) => IRawStorage` - Creates isolated storage per strand (recommended)
+- **An `IRawStorage` instance** - One store shared by every scope, so it can serve only a single party
+- **A factory function** `(scope: string) => IRawStorage` - Creates isolated storage per scope (recommended)
+
+A **scope key** is what the factory receives. It is the strand id for each strand, and
+`controlStorageScope(partyId)` — `control-<base64url party id>` — for the control database,
+which holds one party's own records and must not be shared between parties. Every key is
+opaque and already safe as a file, directory or database name (always within
+`[A-Za-z0-9._-]`): use it verbatim, do not parse it. `isControlStorageScope(scope)` tells
+the two kinds apart.
 
 Available storage implementations:
 | Package | Environment | Description |

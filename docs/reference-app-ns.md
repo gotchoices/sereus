@@ -59,12 +59,18 @@ This is the same topology as the RN app — see
 
 The phone uses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`,
 `openOptimysticNSDb`, `loadOrCreateNSPeerKey`) over the
-`@nativescript-community/sqlite` native plugin. Each strand gets its own
-`sereus-<strandId>` database; the peer identity (Ed25519 key, producing a stable
-PeerId across cold launches) lives in `sereus-peer-identity`. Because
-`openOptimysticNSDb` is async but `CadreNodeConfig.storage.provider` is a sync
-factory, `src/ns-storage.ts` returns a lazy `IRawStorage` proxy that awaits a
-cached open before delegating each call.
+`@nativescript-community/sqlite` native plugin. One database per cadre-core storage
+scope: `sereus-<strandId>` for each strand, and `sereus-control-<base64url party id>`
+for the party's control database — the control key carries the party id, so switching
+parties on one device lands on a different database rather than sharing one. The peer
+identity (Ed25519 key, producing a stable PeerId across cold launches) lives in
+`sereus-peer-identity`. Because `openOptimysticNSDb` is async but
+`CadreNodeConfig.storage.provider` is a sync factory, `src/ns-storage.ts` returns a
+lazy `IRawStorage` proxy that awaits a cached open before delegating each call.
+
+A device that ran a build predating the party scoping still has an unscoped
+`sereus-control` database. Nothing opens or deletes it: its rows belong to whichever
+party was configured when they were written and nothing recorded which.
 
 ### Node-local records
 

@@ -7,6 +7,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
+import { controlStorageScope } from '../src/storage-scope.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
 import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
@@ -251,20 +252,22 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('storage', () => {
-    it('calls a factory provider exactly once with the literal "control" strand id, and hands the node the cached wrap', async () => {
+    it("calls a factory provider exactly once with this party's control scope key, and hands the node the cached wrap", async () => {
       const calls: string[] = [];
       const instance = {} as IRawStorage;
-      const config = createConfig({ storage: { provider: (strandId) => { calls.push(strandId); return instance; } } });
+      const config = createConfig({ storage: { provider: (scope) => { calls.push(scope); return instance; } } });
 
       const options = controlOptions(new CadreNode(config));
 
-      expect(calls).toEqual(['control']);
+      // The control scope carries the party id, so two parties on one device get two
+      // stores — the property itself is pinned in `control-storage-scope.spec.ts`.
+      expect(calls).toEqual([controlStorageScope(config.controlNetwork.partyId)]);
       // The node gets the write-through cached view of the provided storage, and the
       // wrap is memoized per inner instance — a second resolution of the same instance
       // must reuse the same cache, never stack a second one over the same backend.
       // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
       // must balance, and the node under test still holds the claim keeping it live.
-      const cached = wrapStorageWithCache(instance, 'control');
+      const cached = wrapStorageWithCache(instance, calls[0]!);
       expect(options.storage).toBeInstanceOf(CachedRawStorage);
       expect(options.storage).toBe(cached);
       await disposeStorageCache(cached);
@@ -276,7 +279,7 @@ describe('CadreNode control-network node options', () => {
 
       const options = controlOptions(new CadreNode(config));
 
-      const cached = wrapStorageWithCache(instance, 'control');
+      const cached = wrapStorageWithCache(instance, controlStorageScope(config.controlNetwork.partyId));
       expect(options.storage).toBeInstanceOf(CachedRawStorage);
       expect(options.storage).toBe(cached);
       await disposeStorageCache(cached);
@@ -308,13 +311,13 @@ describe('CadreNode control-network node options', () => {
     it('resolves the provider once per node, not once per call', () => {
       const calls: string[] = [];
       const instance = {} as IRawStorage;
-      const config = createConfig({ storage: { provider: (strandId) => { calls.push(strandId); return instance; } } });
+      const config = createConfig({ storage: { provider: (scope) => { calls.push(scope); return instance; } } });
       const node = new CadreNode(config);
 
       const first = controlOptions(node);
       const second = controlOptions(node);
 
-      expect(calls).toEqual(['control']);
+      expect(calls).toEqual([controlStorageScope(config.controlNetwork.partyId)]);
       expect(second.storage).toBe(first.storage);
     });
 
@@ -365,15 +368,17 @@ describe('CadreNode control-network node options', () => {
       // disposed wrapper back.
       const calls: string[] = [];
       const instance = {} as IRawStorage;
-      const node = new CadreNode(createConfig({
+      const config = createConfig({
         storage: { provider: (scope) => { calls.push(scope); return instance; } }
-      }));
+      });
+      const node = new CadreNode(config);
 
       const first = controlOptions(node).storage;
       await nodeCleanup(node);
       const second = controlOptions(node).storage;
 
-      expect(calls).toEqual(['control', 'control']);
+      const scope = controlStorageScope(config.controlNetwork.partyId);
+      expect(calls).toEqual([scope, scope]);
       expect(second).toBeInstanceOf(CachedRawStorage);
       expect(second).not.toBe(first);
       await nodeCleanup(node);

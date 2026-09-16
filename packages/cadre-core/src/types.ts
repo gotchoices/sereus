@@ -116,12 +116,24 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
 
 /**
  * Storage provider - either an `IRawStorage` instance or a factory function.
- * Factory functions are useful for creating strand-specific storage instances.
+ * Factory functions are useful for creating per-scope storage instances.
  *
- * **Called once per scope per runtime lifetime.** The scopes are the literal string
- * `'control'` (once per `CadreNode.start()`) and each strand id (once per
- * `startStrand`). Hibernation — `quiesceStrand` then `resumeStrand` — reuses the
- * store already resolved for that strand and does NOT re-enter this callback.
+ * **The argument is an opaque scope key.** Use it directly as a file name, directory
+ * name or database name: cadre-core guarantees every key it mints stays within
+ * `[A-Za-z0-9._-]`, so no escaping is needed and none should be assumed. Do not parse
+ * it; `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the
+ * supported way to mint and recognize the control key.
+ *
+ * **Called once per scope per runtime lifetime.** The scopes are the control database
+ * (once per `CadreNode.start()`) and each strand id (once per `startStrand`).
+ * Hibernation — `quiesceStrand` then `resumeStrand` — reuses the store already
+ * resolved for that strand and does NOT re-enter this callback.
+ *
+ * **The control scope is party-specific.** It is `controlStorageScope(partyId)`, not a
+ * fixed string, because the control database holds one party's own records — its
+ * strands, owner keys, peers, invitations, revocations. Two parties on one device ask
+ * for two different keys and MUST get two different stores, or a node started for one
+ * party reads the other's rows as its own.
  *
  * It IS re-entered for a scope after that scope's runtime has stopped
  * (`stopStrand`, or a `stop()` then `start()` cycle on one `CadreNode`), so it must
@@ -131,14 +143,16 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
  * cadre-core disposes only its own cache wrapper — it never closes the store you
  * returned. Closing the underlying handle stays the embedder's job.
  *
- * Either form is safe with a persistent backend. One instance handed to every scope
+ * **The single-instance form shares data across scopes by construction** — one store
+ * for every strand AND for every party's control database. An embedder that can serve
+ * more than one party must use the factory form. One instance handed to every scope
  * also shares ONE cache wrapper (`wrapStorageWithCache` memoizes per inner instance),
  * which counts its holders: a scope stopping releases only its own claim, and the
- * wrapper is retired when the last scope releases it. The factory form is still the
- * better default for a different reason — it partitions each strand's data, which
+ * wrapper is retired when the last scope releases it. The factory form is the better
+ * default for the further reason that it partitions each strand's data, which
  * simplifies cleanup.
  */
-export type RawStorageProvider = IRawStorage | ((strandId: string) => IRawStorage);
+export type RawStorageProvider = IRawStorage | ((scope: string) => IRawStorage);
 
 /**
  * Storage configuration for storage profile nodes
@@ -146,19 +160,24 @@ export type RawStorageProvider = IRawStorage | ((strandId: string) => IRawStorag
 export interface StorageConfig {
   /**
    * Storage provider - either an IRawStorage instance or a factory function.
-   * See {@link RawStorageProvider} for how often cadre-core calls it.
+   * See {@link RawStorageProvider} for how often cadre-core calls it, and for why
+   * the single-instance form cannot serve more than one party.
+   *
+   * The `scope` a factory receives is an opaque key already safe as a path or
+   * database-name segment (always within `[A-Za-z0-9._-]`), so each example below
+   * interpolates it directly.
    *
    * For Node.js environments, use FileRawStorage from @optimystic/db-p2p-storage-fs:
    * ```typescript
    * import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
-   * storage: { provider: (strandId) => new FileRawStorage(`./data/${strandId}`) }
+   * storage: { provider: (scope) => new FileRawStorage(`./data/${scope}`) }
    * ```
    *
    * For React Native, use the appropriate storage from @optimystic/db-p2p-storage-rn:
    * ```typescript
    * import { LevelDBRawStorage } from '@optimystic/db-p2p-storage-rn';
    * // `db` is an open LevelDB handle (see `openOptimysticRNDb` over `rn-leveldb`)
-   * storage: { provider: (strandId) => new LevelDBRawStorage(openDb(`sereus-${strandId}`)) }
+   * storage: { provider: (scope) => new LevelDBRawStorage(openDb(`sereus-${scope}`)) }
    * ```
    *
    * For in-memory storage (testing):

@@ -618,8 +618,8 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			// NOTE: this read is not gated on the control-network catch-up having covered the
 			// newcomer's control store — it relies on that landing during the several seconds of
 			// Phases 2-4a (one ~1 s debounce), which held on every run to date. If it ever flakes,
-			// gate it with `awaitBlockCoverage(founderCapture.provider('control'),
-			// newcomerCapture.provider('control'), …)` BEFORE `newcomer.stop()` — never by reading
+			// gate it with `awaitBlockCoverage(founderCapture.control(),
+			// newcomerCapture.control(), …)` BEFORE `newcomer.stop()` — never by reading
 			// through the restarted node, which would pull the row in and mask the gap.
 			const strandsSeen = await restarted.getControlDatabase()!.queryStrands();
 			expect(strandsSeen.map((row) => row.Id)).toContain(strandId);

@@ -63,8 +63,10 @@ function nodeOn(
 
 /** The joiner's control store, from its capture — the store the restarted node reads. */
 function controlStore(capture: RawStorageCapture): IRawStorage {
-	// The capture's provider keys by scope; 'control' is the CadreNode control scope.
-	return capture.provider('control');
+	// `control()`, not `provider(...)`: the control scope key carries the party id, and a
+	// hand-built key that missed would mint a FRESH EMPTY store here — which every
+	// coverage assertion below would then pass against, vacuously.
+	return capture.control();
 }
 
 describe('Control-network peer-join block catch-up', () => {

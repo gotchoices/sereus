@@ -7,11 +7,13 @@
  *
  * Browser specifics vs the phone:
  *   - WebSocket + circuit-relay + WebRTC(+direct) transports (no TCP in a tab).
- *   - IndexedDB-backed raw storage via `strand-storage.ts` (per-strand handles
+ *   - IndexedDB-backed raw storage via `strand-storage.ts` (per-scope handles
  *     pre-opened before the synchronous cadre-core storage provider is hit).
- *   - Ed25519 identity + party id persisted in the control IndexedDB database
+ *   - Ed25519 identity + party id persisted in the node-local IndexedDB database
  *     across reloads, alongside the durable trusted-owner anchor and
  *     bootstrap-peer store (`node-local-slots.ts`) — same database, shared fate.
+ *     That database is deliberately NOT the control block store: cadre-core scopes
+ *     the control blocks by party id, and the party id is read out of this one.
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
  * The node self-seeds as its own owner (mirroring `cadre-cli start
@@ -35,6 +37,7 @@ import {
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
 	peerKeySigner,
+	controlStorageScope,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -67,7 +70,7 @@ import {
 	storageProvider,
 	getStoreHandle,
 	getStoreStorage,
-	CONTROL_STORE_KEY,
+	NODE_LOCAL_STORE_KEY,
 } from './strand-storage.js';
 import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
@@ -162,6 +165,13 @@ const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
 
 let node: CadreNode | null = null;
 let controlStorage: IRawStorage | null = null;
+/**
+ * The party-scoped key of the control BLOCK store, set by {@link startCadre} once it has
+ * read the party id. Held rather than re-derived at each getter, so there is exactly one
+ * place the key is computed and the diagnostics getters cannot drift from the store the
+ * node was actually handed. Null before a start and after {@link stopCadre}.
+ */
+let controlStoreKey: string | null = null;
 let partyId: string | null = null;
 let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
@@ -197,14 +207,29 @@ export function getChatStrand(): StrandInstance | undefined {
 	return node.getStrand(activeStrandId);
 }
 
-/** Control IndexedDB handle — used by diagnostics for per-store row counts. */
+/**
+ * The control BLOCK store's IndexedDB handle — used by diagnostics for per-store row
+ * counts. Party-scoped, so it is null until {@link startCadre} has read the party id.
+ * NOT the node-local `kv` database (`NODE_LOCAL_STORE_KEY`), which holds identity and
+ * anchors rather than blocks.
+ */
 export function getControlDbHandle(): OptimysticWebDBHandle | null {
-	return getStoreHandle(CONTROL_STORE_KEY);
+	return controlStoreKey ? getStoreHandle(controlStoreKey) : null;
 }
 
 /** Control raw storage — used by diagnostics for the backend label + byte estimate. */
 export function getControlStorage(): IRawStorage | null {
 	return controlStorage;
+}
+
+/**
+ * The node-local IndexedDB handle — the tab's identity, party id and durable slots
+ * (`node-local-slots.ts`). Separate from {@link getControlDbHandle} since the control
+ * block store became party-scoped: diagnostics counts the block object stores on that
+ * one and the `kv` object store on this one.
+ */
+export function getNodeLocalDbHandle(): OptimysticWebDBHandle | null {
+	return getStoreHandle(NODE_LOCAL_STORE_KEY);
 }
 
 export function getIdentityFirstSeenMs(): number | null {
@@ -280,20 +305,27 @@ async function trackIdentityFirstSeen(
 export async function startCadre(): Promise<CadreNode> {
 	if (node) return node;
 
-	// Pre-open the control network's IndexedDB handle before start() — cadre-core
-	// hits the synchronous storage provider with key 'control' during start.
-	await openStores([CONTROL_STORE_KEY]);
-	const controlHandle = getStoreHandle(CONTROL_STORE_KEY)!;
+	// Two databases, opened in order, because the second's NAME depends on the first's
+	// contents. The node-local database holds this tab's identity, its persisted party
+	// id and its three durable slots; cadre-core's control block store is keyed by party
+	// id, so it cannot be opened until the party id has been read out of the first.
+	await openStores([NODE_LOCAL_STORE_KEY]);
+	const nodeLocalHandle = getStoreHandle(NODE_LOCAL_STORE_KEY)!;
 
-	partyId = await loadOrCreatePartyId(controlHandle);
-	identityFirstSeenMs = await trackIdentityFirstSeen(controlHandle, DEFAULT_PEER_KEY_NAME);
+	partyId = await loadOrCreatePartyId(nodeLocalHandle);
+	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
 	// `loadOrCreateBrowserPeerKey` returns db-p2p-storage-web's pinned
 	// `@libp2p/interface` `PrivateKey`, whose `Uint8ArrayList` brand is newer than
 	// this app's `@libp2p/interface` (same global symbol → runtime-identical).
 	// Bridge to the local `PrivateKey` type — the same brand-skew cast the
 	// transport factories use above; cadre-core consumes the local brand.
-	const privateKey = (await loadOrCreateBrowserPeerKey(controlHandle)) as unknown as PrivateKey;
-	controlStorage = getStoreStorage(CONTROL_STORE_KEY);
+	const privateKey = (await loadOrCreateBrowserPeerKey(nodeLocalHandle)) as unknown as PrivateKey;
+
+	// Now the party id is known, pre-open the party-scoped control block store — the key
+	// cadre-core's synchronous provider will ask for during `node.start()` below.
+	controlStoreKey = controlStorageScope(partyId);
+	await openStores([controlStoreKey]);
+	controlStorage = getStoreStorage(controlStoreKey);
 
 	// ICE servers (STUN/TURN) from the runtime manifest. Never throws; `[]` when
 	// no manifest is configured (host/LAN candidates still work).
@@ -309,7 +341,7 @@ export async function startCadre(): Promise<CadreNode> {
 	// and become dialable for strand formation. Empty → Phase-1 solo posture.
 	const relayAddrs = resolveRelayAddrs();
 
-	// Durable node-local records, in the same control IndexedDB database as the
+	// Durable node-local records, in the same node-local IndexedDB database as the
 	// identity/party-id above (shared fate — see `node-local-slots.ts`). No
 	// migration: an existing install has no persisted anchor, so it cold-starts
 	// once — `runOwnerGenesis` below re-anchors this node's own key on every
@@ -318,11 +350,11 @@ export async function startCadre(): Promise<CadreNode> {
 	// `runOwnerGenesis`/`reserveRelay` below — an unreadable anchor is a refusal
 	// to start, not a silent downgrade to trusting nobody.
 	trustedOwnerStore = await PersistentTrustedOwnerStore.open(
-		kvSlot(controlHandle, TRUSTED_OWNERS_KV_KEY),
+		kvSlot(nodeLocalHandle, TRUSTED_OWNERS_KV_KEY),
 		partyId,
 	);
 	bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
-		kvSlot(controlHandle, BOOTSTRAP_PEERS_KV_KEY),
+		kvSlot(nodeLocalHandle, BOOTSTRAP_PEERS_KV_KEY),
 		partyId,
 	);
 	// The party's enrolled-machine count, from which the control node declares its
@@ -331,7 +363,7 @@ export async function startCadre(): Promise<CadreNode> {
 	// NOT fail the start: the count is a repair hint, so `open` cold-starts and the
 	// tab simply declares nothing.
 	enrolledMachineStore = await PersistentEnrolledMachineStore.open(
-		kvSlot(controlHandle, ENROLLED_MACHINES_KV_KEY),
+		kvSlot(nodeLocalHandle, ENROLLED_MACHINES_KV_KEY),
 		partyId,
 	);
 
@@ -770,6 +802,7 @@ export async function stopCadre(): Promise<void> {
 	clearDebugHook();
 	await closeStores();
 	controlStorage = null;
+	controlStoreKey = null;
 	partyId = null;
 	activeStrandId = null;
 	identityFirstSeenMs = null;
@@ -777,7 +810,7 @@ export async function stopCadre(): Promise<void> {
 	ownerError = null;
 	solicitationReady = false;
 	formedStrands.clear();
-	// The slot closures captured `controlHandle`, now closed by `closeStores()`
+	// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 	// above — drop the references so nothing can write through a closed handle.
 	trustedOwnerStore = null;
 	bootstrapPeerStore = null;

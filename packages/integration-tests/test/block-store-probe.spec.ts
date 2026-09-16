@@ -17,6 +17,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
+import { controlStorageScope } from '@serfab/cadre-core';
 import type { ActionId, BlockId, IBlock } from '@optimystic/db-core';
 
 import {
@@ -97,32 +98,56 @@ describe('readBlockIndex', () => {
 });
 
 describe('captureRawStorage', () => {
+	// The control scope key carries the party id (`controlStorageScope`), so these build it
+	// rather than spelling a literal — the same call the node under test makes.
+	const CONTROL = controlStorageScope('probe-party');
+
 	it('hands back the SAME store for a repeated scope', async () => {
 		// cadre-core asks the provider again whenever a strand runtime is rebuilt; a fresh
 		// store per call would silently drop the strand's blocks on resume.
 		const capture = captureRawStorage();
 		const first = capture.provider('strand-1');
 		expect(capture.provider('strand-1')).toBe(first);
-		expect(capture.provider('control')).not.toBe(first);
+		expect(capture.provider(CONTROL)).not.toBe(first);
 	});
 
 	it('reports the scopes it was asked for, in ask order', () => {
 		const capture = captureRawStorage();
-		capture.provider('control');
+		capture.provider(CONTROL);
 		capture.provider('strand-1');
-		expect(capture.scopes()).toEqual(['control', 'strand-1']);
+		expect(capture.scopes()).toEqual([CONTROL, 'strand-1']);
 	});
 
-	it('refuses to serve the control scope as a strand', () => {
+	it('finds the control store without being told the party id', () => {
+		// What every scenario uses instead of rebuilding the key: it must reach the store
+		// the node actually wrote to, and it must not mint a fresh empty one.
 		const capture = captureRawStorage();
-		capture.provider('control');
-		expect(() => capture.forStrand('control')).toThrow(BlockStoreProbeError);
+		const control = capture.provider(CONTROL);
+		capture.provider('strand-1');
+		expect(capture.control()).toBe(control);
+	});
+
+	it('throws rather than inventing a control store the node never asked for', () => {
+		// A minted-on-demand empty store would pass every coverage assertion vacuously,
+		// which is the whole failure mode this module guards.
+		const capture = captureRawStorage();
+		capture.provider('strand-1');
+		expect(() => capture.control()).toThrow(BlockStoreProbeError);
+		expect(() => capture.control()).toThrow(/scopes seen so far: \[strand-1\]/);
+	});
+
+	it('refuses to serve a control scope as a strand', () => {
+		const capture = captureRawStorage();
+		capture.provider(CONTROL);
+		expect(() => capture.forStrand(CONTROL)).toThrow(BlockStoreProbeError);
 	});
 
 	it('names the scopes it did see when asked for a strand it never made', () => {
 		const capture = captureRawStorage();
-		capture.provider('control');
-		expect(() => capture.forStrand('strand-missing')).toThrow(/scopes seen so far: \[control\]/);
+		capture.provider(CONTROL);
+		// A plain string matches as a substring — the encoded key can contain regex-special
+		// characters, so building a pattern out of it would be its own bug.
+		expect(() => capture.forStrand('strand-missing')).toThrow(`scopes seen so far: [${CONTROL}]`);
 	});
 
 	it('refuses a capture whose factory collapses every scope into one store', () => {
@@ -130,7 +155,7 @@ describe('captureRawStorage', () => {
 		// two nodes sharing it would compare a store with itself.
 		const shared = new MemoryRawStorage();
 		const capture = captureRawStorage(() => shared);
-		capture.provider('control');
+		capture.provider(CONTROL);
 		capture.provider('strand-1');
 		expect(() => capture.forStrand('strand-1')).toThrow(/SAME raw store/);
 	});

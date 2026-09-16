@@ -2,14 +2,14 @@
  * ns-storage.ts — lazy SQLite-backed `IRawStorage` for NativeScript strands.
  *
  * `CadreNodeConfig.storage.provider` is a *synchronous* factory
- * (`(strandId) => IRawStorage`). The RN app gets away with that because
+ * (`(scope) => IRawStorage`). The RN app gets away with that because
  * `rn-leveldb` opens synchronously; `openOptimysticNSDb` is **async**, so a sync
  * factory cannot open it directly.
  *
- * `makeLazyNsStorage(strandId)` returns a proxy `IRawStorage` whose every
- * (already-async) method `await`s a cached `openOptimysticNSDb('sereus-<strandId>')`
+ * `makeLazyNsStorage(scope)` returns a proxy `IRawStorage` whose every
+ * (already-async) method `await`s a cached `openOptimysticNSDb('sereus-<scope>')`
  * promise before delegating to the real `SqliteRawStorage`. This preserves the RN
- * app's per-strand storage isolation and sidesteps the sync/async mismatch.
+ * app's per-scope storage isolation and sidesteps the sync/async mismatch.
  */
 
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
@@ -148,9 +148,19 @@ class LazyNsRawStorage implements IRawStorage {
 }
 
 /**
- * Build a lazy per-strand `IRawStorage`. Pass as
- * `storage: { provider: (strandId) => makeLazyNsStorage(strandId) }`.
+ * Build a lazy per-scope `IRawStorage`. Pass as
+ * `storage: { provider: (scope) => makeLazyNsStorage(scope) }`.
+ *
+ * `scope` is cadre-core's storage scope key — a strand id, or the party's control
+ * key from `controlStorageScope`. Every key it mints is already within
+ * `[A-Za-z0-9._-]`, so it goes straight into the database name unescaped.
+ *
+ * NOTE: a dev device that ran a build predating the party scoping still has an
+ * unscoped `sereus-control` database on disk. Nothing opens or deletes it — its
+ * rows belong to whichever party was configured when they were written and nothing
+ * recorded which, so adopting them into a party's store would reintroduce exactly
+ * the cross-party bleed the scoping fixed. Dev builds only; it simply sits there.
  */
-export function makeLazyNsStorage(strandId: string): IRawStorage {
-	return new LazyNsRawStorage(`sereus-${strandId}`);
+export function makeLazyNsStorage(scope: string): IRawStorage {
+	return new LazyNsRawStorage(`sereus-${scope}`);
 }

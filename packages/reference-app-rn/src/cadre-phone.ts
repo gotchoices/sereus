@@ -79,9 +79,24 @@ function openLevelDb(name: string) {
 }
 
 // ── Storage factory ──────────────────────────────────────────────────────────
+//
+// One LevelDB database per cadre-core storage SCOPE. cadre-core guarantees every
+// scope key is already within `[A-Za-z0-9._-]`, so it goes straight into the
+// filename with no escaping. The control scope carries the party id
+// (`controlStorageScope`), so switching parties in Settings now lands on a
+// different database — `sereus-control-<base64url party id>` — instead of every
+// party sharing one `sereus-control`.
+//
+// NOTE: a dev device that ran a build predating the party scoping still has that
+// unscoped `sereus-control` database on disk. Nothing opens or deletes it. It
+// cannot be adopted: its rows belong to whichever party happened to be configured
+// when they were written, and nothing recorded which — that ambiguity IS the
+// defect the scoping fixed, so merging it into any party's store would reintroduce
+// it. Same posture as the abandoned `sereus-peer-identity` database noted below:
+// leaving a stale file on a dev device beats deleting a user's blocks on upgrade.
 
-function createStorage(strandId: string) {
-	return new LevelDBRawStorage(openLevelDb(`sereus-${strandId}`));
+function createStorage(scope: string) {
+	return new LevelDBRawStorage(openLevelDb(`sereus-${scope}`));
 }
 
 // ── Peer identity (secure enclave) ────────────────────────────────────────────

@@ -17,6 +17,7 @@ import {
 	getControlNode,
 	getControlDbHandle,
 	getControlStorage,
+	getNodeLocalDbHandle,
 	getIdentityFirstSeenMs,
 	getPartyId,
 	getCadreNode,
@@ -655,14 +656,24 @@ function collectKnownRings(
 	return Array.from(rings).sort((a, b) => a - b);
 }
 
-const OBJECT_STORE_NAMES = [
+/**
+ * Block object stores, counted on the party-scoped control database.
+ *
+ * `kv` is deliberately not here: since the control block store became party-scoped
+ * (`controlStorageScope`), the tab's node-local `kv` records stayed behind in the
+ * database whose name the party id is read out of, so counting `kv` on the block
+ * database would report a flat 0. It is counted separately below.
+ */
+const BLOCK_STORE_NAMES = [
 	'metadata',
 	'revisions',
 	'pending',
 	'transactions',
 	'materialized',
-	'kv',
 ] as const;
+
+/** The node-local object store, counted on the database `node-local-slots.ts` writes to. */
+const NODE_LOCAL_STORE_NAME = 'kv';
 
 // Stable, minification-safe labels for IRawStorage implementations. Falling
 // back to `constructor.name` would break in production, where Vite mangles
@@ -707,11 +718,15 @@ async function collectStorage(): Promise<StorageInfo> {
 
 	let storeCounts: Record<string, number> | null = null;
 	let storesError: string | null = null;
+	const nodeLocalDb = getNodeLocalDbHandle();
 	if (db) {
 		try {
 			const counts: Record<string, number> = {};
-			for (const name of OBJECT_STORE_NAMES) {
+			for (const name of BLOCK_STORE_NAMES) {
 				counts[name] = await db.count(name);
+			}
+			if (nodeLocalDb) {
+				counts[NODE_LOCAL_STORE_NAME] = await nodeLocalDb.count(NODE_LOCAL_STORE_NAME);
 			}
 			storeCounts = counts;
 		} catch (err) {
