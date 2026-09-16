@@ -90,6 +90,66 @@ reports that the answer is local (a read-side counterpart to the `WriteDurabilit
 on the write side); or the error carries enough for a caller to retry as committed without
 string-matching. Whichever lands, the sereus side of the decision is the same one above.
 
+## What the sereus side probably is — read-only investigation, 2026-09-15 23:50
+
+Established by reading only; nothing was run, because the device session holds the tree.
+
+**1. Sereus already has the committed arm wired.** `readRowsOnce`
+(`control-database.ts:674`) picks the arm today:
+
+```ts
+if (this.db!.getAutocommit()) {
+  iterator = this.db!.eval(sql, params);                                  // live
+} else {
+  iterator = this.db!.eval(sql, params, { readConcurrency: 'committed' }); // committed
+}
+```
+
+So the plumbing exists end to end and the question is not "can we ask for a committed read" but
+**when we should**. Today the only trigger is "some writer's transaction is open" — a concurrency
+concern. Partition is a second reason to prefer the committed arm, and nothing tests for it.
+
+**2. The arms differ exactly as upstream described.** In `optimystic-module.ts:1204-1221`, the
+committed arm builds both views in one synchronous block, pinning one moment and never refreshing;
+the live arm does `await mainTree.update()` (and the same for the index tree) first. That
+`Tree.update()` is the frame in the stack above, so the failure is the network refresh, not the
+read of the rows.
+
+**3. The error is structured, so a classifier needs no string-matching.**
+`BlockUnavailableError` serializes as `{ blockId: 'default/Revocation', reason: 'cohort-unreachable' }`.
+`reason` is a discriminable field. Upstream's third candidate answer — "the error carries enough
+for a caller to retry as committed without string-matching" — may therefore already hold.
+
+**4. Retrying live cannot converge, which is why this surfaces at all.** `retryControlOperation`
+re-presents *the same attempt*, so every retry takes the live arm and refreshes against the same
+unreachable cohort, until attempts or the budget run out and the last error is rethrown unchanged.
+This is structurally the same trap as `control-db-bring-up-runs-before-first-connection`: retrying
+cannot clear the condition that causes the failure. That ticket's fix was ordering; here the
+candidate is arm selection.
+
+**So the shape to try is:** an unlocked control read that fails with `reason === 'cohort-unreachable'`
+falls back once to a committed read, rather than retrying live into the same wall.
+
+**When running the experiment, assert WHICH revision came back, not that rows came back**
+(upstream's warning, and it is a real trap here). The committed arm serves a pinned view, so if the
+isolated node's last committed moment predates the revision authored on C, the read returns stale
+but real rows — the experiment goes green while proving only that a committed read returns
+something. This scenario exists to prove a specific revision crosses a reconnect, so the assertion
+has to name it.
+
+**The part that needs a decision, not just a patch.** A committed read answers from what this node
+holds, which under partition may be stale or empty — and some callers of these reads are making
+*authorization* decisions (`isAuthorizedMember`, and membership gates gated on it). A stale answer
+that wrongly denies is an availability bug; a stale answer that wrongly admits is a security one.
+Before wiring a fallback, enumerate which control reads can accept a local answer and which must
+fail closed, and say so in the code. The `Revocation` table makes this sharper than usual: a
+revocation that has not replicated to this node reads as "not revoked". **Do not give the whole
+read funnel one blanket fallback.**
+
+Related: `plan/every-membership-lookup-reads-an-empty-revocation-table` is about the same table and
+the same read, from the cost side. Whoever takes either should read both — a change to when that
+lookup runs at all may make this failure unreachable on the membership path.
+
 ## Why load is not the explanation
 
 Both runs overlapped two SiteCAD ticket agents (`C:\projects\SiteCAD_branch` since 22:44,
