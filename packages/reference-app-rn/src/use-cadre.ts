@@ -164,14 +164,14 @@ export function useCadreInternal(): UseCadreResult {
       refreshStrands();
     };
 
-    // A strand created by another member arrived over the control network. Only
-    // OPEN strands (`Type:'o'`) are auto-joined — "anyone can participate". A
-    // CLOSED strand (`Type:'c'`) is invitation-only by design and must go through
-    // the explicit consent handshake (`joinViaInvite` → `formStrand`); blindly
-    // attaching it here would bypass that flow. Join the open one (register the
-    // chat config + addStrand), then refresh. Guard against a double-join (we may
-    // already host it — e.g. our own just-published strand, or a re-fire) and
-    // surface failures rather than eating them.
+    // A strand this node holds no config for arrived over the control network —
+    // created by another member, or created by US in a previous session (sApp
+    // configs are in-memory only, so every stored strand is "unclaimed" again
+    // after a restart). Only OPEN strands (`Type:'o'`) are auto-joined — "anyone
+    // can participate". A CLOSED strand (`Type:'c'`) is invitation-only by design
+    // and must go through the explicit consent handshake (`joinViaInvite` →
+    // `formStrand`); blindly attaching it here would bypass that flow. A closed
+    // strand simply stays unclaimed in the node's discovered map.
     //
     // NOTE: this passes no `founder` flag, and needs none — the `Strand` row records the
     // machine that published it (`FounderOwnerKey`), and `CadreNode` derives founder-ness
@@ -179,15 +179,34 @@ export function useCadreInternal(): UseCadreResult {
     // app died before founding) runs the founder bootstrap and seats its `Strand.Header`,
     // while attaching another party's strand joins without writing anything — the handler
     // no longer has to tell the two apart.
-    const onDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
+    //
+    // Reached from BOTH the event and the catch-up drain below, so it must be
+    // idempotent. `getStrands().has(strandId)` alone is not enough: the strand
+    // manager only tracks an instance once `addStrand` has resolved, and this is
+    // fire-and-forget, so two offers seconds apart could both pass that check and
+    // launch twice. `joining` closes that window.
+    //
+    // NOTE: `joining` is per effect RUN, which is sufficient only because this
+    // effect's deps are `[node, refreshStrands]` and `refreshStrands` is stable
+    // (`useCallback` with `[]`) — so a re-run means a different node, with its own
+    // backlog and nothing in flight from the old one. If this effect ever gains a
+    // dep that changes under a live node, or the app mounts under React's
+    // `StrictMode` (which runs cleanup and re-runs the effect on the same node),
+    // a fresh set would let a second launch through: hoist it to a `useRef` then.
+    const joining = new Set<string>();
+    const claimDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
       if (strand.Type !== 'o') return;
       if (node.getStrands().has(strandId)) return;
+      if (joining.has(strandId)) return;
+      joining.add(strandId);
       void (async () => {
         try {
           await joinChatStrand(node, strand);
           refreshStrands();
         } catch (err) {
           console.warn(`Failed to auto-join discovered strand ${strandId}:`, err);
+        } finally {
+          joining.delete(strandId);
         }
       })();
     };
@@ -195,13 +214,27 @@ export function useCadreInternal(): UseCadreResult {
     node.on('strand:started', onStarted);
     node.on('strand:stopped', onStopped);
     node.on('strand:error', onError);
-    node.on('strand:discovered', onDiscovered);
+    node.on('strand:discovered', claimDiscovered);
+
+    // Catch up on strands discovered BEFORE this effect could subscribe. The
+    // watcher's first poll runs inside `CadreNode.start()`, which resolves before
+    // `startPhoneNode` does (it still has owner genesis to await) and long before
+    // React runs this effect — so on a restart into a party that already has
+    // strands, every `strand:discovered` fires into an empty listener list. The
+    // node keeps those strands in `getDiscoveredStrands()`; this drains them.
+    //
+    // Subscribe-then-drain, in that order: a strand discovered between the two
+    // steps is then offered twice (harmless — `claimDiscovered` is idempotent)
+    // rather than zero times.
+    for (const [strandId, strand] of node.getDiscoveredStrands()) {
+      claimDiscovered({ strandId, strand });
+    }
 
     return () => {
       node.off('strand:started', onStarted);
       node.off('strand:stopped', onStopped);
       node.off('strand:error', onError);
-      node.off('strand:discovered', onDiscovered);
+      node.off('strand:discovered', claimDiscovered);
     };
   }, [node, refreshStrands]);
 

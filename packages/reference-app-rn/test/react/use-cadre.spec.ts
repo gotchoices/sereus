@@ -23,7 +23,7 @@ import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useCadreInternal, type UseCadreResult } from '../../src/use-cadre';
 import { connectionBanner } from '../../src/connection-status';
 import { createOpenInvitation, type PhoneNodeOptions } from '../../src/cadre-phone';
-import { createClosedChatStrand } from '../../src/chat-strand';
+import { createClosedChatStrand, joinChatStrand } from '../../src/chat-strand';
 
 // ── Shared test doubles (hoisted so the vi.mock factories below can close over
 //    them — vitest lifts vi.hoisted above the mocks). ─────────────────────────
@@ -61,8 +61,14 @@ const h = vi.hoisted(() => {
     controlConnected = true;
     hibernateAllCount = 0;
     multiaddrs: string[] = [];
-    private readonly handlers = new Map<string, Set<() => void>>();
+    private readonly handlers = new Map<string, Set<(payload?: unknown) => void>>();
     private readonly strands = new Map<string, unknown>();
+    /**
+     * The node's unclaimed-strand backlog — what `getDiscoveredStrands()` hands the
+     * hook's catch-up drain. Seeded by a test to stand for strands the real node
+     * announced inside `start()`, before any listener existed.
+     */
+    readonly discovered = new Map<string, unknown>();
 
     constructor(id: number) {
       this.id = id;
@@ -72,6 +78,11 @@ const h = vi.hoisted(() => {
 
     getStrands(): Map<string, unknown> {
       return this.strands;
+    }
+
+    /** A snapshot, as the real `CadreNode.getDiscoveredStrands()` returns. */
+    getDiscoveredStrands(): Map<string, unknown> {
+      return new Map(this.discovered);
     }
 
     getMultiaddrs(): string[] {
@@ -87,7 +98,7 @@ const h = vi.hoisted(() => {
       return [];
     }
 
-    on(event: string, handler: () => void): void {
+    on(event: string, handler: (payload?: unknown) => void): void {
       let set = this.handlers.get(event);
       if (!set) {
         set = new Set();
@@ -96,12 +107,13 @@ const h = vi.hoisted(() => {
       set.add(handler);
     }
 
-    off(event: string, handler: () => void): void {
+    off(event: string, handler: (payload?: unknown) => void): void {
       this.handlers.get(event)?.delete(handler);
     }
 
-    emit(event: string): void {
-      this.handlers.get(event)?.forEach((cb) => cb());
+    /** `payload` is what the typed CadreNode event carries; omitted for the void events. */
+    emit(event: string, payload?: unknown): void {
+      this.handlers.get(event)?.forEach((cb) => cb(payload));
     }
 
     listenerCount(event: string): number {
@@ -273,6 +285,75 @@ describe('useCadreInternal — closed-strand invite', () => {
     // The caller's id is the strand founded, so Settings' logs name the same strand.
     expect(createClosedChatStrand).toHaveBeenCalledWith(expect.anything(), 'closed-1');
     expect(encoded).toBe('encoded-invite-1');
+  });
+});
+
+describe('useCadreInternal — discovered-strand backlog', () => {
+  beforeEach(resetHarness);
+
+  /** An unclaimed row as the control network advertises it. */
+  const strandRow = (id: string, type: 'o' | 'c') => ({ Id: id, Type: type, MemberPrivateKey: null, FounderOwnerKey: null });
+
+  /**
+   * A node that is ALREADY up with `backlog` unclaimed — the restart shape. The real
+   * node announces each stored strand from the watcher's first poll inside
+   * `CadreNode.start()`, which resolves before `startPhoneNode` does and long before
+   * React can run the subscribing effect, so the hook never sees those events.
+   */
+  function nodeWithBacklog(...backlog: ReturnType<typeof strandRow>[]): InstanceType<typeof h.MockNode> {
+    const node = new h.MockNode(1);
+    for (const row of backlog) node.discovered.set(row.Id, row);
+    h.ctl.node = node;
+    return node;
+  }
+
+  it('drains the backlog on subscribe, so a strand announced before mount is still joined', async () => {
+    const row = strandRow('stored-1', 'o');
+    const node = nodeWithBacklog(row);
+
+    await mountStarted();
+
+    // No `strand:discovered` ever reached this listener — the drain is the only
+    // thing that could have produced this call.
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+    expect(joinChatStrand).toHaveBeenCalledWith(node, row);
+  });
+
+  it('leaves a CLOSED strand unclaimed — it still requires the explicit invite handshake', async () => {
+    nodeWithBacklog(strandRow('closed-stored', 'c'));
+
+    await mountStarted();
+
+    expect(joinChatStrand).not.toHaveBeenCalled();
+  });
+
+  it('joins once when the event re-offers a strand the drain is still claiming', async () => {
+    const row = strandRow('stored-1', 'o');
+    const node = nodeWithBacklog(row);
+    // A join that never settles: the window where `getStrands()` still shows nothing,
+    // because the strand manager tracks the instance only once `addStrand` resolves.
+    vi.mocked(joinChatStrand).mockReturnValue(new Promise(() => { /* never settles */ }) as never);
+
+    await mountStarted();
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+
+    await actFlush(() => node.emit('strand:discovered', { strandId: row.Id, strand: row }));
+
+    // Without the in-flight guard this is 2 — two `addStrand` calls for one strand.
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+  });
+
+  it('subscribes BEFORE draining, so a discovery landing between the two is not lost', async () => {
+    const node = nodeWithBacklog();
+    await mountStarted();
+
+    // Nothing in the backlog at mount, but the listener is attached: the ordinary
+    // mid-session discovery still works, unchanged by the drain.
+    const row = strandRow('later-1', 'o');
+    await actFlush(() => node.emit('strand:discovered', { strandId: row.Id, strand: row }));
+
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+    expect(joinChatStrand).toHaveBeenCalledWith(node, row);
   });
 });
 

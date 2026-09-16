@@ -21,6 +21,7 @@ import { webSockets } from '@libp2p/websockets';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import type { CadreNode } from '../src/cadre-node.js';
@@ -163,6 +164,30 @@ export function fileStorageProvider(baseDir: string): (scope: string) => IRawSto
 			// a test may pass a hand-written strand id, and `FileStoreDriver` does no
 			// escaping of its own.
 			storage = new FileRawStorage(join(baseDir, encodeURIComponent(scope)));
+			byScope.set(scope, storage);
+		}
+		return storage;
+	};
+}
+
+/**
+ * A `(scope) => IRawStorage` factory backed by one `MemoryRawStorage` per scope —
+ * the heap-resident counterpart of {@link fileStorageProvider}, memoised for the same
+ * reason: `CadreNode` asks once per scope, and handing back a fresh (empty) store on a
+ * second call for the same scope would split that scope's blocks across two views.
+ *
+ * Because the instances live in the parent process's heap, a node rebuilt over the same
+ * provider is a restart that keeps its blocks — which is what the restart specs want and
+ * exactly what {@link fileStorageProvider} deliberately does NOT give them. Use this one
+ * when the point is "same stored rows, new node"; use the file-backed one when the point
+ * is "nothing but the bytes on disk crossed the boundary".
+ */
+export function memoryStorageProvider(): (scope: string) => IRawStorage {
+	const byScope = new Map<string, IRawStorage>();
+	return (scope: string) => {
+		let storage = byScope.get(scope);
+		if (!storage) {
+			storage = new MemoryRawStorage();
 			byScope.set(scope, storage);
 		}
 		return storage;

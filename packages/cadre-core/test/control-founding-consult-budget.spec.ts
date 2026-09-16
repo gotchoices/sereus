@@ -1,12 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import type { StrandWatcher } from '../src/strand-watcher.js';
-import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
+import { controlNodeConfig, freshPartyId, memoryStorageProvider, scopedWithin } from './control-db-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
 import {
 	formatConsultSnapshot,
@@ -269,19 +267,6 @@ interface CadreNodeInternals {
 
 interface StrandWatcherInternals {
 	initialPollTimer: ReturnType<typeof setTimeout> | null;
-}
-
-/** One `MemoryRawStorage` per storage id, memoised — the control network and the strand never share blocks. */
-function memoryStorageProvider(): (id: string) => IRawStorage {
-	const byId = new Map<string, IRawStorage>();
-	return (id: string) => {
-		let storage = byId.get(id);
-		if (!storage) {
-			storage = new MemoryRawStorage();
-			byId.set(id, storage);
-		}
-		return storage;
-	};
 }
 
 /** Resolve once no consult or commit has been issued for {@link QUIET_MS}. */

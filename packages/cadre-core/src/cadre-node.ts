@@ -391,6 +391,15 @@ export class CadreNode implements SAppIdLookup {
   private sAppConfigs: Map<string, SAppConfig> = new Map();
 
   /**
+   * Strands the control network advertises that no local sAppConfig claims — the
+   * backlog behind `strand:discovered`. Maintained in {@link handleStrandAdded}
+   * (added), {@link addStrand} (claimed), {@link detachStrand} (stopped or its
+   * control row vanished) and {@link cleanup}. Read through
+   * {@link getDiscoveredStrands}.
+   */
+  private discoveredStrands: Map<string, StrandRow> = new Map();
+
+  /**
    * Most-recently pushed invite addresses (see {@link setInviteAddresses}).
    * When non-null these take priority over `libp2pNode.getMultiaddrs()` when
    * minting invites — the host pushes NAT-resolved addresses here so the
@@ -867,6 +876,26 @@ export class CadreNode implements SAppIdLookup {
    */
   getStrands(): Map<string, StrandInstance> {
     return this.strandManager.getInstances();
+  }
+
+  /**
+   * Strands the control network advertises that no local sAppConfig claims —
+   * the backlog behind `strand:discovered`.
+   *
+   * The event fires once per strand, and it can fire before the app has
+   * subscribed (the watcher's first poll runs inside `start()`). So an app that
+   * auto-joins discovered strands must subscribe FIRST and then drain this map,
+   * not rely on the event alone. Entries leave the map when the strand is
+   * claimed ({@link addStrand}) or its control row disappears.
+   *
+   * Bounded by the number of strands this party has that this node does not run
+   * — the control database holds only this party's rows — so there is no cap and
+   * no eviction policy to reason about.
+   *
+   * Returns a snapshot; mutating it does not affect the node.
+   */
+  getDiscoveredStrands(): Map<string, StrandRow> {
+    return new Map(this.discoveredStrands);
   }
 
   /**
@@ -3911,6 +3940,13 @@ export class CadreNode implements SAppIdLookup {
       // (register a config + addStrand); the strand-agnostic seam keeps this
       // class free of any app's join policy. A self-configured strand (config
       // already present) keeps auto-starting below, unchanged.
+      //
+      // Recorded BEFORE the emit so a handler that synchronously drains
+      // `getDiscoveredStrands()` sees this strand too. The watcher never offers
+      // the same strand twice (its `knownStrands` retains the id for the life of
+      // the process), so this map — not the event — is what a late subscriber
+      // reads. See the `strand:discovered` doc in types.ts.
+      this.discoveredStrands.set(strand.Id, strand);
       this.emit('strand:discovered', { strandId: strand.Id, strand });
       return;
     }
@@ -4031,9 +4067,10 @@ export class CadreNode implements SAppIdLookup {
     // Stop all strand instances
     await this.strandManager.stopAll();
 
-    // Clear sApp configs and recorded launch refusals
+    // Clear sApp configs, recorded launch refusals and the unclaimed-strand backlog
     this.sAppConfigs.clear();
     this.strandLaunchRefusals.clear();
+    this.discoveredStrands.clear();
 
     // Drop delegate-admission state: the grants are scoped to the session that
     // recorded them, so a stop()/start() cycle on this object must not keep
@@ -4353,8 +4390,10 @@ export class CadreNode implements SAppIdLookup {
       );
     }
 
-    // Store sApp config for this strand
+    // Store sApp config for this strand. The strand is claimed now, so it leaves the
+    // unclaimed backlog — a later `getDiscoveredStrands()` drain must not re-offer it.
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
+    this.discoveredStrands.delete(strandRow.Id);
     log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
       strandRow.Id, sAppConfig.id, founder ?? 'derived');
 
@@ -5623,8 +5662,12 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Stop a strand on THIS node only: untrack it from hibernation, drop its sApp config,
    * stop the local instance, and emit `strand:stopped`. The shared `Strand` row is left
-   * intact, so on the next node restart (or watcher poll) the strand is rediscovered and
-   * surfaces as `strand:discovered` again. Party-wide removal is {@link unpublishStrand}.
+   * intact, so on the next node RESTART the strand is rediscovered and surfaces as
+   * `strand:discovered` again — not on the next watcher poll, which never re-offers a
+   * strand it has already seen (`StrandWatcher.knownStrands` retains the id for the life
+   * of the process). The stop also drops the strand from {@link getDiscoveredStrands},
+   * so a drain cannot undo a deliberate stop. Party-wide removal is
+   * {@link unpublishStrand}.
    */
   async stopStrand(strandId: string): Promise<void> {
     if (!this._running) {
@@ -5644,14 +5687,20 @@ export class CadreNode implements SAppIdLookup {
    * The stop + emit are skipped when the strand manager holds no instance for `strandId` —
    * e.g. a party owner that published a strand's row but never ran it locally, or an
    * explicit {@link stopStrand} for an id this node never started. `hibernationManager`
-   * untrack and the `sAppConfigs` / {@link strandLaunchRefusals} deletes stay
-   * unconditional (all no-ops when there is nothing to remove), so a launch that failed
-   * before an instance was ever tracked still gets its stray entries cleared.
+   * untrack and the `sAppConfigs` / {@link strandLaunchRefusals} / {@link discoveredStrands}
+   * deletes stay unconditional (all no-ops when there is nothing to remove), so a launch
+   * that failed before an instance was ever tracked still gets its stray entries cleared.
+   *
+   * Dropping the {@link discoveredStrands} entry here covers both callers, and both
+   * readings are the intended one: `handleStrandRemoved` arrives because the control row
+   * is gone, and an explicit {@link stopStrand} is a deliberate abandonment — neither
+   * strand may be re-offered to a later `getDiscoveredStrands()` drain.
    */
   private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);
     this.sAppConfigs.delete(strandId);
     this.strandLaunchRefusals.delete(strandId);
+    this.discoveredStrands.delete(strandId);
     if (!this.strandManager.hasStrand(strandId)) {
       log('detachStrand: strand %s not tracked locally — no-op (no stop, no strand:stopped)', strandId);
       return;

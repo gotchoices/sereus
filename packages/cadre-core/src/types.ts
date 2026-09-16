@@ -1116,10 +1116,28 @@ export interface CadreNodeEvents {
   'strand:revoked': { strandId: string };
   /**
    * Emitted when the control network advertises a strand this node has no
-   * registered `sAppConfig` for — i.e. a strand created by another member. The
-   * hosting app decides whether to join it (register a config + `addStrand`,
-   * e.g. via a chat `joinChatStrand` helper). Carries the full {@link StrandRow}
-   * so the app can join without re-querying the control DB.
+   * registered `sAppConfig` for — i.e. a strand created by another member, or
+   * one this node ran in a previous session (sApp configs are in-memory only and
+   * do not survive `stop()`). The hosting app decides whether to join it
+   * (register a config + `addStrand`, e.g. via a chat `joinChatStrand` helper).
+   * Carries the full {@link StrandRow} so the app can join without re-querying
+   * the control DB.
+   *
+   * **Fired exactly ONCE per strand per session, and it can fire before your
+   * listener is attached.** The strand watcher's first poll runs inside
+   * `CadreNode.start()` (100 ms after the watcher starts), so every strand
+   * already stored for this party is normally offered while the embedding app is
+   * still inside its own `start()` await. The watcher then records the strand as
+   * seen and no later poll re-offers it, so a listener attached a moment late
+   * misses those strands for the life of the process.
+   *
+   * So an app that auto-joins discovered strands must **subscribe first, then
+   * drain `CadreNode.getDiscoveredStrands()`** — the map of strands no local
+   * config claims. In that order a strand discovered between the two steps is
+   * handled twice rather than not at all, which is why the join handler needs to
+   * be idempotent (guard on an in-flight set, not only on
+   * `getStrands().has(id)` — the strand manager tracks an instance only once
+   * `addStrand` has resolved).
    */
   'strand:discovered': { strandId: string; strand: StrandRow };
   'control:connected': void;
