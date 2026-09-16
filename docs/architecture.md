@@ -878,10 +878,11 @@ failure costs*:
 
 | how the relay is named | drive | first attempt lands nothing |
 | --- | --- | --- |
-| `network.relayAddrs` | at the end of `CadreNode.start()`, after control-DB bring-up | **fatal**: `start()` throws `RelayReservationFailedError` naming the relay |
+| `network.relayAddrs` (default `requireRelay`) | at the end of `CadreNode.start()`, after control-DB bring-up | **fatal**: `start()` throws `RelayReservationFailedError` naming the relay |
+| `network.relayAddrs` with `requireRelay: false` | same point in `start()` | logged, not thrown; status is `retrying`/`error` and the node stays up, solo |
 | `CadreNode.reserveRelays(addrs)` | whenever the app calls it | nothing throws; status is `retrying`/`error` and the node stays up, solo |
 
-The second posture is what browser tabs and other must-still-boot nodes use.
+The second and third postures are what browser tabs and other must-still-boot nodes use — `requireRelay: false` gives that posture to a CONTROL node's own `relayAddrs` reservation (a strand node's per-relay reservation is already fail-soft regardless, see below), while `reserveRelays()` is for a caller that only discovers its relay at runtime and never named one in config. Either way, a caller on the fail-soft posture reads `CadreNode.getRelayReservationState()` to learn whether the node actually ended up dialable — `start()` resolving no longer implies it.
 
 **Why `relayAddrs` no longer builds a `<relay>/p2p/<relayPeerId>/p2p-circuit`
 listen address.** libp2p's transport manager dials a *configured* circuit

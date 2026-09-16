@@ -291,11 +291,40 @@ export interface NetworkConfig {
    * must not acquire a listener by accident.
    *
    * FAIL-FAST both ways: a malformed entry throws at node start rather than being
-   * silently dropped, and a first reservation attempt that lands no
-   * `/p2p-circuit` address throws `RelayReservationFailedError` out of `start()`.
-   * The fail-soft posture over the same machinery is `CadreNode.reserveRelays()`.
+   * silently dropped, and — while {@link requireRelay} stays at its default —
+   * a first reservation attempt that lands no `/p2p-circuit` address throws
+   * `RelayReservationFailedError` out of `start()`. The fail-soft posture over
+   * the same machinery is `CadreNode.reserveRelays()`.
    */
   relayAddrs?: string[];
+  /**
+   * Must a relay named in {@link relayAddrs} have granted a reservation before
+   * `start()` is allowed to succeed? Default `true`: an operator who names a
+   * relay is telling this machine it has no other reachability, so a relay
+   * that will not have us on the first attempt should stop the boot loudly
+   * rather than leave a node nobody can reach.
+   *
+   * Set `false` for a node that must still boot with no network — a phone or a
+   * browser tab. The first attempt is still driven at the same point in
+   * `start()`; a lost reservation just logs instead of throwing, and the
+   * retry supervisor keeps trying in the background exactly as it does after a
+   * `CadreNode.reserveRelays()` call. A caller on this posture cannot infer
+   * dialability from `start()` resolving — read
+   * {@link CadreNode.getRelayReservationState} to find out.
+   *
+   * Softens only the RESERVATION half of {@link relayAddrs}'s fail-fast
+   * contract. A malformed `relayAddrs` entry still throws at config
+   * resolution regardless of this setting — a typo is an operator error
+   * whatever the posture — and a hand-written `<relay>/p2p-circuit` entry in
+   * {@link listenAddrs} is still rejected on the control node, since that
+   * rejection is about the listener shape, not about whether reachability is
+   * required.
+   *
+   * Has no effect on STRAND nodes, which are already fail-soft over
+   * `relayAddrs` regardless of this field (`strand-network-config.ts`,
+   * `strand-instance-manager.ts`).
+   */
+  requireRelay?: boolean;
   /**
    * Enable circuit relay server - allows this node to relay connections for other peers.
    * When undefined, defaults to true for storage profile nodes (they typically have

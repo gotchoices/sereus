@@ -651,6 +651,20 @@ describe('CadreNode control-network node options', () => {
       expect(options.listenAddrs).toEqual(['/p2p-circuit']);
     });
 
+    /**
+     * `requireRelay: false` only softens what `driveControlRelayReservation` does
+     * with a failed first attempt (`cadre-node.ts`) — it changes nothing about the
+     * listen set `buildControlNodeOptions` resolves. A tolerated start still needs
+     * the bare search entry to land a later reservation on.
+     */
+    it('still carries the bare /p2p-circuit search entry when requireRelay is false', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], relayAddrs: [RELAY_ADDR], requireRelay: false }
+      })));
+
+      expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/p2p-circuit']);
+    });
+
     it('still validates every entry at option-build time, even though the search entry discards them', () => {
       const node = new CadreNode(createConfig({ network: { relayAddrs: ['/ip4/1.2.3.4/tcp/4001'] } }));
 

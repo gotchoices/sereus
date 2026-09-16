@@ -1112,7 +1112,7 @@ export class CadreNode implements SAppIdLookup {
       // scheduleSelfRegistration, so this node's first published `CadrePeer` row
       // already carries the `/p2p-circuit` address the reservation earns it.
       // Throws on a relay that will not have us — start() is fail-fast for a node
-      // whose operator named a relay.
+      // whose operator named a relay, unless network.requireRelay is false.
       await this.driveControlRelayReservation();
 
       // Schedule self-registration in background
@@ -5932,6 +5932,11 @@ export class CadreNode implements SAppIdLookup {
    * relay indistinguishable from a hung start, and much shorter would fail nodes
    * on links that were merely slow. The retries carry on in the background after
    * this resolves, exactly as they do for a {@link reserveRelays} caller.
+   *
+   * `network.requireRelay === false` softens only the outcome below: a first
+   * attempt that lands no `/p2p-circuit` address is logged instead of thrown, and
+   * `start()` carries on with the retry supervisor already running in the
+   * background (the same supervisor {@link reserveRelays} always starts).
    */
   private async driveControlRelayReservation(): Promise<void> {
     const relayAddrs = this.config.network?.relayAddrs ?? [];
@@ -5942,6 +5947,11 @@ export class CadreNode implements SAppIdLookup {
     const state = await this.reserveRelays([...relayAddrs]);
     timing('[start] reserveRelays: %dms', Math.round(performance.now() - t0));
     if (state.status !== 'reserved') {
+      if (this.config.network?.requireRelay === false) {
+        log('Relay reservation did not land on the first attempt (status: %s); ' +
+          'continuing without it because network.requireRelay is false: %o', state.status, state);
+        return;
+      }
       throw new RelayReservationFailedError(relayAddrs, state);
     }
     log('Reserved a relay slot: %o', state.circuitAddrs);

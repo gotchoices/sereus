@@ -34,11 +34,16 @@
  * node ({@link resolveListenAddrs}) and folded into the supervised relay set on a
  * strand node.
  *
- * `network.relayAddrs` is FAIL-FAST for the operator: a malformed entry throws here at
- * config resolution, and on the control node a first reservation attempt that does not
- * land throws out of `start()` (`RelayReservationFailedError`). Naming a relay that is
- * down still means the control node does not come up; a strand node is fail-SOFT
- * instead (its supervisor keeps trying while the strand serves).
+ * `network.relayAddrs` is FAIL-FAST for the operator by default: a malformed entry
+ * throws here at config resolution regardless of posture, and on the control node a
+ * first reservation attempt that does not land throws out of `start()`
+ * (`RelayReservationFailedError`). Naming a relay that is down still means the control
+ * node does not come up. `network.requireRelay: false` softens the second half only —
+ * for a node that must still boot with no network (a phone, a browser tab) — logging
+ * the failed attempt instead of throwing and leaving the retry supervisor running in
+ * the background; the malformed-entry check is unaffected. A strand node is
+ * fail-SOFT regardless of `requireRelay` (its supervisor keeps trying while the
+ * strand serves).
  *
  * The bare `/p2p-circuit` search listener cannot open a connection on its own:
  * libp2p fills a pending reservation from `RelayDiscovery`, which nominates a peer
@@ -345,9 +350,11 @@ const TRANSPORT_PACKAGES: Record<string, string> = {
 
 /**
  * Thrown out of `CadreNode.start()` when the boot-path reservation drive for
- * `network.relayAddrs` produces no `/p2p-circuit` address on its FIRST attempt.
+ * `network.relayAddrs` produces no `/p2p-circuit` address on its FIRST attempt,
+ * UNLESS `network.requireRelay` is explicitly `false` (see `driveControlRelayReservation`,
+ * which logs and returns instead on that posture).
  *
- * This is what keeps `network.relayAddrs` fail-fast now that the control node
+ * This is what keeps `network.relayAddrs` fail-fast by default now that the control node
  * listens on the bare search entry: libp2p's own `UnsupportedListenAddressesError` used
  * to abort start from inside `listen()`, and an operator who names a relay is
  * telling the node it has no other reachability — coming up undialable is worse

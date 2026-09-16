@@ -66,4 +66,24 @@ describe('CadreNode start() failing on its relay reservation', () => {
     await expect(node.start()).rejects.toThrow(RelayReservationFailedError);
     expect(node.isRunning).toBe(false);
   }, 120_000);
+
+  it('rejects the same way when requireRelay is explicitly true — the default is not implicit', async () => {
+    const relayKey = await generateKeyPair('Ed25519');
+    const node = new CadreNode({
+      controlNetwork: { partyId: 'relay-boot-failure-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
+      privateKey: await generateKeyPair('Ed25519'),
+      profile: 'transaction',
+      strandFilter: { mode: 'none' },
+      storage: { provider: () => new MemoryRawStorage() },
+      network: {
+        listenAddrs: [],
+        relayAddrs: [`/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(relayKey).toString()}`],
+        requireRelay: true
+      }
+    });
+
+    await expect(node.start()).rejects.toThrow(RelayReservationFailedError);
+    expect(node.isRunning).toBe(false);
+    expect(node.getRelayReservationState().status).toBe('none');
+  }, 60_000);
 });
