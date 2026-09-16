@@ -1,5 +1,4 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { createServer } from 'node:net';
 import { createLibp2p, type Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
@@ -22,6 +21,7 @@ import {
   superviseRelayReservation,
   type RelayReservationSupervisorOptions
 } from '../src/relay-reservation.js';
+import { blackholeRelayAddr, deadRelayAddr, freePort } from './relay-test-addrs.js';
 
 /**
  * Relay reservation through the bare `/p2p-circuit` SEARCH listener: the status
@@ -331,22 +331,6 @@ async function startPlainTcpListener(): Promise<Libp2p> {
   return node;
 }
 
-/** A syntactically valid relay addr with nothing listening behind it (refused fast). */
-async function deadRelayAddr(): Promise<string> {
-  const key = await generateKeyPair('Ed25519');
-  return `/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(key).toString()}`;
-}
-
-/**
- * A relay addr in RFC 5737 TEST-NET-1, which is routed nowhere: a dial to it
- * HANGS rather than being refused, so it exercises the deadline instead of the
- * connection-refused path {@link deadRelayAddr} takes.
- */
-async function blackholeRelayAddr(port: number): Promise<string> {
-  const key = await generateKeyPair('Ed25519');
-  return `/ip4/192.0.2.1/tcp/${port}/p2p/${peerIdFromPrivateKey(key).toString()}`;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -357,27 +341,6 @@ async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): P
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
     await sleep(100);
   }
-}
-
-/**
- * A TCP port nothing is listening on: bind `:0`, read what the OS assigned,
- * release it, hand it on. Deliberately NOT a hard-coded port — spec files run in
- * parallel and would collide on one.
- */
-function freePort(): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const probe = createServer();
-    probe.on('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
-      const address = probe.address();
-      if (address === null || typeof address === 'string') {
-        probe.close(() => reject(new Error('no TCP port was assigned')));
-        return;
-      }
-      const { port } = address;
-      probe.close(() => resolve(port));
-    });
-  });
 }
 
 /**

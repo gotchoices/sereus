@@ -312,6 +312,12 @@ export interface NetworkConfig {
    * dialability from `start()` resolving — read
    * {@link CadreNode.getRelayReservationState} to find out.
    *
+   * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
+   * out that first attempt, which costs the drive's whole timeout
+   * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s) against a relay that is unreachable
+   * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
+   * case libp2p's own discovery lands a reservation independently).
+   *
    * Softens only the RESERVATION half of {@link relayAddrs}'s fail-fast
    * contract. A malformed `relayAddrs` entry still throws at config
    * resolution regardless of this setting — a typo is an operator error

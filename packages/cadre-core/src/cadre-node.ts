@@ -2367,7 +2367,10 @@ export class CadreNode implements SAppIdLookup {
     // `CadrePeer` row, so its boot-time publish does nothing, and the two triggers
     // wired here are the only ones after that: `self:peer:update` needs an ADDRESS
     // CHANGE, and a relay-only node's addresses stop changing the moment its
-    // reservation lands — inside `start()`, before this listener exists. Harmless
+    // reservation lands — inside `start()`, before this listener exists (on the
+    // `network.requireRelay: false` posture the reservation may instead land LATER,
+    // from the retry supervisor, and then this listener is what publishes the
+    // `/p2p-circuit` address the boot-time publish could not carry). Harmless
     // where a late-authorized node's addresses keep churning (NAT/relay rotation
     // fire the event anyway), and invisible while parties authorize members before
     // they boot. If late enrollment becomes the normal path — an invited phone is

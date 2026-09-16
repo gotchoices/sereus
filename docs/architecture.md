@@ -878,7 +878,7 @@ failure costs*:
 
 | how the relay is named | drive | first attempt lands nothing |
 | --- | --- | --- |
-| `network.relayAddrs` (default `requireRelay`) | at the end of `CadreNode.start()`, after control-DB bring-up | **fatal**: `start()` throws `RelayReservationFailedError` naming the relay |
+| `network.relayAddrs`, `requireRelay` at its default | at the end of `CadreNode.start()`, after control-DB bring-up | **fatal**: `start()` throws `RelayReservationFailedError` naming the relay |
 | `network.relayAddrs` with `requireRelay: false` | same point in `start()` | logged, not thrown; status is `retrying`/`error` and the node stays up, solo |
 | `CadreNode.reserveRelays(addrs)` | whenever the app calls it | nothing throws; status is `retrying`/`error` and the node stays up, solo |
 
@@ -899,8 +899,9 @@ database the retry is building. The fix is ordering, not retrying — the contro
 database is built while the node holds **zero** control connections (a cohort of
 one, entirely local), and only then does it reach out. `relayAddrs` keeps its
 fail-fast contract from the two places it can still be enforced: a malformed
-entry throws at config resolution, and a first reservation attempt that lands
-nothing throws out of `start()`.
+entry throws at config resolution — at both postures — and, while `requireRelay`
+is at its default, a first reservation attempt that lands nothing throws out of
+`start()`.
 
 **Strand** nodes take the same search shape, one listener and one supervisor
 PER relay: `strand-network-config.ts` resolves the inherited `relayAddrs` to one
@@ -1173,11 +1174,20 @@ interface CadreNodeConfig {
     // FAIL-FAST: a malformed entry throws at config resolution, and a first
     // reservation attempt that lands nothing throws `RelayReservationFailedError` out
     // of `start()` — naming a relay that is down still means the node does not come
-    // up. The FAIL-SOFT posture over the same machinery is `CadreNode.reserveRelays()`
-    // (`relay-reservation.ts`), which reports a non-`reserved` status instead of
-    // throwing; browser tabs take that one so a dead relay leaves them solo rather
-    // than dead. Setting both is redundant, not fatal.
+    // up. The FAIL-SOFT postures over the same machinery are `requireRelay: false`
+    // below and `CadreNode.reserveRelays()` (`relay-reservation.ts`), both of which
+    // report a non-`reserved` status instead of throwing; browser tabs take one of
+    // them so a dead relay leaves them solo rather than dead. Setting both is
+    // redundant, not fatal.
     relayAddrs?: string[];
+    // Must a relay named above have granted a reservation before start() may succeed?
+    // Default true (the fail-fast contract described there). false for a node that must
+    // still boot with no network — a phone, a browser tab: the first attempt is still
+    // driven and still waited on, but a miss is logged rather than thrown and the retry
+    // supervisor keeps going. Such a caller reads CadreNode.getRelayReservationState()
+    // to learn whether it is actually dialable; a malformed relayAddrs entry still
+    // throws either way. No effect on strand nodes, already fail-soft.
+    requireRelay?: boolean;
     enableRelay?: boolean;        // Enable circuit relay (default: true for storage profile)
     // Cap on concurrent relay reservations granted to peers this node cannot (yet)
     // recognize as members — the boot-ordering window where a genuine member reserves

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
+import { deadRelayAddr } from './relay-test-addrs.js';
 import { RelayReservationFailedError } from '../src/relay-addrs.js';
 import type { CadreNodeEvents } from '../src/types.js';
 
@@ -20,13 +20,8 @@ import type { CadreNodeEvents } from '../src/types.js';
  * a reservation retry loop dialing a stopped node forever.
  */
 describe('CadreNode start() failing on its relay reservation', () => {
-  /** A relay peerId nothing is listening for, on a port that refuses immediately. */
-  async function deadRelayAddr(): Promise<string> {
-    const relayKey = await generateKeyPair('Ed25519');
-    return `/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(relayKey).toString()}`;
-  }
-
-  async function nodeWithDeadRelay(): Promise<CadreNode> {
+  /** `requireRelay` omitted (the default posture) unless a case names one explicitly. */
+  async function nodeWithDeadRelay(requireRelay?: boolean): Promise<CadreNode> {
     return new CadreNode({
       controlNetwork: { partyId: 'relay-boot-failure-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
       privateKey: await generateKeyPair('Ed25519'),
@@ -35,7 +30,7 @@ describe('CadreNode start() failing on its relay reservation', () => {
       storage: { provider: () => new MemoryRawStorage() },
       // No direct listener either, so the reservation is the node's only reachability —
       // the shape an operator who names a relay is actually describing.
-      network: { listenAddrs: [], relayAddrs: [await deadRelayAddr()] }
+      network: { listenAddrs: [], relayAddrs: [await deadRelayAddr()], ...(requireRelay !== undefined && { requireRelay }) }
     });
   }
 
@@ -68,19 +63,7 @@ describe('CadreNode start() failing on its relay reservation', () => {
   }, 120_000);
 
   it('rejects the same way when requireRelay is explicitly true — the default is not implicit', async () => {
-    const relayKey = await generateKeyPair('Ed25519');
-    const node = new CadreNode({
-      controlNetwork: { partyId: 'relay-boot-failure-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-      privateKey: await generateKeyPair('Ed25519'),
-      profile: 'transaction',
-      strandFilter: { mode: 'none' },
-      storage: { provider: () => new MemoryRawStorage() },
-      network: {
-        listenAddrs: [],
-        relayAddrs: [`/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(relayKey).toString()}`],
-        requireRelay: true
-      }
-    });
+    const node = await nodeWithDeadRelay(true);
 
     await expect(node.start()).rejects.toThrow(RelayReservationFailedError);
     expect(node.isRunning).toBe(false);

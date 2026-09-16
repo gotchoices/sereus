@@ -28,8 +28,10 @@
  * a `RelayReservationFailedError` out of `start()` when the first attempt lands
  * nothing (fail-fast, the operator asked for this relay), while a node that calls
  * `CadreNode.reserveRelays()` itself gets a non-`reserved` status and stays up
- * (fail-soft, the browser-tab posture). Configuring both is now redundant, not
- * fatal.
+ * (fail-soft, the browser-tab posture). `network.requireRelay: false` gives a
+ * CONFIGURED relay the fail-soft posture too, for a node that must boot with no
+ * network at all — same drive, same supervisor, only the throw is dropped.
+ * Configuring both is now redundant, not fatal.
  *
  * STRAND nodes take the same route, ONE supervisor PER RELAY
  * (`strand-instance-manager.ts` → `buildStrandRuntime`): each configured relay

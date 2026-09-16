@@ -392,18 +392,22 @@ export async function startCadre(): Promise<CadreNode> {
 			// the tab depend on libp2p's relay *discovery* — cadre-core fills that pending
 			// reservation by asking the relay directly (discovery could never see this
 			// relay; see `relay-reservation.ts`). `network.relayAddrs` would produce the
-			// same bare entry on the control node, but it is deliberately NOT set here:
-			// it makes a reservation that does not land on the first attempt FATAL to
-			// `start()`, and a browser tab must still boot solo when its relay is down.
-			// So the tab keeps the explicit `reserveRelays` call below — same drive,
+			// same bare entry on the control node, and is not set here for a reason that
+			// has since been lifted: it used to make a first reservation attempt that does
+			// not land FATAL to `start()`, and a browser tab must still boot solo when its
+			// relay is down. `network.requireRelay: false` (cadre-core `types.ts`) is now
+			// that same tolerance for a CONFIGURED relay, so the tab could switch — it has
+			// not, so for now it keeps the explicit `reserveRelays` call below: same drive,
 			// fail-soft posture.
 			//
 			// NOTE: `reserveRelays` reaches the CONTROL node only. `network.relayAddrs` is
 			// what gives a strand node a supervised reservation of its own (one per relay,
 			// `strand-network-config.ts`); this tab's strand nodes inherit the bare entry
 			// below and nothing drives it, so they publish no circuit addr of their own and
-			// are not dialable inbound until that gap closes. See
-			// `tickets/plan/phone-reachable-for-strand-invitations`.
+			// are not dialable inbound. Switching this config to
+			// `relayAddrs` + `requireRelay: false` is what closes it; the phone takes that
+			// route first (ticket `phone-becomes-reachable-through-a-relay`), and the tab
+			// should follow it rather than invent a second shape.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 			// Permissive dial gater. libp2p's browser default denies dialing
 			// insecure-WebSocket and private/loopback addresses, which blocks the
