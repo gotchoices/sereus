@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-09-16T07:03:48.184Z (agent: claude)
+  Log file: c:\projects\sereus\tickets\.logs\0-rn-polyfill-guard-and-audit.implement.2026-09-16T07-03-48-182Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: The phone's fix for "it cannot connect to anything" is a handful of small web APIs added by hand, and nothing fails today if someone deletes them or a library starts needing another one. Add tests that catch that, tidy two small leaks in the new code, and write down which other web APIs the phone is still missing.
 files:
   - packages/reference-app-rn/polyfills/hermes.js (the three additions to guard; the AbortSignal cleanup arm)
