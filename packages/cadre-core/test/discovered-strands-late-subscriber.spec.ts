@@ -35,7 +35,7 @@ import { signedSApp } from './signed-sapp.js';
  * notification: `CadreNode.getDiscoveredStrands()`. The event is unchanged; it
  * is simply no longer the only way to learn about the strand.
  *
- * Three arms, cheapest last:
+ * Four arms, the cheap ones last:
  *  1. **The restart.** A real node founds an open strand, stops, and a second
  *     node comes up on the same party over the same storage. It subscribes only
  *     AFTER `start()` has resolved and the watcher has already offered the
@@ -49,6 +49,9 @@ import { signedSApp } from './signed-sapp.js';
  *     driving the real `handleStrandAdded`, with no libp2p node and no database.
  *     It says nothing arm 1 does not, but it says it in a few hundred
  *     milliseconds and names exactly the two objects involved.
+ *  4. **The other half of the contract.** A backlog that outlives the event has to
+ *     forget a strand whose control row is gone, or a drain would try to launch a
+ *     row the party removed. Same bare harness.
  */
 
 /** `within` scoped to this spec's failure label: `discovered-late-subscriber control op <label> …`. */
@@ -239,17 +242,7 @@ describe('discovered strands survive a late subscriber', () => {
 	it('a late subscriber to a real StrandWatcher still finds the strand in getDiscoveredStrands()', async () => {
 		// The bare reproduction: a real watcher and the real `handleStrandAdded`, with
 		// no libp2p node and no database behind either. Costs a few hundred ms.
-		const node = new CadreNode({
-			controlNetwork: { partyId: freshPartyId('discovered-bare'), bootstrapNodes: [] },
-			profile: 'transaction'
-		});
-		const row: StrandRow = { Id: strandId('bare'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
-		const queryable: StrandQueryable = { queryStrands: async () => [row] };
-		const watcher = new StrandWatcher(queryable, {
-			onStrandAdded: async (strand) =>
-				(node as unknown as { handleStrandAdded(s: StrandRow): Promise<void> }).handleStrandAdded(strand),
-			onStrandRemoved: async () => { /* never removed here */ }
-		}, { mode: 'all' }, 5_000);
+		const { node, row, watcher } = bareWatcher('bare');
 
 		try {
 			await watcher.start();
@@ -270,4 +263,58 @@ describe('discovered strands survive a late subscriber', () => {
 			await watcher.stop();
 		}
 	});
+
+	it('drops an unclaimed strand from the backlog once its control row is gone', async () => {
+		// The backlog outlives the event, so it needs the other half of the contract:
+		// a strand the party removed (`unpublishStrand` on any machine) must not stay
+		// on offer here, or a drain would launch a strand whose row no longer exists.
+		const { node, row, rows, watcher } = bareWatcher('unpublished');
+
+		try {
+			await watcher.start();
+			await watcher.forcePoll();
+			expect([...node.getDiscoveredStrands().keys()],
+				'the strand was never offered, so its removal proves nothing'
+			).toEqual([row.Id]);
+
+			// The row disappears, as a sibling's unpublish makes it disappear.
+			rows.length = 0;
+			await watcher.forcePoll();
+
+			expect([...node.getDiscoveredStrands().keys()],
+				'an unpublished strand is still on the backlog — a later drain would try to launch a row that is gone'
+			).toEqual([]);
+		} finally {
+			await watcher.stop();
+		}
+	});
 });
+
+/**
+ * A real {@link StrandWatcher} driving the real `handleStrandAdded`/`handleStrandRemoved`
+ * on an UNSTARTED {@link CadreNode}: no libp2p node, no database, a few hundred ms. Both
+ * handlers are reachable on a node that never started — the strand and hibernation
+ * managers are built in the constructor — and neither touches the control plane for an
+ * unclaimed strand, which is the whole path under test.
+ *
+ * `rows` is the queryable's live backing array: mutate it to make the control row appear
+ * or vanish between polls.
+ */
+function bareWatcher(tag: string): { node: CadreNode; row: StrandRow; rows: StrandRow[]; watcher: StrandWatcher } {
+	const node = new CadreNode({
+		controlNetwork: { partyId: freshPartyId(`discovered-${tag}`), bootstrapNodes: [] },
+		profile: 'transaction'
+	});
+	const row: StrandRow = { Id: strandId(tag), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+	const rows: StrandRow[] = [row];
+	const queryable: StrandQueryable = { queryStrands: async () => [...rows] };
+	const internals = node as unknown as {
+		handleStrandAdded(s: StrandRow): Promise<void>;
+		handleStrandRemoved(id: string): Promise<void>;
+	};
+	const watcher = new StrandWatcher(queryable, {
+		onStrandAdded: async (strand) => internals.handleStrandAdded(strand),
+		onStrandRemoved: async (id) => internals.handleStrandRemoved(id)
+	}, { mode: 'all' }, 5_000);
+	return { node, row, rows, watcher };
+}

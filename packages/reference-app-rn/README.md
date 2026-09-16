@@ -313,7 +313,7 @@ reference-app-rn/
 
 ## Key Concepts
 
-**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an owner-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event.
+**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an owner-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event. That event fires once per strand per run, and on a relaunch it fires before the app can subscribe — so the app also drains `CadreNode.getDiscoveredStrands()` right after subscribing, which is how strands from a previous session come back instead of showing `0 strand(s)`.
 
 **Strand** — An isolated P2P database. The quick-start creates strands of type `'o'` (open), meaning any connected node can participate. The trust-model demo also creates type `'c'` (closed) strands, which are invitation-only and gated by a membership key — see "Trust model / closed strands" below.
 

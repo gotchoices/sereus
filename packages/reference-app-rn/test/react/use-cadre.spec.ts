@@ -332,7 +332,9 @@ describe('useCadreInternal — discovered-strand backlog', () => {
     const node = nodeWithBacklog(row);
     // A join that never settles: the window where `getStrands()` still shows nothing,
     // because the strand manager tracks the instance only once `addStrand` resolves.
-    vi.mocked(joinChatStrand).mockReturnValue(new Promise(() => { /* never settles */ }) as never);
+    // `…Once`, not `mockReturnValue`: `resetHarness` clears calls but NOT implementations,
+    // so a permanent never-settling join would leak into every later test in this file.
+    vi.mocked(joinChatStrand).mockImplementationOnce(() => new Promise(() => { /* never settles */ }));
 
     await mountStarted();
     expect(joinChatStrand).toHaveBeenCalledTimes(1);

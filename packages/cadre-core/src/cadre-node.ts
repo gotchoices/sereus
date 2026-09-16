@@ -4367,11 +4367,17 @@ export class CadreNode implements SAppIdLookup {
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
-   * automatic relaunch need it. So once the strand's row is visible on the control
-   * network (via {@link publishStrand} or another member), a failed launch keeps
-   * being re-attempted in the background — each failure re-emitting `strand:error`
-   * — until it succeeds. {@link detachStrand} (reached via {@link stopStrand}) is
-   * what abandons a strand for good.
+   * automatic relaunch need it. That background relaunch covers only a strand the
+   * WATCHER launched: it forgets a row whose `onStrandAdded` threw and re-attempts it
+   * on a later poll (each failure re-emitting `strand:error`) until it succeeds. A
+   * strand claimed here after it was DISCOVERED gets no such retry — the watcher
+   * already recorded it in its `knownStrands` when it offered it as
+   * `strand:discovered`, and no later poll re-offers a strand it knows. This call has
+   * also already dropped it from {@link getDiscoveredStrands}, so a failed claim
+   * leaves the strand dormant until the caller retries or the node restarts (see
+   * `backlog/bug-discovered-strand-lost-when-claim-fails`).
+   * {@link detachStrand} (reached via {@link stopStrand}) is what abandons a strand
+   * for good.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
