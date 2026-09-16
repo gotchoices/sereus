@@ -104,14 +104,17 @@ network:
 
 ### Phone (RN app) Configuration
 
-The phone supplies WebSocket + circuit relay transports via `CadreNodeConfig.network`:
+The phone supplies WebSocket + circuit relay transports via `CadreNodeConfig.network` (`src/phone-node-config.ts`):
 
 ```typescript
 network: {
-  transports: [webSockets(), circuitRelayTransport()],
-  listenAddrs: []  // Cannot listen in RN
+  transports: [webSockets(), circuitRelayTransport(), webRTC({ rtcConfiguration: { iceServers } })],
+  listenAddrs: [],  // Cannot listen in RN
+  connectionGater: { denyDialMultiaddr: () => false },
 }
 ```
+
+`denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
 
 ### How It Connects
 
@@ -521,6 +524,56 @@ Messages from the drone (if any are inserted programmatically) replicate back to
 | Connect phone | Settings → enter Party ID + bootstrap addr → Connect |
 | Create strand | Settings → Create Strand |
 | Chat | Chat tab → type → send |
+
+
+## Borrowing a Node From a cadre-host
+
+The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**.
+
+This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (the same flow on the wire, with a real lent node — but with a Node-hosted requester, not a device).
+
+### On the PC
+
+```bash
+cadre-host start                 # note the management port it binds
+cadre-host grant issue           # prints the grant token to paste into the phone
+```
+
+### Reaching the host from the phone
+
+The grant surface (`/grants`) is loopback-only in v1: the host's origin guard accepts a `Host` header of `127.0.0.1` or `localhost` and nothing else, so a LAN-IP URL answers `403 forbidden_origin`. Forward the port instead:
+
+```bash
+adb reverse tcp:<managementPort> tcp:<managementPort>
+```
+
+Then enter `http://127.0.0.1:<managementPort>` as the Host URL on the phone.
+
+Two things `adb reverse` does **not** cover:
+
+- **libp2p traffic.** The phone dials the lent node directly, so the phone must be on the **same Wi-Fi LAN** as the PC. `adb reverse` needs every port named up front, and a lent node's strand nodes listen on ports the OS picks at start, so forwarding the control port alone is not a working setup.
+- **The Windows firewall.** Allow `node.exe` on private networks when prompted, or the phone's dial is dropped before it reaches the node.
+
+### The run
+
+1. Connect the phone solo (Settings → Connect, no bootstrap address).
+2. Settings → **Host Node** → paste the Host URL and the grant token → **Request Node**.
+3. The progress line advances through: asking the host, waiting for the node to start, adding it to the cadre, seeding it, connecting. A failure opens the usual modal, with the host's own wording underneath the plain-language message.
+
+Expected result: the stages reach `connected`, and the lent node's peer id appears among the phone's control connections.
+
+Reconnecting to the lent node after the app relaunches is only observable on a device once the party id persists across restarts (`tickets/backlog/feat-rn-persist-node-start-options`). Until then the headless proof of that reconnect is the integration scenario named above.
+
+### If the flow stalls
+
+- **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is `tickets/blocked/rn-solo-founding-device-run`.
+- **Stuck at "Connecting to the node"**, then failing after 30 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall.
+
+### Not covered here
+
+- Strands on the lent node. A lent node launches no strand of its own — whether it should is `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run`.
+- Reaching a host across the internet rather than a home LAN: `tickets/backlog/feat-cadre-host-wan-grant-reachability`.
+- Listing loans or ending one from the app. The host's own UI and `cadre-host` CLI do that.
 
 
 ## Build & Development Workflow

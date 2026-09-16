@@ -70,6 +70,26 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// the phone's dialed circuit reservation + the `/webrtc` upgrade are
 			// advertised over the existing identify/cohort flow without a listen addr.
 			listenAddrs: [], // RN cannot listen for inbound connections
+			// Permissive dial gater, for the same reason the web reference app sets one
+			// (`reference-app-web/src/lib/cadre-web.ts`). libp2p's `connection-gater`
+			// package points its `react-native` field at the BROWSER build, which refuses
+			// to dial insecure `ws://` and private addresses — LAN and loopback. A node
+			// borrowed from a cadre-host on the same Wi-Fi is exactly that: a private
+			// `/ws` address, in normal use rather than only in development. cadre-core's
+			// membership gater spreads whatever the embedder passes and adds only
+			// `denyDialPeer` plus the inbound/relay hooks, so it never supplies this one.
+			//
+			// Set explicitly rather than relying on module resolution: Metro's handling of
+			// the `react-native` field under package exports is not dependable (see the
+			// `unstable_enablePackageExports` comment in `metro.config.js`), so which
+			// build is bundled is not something to bet a connection on.
+			//
+			// This only permits the DIAL. The connection is still Noise-encrypted, and
+			// membership is still gated by `denyDialPeer` and the inbound hooks.
+			//
+			// cadre-core hands `network.connectionGater` to strand nodes as well
+			// (`strand-instance-manager.ts`), which is wanted — they dial LAN addresses too.
+			connectionGater: { denyDialMultiaddr: () => false },
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },

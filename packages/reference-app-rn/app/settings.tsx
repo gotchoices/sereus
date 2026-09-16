@@ -22,8 +22,19 @@ import {
   type FoundingOutcome,
   type PendingFounding,
 } from '../src/founding-progress';
+import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
+
+/** Plain-language label for each stage of a host-node request, for the progress line. */
+const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
+  requesting: 'Asking the host for a node…',
+  'waiting-for-node': 'Waiting for the node to start…',
+  authorizing: 'Adding the node to this cadre…',
+  seeding: 'Telling the node who its owner is…',
+  connecting: 'Connecting to the node…',
+  connected: 'Connected.',
+};
 
 export default function SettingsScreen() {
   const cadre = useCadre();
@@ -34,6 +45,11 @@ export default function SettingsScreen() {
   const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
+  const [hostUrl, setHostUrl] = useState('');
+  const [hostToken, setHostToken] = useState('');
+  // The stage a host-node request has reached, or null when none is running —
+  // which is also what disables the button.
+  const [hostNodeStage, setHostNodeStage] = useState<HostNodeRequestStage | null>(null);
   const [modal, setModal] = useState<{ title: string; message: string; detail?: string } | null>(null);
   // The strand founding in progress, if any. Both create buttons found a strand, so
   // both are disabled while either runs: one screen cannot start two foundings.
@@ -110,6 +126,24 @@ export default function SettingsScreen() {
       showAlert('Peer connected', 'Dialed successfully');
     } catch (err) {
       showAlert('Dial failed', String(err));
+    }
+  };
+
+  // ── Host node (borrow a node from a cadre-host) ────────────────────────
+
+  // Errors carry a message written for a person plus the host's own wording as
+  // `detail`; show both, because the detail is what makes a bug report useful.
+  // The hook holds the real re-entry guard — this only disables the button.
+  const handleRequestHostNode = async () => {
+    setHostNodeStage('requesting');
+    try {
+      const result = await cadre.requestHostNode(hostUrl, hostToken, setHostNodeStage);
+      showAlert('Host node connected', `Peer ID: ${result.peerId}`, `Loan ${result.donationId}`);
+    } catch (err) {
+      const detail = err instanceof HostNodeRequestError ? err.detail : undefined;
+      showAlert('Host node request failed', String(err instanceof Error ? err.message : err), detail);
+    } finally {
+      setHostNodeStage(null);
     }
   };
 
@@ -258,6 +292,32 @@ export default function SettingsScreen() {
             testID={TEST_IDS.settings.createStrandBtn}
           />
           {founding?.kind === 'open' && isSlowFounding(foundingElapsedMs) && <SlowFoundingHint />}
+        </Section>
+      )}
+
+      {/* Host node (borrow a node from a self-hosted cadre-host) */}
+      {connected && (
+        <Section title="Host Node">
+          <Text style={styles.hint}>
+            Ask a machine running cadre-host to lend this cadre an always-on node.
+            Enter that host&apos;s address and a grant token its owner issued with
+            &quot;cadre-host grant issue&quot;. The host only answers requests from
+            itself, so on a phone forward its port with &quot;adb reverse&quot; and use
+            a 127.0.0.1 address. Phone and host must be on the same Wi-Fi network.
+          </Text>
+          <LabelledInput label="Host URL" value={hostUrl} onChangeText={setHostUrl} placeholder="http://127.0.0.1:8088" testID={TEST_IDS.settings.hostUrlInput} />
+          <LabelledInput label="Grant token" value={hostToken} onChangeText={setHostToken} placeholder="token from cadre-host grant issue" testID={TEST_IDS.settings.hostTokenInput} />
+          <Btn
+            label="Request Node"
+            onPress={handleRequestHostNode}
+            disabled={hostNodeStage !== null || !hostUrl.trim() || !hostToken.trim()}
+            testID={TEST_IDS.settings.requestHostNodeBtn}
+          />
+          {hostNodeStage && (
+            <Text style={styles.slowHint} testID={TEST_IDS.settings.hostNodeStage}>
+              {HOST_NODE_STAGE_LABEL[hostNodeStage]}
+            </Text>
+          )}
         </Section>
       )}
 

@@ -19,6 +19,13 @@ export const TEST_IDS = {
 		createClosedStrandBtn: 'btn-create-closed-strand',
 		inviteInput: 'input-invite',
 		joinViaInviteBtn: 'btn-join-via-invite',
+		/** Management address of a cadre-host to borrow a node from. */
+		hostUrlInput: 'input-host-url',
+		/** Grant token that host's admin issued. */
+		hostTokenInput: 'input-host-token',
+		requestHostNodeBtn: 'btn-request-host-node',
+		/** Progress line showing which stage the host-node request has reached. */
+		hostNodeStage: 'text-host-node-stage',
 		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
 		/** Elapsed-time line under the modal title; shown only for strand-creation results. */

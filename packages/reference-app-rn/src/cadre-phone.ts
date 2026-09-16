@@ -251,11 +251,11 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
       // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
       // hole-punches to a direct `/webrtc` data path, dropping the drone out of
       // the data path (relay stays signalling-only). Brand-skew bridge —
-      // runtime-safe, see TransportFactory above. No `connectionGater` override
-      // is added: the phone dials a real relay/drone over `wss` (not a
-      // private/loopback addr), so unlike the web reference's local insecure
-      // dials it should not be gated out by libp2p's default. (This is a
-      // Tier-B/device-verified assumption — see the review handoff.)
+      // runtime-safe, see TransportFactory above. The permissive dial gater the
+      // phone needs lives in `buildPhoneNodeConfig` (`phone-node-config.ts`),
+      // which explains why: a node borrowed from a cadre-host on the same Wi-Fi
+      // is a private `ws://` address, which libp2p's browser-build gater refuses
+      // by default.
       webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
     ],
     trustedOwnerStore,

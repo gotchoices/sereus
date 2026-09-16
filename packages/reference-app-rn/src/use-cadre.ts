@@ -28,6 +28,11 @@ import {
   CHAT_SAPP_ID,
 } from './chat-strand';
 import {
+  requestHostNode as runHostNodeRequest,
+  type HostNodeRequestResult,
+  type HostNodeRequestStage,
+} from './host-node-request';
+import {
   createBackgroundRunner,
   type BackgroundRunner,
   type RunnerState,
@@ -96,6 +101,23 @@ export interface UseCadreResult {
    * strand id + membership key the result carries.
    */
   joinViaInvite: (encoded: string) => Promise<StrandInstance>;
+  /**
+   * Ask the cadre-host at `hostUrl` to lend this cadre a node, using a grant
+   * token its admin issued, and resolve once the phone is connected to that node
+   * (see `host-node-request.ts` for the six stages `onStage` reports).
+   *
+   * Only one request may run at a time — a second call rejects rather than
+   * provisioning a second node against the same grant. {@link stop} cancels one
+   * in flight.
+   *
+   * Nothing else needs refreshing afterwards: the new peer arrives through the
+   * control database like any other member.
+   */
+  requestHostNode: (
+    hostUrl: string,
+    grantToken: string,
+    onStage?: (stage: HostNodeRequestStage) => void,
+  ) => Promise<HostNodeRequestResult>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -128,6 +150,11 @@ export function useCadreInternal(): UseCadreResult {
   // node (re-run `startPhoneNode`) on a foreground return after the OS killed it.
   const optsRef = useRef<PhoneNodeOptions | null>(null);
   const runnerRef = useRef<BackgroundRunner | null>(null);
+
+  // Non-null exactly while a host-node request is in flight, so it doubles as the
+  // re-entry guard and as the handle `stop` cancels through. A ref, not state: the
+  // guard has to hold against a same-frame second tap, which a re-render cannot.
+  const hostRequestRef = useRef<AbortController | null>(null);
 
   // ── Strand event sync ──────────────────────────────────────────────────
 
@@ -306,6 +333,10 @@ export function useCadreInternal(): UseCadreResult {
   }, []);
 
   const stop = useCallback(async () => {
+    // Cancel a host-node request first: everything it does from here on needs a
+    // running node, and its cleanup (ending the loan on the host, dropping the
+    // authorization row) has to run while the node is still up.
+    hostRequestRef.current?.abort();
     // Clear the DeviceToken row + drop the rotation listener before stopping, so a
     // logged-out phone is no longer push-wake addressable. Best-effort (logs on
     // failure); must run before stopPhoneNode tears the node down.
@@ -414,12 +445,46 @@ export function useCadreInternal(): UseCadreResult {
     return instance;
   }, [refreshStrands]);
 
+  // ── Borrowing a node from a cadre-host ─────────────────────────────────
+
+  // The guard is here rather than only on the button: a disabled button takes
+  // effect one render late, and two provisions against one grant would use up a
+  // one-node grant on a node the phone then only half-owns.
+  //
+  // NOTE: the in-flight request holds the node it started with. If the OS kills the
+  // node mid-request, the BackgroundRunner's cold start (`ensureNode`) replaces the
+  // singleton and the request's own calls then fail against the dead one — which is
+  // the outcome we want (a clear failure plus cleanup), but the message names the
+  // node call that failed rather than the kill. Thread the abort through the runner
+  // if that ever needs to read better.
+  const requestHostNode = useCallback(async (
+    hostUrl: string,
+    grantToken: string,
+    onStage?: (stage: HostNodeRequestStage) => void,
+  ): Promise<HostNodeRequestResult> => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    if (hostRequestRef.current) throw new Error('A host node request is already running');
+    const abort = new AbortController();
+    hostRequestRef.current = abort;
+    try {
+      return await runHostNodeRequest(hostUrl, grantToken, {
+        fetch,
+        node: current,
+        onStage,
+        signal: abort.signal,
+      });
+    } finally {
+      hostRequestRef.current = null;
+    }
+  }, []);
+
   return {
     status, node, peerId, ownerPublicKey, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded,
     start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
-    createClosedStrandWithInvite, joinViaInvite,
+    createClosedStrandWithInvite, joinViaInvite, requestHostNode,
   };
 }
 
