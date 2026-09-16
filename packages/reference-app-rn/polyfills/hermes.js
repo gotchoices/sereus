@@ -254,7 +254,7 @@ if (typeof AbortController === 'function'
 	AbortController.prototype.abort = function abort(reason) {
 		const signal = this.signal;
 		if (!signal.aborted) {
-			signal.reason = reason ?? abortReason('This operation was aborted', 'AbortError');
+			signal.reason = reason ?? abortReason('The operation was aborted.', 'AbortError');
 		}
 		return _origAbort.call(this);
 	};
@@ -264,37 +264,29 @@ if (typeof AbortController === 'function'
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'function') {
 	AbortSignal.timeout = function timeout(ms) {
 		const controller = new AbortController();
-		// `setTimeout` is resolved against the global at CALL time, and by the time
-		// anything dials, the bottom of this file has already replaced it with the
-		// .ref()/.unref() wrapper — so this is the wrapper, and `handle` is an object,
-		// not a number. `clearTimeout` is patched to unwrap exactly that.
-		const handle = setTimeout(() => {
+		// NOTE: the timer always runs its full `ms` — only it can abort this signal, and no
+		// API tells a signal its caller is finished — holding the controller and its
+		// listeners until then. Bounded (10 s for a dial); if long timeouts are created at a
+		// high rate, have those callers use a controller they can clear.
+		setTimeout(() => {
 			controller.abort(abortReason('The operation timed out.', 'TimeoutError'));
 		}, ms);
-		// Nothing but the timer above can abort this signal — the controller is never
-		// handed out — so today this only collapses the already-fired case, and the timer
-		// still runs to completion after a caller has finished with the signal, holding
-		// the controller and every listener attached to it for the rest of the timeout.
-		// That is bounded by the timeout (10 s for a dial) rather than growing, and it is
-		// not fixable from here: the DOM's own AbortSignal.timeout is cancelled by the
-		// platform and we have no equivalent hook. Registered so that the timer is
-		// released the moment an abort path does appear.
-		controller.signal.addEventListener('abort', () => { clearTimeout(handle); }, { once: true });
 		return controller.signal;
 	};
 	markPolyfilled('AbortSignal.timeout');
 }
 
-// The listeners this attaches have to come back off the inputs when the combined
-// signal settles. `{ once: true }` only removes the listener that actually fired; the
-// ones on the inputs that did NOT abort stay attached for as long as those inputs
-// live, and callers routinely combine a long-lived signal with a fresh per-request
-// one — Optimystic's repo client does it on every remote block RPC
-// (../optimystic/packages/db-p2p/src/repo/client.ts), and `p-wait-for` (pulled in by
-// libp2p, @libp2p/websockets, @libp2p/circuit-relay-v2, @libp2p/webrtc and
-// @libp2p/tcp) does it in its own `index.js`. One listener per call would otherwise
-// accumulate on the long-lived signal for as long as the phone runs. libp2p's own
-// internals mostly use the `any-signal` package instead, which already detaches.
+// The listeners this attaches come back off the inputs when the combined signal aborts.
+// `{ once: true }` only removes the listener that actually fired, and callers combine a
+// long-lived signal with a short-lived one — `p-wait-for` (pulled in by libp2p,
+// @libp2p/websockets, @libp2p/circuit-relay-v2, @libp2p/webrtc and @libp2p/tcp) pairs
+// the caller's signal with an `AbortSignal.timeout`, which always fires.
+//
+// A combination whose inputs NEVER abort keeps its listeners for as long as the inputs
+// live: the DOM holds dependent signals weakly, and Hermes gives this no hook to do the
+// same. Optimystic's repo client (../optimystic/packages/db-p2p/src/repo/client.ts)
+// hits this on every RPC that succeeds — its deadline controller is cleared, not
+// aborted — see backlog ticket bug-abortsignal-any-leaks-listeners-on-hermes.
 
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any !== 'function') {
 	AbortSignal.any = function any(signals) {

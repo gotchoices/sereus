@@ -14,7 +14,7 @@ files:
 difficulty: medium
 ----
 
-# Guard the Hermes polyfills, and write down what is still missing — review handoff
+# Guard the Hermes polyfills, and write down what is still missing
 
 ## What landed
 
@@ -64,3 +64,29 @@ Two interrupted runs did this work. The first is committed as `6c59b45` (partial
 - `Symbol.asyncIterator`'s patch is not exercised by the spec, because the test runner's `Symbol` already has it (the spec's `REQUIRED_MARKS` comment explains this). The boot audit is the only check.
 - The drift guard only sees the 24 listed packages and plain names. A global reached as `globalThis[name]` is invisible to it. Resolution through `metro-resolution.ts` follows `nodeModulesPaths` only, not the `node_modules` folders next to the importing file (noted in that file).
 - The `abort-controller` classes are patched in place inside the Vitest worker. Nothing else in the `polyfills` project requires that module today.
+
+## Review findings
+
+Read both implement commits (`6c59b45`, `34bce69`) before the handoff. Checked every file in the diff, plus `docs/reference-app-rn.md` § Key Dependencies, `docs/testing.md`, Optimystic's repo client, `p-wait-for/index.js`, and the NativeScript ticket that copies the same abort-signal plan.
+
+**Major, filed as a ticket:**
+- **The `AbortSignal.any` detach does not fix the leak its comment and the docs named.** Optimystic's repo client (`../optimystic/packages/db-p2p/src/repo/client.ts:91`) clears its deadline timer on success and never aborts that controller. So the combined signal never aborts, and the listener stays on `options.signal` for every successful RPC. The polyfill cannot detach in that case: the DOM holds combined signals weakly, and Hermes gives the polyfill no garbage-collection hook. The fix belongs at the call site. Filed as `tickets/backlog/bug-abortsignal-any-leaks-listeners-on-hermes.md` (repro: static; whether any caller passes a session-long signal is unconfirmed). `p-wait-for` is covered, because its other input is an `AbortSignal.timeout`, which always fires. I corrected the `hermes.js` comment and the docs table row. I also added a correction to `tickets/implement/1-ns-websocket-cannot-send.md`, which planned the same detach for NativeScript on the same wrong premise and told the implementer to add the no-op timer clear too.
+
+**Minor, fixed in this pass:**
+- `AbortSignal.timeout`: removed the `clearTimeout(handle)` abort listener. Only the timer can abort that signal, so the listener could never clear a live timer; it was dead code with an eight-line comment. The implementer asked the reviewer to decide on this. The four-line "`setTimeout` resolves to the wrapper" comment went with it, since nothing needs the handle now. What remains is a `NOTE:` tripwire: the timer runs its full duration, bounded by `ms`; if long timeouts are created at a high rate, those callers should use a controller they can clear.
+- The default AbortError message was "This operation was aborted" in the reason patch and "The operation was aborted." in `throwIfAborted` and `any`. Both now use the second wording.
+
+**Checked, no change:**
+- Abort-reason patch: sets `reason` before delegating, so `abort` listeners, including `any`'s `reasonOf`, see it. It is guarded by `'reason' in AbortSignal.prototype`, so a React Native that ships a native `reason` skips it. It is covered by two tests.
+- `index.js` importing the audit, instead of calling it from the module body: correct, because ES imports all evaluate before the importing module's body runs.
+- `audit.js` `isPresent` guards against a throwing getter. Its probe keys are cross-checked against `markPolyfilled` calls by `dependency-globals.spec.ts`.
+- Test design: the fake runtime uses numeric timers, the real `abort-controller`, and a control class the polyfill never patched, so the tests can fail. The implementer's mutation checks cover the outage case.
+- Resource cleanup and error handling in the specs: fake timers around the connection that stalls by design; `resolvePackageDir` throws instead of silently skipping.
+- Accepted-tradeoff `NOTE:`s at these sites: none found.
+
+**Gaps noted, not ticketed:**
+- The audit has no row for `AbortSignal.reason`. The patch stores `reason` as an instance property, so a dotted-path probe on the prototype would report MISSING even after patching. The registry key is still marked and asserted by the spec. Recording this here rather than adding a special-case probe.
+- The handoff's own known gaps still apply: no device run, `Symbol.asyncIterator` untested in Node, and the drift guard's substring and hand-listed-package limits.
+- Sizes (`wc -l`): `hermes.js` 401 lines, `hermes-polyfills.spec.ts` 509, `dependency-globals.spec.ts` 292. The polyfill file is a flat list of independent guarded blocks and the spec is mostly doc-commented fixtures; no split warranted today.
+
+**Validation after the review edits:** `yarn workspace @serfab/reference-app-rn vitest run --project polyfills` 22 passed; `yarn workspace @serfab/reference-app-rn test` 19 files / 299 passed; `yarn workspace @serfab/reference-app-rn typecheck` exit 0; `yarn lint` exit 0.

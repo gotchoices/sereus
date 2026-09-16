@@ -28,7 +28,9 @@ The one thing that could make this a non-issue: if `@valor/nativescript-websocke
 
 `src/polyfills/abort.ts` implements `AbortSignal` from scratch for NativeScript, whose runtime ships none. Its `static any(signals)` has the same defect the React Native version has: it attaches an `abort` listener to each input signal and removes none of them when the combined signal settles, so listeners accumulate on any long-lived input. Optimystic's repo client (`../optimystic/packages/db-p2p/src/repo/client.ts:91`) combines a caller signal with a fresh per-request deadline controller on every remote block RPC, and `p-wait-for` (reached through `libp2p`, `@libp2p/websockets` and `@libp2p/circuit-relay-v2`) does the same at `index.js:79` — so on an app left running, that is one listener per RPC that never goes away. `static timeout(ms)` likewise leaves its timer running after the signal is no longer referenced; bounded by the timeout, so a smaller cost, but the same shape.
 
-Fix both here so the two apps do not drift: detach the listeners once the combined signal aborts, register nothing when an input is already aborted, and clear the timeout's timer once it has fired or the signal has aborted.
+Correction from the review of `rn-polyfill-guard-and-audit`: detaching on abort does NOT cover Optimystic's repo client. On a successful RPC its deadline controller is cleared, never aborted, so the combined signal never aborts and the listener stays. No polyfill can detach that without a garbage-collection hook. That case is tracked in backlog `bug-abortsignal-any-leaks-listeners-on-hermes`, and the fix belongs at the call site. Likewise, clearing the timeout's timer on abort does nothing, because only that timer can abort the signal. Don't add that listener; the React Native version dropped it. `p-wait-for` is covered, because its other input is an `AbortSignal.timeout`, which always fires.
+
+Fix both here so the two apps do not drift: detach the listeners once the combined signal aborts, register nothing when an input is already aborted.
 
 ## What the boot audit misses
 
