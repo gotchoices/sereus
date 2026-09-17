@@ -1087,7 +1087,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
       { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
     ]));
 
-    await node.reconcileControlCohort();
+    // A stop mid-loop still reports the dial that resolved before it.
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [first] });
 
     expect(attempted).toHaveLength(1);
   });

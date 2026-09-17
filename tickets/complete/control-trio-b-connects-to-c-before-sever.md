@@ -3,7 +3,7 @@ prereq: isolated-node-reads-unwritten-revocation-table-as-empty
 files: packages/integration-tests/src/harness/peer-dial-gate.ts, packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/control-cohort.ts, packages/cadre-core/src/index.ts, packages/cadre-core/test/cadre-node-control-cohort.spec.ts, packages/cadre-core/test/control-founding-consult-budget.spec.ts, packages/reference-app-rn/src/host-node-request.ts, docs/architecture.md
 ----
 
-# Harness dial gate from B to C, and reconcile passes that report what they dialled
+# Harness dial gate from B to C, and reconcile passes that report what they dialled (complete)
 
 ## Background
 
@@ -70,3 +70,32 @@ Commands, from `packages/integration-tests`:
 - The pre-sever `:217` arm from the original ticket was not reproduced. The gate covers it by construction, since every B→C dial before step 6 is denied.
 - cadre-core passes `network.connectionGater` to strand nodes too, so `gateB` also gates B's strand networks. B runs no strands in these scenarios, so this has no effect here.
 - `tickets/.pre-existing-known.md`'s 2026-09-16 delta names this ticket as the tracker for the failures "B held a connection the test forbids". That line can be retired once this completes.
+
+## Review findings
+
+Reviewed the implement diff (`ce6cb21`) before the handoff.
+
+**Checked, no change needed**
+- Correctness of `reconcileControlCohort`'s new result: every early return gives `{ dialed: [] }`, the dial loop and cold-start branch report only dials that resolved, and the single-flight joiner returns the in-flight promise's value. The type change reaches every caller: the RN interface is widened, the RN spec's fake `Promise<void>` still fits, and the other integration scenarios discard the value.
+- Isolation case 1's instance patch (`B.reconcileControlCohort = () => dialsToC.reconcile()`) works because both the start pass and the `startRecordRefresh` triggers call `this.reconcileControlCohort()` at call time (`cadre-node.ts` ~2112, ~2357), and `dialsToCFor` binds the original method before the patch, so the patch cannot recurse. Accepted: it is an ordinary test spy on a test-owned node. Opening the gate permanently instead would stop the case from proving that a timer pass made the dial.
+- Gate coverage: an address dial with no `/p2p/` component passes `denyDialMultiaddr` but is caught by `denyOutboundConnection` once the remote peer is known. An in-flight foreign dial that finishes after the gate closes is caught at the upgrader. `allowDuring`'s depth counter handles overlapping timer and `self:peer:update` passes.
+- `openingPass` logic: a pass whose connection C's membership gate later refuses leaves a stale snapshot id that never matches a current connection, so a later pass is picked correctly.
+- The public API change (`ControlCohortReconcileResult`) is small, documented, and makes the unit tests stricter. Accepted.
+- Docs: the `docs/architecture.md` control-cohort bullet matches the new behaviour. `docs/testing.md` only names the scenarios, so it needed no change.
+- Resource cleanup: the gate holds only two small maps per trio, and stop behaviour is unchanged.
+
+**Fixed inline (minor)**
+- `cadre-node-control-cohort.spec.ts`, "abandons the pass mid-loop when the node stops" (cold-start): now asserts `{ dialed: [first] }`. The handoff claimed that a stop mid-loop returns the dials made so far, but no test covered it.
+- `tickets/.pre-existing-known.md`: marked the "B held a connection the test forbids" class resolved by this ticket, in both the 2026-09-16 delta and the edge-scenario entry, as the handoff asked.
+
+**Tripwires (already parked by the implementer; not re-filed)**
+- The residual race in which a foreign dial lands between the pass's connection snapshot and its own dial is recorded as a `NOTE:` on `DialsToC.openingPass`.
+- Small window, noted and not changed: each scenario runs `openingPass()` again in an `expect` after its poll, so a connection that C's membership gate closes in between would fail with an unclear `undefined`. The same window already existed for isolation case 2's `expect(hasOutboundTo(...)).toBe(true)`, and no run has hit it.
+
+**Major findings:** none. No new tickets filed.
+
+**Validation (review pass)**
+- Root `yarn lint`: clean. integration-tests `tsc --noEmit`: clean.
+- `cadre-node-control-cohort.spec.ts`: 54 passed.
+- `control-cohort-three-node-isolation` and `control-cohort-edge-carries-data` together, 1 run: 3 of 3 tests passed (log `tickets/.logs/b2c-gate-review.log`).
+- Not run: the full cadre-core suite and the full integration suite, as in implement.
