@@ -108,26 +108,35 @@ const log = debug('sereus:integration:degraded-cohort');
 // the number of rounds is NOT deterministic even with the coordinator pinned
 // (one round in some runs, two in others; see the failure case's assertions).
 //
-// KNOWN INTERMITTENT (pre-existing, not this suite's defect): the healthy and
-// delayed cases sometimes fail with `Failed to get super-majority: 0/3
-// approvals (needed 3, 0 rejections)` — nobody votes at all, so those runs
-// prove nothing about degradation either way. Struck 3 of 5 full boots on
-// 2026-08-12, 2 of 2 on that day's review pass, and 1 of 3 isolated runs of the
-// healthy case. Cause settled 2026-08-12 and filed upstream as
-// `../optimystic/tickets/fix/lost-conflict-race-abstains-and-orphans-the-block`:
-// concurrent writers on one block (this write plus B's and C's ORGANIC
-// `[self-record-update]` refreshes) produce a stale-revision rejection whose
-// coordinator abandons the pend without telling the members, and the abandoned
-// pend then wins the conflict race against every later write for a fixed 2 s —
-// during which a losing member returns NO vote, which the coordinator counts as
-// zero approvals AND zero rejections. Each blocked attempt leaves a fresh 2 s
-// blocker, so all three retry attempts land inside the window. Tracked here by
-// `tickets/blocked/control-write-hears-zero-approvals-from-healthy-trio` (listed
-// in `tickets/.pre-existing-known.md`). The retry-log capture below prints the
-// funnel's decisions when it strikes; to see the mechanism itself, re-run under
-// `DEBUG='optimystic:db-p2p:cluster*'` and grep `race-keep-existing` /
-// `phase-promising-blocked` / `stale-cleanup`. A red run on THIS fingerprint is
-// that tracked class, not a regression of the retry coverage.
+// RESOLVED (historical, not live): before 2026-08-12 the healthy and delayed
+// cases sometimes failed with `Failed to get super-majority: 0/3 approvals
+// (needed 3, 0 rejections)` — nobody voted, including the healthy members.
+// Cause: concurrent writers on one block (this write plus B's and C's ORGANIC
+// `[self-record-update]` refreshes) produced a stale-revision rejection whose
+// coordinator abandoned the pend without telling the members; the abandoned
+// pend then won the conflict race against every later write for a fixed 2 s,
+// during which a losing member returned NO vote, counted as zero approvals AND
+// zero rejections. Fixed upstream 2026-08-12
+// (`member-must-answer-a-lost-conflict-race`, optimystic `c7e3506d`). None of
+// the ~39 runs recorded in `tickets/.pre-existing-known.md` between 2026-08-21
+// and 2026-09-17 show it. A `0/3 approvals` from a healthy or delayed case
+// today is a REGRESSION, not a known failure — report it.
+//
+// Fingerprints this file can still show, and who owns each:
+//
+//  - `pending conflict` after a stream reset whose error carries `cancelError`
+//    → `control-write-retry-does-not-absorb-a-transient-stream-reset`
+//  - `pending conflict` with neither, clearing by itself
+//    → `control-write-refused-when-a-rival-write-holds-the-block`
+//  - "7 skipped", `Timeout waiting for B resolves C's signed address record`
+//    → `control-peer-row-refresh-invisible-to-third-node`
+//  - `2/3 approvals (needed 3, 0 rejections)` — not a failure, the
+//    deliberately silent-member cases behaving as specified
+//
+// To trace the old (fixed) mechanism, re-run under
+// `DEBUG='optimystic:db-p2p:cluster*'` (trailing star required — these
+// channels carry a peer-id suffix since 0.28.0) and grep `race-keep-existing`
+// / `phase-promising-blocked` / `stale-cleanup`.
 
 /** Reads and read-backs: all answer from local state; this only catches hangs. */
 const READ_TIMEOUT_MS = 15_000;
@@ -304,11 +313,9 @@ function captureControlRetryLogs(): RetryLogCapture {
 
 /**
  * Print the retry funnel's decision lines under a `[retry-log]` prefix — the
- * record a red run needs. In particular, when the intermittent healthy-path
- * `0/3 approvals` failure strikes (tracked as an arm on
- * `control-write-retry-scenario-coverage`), these lines say whether the funnel
- * declined the failure (`not retried here` — a commit-phase veto or classifier
- * miss) or retried and exhausted — the disambiguation that arm is missing.
+ * record a red run needs. These lines say whether the funnel declined a
+ * failure (`not retried here` — a commit-phase veto or classifier miss) or
+ * retried and exhausted, which a bare error message cannot show.
  */
 function printRetryDecisions(caseLabel: string, capture: RetryLogCapture): void {
 	for (const line of capture.lines()) {
@@ -445,18 +452,19 @@ interface ResetHandle extends DegradedHandle {
  *
  * Takes the FULL protocol id, unlike `degradeClusterHandler`, because which
  * seam the reset hits decides whether the retry can absorb it at all — a
- * lesson measured the hard way (2026-08-12, run 1 of this ticket): resetting
- * the CLUSTER protocol on a member kills that member's promise RPC AFTER the
- * other members already pended the transaction, and the abandoned pend state
- * then starves the retry's next attempts of answers on the same hot block
- * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts). The starving
- * was inferred there and is now CONFIRMED upstream — an abandoned pend wins the
- * conflict race at every member for a fixed 2 s, and a member that loses that
- * race returns no vote, so the coordinator counts zero of both
- * (`blocked/control-write-hears-zero-approvals-from-healthy-trio`). Either way,
- * the class the retry demonstrably absorbs is a reset on the transactor's
- * REPO-protocol batch stream to the coordinator, which dies before anything
- * pends anywhere.
+ * lesson measured the hard way (2026-08-12): resetting the CLUSTER protocol on
+ * a member kills that member's promise RPC AFTER the other members already
+ * pended the transaction, and the abandoned pend state then starved the
+ * retry's next attempts of answers on the same hot block (approvals degraded
+ * 2/3 → 1/3 → 0/3 across the three attempts). The starving was inferred that
+ * day and confirmed upstream the same day: an abandoned pend won the conflict
+ * race at every member for a fixed 2 s, and a member that lost that race
+ * returned no vote, so the coordinator counted zero of both. Fixed upstream
+ * 2026-08-12 (`member-must-answer-a-lost-conflict-race`, optimystic
+ * `c7e3506d`) — kept here as the reason a cluster-protocol reset is NOT how
+ * this case injects. Either way, the class the retry demonstrably absorbs is
+ * a reset on the transactor's REPO-protocol batch stream to the coordinator,
+ * which dies before anything pends anywhere.
  *
  * Sibling of `degradeClusterHandler`, deliberately self-contained rather than
  * factored: the two share ~12 lines of registrar plumbing but differ in the
@@ -668,7 +676,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const observer = await observeClusterHandler(C, partyId);
 		activeDegradation = observer;
 		// No assertions on this capture — it exists so a red run records the retry
-		// funnel's decisions (see printRetryDecisions and the `0/3 approvals` arm).
+		// funnel's decisions (see printRetryDecisions).
 		const retryLog = captureControlRetryLogs();
 		const t0 = Date.now();
 		try {
@@ -699,8 +707,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const target = await randomPeerId();
 		const baseline = forced!.callCount();
 		activeDegradation = await degradeClusterHandler(C, partyId, UNDER_DEADLINE_DELAY_MS);
-		// Record-only, like the healthy case: this is the other case the
-		// intermittent `0/3 approvals` failure has struck.
+		// Record-only, like the healthy case: same rationale (see
+		// printRetryDecisions).
 		const retryLog = captureControlRetryLogs();
 		try {
 			const authorize = await timedSettle(`authorizePeer(${target.slice(-8)}) delayed`, DELAYED_WRITE_TIMEOUT_MS,
@@ -747,20 +755,23 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// are the claim: the write failed on SILENCE, not on anyone voting no. The
 			// approval COUNT floats because the number of pend rounds does — measured
 			// `2/3` when the write fails on its first round (~20 s) and `0/3` when a
-			// second round runs (~40 s). Pinning the literal to one variant makes this
-			// case flake, so it is deliberately `\d+`.
-			// NOTE: the second round reports 0 approvals AND 0 rejections even though A
-			// and B are healthy — i.e. a retried control write hears nothing from the
-			// healthy members either. Benign for this assertion (the write must fail
-			// either way). Measured 2026-08-12 (run 1 of the scenario-coverage
-			// ticket): a write re-presented right after a failed promise round
-			// degraded MONOTONICALLY — 2/3 → 1/3 → 0/3 across three attempts on the
-			// same hot block — which is why the transient-reset case injects at the
-			// BATCH seam instead of the cluster promise seam. The decline itself is
-			// one observation (the review pass measured `0/3` from the first attempt),
-			// but the underlying mechanism is settled: an abandoned pend blocks the
-			// block for 2 s and the members that lose that race vote nothing. See
-			// `blocked/control-write-hears-zero-approvals-from-healthy-trio`.
+			// second round ran under the pre-2026-08-12 abandoned-pend bug (below).
+			// Both 2026-09-17 rounds settled at ~40 s (40161 ms, 40110 ms) and both
+			// reported `2/3`, so a second round no longer implies `0/3`. Pinning the
+			// literal to one variant makes this case flake, so it is deliberately
+			// `\d+`.
+			// NOTE: before 2026-08-12, a second pend round could report 0 approvals
+			// AND 0 rejections even with A and B healthy — a retried write heard
+			// nothing from the healthy members either. Cause: an abandoned pend won
+			// the conflict race at every member for a fixed 2 s, and a member that
+			// lost that race returned no vote, counted as neither approval nor
+			// rejection. Measured 2026-08-12 (run 1): a write re-presented right
+			// after a failed promise round degraded MONOTONICALLY — 2/3 → 1/3 → 0/3
+			// across three attempts on the same hot block — which is why the
+			// transient-reset case injects at the BATCH seam instead of the cluster
+			// promise seam. Fixed upstream the same day
+			// (`member-must-answer-a-lost-conflict-race`, optimystic `c7e3506d`); not
+			// seen since in any run recorded in `tickets/.pre-existing-known.md`.
 			expect(chain).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
 			// If the admission gate bit, the failure has the WRONG cause — fail on that
 			// explicitly rather than reporting a super-majority failure that isn't one.
@@ -789,8 +800,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// own log is the assertion surface — scoped by the `peer-insert` label to
 			// THIS write, because background writes are NOT all stall victims:
 			// measured 2026-08-12 (run 1), a background write fast-failed 3/3 inside
-			// this window on the intermittent `0/3 approvals` class, so an unscoped
-			// "nothing retried" assertion false-fails.
+			// this window on the (since-fixed) abandoned-pend `0/3 approvals` bug, so
+			// an unscoped "nothing retried" assertion false-fails.
 			const insertLines = retryLog.lines().filter((l) => l.includes('[peer-insert]'));
 			expect(insertLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
 				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~20 s degraded-member failure').toBe(false);

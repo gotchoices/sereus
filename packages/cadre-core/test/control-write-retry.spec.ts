@@ -123,6 +123,17 @@ const SUPER_MAJORITY_THIRD_NODE_JOIN =
 const SUPER_MAJORITY_IN_PEND_AGGREGATE =
 	'Some peers did not complete: 12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections), 12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset; root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
 /**
+ * A promise-phase REJECTION, not a shortfall — the shape a rival write's `pending conflict`
+ * refusal actually takes when it reaches this classifier: wrapped in the same `[block:` aggregate
+ * as every other promise-phase failure. `isUncommittedTransactorAggregate` claims the wrapper on
+ * its own, whatever the cause inside says (its accepted-tradeoff `NOTE:` explains why that is kept).
+ *
+ * A real captured message, not a reconstruction: `tickets/.logs/control-write-hears-zero.gate-r1.log`,
+ * the `[peer-insert]` write A ran on 2026-09-17, refused by C's unresolved pending action.
+ */
+const PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE =
+	'Some peers did not complete: 12D3KooWSsZxd8HWy9sqb9h81WTJZTwyvBQVVtnnzAP9WbvHdq7M[block:BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y](in-flight) cause=Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA; root: Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA';
+/**
  * The SAME shortfall sentence carried by a COMMIT-phase aggregate. Vetoed, and this is the case
  * that decides whether the schema-init retry does anything at all: if a joining node's real
  * failure looks like this, the retry silently never engages. Do not widen
@@ -224,6 +235,16 @@ describe('isRetriableControlWriteFailure', () => {
 
 	it('never retries a super-majority shortfall carrying a rejection — somebody voted no', () => {
 		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_REJECTED))).toBe(false);
+	});
+
+	/**
+	 * Pins the accepted tradeoff recorded at `isUncommittedTransactorAggregate`'s `NOTE:`: unlike
+	 * the bare-message rejection above, a rejection carried inside a promise-phase `[block:`
+	 * aggregate IS retried — the matcher claims the wrapper on its own, whatever the cause inside
+	 * it says. Real capture (see the constant's comment), not a reconstruction.
+	 */
+	it('retries a promise-phase rejection carried inside a [block: aggregate — the accepted tradeoff', () => {
+		expect(isRetriableControlWriteFailure(nested(PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE))).toBe(true);
 	});
 
 	/**

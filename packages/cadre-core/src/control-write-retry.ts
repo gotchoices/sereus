@@ -16,8 +16,11 @@ import type { ControlRetryOptions } from './control-retry.js';
  * a moment later, which the degraded-cohort-member scenario measured as safe (a failed
  * write rolls back, nothing half-commits) and effective (the next write commits in ~1 s).
  *
- * A write somebody actually REJECTED is never retried — re-presenting it would re-present
- * a spent signature against a cohort that already said no.
+ * A write somebody actually REJECTED after something committed is never retried —
+ * re-presenting it would re-present a spent signature against a cohort that already said no.
+ * A rejection raised while the cohort is still collecting PROMISES is a different case: nothing
+ * has committed yet, so it is re-presented too (see the accepted-tradeoff `NOTE:` on
+ * {@link isUncommittedTransactorAggregate}).
  *
  * TWO policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
@@ -121,9 +124,14 @@ const COMMIT_BATCH_TOKEN = '[blocks:';
  * matched ONLY with a ZERO rejection count. The same message with a non-zero count means a
  * member actually voted no (that branch carries `membership-not-admitted` rejections), and
  * retrying it would re-present a spent signature to a cohort that already refused it. This one
- * is raised while collecting PROMISES, before any commit, so re-presenting it is safe. A
- * decisive rejection is a different error entirely (`ValidatorRejectionError`,
- * `Transaction rejected by validators`), which this classifier also never matches.
+ * is raised while collecting PROMISES, before any commit, so re-presenting it is safe.
+ *
+ * This regex itself never matches a decisive rejection (`ValidatorRejectionError`, `Transaction
+ * rejected by validators`) — that text carries no `Failed to get super-majority:` prefix. But the
+ * composite classifier is not this matcher alone: a rejection raised while promises are still
+ * being collected reaches this repo wrapped in the transactor's `Some peers did not complete:
+ * …[block:…]` aggregate, and {@link isUncommittedTransactorAggregate} matches that wrapper on its
+ * own, whatever the cause inside it says — see the accepted-tradeoff `NOTE:` there.
  */
 const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
 	/Failed to get super-majority: \d+\/\d+ approvals \(needed \d+, 0 rejections\)/;
@@ -169,6 +177,18 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * (`Cancel of action <id> did not discharge <n> block(s): …`), which does not raise the
  * `Some peers did not complete:` prefix; only the conjunction keeps a cancel fault from
  * classifying as a retriable get/pend (checked against optimystic `c56c2bd4`, 2026-09-16).
+ *
+ * NOTE: accepted tradeoff — a rejection raised while promises are still being collected (e.g.
+ * `Transaction rejected by validators (1/3 rejected): …: pending conflict: block … held by
+ * unresolved action(s) …`) reaches this repo wrapped in this same aggregate, and this matcher
+ * claims it on the wrapper alone, whatever the cause inside says. That re-presents such a
+ * rejection up to two more times inside the 10 s budget. Kept deliberately: nothing has committed
+ * at this phase, and the only rejection ever recorded here is `pending conflict` — "another write
+ * holds this block right now" — which a retry a moment later gets past. Revisit when upstream
+ * `a-contended-pend-refusal-is-permanent-on-a-small-cohort` (`../optimystic/tickets/fix/` as of
+ * 2026-09-17) lands and `pending conflict` stops arriving as a rejection at this phase; see
+ * `control-write-refused-when-a-rival-write-holds-the-block` for the classifier change that then
+ * needs to happen.
  *
  * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
  * batches to format) carries neither token, matches nothing here, and is not retried — an
