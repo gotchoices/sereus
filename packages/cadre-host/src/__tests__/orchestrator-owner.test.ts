@@ -182,6 +182,29 @@ describe('HostProcessOrchestrator.ensureOwnerNode', () => {
     expect(isPidAlive(pid)).toBe(true);
   });
 
+  // The owner's own guard arm: its admin channel binds on loopback, so the probe
+  // must check 127.0.0.1 too — the fake owner binds nothing else.
+  it('refuses to re-spawn over a re-attached owner whose admin port is still bound', async () => {
+    const rootDir = join(tmpRoot, 'g');
+    const a = makeOrchestrator(rootDir);
+    await a.init();
+    const node = await a.ensureOwnerNode(CFG);
+    const tokenPath = join(rootDir, OWNER_CONTAINER_ID, '.startup-token');
+    await waitFor(async () => (await a.getLogs(node.dockerId)).includes('admin listening'));
+
+    // Unverified as far as `b` can tell: live pid, token not (yet) matching.
+    writeFileSync(tokenPath, 'not-yet', 'utf8');
+    const b = makeOrchestrator(rootDir);
+    await b.init();
+    expect(await b.isRunning(node.dockerId)).toBe(false);
+
+    await expect(b.ensureOwnerNode(CFG)).rejects.toThrow(
+      new RegExp(`owner may still be running: port ${node.ports.admin} on 127\\.0\\.0\\.1 is unavailable`),
+    );
+    expect(b.listNodes().map((n) => n.dockerId)).toEqual([node.dockerId]);
+    expect(isPidAlive(decodeDockerId(node.dockerId).pid)).toBe(true);
+  });
+
   it('restartOwnerNode preserves the workdir and re-spawns', async () => {
     const orch = makeOrchestrator(join(tmpRoot, 'e'));
     await orch.init();

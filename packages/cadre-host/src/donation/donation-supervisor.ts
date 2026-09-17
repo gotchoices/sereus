@@ -243,6 +243,10 @@ export class DonationSupervisor {
     // refill it. Checked here and not only when `respawn` throws: a spawn that
     // succeeds and then dies at once (a crash on boot, a port clash) never
     // throws, so a catch-only check would respawn it forever.
+    // NOTE: a record at the cap whose last respawn was still up but not yet
+    // refilled when the host went down is given up on host restart rather than
+    // tried once more; if that is ever seen, skip this check when the host
+    // started after `respawn.lastAttemptAt`.
     const attempts = donation.respawn?.attempts ?? 0;
     if (attempts >= DONATION_RESPAWN_MAX_ATTEMPTS) {
       await this.giveUp(donation.id, attempts, 'the node did not stay running after its last respawn');

@@ -16,6 +16,10 @@ const SEED_REFUSAL_REASONS: Record<BearerRefusal, string> = {
  * debug log, like the node's other seed events, because a node refusing its
  * orchestrator's credential otherwise leaves nothing in its own log to explain
  * a loan that never gets seeded. Says why, never what was presented.
+ *
+ * NOTE: one stderr line per refused request, unthrottled — a client hammering
+ * `/seed` fills the node's log (the orchestrator rotates it by size). If that is
+ * ever seen, rate-limit this line.
  */
 function logSeedRefusal(refusal: BearerRefusal): void {
   const reason = SEED_REFUSAL_REASONS[refusal];
