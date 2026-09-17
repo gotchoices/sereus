@@ -23,6 +23,7 @@ cadre-core (`yarn workspace @serfab/cadre-core test`):
   - `test/control-start-storage-op-budget.spec.ts` "stays within its operation budget on a cold start and on a warm restart"
   - `test/discovered-strands-late-subscriber.spec.ts` "a restarted node re-attaches a stored strand even though the app subscribes after start() resolves"
   - integration: `strand-late-cadre-join.integration.ts` "delivers a pre-existing strand — blocks and all — to a machine enrolled after the writes"; `strand-two-party-two-machine.integration.ts` "replicates from any machine, commits with one machine off, and catches the returner up"
+  - cadre-cli `test/one-shot-node.spec.ts` "removes a seeded strand, and the row is gone from the control database afterwards" and "refuses a closed strand without --yes, exits 1, and leaves the membership key intact" (the spawned `cadre strand remove` warm-reopens the control database the seed node wrote)
 - Group B, `test/strand-membership-writer.spec.ts` "hydrates a grown strand (3 members, 2 managers) into a fresh Database without re-running membership CHECKs": `QuereusError: context.ManagerKey isn't a column` (planner `resolveColumn`), raised by the warm-session `addManager` insert.
 - Group C, `test/strand-transactor-handover.spec.ts` "reads and appends, through the network transactor, a store the local transactor wrote": `expected Set{} to deeply equal Set{ 'gen1-a', 'gen1-b', 'gen1-c' }`.
 
