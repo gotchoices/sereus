@@ -13,10 +13,19 @@
  *   seam where a transport peer id and a live `Database` both exist), and every pass is
  *   fully contained: a joiner at that instant has typically not synced the founder's rows
  *   and may lack write quorum, so failure means "retry next tick", never a throw.
- * - **Retries on the revocation enforcer's cadence** (default
- *   {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}; an embedder's
- *   `revocationEnforcement.pollIntervalMs` is mirrored here by the instance manager) until
- *   it reaches the done state, then stops.
+ * - **Kicked the moment its database appears.** A joining machine's first pass runs while
+ *   the first-sync write gate still withholds `instance.database`, so it finds no database
+ *   and returns at once. `StrandInstanceManager.publishDatabase` calls `reconcile()` as it
+ *   hands the database to the app, which is what makes the join finish about a second after
+ *   the strand becomes writable rather than on the next timer.
+ * - **Retries fast while the join is unfinished, slowly while it is only waiting.** A pass
+ *   that leaves the join unfinished re-arms on a ladder starting at
+ *   {@link INITIAL_JOIN_RETRY_INTERVAL_MS} and doubling, capped at the configured poll
+ *   interval (default {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}; an embedder's
+ *   `revocationEnforcement.pollIntervalMs` is mirrored here by the instance manager). A pass
+ *   that finds no member row AND no staged invitation is not an unfinished join but a wait
+ *   for someone to admit this party — nothing this machine can do faster — so it re-arms on
+ *   the flat poll interval and resets the ladder. The loop stops on the done state.
  * - **Done state**: the party's member row is visible locally AND this machine's own
  *   binding is in place — the loop stops for good. A LATER revocation is the enforcer's
  *   business, not this loop's; a resume rebuilds the reconciler and re-verifies from
@@ -62,10 +71,7 @@ import {
   isStrandMember,
   registerMemberPeer,
 } from './strand-membership-writer.js';
-import {
-  DEFAULT_REVOCATION_POLL_INTERVAL_MS,
-  type RevocationRefreshScheduler,
-} from './strand-revocation-enforcer.js';
+import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from './strand-revocation-enforcer.js';
 
 const log = debug('sereus:cadre:strand-membership-reconciler');
 
@@ -76,6 +82,18 @@ const log = debug('sereus:cadre:strand-membership-reconciler');
  * founder-row replication is visible without the debug namespace enabled.
  */
 export const IDLE_PASSES_BEFORE_ESCALATION = 10;
+
+/**
+ * First retry delay, ms, for a pass that left the join UNFINISHED — a `consumeInvite`
+ * whose `Strand.Invite` row has not replicated to this machine yet, a cohort briefly
+ * unwritable, a database not yet published. Doubles per such pass up to the configured
+ * poll interval. Sized for what it retries: invite-row replication resolves in about a
+ * second over a direct connection and a few over a relay. The poll interval is NOT sized
+ * for that — it is the revocation enforcer's deny-set refresh cadence, mirrored here for
+ * the idle case (waiting to be admitted at all), which is why this ladder exists instead
+ * of a shorter interval.
+ */
+export const INITIAL_JOIN_RETRY_INTERVAL_MS = 1_000;
 
 /**
  * `consumeInvite` rejections that mean the strand is SEALED — `ConsumedInvite.NotSealed`
@@ -134,8 +152,8 @@ export interface StrandMembershipReconcilerDeps {
    * Absent (enforcement disarmed) means "not known revoked".
    */
   isSelfRevoked?: () => boolean;
-  /** Timer seam; omit for real (unref'd) intervals. Shared shape with the enforcer's. */
-  scheduler?: RevocationRefreshScheduler;
+  /** Timer seam; omit for real (unref'd) timeouts. See {@link MembershipRetryScheduler}. */
+  scheduler?: MembershipRetryScheduler;
 }
 
 /** Embedder-facing tuning, threaded by `StrandInstanceManager`. */
@@ -147,19 +165,31 @@ export interface StrandMembershipReconciliationConfig {
    */
   enabled?: boolean;
   /**
-   * Retry cadence, ms. When omitted the instance manager mirrors the revocation
-   * enforcer's configured cadence; default {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}.
+   * Idle cadence, ms — how often the loop re-checks while nobody has admitted this party
+   * yet — and the CAP of the unfinished-join retry ladder. When omitted the instance
+   * manager mirrors the revocation enforcer's configured cadence; default
+   * {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}.
    */
   pollIntervalMs?: number;
 }
 
-const defaultScheduler: RevocationRefreshScheduler = {
-  setInterval: (fn, ms) => {
-    const handle = setInterval(fn, ms);
+/**
+ * Timer seam for the retry ladder; omit for real (unref'd) timeouts. Timeouts rather than
+ * the enforcer's repeating interval because the delay changes per pass and the next pass is
+ * armed only once the previous one settles, so a slow pass never stacks ticks behind it.
+ */
+export interface MembershipRetryScheduler {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const defaultScheduler: MembershipRetryScheduler = {
+  setTimeout: (fn, ms) => {
+    const handle = setTimeout(fn, ms);
     (handle as { unref?: () => void }).unref?.();
     return handle;
   },
-  clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0])
+  clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0])
 };
 
 /**
@@ -170,12 +200,11 @@ const defaultScheduler: RevocationRefreshScheduler = {
  * it and re-runs the (idempotent) ladder from scratch.
  */
 export class StrandMembershipReconciler {
-  private readonly scheduler: RevocationRefreshScheduler;
+  private readonly scheduler: MembershipRetryScheduler;
   private readonly pollIntervalMs: number;
   /** Tail of the pass chain — serializes passes (no two in flight). */
   private tail: Promise<void> = Promise.resolve();
-  private reconciling = false;
-  private intervalHandle: unknown;
+  private timer: unknown;
   private started = false;
   private stoppedFlag = false;
   private doneFlag = false;
@@ -183,6 +212,14 @@ export class StrandMembershipReconciler {
   private keyPair: Ed25519KeyPair | undefined;
   private idlePasses = 0;
   private idleEscalated = false;
+  /**
+   * Whether the pass that just ran found nothing to act on — no member row and no staged
+   * invitation. That is a wait to be admitted, not an unfinished join, so it re-arms on the
+   * flat poll interval; every other unfinished outcome climbs the ladder.
+   */
+  private lastPassIdle = false;
+  /** Current rung of the unfinished-join retry ladder, ms; unset before the first retry. */
+  private retryDelayMs: number | undefined;
 
   constructor(
     private readonly deps: StrandMembershipReconcilerDeps,
@@ -202,24 +239,21 @@ export class StrandMembershipReconciler {
     return this.stoppedFlag;
   }
 
-  /** Kick an immediate pass (not awaited — bring-up never blocks on it) and arm the poll. */
+  /**
+   * Kick an immediate pass (not awaited — bring-up never blocks on it). Every later pass
+   * is armed only once the previous one settles — see the retry ladder in the module doc —
+   * so there is no repeating interval to arm here.
+   */
   start(): void {
     if (this.started || this.stoppedFlag) return;
     this.started = true;
     void this.reconcile();
-    this.intervalHandle = this.scheduler.setInterval(() => {
-      // Skip a tick while a pass is in flight rather than queueing behind it —
-      // the interval bounds retry latency, and a stack of queued passes bounds
-      // nothing extra. Explicit reconcile() calls still chain (see reconcile).
-      if (!this.reconciling) {
-        void this.reconcile();
-      }
-    }, this.pollIntervalMs);
-    log('[%s] membership reconciler started (poll %dms)', this.deps.label, this.pollIntervalMs);
+    log('[%s] membership reconciler started (retry from %dms, idle poll %dms)',
+      this.deps.label, Math.min(INITIAL_JOIN_RETRY_INTERVAL_MS, this.pollIntervalMs), this.pollIntervalMs);
   }
 
   /**
-   * Resolve once no pass is in flight. {@link stop} only disarms the POLL — a pass
+   * Resolve once no pass is in flight. {@link stop} only disarms the retry TIMER — a pass
    * already past its stopped check runs to completion, so a caller that must know the
    * loop can no longer write (`StrandInstanceManager.clearOwnMemberPeerBinding`, which
    * would otherwise have its removal undone by a racing `registerMemberPeer`) awaits
@@ -229,20 +263,20 @@ export class StrandMembershipReconciler {
     await this.tail;
   }
 
-  /** Disarm the poll; a pass already in flight completes but writes idempotently. */
+  /** Disarm the retry timer; a pass already in flight completes but writes idempotently. */
   stop(): void {
     if (this.stoppedFlag) return;
     this.stoppedFlag = true;
-    if (this.intervalHandle != null) {
-      this.scheduler.clearInterval(this.intervalHandle);
-      this.intervalHandle = undefined;
-    }
+    this.clearTimer();
     log('[%s] membership reconciler stopped%s', this.deps.label, this.doneFlag ? ' (done)' : '');
   }
 
   /**
    * Run one pass now. Never rejects. Serialized: concurrent calls chain, so no two
-   * passes overlap and each explicit call gets a pass that STARTS after the call.
+   * passes overlap and each explicit call gets a pass that STARTS after the call. On a
+   * started loop the pass re-arms the retry timer where it settles, so an explicit call —
+   * `StrandInstanceManager.publishDatabase`'s kick when a joiner's database is finally
+   * published — REPLACES the pending timer rather than running alongside it.
    */
   reconcile(): Promise<void> {
     const run = this.tail.then(() => this.doPass());
@@ -253,7 +287,7 @@ export class StrandMembershipReconciler {
   /** One serialized pass; contains every failure (contract: never rejects). */
   private async doPass(): Promise<void> {
     if (this.stoppedFlag || this.doneFlag) return;
-    this.reconciling = true;
+    this.lastPassIdle = false;
     try {
       if (this.deps.isSelfRevoked?.() === true) {
         // NOTE: "arrives via a fresh formation" is aspirational, not current behaviour.
@@ -273,11 +307,63 @@ export class StrandMembershipReconciler {
       const db = this.deps.getDatabase();
       if (!db) return; // no live database this instant (quiesce race) — next tick decides
       if (!(await this.ensureMembership(db, keyPair))) return;
+      // NOTE: the redemption (`Member` + `ConsumedInvite`) and the binding below are two
+      // SEPARATE commits — measured at 27 and 18 `/cluster` streams on 2026-09-17.
+      // `inStrandTransaction` would let both run in one transaction (`MemberPeer.MemberExists`
+      // reads the LIVE `Member` table, and `MemberPeer.Authorized`'s add branch only verifies a
+      // self-signature over the new row), worth perhaps a third of that plus one commit
+      // round-trip. Left as two deliberately: the saving is unmeasured, and merging them merges
+      // their failure modes — today a redemption that lands but reports torn simply heals on the
+      // next pass, which sees the member row and proceeds to the binding. If a joiner's write
+      // cost ever shows up in a measurement, try the single transaction and measure against the
+      // 27 + 18 baseline.
       await this.ensureBinding(db, keyPair);
     } catch (error) {
       log('[%s] reconcile pass failed — retrying next tick: %o', this.deps.label, error);
     } finally {
-      this.reconciling = false;
+      this.scheduleNext();
+    }
+  }
+
+  /**
+   * Arm the next pass, now that this one has settled — so a slow pass never stacks ticks
+   * behind it. Only a STARTED loop schedules: a caller driving {@link reconcile} by hand
+   * (the unit tests, and the publish kick on a launch whose `start()` has not run yet) gets
+   * exactly the passes it asks for and no background timer.
+   */
+  private scheduleNext(): void {
+    if (!this.started || this.stoppedFlag || this.doneFlag) return;
+    this.clearTimer();
+    const delayMs = this.nextDelayMs();
+    this.timer = this.scheduler.setTimeout(() => {
+      this.timer = undefined;
+      void this.reconcile();
+    }, delayMs);
+  }
+
+  /**
+   * The delay before the next pass: the flat poll interval while the loop is merely idling
+   * (no member row, no staged invitation — {@link noteIdlePass}), otherwise the next rung
+   * of the doubling ladder from {@link INITIAL_JOIN_RETRY_INTERVAL_MS}, capped at the poll
+   * interval. A pass that lands idle resets the ladder, so a later unfinished join starts
+   * over at the bottom rung.
+   */
+  private nextDelayMs(): number {
+    if (this.lastPassIdle) {
+      this.retryDelayMs = undefined;
+      return this.pollIntervalMs;
+    }
+    this.retryDelayMs = Math.min(
+      this.retryDelayMs === undefined ? INITIAL_JOIN_RETRY_INTERVAL_MS : this.retryDelayMs * 2,
+      this.pollIntervalMs
+    );
+    return this.retryDelayMs;
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== undefined) {
+      this.scheduler.clearTimeout(this.timer);
+      this.timer = undefined;
     }
   }
 
@@ -403,6 +489,7 @@ export class StrandMembershipReconciler {
    * surface it) rather than shortening the interval.
    */
   private noteIdlePass(): void {
+    this.lastPassIdle = true;
     this.idlePasses += 1;
     if (this.idlePasses >= IDLE_PASSES_BEFORE_ESCALATION && !this.idleEscalated) {
       this.idleEscalated = true;

@@ -35,14 +35,22 @@
  *      secret. B adds the strand; its strand node — holding its own reservation
  *      on the same relay — dials A's strand node through the relay from the
  *      carried seed alone. No hand-dial anywhere in this file.
- *   4. Rows written by A are read by B and vice versa — real strand data over
+ *   4. B's join FINISHES on its own: within seconds of the strand becoming
+ *      writable, B's membership reconciler has redeemed the staged invitation
+ *      (its `Strand.Member` seat) and written its own `Strand.MemberPeer`
+ *      binding. This is the only end-to-end gate on that timing at the DEFAULT
+ *      cadence — nothing here shortens `revocationPollMs` — so a regression to
+ *      "wait for the next poll tick" (30 s) fails here rather than passing
+ *      slowly. See `strand-membership-reconciler.ts` for the ladder and
+ *      `StrandInstanceManager.publishDatabase` for the kick that starts it.
+ *   5. Rows written by A are read by B and vice versa — real strand data over
  *      the circuit in both directions, including B→A where B is a total
  *      stranger to A's party.
- *   5. Every A↔B connection — control and strand — is classified `relayed` by
+ *   6. Every A↔B connection — control and strand — is classified `relayed` by
  *      `summarizeConnectionPaths` (both ends), and a final sweep asserts
  *      neither side holds a direct connection to anything but the relay itself,
  *      so a direct fallback cannot pass for relayed success.
- *   6. The relay's reservation count is measured: 4 (two control + two strand)
+ *   7. The relay's reservation count is measured: 4 (two control + two strand)
  *      — the cross-party confirmation of the per-strand relay-slot cost first
  *      measured same-party: one slot per node per network, so every strand a
  *      NAT'd node joins costs one extra relay slot per node.
@@ -72,6 +80,7 @@ import {
 	CadreNode,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
+	strandMemberKeyPair,
 	summarizeConnectionPaths,
 	STRAND_ADDR_PROTOCOL,
 } from '@serfab/cadre-core';
@@ -101,6 +110,12 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /** Budget for every convergence gate. Circuit setup is slower than loopback —
  *  headroom, not an expectation. */
 const GATE = { timeoutMs: 60_000, intervalMs: 250 } as const;
+
+/** Budget for the joiner's membership rows, measured from the strand becoming writable.
+ *  Deliberately BELOW the reconciler's 30 s production poll interval, which this scenario
+ *  does not override: generous enough for a circuit, tight enough that "the join waits out
+ *  a full interval" is a failure rather than a slow pass. */
+const JOIN_FINISH_MS = 20_000;
 
 const isCircuit = (addr: string): boolean => addr.includes('/p2p-circuit');
 
@@ -333,6 +348,40 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 			// and its database is published (a joiner's is withheld until then).
 			await B.whenStrandWritable(strandId, { timeoutMs: GATE.timeoutMs });
 			expect(bStrand.status).toBe('active');
+			const bDb = bStrand.database!.getDatabase();
+
+			// ── B's join finishes WITH the strand becoming writable ──────────────
+			// The membership reconciler's own first pass ran while the first-sync gate
+			// still withheld B's database and found none; `publishDatabase` kicks it the
+			// moment the database is handed over, and an unfinished join then retries on a
+			// short doubling ladder rather than the 30 s poll interval. Both rows —
+			// the `Strand.Member` seat redeeming the staged invitation, and this machine's
+			// own `Strand.MemberPeer` binding — are written by bring-up alone: no
+			// consumeInvite or registerMemberPeer call appears anywhere in this file.
+			const bMemberKey = strandMemberKeyPair(
+				(await B.getControlDatabase()!.queryStrandPartyKey(strandId))!).publicKeyB64;
+			await waitUntil(
+				async () => {
+					let seated = false;
+					for await (const row of bDb.eval('select Key from Strand.Member')) {
+						if (row.Key === bMemberKey) seated = true;
+					}
+					if (!seated) return false;
+					for await (const row of bDb.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
+						if (row.MemberKey === bMemberKey && row.PeerId === bStrandPeerId) return true;
+					}
+					return false;
+				},
+				{
+					timeoutMs: JOIN_FINISH_MS,
+					intervalMs: 250,
+					description: "B's Member seat and its own MemberPeer binding land within "
+						+ `${JOIN_FINISH_MS} ms of the strand becoming writable (default reconciler cadence)`,
+				},
+			);
+			// The invitation is spent, so the staged copy is dropped — the reconciler owns
+			// that invalidation.
+			expect(B.getPendingMembershipInvite(strandId)).toBeUndefined();
 
 			// ── The strand mesh is RELAY-CARRIED and unlimited, both ends ────────
 			expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand');
@@ -351,7 +400,6 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 			// nothing. Their visibility on B proves layer-2 replication crossed the
 			// circuit before the app-data assertions below lean on it.
 			const aDb = founded.instance.database!.getDatabase();
-			const bDb = bStrand.database!.getDatabase();
 			await waitUntil(
 				async () => ((await bDb.get('select count(1) as c from Strand.Header'))?.c as number) >= 1,
 				{ ...GATE, description: "the closed strand's Header row becomes visible on B over the circuit" },

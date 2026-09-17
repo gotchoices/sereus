@@ -184,9 +184,11 @@ export {
 export {
   StrandMembershipReconciler,
   IDLE_PASSES_BEFORE_ESCALATION,
+  INITIAL_JOIN_RETRY_INTERVAL_MS,
   type StrandMembershipReconcilerDeps,
   type StrandMembershipReconciliationConfig,
-  type PendingMembershipInviteSource
+  type PendingMembershipInviteSource,
+  type MembershipRetryScheduler
 } from './strand-membership-reconciler.js';
 
 // Hibernation

@@ -239,9 +239,10 @@ async function redeemOnJoiner(
 		privateKey: joinerKey,
 		bootstrapNodes: controlAddrs(side.host),
 		storageProvider: capture.provider,
-		// Keeps the membership reconciler's "invite row not replicated yet" retry
-		// inside the wait budget (see strand-formation-cross-party-seed).
-		revocationPollMs: 2_000,
+		// No revocationPollMs override: the membership reconciler retries an unfinished
+		// join on its own short ladder (1 s, doubling, capped at the poll interval), so a
+		// joiner no longer needs the production cadence shortened to finish inside the
+		// wait budget.
 		...(opts.firstSyncTimeoutMs !== undefined ? { strandFirstSync: { timeoutMs: opts.firstSyncTimeoutMs } } : {}),
 	}));
 	await joiner.start();

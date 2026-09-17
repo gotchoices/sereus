@@ -22,15 +22,22 @@ import type {
  * it: a CLOSED strand launched WITH a party key must arm it (launch and
  * hibernation resume alike), an OPEN strand or a keyless joiner must not, its
  * lifecycle must match the enforcer's (stopped on quiesce/stop, rebuilt on
- * resume), and its deps must be the lazy per-pass reads of the instance's live
- * handles. Same doubles as `strand-instance-manager-revocation.spec.ts` — no
+ * resume), its deps must be the lazy per-pass reads of the instance's live
+ * handles, and a launch held back by the first-sync write gate must get ONE
+ * extra pass the moment its database is published. Same doubles as `strand-instance-manager-revocation.spec.ts` — no
  * real libp2p node, database, or reconciler is needed to observe the wiring.
  */
 const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
-  // `eval` answers the first-sync gate's `Strand.Header` probe with "held", so every
-  // launch here is a machine that has synced before and comes up writable at once.
-  const fakeDb = { fake: 'db', eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } } as unknown as Database;
+  // `eval` answers the first-sync gate's `Strand.Header` probe from `gateState`: held by
+  // default, so every launch here is a machine that has synced before and comes up
+  // writable at once. A test that wants the GATED path flips it before `startStrand`.
+  const gateState = { headerHeld: true };
+  const fakeDb = {
+    fake: 'db',
+    eval: async function* () { yield { Count: gateState.headerHeld ? 1 : 0 }; },
+    schemaManager: { getSchema: () => undefined },
+  } as unknown as Database;
   const createLibp2pNode = vi.fn(async () => ({
     coordinatedRepo: {},
     stop,
@@ -47,12 +54,13 @@ const mocks = vi.hoisted(() => {
   const reconcilerStart = vi.fn();
   const reconcilerStop = vi.fn();
   const reconcilerSettle = vi.fn(async () => {});
+  const reconcilerReconcile = vi.fn(async () => {});
   const StrandMembershipReconciler = vi.fn(function StrandMembershipReconcilerMock() {
     return {
       start: reconcilerStart,
       stop: reconcilerStop,
       settle: reconcilerSettle,
-      reconcile: vi.fn(async () => {}),
+      reconcile: reconcilerReconcile,
     };
   });
   const enforcerIsRevoked = vi.fn(() => false);
@@ -69,8 +77,8 @@ const mocks = vi.hoisted(() => {
   const readStrandRevocationRows = vi.fn(async () => ({ memberKeys: new Set<string>(), bindings: [] }));
   const removeMemberPeer = vi.fn(async () => {});
   return {
-    stop, fakeDb, createLibp2pNode, StrandDatabase,
-    StrandMembershipReconciler, reconcilerStart, reconcilerStop, reconcilerSettle,
+    stop, fakeDb, gateState, createLibp2pNode, StrandDatabase,
+    StrandMembershipReconciler, reconcilerStart, reconcilerStop, reconcilerSettle, reconcilerReconcile,
     StrandRevocationEnforcer, enforcerIsRevoked, createRevocationConnectionGater, readStrandRevocationRows,
     removeMemberPeer,
   };
@@ -105,6 +113,7 @@ let partyKey: string;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.gateState.headerHeld = true;
   authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
   authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   partyKey = await generateStrandMemberKey();
@@ -265,6 +274,41 @@ describe('membership reconciler arming', () => {
     await manager.stopStrand('mem-stop');
 
     expect(mocks.reconcilerStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds NO extra pass on a launch that was never gated — the loop\'s own first pass sees the database', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('mem-ungated', 'c', {
+      partyMemberPrivateKey: partyKey,
+    }));
+
+    // publishDatabase ran BEFORE the reconciler was constructed, so there was nothing
+    // registered to kick — and nothing to kick it for.
+    expect(instance.status).toBe('active');
+    expect(mocks.reconcilerStart).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcilerReconcile).not.toHaveBeenCalled();
+  });
+
+  it('kicks it EXACTLY once when a gated launch finally publishes its database', async () => {
+    // The joiner shape this whole ticket is about: the first-sync write gate withholds
+    // `instance.database`, so the loop's own immediate pass finds none. Without the kick
+    // the next attempt is a full retry interval away.
+    mocks.gateState.headerHeld = false;
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('mem-gated', 'c', {
+      partyMemberPrivateKey: partyKey,
+      firstSync: { pollIntervalMs: 10 },
+    }));
+
+    expect(instance.status).toBe('syncing');
+    expect(mocks.reconcilerStart).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcilerReconcile).not.toHaveBeenCalled();
+
+    // The Header arrives from a peer; the gate's next probe publishes the database.
+    mocks.gateState.headerHeld = true;
+    await vi.waitFor(() => { expect(instance.status).toBe('active'); });
+
+    expect(mocks.reconcilerReconcile).toHaveBeenCalledTimes(1);
   });
 });
 

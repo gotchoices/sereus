@@ -3,12 +3,11 @@ import type { Database } from '@quereus/quereus';
 import {
   StrandMembershipReconciler,
   IDLE_PASSES_BEFORE_ESCALATION,
+  INITIAL_JOIN_RETRY_INTERVAL_MS,
   type PendingMembershipInviteSource,
+  type MembershipRetryScheduler,
 } from '../src/strand-membership-reconciler.js';
-import {
-  DEFAULT_REVOCATION_POLL_INTERVAL_MS,
-  type RevocationRefreshScheduler,
-} from '../src/strand-revocation-enforcer.js';
+import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from '../src/strand-revocation-enforcer.js';
 import {
   bootstrapFounderMembership,
   issueInvite,
@@ -80,24 +79,31 @@ function inviteSlot(initial?: StrandMembershipInvite): {
   };
 }
 
-/** A hand-cranked scheduler: the interval fires only when the test says so. */
+/**
+ * A hand-cranked scheduler: the retry timer fires only when the test says so.
+ * {@link armedMs} is the delay of the timer currently pending (`undefined` once it has
+ * fired or been cleared), and {@link delays} the whole sequence the loop asked for — which
+ * is what the escalating ladder is asserted against.
+ */
 function manualScheduler(): {
-  scheduler: RevocationRefreshScheduler;
+  scheduler: MembershipRetryScheduler;
   tick: () => void;
   armedMs: () => number | undefined;
-  cleared: () => boolean;
+  delays: () => number[];
+  pending: () => boolean;
 } {
   let fn: (() => void) | undefined;
   let ms: number | undefined;
-  let cleared = false;
+  const asked: number[] = [];
   return {
     scheduler: {
-      setInterval: (f, m) => { fn = f; ms = m; return 'handle'; },
-      clearInterval: () => { cleared = true; },
+      setTimeout: (f, m) => { fn = f; ms = m; asked.push(m); return 'handle'; },
+      clearTimeout: () => { fn = undefined; ms = undefined; },
     },
-    tick: () => fn?.(),
+    tick: () => { const f = fn; fn = undefined; ms = undefined; f?.(); },
     armedMs: () => ms,
-    cleared: () => cleared,
+    delays: () => [...asked],
+    pending: () => fn !== undefined,
   };
 }
 
@@ -105,7 +111,7 @@ interface ReconcilerOverrides {
   getOwnPeerId?: () => string | undefined;
   pendingInvite?: PendingMembershipInviteSource;
   isSelfRevoked?: () => boolean;
-  scheduler?: RevocationRefreshScheduler;
+  scheduler?: MembershipRetryScheduler;
   pollIntervalMs?: number;
   partyMemberPrivateKey?: string;
   getDatabase?: () => Database | undefined;
@@ -424,8 +430,8 @@ describe('waiting and failure classification', () => {
   });
 });
 
-describe('scheduler wiring', () => {
-  it('start() kicks an immediate pass and arms the poll at the default cadence', async () => {
+describe('retry scheduling', () => {
+  it('start() kicks an immediate pass, and reaching the done state arms no timer at all', async () => {
     const strand = await openClosedStrand();
     const clock = manualScheduler();
     const reconciler = reconcilerOver(strand.db, strand.founderPrivateKey, {
@@ -434,41 +440,98 @@ describe('scheduler wiring', () => {
     });
 
     reconciler.start();
-    expect(clock.armedMs()).toBe(DEFAULT_REVOCATION_POLL_INTERVAL_MS);
     // start() returned synchronously with the pass still in flight — bring-up is
-    // never blocked on it; flushing the chain shows the pass really ran.
-    await reconciler.reconcile();
+    // never blocked on it; settling the chain shows the pass really ran.
+    await reconciler.settle();
 
     expect(reconciler.done).toBe(true);
-    // Reaching the done state disarms the interval.
-    expect(clock.cleared()).toBe(true);
+    expect(clock.delays()).toEqual([]);
+    expect(clock.pending()).toBe(false);
   }, 30_000);
 
-  it('mirrors a configured cadence and retries on ticks until done', async () => {
-    const { db, founder } = await openClosedStrand();
+  it('a joiner nobody has admitted yet re-arms at the flat poll interval (the 30 s default)', async () => {
+    const { db } = await openClosedStrand();
     const joiner = await freshParty();
+    const clock = manualScheduler();
+    const reconciler = reconcilerOver(db, joiner.privateKey, { scheduler: clock.scheduler });
+
+    reconciler.start();
+    await reconciler.settle();
+
+    // No member row and no staged invitation: nothing this machine can do faster, so
+    // the ladder is not used and the idle cadence is what re-arms.
+    expect(clock.armedMs()).toBe(DEFAULT_REVOCATION_POLL_INTERVAL_MS);
+    expect(reconciler.done).toBe(false);
+  }, 30_000);
+
+  it('an UNFINISHED join climbs a doubling ladder capped at the poll interval, and idling resets it', async () => {
+    const { db } = await openClosedStrand();
+    const joiner = await freshParty();
+    // A credential whose Invite row this replica has never seen: consumeInvite fails the
+    // deferred InviteExists every pass, which is the "the invitation has not replicated
+    // here yet" state the ladder exists for.
+    const phantomPrivate = generatePrivateKey('ed25519', 'base64url') as string;
+    const phantomKey = getPublicKey(phantomPrivate, 'ed25519', 'base64url', 'base64url') as string;
+    const phantom: StrandMembershipInvite = { inviteKey: phantomKey, invitePrivateKey: phantomPrivate };
     const slot = inviteSlot();
     const clock = manualScheduler();
     const reconciler = reconcilerOver(db, joiner.privateKey, {
       pendingInvite: slot.source,
       scheduler: clock.scheduler,
-      pollIntervalMs: 5_000,
+      pollIntervalMs: 4_000,
       getOwnPeerId: () => 'joiner-machine',
     });
 
     reconciler.start();
-    await reconciler.reconcile();
-    expect(clock.armedMs()).toBe(5_000);
-    expect(reconciler.done).toBe(false);
+    await reconciler.settle();           // idle (nothing staged yet) → flat interval
 
-    // The invitation arrives between ticks (formation completed); the next tick joins.
-    const invite = await issueInvite(db, { managerKeyPair: founder });
-    slot.set({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    slot.set(phantom);
+    for (let i = 0; i < 3; i++) {        // three failing redemptions → 1s, 2s, 4s (capped)
+      clock.tick();
+      await reconciler.settle();
+    }
+
+    slot.set(undefined);                 // the invitation was dropped: back to waiting
     clock.tick();
+    await reconciler.settle();
+
+    slot.set(phantom);                   // a re-formation stages another: ladder from the bottom
+    clock.tick();
+    await reconciler.settle();
+
+    expect(clock.delays()).toEqual([4_000, 1_000, 2_000, 4_000, 4_000, 1_000]);
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
+  }, 30_000);
+
+  it('a pass with no live database retries on the LADDER, not the idle interval', async () => {
+    // The gated-joiner shape: the first-sync write gate still withholds the database, so
+    // the loop's own first pass finds none. That is an unfinished join, not a wait to be
+    // admitted — see `StrandInstanceManager.publishDatabase`, which kicks it the moment
+    // the database appears.
+    const strand = await openClosedStrand();
+    let live: Database | undefined = undefined;
+    const clock = manualScheduler();
+    const reconciler = reconcilerOver(undefined, strand.founderPrivateKey, {
+      getDatabase: () => live,
+      scheduler: clock.scheduler,
+      getOwnPeerId: () => 'founder-machine',
+    });
+
+    reconciler.start();
+    await reconciler.settle();
+    expect(clock.armedMs()).toBe(INITIAL_JOIN_RETRY_INTERVAL_MS);
+    expect(clock.pending()).toBe(true);
+
+    // The publish kick: an explicit reconcile() once the database is live REPLACES the
+    // pending timer rather than running alongside it.
+    live = strand.db;
     await reconciler.reconcile();
 
     expect(reconciler.done).toBe(true);
-    expect(clock.cleared()).toBe(true);
+    expect(clock.pending()).toBe(false);
+    expect(clock.delays()).toEqual([INITIAL_JOIN_RETRY_INTERVAL_MS]);
+    expect(await tableCount(strand.db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
   it('stop() does not cancel a pass already in flight — settle() is what waits it out', async () => {
@@ -489,18 +552,21 @@ describe('scheduler wiring', () => {
     expect(await tableCount(strand.db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
-  it('stop() disarms the poll and later passes are inert', async () => {
+  it('stop() disarms the retry timer and later passes are inert', async () => {
     const { db } = await openClosedStrand();
     const joiner = await freshParty();
     const clock = manualScheduler();
     const reconciler = reconcilerOver(db, joiner.privateKey, { scheduler: clock.scheduler });
 
     reconciler.start();
-    await reconciler.reconcile();
+    await reconciler.settle();
+    expect(clock.pending()).toBe(true);
+
     reconciler.stop();
 
-    expect(clock.cleared()).toBe(true);
+    expect(clock.pending()).toBe(false);
     await reconciler.reconcile();
     expect(reconciler.done).toBe(false);
+    expect(clock.pending()).toBe(false);
   }, 30_000);
 });

@@ -731,7 +731,9 @@ export class StrandInstanceManager {
       // each App table once, so their collections are fetched too. Publishing the database
       // is what makes the strand writable to the app; until then the instance stays
       // `'syncing'` and the gate re-probes on its cadence. Everything armed below reads
-      // `instance.database` lazily, so the reconciler and enforcer wait with it.
+      // `instance.database` lazily, so the reconciler and enforcer wait with it — and
+      // `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
+      // rows land with the strand rather than one retry later.
       t0 = performance.now();
       if (config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId)) {
         this.publishDatabase(instance, strandDb);
@@ -747,9 +749,12 @@ export class StrandInstanceManager {
       // for launch AND hibernation resume, for closed strands that carry the
       // party's own membership key. start() kicks an immediate pass WITHOUT
       // awaiting it — a joiner at this instant has not synced the founder's rows
-      // and may lack write quorum, so bring-up is never blocked; the loop retries
-      // on the enforcer's cadence (the same configured pollIntervalMs) and stops
-      // once the member row and this machine's own binding are both in place.
+      // and may lack write quorum, so bring-up is never blocked; an unfinished join
+      // then retries on a short doubling ladder capped at the configured
+      // pollIntervalMs (which is also the flat cadence while nobody has admitted this
+      // party yet), and the loop stops once the member row and this machine's own
+      // binding are both in place. Armed AFTER the gate above, so a gated launch
+      // always has a reconciler registered by the time the gate can publish.
       if (config.strandRow.Type === 'c' && config.partyMemberPrivateKey
         && config.membershipReconciliation?.enabled !== false) {
         const reconciler = new StrandMembershipReconciler({
@@ -1278,6 +1283,14 @@ export class StrandInstanceManager {
    * bring-up) announces nothing: `startStrand` / `resumeStrand` are about to report the
    * strand `'active'`, and `strand:writable` is defined as the follow-up to a gated
    * launch, never a duplicate of `strand:started`.
+   *
+   * It is also the one seam where a WITHHELD database becomes available, so it kicks the
+   * membership reconciler: on a gated launch that loop's own immediate pass ran while
+   * `instance.database` was still unset, found no database, and would otherwise not try
+   * again until its retry timer fired. A launch that was never gated publishes here BEFORE
+   * the reconciler is constructed, so there is nothing registered to kick and the loop's own
+   * immediate pass already sees the database — which is why the kick needs no `wasGated`
+   * test of its own.
    */
   private publishDatabase(instance: StrandInstance, database: StrandDatabase): void {
     const strandId = instance.strandId;
@@ -1301,6 +1314,9 @@ export class StrandInstanceManager {
     if (wasGated) {
       this.launchConfigs.get(strandId)?.onWritable?.(strandId);
     }
+    // Not awaited: publishing must stay synchronous, and the pass chains on the loop's own
+    // tail, so it cannot overlap a pass already in flight.
+    void this.membershipReconcilers.get(strandId)?.reconcile();
   }
 
   /** Reject every {@link whenWritable} waiter for a strand that is going away. */
