@@ -1,0 +1,32 @@
+description: A machine cut off from every other machine in its party could not look up any member or peer while the party had never recorded a revocation. The revocation lookup now treats "nobody reachable to ask about a list nobody here holds" as "no revocations known", so an isolated machine keeps answering from what it holds.
+prereq:
+files: packages/cadre-core/src/control-read-retry.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/test/control-read-retry.spec.ts, packages/cadre-core/src/control-retry.ts, packages/cadre-core/src/control-write-retry.ts, packages/cadre-core/src/strand-watcher.ts, packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts, docs/architecture.md
+----
+
+# Isolated node reads the never-written Revocation table as "no revocations"
+
+## What was built
+
+Every membership, peer-record and device-token lookup first reads retired stamps from `CadreControl.Revocation` through `ControlDatabase.queryRevokedStamps`. That table has no storage block until something writes to it, so a machine isolated before it received the block got `BlockUnavailableError { reason: 'cohort-unreachable' }`, and every lookup threw.
+
+- `isCohortUnreachableRead` (`control-read-retry.ts`) matches a typed `BlockUnavailableError` with reason `cohort-unreachable` anywhere on the `cause` chain. It guards against cycles and answers false for everything else.
+- `ControlDatabase.readRevokedStampRows` (private) runs the normal read with its normal retry. If the read still fails `cohort-unreachable`, it logs and returns no rows. Every other failure is rethrown. Its `NOTE:`s record the accepted tradeoff and a timing tripwire against the admission gate's 2 s deadline.
+- The permissive answer covers only this one read. `queryRevocations`, used by the reap and re-issue sweeps, still throws, and a test pins that.
+- Comments that said upstream destroys the typed error were corrected, since the typed error now reaches this repo. `docs/architecture.md` (the `Revocation` row), the integration scenario's step-4 comment, and a `NOTE:` in the strand watcher about the `Strand` table failing the same way were also updated.
+
+Implementation validation: 2 of 9 isolated integration runs passed end to end. The other failures come from B connecting to C, which is tracked on `fix/control-trio-b-connects-to-c-before-sever`, and from a known boot gate. The details are in the implement commit.
+
+## Review findings
+
+- **Diff read first, fresh.** The change is small and does one job. The typed match lives in the read-retry module, and the empty answer is a private reader behind the one public method. There is no duplicate SQL.
+- **Callers of `queryRevokedStamps` checked** (`queryCadrePeers`, `queryPeerRecord`, `CadreNode.resolveDeviceToken`). All are read-side filters. Guarded inserts enforce `NotRevoked` in SQL CHECKs, not through this method, so no write path became permissive. The `retry: false` under-lock path gets the same treatment, and a test covers it.
+- **Security argument challenged.** Here is the case where the empty answer and a stale block could differ. A node holds a `CadrePeer` block that carries a replayed row at a retired stamp, but it never fetched `Revocation`. To receive that `CadrePeer` block it had to be connected, and while connected every membership read also fetches `Revocation`. So this needs a node that replicated `CadrePeer` without ever running a membership read, then got isolated. Judged contrived, and it is covered by the accepted-tradeoff `NOTE:` on `readRevokedStampRows`. No ticket filed.
+- **Upstream contract verified.** `optimystic/packages/db-core/src/transactor/network-transactor.ts` says `cohort-unreachable` is "the one reason a caller may treat permissively". It also ranks unavailable reasons so a partitioned responder cannot hide a better-connected one. That matches the classifier's scope.
+- **DRY.** `causeChain` walks the `cause` chain beside `chainMessages`/`unwrapError` in `control-retry.ts`. They differ on purpose: one matches by type with a cycle guard, the other by text through upstream's walker. Merging them would change the text classifiers' behaviour, so they were left separate. Not filed.
+- **Dependency.** `@optimystic/db-core` is a direct dependency of cadre-core (`package.json`), so the new runtime import is declared. The risk of two loaded copies of the package, where the match silently stops firing, is noted on `isCohortUnreachableRead`. Kept as a tripwire, no ticket.
+- **Tripwires already parked by the implementer, re-checked and kept:** the retry-plus-scan time against the 2 s admission deadline (`NOTE:` on `readRevokedStampRows`) and the log volume from the `Strand` poll on an isolated node (`NOTE:` in `strand-watcher.ts`). Nothing new to add.
+- **Tests.** The unit coverage is adequate: the classifier's positive and negative cases, cycles and non-Errors, exhaustion of the retry before the empty answer, all three lookup entry points, the other reasons rethrowing the original object, and `queryRevocations` staying strict. The device-token path has no dedicated test, but it goes through the same method, so none was added. There is still no end-to-end test of the phone that loses its network before the owner's first connected reconcile pass, beyond the integration scenario. Accepted as the implementer described.
+- **Docs.** The `architecture.md` Revocation row matches the code. The corrected comments in `control-retry.ts`, `control-write-retry.ts` and the specs are accurate.
+- **Validation in this pass.** `yarn lint` is clean. `control-read-retry`, `control-revocation-ledger-marker`, `control-write-retry` and `device-token-registry` specs: 84/84 passed. Environment issue, not caused by this ticket: the sibling `../optimystic` workspace had uncommitted, in-progress edits in `quereus-plugin-optimystic` (`schema-manager.ts`, `table-identity.ts`, `optimystic-module.ts`) that tripped the stale-build guard. Rebuilding it, as the guard instructs, produced the JS, but the type-declaration step failed on those in-progress edits (`optimystic-module.ts(705)`: `defaultValue` typed `unknown`). That build step also removed the package's `dist/*.d.ts`, so `tsc` in cadre-core reports a missing declaration until whoever owns those edits rebuilds. Repo-wide typecheck passed at implement time, before those edits. Nothing in sereus needs to change.
+- **Minor fixes inline:** none needed.
+- **Major findings / new tickets:** none.
