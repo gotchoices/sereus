@@ -437,6 +437,13 @@ export class ControlDatabase {
   /** Tail of the local-write chain — see {@link withWriteLock}. */
   private writeQueue: Promise<unknown> = Promise.resolve();
   /**
+   * Locked write bodies currently running (see {@link runWriteBody}); what
+   * {@link readRowsOnce} consults to route an unlocked read around a write that has
+   * started but not yet opened its transaction. At most 1 while every writer takes the
+   * lock — a count rather than a flag so it stays truthful if that ever stops holding.
+   */
+  private runningWriteBodies = 0;
+  /**
    * Pacing seams for {@link lockedWithRetry}. Production leaves this empty (real backoff,
    * real clock); specs inject a recorded `sleep` / fake `now` so no test waits out a real
    * backoff. Applied OVER the call site's policy, so it overrides pacing without a spec
@@ -658,11 +665,33 @@ export class ControlDatabase {
    * opted in, `control-write-degraded-cohort-member` could no longer observe a sibling
    * publishing its own `CadrePeer` row and failed at suite setup on two runs out of two.
    *
-   * `getAutocommit()` reports the whole `Database` rather than this call (the same
-   * property {@link assertCommitBoundary} leans on), which is exactly what is wanted:
-   * false means some writer's transaction is open, which is the only situation where a
-   * read would have blocked. The check races that writer harmlessly in both directions
-   * — losing it either reads normally (today's behaviour) or reads committed state.
+   * "A write is in flight" is {@link writeInFlight}, and it needs TWO signals because a
+   * write is invisible to `getAutocommit()` for part of its life. `Database.exec` takes
+   * the exec mutex first; the implicit transaction — the moment `getAutocommit()` turns
+   * false — opens only after the write has acquired the mutex, planned the statement,
+   * and awaited `begin()` on every connection. While the write WAITS for the mutex (a
+   * serialized read holds it, say) it still reports autocommit, so a read routed on
+   * `getAutocommit()` alone queued behind the write and answered only after its whole
+   * commit — tens of seconds against a slow cohort member, which is what timed out the
+   * degraded-cohort scenario's `isMember` read (verified against the engine directly;
+   * `complete/control-read-queues-behind-a-write-waiting-for-the-database`). So an
+   * UNLOCKED read also takes the committed path while any locked write body is running
+   * ({@link runningWriteBodies}), which covers that queued window and everything else a
+   * body does before its transaction opens. A read issued INSIDE a locked body
+   * (`underWriteLock`) must not: that body is the one being counted, and its guard reads
+   * need the refreshing path — so it keeps the transaction-only test.
+   *
+   * Both signals are sampled synchronously just before `eval`, which claims its place
+   * on the mutex in that same tick, so the only race left is a body starting or ending
+   * in between: a body that starts after the sample queues its statements BEHIND this
+   * read, and one that ended before it has nothing left to queue behind.
+   *
+   * Residual gaps, both of which still queue a read behind a write:
+   * - an EXPLICIT transaction ({@link inTransaction}) disqualifies the committed path in
+   *   Quereus itself, so a read overlapping such a body's `COMMIT` falls back to the
+   *   serialized path and waits for it;
+   * - a writer that bypasses {@link withWriteLock} is not counted (in this repo only
+   *   `reference-app-web`'s deliberately-rejected diagnostics insert does).
    *
    * What a committed read gives up is observing a write that has not finished
    * committing, and that is safe for every caller here: an AWAITED write is committed by
@@ -670,20 +699,43 @@ export class ControlDatabase {
    * open explicit transaction and stays serialized, so it still sees its own
    * transaction's rows. A read after an UNAWAITED write on this database would be wrong
    * — no such caller exists, and {@link withWriteLock} is what keeps it that way.
+   *
+   * NOTE: counting whole bodies widens the stale (non-refreshing) window from "a
+   * transaction is open" to "a locked body is running", which adds a body's pre-transaction
+   * work and its post-commit tail (a `CadrePeer` write's membership-listener read). The
+   * slow part of a write against a degraded cohort is its commit, already inside the old
+   * window, so the added time is short; if a poller for replicated rows ever starves
+   * behind back-to-back local writes, narrow the count to the span from a body's first
+   * statement to its transaction opening.
    */
-  private async readRowsOnce(sql: string, params?: SqlParameters): Promise<Record<string, SqlValue>[]> {
+  private async readRowsOnce(sql: string, params: SqlParameters | undefined, underWriteLock: boolean): Promise<Record<string, SqlValue>[]> {
     let iterator: AsyncIterableIterator<Record<string, SqlValue>>;
-    if (this.db!.getAutocommit()) {
-      iterator = this.db!.eval(sql, params);
-    } else {
-      log('read-eval: a write is in flight, asking for a committed read: %s', sql);
+    if (this.writeInFlight(underWriteLock)) {
+      log('read-eval: a write is in flight (%s), asking for a committed read: %s',
+        this.db!.getAutocommit() ? 'locked body running, no transaction open yet' : 'transaction open', sql);
       iterator = this.db!.eval(sql, params, { readConcurrency: 'committed' });
+    } else {
+      iterator = this.db!.eval(sql, params);
     }
     const rows: Record<string, SqlValue>[] = [];
     for await (const row of iterator) {
       rows.push(row);
     }
     return rows;
+  }
+
+  /**
+   * Whether a control read should ask for a committed read — see {@link readRowsOnce}.
+   * `getAutocommit()` reports the whole `Database` (the property
+   * {@link assertCommitBoundary} leans on), so false means some writer's transaction is
+   * open. An unlocked read also counts a running locked body that has not opened its
+   * transaction yet; a read inside such a body does not, since it is that body.
+   */
+  private writeInFlight(underWriteLock: boolean): boolean {
+    if (!this.db!.getAutocommit()) {
+      return true;
+    }
+    return !underWriteLock && this.runningWriteBodies > 0;
   }
 
   /**
@@ -701,8 +753,8 @@ export class ControlDatabase {
    * primary-key lookup or a `count(1)`); nothing streams.
    *
    * Each ATTEMPT is a fresh {@link readRowsOnce} call, so the committed-read opt-in
-   * (`getAutocommit()`) is re-evaluated per attempt — a write can finish between attempts
-   * and change the right answer.
+   * ({@link writeInFlight}) is re-evaluated per attempt — a write can finish between
+   * attempts and change the right answer.
    *
    * The retry's budget ({@link CONTROL_READ_RETRY_BUDGET_MS}, 1.5 s) is deliberately far
    * under the write funnel's: the tightest caller deadline over a control read is the
@@ -735,13 +787,15 @@ export class ControlDatabase {
     label: string,
     retry = true
   ): Promise<Record<string, SqlValue>[]> {
+    // `retry: false` marks exactly the reads issued inside a locked write body, which is
+    // also what readRowsOnce's committed-read routing must know (see writeInFlight).
     if (!retry) {
-      return this.readRowsOnce(sql, params);
+      return this.readRowsOnce(sql, params, true);
     }
     // The label lands LAST so the call site's name survives the spec-injected pacing —
     // it changes log attribution only, never behaviour (same layering as lockedWithRetry).
     return retryControlRead(
-      () => this.readRowsOnce(sql, params),
+      () => this.readRowsOnce(sql, params, false),
       { ...this.controlReadRetryPacing, label }
     );
   }
@@ -2348,9 +2402,25 @@ export class ControlDatabase {
   async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     // Chain behind the current tail regardless of how it settled, then park a
     // swallowed copy as the new tail so one failed write never poisons the queue.
-    const run = this.writeQueue.then(fn, fn);
+    const body = () => this.runWriteBody(fn);
+    const run = this.writeQueue.then(body, body);
     this.writeQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * Run one locked body, counted in {@link runningWriteBodies} from the moment it takes
+   * the lock until it settles — so an unlocked read routes around it even while its
+   * first statement is still waiting for the database's exec mutex, before
+   * `getAutocommit()` can show it (see {@link readRowsOnce}).
+   */
+  private async runWriteBody<T>(fn: () => Promise<T>): Promise<T> {
+    this.runningWriteBodies++;
+    try {
+      return await fn();
+    } finally {
+      this.runningWriteBodies--;
+    }
   }
 
   /**
