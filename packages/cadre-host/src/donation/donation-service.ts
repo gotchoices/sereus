@@ -455,6 +455,18 @@ export class DonationService {
     } catch (err) {
       throw new DonationError('seed_failed', `Donated node unreachable: ${errorMessage(err)}`);
     }
+    if (res.status === 401) {
+      // The node refused the host's bearer, not the requester's seed — the node
+      // never looked at the seed. So the fault is the host's own token
+      // bookkeeping (the record names a token the running child was not started
+      // with), and the message must not read as a trust-policy rejection.
+      //
+      // Still `seed_failed`, deliberately: the phone retries that code, and a
+      // bookkeeping gap that is mid-repair (a respawn about to write its new
+      // token) can clear inside that retry window.
+      log('donated node for donation %s refused the host seed credential (401)', id);
+      throw new DonationError('seed_failed', 'Donated node rejected the host\'s seed credential (401)');
+    }
     if (!res.ok) {
       const body = await res.text();
       throw new DonationError('seed_failed', `Donated node /seed returned ${res.status}: ${body}`);

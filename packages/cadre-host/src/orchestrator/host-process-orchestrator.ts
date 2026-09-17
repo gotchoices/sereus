@@ -33,9 +33,9 @@ import {
 } from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
+import { assertPortFree, type PortBinding } from './port-probe.js';
 import type { PushCredentials } from '@serfab/cadre-core';
 import {
-  decodeDockerId,
   encodeDockerId,
   type OwnerSpawnConfig,
   type Handle,
@@ -95,6 +95,22 @@ function scrubbedParentEnv(): NodeJS.ProcessEnv {
  */
 export function childListenAddrs(ports: Pick<NodePorts, 'p2p' | 'ws'>): string[] {
   return [`/ip4/0.0.0.0/tcp/${ports.p2p}`, `/ip4/0.0.0.0/tcp/${ports.ws}/ws`];
+}
+
+/**
+ * Every TCP port a managed child binds, on the address it binds it to: health and
+ * metrics (`cadre-cli`'s `HealthServer`) and the libp2p TCP and WebSocket listeners
+ * ({@link childListenAddrs}) on every interface, plus the loopback admin channel —
+ * for the owner node only, the one child started with `--admin-port`. A key the
+ * set lacks (a handle persisted by an older build) is skipped.
+ */
+function childPortBindings(ports: Partial<NodePorts>, owner: boolean): PortBinding[] {
+  const bindings: PortBinding[] = [];
+  for (const port of [ports.health, ports.metrics, ports.p2p, ports.ws]) {
+    if (port !== undefined) bindings.push({ port, host: '0.0.0.0' });
+  }
+  if (owner && ports.admin !== undefined) bindings.push({ port: ports.admin, host: '127.0.0.1' });
+  return bindings;
 }
 
 /** Fixed friendly id for the admin's owner node. */
@@ -181,7 +197,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     const state = this.stateStore.load();
     this.ownerConfig = state.ownerConfig;
     for (const persisted of state.handles) {
-      const alive = isPidAlive(persisted.pid) && tokenMatches(persisted.workdir, persisted.startupToken);
       const handle: Handle = {
         containerId: persisted.containerId,
         dockerId: persisted.dockerId,
@@ -193,8 +208,9 @@ export class HostProcessOrchestrator implements Orchestrator {
         partyId: persisted.partyId,
         profile: persisted.profile,
         ...(persisted.owner ? { owner: true } : {}),
-        alive,
+        alive: false,
       };
+      handle.alive = isHandleLive(handle);
       this.handles.set(handle.dockerId, handle);
       // Always reserve ports — even for dead handles, until the caller cleans them up
       this.reservePorts(persisted.ports);
@@ -284,8 +300,8 @@ export class HostProcessOrchestrator implements Orchestrator {
       const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
       // Only storage-profile nodes participate in strands and thus fan out push
       // wakes — a transaction-only node need not carry credentials. Resolved
-      // BEFORE the drop below: it is the last `await` on this path, which is what
-      // keeps the drop → launch window synchronous (see restoreDroppedHandles).
+      // BEFORE the drop below, which keeps the drop → launch window synchronous
+      // (see restoreDroppedHandles).
       const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
       // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
       // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
@@ -293,6 +309,9 @@ export class HostProcessOrchestrator implements Orchestrator {
       const extraEnv = request.pinnedOwnerKeys?.length
         ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
         : undefined;
+
+      // The last `await` on this path: checked as close to the drop as it can be.
+      await this.refuseRespawnOverLiveChild(request.containerId, {}, false);
 
       // Nothing from here to the launch is `await`ed — which is what keeps
       // `restoreDroppedHandles`'s documented precondition true even though the
@@ -432,7 +451,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.ownerConfig = config;
 
     const existing = this.findOwnerHandle();
-    if (existing && isPidAlive(existing.pid) && tokenMatches(existing.workdir, existing.startupToken)) {
+    if (existing && isHandleLive(existing)) {
       this.persist();
       return toNodeInfo(existing);
     }
@@ -443,6 +462,8 @@ export class HostProcessOrchestrator implements Orchestrator {
     // Resolved BEFORE the drop below so the drop → launch window stays
     // synchronous (see restoreDroppedHandles).
     const push = await this.resolvePush();
+    // The last `await` before the drop — same guard as in createContainer.
+    await this.refuseRespawnOverLiveChild(OWNER_CONTAINER_ID, { p2p: config.libp2pPort }, true);
 
     // NOTE: the short-circuit above matches via `findOwnerHandle` (owner flag OR
     // containerId), this drop only by containerId. Equivalent today — every
@@ -709,6 +730,69 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
+   * Refuse to re-spawn `containerId` while a previous child of it may still be
+   * running. Both spawn paths call this as their last `await` before the handle
+   * drop, so a refusal happens while nothing has been released, no token rotated
+   * and no child launched — the caller sees an ordinary failed spawn.
+   *
+   * Why it exists: the drop hands the old handle's ports back and the launch takes
+   * those same ports (`reusedNodePorts`), so a child started over a live one dies
+   * on a port clash — but only after `launchChild` has returned success with a
+   * fresh seed token. The caller then records a dead child, and the live one
+   * refuses the new token.
+   *
+   * - A handle this process spawned is checked exactly ({@link isHandleLive}); a
+   *   live one refuses outright.
+   * - A handle re-attached from `state.json` whose pid is alive but whose token
+   *   does not match is either our child still starting or an unrelated process
+   *   that inherited the pid. The ports decide: if any the re-spawn would take back
+   *   is already bound, refuse. The pid is never killed on that evidence — it may
+   *   not be ours.
+   *
+   * `overrides` are the ports the caller will override on top of the reused ones
+   * (the owner node's configured p2p port); `owner` adds the admin channel.
+   *
+   * NOTE: the probe cannot see a re-attached child still loading its modules —
+   * `cadre-cli start` writes its token and only then binds, so a child in that
+   * window shows neither, and a re-spawn launched then races it for the ports.
+   * Reachable only when the host restarts within a child's first seconds. If it
+   * is ever seen, treat a re-attached handle with a live pid as starting for a
+   * grace period after its `spawnedAt`.
+   *
+   * NOTE: the probe holds each port for an instant, so a child binding that port
+   * in the same instant fails. It would have had to write its token between the
+   * token check above and the probe, against the several awaited steps
+   * `cadre-cli start` takes between writing its token and binding; if a re-attached
+   * child is ever seen dying on its own port right after a host restart, probe by
+   * connecting instead of binding.
+   */
+  private async refuseRespawnOverLiveChild(
+    containerId: string,
+    overrides: Partial<NodePorts>,
+    owner: boolean,
+  ): Promise<void> {
+    const previous = this.handlesFor(containerId);
+    if (previous.some(isHandleLive)) {
+      throw new Error(`container ${containerId} is still running`);
+    }
+    if (!previous.some((h) => isPidAlive(h.pid))) return;
+    const bindings = childPortBindings({ ...reusedNodePorts(previous), ...overrides }, owner);
+    try {
+      await Promise.all(bindings.map(assertPortFree));
+    } catch (err) {
+      throw new Error(
+        `container ${containerId} may still be running: ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
+  }
+
+  /** Every handle for `containerId`, in map order — the order `dropStaleHandle` drops them in. */
+  private handlesFor(containerId: string): Handle[] {
+    return [...this.handles.values()].filter((h) => h.containerId === containerId);
+  }
+
+  /**
    * Drop any handle left over from a previous spawn of the same `containerId`
    * and release its ports. Handles are keyed by the per-spawn `dockerId`, so
    * without this a re-spawn (donated-node respawn) would strand the prior
@@ -720,12 +804,12 @@ export class HostProcessOrchestrator implements Orchestrator {
    * the whole reason a respawn comes back as the same node. `launchChild`
    * reuses the same workdir.
    *
-   * NOTE: releasing the ports hands them straight back to the allocator, and the
+   * Releasing the ports hands them straight back to the allocator, and the
    * re-spawn then takes those same ports as overrides (`reusedNodePorts`), so a
-   * re-spawn while the *previous* child is still listening will bind-clash. Every
-   * caller today re-spawns only a container it has established is not running
-   * (`DonationService.respawn`, `ensureOwnerNode`). If a caller ever needs to
-   * replace a live child, stop it first — or hold the ports until its exit.
+   * re-spawn while the *previous* child is still listening would bind-clash.
+   * Callers must therefore never drop a live child, and both do so only after
+   * {@link refuseRespawnOverLiveChild} has passed. A caller that needs to replace
+   * a live child must stop it first.
    *
    * **The drop is reversible.** It happens before the launch can fail, so the
    * dropped handles are returned and every caller restores them via
@@ -736,13 +820,11 @@ export class HostProcessOrchestrator implements Orchestrator {
    * gone by then.
    */
   private dropStaleHandle(containerId: string): Handle[] {
-    const dropped: Handle[] = [];
-    for (const h of this.handles.values()) {
-      if (h.containerId !== containerId) continue;
+    const dropped = this.handlesFor(containerId);
+    for (const h of dropped) {
       log('dropping stale handle %s for container %s', h.dockerId, containerId);
       this.releasePorts(h.ports);
       this.handles.delete(h.dockerId);
-      dropped.push(h);
     }
     return dropped;
   }
@@ -767,9 +849,10 @@ export class HostProcessOrchestrator implements Orchestrator {
    *
    * NOTE: a restored handle keeps `alive: true` even if its child exited while
    * it was out of the map (`launchChild`'s exit listener looks the handle up by
-   * dockerId and finds nothing). Only reachable by re-spawning a container
-   * whose child is still live, which `dropStaleHandle`'s note above already
-   * forbids.
+   * dockerId and finds nothing). Only reachable by dropping a handle whose child
+   * is still live, which {@link refuseRespawnOverLiveChild} refuses before any
+   * drop. (Its start-up blind spot concerns re-attached handles only, and those
+   * have no exit listener to miss.)
    */
   private restoreDroppedHandles(dropped: Handle[]): void {
     for (const h of dropped) {
@@ -877,36 +960,17 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.persist();
   }
 
+  /**
+   * Whether the child `dockerId` names is running — see {@link isHandleLive}. An
+   * id with no handle is not running: without the handle's workdir there is no
+   * token to verify a live pid against.
+   */
   async isRunning(dockerId: string): Promise<boolean> {
-    const handle: Handle | undefined = this.handles.get(dockerId);
-    let pid: number;
-    let token: string;
-    let workdir: string | undefined;
-
-    if (handle) {
-      pid = handle.pid;
-      token = handle.startupToken;
-      workdir = handle.workdir;
-    } else {
-      try {
-        const decoded = decodeDockerId(dockerId);
-        pid = decoded.pid;
-        token = decoded.token;
-      } catch {
-        return false;
-      }
-    }
-
-    if (!isPidAlive(pid)) {
-      if (handle) handle.alive = false;
-      return false;
-    }
-    if (workdir === undefined) {
-      // We have no record — without a workdir we can't verify the token,
-      // so we must treat this as unknown rather than running.
-      return false;
-    }
-    return tokenMatches(workdir, token);
+    const handle = this.handles.get(dockerId);
+    if (!handle) return false;
+    if (isHandleLive(handle)) return true;
+    if (!isPidAlive(handle.pid)) handle.alive = false;
+    return false;
   }
 
   async getStats(dockerId: string): Promise<OrchestratorStats> {
@@ -1079,6 +1143,31 @@ function resolveCadreCliBin(): string {
       { cause: err },
     );
   }
+}
+
+/**
+ * Whether the process a handle names is still the child it was launched as — the
+ * one liveness rule behind `init`, `isRunning`, `ensureOwnerNode`'s short-circuit
+ * and the pre-spawn guard, so they cannot drift apart.
+ *
+ * A handle this process spawned carries its `ChildProcess`, and that answer is
+ * exact from the moment of spawn: no exit seen, and the pid still answering. (The
+ * pid check covers the moment between the OS ending the process and Node
+ * delivering its exit; the pid cannot have been reused in that moment, since the
+ * OS holds it until Node has reaped the child.) The startup-token file is no use
+ * here — a child writes it only once it is running its own code, so reading it
+ * would report every child dead for its first moments.
+ *
+ * A handle re-attached from `state.json` after a host restart has no
+ * `ChildProcess`, so it falls back to the pid plus that token file, which tells our
+ * child apart from an unrelated process that inherited its pid.
+ */
+function isHandleLive(handle: Handle): boolean {
+  const { child } = handle;
+  if (child) {
+    return child.exitCode === null && child.signalCode === null && isPidAlive(handle.pid);
+  }
+  return isPidAlive(handle.pid) && tokenMatches(handle.workdir, handle.startupToken);
 }
 
 function tokenMatches(workdir: string, expected: string): boolean {

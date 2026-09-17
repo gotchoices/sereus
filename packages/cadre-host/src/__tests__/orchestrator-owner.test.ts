@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -165,7 +165,9 @@ describe('HostProcessOrchestrator.ensureOwnerNode', () => {
     const a = makeOrchestrator(rootDir);
     await a.init();
     const node = await a.ensureOwnerNode(CFG);
-    await waitFor(() => a.isRunning(node.dockerId));
+    // Not `a.isRunning`: that answers from the ChildProcess at once, but `b`
+    // below can only recognise the node once it has written its startup token.
+    await waitFor(() => existsSync(join(rootDir, OWNER_CONTAINER_ID, '.startup-token')));
     const before = a.getOwnerAdminEndpoint();
 
     const b = makeOrchestrator(rootDir);

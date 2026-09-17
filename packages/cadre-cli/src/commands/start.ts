@@ -65,6 +65,24 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
   return keys.map(key => requireEd25519PublicKeyB64(key, 'pinned owner key (--pin-owner-key / CADRE_OWNER_KEYS)'));
 }
 
+/**
+ * Write `$CADRE_STARTUP_TOKEN` to `path` (the `--startup-token-file`), if both are given.
+ *
+ * The file is an identity proof, not a readiness signal: an orchestrator
+ * (cadre-host's `HostProcessOrchestrator`) reads it to confirm that a live PID is
+ * the child it spawned rather than a recycled one. So it is written first, before
+ * the health server binds its port and before `node.start()` — a child that bound
+ * its ports but had not yet written the file would read as "not running" for its
+ * whole start-up, and the orchestrator would launch a second copy that dies on
+ * those same ports.
+ */
+function writeStartupToken(path: string | undefined): void {
+  const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+  if (!path || token.length === 0) return;
+  writeFileSync(path, token, { encoding: 'utf8' });
+  log('Wrote startup token to %s', path);
+}
+
 export const startCommand = new Command('start')
   .description('Start the cadre node with the specified configuration')
   .option('-c, --config <path>', 'Path to config file (YAML or JSON)', 'cadre.yaml')
@@ -75,7 +93,7 @@ export const startCommand = new Command('start')
   .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
-  .option('--startup-token-file <path>', 'After successful node.start(), write $CADRE_STARTUP_TOKEN to this file. Used by external orchestrators to verify the spawned child is the one they expected (vs a recycled PID).')
+  .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
   .option('--identity-file <path>', 'Load the node identity from a libp2p protobuf private key file — the one identity format, written by \'cadre enroll create\' and by cadre-host\'s installer (identity.key). Takes precedence over the config file\'s identity.keyFile.')
   .option('--owner', 'Run as the owner of this node\'s OWN cadre: initialize seed-bootstrap from the node identity and perform the idempotent genesis OwnerKey insert on a fresh party. This is the founder persona (e.g. cadre-host with ownCadre enabled running its operator\'s personal cadre) — NOT a node donated to a requester. Donated nodes are generic and pin the requester\'s owner key via --pin-owner-key instead.')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
@@ -89,6 +107,8 @@ export const startCommand = new Command('start')
     log('Loading configuration from: %s', options.config);
 
     try {
+      writeStartupToken(options.startupTokenFile);
+
       // A --identity-file flag overrides the config file's identity. Route it through the env
       // mapping (CADRE_KEY_FILE -> identity.keyFile) so the loader resolves it exactly as the
       // config-file path, and so applyEnvironmentOverrides' env-beats-file precedence carries it.
@@ -279,17 +299,6 @@ export const startCommand = new Command('start')
 
       // Start the node
       await node.start();
-
-      // Write startup-token file once the node is healthy. External orchestrators
-      // (e.g. cadre-host's HostProcessOrchestrator) use this to confirm the
-      // running PID is the child they spawned and not a recycled one.
-      if (options.startupTokenFile) {
-        const token = process.env.CADRE_STARTUP_TOKEN ?? '';
-        if (token.length > 0) {
-          writeFileSync(options.startupTokenFile, token, { encoding: 'utf8' });
-          log('Wrote startup token to %s', options.startupTokenFile);
-        }
-      }
 
       // Owner init: bridge the libp2p identity into a base64url owner
       // keypair, run the idempotent genesis insert on a fresh party, then bring

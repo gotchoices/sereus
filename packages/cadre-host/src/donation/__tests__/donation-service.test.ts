@@ -410,6 +410,31 @@ describe('DonationService.applySeed', () => {
     expect(store.get(provisioned.id)).toEqual(before);
   });
 
+  // A 401 is the node refusing the HOST's bearer — it never looked at the seed —
+  // so it must not read as the requester's seed being untrusted.
+  it('reports a node that refuses the host credential as a credential fault, not a seed rejection', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    const before = store.get(provisioned.id)!;
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ success: false, error: 'unauthorized' }),
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    )) as typeof globalThis.fetch;
+
+    const err = await svc.applySeed(provisioned.id, 'encoded-seed').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(DonationError);
+    expect(err).toMatchObject({
+      code: 'seed_failed',
+      message: 'Donated node rejected the host\'s seed credential (401)',
+    });
+    expect(store.get(provisioned.id)).toEqual(before);
+  });
+
   it('lets a borrower terminate that lands mid-seed win', async () => {
     const orch = new FakeOrchestrator();
     const store = new DonationStore(join(tmpRoot, 'donations'));
@@ -664,8 +689,12 @@ describe('DonationService.respawn', () => {
 
     const stored = store.get(provisioned.id)!;
     expect(stored.respawn?.attempts).toBe(1);
-    // The old handles are untouched — the caller owns backoff, not cleanup.
+    // The old handles are untouched — the caller owns backoff, not cleanup. The
+    // seed token above all: the child still running was started with it, so a
+    // rotated token would make that child refuse every later seed.
     expect(stored.dockerId).toBe('dock_1');
+    expect(stored.seedEndpoint).toBe('http://127.0.0.1:9001/seed');
+    expect(stored.seedToken).toBe('seed-token-1');
     expect(stored.status).toBe('awaiting_seed');
   });
 

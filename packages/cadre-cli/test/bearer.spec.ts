@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type http from 'node:http';
-import { checkBearer } from '../src/server/bearer.js';
+import { bearerRefusal, checkBearer } from '../src/server/bearer.js';
 
 /** Build a minimal IncomingMessage carrying just the headers checkBearer reads. */
 function reqWith(authorization: string | string[] | undefined): http.IncomingMessage {
@@ -42,5 +42,23 @@ describe('checkBearer', () => {
   it('rejects a duplicated (array) Authorization header', () => {
     // Node can surface duplicate headers as string[]; a non-string must not authorize.
     expect(checkBearer(reqWith([`Bearer ${TOKEN}`, `Bearer ${TOKEN}`]), TOKEN)).toBe(false);
+  });
+});
+
+describe('bearerRefusal', () => {
+  it('is undefined for an authorized request', () => {
+    expect(bearerRefusal(reqWith(`Bearer ${TOKEN}`), TOKEN)).toBeUndefined();
+  });
+
+  it('says `missing` when no Bearer credential was presented', () => {
+    expect(bearerRefusal(reqWith(undefined), TOKEN)).toBe('missing');
+    expect(bearerRefusal(reqWith(`Basic ${TOKEN}`), TOKEN)).toBe('missing');
+    expect(bearerRefusal(reqWith([`Bearer ${TOKEN}`]), TOKEN)).toBe('missing');
+  });
+
+  it('says `mismatch` when a Bearer credential was presented but is wrong', () => {
+    expect(bearerRefusal(reqWith('Bearer wrong'), TOKEN)).toBe('mismatch');
+    expect(bearerRefusal(reqWith(`Bearer ${'x'.repeat(TOKEN.length)}`), TOKEN)).toBe('mismatch');
+    expect(bearerRefusal(reqWith('Bearer '), '')).toBe('mismatch');
   });
 });

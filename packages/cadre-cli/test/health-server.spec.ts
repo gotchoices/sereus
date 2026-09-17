@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { toString as uint8ToString } from 'uint8arrays';
 import { HealthServer } from '../src/server/health.js';
 import type { CadreNode } from '@serfab/cadre-core';
@@ -139,6 +139,25 @@ describe('HealthServer', () => {
       const res = await postSeed(base, { authorization: 'Bearer wrong' });
       expect(res.status).toBe(401);
       expect(node.applySeedCalls).toHaveLength(0);
+    });
+
+    // A node refusing its orchestrator's credential is otherwise invisible in the
+    // node's own log — the loan just never gets seeded.
+    it('logs why a seed request was refused, never the presented token', async () => {
+      const { base } = await startServer(TOKEN);
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await postSeed(base);
+        await postSeed(base, { authorization: 'Bearer presented-but-wrong' });
+        const lines = errors.mock.calls.map((args) => args.join(' '));
+        expect(lines).toEqual([
+          '✗ Seed request refused (401): no bearer token presented',
+          '✗ Seed request refused (401): bearer token does not match this node\'s seed token',
+        ]);
+        expect(lines.join('\n')).not.toContain('presented-but-wrong');
+      } finally {
+        errors.mockRestore();
+      }
     });
 
     it('applies the seed once with the correct bearer (200)', async () => {

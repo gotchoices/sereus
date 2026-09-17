@@ -229,6 +229,43 @@ describe('DonationSupervisor.reconcile', () => {
     expect(h.store.liveNodeCount(stored.grantToken)).toBe(0);
   });
 
+  // A spawn that succeeds and then dies at once (a crash on boot, a port clash)
+  // never throws out of `respawn`, so a give-up checked only on a throw would
+  // respawn such a node forever, rotating its seed token every time.
+  it('gives up on a node whose every respawn spawns but does not stay up', async () => {
+    const h = makeHarness();
+    const view = await h.provision();
+    setStatus(h.store, view.id, 'seeded');
+    h.orch.crash(dockerIdOf(view));
+    h.orch.onSpawned = (dockerId) => { h.orch.crash(dockerId); };
+
+    for (let i = 0; i < DONATION_RESPAWN_MAX_ATTEMPTS; i++) {
+      await expect(h.supervisor.reconcile()).resolves.toEqual([view.id]);
+      // Well past the longest backoff, so every pass gets to act.
+      h.advance(10 * 60_000);
+    }
+    expect(h.orch.createCalls).toHaveLength(1 + DONATION_RESPAWN_MAX_ATTEMPTS);
+    expect(requireDonation(h.store, view.id).status).toBe('seeded');
+
+    // The budget is spent and the last respawn died too: this pass gives up
+    // instead of spawning again.
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+    const stored = requireDonation(h.store, view.id);
+    expect(h.orch.createCalls).toHaveLength(1 + DONATION_RESPAWN_MAX_ATTEMPTS);
+    expect(stored.status).toBe('error');
+    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS);
+    expect(stored.error).toContain(`${DONATION_RESPAWN_MAX_ATTEMPTS} attempts`);
+    expect(stored.error).toContain('did not stay running');
+    // The child the record names is stopped, never reclaimed.
+    expect(h.orch.stopped).toEqual([stored.dockerId]);
+    expect(h.orch.removed).toEqual([]);
+    expect(h.store.liveNodeCount(stored.grantToken)).toBe(0);
+
+    h.advance(10 * 60_000);
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+    expect(h.orch.createCalls).toHaveLength(1 + DONATION_RESPAWN_MAX_ATTEMPTS);
+  });
+
   it('refills the attempt budget once a respawned node has stayed up', async () => {
     const h = makeHarness();
     const view = await h.provision();
@@ -349,10 +386,11 @@ describe('DonationSupervisor.reconcile', () => {
     h.store.put({
       ...requireDonation(h.store, view.id),
       status: 'seeded',
-      // Already at the cap, and long past the longest backoff — so the next
-      // failure lands straight in the give-up path.
+      // One attempt short of the cap (at the cap, the pass would give up before
+      // attempting), and long past the longest backoff — so the next failure
+      // lands straight in the give-up path.
       respawn: {
-        attempts: DONATION_RESPAWN_MAX_ATTEMPTS,
+        attempts: DONATION_RESPAWN_MAX_ATTEMPTS - 1,
         lastAttemptAt: new Date(h.nowMs() - 10 * 60_000).toISOString(),
       },
     });
@@ -370,7 +408,7 @@ describe('DonationSupervisor.reconcile', () => {
     expect(stored.status).toBe('terminated');
     expect(stored.error).toBeUndefined();
     // The attempt counter is the one thing the failed attempt may still record.
-    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS + 1);
+    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS);
     expect(h.orch.stopped).toEqual([]);
   });
 
@@ -380,10 +418,10 @@ describe('DonationSupervisor.reconcile', () => {
     h.store.put({
       ...requireDonation(h.store, view.id),
       status: 'seeded',
-      // Already at the cap and long past the longest backoff, so a *failed*
-      // attempt here would land straight in the give-up path.
+      // One attempt short of the cap and long past the longest backoff, so a
+      // *failed* attempt here would land straight in the give-up path.
       respawn: {
-        attempts: DONATION_RESPAWN_MAX_ATTEMPTS,
+        attempts: DONATION_RESPAWN_MAX_ATTEMPTS - 1,
         lastAttemptAt: new Date(h.nowMs() - 10 * 60_000).toISOString(),
       },
     });
@@ -400,7 +438,7 @@ describe('DonationSupervisor.reconcile', () => {
     // Nothing threw, so no attempt was persisted and give-up never ran.
     expect(stored.status).toBe('terminated');
     expect(stored.error).toBeUndefined();
-    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS);
+    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS - 1);
     expect(stored.dockerId).toBe(view.dockerId);
     // The abandoned child is stopped and reclaimed, not left holding ports.
     expect(h.orch.stopped).toContain('dock_2');

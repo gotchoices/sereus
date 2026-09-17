@@ -23,7 +23,8 @@ export const DONATION_RESPAWN_BACKOFF_BASE_MS = 5_000;
  *
  * NOTE: not reachable at the current {@link DONATION_RESPAWN_MAX_ATTEMPTS} of 5
  * — the longest wait actually served is the one before the 5th attempt,
- * `5s * 2^4` = 80s, and the 5th failure gives up. The cap only starts clamping
+ * `5s * 2^4` = 80s, and once that attempt fails or its node dies the supervisor
+ * gives up rather than waiting again. The cap only starts clamping
  * once a record can reach 6 recorded attempts (`5s * 2^6` = 320s), so raising
  * the attempt cap without revisiting this one changes nothing.
  */
@@ -33,6 +34,12 @@ export const DONATION_RESPAWN_BACKOFF_MAX_MS = 5 * 60_000;
  * Consecutive respawn attempts after which the host stops trying and marks the
  * donation `error` — a node that will not stay up is a host-side fault the
  * borrower cannot see, so surface it instead of spinning forever.
+ *
+ * Every attempt counts, whether its spawn failed or succeeded: a node that spawns
+ * and then dies before {@link DONATION_RESPAWN_HEALTHY_MS} refills the budget is
+ * as much a crash loop as one that never spawns. Give-up happens on whichever
+ * comes first — an attempt that throws with the cap reached, or a pass that finds
+ * the node down with the cap already reached.
  */
 export const DONATION_RESPAWN_MAX_ATTEMPTS = 5;
 
@@ -232,6 +239,15 @@ export class DonationSupervisor {
       this.refillBudgetIfHealthy(donation);
       return undefined;
     }
+    // The budget is spent, and the last attempt did not stay up long enough to
+    // refill it. Checked here and not only when `respawn` throws: a spawn that
+    // succeeds and then dies at once (a crash on boot, a port clash) never
+    // throws, so a catch-only check would respawn it forever.
+    const attempts = donation.respawn?.attempts ?? 0;
+    if (attempts >= DONATION_RESPAWN_MAX_ATTEMPTS) {
+      await this.giveUp(donation.id, attempts, 'the node did not stay running after its last respawn');
+      return undefined;
+    }
     if (!this.backoffElapsed(donation)) {
       log('donation %s is down but still inside its respawn backoff', donation.id);
       return undefined;
@@ -294,7 +310,10 @@ export class DonationSupervisor {
     return this.now().getTime() - last > DONATION_RESPAWN_HEALTHY_MS;
   }
 
-  /** One respawn attempt, with the give-up check on failure. */
+  /**
+   * One respawn attempt, with the give-up check on failure. (The check for an
+   * attempt that spawned but then died lives in {@link reconcileOne}.)
+   */
   private async attemptRespawn(donation: Donation): Promise<string | undefined> {
     try {
       const result = await this.service.respawn(donation.id);

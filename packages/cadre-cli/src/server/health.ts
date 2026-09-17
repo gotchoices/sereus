@@ -2,9 +2,26 @@ import http from 'node:http';
 import debug from 'debug';
 import { emptyConnectionPathSummary } from '@serfab/cadre-core';
 import type { CadreNode, ConnectionPathSummary, StrandInstance } from '@serfab/cadre-core';
-import { checkBearer } from './bearer.js';
+import { bearerRefusal, type BearerRefusal } from './bearer.js';
 
 const log = debug('cadre:cli:health');
+
+const SEED_REFUSAL_REASONS: Record<BearerRefusal, string> = {
+  missing: 'no bearer token presented',
+  mismatch: 'bearer token does not match this node\'s seed token',
+};
+
+/**
+ * Record a `POST /seed` refused at the bearer gate — on stderr as well as the
+ * debug log, like the node's other seed events, because a node refusing its
+ * orchestrator's credential otherwise leaves nothing in its own log to explain
+ * a loan that never gets seeded. Says why, never what was presented.
+ */
+function logSeedRefusal(refusal: BearerRefusal): void {
+  const reason = SEED_REFUSAL_REASONS[refusal];
+  log('POST /seed refused (401): %s', reason);
+  console.error(`✗ Seed request refused (401): ${reason}`);
+}
 
 /**
  * Per-status strand counts for `/status` and `/metrics`. `syncing` is a joining machine
@@ -325,7 +342,9 @@ export class HealthServer {
     // the node's `seedTrustPolicy` (operator-pinned owner keys unioned with the
     // node-local trusted-owner anchor), evaluated inside the applySeed call
     // below — so a node with no pin rejects the seed even with a valid bearer.
-    if (!checkBearer(req, this.options.seedToken)) {
+    const refusal = bearerRefusal(req, this.options.seedToken);
+    if (refusal) {
+      logSeedRefusal(refusal);
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'unauthorized' }));
       return;

@@ -545,7 +545,7 @@ describe('HostProcessOrchestrator.reclaimWorkdir', () => {
 });
 
 describe('HostProcessOrchestrator.isRunning', () => {
-  it('is true after spawn, false after kill, false on tampered token', async () => {
+  it('is true after spawn and false after kill for a child this orchestrator spawned', async () => {
     const orch = makeOrchestrator();
     const { dockerId } = await orch.createContainer(makeRequest('c1'));
     const { pid } = decodeDockerId(dockerId);
@@ -553,20 +553,137 @@ describe('HostProcessOrchestrator.isRunning', () => {
     await waitFor(() => orch.isRunning(dockerId));
     expect(await orch.isRunning(dockerId)).toBe(true);
 
-    // Tamper with the token file
+    // The token file is not consulted for a child this process spawned — its
+    // ChildProcess is exact, and the file has a start-up window it does not.
     const workdir = join((orch as unknown as { rootDir: string }).rootDir, 'c1');
     writeFileSync(join(workdir, '.startup-token'), 'tampered', 'utf8');
-    expect(await orch.isRunning(dockerId)).toBe(false);
-
-    // Restore token, kill the process
-    const persisted = new StateStore((orch as unknown as { rootDir: string }).rootDir).load();
-    writeFileSync(join(workdir, '.startup-token'), persisted.handles[0]!.startupToken, 'utf8');
     expect(await orch.isRunning(dockerId)).toBe(true);
 
     process.kill(pid, 'SIGKILL');
     await waitFor(() => !isPidAlive(pid));
     expect(await orch.isRunning(dockerId)).toBe(false);
   });
+
+  it('checks a re-attached handle by pid plus startup token', async () => {
+    const rootDir = join(tmpRoot, 'reattach');
+    const a = makeOrchestrator({ rootDir });
+    const { dockerId } = await a.createContainer(makeRequest('c1'));
+    const { pid } = decodeDockerId(dockerId);
+    await waitFor(() => existsSync(join(rootDir, 'c1', '.startup-token')));
+
+    // A new orchestrator has no ChildProcess for it — the host-restart case.
+    const b = makeOrchestrator({ rootDir });
+    await b.init();
+    expect(await b.isRunning(dockerId)).toBe(true);
+
+    // A live pid whose token does not match may be an unrelated process that
+    // inherited the pid, so it does not count as ours.
+    const tokenPath = join(rootDir, 'c1', '.startup-token');
+    const token = readFileSync(tokenPath, 'utf8');
+    writeFileSync(tokenPath, 'tampered', 'utf8');
+    expect(await b.isRunning(dockerId)).toBe(false);
+
+    writeFileSync(tokenPath, token, 'utf8');
+    expect(await b.isRunning(dockerId)).toBe(true);
+
+    process.kill(pid, 'SIGKILL');
+    await waitFor(() => !isPidAlive(pid));
+    expect(await b.isRunning(dockerId)).toBe(false);
+  });
+});
+
+/**
+ * A child that binds its health port at once but writes its startup token only
+ * after `TOKEN_DELAY_MS` — the shape of a real `cadre-cli start` built before the
+ * token write moved to the front, and of any child that is slow to reach it. Dies
+ * on a port clash the way `cadre-cli start` does.
+ *
+ * The incident this guards against: the donation supervisor asked `isRunning`
+ * during that window, got `false`, and re-spawned the container. The re-spawn
+ * released and reused the same ports, rotated the seed token, and returned
+ * success; the second child then died on the port the first still held, leaving
+ * the host's records naming a dead child and the live one refusing every seed.
+ */
+describe('HostProcessOrchestrator re-spawn over a child that is still starting', () => {
+  const TOKEN_DELAY_MS = 3000;
+  const SLOW_TOKEN_CHILD = `
+import fs from 'node:fs';
+import net from 'node:net';
+const args = process.argv.slice(2);
+const tokenPath = args[args.indexOf('--startup-token-file') + 1];
+const server = net.createServer();
+server.on('error', (err) => { console.error('Failed to start cadre node: ' + err.message); process.exit(1); });
+server.listen(Number(process.env.CADRE_HEALTH_PORT), '0.0.0.0', () => {
+  console.log('listening');
+  setTimeout(() => fs.writeFileSync(tokenPath, process.env.CADRE_STARTUP_TOKEN), ${TOKEN_DELAY_MS});
+});
+process.on('SIGTERM', () => process.exit(0));
+setInterval(() => {}, 1 << 30);
+`;
+  const TEST_TIMEOUT_MS = 20_000;
+
+  let slowChildPath: string;
+  beforeEach(() => {
+    slowChildPath = join(tmpRoot, 'slow-token-child.mjs');
+    writeFileSync(slowChildPath, SLOW_TOKEN_CHILD, 'utf8');
+  });
+
+  it('reports the child running before its token is written, and refuses to launch over it', async () => {
+    const orch = makeOrchestrator({ spawn: { entrypoint: slowChildPath } });
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const tokenPath = join(rootDir, 'c1', '.startup-token');
+
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(async () => (await orch.getLogs(first.dockerId)).includes('listening'));
+    const portsBefore = orch.getNode('c1')!.ports;
+
+    // Inside the start-up window: port bound, token not yet written.
+    expect(existsSync(tokenPath)).toBe(false);
+    expect(await orch.isRunning(first.dockerId)).toBe(true);
+
+    // Exactly what `DonationService.respawn` would do next.
+    await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow(/c1 is still running/);
+
+    // Nothing was dropped, released or rotated.
+    expect(orch.listNodes()).toHaveLength(1);
+    expect(orch.getNode('c1')?.dockerId).toBe(first.dockerId);
+    expect(orch.getNode('c1')!.ports).toEqual(portsBefore);
+    const other = await orch.createContainer(makeRequest('c2'));
+    expect(other.p2pPort).not.toBe(first.p2pPort);
+    expect(other.healthEndpoint).not.toBe(first.healthEndpoint);
+
+    // The first child finishes starting undisturbed, with the token it was given.
+    const { pid, token } = decodeDockerId(first.dockerId);
+    await waitFor(() => existsSync(tokenPath), TOKEN_DELAY_MS + 5000);
+    expect(readFileSync(tokenPath, 'utf8')).toBe(token);
+    expect(isPidAlive(pid)).toBe(true);
+    expect(await orch.getLogs(first.dockerId)).not.toContain('EADDRINUSE');
+  }, TEST_TIMEOUT_MS);
+
+  it('refuses to launch over a re-attached child whose ports are still bound', async () => {
+    const rootDir = join(tmpRoot, 'reattach-starting');
+    const a = makeOrchestrator({ rootDir, spawn: { entrypoint: slowChildPath } });
+    const first = await a.createContainer(makeRequest('c1'));
+    await waitFor(async () => (await a.getLogs(first.dockerId)).includes('listening'));
+
+    // A host restart while the child is mid-start: no ChildProcess, no token yet.
+    const b = makeOrchestrator({ rootDir, spawn: { entrypoint: slowChildPath } });
+    await b.init();
+    expect(await b.isRunning(first.dockerId)).toBe(false);
+
+    await expect(b.createContainer(makeRequest('c1')))
+      .rejects.toThrow(/c1 may still be running: port \d+ on 0\.0\.0\.0 is unavailable/);
+
+    // Nothing dropped: the record's dockerId still resolves on its ports, and
+    // the live child was not killed on unverified evidence.
+    expect(b.listNodes()).toHaveLength(1);
+    expect(b.getNode('c1')?.dockerId).toBe(first.dockerId);
+    const { pid } = decodeDockerId(first.dockerId);
+    expect(isPidAlive(pid)).toBe(true);
+
+    // Once it has written its token it is recognised as running.
+    await waitFor(() => b.isRunning(first.dockerId), TOKEN_DELAY_MS + 5000);
+  }, TEST_TIMEOUT_MS);
 });
 
 describe('HostProcessOrchestrator.stopContainer', () => {
@@ -761,8 +878,10 @@ describe('Restart recovery (init)', () => {
     const a = makeOrchestrator({ rootDir });
     const r1 = await a.createContainer(makeRequest('c1'));
     const r2 = await a.createContainer(makeRequest('c2'));
-    await waitFor(() => a.isRunning(r1.dockerId));
-    await waitFor(() => a.isRunning(r2.dockerId));
+    // Not `a.isRunning`: that answers from the ChildProcess at once, but `b`
+    // below can only recognise c1 once c1 has written its startup token.
+    await waitFor(() => existsSync(join(rootDir, 'c1', '.startup-token')));
+    await waitFor(() => existsSync(join(rootDir, 'c2', '.startup-token')));
 
     // Kill c2 externally
     const { pid: pid2 } = decodeDockerId(r2.dockerId);
