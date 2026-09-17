@@ -73,6 +73,17 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * attempts, measured in `control-write-degraded-cohort-member.integration.ts`), which
  * already exceeds this budget when attempt 1 returns — so that case is surfaced immediately
  * and retry adds ZERO latency to the case where it cannot help.
+ *
+ * NOTE: a failed commit attempt now also pays a cancel discharge before its error returns
+ * (optimystic `TransactorSource.transact`'s catch, added by upstream
+ * `1-a-failed-attempt-must-discharge-its-own-pend`) — bounded by six rounds and
+ * `abortOrCancelTimeoutMs`, which every collection this repo opens sets to 5 s
+ * (`../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`).
+ * Two failed attempts whose cancels each run their full budget would consume this whole 10 s
+ * ceiling and cut the three-attempt policy to two. Not observed — every measured round of the
+ * transient-reset case committed on attempt 3 of 3 — so this is a condition to watch, not work
+ * to do: if that case ever starts failing with `failed after 2/3 attempt(s)`, the cancel
+ * discharge is where the time went.
  */
 export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
 

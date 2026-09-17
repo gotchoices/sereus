@@ -127,8 +127,6 @@ const log = debug('sereus:integration:degraded-cohort');
 // authoritative if the two ever disagree, and it is where a new fingerprint
 // gets added first.
 //
-//  - `pending conflict` after a stream reset whose error carries `cancelError`
-//    → `control-write-retry-does-not-absorb-a-transient-stream-reset`
 //  - `pending conflict` with NO preceding stream reset and NO `cancelError`,
 //    clearing by itself
 //    → `control-write-refused-when-a-rival-write-holds-the-block`
@@ -136,6 +134,12 @@ const log = debug('sereus:integration:degraded-cohort');
 //    → `control-peer-row-refresh-invisible-to-third-node`
 //  - `2/3 approvals (needed 3, 0 rejections)` — not a failure, the
 //    deliberately silent-member cases behaving as specified
+//
+// CLOSED 2026-09-17: `pending conflict` after a stream reset whose error carried
+// `cancelError` (owned by `control-write-retry-does-not-absorb-a-transient-stream-reset`).
+// Upstream fixed the reset attempt's own pend discharge, and a five-round verification
+// series that day never reproduced the fingerprint — see `tickets/.pre-existing-known.md`
+// for the evidence. "absorbs an injected transient stream reset" below passed all five.
 //
 // To trace the old (fixed) mechanism, re-run under
 // `DEBUG='optimystic:db-p2p:cluster*'` (trailing star required — these

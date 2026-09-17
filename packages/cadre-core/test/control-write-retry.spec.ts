@@ -88,6 +88,39 @@ const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
 /** The aggregate with no per-batch details at all — `formatBatchStatuses` had nothing to format. */
 const TRANSACTOR_AGGREGATE_NO_DETAILS =
 	'Some peers did not complete: ; root: The stream has been reset';
+/**
+ * The FOURTH place `[block:` appears — `NetworkTransactor.dischargeCancel`
+ * (`db-core/src/transactor/network-transactor.ts` ~1152), raised when a failed commit
+ * attempt's own cancel could not discharge the pend it left behind within its bounded
+ * six rounds. This is a reconstruction (built from that formatter's literal template),
+ * not a capture — no run recorded in `tickets/.pre-existing-known.md` has produced one.
+ *
+ * The status token reads `in-flight`, not `no-response`, for the same reason
+ * {@link TRANSACTOR_AGGREGATE_COMMIT_PHASE} does: a batch only carries a `cause=` when its
+ * RPC rejected, and every one of the transactor's three formatters — including this one —
+ * renders that as `in-flight`.
+ */
+const CANCEL_DISCHARGE_AGGREGATE =
+	'Cancel of action N7Wj4Q9nOWCkm5G1cxTPWg did not discharge 1 block(s): '
+	+ 'PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk; peers: '
+	+ '12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) '
+	+ 'cause=The stream has been reset; root: The stream has been reset';
+/**
+ * A collection's own retry budget giving up on a standing `pending conflict` — Optimystic's
+ * `SyncRetryExhaustedError`, raised by `Collection.sync` after it has already spent its own
+ * bounded attempts (`db-core/src/collection/collection.ts`) racing a rival action for the
+ * same block. Reaches this funnel with no transactor-aggregate wrapper at all, so no matcher
+ * here claims it.
+ *
+ * A real captured literal, not a reconstruction: from the `[self-record-update]` write on node
+ * B during round 4 of the 2026-09-17 verification series (see
+ * `retire-the-stream-reset-retry-fingerprint`'s close-out). The log it came from
+ * (`tickets/.logs/control-write-retry-absorb.probe-r2.log`) is pruned on age; this is the
+ * surviving copy.
+ */
+const SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT =
+	'sync for collection default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict: '
+	+ 'block(s) held by unresolved rival action(s) f7cM8wOiFkZ4O_bOrXFVQQ';
 const SUPER_MAJORITY_NONE_ANSWERED =
 	'Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)';
 const SUPER_MAJORITY_PARTIAL =
@@ -250,6 +283,18 @@ describe('isRetriableControlWriteFailure', () => {
 	});
 
 	/**
+	 * Pins `isUncommittedTransactorAggregate`'s NOTE: the discriminator is the `Some peers did
+	 * not complete:` PREFIX and the `[block:` token together, never `[block:` alone. A cancel
+	 * that fails to discharge a pend also formats a `[block:` batch detail, but under a
+	 * different prefix (`Cancel of action … did not discharge …`) — so it must stay declined.
+	 * Relaxing the discriminator to "contains `[block:`" would read this as a retriable
+	 * get/pend and re-present a write whose own cancel is what is still unresolved.
+	 */
+	it('never retries the cancel-discharge aggregate, even though it contains `[block:`', () => {
+		expect(isRetriableControlWriteFailure(nested(CANCEL_DISCHARGE_AGGREGATE))).toBe(false);
+	});
+
+	/**
 	 * The shape a third node's join failure ACTUALLY has: the shortfall inline inside a
 	 * transactor aggregate, not on its own. Same sentence, same `cause` chain, opposite verdicts
 	 * — the per-batch bracket token is the whole discriminator, so this pair is what makes the
@@ -280,6 +325,20 @@ describe('isRetriableControlWriteFailure', () => {
 	it('never retries a missing-block convergence fault — a retry cannot heal it', () => {
 		expect(isRetriableControlWriteFailure(nested(MISSING_BLOCK))).toBe(false);
 		expect(isRetriableControlWriteFailure(nested(ddlFailure(MISSING_BLOCK)))).toBe(false);
+	});
+
+	/**
+	 * A `pending conflict` that reaches this classifier NOT wrapped in a `[block:` aggregate —
+	 * because Optimystic's own collection sync already spent its own ten retries racing the
+	 * rival action and gave up. Correctly declined here: nothing in this message says the
+	 * cohort did not answer, and re-presenting it a further two times inside this loop's
+	 * budget would just repeat a race Optimystic already lost on its own terms. Contrast
+	 * {@link PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE} above, a `pending conflict` at the
+	 * PROMISE phase that IS deliberately retried — the difference is which side has already
+	 * exhausted its attempts.
+	 */
+	it('never retries a SyncRetryExhaustedError-shaped pending-conflict message', () => {
+		expect(isRetriableControlWriteFailure(nested(SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT))).toBe(false);
 	});
 
 	/**
