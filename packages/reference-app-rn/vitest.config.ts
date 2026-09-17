@@ -30,7 +30,8 @@ import { defineConfig } from 'vitest/config';
  *    Its own project for the same reason as `metro-babel`: it runs none of the
  *    `node` project's stale-build guard over sibling `dist` output, so
  *    `vitest run --project polyfills` stays runnable while a sibling is unbuilt.
- *    It does read dependency `dist` trees, but only as text.
+ *    It does read dependency `dist` trees, but only as text. It also holds the spec
+ *    for `polyfills/reload-reason.js`, which runs against a mocked `react-native`.
  *
  * RN-coupled production modules (`app-state.ts`, screens) are not unit-targeted
  * by any project; they run under the Expo e2e harness (`scripts/run-e2e.mjs`).

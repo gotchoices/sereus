@@ -675,8 +675,62 @@ Reconnecting to the lent node after the app relaunches is only observable on a d
 ### Iterating
 
 1. Start the drone: `cd packages/cadre-cli && node dist/bin/cadre.js start -c drone.yaml --listen-for-seeds`
-2. Start Metro: `cd packages/reference-app-rn && npx expo start --dev-client`
+2. Start Metro: `yarn workspace @serfab/reference-app-rn start` (`expo start --dev-client`)
 3. Open on device → app loads JS from Metro → iterate on changes without rebuilding native
+
+Metro watches the whole sereus, optimystic, quereus and Fret roots, so a changed module in any of them reaches the phone while it is connected. For a scenario run that must not be interrupted, see Device test runs below.
+
+### Device test runs
+
+When Metro sends a development build a changed module, Fast Refresh applies it in place only if every chain of imports above that module ends at a React component module. Otherwise the whole app reloads, which is the case for the library and `dist` modules the node is built from, because `index.js` and `src/cadre-phone.ts` import them outside any component. The reload restarts the node and breaks whatever step of the scenario was running.
+
+**What reaches the phone.** Measured against this app's Metro on 2026-09-16:
+
+| Write during the run | Effect on the phone |
+|---|---|
+| A `.md` file anywhere (tickets, docs), or a commit | Nothing. `.md` is not a watched extension and `.git` is ignored |
+| A watched extension (`.json`, `.db`, `.ts`, …) outside the app's module graph, such as `tickets/.logs/*.json` or optimystic's `tickets/.index/index.db` | An empty update: "Refreshing..." flashes and LogBox and any red box are cleared. No reload |
+| A build that rewrites `dist` files with identical bytes | An empty update |
+| A content change to a module the app bundles: this app's `src/`, a sereus workspace package it imports, or a linked `dist` file in optimystic, quereus or Fret | The module is sent, and the app reloads unless Fast Refresh can apply it |
+
+Ticket, doc and commit writes never need to pause. On `yarn start`, the writes that must wait until the run ends are edits to bundled source and builds that change linked `dist` output. The optional watch narrowing (a Metro `blockList` for `tickets/`, `docs/` and similar) was measured to change none of this and is not configured; the note at `watchFolders` in `metro.config.js` says when to revisit it.
+
+One reload does not come from a write. If the app's connection to Metro drops (Wi-Fi, a lost `adb reverse`, Metro restarted), the next time the app loads a module bundled lazily (a dynamic `import()` fetched from Metro, such as optimystic's `import('p2p-fret')`), it reloads with `Bundle Splitting – Metro disconnected`.
+
+**Frozen dev server.** `yarn workspace @serfab/reference-app-rn start:frozen` runs `expo start --dev-client` with `CI=1`, which turns Metro's file watching off. No write anywhere reaches the phone, so other work does not need to pause. Differences from `yarn start`:
+
+- A reload (from the dev menu or a red box) serves each module as Metro first read it, not as it is on disk now. To put a rebuilt dependency on the phone, restart Metro.
+- There is no interactive terminal: no QR code and no `r`/`m`/`j` keys. Metro prints `Waiting on http://localhost:8081`, and the dev client connects as usual (its recent-servers list, or `adb reverse tcp:8081 tcp:8081`).
+- Expo does not register the session with its servers, so a signed-in dev client does not suggest the project in its list.
+- A port in use is not replaced by a prompt for another one; pass `--port <n>`.
+
+**Why it reloaded.** Development builds log the reason before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
+
+```
+W ReactNativeJS: [reload] No root boundary
+```
+
+| Reason | Meaning |
+|---|---|
+| `No root boundary`, `Invalidated boundary`, `Dependency cycle` | Metro sent a changed module Fast Refresh could not apply. The observer below names it |
+| `Bundle Splitting – Metro disconnected` | The connection to Metro had closed, and the app then loaded a lazily bundled module |
+
+A `Running "main"` with no `[reload]` line before it was started natively: the dev menu's Reload, `r` in the Metro terminal, or the app process restarting.
+
+**Which file reached the phone.** With Metro running under `yarn start`, run in a second terminal:
+
+```
+yarn workspace @serfab/reference-app-rn metro:observe [--port <n>]
+```
+
+It attaches to the bundle the dev client loads (read from Metro's manifest) and prints each update that adds, modifies or deletes modules, with local timestamps in logcat's format:
+
+```
+09-16 21:43:24.439 update: 1 modified, 0 added, 0 deleted
+    modified packages/reference-app-rn/src/connection-status.bundle
+```
+
+Paths are relative to the sereus root, with the file extension replaced by `.bundle`; a sibling repo's module starts with `../optimystic/` and so on. Empty updates print nothing. If no client has loaded the bundle yet, the script builds it once before attaching, which can take a minute on a cold Metro. Attaching does not change what the phone receives. Under `start:frozen` it prints nothing.
 
 ### When Native Rebuild Is Needed
 

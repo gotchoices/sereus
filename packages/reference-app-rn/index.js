@@ -10,6 +10,10 @@ import './polyfills/event';
 // here is the point: after every polyfill, before the router evaluates the app tree,
 // so the table beats any import-time crash caused by a global that is not there.
 import './polyfills/audit';
+// Logs `[reload] <reason>` before any JS-initiated reload (__DEV__ only). Placed
+// before expo-router/entry so a reload triggered while the app tree evaluates is
+// logged too.
+import './polyfills/reload-reason';
 
 // Hand off to Expo Router's standard entry.
 import 'expo-router/entry';
