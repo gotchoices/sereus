@@ -80,3 +80,13 @@ above comes from. A run reporting "7 skipped" died at `bootControlTrio` instead 
 > clear, so a re-run of `control-write-degraded-cohort-member` may now fail *differently* rather than
 > less — see the note just added to `control-write-hears-zero-approvals-from-healthy-trio`, which
 > shares the scenario file.
+
+## Unblocked 2026-09-17
+
+The upstream ticket this waits on has landed: optimystic `complete/1-a-failed-attempt-must-discharge-its-own-pend` (review `decb6474`, 2026-09-05). A failed attempt now cancels its own pend with a retried, checked cancel. When that cancel also fails, the error carries `cancelError`. The case where the stream reset also kills the cancel still leaves a pend. That residual is in optimystic `backlog/debt-unpromotable-pending-records-need-a-sweep`, which is not scheduled.
+
+Evidence since then:
+- 2026-09-06 (run from the optimystic side, 8 rounds): 3 clean. The remaining failures were a `StreamResetError` with `cancelError` attached, logged as `failed non-transiently on attempt 1/3, not retried here`, followed by a `pending conflict` two operations later.
+- 2026-09-16 (`complete/control-read-queues-behind-a-write-waiting-for-the-database`): `control-write-degraded-cohort-member` passed 7/7 in each of 3 isolated runs.
+
+To verify: run the scenario file five times in isolation. If it is red, look first at whether the classifier now declines a stream reset that carries `cancelError` (the 2026-09-06 "not retried here" line). That part is on the sereus side. The residual pend is upstream. `control-write-hears-zero-approvals-from-healthy-trio` uses the same scenario file, so one five-run series answers both tickets.

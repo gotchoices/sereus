@@ -83,3 +83,13 @@ Filed upstream as `../optimystic/tickets/fix/3-a-concurrent-same-key-insert-sile
 reproduce-first, since this measurement predates Optimystic's fork guard and pend-refusal fix. The
 unblock condition here is unchanged. Sereus now warns sApp developers against self-imposed integer
 sequences (`docs/schema-guide.md`), and that warning is referenced publicly on gotchoices/sereus#5.
+
+## Unblocked 2026-09-17
+
+The upstream fix has landed in `../optimystic`, which this repo links through `resolutions`:
+
+- `complete/3-concurrent-insert-guard-refuses-taken-key` (`e5fa156c`, 2026-09-10): the losing concurrent same-primary-key insert now fails with the ordinary `UNIQUE constraint failed:` error. Its handoff names this ticket and says `control-write-retry.ts` should need no new classifier arm. Verify that; do not assume it.
+- `complete/3.5-concurrent-secondary-unique-guard` (`19e865dc`): the same refusal for secondary `unique` columns (the `StampId` anti-replay columns).
+- `complete/6.3-refuse-concurrent-row-change-loser` (`4e0112b3`, 2026-09-15): a concurrent update, delete, `insert or ignore` or `insert or replace` loser is refused with a new message, `concurrent modification: another writer changed or removed the row in <table> at primary key (…)`.
+
+To verify: rebuild `../optimystic`, then re-run experiments 1 (two real nodes, same PK) and 3 (different PKs as the control). Expect exactly one writer to be rejected with `UNIQUE constraint failed`. Grep `packages/cadre-core/src` for how the new `concurrent modification:` message is classified if a control write can hit it. Close this ticket if both experiments match.

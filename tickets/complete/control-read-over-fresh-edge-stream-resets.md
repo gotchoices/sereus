@@ -210,3 +210,13 @@ clean.
 > The ticket's own alternative — retire this and open a fresh one against the boot failure that
 > actually fires, rather than the stream-reset symptom never reached in five isolated rounds — looks
 > better than ever under that framing. Still a human's call; nothing has been retired.
+
+## Closed 2026-09-17
+
+This is closed as obsolete. Nothing it was waiting on is still open, and the symptom it was filed for has not appeared in any of the recent runs:
+
+- The upstream dependency landed. `isolated-read-cannot-confirm-a-never-written-block` finished as optimystic `complete/absence-verdict-names-the-evidence`, and the SQL-surface follow-up finished as `complete/2-a-sql-caller-cannot-see-why-a-read-failed` (`95e8df51`, 2026-09-06).
+- The masking boot failure is handled in sereus by `complete/isolated-node-reads-unwritten-revocation-table-as-empty`. The forbidden B→C connection is closed by `complete/control-trio-b-connects-to-c-before-sever` (`1171e57`).
+- Measured (`tickets/.pre-existing-known.md`, delta 2026-09-16): 9 isolated runs after the Revocation fix, with the carry step passing twice. After the harness dial gate, 8 of 9 runs passed. The one failure was the `B resolves C's signed CadrePeer address record` boot gate, which belongs to `control-peer-row-refresh-invisible-to-third-node`. None of the 18 runs showed the original carry-step `The stream has been reset`.
+
+Follow-up: the carry-step entry for this slug in `tickets/.pre-existing-known.md` should be removed. It is outside this triage pass's scope. If the stream reset comes back, open a new fix ticket with a fresh trace.

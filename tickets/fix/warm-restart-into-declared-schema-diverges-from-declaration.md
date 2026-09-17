@@ -89,3 +89,12 @@ All three causes are in `../quereus` (differ) and `../optimystic` (catalog hydra
 1. Rebuild `@quereus/quereus` and `@optimystic/quereus-plugin-optimystic` (and any package the stale-build guard names).
 2. `yarn workspace @serfab/cadre-core test` — every test listed above must pass; then the two integration scenarios from `packages/integration-tests`.
 3. Remove the matching lines from `tickets/.pre-existing-known.md`.
+
+## Unblocked 2026-09-17
+
+All three upstream causes have landed in the linked checkouts:
+
+- **A (type alias):** quereus `561195502` ("Schema diff fix", 2026-09-17) changes `computeColumnAttributeChange` to compare logical types and adds a differ test. It is committed but in no release yet, and optimystic's `blocked/quereus-differ-treats-type-aliases-as-a-retype` still waits on that release. Sereus uses the linked `../quereus`, so rebuild it before running anything.
+- **B (CHECKs and `with context`) and C (stale `using` args):** optimystic `complete/0-warm-restart-restores-a-table-that-disagrees-with-its-declared-schema` (review `06a938ed`, 2026-09-16). The catalog record now stores CHECKs, foreign keys, context variables and declared type spellings. Hydrate strips `transactor`/`keyNetwork`/`networkName`/`port`/`cache` and takes the binding from the current session. Its handoff expects the `context.ManagerKey` failure and the local→network handover empty read to be gone, with the storage-operation budget unchanged.
+
+To verify: rebuild `@quereus/quereus` and `../optimystic` (optimystic `74b75f8e` bumped its quereus range), then follow "When upstream reports fixes" above. Watch optimystic `backlog/bug-optimystic-catalog-record-depends-on-migration-history`: an index declared ahead of an existing one stores different catalog bytes, and a CHECK added by a later schema version is not persisted.

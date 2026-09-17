@@ -485,3 +485,9 @@ with `No dialable control-network address for peer 12D3KooW…`. It passed in al
 subsequent runs, including the five plain ones. Recorded here so the next reader does not
 treat it as new, but it is a different signature with a different owner and is not tracked
 by this ticket.
+
+## Unblocked 2026-09-17
+
+The upstream arm this ticket asks for ("a committed block reaches a second holder" / a single holder is enough) has landed. Optimystic `complete/1-mint-solo-cohort-commit-proof` (`1675b375`, 2026-09-02) has a machine that commits on a one-machine cohort sign a proof for the block. `single-signer-proof-outweighs-corroboration` (`64c65452`, 2026-09-02) lets that proof stand in for corroboration. Both shipped in `@optimystic/db-p2p` 0.28.0. The 2026-09-05 control-peer-row measurement logged `certified-claims accept-unanchored … signers=1` in use. The sereus peer-join catch-up (`50c39aa`) also landed. `push-wake-e2e` is absent from every failing list in `tickets/.pre-existing-known.md` since then (full-suite gates on 2026-09-05, 09-07, 09-08 ×2 and 09-10). That is weak evidence, because full-suite green runs have been misleading here before.
+
+To verify: run this ticket's five-run isolated gate on `push-wake-e2e`. Five clean runs close it. On a red run, capture whether the `claimed-elsewhere` verdict on `default/OwnerKey` still appears, and whether a certified claim was offered for it.

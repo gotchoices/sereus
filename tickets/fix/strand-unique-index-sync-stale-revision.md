@@ -286,3 +286,16 @@ three is not a rate. Recording the file so the next rate measurement covers it r
 rediscovering it as a new flake.
 
 Nothing changes about the unblock condition — the fix is still upstream in `../optimystic`.
+
+## Unblocked 2026-09-17
+
+This defect was never filed as its own upstream ticket. Since its last sighting, several upstream changes have landed that cover each fingerprint it has shown. On 2026-09-07 it appeared as an intermittent `PartialCommitError` (`[default/Member]` persisted, `_uniq_7.stampid` not) under a `content-digest-mismatch` validator rejection.
+
+- `complete/a-commit-over-a-gapped-base-forks-the-block` (`da57d4e9`, 2026-09-09) refuses a commit over a stale base that previously produced `content-digest-mismatch`. Its measurement on this repo's degraded-cohort scenario took `content-digest-mismatch` from 20 to 0.
+- `complete/2-sync-fail-fast-on-a-stalled-revision-view` (`09ed71bb`, 2026-09-06): a sync that keeps re-requesting a taken revision now fails in about 2 attempts with `SyncRevisionStalledError`, a subclass of `SyncRetryExhaustedError`, instead of 10.
+- `complete/2-a-half-saved-multi-collection-commit-is-reported-as-not-saved` (`670e196e`, 2026-09-17) reports a partial save with the collections that were saved.
+- `complete/3.5-concurrent-secondary-unique-guard` (`19e865dc`) and `complete/1-consensus-pend-refusal-commit-tier` (`aa314602`).
+
+`strand-membership-closed-strand-e2e` has not appeared in a failing list in `tickets/.pre-existing-known.md` since 2026-09-07 (gates on 09-08 ×2 and 09-10).
+
+To verify: run `strand-membership-closed-strand-e2e` in isolation enough times to state a rate (at least 5). If it is still red, capture a trace with `optimystic:db-core:collection` and `optimystic:db-p2p:*` and file it upstream in `../optimystic/tickets/fix/`, since no upstream ticket exists for it. If it is green, close this ticket and remove its entries from `tickets/.pre-existing-known.md`.

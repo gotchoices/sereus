@@ -5,6 +5,8 @@ files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal
 difficulty: medium
 ----
 
+**Upstream status 2026-09-17:** the fail-fast half has landed. Optimystic `complete/2-sync-fail-fast-on-a-stalled-revision-view` (`09ed71bb`, 2026-09-06) now stops within about 2 attempts with `SyncRevisionStalledError` (a subclass of `SyncRetryExhaustedError`, carrying `staleAt`/`requestedRev`/`heldRev`) instead of retrying 10 times. It deliberately does not adopt the responder's revision. This ticket's unblock condition is forward progress on a fork, and that is still only in optimystic backlog (`feat-refresh-can-demand-a-revision-floor`, `more-design/6.5-partition-healing`). `control-delete-while-alone-convergence` has not been on a failing list in `tickets/.pre-existing-known.md` since 2026-09-02. Those were full-suite runs, and this defect fails more often in isolation.
+
 > **Re-measured 2026-09-02, after the control-network peer-join block catch-up landed
 > (`review/control-network-peer-join-block-catch-up`, commit `50c39aa`). Still real, at a lower
 > rate.** That work asked for this re-measurement explicitly, because it fixed a *different*

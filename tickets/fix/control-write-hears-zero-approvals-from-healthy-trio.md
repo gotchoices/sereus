@@ -325,3 +325,9 @@ Do not "fix" this by loosening the scenario's assertions.
 > `tickets/.pre-existing-known.md` with the 3-of-8 rate so nobody reads a green round as a fix, and
 > re-run with `DEBUG='optimystic:db-p2p:*'` on a round that fails, to see whether the standing pend
 > is ever swept once the transport heals or whether it really is permanent for the process.
+
+## Unblocked 2026-09-17
+
+Every upstream mechanism this ticket recorded has landed. The `0/3` silence is fixed by `member-must-answer-a-lost-conflict-race` (pruned; `c7e3506d`). The half-applied-commit wedge is fixed by `complete/1-torn-commit-must-cancel-the-blocks-it-abandoned` (`3c941a4a`). The stream-reset pend is fixed by `complete/1-a-failed-attempt-must-discharge-its-own-pend` (`decb6474`). After the 2026-09-06 run (3 of 8 clean), `complete/control-read-queues-behind-a-write-waiting-for-the-database` measured `control-write-degraded-cohort-member` at 7/7 green in 3 of 3 isolated runs on 2026-09-16.
+
+To verify: run the five-round gate this ticket specifies, in isolation. If all five are clean, close this ticket and update the scenario's entry in `tickets/.pre-existing-known.md`. If a round is red, attribute it by fingerprint before keeping this open: `pending conflict` after a `cancelError` belongs to `control-write-retry-does-not-absorb-a-transient-stream-reset` (also in `fix/`, same scenario file), and the boot gate belongs to `control-peer-row-refresh-invisible-to-third-node`.

@@ -576,3 +576,16 @@ wait for a fix, and it is the fastest way to give the upstream ticket the one fa
 > an arm on `optimystic/tickets/backlog/more-design/6.5-partition-healing`, which already owns the
 > "Forked (conflict)" case. That is design work behind a human decision, so do not expect it to
 > arrive as a side effect of any in-flight fix.
+
+## Unblocked 2026-09-17
+
+Several upstream changes landed after the 2026-08-29 capture, and each could remove the fork where two actions share one revision on the index sub-collection:
+
+- optimystic `complete/a-commit-over-a-gapped-base-forks-the-block` (`da57d4e9`, 2026-09-09). A node that missed updates used to apply the next commit over its stale copy, which left different content under the same revision number. Its commit is now refused and the node heals from a peer. This matches the `lineage-divergence` lines above.
+- `complete/6.3-refuse-concurrent-row-change-loser` (`4e0112b3`, 2026-09-15). A concurrent loser used to leave a permanently wrong secondary index entry. It is now refused.
+- `complete/6.4-index-seek-must-verify-its-entries` (`ad88185e`) and `complete/6-index-integrity-check` (`cc7d950a`, 2026-09-15). The index-integrity check can report which direction an index disagrees with its table.
+- `complete/1-consensus-pend-refusal-commit-tier` (`aa314602`, 2026-08-31). This covers the "two writers admitted at one revision" lead that the 2026-09-05 note left unproven.
+
+Upstream also asked, in `blocked/secondary-index-repro-exhausted-upstream`, for the next step to be taken here: instrument the failing read downstream.
+
+To verify: rebuild `../optimystic`. Temporarily re-add `index FormationUsageByToken on FormationUsage (Token);` to both control-schema copies, run `strand-formation-concurrent-redemption` five times with the `collection:*` and `index:*` debug namespaces, then remove the line again. Also exercise a cross-machine `unique` column. If it is green, close this ticket and tell optimystic so they can close their blocked ticket. If it is red, record the block id and revision at the failing read on that upstream ticket.
