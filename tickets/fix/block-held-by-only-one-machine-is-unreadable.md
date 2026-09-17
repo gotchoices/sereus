@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-09-17T15:37:30.679Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\block-held-by-only-one-machine-is-unreadable.fix.2026-09-17T15-37-30-679Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ----
 description: When a machine writes something to the shared database before any other machine has joined, the other machines can be unable to read it back — not "not yet", but an outright error — because the database library refuses to accept a record that only one machine has a copy of. It usually rights itself by luck, which is why this shows up as a test that fails about four times in ten. The rule that causes it lives in a separate library this project depends on but does not edit.
 prereq:
