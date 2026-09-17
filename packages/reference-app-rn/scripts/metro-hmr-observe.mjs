@@ -11,9 +11,10 @@
  * adds, modifies or deletes modules, listing each module. Empty updates (a watched file
  * changed that is not in the bundle: ticket logs, index databases, docs) print nothing;
  * on the phone they only flash "Refreshing..." and clear LogBox. A modified module that
- * is not a React Refresh boundary (any library or `dist` module) makes the phone reload
- * with `[reload] No root boundary` or similar, so a block printed here just before a
- * reload names the file that caused it. See docs/reference-app-rn.md § Device test runs.
+ * is not a React Refresh boundary (any library or `dist` module) makes the phone reload,
+ * logging `[reload] (no reason given)` with `performFullRefresh` as the caller, so a
+ * block printed here just before a reload names the file that caused it.
+ * See docs/reference-app-rn.md § Device test runs.
  *
  * The bundle URL comes from the dev server's manifest (what the dev client itself
  * requests), so it matches the phone's graph and joins the phone's HMR group. Joining

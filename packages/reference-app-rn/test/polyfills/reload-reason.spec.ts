@@ -2,7 +2,7 @@
  * Guards `polyfills/reload-reason.js` — the development-build wrap that logs
  * `[reload] <reason>` before `DevSettings.reload` runs.
  *
- * React Native's own callers (`setUpReactRefresh.js`, `HMRClient.js`) hold the shared
+ * Its callers (React Native's `HMRClient.js`, Expo's native `window.location.reload`) hold the shared
  * `DevSettings` object and look `reload` up on it at call time, so calling through a
  * fake object here is the same path they take. `react-native` itself is replaced by
  * that fake: its Flow sources cannot load in Node. Each case re-evaluates the polyfill
@@ -21,6 +21,7 @@ interface FakeDevSettings {
 const h = vi.hoisted(() => ({
 	devSettings: { reload: () => undefined } as FakeDevSettings,
 	events: [] as string[],
+	warnExtras: [] as unknown[][],
 }));
 
 vi.mock('react-native', () => ({ DevSettings: h.devSettings }));
@@ -36,12 +37,14 @@ describe('reload-reason polyfill', () => {
 
 	beforeEach(() => {
 		h.events = [];
+		h.warnExtras = [];
 		originalReload = vi.fn(function (this: unknown, reason?: string) {
 			h.events.push(`reload:${String(reason)}:${this === h.devSettings ? 'bound' : 'unbound'}`);
 		});
 		h.devSettings.reload = originalReload;
-		vi.spyOn(console, 'warn').mockImplementation((message: string) => {
+		vi.spyOn(console, 'warn').mockImplementation((message: string, ...rest: unknown[]) => {
 			h.events.push(`warn:${message}`);
+			h.warnExtras.push(rest);
 		});
 	});
 
@@ -53,23 +56,36 @@ describe('reload-reason polyfill', () => {
 	it('logs the reason, then reloads with it, in a development build', async () => {
 		await evaluatePolyfill(true);
 
-		h.devSettings.reload('No root boundary');
+		h.devSettings.reload('Bundle Splitting – Metro disconnected');
 
 		expect(h.events).toEqual([
-			'warn:[reload] No root boundary',
-			'reload:No root boundary:bound',
+			'warn:[reload] Bundle Splitting – Metro disconnected',
+			'reload:Bundle Splitting – Metro disconnected:bound',
 		]);
 	});
 
-	it('still logs a line when no reason is passed', async () => {
+	it('logs the caller stack when no reason is passed', async () => {
 		await evaluatePolyfill(true);
 
-		h.devSettings.reload();
+		// Stands in for Expo's `window.location.reload`, which passes no reason.
+		function expoLocationReload(): void {
+			h.devSettings.reload();
+		}
+		expoLocationReload();
 
 		expect(h.events).toEqual([
-			'warn:[reload] (no reason given)',
+			'warn:[reload] (no reason given) caller:',
 			'reload:undefined:bound',
 		]);
+		expect(h.warnExtras[0]).toEqual([expect.stringContaining('expoLocationReload')]);
+	});
+
+	it('does not add a stack when a reason is passed', async () => {
+		await evaluatePolyfill(true);
+
+		h.devSettings.reload('Bundle Splitting – Metro disconnected');
+
+		expect(h.warnExtras).toEqual([[]]);
 	});
 
 	it('leaves DevSettings.reload untouched in a release build', async () => {

@@ -704,18 +704,21 @@ One reload does not come from a write. If the app's connection to Metro drops (W
 - Expo does not register the session with its servers, so a signed-in dev client does not suggest the project in its list.
 - A port in use is not replaced by a prompt for another one; pass `--port <n>`.
 
-**Why it reloaded.** Development builds log the reason before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
+**Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
 
 ```
-W ReactNativeJS: [reload] No root boundary
+W ReactNativeJS: [reload] Bundle Splitting – Metro disconnected
+W ReactNativeJS: [reload] (no reason given) caller: Error: reload caller
+W ReactNativeJS:     at ...
 ```
 
-| Reason | Meaning |
+| Line | Meaning |
 |---|---|
-| `No root boundary`, `Invalidated boundary`, `Dependency cycle` | Metro sent a changed module Fast Refresh could not apply. The observer below names it |
-| `Bundle Splitting – Metro disconnected` | The connection to Metro had closed, and the app then loaded a lazily bundled module |
+| `(no reason given)`, with `performFullRefresh` in the caller stack | Metro sent a changed module Fast Refresh could not apply. Metro's own reason (`No root boundary` and similar) is lost, because it reloads through Expo's `window.location.reload()`, which passes none. The observer below names the module |
+| `(no reason given)` with any other caller | Some other JavaScript called `DevSettings.reload()`; the stack names it |
+| `Bundle Splitting – Metro disconnected` | The connection to Metro had closed, and the app then loaded a lazily bundled module. React Native also logs a `Disconnected from Metro` warning when the connection drops |
 
-A `Running "main"` with no `[reload]` line before it was started natively: the dev menu's Reload, `r` in the Metro terminal, or the app process restarting.
+A `Running "main"` with no `[reload]` line before it was started natively: the dev menu's Reload, `r` in the Metro terminal, or the app process restarting. These readings come from React Native 0.79 and Expo SDK sources and have not yet been confirmed on a device.
 
 **Which file reached the phone.** With Metro running under `yarn start`, run in a second terminal:
 
