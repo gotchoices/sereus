@@ -26,7 +26,11 @@ and the full history in its doc comment:
   (`ControlDatabase.openRevocationLedger`), which is what that marker exists to save.
 
 All three are two-sided (a ceiling as regression guard, a floor at half the measurement as
-anti-vacuity guard; the consult spec also pins its per-call membership reads exactly). For the
+anti-vacuity guard). Two phases are pinned EXACTLY instead of bracketed, because their shape
+rather than their size is the signal: the consult spec's per-call membership reads, and the
+solo strand's select phase, which now reaches the backend zero times and so has no floor a
+halved measurement could express — a phase pinned at zero fails on any operation in either
+direction, and the phases before it carry that spec's anti-vacuity duty. For the
 two storage budgets, the operative consequence — that a control start's duration is
 (raw-storage operations) × (device cost per operation), so the *count* is the thing worth
 pinning — is recorded as a `NOTE:` at `control-database.ts`'s `loadSchema` call site, which is

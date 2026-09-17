@@ -244,7 +244,11 @@ describe('control database start, raw-storage operation budget', () => {
 			warm = counter.snapshot();
 			console.log(formatSnapshot('storage-op-budget', 'warm restart', warm));
 
-			// Anti-vacuity: the warm start really did read the prior session's rows.
+			// Anti-vacuity: the warm start hydrated a catalog that still sees the prior
+			// session's rows, rather than coming up on an empty database. These reads sit
+			// AFTER the snapshot and cost the warm budget nothing — which is the point:
+			// since BASELINE_UPSTREAM the hydrate no longer touches a table's block at
+			// all, so the first read of `OwnerKey` is here rather than inside the phase.
 			const db = second.getControlDatabase();
 			expect(db).not.toBeNull();
 			expect(await within('hasOwnerKey() (warm)', LIFECYCLE_TIMEOUT_MS, () => db!.hasOwnerKey())).toBe(true);

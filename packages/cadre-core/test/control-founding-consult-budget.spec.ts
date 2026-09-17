@@ -122,11 +122,12 @@ const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
  * watcher's first poll it leaves running. 25 consults over 18 blocks, 2 commits. Every
  * control table and index block is consulted once as the schema is applied (all missing),
- * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables twice
+ * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` by
- * the watcher's `queryStrands`. History: 24 over 18 blocks in the trace that motivated this
- * spec (snapshotted at `start()`'s return, before the seed and the poll), 30 on 2026-09-15,
- * 25 at {@link BASELINE_UPSTREAM} — the catalog's 7 consults became 5.
+ * the watcher's `queryStrands`. 14 + 5 + 3×2 = 25. History: 24 over 18 blocks in the trace
+ * that motivated this spec (snapshotted at `start()`'s return, before the seed and the poll),
+ * 30 on 2026-09-15, 25 at {@link BASELINE_UPSTREAM} — the catalog went 7 → 5 and each of the
+ * three never-written tables 3 → 2.
  */
 const COLD: Budget = { consults: 25, blocks: 18, commits: 2, consultBudget: 30, blockBudget: 22, commitBudget: 3 };
 /**
@@ -522,6 +523,12 @@ function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget, note
 
 	const vacuity = 'Either the counter no longer sees this path (a renamed or bypassed CoordinatorRepo method, or a repo '
 		+ 'attributed to the wrong label), or the cost genuinely improved — in which case re-measure and TIGHTEN the budget.';
+	// NOTE: a phase measured at 0 gets NO floor here — `> 0` can never pass, so the guard
+	// below skips it. Today that is safe only because the one such phase (RECONCILE_STRAND)
+	// also carries a ceiling of 0, and a 0 ceiling pins it exactly. If a re-baseline ever
+	// takes a phase to 0 while leaving a non-zero ceiling, that phase asserts nothing in
+	// either direction: give it a 0 ceiling, or pin it the way `strand-solo-write-budget.spec.ts`
+	// pins its select phase (`expectPinnedAtZero`).
 	if (budget.consults > 0) {
 		expect(snapshot.consults, `${phase} issued only ${snapshot.consults} cohort consults, far below ${context} ${vacuity}`)
 			.toBeGreaterThan(Math.floor(budget.consults / 2));

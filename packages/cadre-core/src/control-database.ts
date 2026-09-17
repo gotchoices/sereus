@@ -543,8 +543,8 @@ export class ControlDatabase {
     // NOTE: this is where a slow launch is felt. Duration is (raw-storage operations
     // issued) × per-operation storage latency: ~1ms/op on an idle machine, but
     // 50-90ms/op on a loaded disk or a phone's flash under launch contention. A cold
-    // start now reaches the backend 169 times (9 tables + 1 index, 20 distinct blocks
-    // — dominated by its genuine writes), a warm restart 46, because cadre-core
+    // start now reaches the backend 45 times (9 tables + 1 index, 20 distinct blocks
+    // — dominated by its genuine writes), a warm restart 13, because cadre-core
     // wraps every embedder storage in `@optimystic/db-p2p`'s write-through cache
     // (@serfab/quereus-plugin-sereus's cached-storage.ts). Uncached the same start issued ~2000 operations — the
     // upstream re-read amplification measured in
@@ -1099,7 +1099,7 @@ export class ControlDatabase {
    *
    * NOTE: the per-call cost that matters is the storage layer's, not the row count. While
    * `Revocation` has never been written, this node does not hold its block, and Optimystic
-   * consults a block's cohort on every read of a block it does not hold: 2 consults per
+   * consults a block's cohort on every read of a block it does not hold: 1 consult per
    * call (measured), each a round trip to every other member on a multi-machine party. The
    * ledger marker ({@link openRevocationLedger}) ends that — a held block is re-consulted
    * at most once per read-repair window (10 s). Do not cache the set instead: a cache

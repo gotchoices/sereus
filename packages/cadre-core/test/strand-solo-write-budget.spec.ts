@@ -90,12 +90,15 @@ const LAUNCH: Budget = { ops: 78, blocks: 17, opBudget: 95, blockBudget: 20 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
  * 80 over 3 blocks — nearly all writes (the cache absorbs the transactor's
- * re-reads; 366 uncached on 2026-08-13). It was 75 on 2026-08-17 and is 80 at
- * {@link BASELINE_UPSTREAM}: the 5-operation rise is `saveMaterializedBlock` (17 against
- * 11 of each other commit step) and has not been attributed to a named change. It repeats
- * exactly across runs. This is the phase carrying the spec's anti-vacuity duty — see the
- * NOTE on {@link SELECT} — so with 10 operations of headroom the next rise should be
- * explained before anyone raises the budget.
+ * re-reads; 366 uncached on 2026-08-13). History: 75 on 2026-08-17, 86 on 2026-09-14, 80 at
+ * {@link BASELINE_UPSTREAM}. (Between those last two the measured figure recorded here and
+ * the `ops` field below disagreed — the comment said 86 while `ops` stayed at 75, so the
+ * floor was computed off the older number. Both say 80 now.) What is uneven across commit
+ * steps is `saveMaterializedBlock` at 17 and `saveMetadata` at 14 against 11 of each other
+ * step; neither excess has been attributed to a named change, and the figure repeats exactly
+ * across runs. This is the phase carrying the spec's anti-vacuity duty — see the NOTE on
+ * {@link SELECT} — so with 10 operations of headroom the next rise should be explained
+ * before anyone raises the budget.
  */
 const INSERT: Budget = { ops: 80, blocks: 3, opBudget: 90, blockBudget: 5 };
 /**
@@ -111,10 +114,12 @@ const INSERT: Budget = { ops: 80, blocks: 3, opBudget: 90, blockBudget: 5 };
  *
  * A phase measured at zero cannot carry a halved floor — `> 0` can never pass — so
  * {@link expectWithinBudget} pins it EXACTLY instead. That is a tightening, not a hole: any
- * backend operation reappearing on this path is now a failure to explain. The zero is a real
- * measurement, not a blind counter: launch (78) and insert (80) are counted through the same
- * `CountingRawStorage` instance, on the same node, in the same run, immediately before these
- * selects — so those two phases, which have real slack, carry the spec's anti-vacuity duty.
+ * backend operation reappearing on this path is now a failure to explain. Two things keep the
+ * zero from being a blind counter. Each select asserts it saw all {@link ROW_COUNT} inserted
+ * rows, so the phase provably ran and returned the data at zero backend operations. And
+ * launch (78) and insert (80) are counted through the same `CountingRawStorage` instance, on
+ * the same node, in the same run, immediately before these selects — so those two phases,
+ * which have real slack, carry the spec's anti-vacuity duty.
  */
 const SELECT: Budget = { ops: 0, blocks: 0, opBudget: 0, blockBudget: 0 };
 
