@@ -60,6 +60,8 @@ export class ChatViewModel extends Observable {
 	private strand: StrandInstance | null = null;
 	private participantId: string | null = null;
 	private registered = false;
+	/** Strand whose participant insert is still running, so polls don't start another. */
+	private registeringStrand: StrandInstance | null = null;
 	private timer: ReturnType<typeof setInterval> | undefined;
 	/** Strands with a read still running — see `refresh()`. */
 	private readonly readsInFlight = new Set<StrandInstance>();
@@ -160,18 +162,26 @@ export class ChatViewModel extends Observable {
 		// would fork the Participant table (it never merges — docs/strands.md, "Joining").
 		// `refresh()` re-enters here every poll while unregistered, so the registration
 		// lands on the first poll after the strand becomes writable.
-		if (strand?.database && participantId && !this.registered) {
-			const name = `User-${participantId.slice(-4)}`;
-			insertParticipant(strand, participantId, name)
-				.then(() => {
-					this.registered = true;
-				})
-				.catch((err) => console.warn('[chat-vm] participant register failed:', err));
+		if (strand?.database && participantId && !this.registered && this.registeringStrand !== strand) {
+			this.register(strand, participantId);
 		}
 
 		if (changed) {
 			this.notifySendState();
 		}
+	}
+
+	/** Insert the local participant; a commit can outlast the poll interval on a slow link. */
+	private register(strand: StrandInstance, participantId: string): void {
+		this.registeringStrand = strand;
+		void insertParticipant(strand, participantId, `User-${participantId.slice(-4)}`)
+			.then(() => {
+				if (this.strand === strand) this.registered = true;
+			})
+			.catch((err) => console.warn('[chat-vm] participant register failed:', err))
+			.finally(() => {
+				if (this.registeringStrand === strand) this.registeringStrand = null;
+			});
 	}
 
 	private async refresh(): Promise<void> {

@@ -5,7 +5,7 @@ files:
   - packages/reference-app-rn/vitest.config.ts (react project comment only)
   - packages/reference-app-ns/src/chat-vm.ts (`readsInFlight`, `refresh`)
   - tickets/backlog/debt-ns-chat-vm-unit-tests.md (added a coverage arm)
-  - packages/reference-app-web/src/lib/messages.svelte.ts (`refreshInFlight`, the guard mirrored)
+  - packages/reference-app-web/src/lib/messages.svelte.ts (`refreshInFlight`, reference only — unchanged)
 ----
 
 # Chat poll no longer overlaps itself on a slow link
@@ -48,3 +48,20 @@ Validation run:
 - **A read that never settles now stops polling for that strand.** Before, later polls kept starting (and piling up). Now, if `queryMessages`/`queryParticipants` never resolves or rejects, no further read of that strand starts until the strand instance changes. The web app's `refreshInFlight` has the same property. I did not check whether optimystic bounds these reads with a timeout. If it does not, this is worth a look.
 - **Optimistic send can briefly disappear. This predates the change.** `send` appends the new message locally. A read that started before the insert and finishes after it replaces the list without that message until the next read. Overlapping polls could do the same. The guard may keep that window open slightly longer, because the next read waits for the running one to finish. Not changed here.
 - The NS guard is untested (see above).
+
+## Review findings
+
+Read the implement diff (`0fb74cd`) before the handoff, plus the whole of `use-chat.ts`, the NativeScript `chat-vm.ts`, and the web app's `messages.svelte.ts` that the guard copies.
+
+- **Correctness of the RN guard:** checked. Keying on the strand instance is right: the check comes after the `database` gate, so a joiner whose instance becomes writable is not blocked by an earlier no-op call, and the stale-result check still drops rows from a strand you have switched away from. The four tests cover skipped ticks, release after an error, switching strands, and switching back. No gaps worth adding for this change.
+- **NativeScript participant registration overlapped the same way (fixed inline):** `attach()` runs on every poll while the participant is not registered, and it started a new `insertParticipant` commit each time, even with the previous one still running. On a slow relayed link, a joiner would stack up commits every 2 s, which is the same overlap this ticket removes for reads. Moved the insert into `register()` with a `registeringStrand` guard. It also sets `registered` only if that strand is still attached. There is no test yet because the `ObservableArray` import still fails under Node, so I added a coverage arm to `debt-ns-chat-vm-unit-tests`. RN does not have this problem: registration runs in an effect that only re-runs when its dependencies change.
+- **A read that never settles stops polling for that strand (tripwire):** optimystic has dial timeouts (`protocol-client.ts`), but I did not confirm that every read path is bounded. Recorded as a `NOTE:` next to `inFlightRef` in `use-chat.ts`. The web app's `refreshInFlight` has the same property.
+- **NativeScript has no stale-result check:** this predates the change. `ChatViewModel.refresh` applies rows even if the attached strand changed while the read ran. In NativeScript that only happens when a reconnect creates a new instance of the same strand (`getFirstStrand`), so the rows are from the same conversation and the next poll replaces them. Not filed.
+- **Optimistic send can be overwritten by a read already in flight:** this predates the change (see the handoff). The guard does not make it worse in any way I could measure. Not filed.
+- **Handoff accuracy:** the `files:` header listed the web app's `messages.svelte.ts` as "the guard mirrored", but that file was not changed. It is only the reference the guard copies. I corrected the header. The NativeScript test failure listed in `.pre-existing-error.md` has since been triaged, and the NativeScript suite now passes.
+- **Docs:** none describe the chat poll's timing, so nothing needed updating. The `vitest.config.ts` comment was updated by implement and is accurate.
+- **Hygiene, types, cleanup:** the guard adds no `any`. `finally` releases the guard on success and on error, and the timer cleanup is unchanged. The new spec is 184 lines and its helpers are small.
+
+Validation after the review edits: `yarn lint` passed. `typecheck` passed for reference-app-rn and reference-app-ns. `yarn workspace @serfab/reference-app-rn test` passed 311/311, and `yarn workspace @serfab/reference-app-ns test` passed 110/110.
+
+Still open and needs a human: confirming the delivery latency on a device, by re-running the phone ↔ PC relay check.

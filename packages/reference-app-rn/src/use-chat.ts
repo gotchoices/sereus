@@ -107,6 +107,8 @@ export function useChat(opts: UseChatOptions): UseChatResult {
   // minutes late. Keyed per strand instance (the same identity the stale-result
   // check uses) so a read still running for the previous strand never delays the
   // first read of the one just switched to.
+  // NOTE: a read that never settles stops polling for that strand; relies on
+  // optimystic bounding its network requests — if chat ever freezes silently, add a timeout here.
   const inFlightRef = useRef<Set<StrandInstance>>(new Set());
 
   const refresh = useCallback(async () => {

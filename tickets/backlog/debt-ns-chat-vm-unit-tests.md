@@ -47,6 +47,7 @@ the fallback, with the usual cost: it can drift from the real one.
   immediately. It landed with `rn-chat-poll-overlaps-slow-reads` without a test
   because of the `ObservableArray` blocker above; the RN equivalent is
   `packages/reference-app-rn/test/react/use-chat.spec.ts`.
+- Participant registration (`register()`): while an insert is still running, later polls start no second insert for that strand; a failed insert is retried on a later poll.
 - Whatever unblocks `ObservableArray` is written down where the next person
   meets it, not only in this ticket.
 
