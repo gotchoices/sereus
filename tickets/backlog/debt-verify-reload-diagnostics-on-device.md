@@ -1,16 +1,11 @@
-description: The tools added to explain unexpected app reloads during phone test runs have only been checked by reading source code and by runs without a phone. Someone with the phone attached needs to confirm they report what the docs say, so the next unexplained reload can actually be diagnosed.
-files: packages/reference-app-rn/polyfills/reload-reason.js, packages/reference-app-rn/scripts/metro-hmr-observe.mjs, packages/reference-app-rn/package.json, docs/reference-app-rn.md
-tradeoffs: Needs a phone with a development build and about half an hour of someone at the phone, and may never pay off if no more mid-run reloads happen.
+description: Most of the tools that explain unexpected app reloads during phone test runs have now been checked on a phone, but two checks remain: the reload message logged after the app loses its development server, and whether watching the server's updates from the PC has any visible effect on the phone.
+files: packages/reference-app-rn/polyfills/reload-reason.js, packages/reference-app-rn/scripts/metro-hmr-observe.mjs, docs/reference-app-rn.md
+tradeoffs: Needs a phone with a development build and someone at the phone, and may never pay off if no more mid-run reloads happen.
 ----
 
-`docs/reference-app-rn.md` § Device test runs describes three tools for explaining a reload of the reference app on a connected phone: the `[reload]` logcat warning (`polyfills/reload-reason.js`), the frozen dev server (`yarn workspace @serfab/reference-app-rn start:frozen`), and the HMR (hot module replacement) observer (`yarn workspace @serfab/reference-app-rn metro:observe`). None has been run against a phone. Expected behavior to confirm on the Android development build:
+`docs/reference-app-rn.md` § Device test runs describes three tools for explaining a reload of the reference app on a connected phone: the `[reload]` logcat warning (`polyfills/reload-reason.js`), the frozen dev server (`yarn workspace @serfab/reference-app-rn start:frozen`), and the HMR (hot module replacement) observer (`yarn workspace @serfab/reference-app-rn metro:observe`). The device run of 2026-09-16 (`tickets/complete/rn-device-audit-and-reload-run.md`, ticket `rn-device-audit-and-reload-run`) confirmed the rest, and the doc was updated to match. Still unchecked, on the Android development build:
 
-- On `yarn start`, change a module imported outside React components (for example `polyfills/event.js`, or a linked optimystic `dist` file). Logcat shows `W ReactNativeJS: [reload] (no reason given) caller:` with a stack that names `performFullRefresh`, then the app restarts. `metro:observe` prints that module just before. If the Hermes stack doesn't name the caller readably, reword the doc's reason table.
-- On `start:frozen`, the dev client connects (from its recent-servers list, or after `adb reverse tcp:8081 tcp:8081`), and the same change causes no reload.
-- Writing a `tickets/*.md` file under either mode causes no reload, and the observer prints nothing.
-- Dev menu → Reload prints no `[reload]` line.
-- Stopping and restarting Metro, then reaching a lazily loaded module (a dynamic `import()` such as optimystic's `import('p2p-fret')`), logs `[reload] Bundle Splitting – Metro disconnected`.
-- Find which logcat line reliably marks a real JavaScript reload. The docs assume `Running "main"`. Don't use `I ReactNativeJS: log level = info`: it also appears every 15 minutes from a different process (probably the background task).
-- Attaching `metro:observe` while the app runs has no visible effect on the phone.
+- Stop and restart Metro, then reach a lazily bundled module (a dynamic `import()` such as optimystic's `import('p2p-fret')`). Confirm logcat shows `[reload] Bundle Splitting – Metro disconnected`, and record the exact line shape in the doc's "Why it reloaded" block (the two-argument no-reason line is quoted and comma-separated by logcat; this one has a single argument and its shape there is inferred).
+- Watch the phone while attaching `metro:observe` to a running app, and confirm nothing visible happens (attaching sends the phone's update group one initial update, normally empty). The doc currently says only that attaching does not change what the phone receives.
 
-Correct the docs wherever the device disagrees.
+Correct the docs wherever the device disagrees. For a cold Metro, see the doc's "First launch on a cold Metro" paragraph before launching.

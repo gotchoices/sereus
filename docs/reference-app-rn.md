@@ -705,25 +705,30 @@ One reload does not come from a write. If the app's connection to Metro drops (W
 **Frozen dev server.** `yarn workspace @serfab/reference-app-rn start:frozen` runs `expo start --dev-client` with `CI=1`, which turns Metro's file watching off. No write anywhere reaches the phone, so other work does not need to pause. Differences from `yarn start`:
 
 - A reload (from the dev menu or a red box) serves each module as Metro first read it, not as it is on disk now. To put a rebuilt dependency on the phone, restart Metro.
-- There is no interactive terminal: no QR code and no `r`/`m`/`j` keys. Metro prints `Waiting on http://localhost:8081`, and the dev client connects as usual (its recent-servers list, or `adb reverse tcp:8081 tcp:8081`).
+- There is no interactive terminal: no QR code and no `r`/`m`/`j` keys. Metro prints `Metro is running in CI mode, reloads are disabled. Remove CI=true to enable watch mode.` followed by `Waiting on http://localhost:8081`, and the dev client connects as usual (its recent-servers list, or `adb reverse tcp:8081 tcp:8081`).
 - Expo does not register the session with its servers, so a signed-in dev client does not suggest the project in its list.
 - A port in use is not replaced by a prompt for another one; pass `--port <n>`.
+
+Confirmed on a device (2026-09-16): the dev client connected through `adb reverse tcp:8081 tcp:8081` and the deep link `sereus-chat://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081`, and editing `polyfills/event.js` (a module imported outside components) and reverting it caused no reload, no JavaScript log lines and no `metro:observe` output.
+
+**First launch on a cold Metro.** This applies to `yarn start` and `start:frozen` alike. After `yarn start --clear`, the dev client's first launch from the deep link gave up after about 10 s with "There was a problem loading the project. timeout" (okhttp `readResponseHeaders`): building the Android bundle on a cold cache takes about 20 s (4825 modules). Fetching the bundle once from the PC, then launching again, worked. Build the bundle before opening the app: start `metro:observe` first, which builds it when no client has loaded it yet (see below). To fetch it by hand instead, use the URL the observer prints on its first line (`bundle <url>`), which comes from Expo's manifest. Do not shorten it to `index.bundle?platform=android&dev=true`: the query carries transform options (`transform.engine=hermes` and others), and a bundle requested with different options is a different build.
 
 **Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
 
 ```
 W ReactNativeJS: [reload] Bundle Splitting – Metro disconnected
-W ReactNativeJS: [reload] (no reason given) caller: Error: reload caller
-W ReactNativeJS:     at ...
+W ReactNativeJS: '[reload] (no reason given) caller:', 'Error: reload caller\n    at logReload (http://127.0.0.1:8081/...)\n    at anonymous (...)\n    at reload (...)\n    at performFullRefresh (...)\n    at metroHotUpdateModule (...)\n    at injectUpdate (...)\n ...'
 ```
+
+The no-reason line passes the text and the stack as two arguments, so logcat prints both quoted and comma-separated on one line, with the stack's newlines escaped as `\n`. Search with `grep '\[reload\]'`; a search for `caller: Error` does not match. The `Bundle Splitting` line has one argument; its shape above is inferred and has not been seen on a device.
 
 | Line | Meaning |
 |---|---|
-| `(no reason given)`, with `performFullRefresh` in the caller stack | Metro sent a changed module Fast Refresh could not apply. Metro's own reason (`No root boundary` and similar) is lost, because it reloads through Expo's `window.location.reload()`, which passes none. The observer below names the module |
+| `(no reason given)`, with `performFullRefresh` in the caller stack | Metro sent a changed module Fast Refresh could not apply. Metro's own reason (`No root boundary` and similar) is lost, because it reloads through Expo's `window.location.reload()`, which passes none. Hermes names the callers: `performFullRefresh`, then `metroHotUpdateModule` and `injectUpdate`. The observer below names the module |
 | `(no reason given)` with any other caller | Some other JavaScript called `DevSettings.reload()`; the stack names it |
 | `Bundle Splitting – Metro disconnected` | The connection to Metro had closed, and the app then loaded a lazily bundled module. React Native also logs a `Disconnected from Metro` warning when the connection drops |
 
-A `Running "main"` with no `[reload]` line before it was started natively: the dev menu's Reload, `r` in the Metro terminal, or the app process restarting. These readings come from React Native 0.79 and Expo SDK sources and have not yet been confirmed on a device.
+`Running "main" with {...}` is logged once per JavaScript start: at launch, after a Fast Refresh full reload, and after the dev menu's Reload (all three seen on a device on 2026-09-16). A `Running "main"` with no `[reload]` line before it was started natively: the dev menu's Reload (on the device it printed none), `r` in the Metro terminal, or the app process restarting. Do not use `I ReactNativeJS: log level = info` as a restart marker: it is also logged by a different process (a different pid in logcat), including about every 15 minutes, probably the background task. The `Bundle Splitting` path has not been checked on a device; its reading comes from React Native 0.79 and Expo SDK sources.
 
 **Which file reached the phone.** With Metro running under `yarn start`, run in a second terminal:
 
@@ -738,7 +743,9 @@ It attaches to the bundle the dev client loads (read from Metro's manifest) and 
     modified packages/reference-app-rn/src/connection-status.bundle
 ```
 
-Paths are relative to the sereus root, with the file extension replaced by `.bundle`; a sibling repo's module starts with `../optimystic/` and so on. Empty updates print nothing. If no client has loaded the bundle yet, the script builds it once before attaching, which can take a minute on a cold Metro. Attaching does not change what the phone receives. Under `start:frozen` it prints nothing.
+Paths are relative to the sereus root, with the file extension replaced by `.bundle`; a sibling repo's module starts with `../optimystic/` and so on. Empty updates print nothing. Confirmed on a device under `yarn start`: writing, modifying and deleting `.md` and `.json` files under `tickets/` produced no observer output and no JavaScript log lines. If no client has loaded the bundle yet, the script builds it once before attaching, which can take a minute on a cold Metro. Attaching does not change what the phone receives; whether it has any visible effect on the phone has not been checked. Under `start:frozen` it prints nothing. When Metro stops, it prints `Metro closed the HMR socket` and exits with code 1.
+
+The observer's block and the phone's `[reload]` line appear at the same moment. On a device, an edit to `polyfills/event.js` printed the observer block at 22:37:48.281 (PC clock) and the `[reload]` line at 22:37:47.715 (phone clock), with the phone clock about 0.65 s behind the PC, then `Running "main"` about 8 s later. When matching the two logs, allow for the offset between the phone's clock and the PC's rather than expecting one line to come first.
 
 ### When Native Rebuild Is Needed
 
