@@ -351,11 +351,14 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	//        record present, publicKey ↔ peerId binding, self-signature, freshness,
 	//        trust policy (CadreNode.resolvePeerAddrs).
 	//
-	// NOTE: this poll timed out once, on the very first cold run of the isolation
-	// scenario, and has resolved in milliseconds on every run since — no cause
-	// established. If it recurs, capture DEBUG='sereus:cadre:node' and check
-	// whether C's row reached B at all: a genuine A→B replication failure is a
-	// product bug and deserves its own ticket rather than a wider timeout here.
+	// NOTE: this poll times out intermittently (2 of 6 isolated runs, 2026-09-17),
+	// and the cause is upstream, not a slow machine: B learns of C's new revision
+	// from A, re-reads the changed row block from its OWN replica (still one
+	// revision behind, and inside Optimystic's 10s read-repair window, so nobody
+	// is consulted), and keeps that stale block in its in-memory collection cache
+	// until another write touches it. Runs that pass can still spend ~9s here for
+	// the same reason. Do not widen the timeout — the wait is the measurement.
+	// Tracked by tickets/blocked/control-peer-row-refresh-invisible-to-third-node.
 	await waitUntil(
 		async () => (await B.resolvePeerAddrs(cPeerId)).length > 0,
 		{ timeoutMs: 45_000, intervalMs: 250, description: "B resolves C's signed CadrePeer address record" }

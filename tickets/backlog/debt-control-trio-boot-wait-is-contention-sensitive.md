@@ -78,3 +78,7 @@ decision.
 - [ ] Make a suite that dies in setup report red rather than skipped.
 - [ ] Re-run the full suite three times and confirm the two files are stable regardless of order.
 - [ ] Record the chosen grouping and its reason in `docs/testing.md`.
+
+## Evidence added 2026-09-17 — the wait has three outcomes, and only one of them is about load
+
+Traced while working `control-peer-row-refresh-invisible-to-third-node` (now in `tickets/blocked/`, which has the full mechanism). The step-6 wait in `bootControlTrio` resolves in one of three ways, decided by which machine B happens to read two blocks from, not by how busy the host is: in milliseconds (B reads the changed row block from A); after roughly 9-10 s (B reads both the change-log tail and the row block from its own stale replica, and recovers when Optimystic's 10 s read-repair window expires); or not until another write touches the block (B reads the tail from A and the row block from itself, and caches the stale block). The third outcome is an upstream defect and no harness change fixes it. The second means a healthy run can legitimately spend 10 s of the 45 s budget here, which is the part that load can push over the edge. Any redesign of this wait should be measured after the upstream fix lands, because the distribution it is budgeting for will change.
