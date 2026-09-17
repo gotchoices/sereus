@@ -89,8 +89,9 @@ const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
 const TRANSACTOR_AGGREGATE_NO_DETAILS =
 	'Some peers did not complete: ; root: The stream has been reset';
 /**
- * The FOURTH place `[block:` appears — `NetworkTransactor.dischargeCancel`
- * (`db-core/src/transactor/network-transactor.ts` ~1152), raised when a failed commit
+ * The THIRD and last place `[block:` appears — `NetworkTransactor.dischargeCancel`
+ * (`db-core/src/transactor/network-transactor.ts` ~1156; the other two are `get` at ~304 and
+ * `pend` at ~579, and the commit site at ~942 renders `[blocks:` instead), raised when a failed commit
  * attempt's own cancel could not discharge the pend it left behind within its bounded
  * six rounds. This is a reconstruction (built from that formatter's literal template),
  * not a capture — no run recorded in `tickets/.pre-existing-known.md` has produced one.

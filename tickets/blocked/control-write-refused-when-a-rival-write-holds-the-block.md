@@ -25,7 +25,7 @@ and this repo's retry logged `Control write [peer-insert] failed after 1/3 attem
 
 This is a different failure from the two that share its `pending conflict` text:
 
-| | this ticket | `control-write-retry-does-not-absorb-a-transient-stream-reset` | the 2026-09-03 half-applied-commit wedge (fixed) |
+| | this ticket | `control-write-retry-does-not-absorb-a-transient-stream-reset` (closed 2026-09-17 — fixed upstream, verified over five rounds; kept here only to tell the shapes apart) | the 2026-09-03 half-applied-commit wedge (fixed) |
 | --- | --- | --- | --- |
 | a stream reset or `cancelError` precedes it | no | yes | no |
 | the blocking record clears by itself | **yes** — the next test's write, seconds later, was not refused by it | no | no |

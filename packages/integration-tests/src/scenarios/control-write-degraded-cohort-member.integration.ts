@@ -99,7 +99,14 @@ const log = debug('sereus:integration:degraded-cohort');
 //   2 s-delayed authorize / remove ... ~55 s      each
 //   never-answering member ........... ~20 s or ~40 s to the named failure
 //   recovery after a failed write .... ~1.1–1.8 s
-//   transient-reset absorb ........... ~0.7 s     (commits on attempt 2)
+//   transient-reset absorb ........... ~1.6 s     (commits on attempt 3)
+//
+// The absorb row was ~0.7 s on attempt 2 when this table was first measured
+// (2026-08-12). Re-measured 2026-09-17 over three isolated rounds
+// (`tickets/.logs/control-write-retry-absorb.probe-r{1,2,3}.log`): 1550 ms,
+// `committed on attempt 3/3` in every round, because the two injected resets
+// now fail SEPARATE attempts rather than both landing on the first — see
+// {@link TRANSIENT_RESET_COUNT}.
 //
 // The ~55 s delayed commit is the 2 s handler delay paid serially across the
 // ~27 inbound cluster RPCs a control write makes: a small per-RPC delay becomes
@@ -192,13 +199,24 @@ const UNDER_DEADLINE_DELAY_MS = 2_000;
  * `resetFirstProtocolStreams` for why not the cluster protocol). Two, so a
  * batch RPC that gets an in-line re-attempt still fails the write's first
  * attempt outright; tuned against real runs.
+ *
+ * NOTE: as measured on 2026-09-17 the two resets no longer both land on attempt
+ * 1 — they fail attempts 1 and 2 separately, and attempt 3 commits (three
+ * isolated rounds, `tickets/.logs/control-write-retry-absorb.probe-r{1,2,3}.log`,
+ * `committed on attempt 3/3` in each). That leaves this case riding the LAST of
+ * `CONTROL_WRITE_ATTEMPTS` (3) with no spare attempt: one more attempt-consuming
+ * failure and it reddens with `failed after 3/3 attempt(s)` instead of the
+ * absorption it is asserting. Fine today — the retry still absorbs the class,
+ * which is what the case is for — but if it does redden that way, the levers are
+ * this count (lower it) or `CONTROL_WRITE_ATTEMPTS`, not the timing bounds.
  */
 const TRANSIENT_RESET_COUNT = 2;
 /**
  * Ceiling for the reset-absorbed commit. The resets fail instantly (no
- * response-deadline wait), so the cost is the failed first attempt (<1 s), the
- * retry backoffs (jittered ≤375 ms, then ≤1 s if a second retry is needed) and
- * a healthy ~1 s commit — a few seconds end to end. Headroom so a slow box
+ * response-deadline wait), so the cost is two failed attempts (<1 s together),
+ * both retry backoffs (jittered ≤375 ms, then ≤1 s — as of 2026-09-17 the
+ * second one is always paid, see {@link TRANSIENT_RESET_COUNT}) and a healthy
+ * ~1 s commit — a few seconds end to end. Headroom so a slow box
  * does not flake while an escalation into the 10 s response-deadline path
  * (≥20 s) still trips it.
  */

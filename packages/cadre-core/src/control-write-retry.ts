@@ -186,7 +186,8 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * check.
  *
  * NOTE: the discriminator is the prefix AND the token within ONE message — never relax it to
- * "contains `[block:`". Optimystic renders `[block:` in a fourth place, `dischargeCancel`
+ * "contains `[block:`". Beyond the `get` and `pend` sites above, Optimystic renders `[block:` in
+ * one further place — a third formatter, outside the aggregate's three sites — `dischargeCancel`
  * (`Cancel of action <id> did not discharge <n> block(s): …`), which does not raise the
  * `Some peers did not complete:` prefix; only the conjunction keeps a cancel fault from
  * classifying as a retriable get/pend (checked against optimystic `c56c2bd4`, 2026-09-16).
