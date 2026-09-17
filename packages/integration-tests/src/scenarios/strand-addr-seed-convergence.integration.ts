@@ -139,6 +139,9 @@ describe('E2E strand-addr seed convergence', () => {
 			const aStrand = await A.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
+				// A founds: the Header it writes is what B's seeded join below syncs before
+				// its addStrand resolves (a joiner's database is withheld until then).
+				founder: true,
 			});
 			expect(aStrand.status).toBe('active');
 			const aStrandNode = aStrand.libp2pNode!;

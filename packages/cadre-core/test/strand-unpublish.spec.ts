@@ -96,7 +96,11 @@ describe('CadreNode strand unpublish', () => {
     );
   }
 
-  /** A full strand config with a real signed sApp schema, for `addStrand`. */
+  /**
+   * A full strand config with a real signed sApp schema, for `addStrand`. `founder: true`:
+   * the hand-built row carries no founder provenance, and a joiner launched alone comes up
+   * 'syncing' with no database until a peer supplies the Header — this node IS the founder.
+   */
   function createStrandConfig(strandId: string): StrandConfig {
     const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -110,6 +114,7 @@ describe('CadreNode strand unpublish', () => {
         schema,
         signature: signSchema(schema, version, authorPrivateKey),
       },
+      founder: true,
     };
   }
 

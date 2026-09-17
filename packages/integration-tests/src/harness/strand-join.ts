@@ -48,9 +48,13 @@ export interface StrandJoinSpec {
 	/** The machines that run the strand, in join order. `members[0]` founds. Machines
 	 *  NOT listed never see `addStrand` — the negative case is first-class. */
 	members: ReadonlyArray<TopologyMachine>;
-	/** Pass `founder: true` on `members[0]`'s `addStrand` (seats the closed-strand
-	 *  membership bootstrap rows). Default false — open strands don't want it
-	 *  (see the comment at strand-late-cadre-join's `foundStrandAlone`). */
+	/** Whether `members[0]` FOUNDS the strand (`addStrand({ founder: true })`, which seats
+	 *  the `Strand.Header` — and, for a closed strand, the founding Member/Manager under
+	 *  {@link partyMemberPrivateKey}). Default TRUE, and every other member is gated on
+	 *  it: a joining machine's database is withheld until the Header reaches it from a
+	 *  peer (`docs/strands.md`, "Joining"), so a strand nobody founded leaves every
+	 *  member `'syncing'` forever. `false` is only for a scenario that asserts that
+	 *  gate itself; it then gets `'syncing'` instances back with no database. */
 	founder?: boolean;
 	/** `publishStrand(strandId)` on `members[0]` after its `addStrand`, making the row
 	 *  discoverable inside `members[0]`'s party. Requires `members[0]` to be its
@@ -231,6 +235,11 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 		await members[0]!.node.ensureStrandPartyKey(spec.strandId, partyMemberPrivateKey);
 	}
 
+	// Launch order: the founder first, writable at once (its bootstrap wrote the Header);
+	// every other member WITHOUT waiting for its first sync, because the mesh that would
+	// carry the Header to it is only dialed below — waiting inside `addStrand` here would
+	// burn the whole budget on a cross-party member whose seed is empty by construction.
+	const founder = spec.founder ?? true;
 	const instances: StrandInstance[] = [];
 	for (let i = 0; i < members.length; i++) {
 		const member = members[i]!;
@@ -240,17 +249,21 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 			instance = await member.node.addStrand({
 				strandRow,
 				sAppConfig: spec.sAppConfig,
-				...(i === 0 && spec.founder ? { founder: true, partyMemberPrivateKey } : {}),
+				...(i === 0 && founder ? { founder: true, partyMemberPrivateKey } : {}),
+				awaitFirstSync: false,
 			});
 		} catch (error) {
 			throw new Error(
 				`joinStrandOn: addStrand('${spec.strandId}') failed on ${label}: ${String(error)}`,
 				{ cause: error });
 		}
-		if (instance.status !== 'active') {
+		const expected = i === 0 && founder ? 'active' : 'syncing';
+		// A joiner may already be 'active' — a same-party sibling's seed can carry the Header
+		// before addStrand resolves — but it must never be anything outside these two.
+		if (instance.status !== 'active' && instance.status !== expected) {
 			throw new Error(
 				`joinStrandOn: strand '${spec.strandId}' on ${label} came up '${instance.status}'`
-				+ (instance.error ? ` (${instance.error})` : '') + ", expected 'active'");
+				+ (instance.error ? ` (${instance.error})` : '') + `, expected '${expected}'`);
 		}
 		instances.push(instance);
 		if (i === 0 && spec.publish) {
@@ -267,6 +280,24 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 					strandNodeOf(instances[j]!, spec.strandId, dialerLabel), dialerLabel,
 					strandNodeOf(instances[i]!, spec.strandId, targetLabel), targetLabel,
 					timeoutMs);
+			}
+		}
+	}
+
+	// Every member writable — the founder's Header has reached each joiner. Under
+	// `mesh: 'none'` this still waits: a same-party joiner reaches the founder over the
+	// strand-addr seed on its own, which is exactly the discovery claim such a scenario
+	// makes. Skipped only when nobody founded, since then nothing could ever arrive.
+	if (founder) {
+		for (let i = 1; i < members.length; i++) {
+			const label = machineLabel(members[i]!);
+			try {
+				await members[i]!.node.whenStrandWritable(spec.strandId, { timeoutMs });
+			} catch (error) {
+				throw new Error(
+					`joinStrandOn: strand '${spec.strandId}' on ${label} never became writable — the founder's `
+					+ `Strand.Header did not reach it: ${String(error)}`,
+					{ cause: error });
 			}
 		}
 	}

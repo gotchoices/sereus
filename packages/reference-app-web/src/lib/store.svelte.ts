@@ -113,6 +113,10 @@ function subscribe(node: CadreNode): void {
 		record('strand:error', `${strandId}: ${error.message}`);
 		syncStrand();
 	});
+	node.on('strand:writable', ({ strandId }) => {
+		record('strand:writable', strandId);
+		syncStrand();
+	});
 	node.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
 	node.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
 	node.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));

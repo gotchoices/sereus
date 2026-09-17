@@ -127,7 +127,12 @@ describe('Two-node strand-unpublish sibling convergence', () => {
 			// the id, so its watcher's first sighting emits `strand:discovered`. B never
 			// wrote the row and is not an owner: observing it at all proves a genuine
 			// network read (the precondition for the removal path ever firing).
-			await A.publishStrand(strandId);
+			//
+			// A FOUNDS (publish + run) rather than merely publishing: B's launch is a
+			// joiner's, whose database is withheld until the strand's Header reaches it
+			// from a peer — and the only peer that can carry it is A's running strand
+			// node, which B's strand-addr seed finds over the party's control mesh.
+			await A.foundStrand({ strandId, type: 'o', sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0') });
 			await waitUntil(() => events.discovered.length >= 1, {
 				timeoutMs: CONVERGE_BUDGET_MS,
 				description: 'B discovers the strand row published on A',

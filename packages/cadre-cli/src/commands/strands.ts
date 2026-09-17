@@ -240,6 +240,7 @@ export const strandCommand = new Command('strand')
 function printStrand(strandId: string, instance: StrandInstance): void {
   const statusIcon = {
     starting: '⋯',
+    syncing: '⋯',
     active: '●',
     idle: '○',
     hibernating: '◦',

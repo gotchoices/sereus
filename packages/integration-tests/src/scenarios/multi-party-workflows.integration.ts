@@ -16,12 +16,12 @@
 import { describe, it, expect } from 'vitest';
 import {
 	CadreNode,
+	generateStrandMemberKey,
 	type CadreNodeConfig,
 	type StrandRow,
 	type StrandInstance,
 	type SAppConfig,
 } from '@serfab/cadre-core';
-import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import {
 	waitUntil,
 	controlNodeConfig,
@@ -102,11 +102,20 @@ async function setupStrandBetweenParties(
 		FounderOwnerKey: null,
 	});
 
-	const strandA = await partyA.addStrand({ strandRow: strandRow(opts.memberPrivateKeyA ?? null), sAppConfig });
+	// Party A FOUNDS (writes the Header — and, on a closed strand, the founding
+	// Member/Manager under a party key minted here); party B joins without waiting for
+	// its first sync, since the dial that carries the Header to it happens below — a
+	// joiner's database is withheld until then (docs/strands.md, "Joining").
+	const strandA = await partyA.addStrand({
+		strandRow: strandRow(opts.memberPrivateKeyA ?? null),
+		sAppConfig,
+		founder: true,
+		...(opts.type === 'c' ? { partyMemberPrivateKey: await generateStrandMemberKey() } : {}),
+	});
 	expect(strandA.status).toBe('active');
 
-	const strandB = await partyB.addStrand({ strandRow: strandRow(opts.memberPrivateKeyB ?? null), sAppConfig });
-	expect(strandB.status).toBe('active');
+	const strandB = await partyB.addStrand({ strandRow: strandRow(opts.memberPrivateKeyB ?? null), sAppConfig, awaitFirstSync: false });
+	expect(strandB.status).toBe('syncing');
 
 	// Manually connect strand-level libp2p nodes (strand peer discovery not yet wired)
 	const addrsA = strandA.libp2pNode!.getMultiaddrs();
@@ -122,6 +131,8 @@ async function setupStrandBetweenParties(
 		() => strandA.libp2pNode!.getConnections().length > 0,
 		{ timeoutMs: 10_000, description: 'strand A sees inbound connection from B' },
 	);
+	await partyB.whenStrandWritable(strandId, { timeoutMs: 30_000 });
+	expect(strandB.status).toBe('active');
 
 	return { strandA, strandB };
 }
@@ -182,8 +193,10 @@ describe('Multi-Party Strand Workflows', () => {
 				);
 
 				// Both parties add closed strand instances
-				// Party A generates its own member key for the strand
-				const aPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+				// Party A mints the strand's read-gating member key in the strand member-key
+				// format: A founds the strand now, and the founder bootstrap decodes the row's
+				// key (to refuse a pre-split founding), which a raw ed25519 seed is not.
+				const aPrivateKey = await generateStrandMemberKey();
 				const { strandA, strandB } = await setupStrandBetweenParties(
 					partyA, partyB, formResult.strandId, CHAT_SAPP_CONFIG,
 					{ type: 'c', memberPrivateKeyA: aPrivateKey, memberPrivateKeyB: formResult.invitePrivateKey },

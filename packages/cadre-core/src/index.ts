@@ -128,8 +128,21 @@ export {
   StrandInstanceManager,
   type StartStrandConfig,
   type ResumeStrandOverrides,
-  getStrandStoragePath
+  getStrandStoragePath,
+  isAwaitingFirstSync,
+  liveStrandStatus
 } from './strand-instance-manager.js';
+
+// The joining machine's first-sync write gate: a non-founder launch withholds its
+// database (status 'syncing') until the strand's Header has arrived from a peer, so a
+// write before the first sync can never fork the strand's tables.
+export {
+  StrandAwaitingFirstSyncError,
+  DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
+  DEFAULT_STRAND_FIRST_SYNC_POLL_MS,
+  strandHeaderHeld,
+  type StrandFirstSyncConfig
+} from './strand-first-sync-gate.js';
 
 // Peer-join block catch-up (push this network's own blocks to each newly
 // connected peer, so a late joiner physically holds pre-join blocks). Shared

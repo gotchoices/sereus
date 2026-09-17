@@ -116,6 +116,14 @@ export interface ControlNodeOpts {
    * suspending one would otherwise suspend both.
    */
   membershipReconciliation?: false | { pollIntervalMs: number };
+  /**
+   * The joining machine's first-sync write gate (`CadreNodeConfig.strandFirstSync`):
+   * how long `addStrand` / `whenStrandWritable` wait for a joiner to receive the
+   * strand's Header before rejecting (default 30 s), and the probe cadence. A
+   * scenario that asserts the rejection itself passes a SHORT `timeoutMs`; one
+   * whose join rides a slow path (a relay) may need a longer one.
+   */
+  strandFirstSync?: { timeoutMs?: number; pollIntervalMs?: number };
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
@@ -190,6 +198,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
           ? { enabled: false }
           : { pollIntervalMs: opts.membershipReconciliation.pollIntervalMs }
       } : {}),
+    ...(opts.strandFirstSync !== undefined ? { strandFirstSync: opts.strandFirstSync } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {

@@ -521,12 +521,13 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		// Both nodes run the network transactor (every strand does), so the manual
 		// strand dial below actually replicates rows across the two raw stores.
 		const founderStrand = await founderNode.addStrand({ strandRow, sAppConfig, founder: true, partyMemberPrivateKey });
-		const joinerStrand = await joinerNode.addStrand({ strandRow, sAppConfig, founder: false });
+		// The joiner launches WITHOUT waiting for its first sync: the dial that carries the
+		// founder's Header to it happens below, and its database is withheld until then.
+		const joinerStrand = await joinerNode.addStrand({ strandRow, sAppConfig, founder: false, awaitFirstSync: false });
 		expect(founderStrand.status).toBe('active');
-		expect(joinerStrand.status).toBe('active');
+		expect(joinerStrand.status).toBe('syncing');
 
 		const founderDb = founderStrand.database!.getDatabase();
-		const joinerDb = joinerStrand.database!.getDatabase();
 
 		// Each node's strand-scoped raw store, now that the provider has been asked for
 		// this strand's scope. `forStrand` throws (naming the scopes it did see) rather
@@ -548,11 +549,12 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		expect(founderManager?.MemberKey).toBe(founderKeyPair.publicKeyB64);
 
 		// ── Joiner writes nothing on bring-up (BEFORE any strand dial) ───────
-		// No strand-level connection exists yet, so nothing could have synced — this
-		// proves the joiner's `addStrand({ founder:false })` inserted no rows itself.
-		expect(await strandCount(joinerDb, 'Header')).toBe(0);
-		expect(await strandCount(joinerDb, 'Member')).toBe(0);
-		expect(await strandCount(joinerDb, 'Manager')).toBe(0);
+		// No strand-level connection exists yet, so nothing could have synced — and
+		// nothing CAN be written: the joiner's `addStrand({ founder:false })` came up
+		// `'syncing'` with its database withheld until the founder's Header reaches it
+		// (the first-sync gate, docs/strands.md → "Joining").
+		expect(joinerStrand.database).toBeUndefined();
+		expect(joinerNode.isRunning).toBe(true);
 
 		// ── Manually connect strand-level libp2p ──
 		// Same reason as strand-formation-e2e's Phase-2 dial: this fixture forms through a
@@ -566,6 +568,11 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 			() => joinerStrand.libp2pNode!.getConnections().length > 0,
 			{ timeoutMs: 10_000, description: 'joiner strand connects to founder strand' },
 		);
+
+		// ── GATE: the joiner's first sync — the Header arrives and its database is published ──
+		await joinerNode.whenStrandWritable(formResult.strandId, { timeoutMs: GATE.timeoutMs });
+		expect(joinerStrand.status).toBe('active');
+		const joinerDb = joinerStrand.database!.getDatabase();
 
 		// ── GATE: the founder's bootstrap rows become visible to the joiner ──
 		// Throws on timeout. Expiring the GATE budget is a real defect, not a slow

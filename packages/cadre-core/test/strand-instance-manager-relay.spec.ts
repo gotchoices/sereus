@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => {
     peerId: { toString: () => 'strand-delegate-peer' }
   }));
   let initializeFails = false;
+  // The first-sync gate probes `Strand.Header` on every non-founder launch; this double
+  // reports the row held, so every launch here is a machine that has synced before.
+  const headerHeldDb = { eval: async function* () { yield { Count: 1 }; } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
     return {
       initialize: vi.fn(async () => {
@@ -35,7 +38,8 @@ const mocks = vi.hoisted(() => {
           throw new Error('initialize failed on purpose');
         }
       }),
-      close: vi.fn(async () => { sequence.push('database.close'); })
+      close: vi.fn(async () => { sequence.push('database.close'); }),
+      getDatabase: () => headerHeldDb
     };
   });
   interface FakeSupervisor {

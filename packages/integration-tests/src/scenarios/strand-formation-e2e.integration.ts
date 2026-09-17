@@ -437,17 +437,22 @@ describe('E2E Strand Formation', () => {
 				// (control-network cohort discovery is intentionally not exercised here —
 				// see strand-formation-e2e header). Every strand runs the network
 				// transactor, so the manual dial is all replication needs.
+				// Alice FOUNDS (writes the Header); Bob joins without waiting for his first
+				// sync, because the mesh that carries the Header to him is only dialed below —
+				// a joiner's database is withheld until then (docs/strands.md, "Joining").
 				const aliceStrand = await aliceNode.addStrand({
 					strandRow,
 					sAppConfig: SAPP_CONFIG_A,
+					founder: true,
 				});
 				expect(aliceStrand.status).toBe('active');
 
 				const bobStrand = await bobNode.addStrand({
 					strandRow,
 					sAppConfig: SAPP_CONFIG_A,
+					awaitFirstSync: false,
 				});
-				expect(bobStrand.status).toBe('active');
+				expect(bobStrand.status).toBe('syncing');
 
 				// Manually connect strand-level libp2p nodes. Strand peer discovery DOES
 				// exist now — own-party over the strand-addr RPC, cross-party over the
@@ -466,6 +471,9 @@ describe('E2E Strand Formation', () => {
 					() => bobStrand.libp2pNode!.getConnections().length > 0,
 					{ timeoutMs: 10_000, description: 'Bob strand connects to Alice strand' },
 				);
+				// Bob's first sync: Alice's Header reaches him over the dial and his database is published.
+				await bobNode.whenStrandWritable(strandRow.Id, { timeoutMs: 30_000 });
+				expect(bobStrand.status).toBe('active');
 
 				// Insert data on Alice's strand
 				const aliceDb = aliceStrand.database!.getDatabase();
@@ -547,15 +555,16 @@ describe('E2E Strand Formation', () => {
 
 				// Manually-wired strands (see note in the first Phase 2 test): writes
 				// replicate over the dialed connections.
-				const aliceStrandA = await aliceNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A });
-				const aliceStrandB = await aliceNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B });
-				const bobStrandA = await bobNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A });
-				const bobStrandB = await bobNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B });
+				// Alice founds both; Bob joins both without waiting (see the first Phase 2 test).
+				const aliceStrandA = await aliceNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A, founder: true });
+				const aliceStrandB = await aliceNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B, founder: true });
+				const bobStrandA = await bobNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A, awaitFirstSync: false });
+				const bobStrandB = await bobNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B, awaitFirstSync: false });
 
 				expect(aliceStrandA.status).toBe('active');
 				expect(aliceStrandB.status).toBe('active');
-				expect(bobStrandA.status).toBe('active');
-				expect(bobStrandB.status).toBe('active');
+				expect(bobStrandA.status).toBe('syncing');
+				expect(bobStrandB.status).toBe('syncing');
 
 				// Connect strand-level nodes for both strands
 				await bobStrandA.libp2pNode!.dial(aliceStrandA.libp2pNode!.getMultiaddrs()[0]!);
@@ -569,6 +578,10 @@ describe('E2E Strand Formation', () => {
 					() => bobStrandB.libp2pNode!.getConnections().length > 0,
 					{ timeoutMs: 10_000, description: 'strand B connected' },
 				);
+				await bobNode.whenStrandWritable(strandRowA.Id, { timeoutMs: 30_000 });
+				await bobNode.whenStrandWritable(strandRowB.Id, { timeoutMs: 30_000 });
+				expect(bobStrandA.status).toBe('active');
+				expect(bobStrandB.status).toBe('active');
 
 				// Insert data in strand A
 				const aliceDbA = aliceStrandA.database!.getDatabase();
@@ -669,13 +682,14 @@ describe('E2E Strand Formation', () => {
 
 				// Manually-wired strands (see note in the first Phase 2 test): writes
 				// replicate over the dialed connections.
-				const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
-				const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
-				const carolStrand = await carolNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
+				// Alice founds; Bob and Carol join without waiting (see the first Phase 2 test).
+				const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, founder: true });
+				const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, awaitFirstSync: false });
+				const carolStrand = await carolNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, awaitFirstSync: false });
 
 				expect(aliceStrand.status).toBe('active');
-				expect(bobStrand.status).toBe('active');
-				expect(carolStrand.status).toBe('active');
+				expect(bobStrand.status).toBe('syncing');
+				expect(carolStrand.status).toBe('syncing');
 
 				// Connect strand-level libp2p: full mesh (Alice↔Bob, Alice↔Carol, Bob↔Carol)
 				const aliceStrandAddrs = aliceStrand.libp2pNode!.getMultiaddrs();
@@ -703,6 +717,11 @@ describe('E2E Strand Formation', () => {
 					() => bobStrand.libp2pNode!.getConnections().length >= 2,
 					{ timeoutMs: 10_000, description: 'Bob strand sees connection from Carol' },
 				);
+				// Both joiners' first sync: Alice's Header reaches them and their databases are published.
+				await bobNode.whenStrandWritable(strandId, { timeoutMs: 30_000 });
+				await carolNode.whenStrandWritable(strandId, { timeoutMs: 30_000 });
+				expect(bobStrand.status).toBe('active');
+				expect(carolStrand.status).toBe('active');
 				await waitUntil(
 					() => carolStrand.libp2pNode!.getConnections().length >= 2,
 					{ timeoutMs: 10_000, description: 'Carol strand sees connection from Bob' },

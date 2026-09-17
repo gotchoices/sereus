@@ -47,13 +47,16 @@ describe('StrandInstanceManager', () => {
     };
   }
 
-  // Helper to create start config
+  // Helper to create start config. `founder: true` by default: these are solo launches
+  // over a real node, and a solo strand is a FOUNDED strand — a joiner launched alone
+  // comes up 'syncing' with its database withheld (strand-first-sync-gate.spec.ts).
   function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
     return {
       strandRow: createStrandRow(strandId),
       sAppConfig: createSAppConfig(),
       profile: 'transaction',
       defaultLatencyHint: 'interactive',
+      founder: true,
       ...overrides
     };
   }
@@ -136,14 +139,19 @@ describe('StrandInstanceManager', () => {
 
     it('should track member private key for closed strands', async () => {
       const manager = new StrandInstanceManager();
+      // A joiner launch: founding a closed strand needs a party key, and the row's
+      // placeholder member key is not one. Comes up 'syncing' (no peer holds the
+      // Header), which is fine — only the retained key is under test.
       const config = createStartConfig('closed-strand', {
         strandRow: createStrandRow('closed-strand', 'c'),
-        defaultLatencyHint: 'background'
+        defaultLatencyHint: 'background',
+        founder: false
       });
 
       const instance = await manager.startStrand(config);
 
       expect(instance.memberPrivateKey).toBe('test-key');
+      expect(instance.status).toBe('syncing');
 
       await manager.stopAll();
     }, 30000);

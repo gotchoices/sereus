@@ -3,7 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { StrandFilter } from '../src/types.js';
+import type { CadreNodeConfig, StrandFilter } from '../src/types.js';
 
 /**
  * Shared boot for the "self-owner node" starting point several node-level specs need: a
@@ -28,6 +28,13 @@ export interface SelfOwnerNodeConfig {
   strandWatchInterval?: number;
   /** Which strands the node's watcher admits. Omitted/`undefined` → `{ mode: 'all' }`. */
   strandFilter?: StrandFilter;
+  /**
+   * Raw storage for the control database and every strand. Omitted → cadre-core's
+   * default (nothing durable: a strand stopped and relaunched starts from an empty
+   * store). Pass a memoized per-scope provider (`memoryStorageProvider()`) when a spec
+   * relaunches a strand and needs the rows the earlier launch wrote.
+   */
+  storage?: CadreNodeConfig['storage'];
 }
 
 export interface SelfOwnerNodeOptions extends SelfOwnerNodeConfig {
@@ -56,6 +63,7 @@ export async function newUnstartedNode(
     profile: 'transaction',
     strandWatchInterval: config.strandWatchInterval,
     strandFilter: config.strandFilter,
+    storage: config.storage,
   });
   return { node, ownerKey: ed25519KeyPairFromLibp2p(nodeKey) };
 }

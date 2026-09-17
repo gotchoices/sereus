@@ -174,6 +174,14 @@ export async function createClosedChatStrand(
  * by the chat schema DDL, not an open free-for-all — and assigns the joiner the
  * app-level `member` role.
  *
+ * The role write below is safe ONLY because `addStrand` resolves once the strand is
+ * writable: a joining machine's database is withheld until it has received the
+ * strand's data from the host, since a write before that forks the table it touches
+ * (the joiner's own rows silently vanish). If no host is reachable within the node's
+ * `strandFirstSync.timeoutMs`, `addStrand` rejects with the retryable
+ * `StrandAwaitingFirstSyncError` and the strand stays launched — call this again once
+ * the host is reachable.
+ *
  * @param cadreNode         Running CadreNode
  * @param strandId          The closed strand's id
  * @param memberPrivateKey  The membership key carried by the invitation

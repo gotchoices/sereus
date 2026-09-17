@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import type { Database } from '@quereus/quereus';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { StrandAwaitingFirstSyncError } from '../src/strand-first-sync-gate.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
@@ -21,7 +22,8 @@ import { signedSApp } from './signed-sapp.js';
  *
  * Only the FOUNDER writes. A joiner (`founder:false`) writes nothing locally — in a
  * networked cadre it would instead receive the rows via Optimystic sync (covered by
- * the lifecycle/invite tickets, not here).
+ * the lifecycle/invite tickets, not here) — and until it has, the first-sync gate
+ * withholds its database altogether (`strand-first-sync-gate.spec.ts` for the gate).
  */
 
 function startConfig(strandRow: StrandRow, founder: boolean, partyMemberPrivateKey?: string): StartStrandConfig {
@@ -76,19 +78,21 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     expect(member?.Key).not.toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
   }, 30_000);
 
-  it('joiner of a closed strand writes nothing locally (founder:false)', async () => {
+  it('joiner of a closed strand writes nothing locally (founder:false): it comes up syncing with its database withheld', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
     const strandRow: StrandRow = { Id: 'joiner-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, false));
-    expect(instance.status).toBe('active');
-
-    const db = instance.database!.getDatabase();
-    // No bootstrap ran: the rows would arrive via sync in a real cadre.
-    expect(await count(db, 'Header')).toBe(0);
-    expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Manager')).toBe(0);
+    // No bootstrap ran, and nothing CAN run: the rows arrive via sync in a real cadre, and
+    // until they do (no Strand.Header held) the first-sync gate withholds the database
+    // so no write — the app's, or the reconciler's — can fork a table. Real node, real
+    // probe: the Header read over a fresh solo store reports "not held".
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
+    expect(instance.libp2pNode).toBeDefined();
+    await expect(manager.whenWritable('joiner-closed', { timeoutMs: 1_500 }))
+      .rejects.toThrow(StrandAwaitingFirstSyncError);
   }, 30_000);
 
   it('founder of an open strand seats only a Header(o) — no Member/Manager', async () => {
@@ -122,25 +126,26 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     expect(manager.getInstances().size).toBe(0);
   }, 30_000);
 
-  it('a joiner WITH a party key comes up active immediately; the membership reconciler idles until rows arrive', async () => {
+  it('a joiner WITH a party key resolves immediately (syncing); the membership reconciler idles until rows arrive', async () => {
     // The real reconciler is armed here (closed + party key), but this solo joiner
     // has no founder rows and no staged invitation — so startStrand must resolve
-    // active with the loop merely waiting, having written nothing. This is the
-    // "bring-up never blocks on membership" half of the reconciler contract; the
-    // ladder itself is strand-membership-reconciler.spec.ts.
+    // with the loop merely waiting, having written nothing. This is the "bring-up
+    // never blocks on membership" half of the reconciler contract; the ladder itself
+    // is strand-membership-reconciler.spec.ts. The reconciler reads `instance.database`
+    // per pass, and the first-sync gate keeps that unset until the Header is held, so
+    // the loop cannot even reach a table to write into.
     manager = new StrandInstanceManager();
     const strandRow: StrandRow = { Id: 'joiner-reconciling', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, false, await generateStrandMemberKey()));
-    expect(instance.status).toBe('active');
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
 
-    const db = instance.database!.getDatabase();
-    // Give the immediate (non-awaited) first pass a beat to run, then confirm it
-    // wrote nothing: no Member row means no binding is even attempted.
+    // Give the immediate (non-awaited) first pass a beat to run: the strand is still
+    // gated afterwards, so nothing was seated (a seated row would have opened nothing
+    // either — only the Header does — but it could not have been written at all).
     await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(await count(db, 'Member')).toBe(0);
-    for await (const row of db.eval('select count(1) as c from Strand.MemberPeer')) {
-      expect((row as { c: number }).c).toBe(0);
-    }
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
   }, 30_000);
 });

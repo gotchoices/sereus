@@ -67,8 +67,13 @@ export function useChat(opts: UseChatOptions): UseChatResult {
   // the picker must register the local participant there too (register once per strand).
   const registeredStrandsRef = useRef<Set<string>>(new Set());
 
+  // Gated on `strand.database`: a joiner comes up `'syncing'` with no database until it
+  // has received the strand's data from another member, and a write before that would
+  // fork the Participant table (it never merges — see docs/strands.md, "Joining"). The
+  // dep on `strand.database` is what re-runs this once the strand becomes writable
+  // (`use-cadre` re-renders on `strand:writable`).
   useEffect(() => {
-    if (!strand || !participantId) return;
+    if (!strand?.database || !participantId) return;
     const sid = strand.strandId;
     if (registeredStrandsRef.current.has(sid)) return;
 
@@ -80,7 +85,7 @@ export function useChat(opts: UseChatOptions): UseChatResult {
         console.warn('Failed to register participant:', err);
       }
     })();
-  }, [strand, participantId, participantName]);
+  }, [strand, strand?.database, participantId, participantName]);
 
   // ── Reset view on strand switch ─────────────────────────────────────────
 

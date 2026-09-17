@@ -71,7 +71,7 @@ import {
   isPushPlatform
 } from './device-token.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
-import { StrandInstanceManager } from './strand-instance-manager.js';
+import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manager.js';
 import { PeerJoinBackfill } from './peer-join-backfill.js';
 import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
@@ -4201,9 +4201,10 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
-    // Still live (idle wake, or defensive double-wake): no rebuild needed.
+    // Still live (idle wake, or defensive double-wake): no rebuild needed. A joiner
+    // still behind its first-sync gate wakes back to `'syncing'`, not `'active'`.
     if (instance.libp2pNode || instance.database) {
-      instance.status = 'active';
+      instance.status = liveStrandStatus(instance);
       instance.lastActivity = new Date();
       log('Strand %s woke (already live)', strandId);
       this.emit('strand:waking', { strandId });
@@ -4328,7 +4329,7 @@ export class CadreNode implements SAppIdLookup {
 
     const sawActivity = instance.lastActivity !== activityMark;
     if (sawActivity) {
-      instance.status = 'active';
+      instance.status = liveStrandStatus(instance);
       this.emit('strand:waking', { strandId });
       log('Wake window: strand %s saw activity during the window; staying active', strandId);
       return true;
@@ -4429,7 +4430,39 @@ export class CadreNode implements SAppIdLookup {
     // formation/responder flows pass one deliberately, since their consent-seated rows
     // carry a null column. See StrandConfig.founder. Same rule for the explicit
     // partyMemberPrivateKey: it wins over the StrandPartyKey control-row read.
-    return await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+    const instance = await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+
+    // The first-sync write gate: a JOINING machine's database is withheld until it has
+    // received the strand's Header from another member, because a write before that
+    // forks every table it touches (see strand-first-sync-gate.ts). Waiting here is what
+    // lets an app write straight after `addStrand` resolves — the reference chat apps
+    // do — so the default is to wait, bounded by `strandFirstSync.timeoutMs`. A timeout
+    // rejects with the retryable `StrandAwaitingFirstSyncError` and leaves the launch
+    // up: this same call, made again once a member is reachable, completes the attach
+    // (the tracked-instance path above returns the still-syncing instance, and this
+    // wait picks it up). Founders and machines that already hold the Header resolve at
+    // once. Only a LIVE gated instance is waited on — a hibernating one is returned as
+    // it always was (no database either; a wake publishes it).
+    if (config.awaitFirstSync !== false && this.strandManager.isAwaitingFirstSync(strandRow.Id)) {
+      await this.strandManager.whenWritable(strandRow.Id, { timeoutMs: this.config.strandFirstSync?.timeoutMs });
+    }
+    return instance;
+  }
+
+  /**
+   * Resolve once a launched strand is writable — its database published to the app and
+   * its status `'active'` — or reject with the retryable `StrandAwaitingFirstSyncError`
+   * after `timeoutMs` (default `strandFirstSync.timeoutMs`, else
+   * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`). The promise form of the `strand:writable`
+   * event, for a caller that attached without waiting ({@link StrandConfig.awaitFirstSync}
+   * `false`) or that holds a strand the watcher launched. Resolves immediately for a
+   * strand that is already writable; rejects immediately for one this node does not run.
+   * A hibernating strand is not woken — wake it first if that is what is wanted.
+   */
+  async whenStrandWritable(strandId: string, options?: { timeoutMs?: number }): Promise<StrandInstance> {
+    return await this.strandManager.whenWritable(strandId, {
+      timeoutMs: options?.timeoutMs ?? this.config.strandFirstSync?.timeoutMs
+    });
   }
 
   /**
@@ -4611,7 +4644,7 @@ export class CadreNode implements SAppIdLookup {
    *   published row of the same id has a different `Type`, or either half rejects.
    */
   async foundStrand(config: FoundStrandConfig): Promise<FoundStrandResult> {
-    const { strandId, type = 'o', memberPrivateKey, sAppConfig } = config;
+    const { strandId, type = 'o', memberPrivateKey, sAppConfig, awaitFirstSync } = config;
     if (!this._running || !this.controlDatabase) {
       throw new Error(`CadreNode must be started before attempting to found strand ${strandId}`);
     }
@@ -4634,7 +4667,8 @@ export class CadreNode implements SAppIdLookup {
         '(FounderOwnerKey is not this node\'s owner key) — attaching as a joiner; ' +
         'the founder bootstrap runs on the publishing machine', trimmed);
     }
-    const instance = await timed('addStrand', () => this.addStrand({ strandRow, sAppConfig, founder: founded }));
+    const instance = await timed('addStrand',
+      () => this.addStrand({ strandRow, sAppConfig, founder: founded, awaitFirstSync }));
     timing(`[foundStrand:${trimmed}] total: ${Math.round(performance.now() - tTotal)}ms`);
     return { instance, strandRow, founded };
   }
@@ -5176,6 +5210,10 @@ export class CadreNode implements SAppIdLookup {
       revocationEnforcement: this.config.strandRevocationEnforcement,
       membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
+      // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
+      // comes up `'syncing'` announces the moment its database is published.
+      firstSync: this.config.strandFirstSync,
+      onWritable: (writableStrandId) => this.emit('strand:writable', { strandId: writableStrandId }),
       // Re-announce the delegate to ONE relay before the strand node's reservation
       // supervisor re-drives it (see announceDelegateToRelay). Retained with the
       // launch config, so a hibernation wake's rebuilt supervisors get it too.

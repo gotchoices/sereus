@@ -9,7 +9,6 @@ import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-memb
 import {
   addManager,
   addMemberByManager,
-  bootstrapFounderMembership,
   PreSplitStrandIdentityError,
   removeManager,
 } from '../src/strand-membership-writer.js';
@@ -25,10 +24,13 @@ import { signedSApp } from './signed-sapp.js';
  * fingerprint: a correctly founded strand, including one whose founder handed management
  * to a successor, re-bootstraps cleanly.
  *
- * Drives the real StrandInstanceManager solo. Pre-split rows are seated by launching as a
- * joiner (which writes nothing) and running the founding by hand under the shared-derived
- * key — what a pre-split founder did. Every launch shares one in-memory store and one
- * transport key, so a relaunch or resume hydrates the rows the earlier launch wrote.
+ * Drives the real StrandInstanceManager solo. Pre-split rows are seated by a FOUNDER launch
+ * whose party key is the shared secret itself — what a pre-split founder did (the
+ * bootstrap's pre-split check looks at rows already seated, and there are none yet) —
+ * which is then stopped. Every launch shares one in-memory store and one transport key,
+ * so the joiner relaunch that follows hydrates those rows: it holds the Header, so it
+ * comes up writable without a peer (the first-sync gate never holds a machine that has
+ * synced before), and it launched as a joiner, so a later founder request is a real flip.
  */
 
 interface Fixture {
@@ -76,9 +78,13 @@ function launchConfig(f: Fixture, founder: boolean): StartStrandConfig {
   };
 }
 
-/** The pre-split founding: Header/Member/Manager under the key derived from the SHARED secret. */
-async function seatPreSplitFounding(db: Database, f: Fixture): Promise<void> {
-  await bootstrapFounderMembership(db, { strandId: f.strandRow.Id, type: 'c', sApp: f.sApp, founderKeyPair: f.sharedKeyPair });
+/**
+ * The pre-split founding: Header/Member/Manager under the key derived from the SHARED
+ * secret, seated by a founder launch under that key and left in the fixture's store.
+ */
+async function seatPreSplitFounding(manager: StrandInstanceManager, f: Fixture): Promise<void> {
+  await manager.startStrand({ ...launchConfig(f, true), partyMemberPrivateKey: f.strandRow.MemberPrivateKey! });
+  await manager.stopStrand(f.strandRow.Id);
 }
 
 async function managerKeys(db: Database): Promise<string[]> {
@@ -102,9 +108,12 @@ describe('founder bootstrap on a pre-split closed strand', () => {
   it('founding in place is refused, re-seats nothing, and is refused again on retry', async () => {
     const f = await fixture();
     manager = new StrandInstanceManager();
+    await seatPreSplitFounding(manager, f);
     const instance = await manager.startStrand(launchConfig(f, false));
+    // The joiner relaunch hydrated the pre-split rows, so it is writable without a peer.
+    expect(instance.status).toBe('active');
     const db = instance.database!.getDatabase();
-    await seatPreSplitFounding(db, f);
+    expect(await managerKeys(db)).toEqual([f.sharedKeyPair.publicKeyB64]);
 
     const found = () => manager!.foundExistingStrand(f.strandRow.Id, async () => f.partyMemberPrivateKey);
     const error = await found().then(() => null, (e: unknown) => e);
@@ -122,9 +131,7 @@ describe('founder bootstrap on a pre-split closed strand', () => {
   it('a fresh founder launch over pre-split rows rejects and tears the runtime down', async () => {
     const f = await fixture();
     manager = new StrandInstanceManager();
-    const joined = await manager.startStrand(launchConfig(f, false));
-    await seatPreSplitFounding(joined.database!.getDatabase(), f);
-    await manager.stopStrand(f.strandRow.Id);
+    await seatPreSplitFounding(manager, f);
 
     // Rejecting at all proves the relaunch hydrated the rows: an empty strand would found.
     await expect(manager.startStrand(launchConfig(f, true))).rejects.toThrow(PreSplitStrandIdentityError);
@@ -134,8 +141,8 @@ describe('founder bootstrap on a pre-split closed strand', () => {
   it('a quiesced instance founded in place fails its rebuild cleanly, and resumes as a joiner once withdrawn', async () => {
     const f = await fixture();
     manager = new StrandInstanceManager();
-    const joined = await manager.startStrand(launchConfig(f, false));
-    await seatPreSplitFounding(joined.database!.getDatabase(), f);
+    await seatPreSplitFounding(manager, f);
+    await manager.startStrand(launchConfig(f, false));
     await manager.quiesceStrand(f.strandRow.Id);
 
     expect(await manager.foundExistingStrand(f.strandRow.Id, async () => f.partyMemberPrivateKey)).toBe('needs-resume');

@@ -252,12 +252,15 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 		return !!rec && rec.addrs.length > 0;
 	}, { timeoutMs: 20_000, intervalMs: 250, description: 'founder self-registers a CadrePeer row with addrs' });
 
-	// Open strand, no `founder: true` — that flag seats the CLOSED-strand membership
-	// bootstrap rows and is not wanted here.
+	// Open strand, `founder: true`: on an open strand the flag seats only the
+	// `Strand.Header` — and that row is what every later joiner waits to receive
+	// before its database is published (docs/strands.md, "Joining"), so the founder
+	// must actually found.
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	const founderStrand = await founder.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 		sAppConfig: sApp,
+		founder: true,
 	});
 	expect(founderStrand.status).toBe('active');
 	await founder.publishStrand(strandId);

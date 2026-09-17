@@ -97,11 +97,14 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
-    const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
+    // The drone FOUNDS (writes the Header); the phone joins without waiting for its
+    // first sync, since the dial that carries the Header to it happens below — a
+    // joiner's database is withheld until then (docs/strands.md, "Joining").
+    const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, founder: true });
     expect(droneStrand.status).toBe('active');
 
-    const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
-    expect(phoneStrand.status).toBe('active');
+    const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, awaitFirstSync: false });
+    expect(phoneStrand.status).toBe('syncing');
 
     // Connect the strand-level libp2p nodes.
     // Each strand spins up its own libp2p instance with bootstrapNodes: []
@@ -117,6 +120,8 @@ describe('WebSocket Chat (server-to-server)', () => {
       { timeoutMs: 10_000, description: 'phone strand node connects to drone strand node' },
     );
     console.log('Strand nodes connected');
+    await phone.whenStrandWritable(STRAND_ID, { timeoutMs: 30_000 });
+    expect(phoneStrand.status).toBe('active');
 
     // ── 4. Insert a participant + message on the drone ──────────────────────
 

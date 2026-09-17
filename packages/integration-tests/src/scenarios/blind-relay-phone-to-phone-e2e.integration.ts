@@ -314,8 +314,9 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 				Type: 'c',
 				FounderOwnerKey: null,
 			};
-			const bStrand = await B.addStrand({ strandRow: bStrandRow, sAppConfig: sApp });
-			expect(bStrand.status).toBe('active');
+			// Launched without waiting for B's first sync, so the relayed connection is
+			// asserted on its own terms below before the Header's arrival is waited for.
+			const bStrand = await B.addStrand({ strandRow: bStrandRow, sAppConfig: sApp, awaitFirstSync: false });
 			const bStrandNode = bStrand.libp2pNode!;
 			const bStrandPeerId = bStrandNode.peerId.toString();
 			expect(bStrandNode.getMultiaddrs().map(String).some(isCircuit)).toBe(true);
@@ -328,6 +329,10 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 				() => aStrandNode.getConnections().some((c) => c.remotePeer.toString() === bStrandPeerId),
 				{ ...GATE, description: "A's strand node accepts the inbound relayed connection from the stranger's strand node" },
 			);
+			// B's first sync over the circuit: the closed strand's Header reaches the stranger
+			// and its database is published (a joiner's is withheld until then).
+			await B.whenStrandWritable(strandId, { timeoutMs: GATE.timeoutMs });
+			expect(bStrand.status).toBe('active');
 
 			// ── The strand mesh is RELAY-CARRIED and unlimited, both ends ────────
 			expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand');

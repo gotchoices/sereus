@@ -153,7 +153,12 @@ export class ChatViewModel extends Observable {
 		this.strand = strand;
 		this.participantId = participantId;
 
-		if (strand && participantId && !this.registered) {
+		// Gated on `strand.database`: a joiner comes up `'syncing'` with no database until
+		// it has received the strand's data from another member, and a write before that
+		// would fork the Participant table (it never merges — docs/strands.md, "Joining").
+		// `refresh()` re-enters here every poll while unregistered, so the registration
+		// lands on the first poll after the strand becomes writable.
+		if (strand?.database && participantId && !this.registered) {
 			const name = `User-${participantId.slice(-4)}`;
 			insertParticipant(strand, participantId, name)
 				.then(() => {
@@ -168,8 +173,9 @@ export class ChatViewModel extends Observable {
 	}
 
 	private async refresh(): Promise<void> {
-		// A strand may be created after the chat screen is already open.
-		if (!this.strand || !this.participantId) {
+		// A strand may be created after the chat screen is already open, and one that
+		// is attached may still be waiting for its first sync (no registration yet).
+		if (!this.strand || !this.participantId || !this.registered) {
 			this.attach();
 		}
 		const strand = this.strand;

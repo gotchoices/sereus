@@ -4,6 +4,7 @@ import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
 import type { StrandMembershipReconciliationConfig } from './strand-membership-reconciler.js';
+import type { StrandFirstSyncConfig } from './strand-first-sync-gate.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
@@ -629,6 +630,22 @@ export interface CadreNodeConfig {
    */
   strandMembershipReconciliation?: StrandMembershipReconciliationConfig;
 
+  /**
+   * Tuning for the JOINING machine's first-sync write gate
+   * (`strand-first-sync-gate.ts`), applied to every strand this node launches as a
+   * non-founder: the strand's database is withheld from the app (`StrandInstance.database`
+   * unset, status `'syncing'`) until the strand's `Strand.Header` has been received from
+   * another member, because a machine that writes before its first sync creates a private
+   * copy of every table it touches that never merges. `timeoutMs` bounds how long
+   * {@link CadreNode.addStrand} waits before rejecting with `StrandAwaitingFirstSyncError`
+   * (retryable — the launch stays up and keeps probing); `pollIntervalMs` is the Header
+   * probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 30 s;
+   * `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is deliberately no way to disable
+   * the gate: a machine that already holds the Header is never gated, so nothing that works
+   * today is blocked by it.
+   */
+  strandFirstSync?: StrandFirstSyncConfig;
+
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
 
@@ -782,15 +799,23 @@ export interface CadreNodeConfig {
 }
 
 /**
- * Status of a strand instance
+ * Status of a strand instance.
+ *
+ * `'syncing'` is a JOINING machine whose runtime is up (strand libp2p node, background
+ * loops) but whose database is held back from the app until the strand's `Strand.Header`
+ * has been received from another member — see `strand-first-sync-gate.ts`. In that state
+ * `StrandInstance.database` is unset; the instance goes `'active'` (and `CadreNode` emits
+ * `strand:writable`) the moment the Header is readable. A founder, or a machine that has
+ * synced this strand before (restart, hibernation resume), never passes through it.
  */
-export type StrandStatus = 
-  | 'starting' 
-  | 'active' 
-  | 'idle' 
-  | 'hibernating' 
-  | 'stopping' 
-  | 'stopped' 
+export type StrandStatus =
+  | 'starting'
+  | 'syncing'
+  | 'active'
+  | 'idle'
+  | 'hibernating'
+  | 'stopping'
+  | 'stopped'
   | 'error';
 
 /**
@@ -811,10 +836,16 @@ export interface StrandInstance {
   status: StrandStatus;
   sAppInfo?: SAppInfo;
 
-  /** The libp2p node for this strand (only when active/idle) */
+  /** The libp2p node for this strand (only when live: syncing/active/idle) */
   libp2pNode?: Libp2p;
 
-  /** The Quereus database for this strand (only when active/idle) */
+  /**
+   * The Quereus database for this strand — set only while the strand is live AND
+   * this machine may write to it. A joining machine that has not yet received the
+   * strand's `Strand.Header` from another member runs with `libp2pNode` set and this
+   * unset (status `'syncing'`); it is published when the Header arrives
+   * (`strand:writable`). Unset while hibernating.
+   */
   database?: StrandDatabase;
 
   /** Membership info for closed strands */
@@ -933,6 +964,17 @@ export interface StrandConfig {
    * party receives — that key derives nobody's identity.
    */
   partyMemberPrivateKey?: string;
+  /**
+   * Whether {@link CadreNode.addStrand} waits for a JOINING machine's first sync before it
+   * resolves. Default `true`: the returned instance is writable (`database` set, status
+   * `'active'`), or the call rejects with `StrandAwaitingFirstSyncError` after
+   * `CadreNodeConfig.strandFirstSync.timeoutMs` — retryable, the launch stays up. `false`
+   * returns as soon as the runtime is launched, possibly `'syncing'` with no `database`;
+   * the caller then wires its own peers (a hand-dialed test fixture) and awaits
+   * {@link CadreNode.whenStrandWritable} or the `strand:writable` event. A founder, or a
+   * machine that already holds the strand's `Strand.Header`, is never gated either way.
+   */
+  awaitFirstSync?: boolean;
 }
 
 /**
@@ -957,6 +999,14 @@ export interface FoundStrandConfig {
   memberPrivateKey?: string;
   /** sApp configuration the hosting application provides, as for {@link StrandConfig}. */
   sAppConfig: SAppConfig;
+  /**
+   * Forwarded to the attach ({@link StrandConfig.awaitFirstSync}). Matters only when the
+   * call ATTACHES rather than founds — the stored row was published by a sibling machine
+   * that won the founding race — in which case this machine is a joiner whose database
+   * is withheld until that sibling's `Strand.Header` reaches it; default `true` waits
+   * for that inside the call. A founding launch is never gated.
+   */
+  awaitFirstSync?: boolean;
 }
 
 /**
@@ -1140,6 +1190,16 @@ export interface CadreNodeEvents {
   'strand:idle': { strandId: string };
   'strand:hibernating': { strandId: string };
   'strand:waking': { strandId: string };
+  /**
+   * Emitted when a strand that came up `'syncing'` — a joining machine whose database was
+   * withheld until it received the strand's `Strand.Header` from another member — becomes
+   * writable: `StrandInstance.database` is now set and the status is `'active'`. A strand
+   * whose `strand:started` already reported `'active'` (a founder, or a machine that had
+   * synced before) never emits this. The event form of what {@link CadreNode.addStrand}
+   * awaits; an app that attaches without waiting (`awaitFirstSync: false`, or a strand the
+   * watcher auto-launched) hangs its "waiting for the other member" screen on the pair.
+   */
+  'strand:writable': { strandId: string };
   /**
    * Emitted when this node discovers it is no longer a member of a CLOSED
    * strand — its party was removed by a manager, or it left. Detected by the

@@ -190,6 +190,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			const aStrand = await A.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
+				founder: true, // A founds: the Header it writes is what B's join below waits for
 			});
 			expect(aStrand.status).toBe('active');
 			const aStrandNode = aStrand.libp2pNode!;
@@ -223,11 +224,13 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			).toBe(true);
 
 			// ── Joiner strand: RPC-resolved seed alone, no hand-dial anywhere ────
+			// Launched without waiting for B's first sync, so the relayed connection is
+			// asserted on its own terms below before the Header's arrival is waited for.
 			const bStrand = await B.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
+				awaitFirstSync: false,
 			});
-			expect(bStrand.status).toBe('active');
 			const bStrandNode = bStrand.libp2pNode!;
 			const bStrandPeerId = bStrandNode.peerId.toString();
 			expect(bStrandNode.getMultiaddrs().map(String).some(isCircuit)).toBe(true);
@@ -240,6 +243,9 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 				() => aStrandNode.getConnections().some((c) => c.remotePeer.toString() === bStrandPeerId),
 				{ ...GATE, description: "A's strand node sees the inbound relayed strand connection" },
 			);
+			// B's first sync over the circuit: A's Header reaches it and its database is published.
+			await B.whenStrandWritable(strandId, { timeoutMs: GATE.timeoutMs });
+			expect(bStrand.status).toBe('active');
 
 			// ── The strand mesh is RELAY-CARRIED, per the canonical classifier ───
 			// (Each strand node also holds a DIRECT ws connection to the relay

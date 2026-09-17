@@ -316,9 +316,15 @@ export function useCadreInternal(): UseCadreResult {
       })();
     };
 
+    // A strand that came up `'syncing'` (a joiner still waiting for the other
+    // member's data) mutates in place when it becomes writable; the Map copy is
+    // what makes React re-render, so `useChat`'s `strand.database` effects fire.
+    const onWritable = () => refreshStrands();
+
     node.on('strand:started', onStarted);
     node.on('strand:stopped', onStopped);
     node.on('strand:error', onError);
+    node.on('strand:writable', onWritable);
     node.on('strand:discovered', claimDiscovered);
 
     // Catch up on strands discovered BEFORE this effect could subscribe. The
@@ -339,6 +345,7 @@ export function useCadreInternal(): UseCadreResult {
       node.off('strand:started', onStarted);
       node.off('strand:stopped', onStopped);
       node.off('strand:error', onError);
+      node.off('strand:writable', onWritable);
       node.off('strand:discovered', claimDiscovered);
     };
   }, [node, refreshStrands]);

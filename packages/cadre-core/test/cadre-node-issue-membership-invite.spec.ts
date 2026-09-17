@@ -23,8 +23,9 @@ import type { CadreNode } from '../src/cadre-node.js';
 import type { StrandMembershipInvite } from '../src/types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
-import { bootstrapFounderMembership, PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
+import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { memoryStorageProvider } from './control-db-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
@@ -45,7 +46,10 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
     // `strandFilter: none` keeps the strand watcher from auto-launching the rows these
     // tests publish — "runtime not live" has to stay deterministically not-live.
     ({ node, ownerKey } = await startSelfOwnerNode('issue-membership-invite-', {
-      strandFilter: { mode: 'none' }
+      strandFilter: { mode: 'none' },
+      // Memoized per scope, so the pre-split test's relaunch below hydrates the rows
+      // its seeding launch wrote instead of starting from an empty store.
+      storage: { provider: memoryStorageProvider() },
     }));
   }, 60_000);
 
@@ -94,12 +98,18 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
     await node.publishStrand(strandId, 'c', memberPrivateKey);
     const strandRow = (await node.getControlDatabase()!.queryStrand(strandId))!;
     const sAppConfig = signedSApp();
-    // Attach as a joiner (writes nothing), then seat the pre-split founding by hand:
-    // Header/Member/Manager under the key derived from the SHARED read secret.
+    // Seat the pre-split founding — Header/Member/Manager under the key derived from the
+    // SHARED read secret — the way a pre-split founder did: a founder launch whose party
+    // key IS that secret (the bootstrap's pre-split check looks at rows already seated,
+    // and there are none yet). Then stop it, so the relaunch below is a JOINER over the
+    // memoized store: it holds the Header, so it comes up writable without a peer, and
+    // it launched as a joiner, so the later founder request is a genuine flip.
+    await node.addStrand({ strandRow, sAppConfig, founder: true, partyMemberPrivateKey: memberPrivateKey });
+    await node.stopStrand(strandId);
     const instance = await node.addStrand({ strandRow, sAppConfig, founder: false });
-    await bootstrapFounderMembership(instance.database!.getDatabase(), {
-      strandId, type: 'c', sApp: sAppConfig, founderKeyPair: strandMemberKeyPair(memberPrivateKey),
-    });
+    expect(instance.status).toBe('active');
+    expect((await instance.database!.getDatabase().get('select Key from Strand.Member'))?.Key)
+      .toBe(strandMemberKeyPair(memberPrivateKey).publicKeyB64);
 
     // Before any founder launch has recorded a refusal (a sibling machine, or a node
     // restarted since), issuance reads the fingerprint off the live rows.

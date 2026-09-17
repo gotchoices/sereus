@@ -18,6 +18,13 @@ import {
 import { removeMemberPeer } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
+import {
+  StrandFirstSyncGate,
+  StrandAwaitingFirstSyncError,
+  strandHeaderHeld,
+  DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
+  type StrandFirstSyncConfig
+} from './strand-first-sync-gate.js';
 import type {
   StrandInstance,
   StrandRow,
@@ -36,6 +43,40 @@ import { superviseRelayReservation, type RelayReservationSupervisor } from './re
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
+
+/** One caller blocked in {@link StrandInstanceManager.whenWritable}. */
+interface WritableWaiter {
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+/**
+ * Whether a tracked instance is launched but waiting for its first sync: the runtime is
+ * up (`libp2pNode` set) while the database is still withheld (`database` unset). That
+ * is the first-sync gate's state regardless of what `status` says — the hibernation
+ * manager's idle timer can flip a long-gated joiner to `'idle'` without changing it.
+ *
+ * NOTE: `status` is therefore not the source of truth for "gated": a joiner that reaches
+ * nobody for `idleTimeout` (5 min at the interactive hint) reads `'idle'`, then
+ * `'hibernating'`, while still holding no database. Harmless today — every decision the
+ * runtime makes goes through this predicate, and an app that shows "waiting for the
+ * other member" on `'syncing'` merely sees "idle" instead after five minutes. If an app
+ * ever needs the gated state to survive the idle flip, make the hibernation manager's
+ * idle transition preserve `'syncing'` rather than adding a second flag.
+ */
+export function isAwaitingFirstSync(instance: StrandInstance): boolean {
+  return instance.libp2pNode !== undefined && instance.database === undefined;
+}
+
+/**
+ * The status a LIVE instance (runtime rebuilt or woken) should report: `'active'` once its
+ * database is published, `'syncing'` while the first-sync gate still withholds it. Every
+ * site that would otherwise write `'active'` after a build or a wake goes through this,
+ * so a gated joiner never reads as writable.
+ */
+export function liveStrandStatus(instance: StrandInstance): 'active' | 'syncing' {
+  return instance.database ? 'active' : 'syncing';
+}
 
 /**
  * Configuration for starting a strand instance
@@ -169,6 +210,24 @@ export interface StartStrandConfig {
    * this node's behalf — what to do about it is the app's call.
    */
   onSelfRevoked?: (strandId: string) => void;
+
+  /**
+   * Tuning for the JOINING machine's first-sync write gate (`strand-first-sync-gate.ts`),
+   * forwarded from {@link CadreNodeConfig.strandFirstSync}: the Header probe cadence while
+   * a non-founder launch is `'syncing'`, and the default budget {@link whenWritable} waits
+   * before rejecting. Founders and machines that already hold the Header are never gated.
+   */
+  firstSync?: StrandFirstSyncConfig;
+
+  /**
+   * Called when a launch that came up `'syncing'` (see {@link firstSync}) becomes
+   * writable: the strand's `Strand.Header` arrived from a peer — or a founder request
+   * ran the bootstrap against the gated database — and `instance.database` is now set.
+   * Never called for a launch that was writable when `startStrand`/`resumeStrand`
+   * resolved. `CadreNode` wires it to its `strand:writable` event. Retained with the
+   * launch config, so a hibernation resume that comes up gated announces too.
+   */
+  onWritable?: (strandId: string) => void;
 
   /**
    * Re-announce this strand's delegate peer id (`delegatePeerId` — the strand
@@ -306,6 +365,25 @@ export class StrandInstanceManager {
    * staged invitation, write this machine's own `MemberPeer` binding) from scratch.
    */
   private membershipReconcilers: Map<string, StrandMembershipReconciler> = new Map();
+  /**
+   * The per-strand first-sync gate (`strand-first-sync-gate.ts`), keyed by strand id:
+   * holds a launch's `StrandDatabase` while it is NOT yet published on the instance.
+   * Present from the moment the database object exists in `buildStrandRuntime` until
+   * {@link publishDatabase} hands it to the app — so it doubles as the rollback handle
+   * for a failed `initialize()` — and, for a joiner that holds no `Strand.Header` yet,
+   * for as long as the launch stays `'syncing'`. Same lifecycle as {@link backfills}:
+   * stopped (its database closed) and dropped in `releaseRuntime`, so a quiesce →
+   * resume rebuild re-probes over the same store. An entry and `instance.database`
+   * are mutually exclusive.
+   */
+  private firstSyncGates: Map<string, StrandFirstSyncGate> = new Map();
+  /**
+   * Callers blocked in {@link whenWritable}, keyed by strand id. Resolved by
+   * {@link publishDatabase}, rejected by {@link stopStrand}; each waiter also carries
+   * its own timeout. Deliberately NOT cleared by `releaseRuntime`: a waiter outlives a
+   * quiesce → resume cycle, since the rebuild is what may finally publish the database.
+   */
+  private writableWaiters: Map<string, Set<WritableWaiter>> = new Map();
   /**
    * The per-strand relay-reservation supervisors — ONE PER CONFIGURED RELAY, each
    * over the node's own bare `/p2p-circuit` listener for that relay
@@ -617,8 +695,10 @@ export class StrandInstanceManager {
 
       // Create and initialize the StrandDatabase.
       //
-      // Attach before initialize so a failed init is cleaned up by
-      // releaseRuntime below (close() is safe on a partially-initialized db).
+      // Held by the first-sync gate (registered before initialize) rather than attached
+      // to the instance: a failed init is then cleaned up by releaseRuntime below through
+      // the gate (close() is safe on a partially-initialized db), and the app only ever
+      // sees `instance.database` once this machine is allowed to write to the strand.
       t0 = performance.now();
       const strandDb = new StrandDatabase({
         strandId,
@@ -635,9 +715,28 @@ export class StrandInstanceManager {
         partyMemberPrivateKey: config.partyMemberPrivateKey,
         founder: config.founder
       });
-      instance.database = strandDb;
+      const gate = new StrandFirstSyncGate({
+        label: strandId,
+        database: strandDb,
+        onHeaderHeld: () => this.publishDatabase(instance, strandDb)
+      }, config.firstSync);
+      this.firstSyncGates.set(strandId, gate);
       await strandDb.initialize();
       timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
+
+      // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
+      // other machine may commit only once it holds the Header — which it can only have
+      // received from a peer (now, or on an earlier run over the same store). Publishing
+      // the database is what makes the strand writable to the app; until then the
+      // instance stays `'syncing'` and the gate re-probes on its cadence. Everything armed
+      // below reads `instance.database` lazily, so the reconciler and enforcer wait with it.
+      t0 = performance.now();
+      if (config.founder === true || await strandHeaderHeld(strandDb.getDatabase(), strandId)) {
+        this.publishDatabase(instance, strandDb);
+      } else {
+        gate.start();
+      }
+      timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
 
       // The membership reconciler: finish this party's join on every machine —
       // redeem a staged formation invitation if one is pending, then write the
@@ -731,8 +830,12 @@ export class StrandInstanceManager {
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
 
-      instance.status = 'active';
+      instance.status = liveStrandStatus(instance);
       instance.lastActivity = new Date();
+      if (instance.status === 'syncing') {
+        log('Strand %s launched as a joiner with no Strand.Header held yet — writes are withheld until ' +
+          'a member of the strand is reached', strandId);
+      }
     } catch (error) {
       // Roll back any partially-attached runtime so the instance is left with
       // NEITHER handle. Otherwise the `libp2pNode || database` "already live"
@@ -790,6 +893,15 @@ export class StrandInstanceManager {
     if (membershipReconciler) {
       membershipReconciler.stop();
       this.membershipReconcilers.delete(instance.strandId);
+    }
+    // A still-gated database (a joiner that never received the Header, or a launch whose
+    // initialize() failed) is closed through its gate; a published one through the
+    // instance. Never both — publishing moves the handle from the gate to the instance.
+    const gate = this.firstSyncGates.get(instance.strandId);
+    if (gate) {
+      gate.stop();
+      this.firstSyncGates.delete(instance.strandId);
+      await gate.database.close();
     }
     if (instance.database) {
       await instance.database.close();
@@ -1085,7 +1197,7 @@ export class StrandInstanceManager {
     // A fresh object rather than mutating in place: startStrand retains the CALLER'S
     // config object, which is not ours to rewrite.
     this.launchConfigs.set(strandId, { ...config, founder: true, partyMemberPrivateKey });
-    if (!instance.database) {
+    if (!instance.database && !this.firstSyncGates.has(strandId)) {
       return 'needs-resume';
     }
     try {
@@ -1095,6 +1207,104 @@ export class StrandInstanceManager {
       throw error;
     }
     return 'bootstrapped';
+  }
+
+  /**
+   * Whether `strandId` is launched but still waiting for its first sync — a joiner whose
+   * runtime is up while its database is withheld (status `'syncing'`, or `'idle'` after
+   * the hibernation manager's idle timer fired on it). `false` for a writable, quiesced,
+   * or untracked strand. The predicate {@link whenWritable}'s callers gate on.
+   */
+  isAwaitingFirstSync(strandId: string): boolean {
+    const instance = this.instances.get(strandId);
+    return instance !== undefined && isAwaitingFirstSync(instance);
+  }
+
+  /**
+   * Resolve once the strand's database is published to the app — immediately for a
+   * writable strand — or reject with {@link StrandAwaitingFirstSyncError} after
+   * `timeoutMs` (default: the retained launch config's `firstSync.timeoutMs`, else
+   * {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS}). The rejection is RETRYABLE: nothing is
+   * torn down, the gate keeps probing, and a later call waits afresh. A quiesced
+   * (hibernating) strand is not woken here — the wait spans a resume, so a caller that
+   * wants one wakes it (`CadreNode.wakeStrand`) and waits. Rejects immediately for an
+   * untracked strand, and whenever the strand is stopped while a wait is pending.
+   */
+  whenWritable(strandId: string, options?: { timeoutMs?: number }): Promise<StrandInstance> {
+    const instance = this.instances.get(strandId);
+    if (!instance) {
+      return Promise.reject(new Error(`Cannot wait for strand ${strandId} to become writable: not tracked`));
+    }
+    if (instance.database) {
+      return Promise.resolve(instance);
+    }
+    const timeoutMs = options?.timeoutMs
+      ?? this.launchConfigs.get(strandId)?.firstSync?.timeoutMs
+      ?? DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS;
+    const startedAt = Date.now();
+    return new Promise<StrandInstance>((resolve, reject) => {
+      const waiters = this.writableWaiters.get(strandId) ?? new Set<WritableWaiter>();
+      this.writableWaiters.set(strandId, waiters);
+      const settle = (): void => {
+        clearTimeout(timer);
+        waiters.delete(waiter);
+        if (waiters.size === 0) {
+          this.writableWaiters.delete(strandId);
+        }
+      };
+      const waiter: WritableWaiter = {
+        resolve: () => { settle(); resolve(instance); },
+        reject: (error) => { settle(); reject(error); }
+      };
+      const timer = setTimeout(
+        () => waiter.reject(new StrandAwaitingFirstSyncError(strandId, Date.now() - startedAt)),
+        timeoutMs);
+      (timer as { unref?: () => void }).unref?.();
+      waiters.add(waiter);
+    });
+  }
+
+  /**
+   * Hand a launch's database to the app: set `instance.database`, retire the gate that
+   * held it, release every {@link whenWritable} waiter, and — when the instance was
+   * `'syncing'` — flip it `'active'` and announce it through the retained config's
+   * `onWritable`. A publish that lands while the instance is still `'starting'` (the
+   * Header arrived during the rest of bring-up) announces nothing: `startStrand` /
+   * `resumeStrand` are about to report the strand `'active'`, and `strand:writable` is
+   * defined as the follow-up to a `'syncing'` launch, never a duplicate of it.
+   */
+  private publishDatabase(instance: StrandInstance, database: StrandDatabase): void {
+    const strandId = instance.strandId;
+    const gate = this.firstSyncGates.get(strandId);
+    if (gate) {
+      gate.open();
+      this.firstSyncGates.delete(strandId);
+    }
+    instance.database = database;
+    instance.lastActivity = new Date();
+    const wasGated = instance.status === 'syncing';
+    if (wasGated) {
+      instance.status = 'active';
+      log('Strand %s is now writable: Strand.Header held', strandId);
+    }
+    const waiters = this.writableWaiters.get(strandId);
+    if (waiters) {
+      this.writableWaiters.delete(strandId);
+      waiters.forEach((waiter) => waiter.resolve());
+    }
+    if (wasGated) {
+      this.launchConfigs.get(strandId)?.onWritable?.(strandId);
+    }
+  }
+
+  /** Reject every {@link whenWritable} waiter for a strand that is going away. */
+  private rejectWritableWaiters(strandId: string, reason: string): void {
+    const waiters = this.writableWaiters.get(strandId);
+    if (!waiters) {
+      return;
+    }
+    this.writableWaiters.delete(strandId);
+    waiters.forEach((waiter) => waiter.reject(new Error(`Strand ${strandId} ${reason} before becoming writable`)));
   }
 
   /**
@@ -1123,6 +1333,11 @@ export class StrandInstanceManager {
    * and is the only thing that makes "founding resolves once the Header is
    * written" true on that path.
    *
+   * A strand still `'syncing'` (its database withheld behind the first-sync gate) is
+   * founded through the gate: the bootstrap writes the Header this machine was waiting
+   * to receive, so a successful run publishes the database and the strand goes
+   * `'active'` — the one legitimate way a joiner launch becomes writable without a peer.
+   *
    * @throws when the strand is not tracked, or is still quiesced (no live
    *   database) — both mean the bootstrap did NOT run, which a founder request
    *   must never swallow.
@@ -1132,7 +1347,9 @@ export class StrandInstanceManager {
     if (!instance) {
       throw new Error(`Cannot run the founder bootstrap for strand ${strandId}: not tracked`);
     }
-    if (!instance.database) {
+    const gate = this.firstSyncGates.get(strandId);
+    const database = instance.database ?? gate?.database;
+    if (!database) {
       throw new Error(
         `Cannot run the founder bootstrap for strand ${strandId}: it is quiesced, so there ` +
         'is no live database to write to — resume it first.'
@@ -1141,7 +1358,10 @@ export class StrandInstanceManager {
     // Forward the RETAINED config's party key: a foundExistingStrand that flipped a
     // joiner launch to founder may have resolved a key the live database's captured
     // config (built at the original launch) never saw.
-    await instance.database.ensureFounderBootstrap(this.launchConfigs.get(strandId)?.partyMemberPrivateKey);
+    await database.ensureFounderBootstrap(this.launchConfigs.get(strandId)?.partyMemberPrivateKey);
+    if (!instance.database) {
+      this.publishDatabase(instance, database);
+    }
   }
 
   /**
@@ -1156,6 +1376,7 @@ export class StrandInstanceManager {
 
     log('Stopping strand instance: %s', strandId);
     instance.status = 'stopping';
+    this.rejectWritableWaiters(strandId, 'was stopped');
 
     try {
       await this.releaseRuntime(instance);

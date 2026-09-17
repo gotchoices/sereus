@@ -28,8 +28,11 @@ const mocks = vi.hoisted(() => {
   // `keyNetwork` present by default: the gate's other arm (a node that exposes
   // none) is asserted explicitly below by dropping it.
   const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop, keyNetwork: {} }));
+  // The first-sync gate probes `Strand.Header` on every non-founder launch; this double
+  // reports the row held, so every launch here is a machine that has synced before.
+  const headerHeldDb = { eval: async function* () { yield { Count: 1 }; } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}), getDatabase: () => headerHeldDb };
   });
   const backfillStart = vi.fn();
   const backfillStop = vi.fn();

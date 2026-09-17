@@ -97,10 +97,13 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			expect(formResult.strandId).toBeDefined();
 
 			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
-			const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig });
-			const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig });
+			// Alice FOUNDS (writes the Header); Bob joins without waiting for his first sync,
+			// since the dial that carries the Header to him happens below — a joiner's
+			// database is withheld until then (docs/strands.md, "Joining").
+			const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig, founder: true });
+			const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig, awaitFirstSync: false });
 			expect(aliceStrand.status).toBe('active');
-			expect(bobStrand.status).toBe('active');
+			expect(bobStrand.status).toBe('syncing');
 
 			// Manually connect strand-level libp2p (strand peer discovery via control net is TODO).
 			await bobStrand.libp2pNode!.dial(aliceStrand.libp2pNode!.getMultiaddrs()[0]!);
@@ -108,6 +111,8 @@ describe('sApp signed-write RBAC (real strand)', () => {
 				() => bobStrand.libp2pNode!.getConnections().length > 0,
 				{ timeoutMs: 10_000, description: 'Bob strand connects to Alice strand' },
 			);
+			await bobNode.whenStrandWritable(strandRow.Id, { timeoutMs: 30_000 });
+			expect(bobStrand.status).toBe('active');
 
 			const aliceDb = aliceStrand.database!.getDatabase();
 

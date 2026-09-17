@@ -611,11 +611,16 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     const sAppConfig = signedSApp();
 
     await node.publishStrand(strandId, 'o');
-    // An app attaching from a hand-built row (no founder knowledge): launches as a joiner.
-    await node.addStrand({
+    // An app attaching from a hand-built row (no founder knowledge): launches as a joiner,
+    // which comes up 'syncing' with its database withheld — no peer can supply the Header
+    // here, so the attach must not wait for one. The founding below is what opens the gate.
+    const attached = await node.addStrand({
       strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
       sAppConfig,
+      awaitFirstSync: false,
     });
+    expect(attached.status).toBe('syncing');
+    expect(attached.database).toBeUndefined();
 
     const { instance, founded } = await node.foundStrand({ strandId, type: 'o', sAppConfig });
 
@@ -631,10 +636,12 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     const memberPrivateKey = await generateStrandMemberKey();
 
     await node.publishStrand(strandId, 'c', memberPrivateKey);
-    // The joiner-shaped attach (id + key from an invitation, no founder knowledge).
+    // The joiner-shaped attach (id + key from an invitation, no founder knowledge) —
+    // gated like the open case above, and opened by the founding that follows.
     await node.addStrand({
       strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
       sAppConfig,
+      awaitFirstSync: false,
     });
 
     const { instance, founded } = await node.foundStrand({
@@ -668,15 +675,18 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
       ? { Id: strandId, Type: 'o' as const, MemberPrivateKey: null, FounderOwnerKey: 'sibling-owner-key-' + rand3() }
       : await realQueryStrand(id);
 
+    // No sibling actually runs the strand here, so the attach can never receive the
+    // Header — launch without waiting for it.
     const { instance, founded } = await node.foundStrand({
-      strandId, type: 'o', sAppConfig: signedSApp(),
+      strandId, type: 'o', sAppConfig: signedSApp(), awaitFirstSync: false,
     });
 
     // Attached, did not bootstrap: two machines founding one strand on separate
-    // replicas is the double-Header hazard the derivation exists to prevent.
-    expect(instance.status).toBe('active');
+    // replicas is the double-Header hazard the derivation exists to prevent. A joiner
+    // that has not received the sibling's Header holds its database back ('syncing').
     expect(founded).toBe(false);
-    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
   }, 60_000);
 });
 
@@ -717,16 +727,20 @@ describe('CadreNode.addStrand founder derivation from Strand.FounderOwnerKey', (
     ({ node } = await startSelfOwnerNode('derive-founder-', { enrollOwner: true }));
     const strandId = 'derive-foreign-' + rand4();
 
+    // A joiner: no Header is written, and none can arrive (nobody else runs the
+    // strand), so the launch is gated — its database withheld, status 'syncing'.
+    // `awaitFirstSync: false` because the default wait could only time out here.
     const instance = await node.addStrand({
       strandRow: {
         Id: strandId, MemberPrivateKey: null, Type: 'o',
         FounderOwnerKey: 'some-other-machine-owner-key-' + rand4(),
       },
       sAppConfig: signedSApp(),
+      awaitFirstSync: false,
     });
 
-    expect(instance.status).toBe('active');
-    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
   }, 60_000);
 
   it('a null FounderOwnerKey (consent-seated shape) stays a joiner without an explicit flag', async () => {
@@ -736,10 +750,11 @@ describe('CadreNode.addStrand founder derivation from Strand.FounderOwnerKey', (
     const instance = await node.addStrand({
       strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
       sAppConfig: signedSApp(),
+      awaitFirstSync: false, // a joiner nobody can sync — see the foreign-key case above
     });
 
-    expect(instance.status).toBe('active');
-    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
   }, 60_000);
 });
 
@@ -814,10 +829,11 @@ describe('CadreNode.addStrand party-key heal at launch', () => {
         FounderOwnerKey: 'foreign-owner-key-' + rand5(),
       },
       sAppConfig: signedSApp(),
+      awaitFirstSync: false, // a joiner nobody can sync: gated, database withheld
     });
 
-    expect(instance.status).toBe('active');
-    expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(0);
+    expect(instance.status).toBe('syncing');
+    expect(instance.database).toBeUndefined();
     expect(await db.queryStrandPartyKey(strandId)).toBeNull();
   }, 60_000);
 
@@ -836,13 +852,18 @@ describe('CadreNode.addStrand party-key heal at launch', () => {
       FounderOwnerKey: null,
     };
 
-    const joined = await node.addStrand({ strandRow, sAppConfig });
-    expect(joined.status).toBe('active');
-    expect(await countRow(joined.database!.getDatabase(), 'Member')).toBe(0);
+    // The joiner launch is gated (no Header can arrive), so the flip below runs the
+    // founder bootstrap against the still-withheld database — and must still refuse.
+    const joined = await node.addStrand({ strandRow, sAppConfig, awaitFirstSync: false });
+    expect(joined.status).toBe('syncing');
+    expect(joined.database).toBeUndefined();
 
     await expect(node.addStrand({ strandRow, sAppConfig, founder: true }))
       .rejects.toThrow(/StrandPartyKey/i);
     expect(await db.queryStrandPartyKey(strandId)).toBeNull();
+    // Refused ⇒ still gated, nothing seated.
+    expect(joined.status).toBe('syncing');
+    expect(joined.database).toBeUndefined();
   }, 60_000);
 });
 

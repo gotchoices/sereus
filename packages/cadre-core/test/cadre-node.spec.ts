@@ -51,11 +51,14 @@ describe('CadreNode', () => {
     };
   }
 
-  // Helper to create full strand config
+  // Helper to create full strand config. `founder: true`: a hand-built row carries no
+  // founder provenance, and a joiner launched alone comes up 'syncing' with no database
+  // until a peer supplies the Header — a solo strand is a FOUNDED strand.
   function createStrandConfig(strandId: string): StrandConfig {
     return {
       strandRow: createStrandRow(strandId),
-      sAppConfig: createSAppConfig()
+      sAppConfig: createSAppConfig(),
+      founder: true
     };
   }
 

@@ -179,11 +179,14 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 	// Create strand on both nodes
 	const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 
-	const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
+	// The drone FOUNDS (writes the Header); the phone joins without waiting for its
+	// first sync, since the dial that carries the Header to it happens below — a
+	// joiner's database is withheld until then (docs/strands.md, "Joining").
+	const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, founder: true });
 	expect(droneStrand.status).toBe('active');
 
-	const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
-	expect(phoneStrand.status).toBe('active');
+	const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, awaitFirstSync: false });
+	expect(phoneStrand.status).toBe('syncing');
 
 	// Connect strand-level libp2p nodes
 	const droneStrandAddrs = droneStrand.libp2pNode!.getMultiaddrs();
@@ -198,6 +201,8 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 		() => droneStrand.libp2pNode!.getConnections().length > 0,
 		{ timeoutMs: 10_000, description: 'drone strand sees inbound connection' },
 	);
+	await phone.whenStrandWritable(strandId, { timeoutMs: 30_000 });
+	expect(phoneStrand.status).toBe('active');
 
 	// Seed both sides with a participant
 	const droneDb = droneStrand.database!.getDatabase();

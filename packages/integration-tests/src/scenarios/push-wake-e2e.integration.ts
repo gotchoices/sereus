@@ -177,9 +177,12 @@ async function seedReceiverRecord(
  */
 async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promise<void> {
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
+	// `founder: true`: a solo strand is a FOUNDED strand — a joiner launched alone comes
+	// up 'syncing' with its database withheld until a peer supplies the Header.
 	const strand = await Rx.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 		sAppConfig: sApp,
+		founder: true,
 	});
 	expect(strand.status).toBe('active');
 
@@ -398,6 +401,7 @@ describe('E2E push-wake over the control network', () => {
 			const strand = await Rx.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
 				sAppConfig: sApp,
+				founder: true, // solo ⇒ founded; see bringUpHibernatingStrand
 			});
 			expect(strand.status).toBe('active');
 

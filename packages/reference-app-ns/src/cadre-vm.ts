@@ -43,6 +43,8 @@ export class CadreViewModel extends Observable {
 	// Stored event handlers so they can be detached on stop.
 	private readonly onStrandStarted = (): void => this.refreshStrands();
 	private readonly onStrandStopped = (): void => this.refreshStrands();
+	/** A `'syncing'` joiner became writable — its instance gained a database in place. */
+	private readonly onStrandWritable = (): void => this.refreshStrands();
 	private readonly onStrandError = ({ strandId, error }: CadreNodeEvents['strand:error']): void => {
 		console.warn(`[cadre-vm] strand ${strandId} error:`, error);
 		this.refreshStrands();
@@ -156,12 +158,14 @@ export class CadreViewModel extends Observable {
 	private bindEvents(node: CadreNode): void {
 		node.on('strand:started', this.onStrandStarted);
 		node.on('strand:stopped', this.onStrandStopped);
+		node.on('strand:writable', this.onStrandWritable);
 		node.on('strand:error', this.onStrandError);
 	}
 
 	private unbindEvents(node: CadreNode): void {
 		node.off('strand:started', this.onStrandStarted);
 		node.off('strand:stopped', this.onStrandStopped);
+		node.off('strand:writable', this.onStrandWritable);
 		node.off('strand:error', this.onStrandError);
 	}
 

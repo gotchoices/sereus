@@ -37,9 +37,12 @@ const mocks = vi.hoisted(() => {
   const close = vi.fn(async () => {});
   const initialize = vi.fn(async () => {});
   const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop }));
+  // The first-sync gate probes `Strand.Header` on every non-founder launch; this double
+  // reports the row held, so every launch here is a machine that has synced before.
+  const headerHeldDb = { eval: async function* () { yield { Count: 1 }; } };
   // Use a non-arrow implementation so `new StrandDatabase(...)` is constructable.
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize, close };
+    return { initialize, close, getDatabase: () => headerHeldDb };
   });
   return { stop, close, initialize, createLibp2pNode, StrandDatabase };
 });
