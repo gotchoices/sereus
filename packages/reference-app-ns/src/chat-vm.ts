@@ -61,6 +61,8 @@ export class ChatViewModel extends Observable {
 	private participantId: string | null = null;
 	private registered = false;
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Strands with a read still running — see `refresh()`. */
+	private readonly readsInFlight = new Set<StrandInstance>();
 
 	constructor(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS) {
 		super();
@@ -183,6 +185,12 @@ export class ChatViewModel extends Observable {
 			this.setLoading(false);
 			return;
 		}
+		// A strand read goes over the network and can outlast the poll interval on a slow
+		// link; starting another anyway slows every read and commit on that connection until
+		// delivery is minutes late. Keyed per strand instance so a read of a strand this VM
+		// has since re-attached away from does not delay the first read of the new one.
+		if (this.readsInFlight.has(strand)) return;
+		this.readsInFlight.add(strand);
 
 		try {
 			const [messages, participants] = await Promise.all([
@@ -195,6 +203,7 @@ export class ChatViewModel extends Observable {
 		} catch (err) {
 			this.setError(errMessage(err));
 		} finally {
+			this.readsInFlight.delete(strand);
 			this.setLoading(false);
 		}
 	}

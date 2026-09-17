@@ -40,7 +40,7 @@ export interface UseChatResult {
   error: string | null;
   /** Send a text message */
   send: (content: string) => Promise<void>;
-  /** Force a refresh */
+  /** Re-read now; resolves immediately if a read for the active strand is already running */
   refresh: () => Promise<void>;
 }
 
@@ -100,9 +100,20 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   // ── Fetch messages + participants ──────────────────────────────────────
 
+  // Strands with a read still running. A strand read is not local — it refreshes
+  // each table's tree over the network — so on a slow link it can outlast the poll
+  // interval; starting another one anyway queues more requests on the same
+  // connection, slowing every read, commit and peer request until delivery is
+  // minutes late. Keyed per strand instance (the same identity the stale-result
+  // check uses) so a read still running for the previous strand never delays the
+  // first read of the one just switched to.
+  const inFlightRef = useRef<Set<StrandInstance>>(new Set());
+
   const refresh = useCallback(async () => {
     const s = strandRef.current;
     if (!s?.database) return;
+    if (inFlightRef.current.has(s)) return;
+    inFlightRef.current.add(s);
 
     try {
       const [msgs, parts] = await Promise.all([
@@ -121,6 +132,7 @@ export function useChat(opts: UseChatOptions): UseChatResult {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
     } finally {
+      inFlightRef.current.delete(s);
       if (strandRef.current === s) setLoading(false);
     }
   }, []);

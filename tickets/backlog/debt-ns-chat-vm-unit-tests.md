@@ -41,6 +41,12 @@ the fallback, with the usual cost: it can drift from the real one.
   is available.
 - `chat-operations.ts` / `chat-strand.ts` covered against a fake strand, to
   whatever depth is reachable without the SQLite plugin.
+- The poll's single-flight guard (`readsInFlight` in `refresh()`): poll ticks
+  while a read is still running start no second read of that strand, the guard
+  is released when a read fails, and a re-attach to a different strand reads it
+  immediately. It landed with `rn-chat-poll-overlaps-slow-reads` without a test
+  because of the `ObservableArray` blocker above; the RN equivalent is
+  `packages/reference-app-rn/test/react/use-chat.spec.ts`.
 - Whatever unblocks `ObservableArray` is written down where the next person
   meets it, not only in this ticket.
 

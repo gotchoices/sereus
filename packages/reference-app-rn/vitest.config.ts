@@ -12,11 +12,12 @@ import { defineConfig } from 'vitest/config';
  *
  *  - **react** — `renderHook`-style tests that mount `useCadreInternal` with
  *    `react-test-renderer` to exercise the hook ↔ {@link BackgroundRunner} wiring
- *    (effect lifecycle, cold-start re-sync, state propagation). The native
- *    modules the hook would otherwise pull (`cadre-phone`, `app-state`,
- *    `push-wake-native`, `chat-strand`, `@serfab/cadre-core`) are `vi.mock`ed in
- *    the spec, so react-native is never loaded here either — node environment is
- *    enough for `react-test-renderer`.
+ *    (effect lifecycle, cold-start re-sync, state propagation), and `useChat` to
+ *    exercise its poll's single-flight guard. The native modules the hooks would
+ *    otherwise pull (`cadre-phone`, `app-state`, `push-wake-native`, `chat-strand`,
+ *    `chat-operations`, `@serfab/cadre-core`) are `vi.mock`ed in the specs, so
+ *    react-native is never loaded here either — node environment is enough for
+ *    `react-test-renderer`.
  *
  *  - **metro-babel** — compiles probes with the app's own Metro Babel transformer
  *    and runs the output, to catch Babel helper defects that only exist in the
