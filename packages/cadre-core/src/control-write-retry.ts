@@ -164,6 +164,12 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * token on the live aggregate; if it reddens there, an upstream reformat is the first thing to
  * check.
  *
+ * NOTE: the discriminator is the prefix AND the token within ONE message — never relax it to
+ * "contains `[block:`". Optimystic renders `[block:` in a fourth place, `dischargeCancel`
+ * (`Cancel of action <id> did not discharge <n> block(s): …`), which does not raise the
+ * `Some peers did not complete:` prefix; only the conjunction keeps a cancel fault from
+ * classifying as a retriable get/pend (checked against optimystic `c56c2bd4`, 2026-09-16).
+ *
  * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
  * batches to format) carries neither token, matches nothing here, and is not retried — an
  * unattributable failure is not a proven non-commit.
