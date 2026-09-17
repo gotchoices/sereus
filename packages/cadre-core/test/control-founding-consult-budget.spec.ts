@@ -343,7 +343,7 @@ async function measurePhase(
 	runStart: number,
 	phase: string,
 	labelNew: 'control' | 'strand' | undefined,
-	op: () => Promise<void>
+	op: () => Promise<unknown>
 ): Promise<{ control: PhaseCost; strand: PhaseCost }> {
 	counter.reset();
 	const started = performance.now();

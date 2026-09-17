@@ -26,7 +26,31 @@
  *  5. C self-publishes (polled `registerSelf() === 'refreshed'`), turning its
  *     row into a signed, addressed record.
  *  6. That record replicates all the way to B (`B.resolvePeerAddrs(cPeerId)`
- *     non-empty) — B knows C's address but has never connected to it.
+ *     non-empty) — B knows C's address but has never connected to it, because
+ *     B's dial gate (below) has denied every dial B made to C since B started.
+ *
+ * B'S DIAL GATE. B boots with a harness-owned connection gater
+ * ({@link ControlTrio.gateB}) that denies every dial to C from the moment B
+ * starts. A test lets B reach C only around the reconcile passes it runs
+ * ({@link DialsToC.reconcile}), then asks which pass opened the link
+ * ({@link DialsToC.openingPass}). An empty address book cannot stand in for the
+ * gate, because two production paths put C's address in front of B's dialers
+ * without any reconcile pass:
+ *
+ *  - Optimystic learns cohort addresses from cluster records. When A coordinates
+ *    a control write whose cohort includes C, the `update` it sends B names C's
+ *    address, and `ClusterService.learnPeerAddresses` merges it into B's
+ *    peerStore (`../optimystic/packages/db-p2p/src/cluster/service.ts`). Whether
+ *    a given run's record carries the address depends on timing.
+ *  - FRET dials addressed ring members it is not connected to: when a neighbour
+ *    departs (`announceOnDeparture` — the edge scenario's sever of A triggers it
+ *    within a millisecond), when new peers appear, after bootstrap, and on
+ *    stabilization (`../Fret/packages/fret/src/service/fret-service.ts`).
+ *
+ * Both are intended; in production B SHOULD reach C through them. Measured
+ * 2026-09-16 with a dial stack logged in B's gater: 3 of 9 edge-scenario runs
+ * opened B→C from FRET's departure announce, and no B→C dial came from a
+ * reconcile pass the test had not run.
  *
  * Both B and C pre-pin A's owner key into their node-local trusted-owner anchor
  * (`trustedOwners.pinnedKeys`), so their seeds are accepted by the DEFAULT
@@ -39,16 +63,18 @@
  *
  * Shared by `control-cohort-three-node-isolation.integration.ts`, which
  * originated this boot sequence as a private `bootTrio` before it was ported
- * here.
+ * here, and `control-cohort-edge-carries-data.integration.ts`.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { ConnectionGater } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
+import type { ControlCohortReconcileResult } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, hasOutboundTo, peerStoreAddrsFor
 } from './node-fixtures.js';
+import { peerDialGate } from './peer-dial-gate.js';
+import type { PeerDialGate } from './peer-dial-gate.js';
 import { waitUntil, sleep } from './wait-utils.js';
 
 export interface ControlTrioHandles { A?: CadreNode; B?: CadreNode; C?: CadreNode; }
@@ -58,16 +84,66 @@ export interface ControlTrioOptions {
 	reconcileMsB: number;
 	/** Filled in as each node boots so a caller's `finally` can stop partial state. */
 	handles: ControlTrioHandles;
+}
+
+/** One reconcile pass run through {@link DialsToC.reconcile}. */
+export interface GatedReconcilePass {
+	/** The peers the pass reported dialling (`ControlCohortReconcileResult.dialed`). */
+	dialed: string[];
+	/** Ids of B's open outbound connections to C as the pass returned, taken before the gate closed again. */
+	outboundToC: string[];
+}
+
+/**
+ * B's dials to C, denied from B's start (file header, B'S DIAL GATE). A test
+ * allows them only around the reconcile passes it runs.
+ */
+export interface DialsToC {
 	/**
-	 * Test-supplied gater for B (composed under the membership gate, which
-	 * preserves every hook except `denyInboundEncryptedConnection`).
+	 * Run `fn` with B's dials to C allowed. The gate closes again once `fn`
+	 * settles and no other `allowDuring` call is still running.
 	 */
-	gaterB?: ConnectionGater;
+	allowDuring<T>(fn: () => Promise<T>): Promise<T>;
+	/**
+	 * Run one reconcile pass on B with dials to C allowed, and record it. Calls
+	 * the `reconcileControlCohort` B had at boot, so a test can route B's own
+	 * triggers (the recurring timer) through here by assigning this over
+	 * `B.reconcileControlCohort`.
+	 */
+	reconcile(): Promise<ControlCohortReconcileResult>;
+	/** Every pass {@link reconcile} has run, oldest first. */
+	passes(): readonly GatedReconcilePass[];
+	/**
+	 * The first recorded pass whose snapshot holds B's CURRENT open outbound
+	 * connection to C, or `undefined` when B holds none or no recorded pass saw
+	 * it. The gate is closed between passes, so that connection formed during
+	 * that pass — and the pass opened it only if its `dialed` names C: a pass
+	 * skips a peer that is already connected, so a connection another subsystem
+	 * opened earlier in the same pass leaves C out of `dialed`.
+	 *
+	 * NOTE: one ordering still reads as the pass's own dial. If another
+	 * subsystem's dial to C starts inside the pass AFTER the pass listed its live
+	 * connections, libp2p hands the pass's dial that connection (or joins that
+	 * in-flight dial) and the pass reports C. That needs a FRET or transactor dial
+	 * to land in the milliseconds between the pass's connection snapshot and its
+	 * own dial; if a run ever shows it, log dial stacks in `gateB` to tell them
+	 * apart.
+	 */
+	openingPass(): GatedReconcilePass | undefined;
+	/** Gater checks for C denied so far (see {@link PeerDialGate.deniedCount}). */
+	deniedCount(): number;
 }
 
 export interface ControlTrio {
 	A: CadreNode; B: CadreNode; C: CadreNode;
 	aPeerId: string; bPeerId: string; cPeerId: string;
+	/**
+	 * B's harness-owned dial gate; C is denied on it from B's start. A test may
+	 * deny further peers on it (the edge scenario severs A this way). Let B reach
+	 * C through {@link dialsToC}, not `gateB.allow`.
+	 */
+	gateB: PeerDialGate;
+	dialsToC: DialsToC;
 }
 
 /**
@@ -97,17 +173,51 @@ export async function stopControlTrio(handles: ControlTrioHandles): Promise<void
 	}
 }
 
+/** The {@link DialsToC} view of `gateB`, bound to the reconcile method B has now. */
+function dialsToCFor(B: CadreNode, gateB: PeerDialGate, cPeerId: string): DialsToC {
+	const reconcileB = B.reconcileControlCohort.bind(B);
+	const passes: GatedReconcilePass[] = [];
+	let openers = 0;
+	const outboundToC = (): string[] => connectionsTo(B, cPeerId)
+		.filter((c) => c.direction === 'outbound' && c.status === 'open')
+		.map((c) => c.id);
+	const allowDuring = async <T>(fn: () => Promise<T>): Promise<T> => {
+		if (openers++ === 0) gateB.allow(cPeerId);
+		try {
+			return await fn();
+		} finally {
+			if (--openers === 0) gateB.deny(cPeerId);
+		}
+	};
+	return {
+		allowDuring,
+		reconcile: () => allowDuring(async () => {
+			const result = await reconcileB();
+			passes.push({ dialed: result.dialed, outboundToC: outboundToC() });
+			return result;
+		}),
+		passes: () => passes,
+		openingPass: () => {
+			const current = outboundToC();
+			return passes.find((pass) => pass.outboundToC.some((id) => current.includes(id)));
+		},
+		deniedCount: () => gateB.deniedCount(cPeerId)
+	};
+}
+
 /** Boot the A/B/C topology in the order described in the file header. */
 export async function bootControlTrio(options: ControlTrioOptions): Promise<ControlTrio> {
-	const { reconcileMsB, handles, gaterB } = options;
+	const { reconcileMsB, handles } = options;
 	const partyId = `ctrl-trio-${Date.now()}`;
 
-	// C's identity is generated up front (NOT started) purely so the "B's seed
-	// cannot name C" checkpoint below can name a concrete peer id.
+	// C's identity is generated up front (NOT started) so B's dial gate and the
+	// "B's seed cannot name C" checkpoint below can name a concrete peer id.
 	const aKey = await generateKeyPair('Ed25519');
 	const bKey = await generateKeyPair('Ed25519');
 	const cKey = await generateKeyPair('Ed25519');
 	const cPeerId = peerIdFromPrivateKey(cKey).toString();
+	const gateB = peerDialGate();
+	gateB.deny(cPeerId);
 
 	// ── 1. A: owner + storage (holds the CadrePeer blocks). No relay: every node
 	//        here is directly dialable over loopback ws.
@@ -144,7 +254,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	const B = new CadreNode(controlNodeConfig({
 		partyId, privateKey: bKey, profile: 'transaction',
 		listenAddrs: [], reconcileMs: reconcileMsB, pinnedOwnerKeys: [aOwnerKey],
-		...(gaterB ? { connectionGater: gaterB } : {})
+		connectionGater: gateB.gater
 	}));
 	handles.B = B;
 	await atStage('B starts', () => B.start());
@@ -251,5 +361,5 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		{ timeoutMs: 45_000, intervalMs: 250, description: "B resolves C's signed CadrePeer address record" }
 	);
 
-	return { A, B, C, aPeerId, bPeerId, cPeerId };
+	return { A, B, C, aPeerId, bPeerId, cPeerId, gateB, dialsToC: dialsToCFor(B, gateB, cPeerId) };
 }

@@ -18,12 +18,20 @@
  *      +-----+  B: listenAddrs: []  → C physically CANNOT dial B
  *         B dials C — the assertion under test
  *
- * B hears about C ONLY because C's signed `CadrePeer` address row replicated to
- * B through A. Nothing hands B a shortcut: B never applies a seed that names C
- * (C did not exist when B's seed was minted — asserted below), and B's libp2p
- * peerStore is checked empty for C right up to the moment of the dial, so the
- * cold-start `peerStoreAddrs` fallback in `resolveControlDialAddrs` cannot be
- * what supplied the address.
+ * The link is a reconcile pass's own dial, not merely a link that exists. FRET
+ * and Optimystic both dial addressed peers on their own, and Optimystic can put
+ * C's address in B's peerStore from a cluster record A sends B (the
+ * `harness/control-trio.ts` header, B'S DIAL GATE, names both paths). So B boots
+ * with a harness dial gate that denies every dial to C except while a reconcile
+ * pass runs through `dialsToC.reconcile`, and each case checks that the pass
+ * during which B→C formed reports dialling C (`dialsToC.openingPass`) — a pass
+ * skips a peer something else already connected.
+ *
+ * The pass learns C's address from C's signed `CadrePeer` row, replicated to B
+ * through A. B never applies a seed that names C (C did not exist when B's seed
+ * was minted — asserted in the harness), and the load-bearing case checks C's
+ * record resolvable on B right before its passes; `resolveControlDialAddrs`
+ * falls back to the peerStore only when the record resolves to nothing.
  *
  * Why B listens on NOTHING: it is the client-only RN/phone shape, and it makes
  * the direction of the link unambiguous. C cannot dial B (no listen addrs, and
@@ -50,7 +58,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	waitUntil, sleep,
 	bootControlTrio, stopControlTrio,
-	hasOutboundTo, connectionsTo, peerStoreAddrsFor,
+	hasOutboundTo, connectionsTo,
 } from '../harness/index.js';
 import type { ControlTrioHandles } from '../harness/index.js';
 
@@ -62,14 +70,21 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 		try {
 			// Short cadence so the recurring reconcile fires several times inside the
 			// window; nothing else in this test drives a pass.
-			const { B, C, cPeerId } = await bootControlTrio({ reconcileMsB: 2_000, handles });
+			const { B, C, cPeerId, dialsToC } = await bootControlTrio({ reconcileMsB: 2_000, handles });
+			// B's gate denies C outside the passes `dialsToC` runs, and the trigger
+			// under test is B's own timer. Route B's own reconcile triggers (the
+			// timer, and `self:peer:update`) through `dialsToC.reconcile`, which
+			// opens the gate for exactly each pass and records it.
+			B.reconcileControlCohort = () => dialsToC.reconcile();
 
-			// THE ASSERTION. B never had an address for C from any source but the
-			// replicated record, and B is the only side that can dial.
+			// THE ASSERTION. A pass on B's timer opens B→C (B is the only side that
+			// can dial), and it is that pass's own dial: the pass during which the
+			// connection formed reports dialling C.
 			await waitUntil(
-				() => hasOutboundTo(B, cPeerId),
-				{ timeoutMs: 60_000, intervalMs: 250, description: 'B dials C from the replicated record (reconcile timer)' }
+				() => dialsToC.openingPass() !== undefined,
+				{ timeoutMs: 60_000, intervalMs: 250, description: "a reconcile pass on B's timer leaves B holding an outbound connection to C" }
 			);
+			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 
 			// End-state check that the resulting cohort actually works: C authors a
 			// NEW row revision after B↔C formed, and B's view catches up to it.
@@ -107,27 +122,24 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			// `reconcileMs` is read once when the refresh timers are wired, so it
 			// cannot be changed mid-test — hence a second boot. 10 minutes means the
 			// recurring timer provably never fires inside this test.
-			const { B, cPeerId } = await bootControlTrio({ reconcileMsB: 600_000, handles });
+			const { B, cPeerId, dialsToC } = await bootControlTrio({ reconcileMsB: 600_000, handles });
 
 			// ── Negative window. For ~5s: B can RESOLVE C (the record is there) but
-			//    holds no connection to it and no peerStore address for it. This is
-			//    what proves no other subsystem forms the link — FRET stabilization
-			//    learns C's peer id from A's announce snapshot, but its
-			//    `dialProtocol(peerId)` has no address to use; the cohort topic and
-			//    the connection manager are equally addressless here.
+			//    holds no connection to it. B's dial gate denies every dial to C in
+			//    this window, so FRET and the transactor — which do dial addressed
+			//    peers on their own — cannot form the link either. B's peerStore is
+			//    deliberately NOT checked: Optimystic may legitimately have merged
+			//    C's address into it from a cluster record (harness/control-trio.ts
+			//    header, B'S DIAL GATE).
 			//
-			// NOTE: if this window ever fails, the first suspect is a
-			// `self:peer:update`-triggered reconcile pass on B (wired in
-			// `startRecordRefresh` alongside the interval, so the 10-minute cadence
-			// does not suppress it). B listens on nothing, so its libp2p address set
-			// should never change mid-test and no run has shown this — but the trigger
-			// exists. Diagnose with DEBUG='sereus:cadre:node' and look for
-			// "Control-cohort reconcile (self:peer:update)".
+			// NOTE: a failure here means a dial got past B's gate — including one
+			// from a reconcile pass the test did not run (a `self:peer:update`-
+			// triggered pass, say), which the gate denies as well. Log dial stacks
+			// in `gateB`'s hooks to find the opener.
 			let checkpoints = 0;
 			let resolvedCheckpoints = 0;
 			for (let elapsed = 0; elapsed < 5_000; elapsed += 250) {
 				expect(connectionsTo(B, cPeerId)).toHaveLength(0);
-				expect(await peerStoreAddrsFor(B, cPeerId)).toHaveLength(0);
 				checkpoints++;
 				if ((await B.resolvePeerAddrs(cPeerId)).length > 0) resolvedCheckpoints++;
 				await sleep(250);
@@ -137,23 +149,21 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			expect(checkpoints).toBeGreaterThan(0);
 			expect(resolvedCheckpoints).toBe(checkpoints);
 
-			// Last checkpoint before the dial: the record path is live and the
-			// cold-start fallback (`peerStoreAddrs`) is empty, so the address the
-			// dial below uses can only have come from the replicated record.
-			expect(await peerStoreAddrsFor(B, cPeerId)).toHaveLength(0);
+			// Last checkpoint before the passes: C's record resolves on B, so the
+			// pass's dial takes the record's addresses — `resolveControlDialAddrs`
+			// consults the peerStore only when the record resolves to nothing.
 			expect((await B.resolvePeerAddrs(cPeerId)).length).toBeGreaterThan(0);
 
 			// ── The public routine the timer would have called — not a raw dial().
 			//    Polled rather than called exactly once: if B's own row has not yet
 			//    replicated to C, C's `admitInboundControlConnection` denies and the
 			//    connection dies moments after `dial()` resolves, so a single pass can
-			//    lose that race. Each iteration is a real production reconcile pass.
-			let passes = 0;
+			//    lose that race. Each iteration is a real production reconcile pass,
+			//    run with B's dials to C allowed for exactly that pass.
 			await waitUntil(
 				async () => {
 					if (hasOutboundTo(B, cPeerId)) return true;
-					passes++;
-					await B.reconcileControlCohort();
+					await dialsToC.reconcile();
 					// The membership gater denies AFTER the dialer's upgrade completes,
 					// so a refused dial looks momentarily successful — re-check on the
 					// next poll rather than accepting this pass's immediate state.
@@ -161,8 +171,12 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 				},
 				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'an explicit reconcile pass dials C' }
 			);
-			expect(passes).toBeGreaterThan(0);
+			expect(dialsToC.passes().length).toBeGreaterThan(0);
 			expect(hasOutboundTo(B, cPeerId)).toBe(true);
+			// The pass during which B→C formed reports dialling C. Had FRET or the
+			// transactor opened it inside that pass, the pass would have skipped C
+			// as already connected.
+			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 		} finally {
 			await stopControlTrio(handles);
 		}

@@ -404,7 +404,8 @@ export {
   selectControlCohortDials,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
-  type ControlCohortSelection
+  type ControlCohortSelection,
+  type ControlCohortReconcileResult
 } from './control-cohort.js';
 
 // Dialing one peer from several candidate addresses, each under its own time

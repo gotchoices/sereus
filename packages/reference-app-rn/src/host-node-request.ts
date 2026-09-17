@@ -58,8 +58,8 @@ export interface HostNodeRequestNode {
 	addDrone(options: { dronePeerId: string; droneMultiaddrs: string[] }): Promise<{ encodedSeed: string }>;
 	/** Undo an {@link addDrone} whose loan then failed. */
 	removePeer(peerId: string): Promise<void>;
-	/** Dial the cohort now instead of waiting out the next timed pass. */
-	reconcileControlCohort(): Promise<void>;
+	/** Dial the cohort now instead of waiting out the next timed pass. The pass's result is unused here. */
+	reconcileControlCohort(): Promise<unknown>;
 	/** The libp2p node behind the control network; null before start. */
 	getControlNode(): { getConnections(): ReadonlyArray<{ remotePeer: { toString(): string }; status: string }> } | null;
 }

@@ -179,7 +179,7 @@ describe('CadreNode.reconcileControlCohort', () => {
       members: [{ peerId: 'self-peer', multiaddr: null }]
     });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
 
     expect(dialCalls).toEqual([]);
     expect(resolvedFor).toEqual([]);
@@ -189,7 +189,7 @@ describe('CadreNode.reconcileControlCohort', () => {
     const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, { members: [] });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
     expect(dialCalls).toEqual([]);
   });
 
@@ -203,7 +203,9 @@ describe('CadreNode.reconcileControlCohort', () => {
       connections: []
     });
 
-    await node.reconcileControlCohort();
+    // The pass reports the sibling it dialled, so a caller can tell this pass
+    // opened the link.
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
 
     expect(resolvedFor).toEqual(['sibling-1']);
     expect(dialCalls).toHaveLength(1);
@@ -222,7 +224,8 @@ describe('CadreNode.reconcileControlCohort', () => {
       connections: ['sibling-1']
     });
 
-    await node.reconcileControlCohort();
+    // Not reported as dialled: a link something else opened is not this pass's.
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
 
     expect(dialCalls).toEqual([]);
     expect(resolvedFor).toEqual(['sibling-1']);
@@ -341,8 +344,9 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
       async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
 
-    // A per-peer dial failure must not throw out of the pass; both siblings are attempted.
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    // A per-peer dial failure must not throw out of the pass; both siblings are
+    // attempted, and a failed dial is not reported as dialled.
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
     expect(resolvedFor.sort()).toEqual(['sibling-a', 'sibling-b']);
   });
 
@@ -382,7 +386,7 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
       async (id: string) => { dialedPeers.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
     expect(dialedPeers.sort()).toEqual(['sibling-a', 'sibling-b']);
     // One deadline per sibling, and each one cancelled its dial rather than
     // leaking it — the whole point of `withDeadline` over a bare `withTimeout`.
@@ -398,8 +402,10 @@ describe('CadreNode.reconcileControlCohort', () => {
       ]
     });
 
-    await Promise.all([node.reconcileControlCohort(), node.reconcileControlCohort()]);
+    const results = await Promise.all([node.reconcileControlCohort(), node.reconcileControlCohort()]);
 
+    // The joining call resolves to the in-flight pass's own result.
+    expect(results).toEqual([{ dialed: ['sibling-1'] }, { dialed: ['sibling-1'] }]);
     // One coalesced pass. A single pass reads membership twice (the per-stream
     // authz snapshot refresh, then sibling enumeration) — so 2 here, not 4,
     // proves the second reconcile call rode the first's in-flight run.
@@ -417,7 +423,7 @@ describe('CadreNode.reconcileControlCohort', () => {
       running: false
     });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
 
     expect(queryCalls()).toBe(0);
     expect(dialCalls).toEqual([]);
@@ -433,7 +439,7 @@ describe('CadreNode.reconcileControlCohort', () => {
       getOwnerKeys: async () => new Set<string>()
     };
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
   });
 
   it('honors the configured targetDegree cap end-to-end', async () => {
@@ -692,7 +698,7 @@ describe('CadreNode.reconcileControlCohort — address-book warming', () => {
       mergeThrows: true
     });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [sibling] });
 
     expect(resolvedFor).toEqual([sibling]);
     expect(dialCalls).toHaveLength(1);
@@ -802,7 +808,7 @@ describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
       reapThrows: true
     });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
 
     expect(reapCalls).toEqual(['self-peer']);
     expect(resolvedFor).toEqual(['sibling-1']);
@@ -901,7 +907,7 @@ describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => 
     const { dialCalls, reapCalls } = injectCohort(node, { members: SELF_AND_SIBLING, connections: ['some-other-peer'] });
     const { filings } = injectLedgerOwner(node, { outcomes: [new Error('ledger boom'), 'opened'] });
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
     expect(filings()).toBe(1);
     expect(reapCalls).toEqual(['self-peer']);
     expect(dialCalls).toHaveLength(1);
@@ -966,7 +972,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     const { dialCalls } = injectCohort(node, { members: [] });
     recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [addr], isOwner: true }]));
 
-    await node.reconcileControlCohort();
+    // The cold-start branch reports its bootstrap dials the same way.
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [owner] });
 
     expect(dialedAddrs(dialCalls)).toEqual([addr]);
   });
@@ -1061,7 +1068,7 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
       { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
     ]));
 
-    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
     expect(attempted).toHaveLength(2);
   });
 

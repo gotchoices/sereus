@@ -78,7 +78,8 @@ import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
-  DEFAULT_CONTROL_COHORT_TARGET_DEGREE
+  DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
+  type ControlCohortReconcileResult
 } from './control-cohort.js';
 import {
   dialPeerAddrs,
@@ -677,7 +678,7 @@ export class CadreNode implements SAppIdLookup {
    * together; collapsing concurrent passes into one in-flight run prevents two
    * passes from double-dialing the same siblings (mirrors {@link registerSelfInFlight}).
    */
-  private reconcileControlCohortInFlight: Promise<void> | null = null;
+  private reconcileControlCohortInFlight: Promise<ControlCohortReconcileResult> | null = null;
   /**
    * Single-flight guard for {@link registerSelf}. Concurrent callers (the explicit
    * CLI `--owner` publish, the 1s startup timer, the TTL heartbeat, and the
@@ -2629,29 +2630,35 @@ export class CadreNode implements SAppIdLookup {
    * `self:peer:update` (all wired in {@link startRecordRefresh}).
    *
    * Concurrent triggers collapse into a single in-flight pass
-   * (see {@link reconcileControlCohortInFlight}) so two passes never double-dial.
+   * (see {@link reconcileControlCohortInFlight}) so two passes never double-dial;
+   * a call that joins an in-flight pass resolves to THAT pass's result.
    * Best-effort throughout: a failure to resolve/dial any one sibling is logged
    * and the pass continues; the whole pass is a no-op when the node is alone.
+   *
+   * Resolves to the peers the pass dialled ({@link ControlCohortReconcileResult}),
+   * so a caller can tell a link this pass opened from one something else opened —
+   * the pass skips a peer that is already connected. The timer and event triggers
+   * discard it.
    */
-  async reconcileControlCohort(): Promise<void> {
+  async reconcileControlCohort(): Promise<ControlCohortReconcileResult> {
     if (this.reconcileControlCohortInFlight) {
       return this.reconcileControlCohortInFlight;
     }
     const op = this.runReconcileControlCohort();
     this.reconcileControlCohortInFlight = op;
     try {
-      await op;
+      return await op;
     } finally {
       this.reconcileControlCohortInFlight = null;
     }
   }
 
   /** Body of {@link reconcileControlCohort}; serialised by its single-flight guard. */
-  private async runReconcileControlCohort(): Promise<void> {
+  private async runReconcileControlCohort(): Promise<ControlCohortReconcileResult> {
     // Shutdown / not-yet-started guard (mirrors publishSelfRecord). A pass that
     // fires after stop() began must early-return rather than touch a torn-down node.
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
     // Ride this pass's cadence to refresh the per-stream gate's materialized
     // authorized set — membership changes that ARRIVED BY REPLICATION (rather
@@ -2669,7 +2676,7 @@ export class CadreNode implements SAppIdLookup {
     // share one row-set across all three.
     await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
     // Refresh relay delegate grants BEFORE the sibling enumeration below: a
     // solo cadre with a party relay has no siblings to dial but must still keep
@@ -2677,7 +2684,7 @@ export class CadreNode implements SAppIdLookup {
     // the reservation and faces the connection gate again).
     await this.refreshDelegateGrants();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
     // Then re-warm each running strand's own address book from its siblings, on
     // its own (much longer) throttle. Same reasoning as warmSiblingAddrBook
@@ -2685,7 +2692,7 @@ export class CadreNode implements SAppIdLookup {
     // layer under cadre-core dials strand peers by bare peer id.
     await this.refreshStrandPeerAddrs();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
     const selfPeerId = this.controlNode.peerId.toString();
 
@@ -2727,7 +2734,7 @@ export class CadreNode implements SAppIdLookup {
         log('reconcileControlCohort: reap pass failed (continuing): %o', error);
       }
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return;
+        return { dialed: [] };
       }
 
       // File the Revocation ledger marker once, so that table stops being a never-written
@@ -2748,7 +2755,7 @@ export class CadreNode implements SAppIdLookup {
       // can hold the party's collections).
       await this.openRevocationLedgerIfDue();
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return;
+        return { dialed: [] };
       }
     }
 
@@ -2763,12 +2770,11 @@ export class CadreNode implements SAppIdLookup {
       // because filling this table needs a connection and getting a connection
       // needs this table. Fall back to the seed's bootstrap addresses; a solo
       // cadre has none and this is a no-op. Must not throw or busy-loop.
-      await this.dialColdStartBootstrap();
-      return;
+      return { dialed: await this.dialColdStartBootstrap() };
     }
     // Re-guard after the await: a stop() may have raced the membership read.
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
 
     // 2. Classify backbone (owner) members and select a bounded dial set.
@@ -2779,7 +2785,7 @@ export class CadreNode implements SAppIdLookup {
     // the anchor if owner status here ever gates something trusted.
     const ownerKeys = await this.controlDatabase.getOwnerKeys();
     if (!this._running || !this.controlNode) {
-      return;
+      return { dialed: [] };
     }
     const targetDegree = this.config.network?.controlCohort?.targetDegree
       ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
@@ -2794,7 +2800,7 @@ export class CadreNode implements SAppIdLookup {
     //    keeping what resolved for the dial loop below.
     const resolved = await this.warmSiblingAddrBook(siblings);
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return;
+      return { dialed: [] };
     }
 
     // 4. Skip already-connected peers (no re-dial / churn for live connections).
@@ -2802,20 +2808,21 @@ export class CadreNode implements SAppIdLookup {
 
     // 5. Dial each selected, not-yet-connected sibling, best-effort, from the
     //    addresses step 3 already resolved for it.
-    let dialed = 0;
+    const dialed: string[] = [];
     for (const sibling of dials) {
       if (!this._running || !this.controlNode) {
-        return;
+        return { dialed };
       }
       if (connected.has(sibling.peerId)) {
         continue;
       }
       if (await this.dialControlSibling(sibling, resolved.get(sibling.peerId) ?? [])) {
-        dialed++;
+        dialed.push(sibling.peerId);
       }
     }
     log('reconcileControlCohort: pass complete (siblings=%d, selected=%d, dialed=%d)',
-      siblings.length, dials.length, dialed);
+      siblings.length, dials.length, dialed.length);
+    return { dialed };
   }
 
   /**
@@ -2970,7 +2977,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Dial one sibling from its already-resolved addresses, best-effort. Returns
-   * whether a dial was attempted (false when no address resolves).
+   * whether the dial resolved (false when no address resolves or the dial fails).
    *
    * A per-peer failure (NAT, offline, relay down, connection-gater denial, or
    * the {@link controlDialBudget} expiring) is logged and swallowed so one
@@ -3186,20 +3193,20 @@ export class CadreNode implements SAppIdLookup {
    * Best-effort per peer, exactly like {@link dialControlSibling}: one dead
    * address never aborts the pass.
    */
-  private async dialColdStartBootstrap(): Promise<void> {
+  private async dialColdStartBootstrap(): Promise<string[]> {
     const controlNode = this.controlNode;
     // Snapshot up front: the store hands back a copy, so a seed applied mid-pass
     // cannot mutate what we are iterating.
     const targets = this.bootstrapPeerStore?.all();
     if (!controlNode || !targets || targets.size === 0) {
-      return;
+      return [];
     }
     // Same skip rule as step 3 of the steady-state pass: no churn on live links.
     const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
-    let dialed = 0;
+    const dialed: string[] = [];
     for (const [peerId, entry] of targets) {
       if (!this._running || !this.controlNode) {
-        return;
+        return dialed;
       }
       // NOTE: a connection this node still holds in `status: 'open'` after the remote
       // has already aborted it counts as connected here, so the cold-start retry stays
@@ -3212,11 +3219,12 @@ export class CadreNode implements SAppIdLookup {
         continue;
       }
       if (await this.dialBootstrapPeer(peerId, entry.addrs)) {
-        dialed++;
+        dialed.push(peerId);
       }
     }
     log('reconcileControlCohort: cold-start pass complete (bootstrap=%d, connected=%d, dialed=%d)',
-      targets.size, connected.size, dialed);
+      targets.size, connected.size, dialed.length);
+    return dialed;
   }
 
   /**

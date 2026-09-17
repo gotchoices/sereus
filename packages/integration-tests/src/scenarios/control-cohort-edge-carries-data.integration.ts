@@ -10,19 +10,21 @@
  *
  *  1. Boot the same A/B/C topology (B listens on nothing — nobody can ever
  *     dial B), with B's recurring reconcile timer at 10 minutes so it provably
- *     never fires in-test.
- *  2. Sever B from A: the test gater denies every future dial to A, then B
+ *     never fires in-test. B's harness dial gate denies every dial to C from
+ *     B's start (see WHY THE NEGATIVE WINDOW CANNOT ACCIDENTALLY FORM B↔C).
+ *  2. Sever B from A: B's dial gate denies every future dial to A, then B
  *     hangs up. B now holds ZERO connections and stays that way unless B
  *     itself dials out.
  *  3. A ~4s negative window re-asserts at every checkpoint: B has zero
- *     connections, A has none to B, B's peerStore still holds no address for
- *     C — while C's signed record stays resolvable on B, so the absence of a
- *     link is "nothing dialled", not "nothing to dial".
+ *     connections and A has none to B — while C's signed record stays
+ *     resolvable on B, so the absence of a link is "nothing dialled", not
+ *     "nothing to dial".
  *  4. C authors a NEW revision of its own `CadrePeer` row (R1) while B is
  *     provably absent from the network, with the batch coordinator pinned to C
  *     for exactly this write (see PIN SCOPING below).
- *  5. The production routine `B.reconcileControlCohort()` opens B→C — the only
- *     connection B gains (the gater holds A out).
+ *  5. The production routine `B.reconcileControlCohort()`, run with B's dials
+ *     to C allowed for exactly that pass, opens B→C and reports dialling C —
+ *     the only connection B gains (the gate still holds A out).
  *  6. B observes R1 — with the coordinator pinned to C again, so the read is
  *     answered BY C — while every open control connection B holds is to C, at
  *     every poll. Therefore R1 crossed the B↔C edge.
@@ -53,21 +55,26 @@
  *    pass starts by reading the CadrePeer table on B (`listMembers`, the
  *    membership-gate refresh) and a live Optimystic read syncs from the network
  *    through the transactor first. With the pin active, B's read is routed to
- *    coordinator C — which B cannot dial yet (no address) — and the read
- *    throws, so the pass aborts before it ever dials anyone: the exact
- *    chicken-and-egg (reaching C requires reconcile, reconcile requires
- *    reading, reading requires reaching C) that the reconcile pass exists to
- *    break. Unpinned, B's transactor falls back to self-coordination and the
- *    read is served from B's local (pre-sever) replicated state, which is
- *    exactly what production offers an isolated node.
+ *    coordinator C, to which B holds no connection. Either the read throws and
+ *    the pass aborts before it ever dials anyone — the exact chicken-and-egg
+ *    (reaching C requires reconcile, reconcile requires reading, reading
+ *    requires reaching C) that the reconcile pass exists to break — or, when
+ *    B's peerStore happens to hold C's address, the transactor dials C itself
+ *    while the pass has the gate open, and the pass then skips C as already
+ *    connected, so the step-5 check fails. Unpinned, B's transactor falls back
+ *    to self-coordination and the read is served from B's local (pre-sever)
+ *    replicated state, which is exactly what production offers an isolated
+ *    node.
  *
- * WHY THE NEGATIVE WINDOW CANNOT ACCIDENTALLY FORM B↔C: everything B's
- * transactor could dial comes from FRET / the libp2p peerStore, and B's
- * peerStore holds no address for C (re-asserted every checkpoint). A
- * `findCoordinator` result is a peer id; the dial then needs addresses and
- * finds none. The only component that can turn C's signed record into a
- * dialable address is `CadreNode.resolveControlDialAddrs`, which only the
- * reconcile pass calls.
+ * WHY THE NEGATIVE WINDOW CANNOT ACCIDENTALLY FORM B↔C: B's harness dial gate
+ * denies every dial to C except during the reconcile pass step 5 runs. An empty
+ * address book is NOT what holds B off: Optimystic merges C's address into B's
+ * peerStore when a cluster record A sends B names it, and FRET dials addressed
+ * ring neighbours on its own — the sever itself triggers FRET's departure
+ * announce, which dialled C within a millisecond in 3 of 9 measured runs before
+ * the gate existed. Both paths, and the measurement, are described in the
+ * `harness/control-trio.ts` header (B'S DIAL GATE). A connection-count failure
+ * inside the window therefore means something bypassed the gate.
  *
  * Honest scope: carriage is demonstrated in the READ direction (B pulls R1
  * across the edge). The write direction (B promising a C-coordinated write
@@ -77,51 +84,17 @@
 
 import { describe, it, expect } from 'vitest';
 import { peerIdFromString } from '@libp2p/peer-id';
-import type { Connection, ConnectionGater } from '@libp2p/interface';
+import type { Connection } from '@libp2p/interface';
 import type { CadreNode } from '@serfab/cadre-core';
 import {
 	bootControlTrio, stopControlTrio,
-	connectionsTo, hasOutboundTo, peerStoreAddrsFor,
+	connectionsTo, hasOutboundTo,
 	pinCoordinator, readCohort,
 	waitUntil, sleep
 } from '../harness/index.js';
 import type { ControlTrioHandles, PinnedCoordinatorHandle } from '../harness/index.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-interface SeverableGater {
-	/** Pass as `network.connectionGater`; denies nothing until {@link sever}. */
-	gater: ConnectionGater;
-	/** Deny every FUTURE dial to `peerId`. Idempotent. */
-	sever(peerId: string): void;
-}
-
-/**
- * A connection gater that starts fully permissive and can be flipped mid-test
- * to deny all dials to one peer. The denied peer id is supplied at `sever()`
- * time (not construction) because the gater must exist before the trio boots,
- * while A's peer id only exists after A starts.
- *
- * Covers both paths libp2p's dial queue consults — `denyDialPeer` on the
- * peer-id path and `denyDialMultiaddr` on the per-address path — plus
- * `denyOutboundConnection` as belt-and-braces at the upgrader.
- */
-function severableDialGater(): SeverableGater {
-	let denied: string | undefined;
-	return {
-		gater: {
-			denyDialPeer: (peerId) => denied !== undefined && peerId.toString() === denied,
-			denyDialMultiaddr: (ma) => {
-				if (denied === undefined) return false;
-				// The dial target is the LAST p2p component (earlier ones name relays).
-				const p2p = ma.getComponents().filter((c) => c.name === 'p2p').pop();
-				return p2p?.value === denied;
-			},
-			denyOutboundConnection: (peerId, _maConn) => denied !== undefined && peerId.toString() === denied
-		},
-		sever(peerId: string) { denied = peerId; }
-	};
-}
 
 /** Every OPEN connection B's control libp2p currently holds, to anyone. */
 function openControlConnections(node: CadreNode): Connection[] {
@@ -194,14 +167,13 @@ async function explain<T>(body: () => Promise<T>, context: string): Promise<T> {
 describe('Control-cohort edge carries data (three nodes, severed backbone)', () => {
 	it('a revision authored on C while B is fully isolated reaches B only across the reconcile-formed B→C connection', async () => {
 		const handles: ControlTrioHandles = {};
-		const severable = severableDialGater();
 		let writePin: PinnedCoordinatorHandle | undefined;
 		let carryPin: PinnedCoordinatorHandle | undefined;
 		try {
 			// ── 1. Boot. reconcileMs 10 min: B's recurring reconcile timer provably
 			//       never fires inside this test; only explicit passes dial.
-			const { A, B, C, aPeerId, bPeerId, cPeerId } = await bootControlTrio({
-				reconcileMsB: 600_000, handles, gaterB: severable.gater
+			const { A, B, C, aPeerId, bPeerId, cPeerId, gateB, dialsToC } = await bootControlTrio({
+				reconcileMsB: 600_000, handles
 			});
 			// Appended to every poll failure below: an aggregate transactor error names
 			// a raw peer id, which is unattributable without this map (or a debug rerun).
@@ -228,8 +200,9 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 
 			// ── 3. Sever B from A: deny all future dials to A, then hang up. Nobody
 			//       can dial B (no listen addrs), so B is now fully isolated and
-			//       stays that way unless B itself dials out.
-			severable.sever(aPeerId);
+			//       stays that way unless B itself dials out. A stays denied for
+			//       the rest of the test; C stays denied outside step 6's passes.
+			gateB.deny(aPeerId);
 			await B.getControlNode()!.hangUp(peerIdFromString(aPeerId));
 			await waitUntil(
 				() => openControlConnections(B).length === 0,
@@ -245,9 +218,15 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 
 			// ── 4. Negative window (~4s of checkpoints, 250ms apart). B stays fully
 			//       isolated while C's record stays KNOWN to B — so the absence of a
-			//       link is "nothing dialled", not "nothing to dial". The peerStore
-			//       check per iteration is what proves nothing but the record path
-			//       could later supply C's address.
+			//       link is "nothing dialled", not "nothing to dial". B's peerStore
+			//       is deliberately NOT checked: it may legitimately hold C's
+			//       address (file header, WHY THE NEGATIVE WINDOW…), and B's dial
+			//       gate, not an empty address book, is what holds B off C here.
+			//       Nor is the gate asserted to have denied anything: whether
+			//       anything tries depends on whether that address arrived (measured
+			//       2026-09-16: 2 of 6 runs denied dials to C by the end of the
+			//       window, each with C's address in B's peerStore; the other 4 had
+			//       neither).
 			//
 			// The resolvability read is served from B's local pre-sever replicated
 			// state (no pin is active). B has never received the `Revocation` block:
@@ -266,18 +245,17 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			// sever (bracket above) and dials C successfully in step 6, so "B had
 			// nothing to dial" is ruled out from both sides regardless.
 			//
-			// NOTE: if this window ever fails on a connection count, the first
-			// suspect is a `self:peer:update`-triggered reconcile pass on B
-			// (`startRecordRefresh` wires one alongside the interval, so the
-			// 10-minute cadence does not suppress it). B listens on nothing, so its
-			// address set should never change mid-test. Diagnose with
-			// DEBUG='sereus:cadre:node'.
+			// NOTE: a connection count failing here means a dial got past B's gate,
+			// which denies both A and C for the whole window — including any dial a
+			// reconcile pass the test did not run would make (a
+			// `self:peer:update`-triggered pass, say). Log dial stacks in `gateB`'s
+			// hooks to find the opener; that is how FRET's departure announce was
+			// found (harness/control-trio.ts header).
 			let resolvedInWindow = 0;
 			let selfCoordBlockedInWindow = 0;
 			for (let checkpoint = 0; checkpoint < 16; checkpoint++) {
 				expect(openControlConnections(B)).toHaveLength(0);
 				expect(connectionsTo(A, bPeerId)).toHaveLength(0);
-				expect(await peerStoreAddrsFor(B, cPeerId)).toHaveLength(0);
 				try {
 					expect((await B.resolvePeerAddrs(cPeerId)).length).toBeGreaterThan(0);
 					resolvedInWindow++;
@@ -321,24 +299,27 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			// ── 6. Link: the production routine, polled the same way the isolation
 			//       scenario polls it — the membership gate denies AFTER the
 			//       dialer's upgrade completes, so a single pass can lose the
-			//       admission race. Each pass dials the owner A first (denied by
-			//       the severed gater; `dialControlSibling` logs and swallows
-			//       per-peer failures, so the denied sibling never aborts the
-			//       pass) and then the non-owner fill, C.
-			let passes = 0;
+			//       admission race. Each pass runs with B's dials to C allowed
+			//       (`dialsToC.reconcile`) and dials the owner A first (denied by
+			//       the sever; `dialControlSibling` logs and swallows per-peer
+			//       failures, so the denied sibling never aborts the pass) and then
+			//       the non-owner fill, C.
 			await waitUntilOrExplain(
 				async () => {
 					if (hasOutboundTo(B, cPeerId)) return true;
-					passes++;
-					await B.reconcileControlCohort();
+					await dialsToC.reconcile();
 					return false;
 				},
 				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'an explicit reconcile pass dials C' },
 				peerMap
 			);
-			expect(passes).toBeGreaterThan(0);
+			expect(dialsToC.passes().length).toBeGreaterThan(0);
+			// The pass that was running when B→C formed reports dialling C. Had FRET
+			// or the transactor opened it inside that pass, the pass would have
+			// skipped C as already connected.
+			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 			// B's open control connection set is exactly {C}: one outbound
-			// connection, and nothing to anyone else — the gater held A out.
+			// connection, and nothing to anyone else — B's dial gate held A out.
 			const linked = openControlConnections(B);
 			for (const conn of linked) expect(conn.remotePeer.toString()).toBe(cPeerId);
 			const outboundToC = linked.filter((c) => c.direction === 'outbound');

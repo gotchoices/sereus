@@ -56,6 +56,20 @@ export interface ControlCohortSelection {
   cappedNonOwner: number;
 }
 
+/** What one {@link CadreNode.reconcileControlCohort} pass did. */
+export interface ControlCohortReconcileResult {
+  /**
+   * Peer ids this pass dialled and whose dial resolved, in dial order: selected
+   * siblings on the steady-state pass, retained bootstrap peers on the cold-start
+   * pass (the pass takes one branch or the other, never both). A peer already
+   * connected when the pass began is never listed — the pass skips it. A resolved
+   * dial can still be refused moments later by the remote's membership gate, so
+   * an entry means "this pass opened a connection", not "that connection is still
+   * open".
+   */
+  dialed: string[];
+}
+
 /** Stable peerId ordering so the bounded fill is identical across passes/nodes. */
 function byPeerId(a: CohortPeerRow, b: CohortPeerRow): number {
   if (a.peerId < b.peerId) return -1;
