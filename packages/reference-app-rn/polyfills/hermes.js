@@ -198,25 +198,16 @@ if (typeof Promise.withResolvers !== 'function') {
 // ── DOMException ────────────────────────────────────────────────────────────
 // Hermes has none: the boot audit on a device (Expo SDK 53 dev client, 2026-09-16) found
 // `typeof DOMException === 'undefined'`.
-// Constructed with no check by p-timeout 7 (`signal.reason ?? new DOMException(…,
-// 'AbortError')`, pulled in by p-queue and p-event), which without this throws
-// `ReferenceError: DOMException is not defined` in place of the AbortError it meant.
-// (@expo/metro-runtime's Location.native.ts also says `new DOMException`, but declares its
-// own class for it and never reads the global.)
-// Three more check for a global DOMException and build their own when there is none, so
-// this only changes which class they use: react-native-webrtc's copy of event-target-shim
-// checks each time it raises an error and will use this one; whatwg-fetch (React Native's
-// `fetch`) checks once, when `fetch` is first loaded; and the web-streams polyfill Expo's
-// Metro config injects (expo/virtual/streams.js) runs before index.js, so it never sees it.
-// `abortReason` below builds its abort reasons from it.
+// Required by: p-timeout 7 (via p-queue, p-event), which constructs one unchecked and
+// would otherwise throw `ReferenceError: DOMException is not defined`; `abortReason`
+// below. Modules that feature-detect the global (react-native-webrtc's event-target-shim,
+// whatwg-fetch, expo/virtual/streams.js) only change which class they use — see
+// docs/reference-app-rn.md § The web APIs the phone's connectivity depends on.
 //
-// A named Error subclass rather than the `domexception` npm package, which is a full
-// WebIDL implementation that drags in webidl-conversions — far more than this needs. It
-// covers `name`, `message`, the legacy `code` and `instanceof Error`. It has no static
-// code constants (`DOMException.ABORT_ERR`), and structuredClone copies it as a plain
-// `Error` carrying only the message.
-//
-// Must stay above the AbortSignal arms, which call `abortReason`.
+// A named Error subclass rather than the `domexception` npm package, a full WebIDL
+// implementation that drags in webidl-conversions. It covers `name`, `message`, the
+// legacy `code` and `instanceof Error`; it has no static code constants
+// (`DOMException.ABORT_ERR`), and structuredClone copies it as a plain `Error`.
 
 if (typeof globalThis.DOMException === 'undefined') {
 	/** The DOM's legacy numeric codes, by error name; names not listed have code 0. */
@@ -230,6 +221,9 @@ if (typeof globalThis.DOMException === 'undefined') {
 	};
 	// Named `DOMException`, as the real constructor is: web-streams-polyfill, for one, only
 	// adopts a global DOMException whose constructor `name` says so.
+	// NOTE: Metro's Babel lowers this through `_wrapNativeSuper`; that form was checked in Node
+	// only, and the spec evaluates the unlowered source. If the device audit ever shows a
+	// wrong `instanceof` or `name`, compile hermes.js in the metro-babel test project.
 	class DOMException extends Error {
 		constructor(message = '', name = 'Error') {
 			super(message);
