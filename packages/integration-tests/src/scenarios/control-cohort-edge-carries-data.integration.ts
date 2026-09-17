@@ -249,11 +249,18 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			//       check per iteration is what proves nothing but the record path
 			//       could later supply C's address.
 			//
-			// The resolvability read is best-effort BY DESIGN: it is served from B's
-			// local pre-sever replicated state (no pin is active), and a freshly
-			// isolated node is often refused self-coordination for the whole window
-			// — see `isSelfCoordinationBlocked`. Observed both ways run to run. So a
-			// blocked read is counted and tolerated; any OTHER read failure, and any
+			// The resolvability read is served from B's local pre-sever replicated
+			// state (no pin is active). B has never received the `Revocation` block:
+			// an owner files its ledger marker only on a connected reconcile pass,
+			// and A has not run one when B is severed. So each lookup's revoked-stamp
+			// read reaches no cohort member (`cohort-unreachable`), which
+			// `ControlDatabase.queryRevokedStamps` answers as "no revocations known"
+			// (see the NOTE there). Before that treatment this read threw at every
+			// checkpoint. The one failure still tolerated is optimystic refusing to
+			// self-coordinate (`isSelfCoordinationBlocked`): upstream `findCoordinator`
+			// still raises it as a hard denial for some intents, though no run has
+			// shown it since the Revocation read stopped throwing. A blocked read is
+			// counted and tolerated; any OTHER read failure, and any
 			// successful read that comes back EMPTY, still fails the test. Neither
 			// tolerance weakens the ordering argument: B knew C's address before the
 			// sever (bracket above) and dials C successfully in step 6, so "B had

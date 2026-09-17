@@ -209,13 +209,14 @@ function isUnansweredSuperMajorityShortfall(message: string): boolean {
  * one connection again, which a cold-starting node dialling its bootstrap peers is actively
  * working on.
  *
- * NOTE: matched by TEXT, not by type, and that is forced rather than chosen.
- * `FindCoordinatorError` (`code: 'SELF_COORDINATION_BLOCKED'`) is exported from `@optimystic/db-p2p`
- * and this package depends on it, but the error OBJECT does not survive the trip:
- * `OptimysticVirtualTable.initialize` catches and rethrows as `new Error(message)` with no `cause`
- * (`quereus-plugin-optimystic/src/optimystic-module.ts`), so only the text reaches this repo. Like
- * every matcher here this fails CLOSED — a rewording upstream stops the retry engaging, it never
- * makes it unsafe.
+ * NOTE: matched by TEXT, not by type. `FindCoordinatorError` (`code: 'SELF_COORDINATION_BLOCKED'`)
+ * is exported from `@optimystic/db-p2p`, and when this matcher was written the error OBJECT did not
+ * survive the trip: `OptimysticVirtualTable.initialize` rethrew as `new Error(message)` with no
+ * `cause`. It now rethrows through `rewrapAsQueryError`, which keeps `cause`
+ * (`quereus-plugin-optimystic/src/optimystic-module.ts`); whether every Quereus wrapper above it on
+ * the schema-init path keeps it too has not been checked, and the text still arrives either way.
+ * Like every matcher here this fails CLOSED — a rewording upstream stops the retry engaging, it
+ * never makes it unsafe.
  */
 const SELF_COORDINATION_GRACE_REFUSAL =
 	/Self-coordination blocked: grace-period-not-elapsed\. No coordinator available for key\./;

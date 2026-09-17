@@ -1,3 +1,4 @@
+import { BlockUnavailableError } from '@optimystic/db-core';
 import { chainMessages, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
@@ -20,14 +21,16 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * This is deliberately NOT "the write classifier minus its commit veto" — the retriable
  * set differs in both directions (see {@link isRetriableControlReadFailure}). The loop
  * lives in `control-retry.ts`, shared with the write policy; this module owns only the
- * read policy. And like the write side, classification is by TEXT: optimystic's
- * `OptimysticVirtualTable` catches every scan-path error and rethrows
- * `new Error('Query failed: ' + message)` with NO `cause`
- * (`quereus-plugin-optimystic/src/optimystic-module.ts`), so the typed
- * `BlockUnavailableError` and its `reason` field are destroyed before they reach this
- * repo; Quereus then wraps that as `Error during query on table '<T>': …` preserving
- * `cause` (`quereus/src/runtime/emit/scan.ts`). Every matcher fails CLOSED — an upstream
- * rewording stops the retry engaging, it never makes it unsafe.
+ * read policy. And like the write side, the retry classifies by TEXT. That was forced when
+ * it was written — optimystic's scan path used to rethrow `new Error('Query failed: ' +
+ * message)` with no `cause` — and is no longer: `OptimysticVirtualTable` now rethrows
+ * through `rewrapAsQueryError` (`quereus-plugin-optimystic/src/optimystic-module.ts`),
+ * which keeps the typed `BlockUnavailableError` on `cause`, and Quereus wraps that as
+ * `Error during query on table '<T>': …`, again preserving `cause`
+ * (`quereus/src/runtime/emit/scan.ts`). The text matchers still work because every wrap
+ * embeds the inner message. Every matcher fails CLOSED — an upstream rewording stops the
+ * retry engaging, it never makes it unsafe. {@link isCohortUnreachableRead}, which is not a
+ * retry classifier, matches by type.
  */
 
 /**
@@ -126,9 +129,8 @@ export type ControlReadRetryOptions = ControlRetryOptions;
  * - the block-unavailability reasons in {@link RETRIABLE_BLOCK_UNAVAILABLE} (and only
  *   those — see its comment for the measured exclusions).
  *
- * Classifies by MESSAGE, walking the `cause` chain with the shared `chainMessages`,
- * because only text survives the trip out of optimystic (see the module comment).
- * Anything that is not an `Error` is never retried.
+ * Classifies by MESSAGE, walking the `cause` chain with the shared `chainMessages` (why
+ * text, in the module comment). Anything that is not an `Error` is never retried.
  */
 export function isRetriableControlReadFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
@@ -136,6 +138,44 @@ export function isRetriableControlReadFailure(error: unknown): boolean {
 	}
 	return chainMessages(error).some(message =>
 		isUncommittedTransactorAggregate(message) || isRetriableBlockUnavailable(message));
+}
+
+/**
+ * Did this control read fail because no cohort member other than the answering node could
+ * be asked about a block nobody here holds — a `BlockUnavailableError` with reason
+ * `cohort-unreachable` anywhere on the `cause` chain?
+ *
+ * Not a retry classifier. It answers "is there a better answer to wait for?", and is used
+ * by exactly one reader, `ControlDatabase.queryRevokedStamps`, to read an isolated node's
+ * never-received `Revocation` block as "no revocations known" (the reasoning is in the NOTE
+ * there). Upstream names this the one reason a caller may treat permissively
+ * (`db-core/src/transactor/network-transactor.ts`). The other reasons do NOT match:
+ * `peers-unreachable` means part of the cohort answered, and `claimed-elsewhere` /
+ * `unmaterializable` mean the block is known to exist, so an empty answer could hide a
+ * real revocation.
+ *
+ * Matched by TYPE, since the typed error survives upstream's rewraps (module comment).
+ * Fails CLOSED: a non-`Error`, a text-only copy of the message, and an error built by a
+ * second loaded copy of `@optimystic/db-core` (which `instanceof` cannot recognise) all
+ * answer false, and the reader throws as it did before this existed.
+ */
+export function isCohortUnreachableRead(error: unknown): boolean {
+	return causeChain(error).some(link =>
+		link instanceof BlockUnavailableError && link.reason === 'cohort-unreachable');
+}
+
+/**
+ * `error` and every `cause` below it, outermost first. Stops at a non-`Error` link (it can
+ * carry no further `cause` worth trusting) and at a repeat, so a cyclic chain terminates.
+ */
+function causeChain(error: unknown): Error[] {
+	const links: Error[] = [];
+	let current: unknown = error;
+	while (current instanceof Error && !links.includes(current)) {
+		links.push(current);
+		current = current.cause;
+	}
+	return links;
 }
 
 /**

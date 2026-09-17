@@ -5,6 +5,17 @@ files: packages/integration-tests/src/scenarios/control-cohort-edge-carries-data
 difficulty: hard
 repro: verified
 ----
+> **2026-09-16 — the masking failure is resolved; this ticket's own re-run can now proceed.** The
+> `Block default/cadrecontrol/Revocation is unavailable (cohort-unreachable)` failure recorded below
+> no longer fails the scenario: `isolated-node-reads-unwritten-revocation-table-as-empty` makes the
+> revoked-stamp read on an isolated node answer "no revocations known" for that one reason. In 9
+> isolated runs afterwards the carry step ran and passed twice, and no run showed the stream-reset
+> fingerprint this ticket was opened for. The other 7 failed before the carry step: 6 because B held a
+> connection the test forbids (`fix/control-trio-b-connects-to-c-before-sever`), 1 on the boot gate
+> (`control-peer-row-refresh-invisible-to-third-node`). Until the first of those lands, most runs still
+> will not reach the carry step, so collect carry-step evidence across more runs than the ~6 the body
+> asks for.
+
 
 > **Measured 2026-09-03 — the re-run this ticket prescribes has now been done, and the answer is
 > "still masked". Five isolated rounds, five identical failures.**

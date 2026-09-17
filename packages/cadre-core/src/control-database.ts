@@ -15,7 +15,7 @@ import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from 
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
-import { retryControlRead } from './control-read-retry.js';
+import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
 import type { ControlReadRetryOptions } from './control-read-retry.js';
 import { chainMessages } from './control-retry.js';
 
@@ -1048,16 +1048,64 @@ export class ControlDatabase {
    * row count only grows (append-only) but stays small while removals are rare; revisit if
    * removals become routine and the scan itself shows up in a profile.
    *
+   * An isolated node that has never received the `Revocation` block reads it as holding no
+   * revocations instead of throwing — see {@link readRevokedStampRows}.
+   *
    * `retry: false` is forwarded by {@link queryCadrePeers} for the one caller that reads
    * under the write lock — see that method's note.
    */
   async queryRevokedStamps(tableName: RevocableTable, retry = true): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
-    for (const row of await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps', retry)) {
+    for (const row of await this.readRevokedStampRows(tableName, retry)) {
       stamps.add(row.StampId as string);
     }
     return stamps;
+  }
+
+  /**
+   * The `Revocation` scan behind {@link queryRevokedStamps}, answering NO ROWS when the read
+   * fails `cohort-unreachable` ({@link isCohortUnreachableRead}): this node does not hold
+   * the block and could ask no other cohort member about it. Every other failure rethrows.
+   * The retry in {@link readRows} runs first, so a node whose connectivity returns within
+   * the read budget still gets the real answer.
+   *
+   * Without this, a machine cut off from every other machine in its party before it ever
+   * received the block — the block does not exist anywhere until the owner files the
+   * ledger marker ({@link openRevocationLedger}) on a connected reconcile pass — cannot
+   * answer ANY membership, peer-record or device-token lookup, although it holds those
+   * rows locally.
+   *
+   * NOTE: accepted tradeoff — `cohort-unreachable` on THIS read, and only this read, is
+   * treated as "no revocations known". It adds no fail-open that does not already exist:
+   * an isolated node holding a stale `Revocation` block is served it silently (the consult
+   * reaches nobody, so no doubt is raised), and a revocation authored elsewhere is invisible
+   * to it either way until connectivity returns. The other reasons still throw:
+   * `peers-unreachable` means part of the cohort answered, and `claimed-elsewhere` /
+   * `unmaterializable` mean the block exists, so an empty answer could admit a revoked
+   * member. Do not move this into {@link readRows}: an empty answer is known-safe only for
+   * a table whose empty state is its never-written state; decide any other table in its
+   * own reader. Revisit if optimystic starts reporting a held-but-stale block distinctly
+   * (the equivalence above then breaks), or if revocation enforcement must fail closed
+   * under partition.
+   *
+   * NOTE: an isolated node pays the whole read retry (up to
+   * `CONTROL_READ_RETRY_BUDGET_MS`, plus the slow attempt that exhausted it) before this
+   * answers, and {@link queryPeerRecord} then issues its row scan on top. If an isolated
+   * node's lookups are seen exceeding the admission gate's 2 s deadline
+   * (`ADMISSION_DECISION_TIMEOUT_MS`), skip the retry for this read when the first attempt
+   * fails `cohort-unreachable`.
+   */
+  private async readRevokedStampRows(tableName: RevocableTable, retry: boolean): Promise<Record<string, SqlValue>[]> {
+    try {
+      return await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps', retry);
+    } catch (error) {
+      if (!isCohortUnreachableRead(error)) {
+        throw error;
+      }
+      log('revoked-stamps(%s): no cohort member reachable and the Revocation block is not held here; reading as no revocations known: %s', tableName, error);
+      return [];
+    }
   }
 
   /**

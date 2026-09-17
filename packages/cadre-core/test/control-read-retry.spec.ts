@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import { BlockPossiblyStaleError, BlockUnavailableError } from '@optimystic/db-core';
+import type { BlockUnavailableReason } from '@optimystic/db-core';
 import {
 	CONTROL_READ_ATTEMPTS,
 	CONTROL_READ_RETRY_DELAYS_MS,
 	CONTROL_READ_RETRY_BUDGET_MS,
+	isCohortUnreachableRead,
 	isRetriableControlReadFailure,
 	retryControlRead,
 	type ControlReadRetryOptions
@@ -23,14 +26,15 @@ import { captureDebugLog } from './capture-debug-log.js';
  * failure during iteration killed `queryRevokedStamps` after exactly one `eval` call
  * while the same injection against `exec` was absorbed; measured 2026-09-01).
  *
- * The classifier table asserts against message LITERALS, a known dependency on
- * engine/transactor/optimystic error text: `BlockUnavailableError` and its `reason` are
- * destroyed on the way out of optimystic (`OptimysticVirtualTable` rethrows
- * `new Error('Query failed: ' + message)` with no `cause`), so text is all a classifier
- * can ever see, and every matcher fails CLOSED — an upstream rewording stops the retry
- * engaging rather than making it unsafe. The `Block <id> is unavailable (<reason>)`
- * literals below are transcribed from `BlockUnavailableError` / `BlockPossiblyStaleError`
- * in `optimystic/packages/db-core/src/network/struct.ts`.
+ * The retry classifier table asserts against message LITERALS, a known dependency on
+ * engine/transactor/optimystic error text (why text, in `control-read-retry.ts`'s module
+ * comment); every matcher fails CLOSED — an upstream rewording stops the retry engaging
+ * rather than making it unsafe. The `Block <id> is unavailable (<reason>)` literals below
+ * are transcribed from `BlockUnavailableError` / `BlockPossiblyStaleError` in
+ * `optimystic/packages/db-core/src/network/struct.ts`.
+ *
+ * `isCohortUnreachableRead` is the exception: it matches the typed error, so its cases build
+ * real `BlockUnavailableError`s wrapped the way the scan path wraps them.
  */
 
 /**
@@ -75,14 +79,30 @@ const BLOCK_POSSIBLY_STALE =
 	'Block PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk may be stale: a cohort peer claimed rev 5 that no reachable coordinator could confirm or refute';
 
 /**
- * How a scan-path failure actually reaches this repo: optimystic's cause-less
- * `Query failed:` rethrow, wrapped by Quereus' scan emitter into
- * `Error during query on table '<T>': …` (which embeds the inner text in its own
- * message AND preserves the rethrow on `cause`).
+ * How a scan-path failure reaches this repo as TEXT: optimystic's `Query failed:` rethrow,
+ * wrapped by Quereus' scan emitter into `Error during query on table '<T>': …` (which embeds
+ * the inner text in its own message AND preserves the rethrow on `cause`). The innermost
+ * link here is a plain `Error` carrying only the text — see {@link typedScanWrapped} for
+ * the typed chain.
  */
 function scanWrapped(inner: string): Error {
 	return new Error(`Error during query on table 'CadrePeer': Query failed: ${inner}`, {
 		cause: new Error(`Query failed: ${inner}`),
+	});
+}
+
+/** The block id a `Revocation` read reported in the observed isolated-node failure. */
+const REVOCATION_BLOCK_ID = 'default/cadrecontrol/Revocation';
+
+/**
+ * The full chain a scan-path block failure arrives as today: Quereus' `Error during query on
+ * table` wrapper → optimystic's `Query failed:` rewrap (`rewrapAsQueryError`, which keeps
+ * `cause`) → the typed `BlockUnavailableError` itself.
+ */
+function typedScanWrapped(reason: BlockUnavailableReason): Error {
+	const typed = new BlockUnavailableError(REVOCATION_BLOCK_ID, reason);
+	return new Error(`Error during query on table 'Revocation': Query failed: ${typed.message}`, {
+		cause: new Error(`Query failed: ${typed.message}`, { cause: typed }),
 	});
 }
 
@@ -153,6 +173,40 @@ describe('isRetriableControlReadFailure', () => {
 			new Error('control read failed', { cause: 'connection closed' }))).toBe(false);
 		expect(isRetriableControlReadFailure(
 			new Error(TRANSACTOR_AGGREGATE, { cause: { reason: 'aborted' } }))).toBe(true);
+	});
+});
+
+/**
+ * The one reason an isolated node may read the never-written `Revocation` table as empty:
+ * nobody else in the cohort could be asked. Everything else — including the same words
+ * without the typed error behind them — must not match, or `queryRevokedStamps` would
+ * answer "no revocations" where a revocation list may exist.
+ */
+describe('isCohortUnreachableRead', () => {
+	it('matches a typed cohort-unreachable failure at any depth of the scan-path chain', () => {
+		expect(isCohortUnreachableRead(typedScanWrapped('cohort-unreachable'))).toBe(true);
+		expect(isCohortUnreachableRead(new BlockUnavailableError(REVOCATION_BLOCK_ID, 'cohort-unreachable'))).toBe(true);
+	});
+
+	it('never matches the reasons that say part of the cohort answered or the block exists', () => {
+		for (const reason of ['peers-unreachable', 'claimed-elsewhere', 'unmaterializable'] as const) {
+			expect(isCohortUnreachableRead(typedScanWrapped(reason))).toBe(false);
+		}
+	});
+
+	it('never matches a possibly-stale read, or cohort-unreachable TEXT with no typed error behind it', () => {
+		expect(isCohortUnreachableRead(new BlockPossiblyStaleError(REVOCATION_BLOCK_ID, 5))).toBe(false);
+		expect(isCohortUnreachableRead(scanWrapped(blockUnavailable('cohort-unreachable')))).toBe(false);
+		expect(isCohortUnreachableRead(nested(blockUnavailable('cohort-unreachable')))).toBe(false);
+	});
+
+	it('answers false for non-Errors and terminates on a cyclic cause chain', () => {
+		expect(isCohortUnreachableRead(undefined)).toBe(false);
+		expect(isCohortUnreachableRead({ reason: 'cohort-unreachable' })).toBe(false);
+		expect(isCohortUnreachableRead(new Error('read failed', { cause: 'cohort-unreachable' }))).toBe(false);
+		const cyclic = new Error('outer');
+		cyclic.cause = new Error('inner', { cause: cyclic });
+		expect(isCohortUnreachableRead(cyclic)).toBe(false);
 	});
 });
 
@@ -423,6 +477,107 @@ describe('ControlDatabase — read retry', () => {
 
 			await expect(db.queryRevokedStamps('CadrePeer')).rejects.toBe(failure);
 			expect(rig.calls()).toBe(1);
+		} finally {
+			rig.restore();
+			slots.controlReadRetryPacing = savedReadPacing;
+		}
+	});
+
+	/**
+	 * An isolated node that never received the `Revocation` block: every attempt fails
+	 * `cohort-unreachable`. The retry still runs to exhaustion first (connectivity may return
+	 * inside the budget), and then the read answers "no revocations known" instead of
+	 * failing every membership lookup.
+	 */
+	it('reads an unreachable-cohort Revocation block as no revocations, after the retry gives up', async () => {
+		const slots = pacingSlots(db);
+		const savedReadPacing = slots.controlReadRetryPacing;
+		const rig = rigEval('from CadreControl.Revocation', () =>
+			failingIteration(typedScanWrapped('cohort-unreachable')));
+		try {
+			slots.controlReadRetryPacing = { sleep: () => Promise.resolve(), now: () => 0 };
+
+			const revoked = await db.queryRevokedStamps('CadrePeer');
+
+			expect(revoked.size).toBe(0);
+			expect(rig.calls()).toBe(CONTROL_READ_ATTEMPTS);
+		} finally {
+			rig.restore();
+			slots.controlReadRetryPacing = savedReadPacing;
+		}
+	});
+
+	/**
+	 * The readers built on the stamp set answer too — the membership scan and the single
+	 * peer-record lookup whose failure was the observed symptom — and the unretried path
+	 * (`retry: false`, the under-lock membership refresh) gets the same treatment.
+	 */
+	it('lets membership and peer-record lookups answer while the Revocation cohort is unreachable', async () => {
+		const peerId = 'isolated-revocation-peer';
+		expect(await db.insertCadrePeer(
+			{ peerId, publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+			owner.publicKey,
+			owner.sign
+		)).toBe(true);
+		const slots = pacingSlots(db);
+		const savedReadPacing = slots.controlReadRetryPacing;
+		const rig = rigEval('from CadreControl.Revocation', () =>
+			failingIteration(typedScanWrapped('cohort-unreachable')));
+		try {
+			slots.controlReadRetryPacing = { sleep: () => Promise.resolve(), now: () => 0 };
+
+			expect((await db.queryCadrePeers()).map((row) => row.peerId)).toContain(peerId);
+			expect((await db.queryCadrePeers(false)).map((row) => row.peerId)).toContain(peerId);
+			expect((await db.queryPeerRecord(peerId))?.peerId).toBe(peerId);
+		} finally {
+			rig.restore();
+			slots.controlReadRetryPacing = savedReadPacing;
+		}
+	});
+
+	/**
+	 * Only `cohort-unreachable` is read as empty. The other reasons say part of the cohort
+	 * answered or the block exists somewhere, and an unrelated failure is not about
+	 * reachability at all — an empty answer to any of them could hide a real revocation.
+	 */
+	it('still throws every other Revocation read failure', async () => {
+		const slots = pacingSlots(db);
+		const savedReadPacing = slots.controlReadRetryPacing;
+		const failures = [
+			typedScanWrapped('peers-unreachable'),
+			typedScanWrapped('claimed-elsewhere'),
+			typedScanWrapped('unmaterializable'),
+			new Error('no such table: CadreControl.Revocation'),
+		];
+		let current = failures[0]!;
+		const rig = rigEval('from CadreControl.Revocation', () => failingIteration(current));
+		try {
+			slots.controlReadRetryPacing = { sleep: () => Promise.resolve(), now: () => 0 };
+
+			for (const failure of failures) {
+				current = failure;
+				await expect(db.queryRevokedStamps('CadrePeer')).rejects.toBe(failure);
+			}
+		} finally {
+			rig.restore();
+			slots.controlReadRetryPacing = savedReadPacing;
+		}
+	});
+
+	/**
+	 * The treatment is scoped to the stamp filter, not the table: the sweeps that enumerate
+	 * every tombstone (reap, re-issue) must still see the failure rather than act on an
+	 * empty ledger.
+	 */
+	it('does not extend the treatment to the full Revocation enumeration', async () => {
+		const slots = pacingSlots(db);
+		const savedReadPacing = slots.controlReadRetryPacing;
+		const failure = typedScanWrapped('cohort-unreachable');
+		const rig = rigEval('from CadreControl.Revocation', () => failingIteration(failure));
+		try {
+			slots.controlReadRetryPacing = { sleep: () => Promise.resolve(), now: () => 0 };
+
+			await expect(db.queryRevocations()).rejects.toBe(failure);
 		} finally {
 			rig.restore();
 			slots.controlReadRetryPacing = savedReadPacing;

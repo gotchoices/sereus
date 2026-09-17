@@ -244,6 +244,12 @@ export class StrandWatcher {
         }
       }
     } catch (error) {
+      // NOTE: a machine cut off from its party before it ever received the `Strand` block
+      // fails this read `cohort-unreachable` on every poll and logs here (observed in
+      // `control-cohort-edge-carries-data`). Harmless: nothing was ever launched from a block
+      // this machine never held, and this catch keeps the known set. Do not answer it as
+      // empty the way `ControlDatabase.queryRevokedStamps` does for `Revocation` — an empty
+      // answer here runs the removed-strand loop above. Revisit if the log volume matters.
       log('Error polling strands: %o', error);
     }
   }

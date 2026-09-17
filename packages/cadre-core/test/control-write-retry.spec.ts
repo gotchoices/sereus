@@ -311,8 +311,8 @@ describe('isRetriableSchemaInitFailure', () => {
 	it('retries the self-coordination grace refusal the default classifier refuses', () => {
 		expect(isRetriableSchemaInitFailure(nested(SELF_COORDINATION_BLOCKED))).toBe(true);
 		// The surface a real startup prints: optimystic's rethrow inside Quereus' module-create
-		// wrapper inside the DDL wrapper. Only the TEXT survives that trip (no `cause` is set on
-		// the rethrow), which is why the classifier matches on text at all.
+		// wrapper inside the DDL wrapper. The classifier matches on text, which every wrap
+		// embeds (why text, on SELF_COORDINATION_GRACE_REFUSAL).
 		expect(isRetriableSchemaInitFailure(
 			nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE)))).toBe(true);
 	});

@@ -142,9 +142,10 @@ export async function retryControlOperation<T>(
 }
 
 /**
- * Every message in the failure's `cause` chain — the shared substrate both classifiers
- * match against, since the failures they care about are not recognisable by type (the
- * typed errors are destroyed on the way out of optimystic; only text survives).
+ * Every message in the failure's `cause` chain — the shared substrate both retry classifiers
+ * match against. They match text (why, in `control-read-retry.ts`'s module comment); every
+ * wrap on the way out of optimystic and Quereus embeds the inner message, so the text of
+ * the deepest failure is visible at every level.
  *
  * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking
  * what that holds — a chain link that is not an `Error` (a stream rejected with a bare string
