@@ -14,10 +14,11 @@ table Participant (
 
 table Message (
     -- Text UUID primary key: generated locally by each peer so concurrent posts
-    -- into a shared strand never collide. A max(Id)+1 integer key is NOT a safe
-    -- alternative: a concurrent duplicate-key insert is silently last-writer-wins
-    -- here, not refused, so the losing row is lost with no error. See
-    -- docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)".
+    -- into a shared strand never collide. A max(Id)+1 integer key would be correct
+    -- but not free: two peers computing the same next id race, the loser is refused
+    -- with UNIQUE constraint failed, and the app must catch that, recompute and
+    -- retry. A local UUID needs no retry. See docs/schema-guide.md
+    -- "Ordering Events (There Is No Commit-Order Column)".
     Id text primary key,
     ParticipantId text not null,
     Content text not null,

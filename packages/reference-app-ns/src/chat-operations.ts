@@ -88,9 +88,9 @@ export async function insertMessage(
 	const now = new Date().toISOString();
 
 	// Generate the primary key locally as a UUID. A read-then-increment of
-	// max(Id) is unsafe here: two peers posting concurrently read the same local
-	// max before either replicates, and the resulting duplicate key is silently
-	// last-writer-wins rather than refused — one message is lost with no error.
+	// max(Id) would need a retry loop: two peers posting concurrently read the same
+	// local max before either replicates, and the duplicate key is refused — one
+	// poster is told UNIQUE constraint failed and has to recompute and post again.
 	// See docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)".
 	// NativeScript 8.8+ exposes crypto.randomUUID natively.
 	const id = crypto.randomUUID();

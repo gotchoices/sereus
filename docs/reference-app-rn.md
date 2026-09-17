@@ -171,9 +171,9 @@ table Participant (
 
 table Message (
     -- Text UUID primary key: each peer generates it locally so concurrent
-    -- posts into a shared strand never collide. A max(Id)+1 integer key is
-    -- NOT safe here: a concurrent duplicate-key insert is silently
-    -- last-writer-wins, not refused, so the losing row is lost with no error.
+    -- posts into a shared strand never collide. A max(Id)+1 integer key would
+    -- be correct but not free: two peers computing the same next id race, the
+    -- loser is refused, and the app must catch that, recompute and retry.
     Id text primary key,
     ParticipantId text not null,
     Content text not null,

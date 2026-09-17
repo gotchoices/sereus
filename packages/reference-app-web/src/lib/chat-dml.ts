@@ -38,10 +38,10 @@ function quereusTimestamp(): string {
  * load-bearing for a fresh formed strand whose `Participant` table starts empty.
  * `Participant.Id = participantName` keeps the demo single-field while still exercising the
  * FK join. The primary key is generated locally as a UUID: a read-then-increment
- * of `max(Id)` is unsafe here, because a duplicate key from two concurrent peers
- * is silently last-writer-wins rather than refused, losing one message with no
- * error (docs/schema-guide.md, "Ordering Events (There Is No Commit-Order
- * Column)"). Returns the new message id.
+ * of `max(Id)` would need a retry loop, because a duplicate key from two concurrent
+ * peers is refused — one poster is told `UNIQUE constraint failed` and has to
+ * recompute and post again (docs/schema-guide.md, "Ordering Events (There Is No
+ * Commit-Order Column)"). Returns the new message id.
  */
 export async function insertChatMessage(
 	database: Database,

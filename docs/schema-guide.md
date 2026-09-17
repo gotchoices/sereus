@@ -311,21 +311,27 @@ schema "com.example.causal" version 1 using (default_vtab_module = 'memory') {
 }
 ```
 
-**Not a third pattern: a self-imposed integer sequence does not work here.** The obvious idea —
-an integer primary key assigned as `max(id) + 1`, with the primary key (or a uniqueness check) as
-the safety net that catches a collision — looks sound, because in every single-writer SQL database
-a reader has used, a duplicate key is refused outright. **It is not refused here.** When two peers
-concurrently insert the same key, both are told they succeeded and the two commits are silently
-resolved last-writer-wins: one row vanishes, with no error raised anywhere. `max(id) + 1` is
-exactly the shape that triggers this, since two concurrent writers computing the same next id are
-indistinguishable, at merge time, from a duplicate-key race. A stricter "no gaps" variant
-(`id = 0 or exists(id - 1)`) is not a safer alternative — it fails the identical way.
+**Not a third pattern: a self-imposed integer sequence is a poor fit here.** The obvious idea — an
+integer primary key assigned as `max(id) + 1` — is safe in the sense that matters: when two peers
+concurrently insert the same primary key, exactly one commits and the other is refused with the
+ordinary `UNIQUE constraint failed: <Table>.<Column>` error. Nothing is silently lost. But the
+refused writer has to notice the error, recompute `max(id) + 1` against its new view, and write
+again — and the more peers post at once, the more often that happens, because every one of them
+computed the same next id from the same local maximum. A stricter "no gaps" variant
+(`id = 0 or exists(id - 1)`) inherits the same contention. Patterns A and B generate their key
+locally and never contend, so they need no retry loop at all. Use one of them unless a gapless
+integer sequence is itself a requirement, and if it is, write the retry.
 
-Two things to be clear about. The gap is specific to *concurrent* commits — a sequential duplicate
-insert, where one write commits before the next begins, still raises the ordinary constraint error.
-And it is not a schema-authoring mistake: the behavior is in Optimystic's commit/merge path, below
-anything a schema author writes, so no constraint shape closes it. It is a tracked, unresolved
-limitation. Use Pattern A or B above instead.
+**Caveat — a column that is `unique` but not the primary key is not yet a safe concurrency guard.**
+The clean refusal above covers the *primary key*. For a secondary `unique` column raced by two rows
+with different primary keys at the same instant, the losing writer is correctly told its insert
+failed, but its row can still be stored — leaving two rows holding one "unique" value on both
+machines. A table row and each of its indexes are committed one at a time, and the losing row's own
+commit finishes before the unique index refuses it. So do not rely on a secondary `unique` column
+(a username, an email address, a claimed handle) as the only thing standing between two members and
+a duplicate. Put the contended value in the primary key, or accept that duplicates can appear and
+resolve them on read. Tracked in `tickets/blocked/concurrent-unique-value-race-commits-both-rows.md`;
+this caveat can be removed once that lands.
 
 ---
 

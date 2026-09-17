@@ -200,21 +200,22 @@ declare schema Chat {
         constraint TimeValid check (new.Timestamp between context.now - timespan('5 min') and context.now + timespan('5 min')),
         -- ID is a gapless sequence starting at 0.
         --
-        -- Kept as a demonstration of constraint syntax, but the PATTERN ITSELF IS
-        -- UNSAFE on this stack and must not be copied into a schema that will see
-        -- concurrent posters: a concurrent duplicate-key insert is silently
-        -- last-writer-wins here, not refused, so the losing row is lost with no error.
-        -- The gapless rule below cannot see that happen and will not report it. See
-        -- docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)";
-        -- schemas/chat-simple.qsql uses a locally generated text UUID key instead.
+        -- Kept as a demonstration of constraint syntax. Nothing is lost when posters
+        -- are concurrent — two peers computing the same next Id race, and exactly one
+        -- is refused on the primary key — but the PATTERN IS CONTENDED and must not be
+        -- copied into a schema that will see concurrent posters without a retry loop:
+        -- every refused poster has to re-read the sequence and write again, and the
+        -- refusals grow with the number of posters. See docs/schema-guide.md
+        -- "Ordering Events (There Is No Commit-Order Column)"; schemas/chat-simple.qsql
+        -- uses a locally generated text UUID key instead, which never contends.
         constraint IdValid check (new.Id >= 0 and (new.Id = 0 or exists (select 1 from Message M where M.Id = new.Id - 1))),
         -- Participant authorized: the signing key must be one this participant has
         -- registered.
         -- NOTE: the digest binds (Id, ParticipantId, Content) but not Timestamp. A
-        -- replayed signature on the same Id is refused locally by the primary key, but
-        -- under the concurrent last-writer-wins hazard described above it could reseat a
-        -- message with a different timestamp; bind the timestamp if concurrency ever
-        -- arrives.
+        -- replayed signature carries the same Id, so it is refused on the primary key —
+        -- concurrently as well as sequentially — and cannot reseat the message under a
+        -- different timestamp. Binding the timestamp would still be the stricter digest
+        -- if this schema ever gains a writer.
         constraint MessageAuthorized check on insert (
             exists (select 1 from ParticipantKey K where K.Key = context.ParticipantKey and K.ParticipantId = new.ParticipantId)
                 and verify(digest(new.Id, new.ParticipantId, new.Content), context.ParticipantSignature, context.ParticipantKey, 'ed25519')

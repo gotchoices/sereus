@@ -2198,10 +2198,7 @@ export class ControlDatabase {
    * row on a networked database (tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked).
    *
    * Two owners filing at once: the loser either sees the marker in its guard or is refused
-   * on the primary key, and both answer `'already-open'`. If the storage layer instead
-   * resolves a concurrent same-key insert as last-writer-wins
-   * (tickets/blocked/optimystic-concurrent-same-pk-insert-silent-lww.md), the two rows are
-   * byte-identical, so nothing is lost.
+   * on the primary key, and both answer `'already-open'`.
    *
    * The caller decides WHEN. A marker committed while the node is alone is local-only and
    * can fork the collection, so {@link CadreNode} files it only while connected; this
