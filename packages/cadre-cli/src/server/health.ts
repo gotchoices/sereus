@@ -1,10 +1,23 @@
 import http from 'node:http';
 import debug from 'debug';
 import { emptyConnectionPathSummary } from '@serfab/cadre-core';
-import type { CadreNode, ConnectionPathSummary } from '@serfab/cadre-core';
+import type { CadreNode, ConnectionPathSummary, StrandInstance } from '@serfab/cadre-core';
 import { checkBearer } from './bearer.js';
 
 const log = debug('cadre:cli:health');
+
+/**
+ * Per-status strand counts for `/status` and `/metrics`. `syncing` is a joining machine
+ * whose database is withheld until another member's data reaches it; the transitional
+ * `starting`/`stopping`/`stopped`/`error` states are counted in `total` only.
+ */
+function countStrandStatuses(strands: Map<string, StrandInstance>): Record<'syncing' | 'active' | 'idle' | 'hibernating', number> {
+  const counts = { syncing: 0, active: 0, idle: 0, hibernating: 0 };
+  for (const strand of strands.values()) {
+    if (strand.status in counts) counts[strand.status as keyof typeof counts]++;
+  }
+  return counts;
+}
 
 /** Maximum seed request body size (256 KiB) — seeds are small. Mirrors AdminServer. */
 const MAX_SEED_BODY_BYTES = 256 * 1024;
@@ -51,6 +64,8 @@ export interface HealthStatus {
     profile: string;
     strands: {
       total: number;
+      /** Joining machines still waiting for the strand's data from another member. */
+      syncing: number;
       active: number;
       idle: number;
       hibernating: number;
@@ -70,6 +85,7 @@ export interface MetricsData {
 
   // Strand metrics
   cadre_strands_total: number;
+  cadre_strands_syncing: number;
   cadre_strands_active: number;
   cadre_strands_idle: number;
   cadre_strands_hibernating: number;
@@ -144,13 +160,7 @@ export class HealthServer {
 
   private getHealthStatus(): HealthStatus {
     const strands = this.node?.getStrands() ?? new Map();
-    let active = 0, idle = 0, hibernating = 0;
-
-    for (const strand of strands.values()) {
-      if (strand.status === 'active') active++;
-      else if (strand.status === 'idle') idle++;
-      else if (strand.status === 'hibernating') hibernating++;
-    }
+    const { syncing, active, idle, hibernating } = countStrandStatuses(strands);
 
     const isRunning = this.node?.isRunning ?? false;
     const peerId = this.node?.peerId?.toString() ?? null;
@@ -171,7 +181,7 @@ export class HealthServer {
         peerId,
         partyId: this.node?.partyId ?? '',
         profile: this.options.profile,
-        strands: { total: strands.size, active, idle, hibernating },
+        strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
       },
     };
@@ -179,13 +189,7 @@ export class HealthServer {
 
   private getMetrics(): MetricsData {
     const strands = this.node?.getStrands() ?? new Map();
-    let active = 0, idle = 0, hibernating = 0;
-    
-    for (const strand of strands.values()) {
-      if (strand.status === 'active') active++;
-      else if (strand.status === 'idle') idle++;
-      else if (strand.status === 'hibernating') hibernating++;
-    }
+    const { syncing, active, idle, hibernating } = countStrandStatuses(strands);
 
     const paths = this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
     // Only emit labelled series for transports actually in use.
@@ -198,6 +202,7 @@ export class HealthServer {
       cadre_node_running: this.node?.isRunning ? 1 : 0,
       cadre_node_uptime_seconds: (Date.now() - this.startTime.getTime()) / 1000,
       cadre_strands_total: strands.size,
+      cadre_strands_syncing: syncing,
       cadre_strands_active: active,
       cadre_strands_idle: idle,
       cadre_strands_hibernating: hibernating,
@@ -233,6 +238,9 @@ export class HealthServer {
       '', '# HELP cadre_strands_total Total number of strands',
       '# TYPE cadre_strands_total gauge',
       `cadre_strands_total ${data.cadre_strands_total}`,
+      '', '# HELP cadre_strands_syncing Number of joining strands still waiting for their first sync',
+      '# TYPE cadre_strands_syncing gauge',
+      `cadre_strands_syncing ${data.cadre_strands_syncing}`,
       '', '# HELP cadre_strands_active Number of active strands',
       '# TYPE cadre_strands_active gauge',
       `cadre_strands_active ${data.cadre_strands_active}`,

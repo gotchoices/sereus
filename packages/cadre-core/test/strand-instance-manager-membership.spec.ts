@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
   // `eval` answers the first-sync gate's `Strand.Header` probe with "held", so every
   // launch here is a machine that has synced before and comes up writable at once.
-  const fakeDb = { fake: 'db', eval: async function* () { yield { Count: 1 }; } } as unknown as Database;
+  const fakeDb = { fake: 'db', eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } } as unknown as Database;
   const createLibp2pNode = vi.fn(async () => ({
     coordinatedRepo: {},
     stop,

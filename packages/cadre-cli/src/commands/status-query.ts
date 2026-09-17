@@ -182,7 +182,7 @@ function formatRuntimeSection(runtime: RuntimeLive | RuntimeUnreachable): string
     `  Peer ID:         ${runtime.peerId ?? '(none)'}`,
     `  Party ID:        ${runtime.partyId}`,
     `  Profile:         ${runtime.profile}`,
-    `  Strands:         total=${s.total} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
+    `  Strands:         total=${s.total} syncing=${s.syncing} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
     ...formatMultiaddrs(runtime.multiaddrs),
   ];
 }

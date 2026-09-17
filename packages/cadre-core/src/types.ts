@@ -635,11 +635,11 @@ export interface CadreNodeConfig {
    * (`strand-first-sync-gate.ts`), applied to every strand this node launches as a
    * non-founder: the strand's database is withheld from the app (`StrandInstance.database`
    * unset, status `'syncing'`) until the strand's `Strand.Header` has been received from
-   * another member, because a machine that writes before its first sync creates a private
-   * copy of every table it touches that never merges. `timeoutMs` bounds how long
-   * {@link CadreNode.addStrand} waits before rejecting with `StrandAwaitingFirstSyncError`
-   * (retryable — the launch stays up and keeps probing); `pollIntervalMs` is the Header
-   * probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 30 s;
+   * another member and every `App` table has been read once, because a machine that writes
+   * to a table it has never fetched creates a private copy of it that never merges.
+   * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
+   * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing);
+   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 30 s;
    * `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is deliberately no way to disable
    * the gate: a machine that already holds the Header is never gated, so nothing that works
    * today is blocked by it.

@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => {
   let initializeFails = false;
   // The first-sync gate probes `Strand.Header` on every non-founder launch; this double
   // reports the row held, so every launch here is a machine that has synced before.
-  const headerHeldDb = { eval: async function* () { yield { Count: 1 }; } };
+  const headerHeldDb = { eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
     return {
       initialize: vi.fn(async () => {

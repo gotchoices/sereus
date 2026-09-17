@@ -22,7 +22,7 @@ const HEALTH: HealthStatus = {
     peerId: '12D3KooWLivePeer',
     partyId: 'party-live',
     profile: 'transaction',
-    strands: { total: 3, active: 1, idle: 1, hibernating: 1 },
+    strands: { total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 },
     connectionPaths: {
       total: 0,
       relayed: 0,
@@ -106,7 +106,7 @@ describe('buildStatusReport', () => {
       expect(report.runtime.running).toBe(true);
       expect(report.runtime.peerId).toBe('12D3KooWLivePeer');
       expect(report.runtime.multiaddrs).toEqual(HEALTH.multiaddrs);
-      expect(report.runtime.strands).toEqual({ total: 3, active: 1, idle: 1, hibernating: 1 });
+      expect(report.runtime.strands).toEqual({ total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 });
       expect(report.runtime.partyId).toBe('party-live');
       expect(report.runtime.profile).toBe('transaction');
     }
@@ -142,7 +142,7 @@ describe('formatStatusReport', () => {
     expect(text).toContain('Running:         true');
     expect(text).toContain('12D3KooWLivePeer');
     expect(text).toContain('/ip4/10.0.0.5/tcp/4001');
-    expect(text).toContain('total=3 active=1 idle=1 hibernating=1');
+    expect(text).toContain('total=4 syncing=1 active=1 idle=1 hibernating=1');
   });
 
   it('renders a clearly-labeled "not reachable" line (never "Running: false") when unreachable', async () => {

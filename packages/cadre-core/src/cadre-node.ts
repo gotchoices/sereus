@@ -4147,6 +4147,22 @@ export class CadreNode implements SAppIdLookup {
     this._running = false;
   }
 
+  /**
+   * A gated joiner's database was just published (`StartStrandConfig.onWritable`): the
+   * instance is `'active'` now, so re-arm its idle timer as any activity would. Nothing
+   * records activity on a gated joiner, so its idle timer may already have fired — the
+   * instance read `'idle'` with a hibernate timer pending — and without this the flip
+   * back to `'active'` would leave that timer to quiesce a strand the app just started
+   * using. Emits `strand:writable` after the timers are settled.
+   */
+  private handleStrandWritable(strandId: string): void {
+    const instance = this.strandManager.getInstance(strandId);
+    if (instance) {
+      this.hibernationManager.recordActivity(instance);
+    }
+    this.emit('strand:writable', { strandId });
+  }
+
   // Hibernation callbacks
   private async handleStrandIdle(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
@@ -5213,7 +5229,7 @@ export class CadreNode implements SAppIdLookup {
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
       firstSync: this.config.strandFirstSync,
-      onWritable: (writableStrandId) => this.emit('strand:writable', { strandId: writableStrandId }),
+      onWritable: (writableStrandId) => this.handleStrandWritable(writableStrandId),
       // Re-announce the delegate to ONE relay before the strand node's reservation
       // supervisor re-drives it (see announceDelegateToRelay). Retained with the
       // launch config, so a hibernation wake's rebuilt supervisors get it too.

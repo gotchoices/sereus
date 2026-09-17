@@ -141,6 +141,8 @@ export {
   DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
   DEFAULT_STRAND_FIRST_SYNC_POLL_MS,
   strandHeaderHeld,
+  appTablesReadable,
+  strandFirstSyncComplete,
   type StrandFirstSyncConfig
 } from './strand-first-sync-gate.js';
 

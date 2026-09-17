@@ -21,7 +21,7 @@ import { assertSchemaSignature } from './schema-verification.js';
 import {
   StrandFirstSyncGate,
   StrandAwaitingFirstSyncError,
-  strandHeaderHeld,
+  strandFirstSyncComplete,
   DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
   type StrandFirstSyncConfig
 } from './strand-first-sync-gate.js';
@@ -59,10 +59,11 @@ interface WritableWaiter {
  * NOTE: `status` is therefore not the source of truth for "gated": a joiner that reaches
  * nobody for `idleTimeout` (5 min at the interactive hint) reads `'idle'`, then
  * `'hibernating'`, while still holding no database. Harmless today — every decision the
- * runtime makes goes through this predicate, and an app that shows "waiting for the
- * other member" on `'syncing'` merely sees "idle" instead after five minutes. If an app
- * ever needs the gated state to survive the idle flip, make the hibernation manager's
- * idle transition preserve `'syncing'` rather than adding a second flag.
+ * runtime makes goes through this predicate, {@link StrandInstanceManager.publishDatabase}
+ * announces on the idle-flipped instance exactly as on a `'syncing'` one, and an app that
+ * shows "waiting for the other member" on `'syncing'` merely sees "idle" instead after
+ * five minutes. If an app ever needs the gated LABEL to survive the idle flip, make the
+ * hibernation manager's idle transition preserve `'syncing'` rather than adding a flag.
  */
 export function isAwaitingFirstSync(instance: StrandInstance): boolean {
   return instance.libp2pNode !== undefined && instance.database === undefined;
@@ -726,12 +727,13 @@ export class StrandInstanceManager {
 
       // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
       // other machine may commit only once it holds the Header — which it can only have
-      // received from a peer (now, or on an earlier run over the same store). Publishing
-      // the database is what makes the strand writable to the app; until then the
-      // instance stays `'syncing'` and the gate re-probes on its cadence. Everything armed
-      // below reads `instance.database` lazily, so the reconciler and enforcer wait with it.
+      // received from a peer (now, or on an earlier run over the same store) — and has read
+      // each App table once, so their collections are fetched too. Publishing the database
+      // is what makes the strand writable to the app; until then the instance stays
+      // `'syncing'` and the gate re-probes on its cadence. Everything armed below reads
+      // `instance.database` lazily, so the reconciler and enforcer wait with it.
       t0 = performance.now();
-      if (config.founder === true || await strandHeaderHeld(strandDb.getDatabase(), strandId)) {
+      if (config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId)) {
         this.publishDatabase(instance, strandDb);
       } else {
         gate.start();
@@ -1266,12 +1268,16 @@ export class StrandInstanceManager {
 
   /**
    * Hand a launch's database to the app: set `instance.database`, retire the gate that
-   * held it, release every {@link whenWritable} waiter, and — when the instance was
-   * `'syncing'` — flip it `'active'` and announce it through the retained config's
-   * `onWritable`. A publish that lands while the instance is still `'starting'` (the
-   * Header arrived during the rest of bring-up) announces nothing: `startStrand` /
-   * `resumeStrand` are about to report the strand `'active'`, and `strand:writable` is
-   * defined as the follow-up to a `'syncing'` launch, never a duplicate of it.
+   * held it, release every {@link whenWritable} waiter, and — when the launch had already
+   * been reported gated — flip it `'active'` and announce it through the retained config's
+   * `onWritable`. "Reported gated" is any status but `'starting'`: `'syncing'`, or the
+   * `'idle'` the hibernation manager's idle timer flips a long-gated joiner to (see
+   * {@link isAwaitingFirstSync}) — the Header arriving after that flip must announce too,
+   * or an app hanging on `strand:writable` never learns the strand opened. A publish that
+   * lands while the instance is still `'starting'` (the Header arrived during the rest of
+   * bring-up) announces nothing: `startStrand` / `resumeStrand` are about to report the
+   * strand `'active'`, and `strand:writable` is defined as the follow-up to a gated
+   * launch, never a duplicate of `strand:started`.
    */
   private publishDatabase(instance: StrandInstance, database: StrandDatabase): void {
     const strandId = instance.strandId;
@@ -1282,7 +1288,7 @@ export class StrandInstanceManager {
     }
     instance.database = database;
     instance.lastActivity = new Date();
-    const wasGated = instance.status === 'syncing';
+    const wasGated = instance.status !== 'starting';
     if (wasGated) {
       instance.status = 'active';
       log('Strand %s is now writable: Strand.Header held', strandId);

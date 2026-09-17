@@ -7,6 +7,8 @@ import {
   StrandFirstSyncGate,
   StrandAwaitingFirstSyncError,
   strandHeaderHeld,
+  appTablesReadable,
+  strandFirstSyncComplete,
   type FirstSyncScheduler,
 } from '../src/strand-first-sync-gate.js';
 import type { StrandDatabase } from '../src/strand-database.js';
@@ -27,7 +29,9 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
  *
  * Same doubles as `strand-instance-manager-hibernation.spec.ts` — no real libp2p node or
  * Quereus database. The double's `eval` answers the Header probe from a per-strand count
- * the test flips, which is how "the Header arrived from a peer" is simulated.
+ * the test flips, which is how "the Header arrived from a peer" is simulated; its `App`
+ * schema declares no tables, so the app-table half of the probe is exercised on the gate
+ * class below with a fake schema instead.
  */
 const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
@@ -41,7 +45,8 @@ const mocks = vi.hoisted(() => {
   // manager passes so the probe answers for THAT strand.
   const StrandDatabase = vi.fn(function StrandDatabaseMock(config: { strandId: string }) {
     const db = {
-      eval: async function* () { yield { Count: headerCounts.get(config.strandId) ?? 0 }; }
+      eval: async function* () { yield { Count: headerCounts.get(config.strandId) ?? 0 }; },
+      schemaManager: { getSchema: () => undefined }
     };
     return { initialize, close, ensureFounderBootstrap, getDatabase: () => db };
   });
@@ -161,6 +166,28 @@ describe('first-sync gate in StrandInstanceManager', () => {
     expect(onWritable).toHaveBeenCalledWith('gate-opens');
     // Already writable: a later wait is immediate, and no second announcement.
     await expect(manager.whenWritable('gate-opens')).resolves.toBe(instance);
+    expect(onWritable).toHaveBeenCalledTimes(1);
+
+    await manager.stopAll();
+  });
+
+  it('the Header arriving after the hibernation idle timer flipped the label still opens: active, announced once', async () => {
+    const onWritable = vi.fn();
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('gate-idle-flip', { onWritable }));
+    expect(instance.status).toBe('syncing');
+
+    // What `CadreNode.handleStrandIdle` does after `idleTimeout` with no activity recorded
+    // on the gated joiner: the label flips while the database stays withheld.
+    instance.status = 'idle';
+    expect(isAwaitingFirstSync(instance)).toBe(true);
+
+    const waiting = manager.whenWritable('gate-idle-flip', { timeoutMs: 5_000 });
+    mocks.headerCounts.set('gate-idle-flip', 1);
+
+    await expect(waiting).resolves.toBe(instance);
+    expect(instance.status).toBe('active');
+    expect(instance.database).toBeDefined();
     expect(onWritable).toHaveBeenCalledTimes(1);
 
     await manager.stopAll();
@@ -288,11 +315,36 @@ describe('StrandFirstSyncGate', () => {
     };
   }
 
-  function fakeDatabase(state: { held: boolean; throws?: boolean }): StrandDatabase {
+  /**
+   * `held` / `throws` drive the Header read; `tables` declares the fake `App` schema and
+   * `unreachable` names the app tables whose read throws (a collection the cohort has not
+   * served yet). `reads` records every statement, so a test can see what was probed.
+   */
+  interface FakeState {
+    held: boolean;
+    throws?: boolean;
+    tables?: string[];
+    unreachable?: string[];
+    reads?: string[];
+  }
+
+  function fakeDatabase(state: FakeState): StrandDatabase {
     const db = {
-      eval: async function* () {
+      eval: async function* (sql: string) {
+        state.reads?.push(sql);
+        const table = /from App\."(\w+)"/.exec(sql)?.[1];
+        if (table !== undefined) {
+          if (state.unreachable?.includes(table)) throw new Error(`cohort-unreachable: ${table}`);
+          yield { Count: 0 };
+          return;
+        }
         if (state.throws) throw new Error('cohort-unreachable');
         yield { Count: state.held ? 1 : 0 };
+      },
+      schemaManager: {
+        getSchema: (name: string) => name === 'App' && state.tables
+          ? { getAllTables: () => (state.tables ?? []).map((t) => ({ name: t, isView: false })) }
+          : undefined
       }
     } as unknown as Database;
     return { getDatabase: () => db, close: async () => {} } as unknown as StrandDatabase;
@@ -362,5 +414,49 @@ describe('StrandFirstSyncGate', () => {
     expect(await strandHeaderHeld(fakeDatabase({ held: true }).getDatabase(), 't')).toBe(true);
     expect(await strandHeaderHeld(fakeDatabase({ held: false }).getDatabase(), 't')).toBe(false);
     expect(await strandHeaderHeld(fakeDatabase({ held: true, throws: true }).getDatabase(), 't')).toBe(false);
+  });
+
+  it('appTablesReadable reads every App table once and reports false the moment one throws', async () => {
+    const settled = { held: true, tables: ['Participant', 'Message'], reads: [] as string[] };
+    expect(await appTablesReadable(fakeDatabase(settled).getDatabase(), 't')).toBe(true);
+    expect(settled.reads).toEqual([
+      'select count(1) as Count from App."Participant"',
+      'select count(1) as Count from App."Message"'
+    ]);
+
+    const unreachable = { held: true, tables: ['Participant', 'Message'], unreachable: ['Participant'], reads: [] as string[] };
+    expect(await appTablesReadable(fakeDatabase(unreachable).getDatabase(), 't')).toBe(false);
+    // Stops at the first failing table — the next probe starts over anyway.
+    expect(unreachable.reads).toHaveLength(1);
+
+    // No App schema at all (nothing declared): trivially readable.
+    expect(await appTablesReadable(fakeDatabase({ held: true }).getDatabase(), 't')).toBe(true);
+  });
+
+  it('strandFirstSyncComplete needs the Header AND every App table, and reads no table before the Header', async () => {
+    const noHeader = { held: false, tables: ['Message'], reads: [] as string[] };
+    expect(await strandFirstSyncComplete(fakeDatabase(noHeader).getDatabase(), 't')).toBe(false);
+    expect(noHeader.reads).toEqual(['select count(1) as Count from Strand.Header']);
+
+    expect(await strandFirstSyncComplete(
+      fakeDatabase({ held: true, tables: ['Message'], unreachable: ['Message'] }).getDatabase(), 't')).toBe(false);
+    expect(await strandFirstSyncComplete(fakeDatabase({ held: true, tables: ['Message'] }).getDatabase(), 't')).toBe(true);
+  });
+
+  it('the gate stays closed while an App table is unreachable and opens once its read settles', async () => {
+    const state: FakeState = { held: true, tables: ['Participant', 'Message'], unreachable: ['Message'] };
+    const scheduler = fakeScheduler();
+    const onHeaderHeld = vi.fn();
+    const gate = new StrandFirstSyncGate({ label: 'g', database: fakeDatabase(state), onHeaderHeld, scheduler });
+
+    gate.start();
+    await scheduler.fire();
+    expect(onHeaderHeld).not.toHaveBeenCalled();
+    expect(scheduler.pending()).toBe(1);
+
+    state.unreachable = [];
+    await scheduler.fire();
+    expect(onHeaderHeld).toHaveBeenCalledTimes(1);
+    expect(gate.isOpen).toBe(true);
   });
 });

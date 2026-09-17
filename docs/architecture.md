@@ -726,7 +726,7 @@ A party may participate in many strands (potentially hundreds), but most are ina
 
 | State | Description | Strand-network resources |
 |-------|-------------|--------------------------|
-| `syncing` | A joining machine that has not yet received the strand's `Strand.Header` from another member | libp2p node and background loops running; the `StrandDatabase` is initialized but **withheld** (`database` unset) so nothing can write before the first sync — see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync). Goes `active` (event `strand:writable`) when the Header arrives |
+| `syncing` | A joining machine that has not yet received the strand's `Strand.Header` from another member, or not yet read every `App` table once | libp2p node and background loops running; the `StrandDatabase` is initialized but **withheld** (`database` unset) so nothing can write before the first sync — see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync). Goes `active` (event `strand:writable`) when the probe passes |
 | `active` | Actively transacting, recent activity | Full libp2p node + `StrandDatabase` running |
 | `idle` | No recent activity (lightweight status flag) | Still fully running — node + DB retained. Connection trimming while idle is a planned refinement, not yet implemented |
 | `hibernating` | Long-term inactive | **Released** — libp2p node stopped, `StrandDatabase` closed, zero strand-network connections/transports/DB handles. Instance identity + metadata retained for rehydration |
@@ -735,7 +735,7 @@ A party may participate in many strands (potentially hundreds), but most are ina
 
 ```mermaid
 stateDiagram-v2
-    syncing --> active : Strand.Header received (joiner's first sync)
+    syncing --> active : Strand.Header received and every App table read (joiner's first sync)
     active --> idle : idle timeout (configurable)
     idle --> active : incoming activity
     idle --> hibernating : extended idle + backoff
