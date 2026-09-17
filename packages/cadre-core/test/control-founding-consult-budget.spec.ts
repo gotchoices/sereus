@@ -107,63 +107,82 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-15';
+const MEASURED_ON = '2026-09-17';
+/**
+ * The `../optimystic` commit these figures were measured against. Every consult count below
+ * fell on 2026-09-17 — roughly by half on the read paths — when that repo stopped re-fetching
+ * a block it had already fetched during one refresh and made a refresh of an unchanged
+ * collection cost a single request. Commit and distinct-block counts did not move. Quote this
+ * commit, not just the date, when the next reader asks whether a count grew or the dependency
+ * changed underneath.
+ */
+const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 30 consults over 18 blocks, 2 commits. Every
+ * watcher's first poll it leaves running. 25 consults over 18 blocks, 2 commits. Every
  * control table and index block is consulted once as the schema is applied (all missing),
- * the schema catalog (`optimystic/schema`) 7 times, and three never-written tables twice
+ * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables twice
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` by
- * the watcher's `queryStrands`. The trace that motivated this spec snapshotted at `start()`'s
- * return, before the seed and the poll, and recorded 24 over the same 18 blocks.
+ * the watcher's `queryStrands`. History: 24 over 18 blocks in the trace that motivated this
+ * spec (snapshotted at `start()`'s return, before the seed and the poll), 30 on 2026-09-15,
+ * 25 at {@link BASELINE_UPSTREAM} — the catalog's 7 consults became 5.
  */
-const COLD: Budget = { consults: 30, blocks: 18, commits: 2, consultBudget: 36, blockBudget: 22, commitBudget: 3 };
+const COLD: Budget = { consults: 25, blocks: 18, commits: 2, consultBudget: 30, blockBudget: 22, commitBudget: 3 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party. 14 consults over 3 blocks, 4 commits:
- * `OwnerKey` ×6 and its unique stamp index ×6, both missing until the insert commits, and
- * the never-written `Revocation` ×2. Same figures as the motivating trace.
+ * Genesis: `ensureOwnerKey` on the fresh party. 7 consults over 3 blocks, 4 commits:
+ * `OwnerKey` ×3 and its unique stamp index ×3, both missing until the insert commits, and
+ * the never-written `Revocation` ×1. History: 14 over the same 3 blocks in the motivating
+ * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved at {@link BASELINE_UPSTREAM}.
  */
-const GENESIS: Budget = { consults: 14, blocks: 3, commits: 4, consultBudget: 17, blockBudget: 4, commitBudget: 5 };
+const GENESIS: Budget = { consults: 7, blocks: 3, commits: 4, consultBudget: 9, blockBudget: 4, commitBudget: 5 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 25 consults over 6
- * blocks, 6 commits: `Strand` ×8 and its two unique indexes ×6 and ×4 (missing until the
- * publish commits), the never-written `Revocation` ×4 and `CadrePeer` ×2, and 1 on a tree
- * block the commit created. The trace taken before upstream removed the absence memo
- * recorded 47 consults and 12 commits for control and strand together; here they sum to
- * 50 and 12.
+ * `foundStrand`, control network side: the `Strand` row published. 13 consults over 6
+ * blocks, 6 commits: `Strand` ×4 and its two unique indexes ×3 and ×2 (missing until the
+ * publish commits), the never-written `Revocation` ×2 and `CadrePeer` ×1, and 1 on a tree
+ * block the commit created. History: 25 over the same 6 blocks on 2026-09-15 (×8, ×6, ×4,
+ * ×4, ×2, ×1), 13 at {@link BASELINE_UPSTREAM}. Control and strand together now sum to 34
+ * consults and 12 commits, against 50 and 12 on 2026-09-15 and 47 and 12 in the trace taken
+ * before upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 25, blocks: 6, commits: 6, consultBudget: 30, blockBudget: 8, commitBudget: 8 };
+const FOUNDING_CONTROL: Budget = { consults: 13, blocks: 6, commits: 6, consultBudget: 16, blockBudget: 8, commitBudget: 8 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
- * bootstrap. 25 consults over 15 blocks, 6 commits: the strand's schema catalog ×7,
- * `Header` ×5, one consult on each other strand table and index as its schema is applied
- * (11, all missing), and 1 each on two tree blocks the bootstrap created.
+ * bootstrap. 21 consults over 15 blocks, 6 commits: the strand's schema catalog ×5,
+ * `Header` ×3, one consult on each other strand table and index as its schema is applied
+ * (11, all missing), and 1 each on two tree blocks the bootstrap created. History: 25 over
+ * the same 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 at {@link BASELINE_UPSTREAM}
+ * — only the two repeatedly-read blocks moved; the 11 apply-once blocks did not.
  */
-const FOUNDING_STRAND: Budget = { consults: 25, blocks: 15, commits: 6, consultBudget: 30, blockBudget: 18, commitBudget: 8 };
+const FOUNDING_STRAND: Budget = { consults: 21, blocks: 15, commits: 6, consultBudget: 26, blockBudget: 18, commitBudget: 8 };
 /**
- * `reconcileControlCohort`, one idle pass on the founded solo party. 8 consults over 2
+ * `reconcileControlCohort`, one idle pass on the founded solo party. 4 consults over 2
  * blocks, no commits: the pass's two `CadrePeer` reads (the gate refresh and the sibling
  * enumeration — see the NOTE in `runReconcileControlCohort`), each consulting the
- * never-written `CadrePeer` and `Revocation` twice. Nothing on the strand's repo.
+ * never-written `CadrePeer` and `Revocation` once. Nothing on the strand's repo. History:
+ * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 at {@link BASELINE_UPSTREAM}.
  */
-const RECONCILE: Budget = { consults: 8, blocks: 2, commits: 0, consultBudget: 10, blockBudget: 3, commitBudget: 0 };
+const RECONCILE: Budget = { consults: 4, blocks: 2, commits: 0, consultBudget: 5, blockBudget: 3, commitBudget: 0 };
 /** The strand's repo during the idle reconcile pass: nothing, and nothing allowed. */
 const RECONCILE_STRAND: Budget = { consults: 0, blocks: 0, commits: 0, consultBudget: 0, blockBudget: 0, commitBudget: 0 };
 /**
- * `queryRevokedStamps('CadrePeer')` per call: `Revocation` ×2 on EVERY call, because a
+ * `queryRevokedStamps('CadrePeer')` per call: `Revocation` ×1 on EVERY call, because a
  * never-written table is a missing block and a missing block is consulted on every read.
- * The motivating trace measured [4, 2, 2, 2, 2, 2] right after genesis rather than after
- * founding; the steady 2 is the same.
+ * The steady per-call cost is what matters, not its size: it was 2 per call on 2026-09-15
+ * and 1 at {@link BASELINE_UPSTREAM}, which is the same block consulted once per refresh
+ * instead of twice. The motivating trace measured [4, 2, 2, 2, 2, 2] right after genesis
+ * rather than after founding. A drop to 0 on later calls would mean the block stopped being
+ * missing, which is the second test's subject.
  */
-const REVOKED_STAMPS_PER_CALL = [2, 2, 2, 2, 2, 2];
+const REVOKED_STAMPS_PER_CALL = [1, 1, 1, 1, 1, 1];
 /**
- * `queryCadrePeers()` per call: `CadrePeer` ×2 and `Revocation` ×2 on every call. Both are
+ * `queryCadrePeers()` per call: `CadrePeer` ×1 and `Revocation` ×1 on every call. Both are
  * never written here — self-registration, which would write this node's `CadrePeer` row, is
- * disarmed. The motivating trace measured 2 per call once a `CadrePeer` row existed, and 0
- * once `Revocation` was held as well.
+ * disarmed. Two missing blocks, so twice {@link REVOKED_STAMPS_PER_CALL}, and it halved with
+ * it (4 per call on 2026-09-15, 2 at {@link BASELINE_UPSTREAM}). The motivating trace
+ * measured 2 per call once a `CadrePeer` row existed, and 0 once `Revocation` was held too.
  */
-const CADRE_PEERS_PER_CALL = [4, 4, 4, 4, 4, 4];
+const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
 
 /**
  * **The second test: what the Revocation ledger marker buys.** Same node shape and counter. One
@@ -175,18 +194,24 @@ const CADRE_PEERS_PER_CALL = [4, 4, 4, 4, 4, 4];
  *
  * | path | before the marker | after |
  * |---|---|---|
- * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×2, every call | 1 on the first call, then 0 |
- * | `queryCadrePeers()` per call | `Revocation` ×2, every call | 0 |
- * | `authorizePeer` of a new member | 5: `Revocation` ×4, 1 on a tree block | 0 |
- * | idle `reconcileControlCohort` | 8: `Revocation` ×8 | 0 |
+ * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×1, every call | 1 on the first call, then 0 |
+ * | `queryCadrePeers()` per call | `Revocation` ×1, every call | 0 |
+ * | `authorizePeer` of a new member | 3: `Revocation` ×2, 1 on a tree block | 0 |
+ * | idle `reconcileControlCohort` | 4: `Revocation` ×4 | 0 |
  *
  * The one consult after is on the tree block the marker's own commit created, paid by whichever
- * read runs first. Filing the marker cost 4 consults (`Revocation` ×4) and 2 commits. The reconcile
+ * read runs first. Filing the marker cost 2 consults (`Revocation` ×2) and 2 commits. The reconcile
  * pass is asserted by its busiest block (more than once before, at most once after) rather than
  * pinned, so an unrelated read added to the pass does not read as a marker regression.
+ *
+ * Only the "before" column moved at {@link BASELINE_UPSTREAM}: every repeated consult of the
+ * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
+ * filing 4 → 2). The "after" column was already zero and is unchanged, so what this test proves
+ * — that the marker removes the repeats entirely — is measured against a smaller "before" than
+ * on 2026-09-15 but the same contrast.
  */
-const MARKER_BEFORE_PER_CALL = [2, 2, 2, 2, 2, 2];
-const MARKER_BEFORE_AUTHORIZE = 5;
+const MARKER_BEFORE_PER_CALL = [1, 1, 1, 1, 1, 1];
+const MARKER_BEFORE_AUTHORIZE = 3;
 /** The first read after the marker pays one consult on the block its commit created. */
 const MARKER_AFTER_REVOKED_STAMPS = [1, 0, 0, 0, 0, 0];
 const MARKER_AFTER_CADRE_PEERS = [0, 0, 0, 0, 0, 0];
@@ -480,7 +505,7 @@ function printPerCall(read: string, cost: PerCallCost): void {
  */
 function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget, note = ''): void {
 	const { snapshot } = cost;
-	const context = `(measured ${budget.consults} consults over ${budget.blocks} blocks and ${budget.commits} commits on ${MEASURED_ON}; `
+	const context = `(measured ${budget.consults} consults over ${budget.blocks} blocks and ${budget.commits} commits on ${MEASURED_ON} at ${BASELINE_UPSTREAM}; `
 		+ `this phase began ${Math.round(cost.atMs)}ms into the run and took ${Math.round(cost.ms)}ms — a held block is `
 		+ `re-consulted once ${READ_REPAIR_WINDOW_MS}ms pass, so a run that slow adds consults${note}). `
 		+ `This run's consults per block: ${formatPerBlock(snapshot)}.`;
@@ -518,7 +543,7 @@ function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget, note
 function expectPerCall(read: string, cost: PerCallCost, measured: number[]): void {
 	const actual = cost.calls.map((call) => call.consults);
 	const detail = cost.calls.map((call, i) => `[${i}] ${formatPerBlock(call)}`).join('; ');
-	expect(actual, `${read}: per-call consults moved from [${measured.join(', ')}] (measured ${MEASURED_ON}) to [${actual.join(', ')}]. `
+	expect(actual, `${read}: per-call consults moved from [${measured.join(', ')}] (measured ${MEASURED_ON} at ${BASELINE_UPSTREAM}) to [${actual.join(', ')}]. `
 		+ `The calls began ${Math.round(cost.atMs)}ms into the run (held blocks are re-consulted after ${READ_REPAIR_WINDOW_MS}ms). `
 		+ `Consults per block, per call: ${detail}`).toEqual(measured);
 	expect(cost.calls.reduce((sum, call) => sum + call.commits, 0), `${read} issued commits; a read should issue none`).toBe(0);
@@ -640,7 +665,7 @@ function busiestBlock(cost: PhaseCost): number {
 
 /** One write's consults, pinned exactly, with the per-block breakdown in the message. */
 function expectConsults(label: string, cost: PhaseCost, measured: number): void {
-	expect(cost.snapshot.consults, `${label}: ${cost.snapshot.consults} cohort consults, measured ${measured} on ${MEASURED_ON}. `
+	expect(cost.snapshot.consults, `${label}: ${cost.snapshot.consults} cohort consults, measured ${measured} on ${MEASURED_ON} at ${BASELINE_UPSTREAM}. `
 		+ `It began ${Math.round(cost.atMs)}ms into the run (held blocks are re-consulted after ${READ_REPAIR_WINDOW_MS}ms). `
 		+ `Consults per block: ${formatPerBlock(cost.snapshot)}`).toBe(measured);
 }

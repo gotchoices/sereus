@@ -1,10 +1,64 @@
-description: When a third machine joins a group, one of the machines already there can keep showing an old copy of the newcomer's entry in the shared member directory — one with no network address — so it cannot connect to the newcomer. It holds that old copy in memory and does not look again until something else changes the directory. The code that must change is in a separate repository.
+description: Fixed upstream and verified here. A machine used to keep an old copy of a newcomer's entry in the shared member directory — one with no network address — and never look again. The optimystic fix landed and ten isolated runs of the two affected scenarios are clean. What remains is bookkeeping: retire this slug's entries from the known-failures file and the NOTE the boot gate carries.
 files: ../optimystic/packages/db-core/src/collection/collection.ts, ../optimystic/packages/db-core/src/transactor/transactor-source.ts, ../optimystic/packages/db-core/src/transform/cache-source.ts, ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts, packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, tickets/.pre-existing-known.md
 difficulty: hard
-repro: verified
+repro: no longer reproduces at optimystic 03ffadc4 (10/10 clean)
 ----
 
-# Blocked — dependency outside this repo: node B caches a stale copy of C's directory row
+# Unblocked 2026-09-17
+
+**The fingerprint is gone.** `Timeout waiting for B resolves C's signed CadrePeer address record
+after 45000ms` did not appear once in ten isolated runs, and neither did the
+`resolvePeerAddrs: signature verification failed … addrs=[], sig=(empty)` line that precedes it.
+
+| scenario | isolated runs | result |
+| --- | --- | --- |
+| `control-cohort-three-node-isolation.integration.ts` | 5 | **5 passed / 0 failed** (2 tests each, 10/10) |
+| `control-cohort-edge-carries-data.integration.ts` | 5 | **5 passed / 0 failed** |
+
+Each run was a fresh process, one suite at a time, and each was counted by the positive pass
+marker (`Tests  N passed`) rather than by the absence of a failure string — the correction the
+"Measured rates" section above asks for. The stale-build guard passed every time.
+
+**What landed upstream.** `../optimystic` was quiet and clean at HEAD `987c45cf`, which is
+`03ffadc4` plus one commit touching `tickets/.garden-report.md` only, so the built `dist` under
+measurement was exactly `03ffadc4`:
+
+- `94553aba` (implement) / `0fc40ac5` (review) — `refreshed-collection-caches-a-block-older-than-its-log-entry`,
+  the stale-read fix this ticket was filed against: a block answer older than the log entry that
+  sent for it is no longer accepted into the in-memory copy.
+- `12eb8412` (implement) / `61747f60` (review) — `a-too-old-block-answer-is-retried-against-another-machine`,
+  which turns that detection into a retry against a different member rather than a failure.
+
+Together these close the mechanism this ticket measured: B learned from A that revisions 7 and 8
+existed, then answered its own block read from its 10-second "recently checked" window with
+revision 6 content and kept it. The comparison the body asks for — "the log entry says revision 7,
+this content says revision 6" — now exists, and the answer is re-fetched elsewhere.
+
+## What is left
+
+Bookkeeping only; no defect is known to remain. All of it is in this repo.
+
+- [ ] Remove this slug's entries from `tickets/.pre-existing-known.md`. Do not sweep the file
+      wholesale — several other entries name this slug only as one of two *candidate* explanations
+      for a symptom they could not trace (the 2026-09-17 `resolvePeerAddrs` returning `[]` entry is
+      one), and those need rewording, not deletion.
+- [ ] Replace the `NOTE:` above step 6 in `packages/integration-tests/src/harness/control-trio.ts`
+      with a plain statement of what the gate proves, as the body's "When unblocked" section
+      specifies.
+- [ ] Decide whether the `updatedAt` / address-count / signature-prefix instrumentation in
+      `packages/cadre-core/src/cadre-node.ts` stays. The body says to keep it; it is what made the
+      failing trace readable, and the entry above notes that the `resolvePeerAddrs:` line names the
+      rejecting gate directly. Recommendation: keep it, and say in the comment why.
+- [ ] The sibling `blocked/forked-control-collection-sync-livelocks` was once described here as
+      "very probably the same defect" and the body already withdraws that. Confirm it is genuinely
+      separate before anyone assumes this unblock moved it too — it was not re-run in this pass.
+
+**Not verified by this pass:** the production claim that a newly joined machine was undialable for
+minutes rather than forever. That was reasoned from the mechanism, never measured, and the fix
+makes it moot rather than confirming it.
+
+---
+# Original report (blocked) — dependency outside this repo: node B caches a stale copy of C's directory row
 
 **Category (b).** Everything that must change is in the sibling checkout `../optimystic` (`@optimystic/db-core`, possibly `@optimystic/db-p2p`), which Sereus runs from its built `dist`. Nothing in this repository can make the failing wait pass, and the wait must not be lengthened — it is the measurement.
 

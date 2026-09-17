@@ -76,7 +76,15 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-14';
+const MEASURED_ON = '2026-09-17';
+/**
+ * The `../optimystic` commit these figures were measured against. The WARM figure fell there
+ * on 2026-09-17 (44 ops over 22 blocks to 13 over 3) when that repo made a refresh of an
+ * unchanged collection cost one request and stopped re-fetching a block it had already
+ * fetched in the same refresh: the hydrate now reads the catalog's blocks and leaves each
+ * table's block for the first read of that table. The COLD figure did not move at all.
+ */
+const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
 /**
  * Cold: first-ever start against empty storage — 9 control tables and 1 index
  * created (StrandPartyKey joined the schema with the strand-party-member-key
@@ -95,15 +103,16 @@ const MEASURED_ON = '2026-09-14';
 const COLD: Budget = { ops: 45, blocks: 20, opBudget: 55, blockBudget: 24 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
- * hydrates instead of the schema being applied. 44 operations over 22 blocks: a
- * cold CACHE over a warm STORE, essentially one read per block plus the hydrate's
- * list fills. The distinct-block count is two above cold (22 vs 20): the cold run had
- * not yet written the owner-key row this spec's genesis step leaves behind, and the
- * schema-apply path does not touch every block the hydrate then reads. NOTE: the
- * per-table→per-block mapping is NOT one-to-one — adding the ninth control table
- * (`StrandPartyKey`) moved cold DOWN from 172 ops / 21 blocks to 169 / 20, which is
- * packing, not a saving to bank on. Re-measure rather than predict when the schema
- * changes again.
+ * hydrates instead of the schema being applied. 13 operations over 3 blocks: a
+ * cold CACHE over a warm STORE, reading the catalog's own blocks four ways each
+ * (`getMetadata`, `listRevisions`, `getMaterializedBlock`, `listPendingTransactions`)
+ * plus one `listBlockIds` fill. It was 44 over 22 blocks until {@link BASELINE_UPSTREAM}
+ * — one read per block for every table — and the drop is that repo no longer touching a
+ * table's block during the hydrate; the first read of each table pays for it instead, which
+ * this phase does not perform. NOTE: the per-table→per-block mapping is NOT one-to-one —
+ * adding the ninth control table (`StrandPartyKey`) moved cold DOWN from 172 ops / 21 blocks
+ * to 169 / 20, which is packing, not a saving to bank on. Re-measure rather than predict
+ * when the schema changes again.
  *
  * The second start deliberately gets a fresh storage IDENTITY over the shared
  * backing store (see the comment at the spec body): cadre-core's cache is memoized
@@ -114,9 +123,11 @@ const COLD: Budget = { ops: 45, blocks: 20, opBudget: 55, blockBudget: 24 };
  * cache, not a restart). A device restart kills the process and the cache with it;
  * the fresh identity reproduces that. History: 315 uncached (2026-08-12), 463
  * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17),
- * 46 with the 9-table schema (2026-09-10), 44 with schema batching (2026-09-14).
+ * 46 with the 9-table schema (2026-09-10), 44 with schema batching (2026-09-14), 13 at
+ * {@link BASELINE_UPSTREAM} (2026-09-17). 13 is still a cold cache: the 3-op signature the
+ * tripwire names is a SHARED storage instance, which reads the catalog once and nothing else.
  */
-const WARM: Budget = { ops: 44, blocks: 22, opBudget: 55, blockBudget: 25 };
+const WARM: Budget = { ops: 13, blocks: 3, opBudget: 17, blockBudget: 5 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -150,7 +161,7 @@ interface Budget {
  * `--reporter=verbose` to learn that.
  */
 function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget): void {
-	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${MEASURED_ON}`;
+	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${MEASURED_ON} at ${BASELINE_UPSTREAM}`;
 	const breakdown = `This run, calls/distinct-blocks by method: ${formatBreakdown(snapshot)}.`;
 	expect(
 		snapshot.total,

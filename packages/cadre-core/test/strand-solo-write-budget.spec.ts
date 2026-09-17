@@ -61,7 +61,14 @@ const within = scopedWithin('strand-write-budget');
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-09-14';
+const MEASURED_ON = '2026-09-17';
+/**
+ * The `../optimystic` commit these figures were measured against. Launch did not move there;
+ * the SELECT phase fell to zero backend operations on 2026-09-17, when that repo made a
+ * refresh of an unchanged collection cost one request and stopped re-fetching a block it had
+ * already fetched in the same refresh — the selects' one remaining backend read went with it.
+ */
+const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * membership schema (8 tables + 1 index) + the one-table sApp schema applied,
@@ -82,27 +89,34 @@ const MEASURED_ON = '2026-09-14';
 const LAUNCH: Budget = { ops: 78, blocks: 17, opBudget: 95, blockBudget: 20 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
- * 86 over 3 blocks — nearly all writes (the cache absorbs the transactor's
- * re-reads; 366 uncached on 2026-08-13). It was 75 on 2026-08-17. The 11-operation
- * rise (mostly `saveMaterializedBlock`, 17 against 11 of each other commit step) showed up in the same
- * upstream window as the launch drop and has not been attributed. It repeats
- * exactly across runs and stays under the ceiling. With 4 operations of headroom,
- * the next rise here should be explained before anyone raises the budget.
+ * 80 over 3 blocks — nearly all writes (the cache absorbs the transactor's
+ * re-reads; 366 uncached on 2026-08-13). It was 75 on 2026-08-17 and is 80 at
+ * {@link BASELINE_UPSTREAM}: the 5-operation rise is `saveMaterializedBlock` (17 against
+ * 11 of each other commit step) and has not been attributed to a named change. It repeats
+ * exactly across runs. This is the phase carrying the spec's anti-vacuity duty — see the
+ * NOTE on {@link SELECT} — so with 10 operations of headroom the next rise should be
+ * explained before anyone raises the budget.
  */
-const INSERT: Budget = { ops: 75, blocks: 3, opBudget: 90, blockBudget: 5 };
+const INSERT: Budget = { ops: 80, blocks: 3, opBudget: 90, blockBudget: 5 };
 /**
- * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 2 operations —
+ * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 0 operations —
  * after the launch/insert phases every read the selects need is already cached,
- * so almost nothing reaches the backend (230 uncached on 2026-08-13).
+ * and at {@link BASELINE_UPSTREAM} nothing at all reaches the backend (2 on 2026-09-14,
+ * 230 uncached on 2026-08-13).
  *
- * NOTE: at 2 ops the floor (`> ops/2` = `> 1`) is exactly the measurement, so this
- * phase's anti-vacuity guard now has no slack in the improving direction: a change
- * that legitimately took the selects to 1 backend operation would red this spec as
- * "no longer measuring the real storage path". If that ever fires, re-measure and
- * re-baseline rather than loosening — and note the insert phase's writes, which have
- * real slack, already carry the anti-vacuity duty for the spec as a whole.
+ * NOTE: that prediction was written down before it happened. At 2 ops the halved floor
+ * (`> ops/2` = `> 1`) was exactly the measurement, and the note here said a legitimate drop
+ * to 1 would red this spec as "no longer measuring the real storage path", to be answered by
+ * re-measuring rather than loosening. The drop came, to 0, and this is that re-baseline.
+ *
+ * A phase measured at zero cannot carry a halved floor — `> 0` can never pass — so
+ * {@link expectWithinBudget} pins it EXACTLY instead. That is a tightening, not a hole: any
+ * backend operation reappearing on this path is now a failure to explain. The zero is a real
+ * measurement, not a blind counter: launch (78) and insert (80) are counted through the same
+ * `CountingRawStorage` instance, on the same node, in the same run, immediately before these
+ * selects — so those two phases, which have real slack, carry the spec's anti-vacuity duty.
  */
-const SELECT: Budget = { ops: 2, blocks: 1, opBudget: 15, blockBudget: 4 };
+const SELECT: Budget = { ops: 0, blocks: 0, opBudget: 0, blockBudget: 0 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -235,8 +249,12 @@ async function measureSoloStrand(): Promise<RunCost> {
  * passing test's console output nowhere.
  */
 function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget): void {
-	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${MEASURED_ON}`;
+	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${MEASURED_ON} at ${BASELINE_UPSTREAM}`;
 	const breakdown = `This run, calls/distinct-blocks by method: ${formatBreakdown(cost.snapshot)}.`;
+	if (budget.ops === 0) {
+		expectPinnedAtZero(phase, cost, provenance, breakdown);
+		return;
+	}
 	expect(
 		cost.snapshot.total,
 		`solo ${phase} issued ${cost.snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
@@ -254,6 +272,24 @@ function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget): voi
 		+ 'Either this spec is no longer measuring the strand\'s real storage path (check the provider branch on strandId), '
 		+ `or the cost genuinely improved — re-measure and TIGHTEN the budget rather than leaving the headroom. ${breakdown}`
 	).toBeGreaterThan(floor);
+}
+
+/**
+ * A phase measured at zero operations, pinned exactly in both directions.
+ *
+ * The halved floor is meaningless here (`> 0` can never pass), so the assertion becomes the
+ * same kind the consult spec uses for its per-call sequences: the shape IS the signal, and a
+ * change in either direction is a behaviour change to re-measure. The anti-vacuity duty the
+ * floor would have carried moves to the phases that still cost something — see {@link SELECT}.
+ */
+function expectPinnedAtZero(phase: string, cost: PhaseCost, provenance: string, breakdown: string): void {
+	expect(
+		cost.snapshot.total,
+		`solo ${phase} issued ${cost.snapshot.total} raw-storage operations; it is pinned at zero (${provenance}). `
+		+ 'Everything this phase reads is already cached from the phases before it, so any operation reaching the backend '
+		+ 'is a change to explain — a cache that stopped answering, or a new read on the path. Re-measure and re-pin '
+		+ `deliberately; do not replace this pin with a ceiling. ${breakdown}`
+	).toBe(0);
 }
 
 describe('solo strand write budget', () => {
