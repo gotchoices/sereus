@@ -65,6 +65,11 @@ const CASE_TIMEOUT_MS = 90_000;
  * classifiers match on (`isStrandIdConflict`, `isRetriableControlWriteFailure`), because
  * the typed engine error does not survive the trip out of optimystic. A non-`Error` is
  * stringified so a rejection with a non-error reason still names itself in the diff.
+ *
+ * NOTE: `control-write-degraded-cohort-member.integration.ts` keeps its own copy of this
+ * helper (cycle-guarded, joined with ` | `). Two copies of a display-only formatter is under
+ * the hoist threshold this suite works to; if a THIRD scenario needs one, hoist it into
+ * `src/harness/` rather than growing a fourth shape.
  */
 function errorChainText(reason: unknown): string {
 	if (!(reason instanceof Error)) return String(reason);
@@ -114,6 +119,11 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 		// row" branch — there is no cadre-core writer for a second owner (`insertOwnerKey`
 		// only rides the empty-owner-set bootstrap branch), so the digest is built here
 		// through the one shared builder every signer must use.
+		//
+		// NOTE: deliberately not a new cadre-core writer. Seating a second owner has no
+		// production caller today (owner rotation is unbuilt), so a public
+		// `insertSecondOwnerKey` would be trust-path API exercised only by this test. If a
+		// SECOND scenario ever needs one, it belongs in `src/harness/` beside `makeOwnOwner`.
 		const bOwnerKey = pair.B.getIdentityOwnerKey().publicKeyB64;
 		const stampId = `owner-${randomUUID()}`;
 		const signature = pair.ownerSign(

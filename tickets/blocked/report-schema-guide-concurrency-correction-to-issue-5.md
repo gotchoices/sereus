@@ -1,0 +1,34 @@
+description: A public issue on our own tracker still points readers at a warning we have since corrected — it says a certain kind of concurrent write silently loses data, which is no longer true. Somebody with access needs to post the correction there.
+files: docs/schema-guide.md, tickets/blocked/concurrent-unique-value-race-commits-both-rows.md
+difficulty: easy
+----
+
+# Human action: post the correction to gotchoices/sereus#5
+
+## Why this is a human's call, not an agent's
+
+Posting to a public issue tracker writes under a person's account, in our project's name, to somebody who asked us a question and acted on the answer. An agent should not do that on its own. Everything needed is below; what is missing is a person to send it.
+
+## What changed and why the issue is now wrong
+
+Issue **gotchoices/sereus#5** asked whether an sApp can read its rows in commit order. Two completed tickets answered it in `docs/schema-guide.md` (`complete/1-document-commit-order-answer`, `complete/6-write-down-why-a-monotonic-int-sequence-is-unsafe`), and the reply posted on the issue pointed readers at that section.
+
+Part of what that section said is no longer true. It warned that if two machines insert a row with the same primary key at the same moment, both are told they succeeded and one row is silently lost, and it called that a tracked, unresolved limitation. The underlying library fixed it; the fix was re-measured against two real machines on 2026-09-17 and holds, and a permanent two-machine regression test now guards it (`packages/integration-tests/src/scenarios/control-concurrent-same-pk-insert.integration.ts`). The loser of that race now gets the ordinary "unique constraint failed" error and nothing is lost.
+
+One narrower problem remains and is newly written down in the same section: the clean refusal covers the *primary key* only. Two rows with different primary keys that share a value in some other column declared unique, raced at the same instant, end with both rows stored even though one writer was told it failed. That is tracked in `tickets/blocked/concurrent-unique-value-race-commits-both-rows.md` and is also outside this repository.
+
+Anyone who read the issue and chose a design around "a duplicate key is silently last-writer-wins" made that choice on information we have since corrected in both directions — the hazard they were warned about is gone, and a different one they were not warned about is real. That is the reason this is worth posting rather than leaving for whoever next reads the guide.
+
+## Draft comment, for a human to review and post
+
+> Following up on the concurrency warning this thread pointed at in `docs/schema-guide.md`.
+>
+> **The primary-key part of that warning is fixed and no longer applies.** It said that when two peers concurrently insert the same primary key, both are told they succeeded and one row is silently lost. That was true when it was written and is not true now: the storage layer refuses the loser with the ordinary `UNIQUE constraint failed: <Table>.<Column>` error, and nothing is lost. We re-measured it on two real machines on 2026-09-17 and added a permanent regression test so it cannot quietly come back.
+>
+> The practical consequence for a schema author: a `max(id) + 1` integer key is now *correct*, but it is *contended* — the refused writer has to catch the error, recompute against its new view and write again, and the refusals get more frequent the more peers post at once. A locally generated key (a UUID) still never contends and still needs no retry loop, so it remains the recommendation.
+>
+> **One narrower gap remains, and it is newly documented.** The clean refusal covers the primary key. A column that is `unique` but is *not* the primary key is not yet a safe concurrency guard: when two rows with different primary keys race on the same unique value at the same instant, the losing writer is correctly told its insert failed, but its row can still end up stored, leaving two rows under one "unique" value. So do not use a secondary `unique` column (a username, an email address, a claimed handle) as the only thing standing between two members and a duplicate — put the contended value in the primary key, or resolve duplicates on read. We have that measured and tracked; the guide's section now says so.
+
+## Before posting
+
+Re-read the "Ordering Events (There Is No Commit-Order Column)" section of `docs/schema-guide.md` as it stands, so the comment and the guide agree. If `concurrent-unique-value-race-commits-both-rows` has landed by the time this is posted, drop the second half of the draft — that caveat is removed from the guide when it does.

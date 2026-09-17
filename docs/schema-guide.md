@@ -318,9 +318,12 @@ ordinary `UNIQUE constraint failed: <Table>.<Column>` error. Nothing is silently
 refused writer has to notice the error, recompute `max(id) + 1` against its new view, and write
 again — and the more peers post at once, the more often that happens, because every one of them
 computed the same next id from the same local maximum. A stricter "no gaps" variant
-(`id = 0 or exists(id - 1)`) inherits the same contention. Patterns A and B generate their key
-locally and never contend, so they need no retry loop at all. Use one of them unless a gapless
-integer sequence is itself a requirement, and if it is, write the retry.
+(`id = 0 or exists(id - 1)`) inherits the same contention. The sketches under Patterns A and B
+key their rows on a value each peer mints for itself (a UUID), which no other peer can collide
+with, so they need no retry loop at all. Use that unless a gapless integer sequence is itself a
+requirement. If it is, the retry is yours to write, and it needs a randomized backoff: every
+refused peer recomputes the same next id from the same view, so retries that fire immediately
+collide with each other again.
 
 **Caveat — a column that is `unique` but not the primary key is not yet a safe concurrency guard.**
 The clean refusal above covers the *primary key*. For a secondary `unique` column raced by two rows
