@@ -194,3 +194,4 @@
 {"slug":"merge-verified-peer-addrs-into-control-peerstore","file":"merge-verified-peer-addrs-into-control-peerstore.md","completedAt":"2026-08-15","commit":"d2dd7f1271deca12d17f5807f4dc9bdac3636b7b","prunedAt":"2026-09-15T04:11:09.986Z"}
 {"slug":"port-solo-warm-start-to-published-smoke","file":"port-solo-warm-start-to-published-smoke.md","completedAt":"2026-08-13","commit":"ad2c40959a4c5530f026f1fd5bc1ff15793100a7","prunedAt":"2026-09-15T04:11:09.986Z"}
 {"slug":"transactor-key-network-ignores-network-scoping","file":"transactor-key-network-ignores-network-scoping.md","completedAt":"2026-08-12","commit":"73785b0036d6b15efae334a07c16d46fa97deb67","prunedAt":"2026-09-15T04:11:09.986Z"}
+{"slug":"revocation-reissue-same-pk-update-unique-collision","file":"10-revocation-reissue-same-pk-update-unique-collision.md","completedAt":"2026-08-18","commit":"1baa8098fb264056cceb59894abb6a5794c854a0","prunedAt":"2026-09-17T06:04:04.752Z"}
