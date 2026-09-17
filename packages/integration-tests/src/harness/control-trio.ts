@@ -52,6 +52,15 @@
  * opened B→C from FRET's departure announce, and no B→C dial came from a
  * reconcile pass the test had not run.
  *
+ * Which is why the gate alone does not settle WHO dialled. A window is open for
+ * a whole pass, not for its dial, and the pass's own address-book warm hands C's
+ * verified address to those same two dialers partway through — so either can open
+ * B→C inside the window, ahead of the pass's dial step. The pass then skips C as
+ * already connected. {@link DialsToC.openingPass} therefore credits a pass only
+ * when the pass's own `dialed` names C, and {@link DialsToC.reconcile} closes a
+ * link left by a pass that did not dial C, so the next pass starts from the same
+ * disconnected state and can dial it itself.
+ *
  * Both B and C pre-pin A's owner key into their node-local trusted-owner anchor
  * (`trustedOwners.pinnedKeys`), so their seeds are accepted by the DEFAULT
  * anchored trust policy and their authorized-member predicate is real rather
@@ -109,17 +118,37 @@ export interface DialsToC {
 	 * the `reconcileControlCohort` B had at boot, so a test can route B's own
 	 * triggers (the recurring timer) through here by assigning this over
 	 * `B.reconcileControlCohort`.
+	 *
+	 * A pass that ends WITHOUT having dialled C leaves behind whatever connection
+	 * to C another subsystem opened inside its window, and that connection is
+	 * evidence of nothing (see {@link openingPass}). Such a pass therefore closes
+	 * those connections before returning, with the gate shut again so nothing can
+	 * re-open them, leaving the next pass the same disconnected start this one
+	 * had. Once {@link openingPass} has named a pass — the evidence the caller is
+	 * polling for — no pass closes anything again, so the link the test goes on to
+	 * read the cohort over is never torn down under it.
 	 */
 	reconcile(): Promise<ControlCohortReconcileResult>;
 	/** Every pass {@link reconcile} has run, oldest first. */
 	passes(): readonly GatedReconcilePass[];
 	/**
-	 * The first recorded pass whose snapshot holds B's CURRENT open outbound
-	 * connection to C, or `undefined` when B holds none or no recorded pass saw
-	 * it. The gate is closed between passes, so that connection formed during
-	 * that pass — and the pass opened it only if its `dialed` names C: a pass
-	 * skips a peer that is already connected, so a connection another subsystem
-	 * opened earlier in the same pass leaves C out of `dialed`.
+	 * The first recorded pass that BOTH reported dialling C and whose snapshot
+	 * holds B's CURRENT open outbound connection to C — the pass whose own dial
+	 * opened the link B holds now. `undefined` when B holds no such connection, or
+	 * when no recorded pass dialled the one it holds.
+	 *
+	 * Both halves are load-bearing, and the `dialed` half is why this cannot be a
+	 * connection-id match alone. The gate is closed between passes, so a
+	 * connection to C did form during SOME pass's window — but the window is open
+	 * for the whole pass, including the address-book warm that hands C's verified
+	 * address to every other dialer in B, so FRET or the transactor can open the
+	 * link before the pass reaches its own dial step. The pass then skips C as
+	 * already connected and returns `dialed: []` while still holding that
+	 * connection in its snapshot. Matching on the snapshot alone named such a pass
+	 * the opener, and the callers' `expect(openingPass()?.dialed).toContain(c)`
+	 * failed with `expected [] to include …`: a B→C link no reconcile pass dialled,
+	 * reported as one a pass did. {@link reconcile} clears those connections so a
+	 * later pass can dial C itself.
 	 *
 	 * NOTE: one ordering still reads as the pass's own dial. If another
 	 * subsystem's dial to C starts inside the pass AFTER the pass listed its live
@@ -181,6 +210,21 @@ function dialsToCFor(B: CadreNode, gateB: PeerDialGate, cPeerId: string): DialsT
 	const outboundToC = (): string[] => connectionsTo(B, cPeerId)
 		.filter((c) => c.direction === 'outbound' && c.status === 'open')
 		.map((c) => c.id);
+	/** Did a recorded pass that reported dialling C hold this connection when it returned? */
+	const dialedByAPass = (id: string): boolean =>
+		passes.some((pass) => pass.dialed.includes(cPeerId) && pass.outboundToC.includes(id));
+	const openingPass = (): GatedReconcilePass | undefined => {
+		const current = outboundToC();
+		return passes.find((pass) =>
+			pass.dialed.includes(cPeerId) && pass.outboundToC.some((id) => current.includes(id)));
+	};
+	/**
+	 * Has a pass's own dial been seen holding the live link? Latched, because it is
+	 * what {@link dropUnattributed} is hunting for: once a caller can have read it,
+	 * the harness stops closing anything, and the cohort B→C carries is left alone
+	 * for the rest of the test.
+	 */
+	let linkCredited = false;
 	const allowDuring = async <T>(fn: () => Promise<T>): Promise<T> => {
 		if (openers++ === 0) gateB.allow(cPeerId);
 		try {
@@ -189,18 +233,40 @@ function dialsToCFor(B: CadreNode, gateB: PeerDialGate, cPeerId: string): DialsT
 			if (--openers === 0) gateB.deny(cPeerId);
 		}
 	};
+	/**
+	 * Close B's connections to C that no pass's own dial accounts for, so the next
+	 * pass finds C disconnected and dials it itself.
+	 *
+	 * Called after a pass that leaves {@link openingPass} empty, and only with every
+	 * window shut (`openers === 0`) so the gate denies the re-dial that closing
+	 * invites. A close that fails is logged and the rest are still closed: the
+	 * caller is a test's polling loop, and a throw here would surface as that loop's
+	 * timeout instead of as what went wrong.
+	 */
+	const dropUnattributed = async (): Promise<void> => {
+		if (openers > 0) return;
+		for (const conn of connectionsTo(B, cPeerId)) {
+			if (dialedByAPass(conn.id)) continue;
+			await conn.close().catch((error: unknown) =>
+				console.warn('dialsToC: closing a connection to C that no reconcile pass dialled failed:', error));
+		}
+	};
 	return {
 		allowDuring,
-		reconcile: () => allowDuring(async () => {
-			const result = await reconcileB();
-			passes.push({ dialed: result.dialed, outboundToC: outboundToC() });
+		reconcile: async () => {
+			const result = await allowDuring(async () => {
+				const passResult = await reconcileB();
+				passes.push({ dialed: passResult.dialed, outboundToC: outboundToC() });
+				return passResult;
+			});
+			linkCredited ||= openingPass() !== undefined;
+			if (!linkCredited) {
+				await dropUnattributed();
+			}
 			return result;
-		}),
-		passes: () => passes,
-		openingPass: () => {
-			const current = outboundToC();
-			return passes.find((pass) => pass.outboundToC.some((id) => current.includes(id)));
 		},
+		passes: () => passes,
+		openingPass,
 		deniedCount: () => gateB.deniedCount(cPeerId)
 	};
 }

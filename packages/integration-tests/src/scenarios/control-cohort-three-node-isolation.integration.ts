@@ -23,9 +23,11 @@
  * C's address in B's peerStore from a cluster record A sends B (the
  * `harness/control-trio.ts` header, B'S DIAL GATE, names both paths). So B boots
  * with a harness dial gate that denies every dial to C except while a reconcile
- * pass runs through `dialsToC.reconcile`, and each case checks that the pass
- * during which B→C formed reports dialling C (`dialsToC.openingPass`) — a pass
- * skips a peer something else already connected.
+ * pass runs through `dialsToC.reconcile`, and each case checks that the link B
+ * ends up holding was opened by a pass's OWN dial (`dialsToC.openingPass`) — a
+ * pass skips a peer something else already connected, so a window in which FRET
+ * or the transactor got there first is discarded and retried rather than credited
+ * to the pass that happened to be running.
  *
  * The pass learns C's address from C's signed `CadrePeer` row, replicated to B
  * through A. B never applies a seed that names C (C did not exist when B's seed
@@ -78,11 +80,11 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			B.reconcileControlCohort = () => dialsToC.reconcile();
 
 			// THE ASSERTION. A pass on B's timer opens B→C (B is the only side that
-			// can dial), and it is that pass's own dial: the pass during which the
-			// connection formed reports dialling C.
+			// can dial), and it is that pass's own dial: the pass holding the live
+			// connection is one that reported dialling C.
 			await waitUntil(
 				() => dialsToC.openingPass() !== undefined,
-				{ timeoutMs: 60_000, intervalMs: 250, description: "a reconcile pass on B's timer leaves B holding an outbound connection to C" }
+				{ timeoutMs: 60_000, intervalMs: 250, description: "a reconcile pass on B's timer dials C, and B still holds that outbound connection" }
 			);
 			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 
@@ -173,9 +175,11 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			);
 			expect(dialsToC.passes().length).toBeGreaterThan(0);
 			expect(hasOutboundTo(B, cPeerId)).toBe(true);
-			// The pass during which B→C formed reports dialling C. Had FRET or the
-			// transactor opened it inside that pass, the pass would have skipped C
-			// as already connected.
+			// The link B holds was opened by a pass's own dial. Had FRET or the
+			// transactor opened it inside a pass's window, that pass would have
+			// skipped C as already connected, and `reconcile` would have closed the
+			// link so a later pass could dial it — the loop above would still be
+			// running, not here.
 			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 		} finally {
 			await stopControlTrio(handles);

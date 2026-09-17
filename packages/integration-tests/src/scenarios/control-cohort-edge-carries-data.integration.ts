@@ -314,9 +314,11 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 				peerMap
 			);
 			expect(dialsToC.passes().length).toBeGreaterThan(0);
-			// The pass that was running when B→C formed reports dialling C. Had FRET
-			// or the transactor opened it inside that pass, the pass would have
-			// skipped C as already connected.
+			// The link B holds was opened by a pass's own dial. Had FRET or the
+			// transactor opened it inside a pass's window, that pass would have
+			// skipped C as already connected, and `reconcile` would have closed the
+			// link so a later pass could dial it — the loop above would still be
+			// running, not here.
 			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 			// B's open control connection set is exactly {C}: one outbound
 			// connection, and nothing to anyone else — B's dial gate held A out.
