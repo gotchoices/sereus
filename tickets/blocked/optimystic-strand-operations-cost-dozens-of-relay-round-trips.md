@@ -9,7 +9,9 @@ repro: verified
 
 # Optimystic: strand reads and commits cost dozens of round trips, which a relay turns into seconds
 
-Blocked because the code is in `../optimystic`, a separate repository with its own ticket board. Sereus can reduce how often it reads (`implement/rn-chat-poll-overlaps-slow-reads`) but not what one read or commit costs. Someone needs to carry these numbers to optimystic's board. If optimystic already tracks them, close this ticket.
+Blocked because the code is in `../optimystic`, a separate repository with its own ticket board. Sereus has already reduced how often it reads (`complete/0-rn-chat-poll-overlaps-slow-reads`), but not what one read or commit costs.
+
+**Carried upstream 2026-09-17:** optimystic `tickets/fix/strand-reads-and-commits-cost-dozens-of-round-trips-over-a-relay.md` (`c5540380`). Unblock when that lands: re-measure with the scenario below and re-run the device relay chat.
 
 ## How it was measured
 
