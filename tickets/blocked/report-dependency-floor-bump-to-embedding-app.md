@@ -124,8 +124,10 @@ else in the reply is version-independent.
 
 The old instruction to re-check "whether cross-machine replication is still broken" has been
 dropped from the reply: multi-node operation now works in the great majority of scenarios, and the
-specific remaining failures are tracked individually (`secondary-index-seek-blind-to-sibling-rows`,
-`control-peer-row-refresh-invisible-to-third-node`, `block-held-by-only-one-machine-is-unreadable`).
+specific remaining failures are tracked individually (`secondary-index-seek-blind-to-sibling-rows`;
+as of 2026-09-17 the other two this list used to name, `control-peer-row-refresh-invisible-to-third-node`
+and `block-held-by-only-one-machine-is-unreadable`, are both fixed and complete — re-check the list
+before sending, rather than trusting this sentence's age).
 A blanket "sharing data across machines does not work" would now be inaccurate in the other
 direction, which is its own kind of unhelpful.
 

@@ -55,11 +55,13 @@
  * Two of those three fingerprints are now closed: the boot-gate timeout (fixed upstream at
  * optimystic `03ffadc4`, verified 2026-09-17 — see `tickets/.pre-existing-known.md`) and
  * `content-digest-mismatch` (resolved 2026-09-09, also recorded there). What is still
- * unmeasured is the OTHER boot wait this file's own `beforeAll` can trip first, "C
- * self-publishes its CadrePeer record" timing out at 45s — a different wait than the one
- * just closed, and not exercised by this ticket's verification. Shipping a fourth flaky-red
- * file into that family while that wait's rate is unknown would risk burying this scenario's
- * signal in noise it did not itself measure. Two members that disagree prove the claim — it
+ * unmeasured is the OTHER boot wait, "C self-publishes its CadrePeer record" timing out at
+ * 45s — step 5 of the shared `harness/control-trio.ts` boot the three-node variant would go
+ * through, a different wait than the one just closed, and one the 2026-09-17 verification did
+ * not measure. Shipping a fourth flaky-red file into that family while that wait's rate is
+ * unknown would risk burying this scenario's signal in noise it did not itself measure. (This
+ * two-node scenario builds its nodes inline and never runs that boot.) Two members that
+ * disagree prove the claim — it
  * is about non-interference between per-node yardsticks, and a third agreeing member adds
  * unanimity pressure, not another way for a yardstick to leak. Restore the three-node variant
  * once the self-publish wait's rate is measured and known-green.
