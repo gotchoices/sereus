@@ -137,8 +137,6 @@ const log = debug('sereus:integration:degraded-cohort');
 //  - `pending conflict` with NO preceding stream reset and NO `cancelError`,
 //    clearing by itself
 //    → `control-write-refused-when-a-rival-write-holds-the-block`
-//  - "7 skipped", `Timeout waiting for B resolves C's signed address record`
-//    → `control-peer-row-refresh-invisible-to-third-node`
 //  - `2/3 approvals (needed 3, 0 rejections)` — not a failure, the
 //    deliberately silent-member cases behaving as specified
 //
@@ -147,6 +145,11 @@ const log = debug('sereus:integration:degraded-cohort');
 // Upstream fixed the reset attempt's own pend discharge, and a five-round verification
 // series that day never reproduced the fingerprint — see `tickets/.pre-existing-known.md`
 // for the evidence. "absorbs an injected transient stream reset" below passed all five.
+//
+// CLOSED 2026-09-17: "7 skipped", `Timeout waiting for B resolves C's signed address
+// record` (owned by `control-peer-row-refresh-invisible-to-third-node`). Upstream fixed
+// the stale in-memory block-cache read, and this file passed 7 of 7 tests on the fix
+// build — see `tickets/.pre-existing-known.md` for the evidence.
 //
 // To trace the old (fixed) mechanism, re-run under
 // `DEBUG='optimystic:db-p2p:cluster*'` (trailing star required — these

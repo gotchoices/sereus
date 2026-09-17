@@ -351,14 +351,13 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	//        record present, publicKey ↔ peerId binding, self-signature, freshness,
 	//        trust policy (CadreNode.resolvePeerAddrs).
 	//
-	// NOTE: this poll times out intermittently (2 of 6 isolated runs, 2026-09-17),
-	// and the cause is upstream, not a slow machine: B learns of C's new revision
-	// from A, re-reads the changed row block from its OWN replica (still one
-	// revision behind, and inside Optimystic's 10s read-repair window, so nobody
-	// is consulted), and keeps that stale block in its in-memory collection cache
-	// until another write touches it. Runs that pass can still spend ~9s here for
-	// the same reason. Do not widen the timeout — the wait is the measurement.
-	// Tracked by tickets/blocked/control-peer-row-refresh-invisible-to-third-node.
+	// What this proves beyond the signature checks: C cannot reach B, so C's
+	// address revisions commit on C and A only, and B must learn from another
+	// machine that the row changed and then obtain content at least that new.
+	// Optimystic once let B satisfy that read from its own older replica and keep
+	// the result in memory indefinitely (fixed in optimystic 03ffadc4). A timeout
+	// here on a later build is a regression to report, not a known intermittent.
+	// Do not widen the timeout — the wait measures propagation.
 	await waitUntil(
 		async () => (await B.resolvePeerAddrs(cPeerId)).length > 0,
 		{ timeoutMs: 45_000, intervalMs: 250, description: "B resolves C's signed CadrePeer address record" }

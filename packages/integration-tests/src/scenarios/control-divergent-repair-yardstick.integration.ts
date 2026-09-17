@@ -52,13 +52,17 @@
  *    **2 red in 3 runs** at the same HEAD with the identical "B resolves C's signed
  *    CadrePeer address record" fingerprint.
  *
- * That is the three-node control-write / peer-record family `tickets/.pre-existing-known.md`
- * records as red at HEAD on tracked, human-blocked tickets
- * (`control-peer-row-refresh-invisible-to-third-node`). Shipping a fourth flaky-red
- * file into it would bury this scenario's signal in that noise. Two members that
- * disagree prove the claim — it is about non-interference between per-node
- * yardsticks, and a third agreeing member adds unanimity pressure, not another way
- * for a yardstick to leak. Restore the three-node variant when that family is green.
+ * Two of those three fingerprints are now closed: the boot-gate timeout (fixed upstream at
+ * optimystic `03ffadc4`, verified 2026-09-17 — see `tickets/.pre-existing-known.md`) and
+ * `content-digest-mismatch` (resolved 2026-09-09, also recorded there). What is still
+ * unmeasured is the OTHER boot wait this file's own `beforeAll` can trip first, "C
+ * self-publishes its CadrePeer record" timing out at 45s — a different wait than the one
+ * just closed, and not exercised by this ticket's verification. Shipping a fourth flaky-red
+ * file into that family while that wait's rate is unknown would risk burying this scenario's
+ * signal in noise it did not itself measure. Two members that disagree prove the claim — it
+ * is about non-interference between per-node yardsticks, and a third agreeing member adds
+ * unanimity pressure, not another way for a yardstick to leak. Restore the three-node variant
+ * once the self-publish wait's rate is measured and known-green.
  */
 
 import { describe, it, expect } from 'vitest';
