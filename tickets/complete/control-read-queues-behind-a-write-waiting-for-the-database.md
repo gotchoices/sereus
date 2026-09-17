@@ -48,3 +48,26 @@ Each of cases 1, 2 and 4 was confirmed to fail with its part of the fix disabled
 - **Freshness cost.** Unlocked reads now serve committed, non-refreshing state for the whole of a locked body: its time before the transaction opens, plus its post-commit tail (a `CadrePeer` write's membership-listener read). Previously that only applied while a transaction was open. The slow part of a degraded write, its commit, was already in the old window. A `NOTE:` at `readRowsOnce` says what to narrow if polling for replicated rows ever starves behind back-to-back local writes.
 - **Explicit transactions are still a gap**, filed as `backlog/bug-control-read-waits-behind-an-explicit-transaction-commit`. Quereus refuses committed reads while an explicit transaction is open, so a read overlapping an `inTransaction` commit (guarded deletes, revocation reissue, redemption) still waits. The same ticket records a static-only suspicion that an unlocked read landing between an explicit transaction's statements sees its uncommitted rows.
 - Option 2 from the implement ticket (a Quereus "queued writer" signal) was not pursued. The counter covers every writer in this repo except the diagnostics probe above.
+
+## Review findings
+
+Reviewed the implement commit (`545ef99`) diff first, then the handoff.
+
+**Correctness of the routing.** Checked every locked body in `control-database.ts` (`deleteStrandAndPartyKey`, `insertCadrePeer`, `deleteGuardedRow`, `reissueRevocations`, `openRevocationLedger`, redemption and usage recording, `mutateCadrePeer` including its post-commit membership notify) for reads that do NOT pass `retry: false`. Every in-body read opts out (`queryStampId(…, false)`, `revocationLedgerFiled`, `assertSeatRemains`, `listAuthorizedMembers(false)` → `queryCadrePeers(false)`), so no in-body guard read was moved onto the non-refreshing committed path. Retry backoff in `lockedWithRetry` sleeps outside `withWriteLock`, so a body waiting to retry is not counted. The counter's `finally` decrement is pinned by spec case 3. No external caller wraps public reads in `withWriteLock` (grep over `packages/`).
+
+**Found (minor, fixed).** The new comment in `readRows` said `retry: false` marks "exactly" the reads issued inside a locked body. That is not true: `CadreNode.refreshAuthorizedControlPeers` always passes `false`, including when it is triggered outside the lock (`start`, the reconcile pass, `seed-applied`, `applySeed`). Those reads keep the transaction-only routing and can still queue behind a write waiting for the exec mutex, which is the pre-fix behaviour and not a regression. Corrected the comment and parked the consequence as a `NOTE:` tripwire at the same site (revisit if an awaiting caller ever carries a tight deadline).
+
+**Found (minor, fixed).** The `.pre-existing-known.md` entry for the degraded-cohort `isMember` timeout listed this ticket's stage as `review`; updated it to `complete`.
+
+**Tripwires, already recorded by the implementer and left as is.** The wider freshness window has a `NOTE:` on `readRowsOnce`. The uncounted diagnostics writer in `reference-app-web` is named in the same comment.
+
+**Already filed, not re-filed.** Explicit-transaction commits still block reads, and reads can see uncommitted rows between statements: `backlog/bug-control-read-waits-behind-an-explicit-transaction-commit`.
+
+**Tests.** The four spec cases cover the repro, a body before its first statement, a throwing body, and the in-body guard read. I did not add cases. The gap in the explicit-transaction path belongs to the backlog ticket above, which names the spec it should add. The test file is 218 lines and `control-database.ts` is now 3060 lines. No split was requested here, and I did not check whether a size-debt ticket already exists.
+
+**Docs.** `docs/architecture.md` has the updated committed-read paragraph and is accurate. A grep of `docs/` found no other mention of `readConcurrency` or committed reads.
+
+**Validation.**
+- `yarn workspace @serfab/cadre-core typecheck` and eslint on both changed files: clean.
+- `yarn workspace @serfab/cadre-core test` does not run at present. The stale-build check refuses because `../optimystic` has another session's uncommitted edits (`quereus-plugin-optimystic` src is newer than its dist). The installed dist therefore still matches committed optimystic, which is the build the implementer tested against. I ran the suite through a scratchpad copy of the vitest config with only `globalSetup` removed: 133 files passed and 1 failed (2175 tests passed, 1 skipped). The failure is `control-start-storage-op-budget.spec.ts`, already tracked under `warm-restart-into-declared-schema-diverges-from-declaration`, the same as in the implement pass. My own change is comment-only.
+- **Not run, same reason as the implement pass:** `control-cohort-three-node-isolation.integration.ts`. Its check against a wider stale-read window reappearing as a missed sibling `CadrePeer` publish is still open. Run it once `../optimystic` builds clean, and compare failure fingerprints rather than pass/fail, since it is already listed as failing at the boot step. The link between this fix and the original degraded-scenario timeout is also still unproven under contention. See the implementer's "Known gaps" above.

@@ -787,8 +787,13 @@ export class ControlDatabase {
     label: string,
     retry = true
   ): Promise<Record<string, SqlValue>[]> {
-    // `retry: false` marks exactly the reads issued inside a locked write body, which is
+    // `retry: false` marks the reads that may run inside a locked write body, which is
     // also what readRowsOnce's committed-read routing must know (see writeInFlight).
+    // NOTE: the membership-gate refresh passes it on EVERY trigger, including the
+    // unlocked ones (start, reconcile, seed-applied), so those keep the transaction-only
+    // routing and can still queue behind a write waiting for the exec mutex (as before this
+    // routing existed). Tolerable while its awaiting callers (reconcile, applySeed) carry no
+    // tight deadline; if one ever does, pass the locked/unlocked distinction through instead.
     if (!retry) {
       return this.readRowsOnce(sql, params, true);
     }
