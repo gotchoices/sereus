@@ -50,6 +50,9 @@ const PROBES = [
 	{ path: 'AbortController' },
 	{ path: 'TextEncoder' },
 	{ path: 'crypto.getRandomValues' },
+	// Native in this Hermes: a device run on 2026-09-16 found it, with `errors` intact.
+	// libp2p's dial queue throws it when every address for a peer fails.
+	{ path: 'AggregateError' },
 
 	// Installed by this directory.
 	{ path: 'setTimeout', key: 'setTimeout.ref' },
@@ -68,15 +71,7 @@ const PROBES = [
 	{ path: 'CustomEvent', key: 'CustomEvent' },
 	{ path: 'Intl.PluralRules', key: 'Intl.PluralRules' },
 	{ path: 'RTCPeerConnection', key: 'RTCPeerConnection' },
-
-	// Unresolved from a desk: there is no Hermes VM in the repo, only the hermesc
-	// compiler, so whether Hermes provides these can only be answered on a device.
-	// libp2p's dial-queue throws `new AggregateError(errors, 'All multiaddr dials
-	// failed')` when every address for a peer fails; if Hermes lacks it, that throw
-	// statement raises a ReferenceError and the per-address causes are lost.
-	// `abortReason` in hermes.js prefers DOMException and falls back to a named Error.
-	{ path: 'AggregateError' },
-	{ path: 'DOMException' },
+	{ path: 'DOMException', key: 'DOMException' },
 
 	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
 	{

@@ -33,9 +33,12 @@
  * patches those classes — which is the point — and that mutation is visible to anything
  * else in this Vitest worker that requires `abort-controller`. Nothing else does.
  *
- * `DOMException` is injected as `undefined`, because Hermes has none: `abortReason` in
- * the polyfill therefore takes its fallback branch and abort reasons are plain `Error`s
- * carrying the spec's `name`, exactly as on the phone.
+ * `DOMException` is injected as `undefined` and left off the fake `globalThis`, because
+ * Hermes has none (a device boot audit confirmed it on 2026-09-16). The polyfill installs
+ * its stand-in on `globalThis`, and `abortReason` reads it from there, so abort reasons
+ * are that stand-in exactly as on the phone. The bare `DOMException` identifier stays
+ * `undefined` inside the evaluated source; in a real bundle it and `globalThis.DOMException`
+ * are the same binding.
  *
  * Its own Vitest project (`polyfills`) with no `globalSetup`: it runs none of the `node`
  * project's stale-build guard over sibling `dist` output, so `vitest run --project
@@ -55,7 +58,7 @@ import { appDir, resolvePackageDir } from './metro-resolution';
 /** The part of an AbortSignal these assertions touch. */
 interface SignalLike {
 	readonly aborted: boolean;
-	readonly reason?: { name?: string; message?: string };
+	readonly reason?: { name?: string; message?: string; code?: number };
 	addEventListener(type: string, listener: () => void, options?: { once?: boolean }): void;
 	removeEventListener(type: string, listener: () => void): void;
 	throwIfAborted?(): void;
@@ -75,6 +78,15 @@ interface AbortSignalCtor {
 	prototype: SignalLike;
 	timeout?(ms: number): SignalLike;
 	any?(signals: Iterable<SignalLike>): SignalLike;
+}
+
+/** The `DOMException` stand-in, as far as callers use it. */
+interface DOMExceptionLike extends Error {
+	readonly code: number;
+}
+
+interface DOMExceptionCtor {
+	new(message?: string, name?: string): DOMExceptionLike;
 }
 
 /** `crypto.subtle` as the polyfill builds it — digest only. */
@@ -316,6 +328,7 @@ const REQUIRED_MARKS = [
 	'structuredClone',
 	'ReadableStream',
 	'Promise.withResolvers',
+	'DOMException',
 	'AbortSignal.reason',
 	'AbortSignal.prototype.throwIfAborted',
 	'AbortSignal.timeout',
@@ -471,6 +484,46 @@ describe('polyfills/hermes.js under a fake Hermes + React Native runtime', () =>
 		const controller = new run.AbortController();
 		controller.abort();
 		expect(controller.signal.reason?.name).toBe('AbortError');
+	});
+
+	describe('DOMException, which Hermes does not have', () => {
+		let DOMExceptionPolyfill: DOMExceptionCtor;
+
+		beforeAll(() => {
+			DOMExceptionPolyfill = run.globals.DOMException as DOMExceptionCtor;
+		});
+
+		it('is installed on globalThis', () => {
+			expect(typeof DOMExceptionPolyfill).toBe('function');
+			// web-streams-polyfill only adopts a global DOMException whose constructor is
+			// named 'DOMException', as the real one is.
+			expect(DOMExceptionPolyfill.name).toBe('DOMException');
+		});
+
+		it('is what a bare abort() aborts with', () => {
+			const controller = new run.AbortController();
+			controller.abort();
+			const reason = controller.signal.reason;
+			expect(reason).toBeInstanceOf(DOMExceptionPolyfill);
+			expect(reason).toBeInstanceOf(Error);
+			expect(reason).toMatchObject({ name: 'AbortError', message: 'The operation was aborted.', code: 20 });
+			expect(String(reason)).toBe('AbortError: The operation was aborted.');
+		});
+
+		it('is what AbortSignal.timeout aborts with', async () => {
+			const signal = run.AbortSignal.timeout!(20);
+			await aborted(signal, 2_000);
+			expect(signal.reason).toBeInstanceOf(DOMExceptionPolyfill);
+			expect(signal.reason).toMatchObject({ name: 'TimeoutError', code: 23 });
+		});
+
+		it('takes the spec\'s defaults, and code 0 for a name outside the legacy table', () => {
+			// whatwg-fetch probes the global with exactly this argument-less construction.
+			expect(new DOMExceptionPolyfill()).toMatchObject({ name: 'Error', message: '', code: 0 });
+			expect(new DOMExceptionPolyfill('no such key', 'NotReadableError').code).toBe(0);
+			// react-native-webrtc's event-target-shim raises this one.
+			expect(new DOMExceptionPolyfill('already dispatching', 'InvalidStateError').code).toBe(11);
+		});
 	});
 
 	it('digests through @noble/hashes at the subpath Metro will resolve', async () => {

@@ -13,7 +13,14 @@
  * It is a substring search over a hand-listed set of packages, not a walk of Metro's
  * module graph:
  *
- *  - A dependency nobody listed is invisible to it.
+ *  - A dependency nobody listed is invisible to it, and so is a package with no `dist`
+ *    directory. Each listed name is read from one place only — the first of Metro's
+ *    `nodeModulesPaths` that holds it — so a copy installed in a sibling checkout's own
+ *    `node_modules` is not read either. That is how an unguarded `new DOMException(…)` in
+ *    `p-timeout` stayed unseen until the device boot audit of 2026-09-16 reported
+ *    `DOMException` missing: `p-timeout` is not listed, keeps its code in `index.js` with no
+ *    `dist`, and has further copies under `../optimystic/packages/db-p2p/node_modules` and
+ *    `../Fret/packages/fret/node_modules`.
  *  - A global reached through a computed property name (`globalThis[name]`) is invisible
  *    to it.
  *  - It reads comments and string literals too, and cannot tell them from code. Several
@@ -97,6 +104,7 @@ const PROVIDED: Record<string, Provision> = {
 	TextDecoder: { by: 'polyfill', file: 'hermes.js', key: 'TextDecoder' },
 	'Symbol.asyncIterator': { by: 'polyfill', file: 'hermes.js', key: 'Symbol.asyncIterator' },
 	ReadableStream: { by: 'polyfill', file: 'hermes.js', key: 'ReadableStream' },
+	DOMException: { by: 'polyfill', file: 'hermes.js', key: 'DOMException' },
 	CustomEvent: { by: 'polyfill', file: 'event.js', key: 'CustomEvent' },
 	'Intl.PluralRules': { by: 'polyfill', file: 'intl-pluralrules.js', key: 'Intl.PluralRules' },
 	RTCPeerConnection: { by: 'polyfill', file: 'webrtc.js', key: 'RTCPeerConnection' },
@@ -108,6 +116,11 @@ const PROVIDED: Record<string, Provision> = {
 	EventTarget: { by: 'react-native', why: 'Hermes provides it; polyfills/event.js backfills older engines' },
 	TextEncoder: { by: 'react-native', why: 'Hermes ships TextEncoder (it is TextDecoder that is missing)' },
 	'crypto.getRandomValues': { by: 'react-native', why: 'installed by the react-native-get-random-values native module' },
+	AggregateError: {
+		by: 'react-native',
+		why: 'native in Hermes — confirmed on a device 2026-09-16. libp2p throws it when every address for a '
+			+ 'peer fails.',
+	},
 
 	BroadcastChannel: {
 		by: 'allowlist',
@@ -126,12 +139,6 @@ const PROVIDED: Record<string, Provision> = {
 		why: 'the polyfill provides digest only. importKey/exportKey and the AES-GCM surface are absent, '
 			+ 'and the phone reaches neither: it uses Ed25519 (pure noble) and no libp2p keychain. '
 			+ 'Documented in docs/reference-app-rn.md § Key Dependencies.',
-	},
-	AggregateError: {
-		by: 'allowlist',
-		why: 'libp2p throws it when every address for a peer fails. Whether Hermes provides it cannot be '
-			+ 'determined from this repo — there is no Hermes VM here, only hermesc — so the boot audit '
-			+ 'in polyfills/audit.js probes it on the device.',
 	},
 	'crypto.randomUUID': {
 		by: 'allowlist',

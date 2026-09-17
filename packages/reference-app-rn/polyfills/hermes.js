@@ -195,6 +195,56 @@ if (typeof Promise.withResolvers !== 'function') {
 	markPolyfilled('Promise.withResolvers');
 }
 
+// ── DOMException ────────────────────────────────────────────────────────────
+// Hermes has none: the boot audit on a device (Expo SDK 53 dev client, 2026-09-16) found
+// `typeof DOMException === 'undefined'`.
+// Constructed with no check by p-timeout 7 (`signal.reason ?? new DOMException(…,
+// 'AbortError')`, pulled in by p-queue and p-event), which without this throws
+// `ReferenceError: DOMException is not defined` in place of the AbortError it meant.
+// (@expo/metro-runtime's Location.native.ts also says `new DOMException`, but declares its
+// own class for it and never reads the global.)
+// Three more check for a global DOMException and build their own when there is none, so
+// this only changes which class they use: react-native-webrtc's copy of event-target-shim
+// checks each time it raises an error and will use this one; whatwg-fetch (React Native's
+// `fetch`) checks once, when `fetch` is first loaded; and the web-streams polyfill Expo's
+// Metro config injects (expo/virtual/streams.js) runs before index.js, so it never sees it.
+// `abortReason` below builds its abort reasons from it.
+//
+// A named Error subclass rather than the `domexception` npm package, which is a full
+// WebIDL implementation that drags in webidl-conversions — far more than this needs. It
+// covers `name`, `message`, the legacy `code` and `instanceof Error`. It has no static
+// code constants (`DOMException.ABORT_ERR`), and structuredClone copies it as a plain
+// `Error` carrying only the message.
+//
+// Must stay above the AbortSignal arms, which call `abortReason`.
+
+if (typeof globalThis.DOMException === 'undefined') {
+	/** The DOM's legacy numeric codes, by error name; names not listed have code 0. */
+	const LEGACY_CODES = {
+		IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4, InvalidCharacterError: 5,
+		NoModificationAllowedError: 7, NotFoundError: 8, NotSupportedError: 9, InUseAttributeError: 10,
+		InvalidStateError: 11, SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+		InvalidAccessError: 15, TypeMismatchError: 17, SecurityError: 18, NetworkError: 19,
+		AbortError: 20, URLMismatchError: 21, QuotaExceededError: 22, TimeoutError: 23,
+		InvalidNodeTypeError: 24, DataCloneError: 25,
+	};
+	// Named `DOMException`, as the real constructor is: web-streams-polyfill, for one, only
+	// adopts a global DOMException whose constructor `name` says so.
+	class DOMException extends Error {
+		constructor(message = '', name = 'Error') {
+			super(message);
+			// An own property: callers branch on `err.name`, and Error.prototype.toString
+			// reads it to print `AbortError: …`.
+			this.name = String(name);
+		}
+		get code() {
+			return LEGACY_CODES[this.name] ?? 0;
+		}
+	}
+	globalThis.DOMException = DOMException;
+	markPolyfilled('DOMException');
+}
+
 // ── AbortSignal.prototype.throwIfAborted ────────────────────────────────────
 // DOM spec addition — not yet in Hermes.
 // Required by: libp2p, @libp2p/utils, @libp2p/circuit-relay-v2,
@@ -220,12 +270,15 @@ if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.prototype.throwIfAb
 // registrar and pruner paths. Found on the device 2026-09-16: Settings → Dial Peer
 // reported it, and it is why borrowing a node from a cadre-host failed at "connecting".
 //
-// `DOMException` is not guaranteed here, so the abort reason falls back to a plain
-// Error carrying the spec's `name`, which is what callers branch on.
+// The abort reasons are `DOMException`s, which the arm above supplies on Hermes. The
+// fallback to a plain Error carrying the spec's `name` (what callers branch on) only
+// matters if that arm is ever removed. It reads `globalThis.DOMException` rather than
+// the bare name so test/polyfills/hermes-polyfills.spec.ts, which injects the bare name
+// as `undefined`, sees what the arm above installed; in a bundle the two are the same.
 
 function abortReason(message, name) {
 	try {
-		return new DOMException(message, name);
+		return new globalThis.DOMException(message, name);
 	} catch {
 		const err = new Error(message);
 		err.name = name;
