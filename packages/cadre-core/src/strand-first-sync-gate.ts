@@ -55,6 +55,7 @@
 import debug from 'debug';
 import type { Database } from '@quereus/quereus';
 import type { StrandDatabase } from './strand-database.js';
+import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 const log = debug('sereus:cadre:strand-first-sync');
 
@@ -160,21 +161,6 @@ export async function strandFirstSyncComplete(db: Database, label: string): Prom
   return await strandHeaderHeld(db, label) && await appTablesReadable(db, label);
 }
 
-/** Timer seam for the probe loop; omit for real (unref'd) timeouts. */
-export interface FirstSyncScheduler {
-  setTimeout(fn: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
-
-const defaultScheduler: FirstSyncScheduler = {
-  setTimeout: (fn, ms) => {
-    const handle = setTimeout(fn, ms);
-    (handle as { unref?: () => void }).unref?.();
-    return handle;
-  },
-  clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0])
-};
-
 export interface StrandFirstSyncGateDeps {
   /** Log tag naming which strand this gate holds (the strand id). */
   label: string;
@@ -186,7 +172,8 @@ export interface StrandFirstSyncGateDeps {
    * (a founder bootstrap it just ran) publishes the database itself.
    */
   onHeaderHeld: () => void;
-  scheduler?: FirstSyncScheduler;
+  /** Timer seam for the probe loop; omit for real (unref'd) timeouts. */
+  scheduler?: TimeoutScheduler;
 }
 
 /**
@@ -195,7 +182,7 @@ export interface StrandFirstSyncGateDeps {
  * network read never stacks probes.
  */
 export class StrandFirstSyncGate {
-  private readonly scheduler: FirstSyncScheduler;
+  private readonly scheduler: TimeoutScheduler;
   private readonly pollIntervalMs: number;
   private timer: unknown;
   private stopped = false;
@@ -203,7 +190,7 @@ export class StrandFirstSyncGate {
   private probing = false;
 
   constructor(private readonly deps: StrandFirstSyncGateDeps, config?: StrandFirstSyncConfig) {
-    this.scheduler = deps.scheduler ?? defaultScheduler;
+    this.scheduler = deps.scheduler ?? defaultTimeoutScheduler;
     this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_STRAND_FIRST_SYNC_POLL_MS;
   }
 

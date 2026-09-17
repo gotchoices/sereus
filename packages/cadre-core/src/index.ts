@@ -187,9 +187,12 @@ export {
   INITIAL_JOIN_RETRY_INTERVAL_MS,
   type StrandMembershipReconcilerDeps,
   type StrandMembershipReconciliationConfig,
-  type PendingMembershipInviteSource,
-  type MembershipRetryScheduler
+  type PendingMembershipInviteSource
 } from './strand-membership-reconciler.js';
+
+// The timer seam the self-rescheduling strand bring-up loops share (first-sync gate
+// probe loop, membership retry ladder) — injected by tests as a hand-cranked clock.
+export { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 // Hibernation
 export {

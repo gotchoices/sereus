@@ -273,8 +273,11 @@ database, which Optimystic replicates to **every node the party owns**:
   background membership reconciler on every machine of the party (launch and
   hibernation wake alike) consumes the invitation — seating the `Strand.Member`
   row under the joiner's own public key — then registers the machine's own device
-  record (`Strand.MemberPeer`), retrying on the enforcement cadence until the
-  strand's rows have replicated to it and never blocking bring-up. A machine that
+  record (`Strand.MemberPeer`), retrying on a short doubling ladder (1 s, capped
+  at the reconciler's poll interval) until the strand's rows have replicated to
+  it and never blocking bring-up — see [Joining: no writes before the first
+  sync](#joining-no-writes-before-the-first-sync) for why a joiner's first pass
+  finds nothing and what re-kicks it. A machine that
   finds the member row already seated (a sibling redeemed first, or a manager
   admitted the party directly) instead *burns* its unspent invitation — files the
   consumption record against the existing member — so the bearer credential can

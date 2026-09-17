@@ -9,8 +9,8 @@ import {
   strandHeaderHeld,
   appTablesReadable,
   strandFirstSyncComplete,
-  type FirstSyncScheduler,
 } from '../src/strand-first-sync-gate.js';
+import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import type { StrandDatabase } from '../src/strand-database.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -296,7 +296,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
 
 describe('StrandFirstSyncGate', () => {
   /** A scheduler that runs nothing on its own — the test fires each pending probe by hand. */
-  function fakeScheduler(): FirstSyncScheduler & { fire(): Promise<void>; pending(): number } {
+  function fakeScheduler(): TimeoutScheduler & { fire(): Promise<void>; pending(): number } {
     const pending: Array<() => void> = [];
     return {
       setTimeout: (fn) => { pending.push(fn); return fn; },

@@ -5,8 +5,8 @@ import {
   IDLE_PASSES_BEFORE_ESCALATION,
   INITIAL_JOIN_RETRY_INTERVAL_MS,
   type PendingMembershipInviteSource,
-  type MembershipRetryScheduler,
 } from '../src/strand-membership-reconciler.js';
+import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from '../src/strand-revocation-enforcer.js';
 import {
   bootstrapFounderMembership,
@@ -86,7 +86,7 @@ function inviteSlot(initial?: StrandMembershipInvite): {
  * is what the escalating ladder is asserted against.
  */
 function manualScheduler(): {
-  scheduler: MembershipRetryScheduler;
+  scheduler: TimeoutScheduler;
   tick: () => void;
   armedMs: () => number | undefined;
   delays: () => number[];
@@ -111,7 +111,7 @@ interface ReconcilerOverrides {
   getOwnPeerId?: () => string | undefined;
   pendingInvite?: PendingMembershipInviteSource;
   isSelfRevoked?: () => boolean;
-  scheduler?: MembershipRetryScheduler;
+  scheduler?: TimeoutScheduler;
   pollIntervalMs?: number;
   partyMemberPrivateKey?: string;
   getDatabase?: () => Database | undefined;
@@ -550,6 +550,28 @@ describe('retry scheduling', () => {
     expect(reconciler.stopped).toBe(true);
     expect(reconciler.done).toBe(true);
     expect(await tableCount(strand.db, 'MemberPeer')).toBe(1);
+  }, 30_000);
+
+  it('stop() DURING an unfinished pass leaves no timer behind', async () => {
+    // The clearOwnMemberPeerBinding race on a pass that will NOT reach the done state:
+    // its `finally` still runs, and must not resurrect a retry timer against an instance
+    // the caller is tearing down. (The done-state sibling above cannot show this — a done
+    // pass declines to re-arm for its own reason.)
+    const { db } = await openClosedStrand();
+    const joiner = await freshParty();
+    const clock = manualScheduler();
+    const reconciler: StrandMembershipReconciler = reconcilerOver(db, joiner.privateKey, {
+      scheduler: clock.scheduler,
+      getDatabase: () => { reconciler.stop(); return db; },
+    });
+
+    reconciler.start();
+    await reconciler.settle();
+
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(true);
+    expect(clock.delays()).toEqual([]);
+    expect(clock.pending()).toBe(false);
   }, 30_000);
 
   it('stop() disarms the retry timer and later passes are inert', async () => {

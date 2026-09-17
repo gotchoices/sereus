@@ -197,7 +197,8 @@ export interface StartStrandConfig {
    * closed strands launched with a {@link partyMemberPrivateKey};
    * `{ enabled: false }` disarms the loop (test fixtures that hand-drive the
    * membership writers). When it names no `pollIntervalMs` the reconciler
-   * mirrors {@link revocationEnforcement}'s cadence.
+   * mirrors {@link revocationEnforcement}'s cadence — as its IDLE cadence and
+   * the cap of its unfinished-join retry ladder, not as a flat retry interval.
    */
   membershipReconciliation?: StrandMembershipReconciliationConfig;
 

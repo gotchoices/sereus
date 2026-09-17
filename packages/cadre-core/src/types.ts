@@ -623,8 +623,11 @@ export interface CadreNodeConfig {
    * node launches with a party identity key: at bring-up each machine redeems a
    * pending formation invitation (seating the party's `Strand.Member` row) and
    * writes its own machine→party `Strand.MemberPeer` binding, retrying in the
-   * background without blocking bring-up. Omit for the defaults (the retry
-   * cadence mirrors {@link strandRevocationEnforcement}'s `pollIntervalMs`);
+   * background without blocking bring-up. `pollIntervalMs` is the IDLE cadence
+   * (how often a machine nobody has admitted re-checks) and the cap of the
+   * unfinished-join retry ladder, NOT the retry cadence itself — an unfinished
+   * join retries from 1 s, doubling. Omit for the defaults (it mirrors
+   * {@link strandRevocationEnforcement}'s `pollIntervalMs`);
    * `{ enabled: false }` disarms the loop — for test fixtures that hand-drive
    * the membership writers and assert exact row sets.
    */
