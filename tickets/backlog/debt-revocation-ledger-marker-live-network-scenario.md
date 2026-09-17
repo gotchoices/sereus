@@ -1,5 +1,5 @@
 description: No test runs the new revocation-list marker on a real network of several machines, so nobody has seen an owner machine file it while connected, or confirmed that the other machines can still read the revocation list afterwards.
-files: packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/harness/node-fixtures.ts, packages/cadre-core/src/cadre-node.ts (openRevocationLedgerIfDue, the connected-only step in runReconcileControlCohort), packages/cadre-core/src/control-database.ts (openRevocationLedger), tickets/blocked/block-held-by-only-one-machine-is-unreadable.md
+files: packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/harness/node-fixtures.ts, packages/cadre-core/src/cadre-node.ts (openRevocationLedgerIfDue, the connected-only step in runReconcileControlCohort), packages/cadre-core/src/control-database.ts (openRevocationLedger), tickets/complete/block-held-by-only-one-machine-is-unreadable.md
 tradeoffs: The integration suite is slow and the control-cohort scenarios are already intermittent, so one more multi-machine scenario adds run time and flake exposure for a write whose logic unit tests already cover.
 ----
 # Prove the `Revocation` ledger marker on a real multi-machine network
@@ -21,7 +21,7 @@ No integration scenario ever has an **owner** node run a reconcile pass while co
 
 ## Why it matters
 
-The marker's insert is what creates the `Revocation` collection on the network. `tickets/blocked/block-held-by-only-one-machine-is-unreadable.md` records that a collection's header block is written exactly once, at creation, and never re-broadcast, and that a block held by only one machine can be refused as unreadable by the others (`claimed-elsewhere`). If that happened to the marker's collection, other machines' reads of `Revocation` would go from "consult, find nothing, answer empty" to an error, on every membership lookup. This is inferred from the code and that ticket, not observed. The unit tests cannot see it, because it needs real replication.
+The marker's insert is what creates the `Revocation` collection on the network. `tickets/complete/block-held-by-only-one-machine-is-unreadable.md` records that a collection's header block is written exactly once, at creation, and never re-broadcast, and that a block held by only one machine can be refused as unreadable by the others (`claimed-elsewhere`). If that happened to the marker's collection, other machines' reads of `Revocation` would go from "consult, find nothing, answer empty" to an error, on every membership lookup. This is inferred from the code and that ticket, not observed. The unit tests cannot see it, because it needs real replication. (That defect was fixed upstream and verified closed on 2026-09-17: a machine that commits alone now signs a proof other machines accept in place of a second copy. The scenario would still confirm the marker path specifically.)
 
 The latency the marker saves on a multi-machine party was also never measured; the consult counts in `control-founding-consult-budget.spec.ts` are from a solo node.
 

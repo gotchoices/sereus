@@ -130,8 +130,8 @@ describe('isRetriableControlReadFailure', () => {
 	/**
 	 * `claimed-elsewhere` was MEASURED not to clear: reissuing the same call every second
 	 * for 60 s returned the identical error every time (2026-08-20). Retrying it spends the
-	 * whole budget and fails anyway — and would disguise the upstream root cause tracked in
-	 * `blocked/block-held-by-only-one-machine-is-unreadable`. `unmaterializable` is a local
+	 * whole budget and fails anyway — and would disguise an upstream defect (the one measured,
+	 * `complete/block-held-by-only-one-machine-is-unreadable`, is fixed). `unmaterializable` is a local
 	 * data problem a second read re-reads.
 	 */
 	it('never retries the block-unavailability reasons a repeat read cannot improve on', () => {

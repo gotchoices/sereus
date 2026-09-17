@@ -89,9 +89,10 @@ export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
  * - **`claimed-elsewhere`** — a cohort peer positively claims the block exists and nobody
  *   could corroborate or acquire it. MEASURED not to clear: reissuing the same call every
  *   second for 60 s returned the identical error every time (2026-08-20, recorded in the
- *   fix ticket). Retrying spends the whole budget and fails anyway; the root cause is
- *   upstream and tracked by `tickets/blocked/block-held-by-only-one-machine-is-unreadable`
- *   — this retry must not paper over it.
+ *   fix ticket). Retrying spends the whole budget and fails anyway. The measured cause (a
+ *   block only one machine held) was fixed upstream by the solo-commit proof in
+ *   `@optimystic/db-p2p` 0.28.0 (`tickets/complete/block-held-by-only-one-machine-is-unreadable`),
+ *   so a `claimed-elsewhere` that surfaces now is a new defect — this retry must not hide it.
  * - **`unmaterializable`** — records are held locally but cannot be reassembled. A local
  *   data problem; a second read reads the same records.
  * - **`Block <id> may be stale`** (`BlockPossiblyStaleError`) — about currency, not
