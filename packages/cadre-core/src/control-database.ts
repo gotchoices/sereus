@@ -18,6 +18,7 @@ import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
 import type { ControlReadRetryOptions } from './control-read-retry.js';
 import { chainMessages } from './control-retry.js';
+import type { ControlRetryAbandonment } from './control-retry.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -408,6 +409,20 @@ export type RevokedRowRef = Omit<RevocationRow, 'reissuedAt'>;
  */
 export type GuardedDeleteListener = (revocation: RevokedRowRef) => void;
 
+/**
+ * Notified when the control-write retry funnel GIVES UP on a local control write — the
+ * classifier declined the failure as non-transient, or every attempt / the elapsed budget
+ * ran out. Carries the operation label, how far it got and the error
+ * ({@link ControlRetryAbandonment}).
+ *
+ * The seam that stops an abandoned BACKGROUND write from disappearing: those are `void`-ed
+ * with a `debug`-only catch, and that namespace is off unless somebody set `DEBUG=`, so
+ * without this the write, the operator and the embedding app all learn nothing. Synchronous
+ * and must not throw — the retry loop swallows and logs if it does, because the write's own
+ * failure is what has to reach the caller.
+ */
+export type ControlWriteAbandonedListener = (abandonment: ControlRetryAbandonment) => void;
+
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
   partyId: string;
@@ -434,6 +449,7 @@ export class ControlDatabase {
   private initialized = false;
   private membershipListener: MembershipChangeListener | null = null;
   private guardedDeleteListener: GuardedDeleteListener | null = null;
+  private controlWriteAbandonedListener: ControlWriteAbandonedListener | null = null;
   /** Tail of the local-write chain — see {@link withWriteLock}. */
   private writeQueue: Promise<unknown> = Promise.resolve();
   /**
@@ -2320,6 +2336,20 @@ export class ControlDatabase {
   }
 
   /**
+   * Wire (or clear, with null) the single listener notified when {@link lockedWithRetry}
+   * ABANDONS a control write. Same ownership contract as
+   * {@link setMembershipChangeListener}: one CadreNode, wired in `start()` and cleared on
+   * teardown, and a second call replaces the first rather than fanning out.
+   *
+   * Covers every write that reaches the funnel, foreground and background alike. A
+   * foreground caller also sees the rethrown error; a background one often does not, which
+   * is the whole reason this exists.
+   */
+  setControlWriteAbandonedListener(listener: ControlWriteAbandonedListener | null): void {
+    this.controlWriteAbandonedListener = listener;
+  }
+
+  /**
    * Run a `CadrePeer` row mutation and notify the membership listener once it has
    * COMMITTED.
    *
@@ -2448,14 +2478,26 @@ export class ControlDatabase {
    * `label` names the operation in this loop's debug lines and nothing else
    * ({@link ControlWriteRetryOptions.label}). Every call site in this class supplies one:
    * several writes retry CONCURRENTLY in a real party, so an unlabelled line cannot be
-   * attributed to a write — keep new call sites labelled.
+   * attributed to a write — keep new call sites labelled. It is also the only thing that
+   * attributes an abandonment reported through {@link setControlWriteAbandonedListener}.
+   *
+   * The abandonment observer lands LAST, after both the policy and the spec-injected
+   * pacing, so this class's single listener is the one seam for it — a policy that
+   * carried its own would be displaced here rather than fanning out.
    */
   private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}, label?: string): Promise<T> {
     // The label lands LAST so a call site's own name survives both the policy and the
     // spec-injected pacing; it changes log attribution only, never behaviour.
     return retryControlWrite(
       () => this.withWriteLock(fn),
-      { ...policy, ...this.controlWriteRetryPacing, ...(label !== undefined ? { label } : {}) }
+      {
+        ...policy,
+        ...this.controlWriteRetryPacing,
+        ...(label !== undefined ? { label } : {}),
+        // Read through the field, not captured: a listener wired (or cleared) while a write
+        // is already in backoff still governs that write's abandonment.
+        onAbandon: (abandonment) => this.controlWriteAbandonedListener?.(abandonment)
+      }
     );
   }
 

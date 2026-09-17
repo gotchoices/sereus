@@ -18,11 +18,12 @@ import type { ControlRetryOptions } from './control-retry.js';
  *
  * A write somebody actually REJECTED is never retried on the strength of the rejection itself —
  * no matcher here claims a rejection message, at any phase, because re-presenting one would
- * re-present a spent signature against a cohort that already said no. Exactly one rejection is
- * re-presented anyway, and only via its WRAPPER: a rejection raised while the cohort is still
- * collecting PROMISES arrives inside the transactor's `[block:` aggregate, and
- * {@link isUncommittedTransactorAggregate} claims that aggregate on the wrapper alone. Safe
- * because nothing has committed at that phase — see the accepted-tradeoff `NOTE:` there.
+ * re-present a spent signature against a cohort that already said no. Rejections are re-presented
+ * anyway when they arrive inside the transactor's promise-phase `[block:` aggregate, which
+ * {@link isUncommittedTransactorAggregate} claims on the WRAPPER alone, whatever the cause inside
+ * says. Safe because nothing has committed at that phase, and deliberately kept — one of the
+ * remaining promise-phase rejections is exactly the kind a re-presentation fixes. See the
+ * accepted-tradeoff `NOTE:` there for which, and why no blanket rejection veto is wanted.
  *
  * TWO policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
@@ -192,17 +193,31 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * `Some peers did not complete:` prefix; only the conjunction keeps a cancel fault from
  * classifying as a retriable get/pend (checked against optimystic `c56c2bd4`, 2026-09-16).
  *
- * NOTE: accepted tradeoff — a rejection raised while promises are still being collected (e.g.
- * `Transaction rejected by validators (1/3 rejected): …: pending conflict: block … held by
- * unresolved action(s) …`) reaches this repo wrapped in this same aggregate, and this matcher
- * claims it on the wrapper alone, whatever the cause inside says. That re-presents such a
- * rejection up to two more times inside the 10 s budget. Kept deliberately: nothing has committed
- * at this phase, and the only rejection ever recorded here is `pending conflict` — "another write
- * holds this block right now" — which a retry a moment later gets past. Revisit when upstream
- * `a-contended-pend-refusal-is-permanent-on-a-small-cohort` (`../optimystic/tickets/fix/` as of
- * 2026-09-17) lands and `pending conflict` stops arriving as a rejection at this phase; see
- * `control-write-refused-when-a-rival-write-holds-the-block` for the classifier change that then
- * needs to happen.
+ * NOTE: accepted tradeoff — a REJECTION raised while promises are still being collected reaches
+ * this repo wrapped in this same aggregate, and this matcher claims it on the wrapper alone,
+ * whatever the cause inside says. That re-presents such a rejection up to two more times inside
+ * the 10 s budget. Kept deliberately, and re-decided on 2026-09-17 against the current upstream
+ * behaviour rather than inherited:
+ *
+ *  - Contention is no longer a rejection at all. "Another write holds this block right now"
+ *    (`pending conflict`) is now a `held` verdict that counts toward neither approvals nor
+ *    rejections (`validatePendOperations`,
+ *    `../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts`), so the rejection this tradeoff
+ *    was originally written about does not arrive any more. It reaches this funnel as
+ *    `SyncRetryExhaustedError` instead, which no matcher here claims and which must stay declined
+ *    — by then Optimystic's own collection sync has already spent its ten retries on the race.
+ *  - What remains rejectable at the promise phase is stale revision, block-unavailable,
+ *    membership-not-admitted, and a configured validator's refusal. Only the first is worth a
+ *    retry — and it is worth one: this loop re-runs the WHOLE write body, reads included
+ *    (`ControlDatabase.withWriteLock`'s contract), so attempt 2 presents a pend against the
+ *    revision that made attempt 1 stale. A blanket "decline any chain reporting a validator
+ *    rejection" rule would remove that retry to save two wasted attempts on the other three.
+ *
+ * Revisit if a re-presentation ever becomes expensive relative to what it buys — a rejection class
+ * that costs a full cohort round-trip to re-present, or a write body whose reads are no longer
+ * cheap — or when upstream offers a typed refusal surface to classify on instead of this text
+ * (`../optimystic/tickets/backlog/debt-a-downstream-repo-classifies-retries-by-parsing-our-error-text`).
+ * Contention is no longer the reason to revisit.
  *
  * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
  * batches to format) carries neither token, matches nothing here, and is not retried — an
@@ -407,6 +422,15 @@ export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
  * On exhaustion (attempts or budget) the LAST error is rethrown unchanged — never wrapped,
  * so the exact messages downstream code and the degraded-cohort-member scenario assert on
  * survive. A non-retriable failure propagates from the attempt that raised it.
+ *
+ * Either way — declined or exhausted — an `options.onAbandon` observer is notified exactly
+ * once before the rethrow (a `ControlRetryAbandonment`). That seam exists for WRITES and
+ * is deliberately not taken by the read policy (`control-read-retry.ts`): an abandoned read
+ * throws to a caller that is awaiting it, so nothing is lost silently there, while an
+ * abandoned write may have no caller at all — a background self-record republish is
+ * `void`-ed with a `debug` catch, so its failure reaches nobody unless something is
+ * listening here. `ControlDatabase.setControlWriteAbandonedListener` is what wires it in
+ * production.
  */
 export function retryControlWrite<T>(
 	attempt: () => Promise<T>,

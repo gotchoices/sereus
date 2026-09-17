@@ -12,6 +12,7 @@ import {
 import { ControlDatabase } from '../src/control-database.js';
 import type { ControlDatabaseConfig } from '../src/control-database.js';
 import { captureDebugLog } from './capture-debug-log.js';
+import type { ControlRetryAbandonment } from '../src/control-retry.js';
 
 /**
  * The transient-control-write classifier and retry loop behind
@@ -113,6 +114,14 @@ const CANCEL_DISCHARGE_AGGREGATE =
  * same block. Reaches this funnel with no transactor-aggregate wrapper at all, so no matcher
  * here claims it.
  *
+ * THE LIVE SHAPE contention takes today. Since optimystic made "another write holds this
+ * block right now" a `held` verdict — counting toward neither approvals nor rejections
+ * (`validatePendOperations`, `db-p2p/src/cluster/cluster-repo.ts`) — a contended write is no
+ * longer refused by a vote; it is retried by the collection's own sync until that budget runs
+ * out, and arrives here like this. Declining it is correct and must stay that way: against a
+ * rival that will never clear, no budget is enough, and upstream measured a LIVE rival being
+ * absorbed in two of the collection's own retries.
+ *
  * A real captured literal, not a reconstruction: from the `[self-record-update]` write on node
  * B during round 4 of the 2026-09-17 verification series (see
  * `retire-the-stream-reset-retry-fingerprint`'s close-out). The log it came from
@@ -157,10 +166,19 @@ const SUPER_MAJORITY_THIRD_NODE_JOIN =
 const SUPER_MAJORITY_IN_PEND_AGGREGATE =
 	'Some peers did not complete: 12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections), 12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset; root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
 /**
- * A promise-phase REJECTION, not a shortfall — the shape a rival write's `pending conflict`
- * refusal actually takes when it reaches this classifier: wrapped in the same `[block:` aggregate
- * as every other promise-phase failure. `isUncommittedTransactorAggregate` claims the wrapper on
- * its own, whatever the cause inside says (its accepted-tradeoff `NOTE:` explains why that is kept).
+ * A promise-phase REJECTION, not a shortfall — wrapped in the same `[block:` aggregate as every
+ * other promise-phase failure. `isUncommittedTransactorAggregate` claims the wrapper on its own,
+ * whatever the cause inside says (its accepted-tradeoff `NOTE:` explains why that is kept), and
+ * this case is what pins that.
+ *
+ * A HISTORICAL capture. Its cause text is a `pending conflict` refusal, which upstream no longer
+ * produces: contention now votes `held` and counts toward neither approvals nor rejections, so a
+ * contended write reaches this funnel as {@link SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT} instead.
+ * The literal is kept because the WRAPPER shape it demonstrates is not historical at all — stale
+ * revision, block-unavailable, membership-not-admitted and a configured validator's refusal all
+ * still arrive rejected inside this same aggregate, and stale revision is the one this loop
+ * genuinely rescues (it re-runs the write body's reads). Read the cause text as an example of a
+ * rejection, not as a claim about what contention looks like now.
  *
  * A real captured message, not a reconstruction: the `[peer-insert]` write A ran on 2026-09-17,
  * refused by C's unresolved pending action. It was transcribed from
@@ -277,7 +295,9 @@ describe('isRetriableControlWriteFailure', () => {
 	 * Pins the accepted tradeoff recorded at `isUncommittedTransactorAggregate`'s `NOTE:`: unlike
 	 * the bare-message rejection above, a rejection carried inside a promise-phase `[block:`
 	 * aggregate IS retried — the matcher claims the wrapper on its own, whatever the cause inside
-	 * it says. Real capture (see the constant's comment), not a reconstruction.
+	 * it says. Real capture (see the constant's comment), though its particular cause text is
+	 * historical; what this case guards is the wrapper rule, which still governs every rejection
+	 * the promise phase can still raise.
 	 */
 	it('retries a promise-phase rejection carried inside a [block: aggregate — the accepted tradeoff', () => {
 		expect(isRetriableControlWriteFailure(nested(PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE))).toBe(true);
@@ -333,10 +353,13 @@ describe('isRetriableControlWriteFailure', () => {
 	 * because Optimystic's own collection sync already spent its own ten retries racing the
 	 * rival action and gave up. Correctly declined here: nothing in this message says the
 	 * cohort did not answer, and re-presenting it a further two times inside this loop's
-	 * budget would just repeat a race Optimystic already lost on its own terms. Contrast
-	 * {@link PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE} above, a `pending conflict` at the
-	 * PROMISE phase that IS deliberately retried — the difference is which side has already
-	 * exhausted its attempts.
+	 * budget would just repeat a race Optimystic already lost on its own terms.
+	 *
+	 * This is the LIVE shape of contention, and it is the one that goes silent: the write is
+	 * abandoned on attempt 1 and, when it is a background write, nobody is awaiting the error.
+	 * `ControlDatabase.setControlWriteAbandonedListener` and the node's
+	 * `control:write-abandoned` event exist for exactly this, and the abandonment cases at the
+	 * bottom of this file pin the loop's half of it.
 	 */
 	it('never retries a SyncRetryExhaustedError-shaped pending-conflict message', () => {
 		expect(isRetriableControlWriteFailure(nested(SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT))).toBe(false);
@@ -636,6 +659,143 @@ describe('retryControlWrite', () => {
 	});
 });
 
+/**
+ * The funnel's report that it GAVE UP — the seam that keeps an abandoned write from
+ * disappearing. Both give-up exits fire it, a rescued write fires nothing, and a throwing
+ * observer may not displace the failure the caller has to see.
+ *
+ * Why it matters at all: the debug lines these cases' production counterparts emit are off
+ * unless something set `DEBUG=`, and a BACKGROUND control write (the self-address republish,
+ * the two replication drains in `cadre-node.ts`) is fired unawaited with a `debug`-only catch
+ * — so before this hook a permanently-abandoned background write reached nobody. Measured:
+ * one run of `control-write-degraded-cohort-member.integration.ts` reported 7 passed while a
+ * node's `[self-record-update]` had been abandoned for good during it.
+ */
+describe('retryControlWrite — abandonment notification', () => {
+	/** Collect abandonments, in order, for one run. */
+	function recorder(): { seen: ControlRetryAbandonment[]; onAbandon: (a: ControlRetryAbandonment) => void } {
+		const seen: ControlRetryAbandonment[] = [];
+		return { seen, onAbandon: (a) => { seen.push(a); } };
+	}
+
+	/**
+	 * The classifier-declined exit — the one the LIVE contention failure takes
+	 * ({@link SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT}), on attempt 1 of 3, with no retry.
+	 */
+	it('reports a declined failure once, naming the attempt it stopped on', async () => {
+		const { seen, onAbandon } = recorder();
+		const failure = nested(SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT);
+		await expect(retryControlWrite(async () => { throw failure; },
+			immediatePacing({ label: 'self-record-update', onAbandon }))).rejects.toBe(failure);
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			label: 'self-record-update',
+			attemptsMade: 1,
+			attemptsAllowed: CONTROL_WRITE_ATTEMPTS,
+			reason: 'declined'
+		});
+		// Identity, not message equality: the observer gets the object the caller is about to
+		// see, so an app can classify it with the same matchers.
+		expect(seen[0]!.error).toBe(failure);
+	});
+
+	/** The exhausted-attempts exit: every attempt ran, every one failed transiently. */
+	it('reports an exhausted retry once, after the last attempt', async () => {
+		const { seen, onAbandon } = recorder();
+		let runs = 0;
+		await expect(retryControlWrite(async () => {
+			runs++;
+			throw nested(TRANSACTOR_AGGREGATE);
+		}, immediatePacing({ label: 'peer-insert', onAbandon }))).rejects.toThrow();
+
+		expect(runs).toBe(CONTROL_WRITE_ATTEMPTS);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			label: 'peer-insert',
+			attemptsMade: CONTROL_WRITE_ATTEMPTS,
+			attemptsAllowed: CONTROL_WRITE_ATTEMPTS,
+			reason: 'attempts'
+		});
+	});
+
+	/**
+	 * The budget exit, told apart from the attempts one. This is the degraded-member case: a
+	 * ~20 s first attempt spends the 10 s budget, so the loop stops with attempts to spare —
+	 * and the reason has to say `budget`, or an operator reading the report concludes the
+	 * write was tried three times when it was tried once.
+	 */
+	it('distinguishes the budget exit from the attempts exit', async () => {
+		const { seen, onAbandon } = recorder();
+		let clock = 0;
+		await expect(retryControlWrite(async () => {
+			clock += CONTROL_WRITE_RETRY_BUDGET_MS;
+			throw nested(TRANSACTOR_AGGREGATE);
+		}, { now: () => clock, sleep: () => Promise.resolve(), label: 'peer-remove', onAbandon }))
+			.rejects.toThrow();
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({
+			attemptsMade: 1,
+			attemptsAllowed: CONTROL_WRITE_ATTEMPTS,
+			reason: 'budget',
+			elapsedMs: CONTROL_WRITE_RETRY_BUDGET_MS
+		});
+	});
+
+	/**
+	 * A write the retry RESCUED is not an abandonment. Without this the observer would report
+	 * every transient blip, and the node's escalation — which is about a write that is
+	 * genuinely lost — would fire on writes that committed a second later.
+	 */
+	it('reports nothing when a retry commits the write', async () => {
+		const { seen, onAbandon } = recorder();
+		await runOneTransientFailure({ label: 'self-record-update', onAbandon });
+
+		expect(seen).toEqual([]);
+	});
+
+	/** An unlabelled call still reports; the label is simply absent. */
+	it('reports an unlabelled operation without inventing a label', async () => {
+		const { seen, onAbandon } = recorder();
+		const failure = nested('CHECK constraint failed: Authorized');
+		await expect(retryControlWrite(async () => { throw failure; },
+			immediatePacing({ onAbandon }))).rejects.toBe(failure);
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.label).toBeUndefined();
+	});
+
+	/**
+	 * A throwing observer is a bug in the observer, and it must not become the write's
+	 * failure: the loop is on its way to rethrowing the real error, and letting a listener's
+	 * `TypeError` out instead would erase the very failure it was notified about. Asserted on
+	 * BOTH exits — they notify from different places in the loop.
+	 */
+	it('rethrows the failure the write itself raised when the observer throws', async () => {
+		const declined = nested('CHECK constraint failed: Authorized');
+		await expect(retryControlWrite(async () => { throw declined; }, immediatePacing({
+			onAbandon: () => { throw new Error('observer blew up'); }
+		}))).rejects.toBe(declined);
+
+		// Exhaustion rethrows the LAST attempt's error, so the identity check has to be made
+		// after the loop finishes rather than against a variable read before it starts.
+		const transient: Error[] = [];
+		let caught: unknown;
+		try {
+			await retryControlWrite(async () => {
+				const error = nested(TRANSACTOR_AGGREGATE);
+				transient.push(error);
+				throw error;
+			}, immediatePacing({ onAbandon: () => { throw new Error('observer blew up'); } }));
+		} catch (error) {
+			caught = error;
+		}
+		expect(transient).toHaveLength(CONTROL_WRITE_ATTEMPTS);
+		expect(caught).toBe(transient[transient.length - 1]);
+	});
+});
+
 /** One transient failure then success, under the given options plus never-sleep pacing. */
 async function runOneTransientFailure(options: ControlWriteRetryOptions): Promise<void> {
 	let runs = 0;
@@ -664,6 +824,8 @@ interface SchemaInitHarness {
 	db: { exec: (sql: string) => Promise<void> };
 	controlWriteRetryPacing: ControlWriteRetryOptions;
 	loadSchema: () => Promise<void>;
+	/** Public on the real class; named here so the cast can reach it. */
+	setControlWriteAbandonedListener: (listener: ((a: ControlRetryAbandonment) => void) | null) => void;
 }
 
 /**
@@ -776,6 +938,32 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 			await expect(harness.loadSchema()).rejects.toBe(failure);
 			expect(runs).toBe(1);
 		}
+	});
+
+	/**
+	 * The `ControlDatabase` seam, driven through a real `lockedWithRetry` rather than a direct
+	 * `retryControlWrite` call: the single settable listener must reach the loop, carry the
+	 * call site's own label, and stop being called once cleared.
+	 *
+	 * Wired this way because the production listener is a `CadreNode` that clears it on
+	 * teardown — a listener that kept firing for a database the node no longer owns would
+	 * report a dead node's losses as a live node's.
+	 */
+	it('delivers an abandonment to the ControlDatabase listener, and stops once cleared', async () => {
+		const seen: ControlRetryAbandonment[] = [];
+		const failure = nested(ddlFailure(MISSING_BLOCK));
+		const harness = schemaInitHarness(async () => { throw failure; });
+		harness.setControlWriteAbandonedListener((abandonment) => { seen.push(abandonment); });
+
+		await expect(harness.loadSchema()).rejects.toBe(failure);
+		expect(seen).toHaveLength(1);
+		// `loadSchema`'s own label, not the policy's or the pacing's — it is what attributes
+		// the loss among the writes a real party runs concurrently.
+		expect(seen[0]).toMatchObject({ label: 'schema-init', reason: 'declined', attemptsMade: 1 });
+
+		harness.setControlWriteAbandonedListener(null);
+		await expect(harness.loadSchema()).rejects.toBe(failure);
+		expect(seen).toHaveLength(1);
 	});
 
 	it('surfaces the last error unchanged once the attempt budget is spent', async () => {

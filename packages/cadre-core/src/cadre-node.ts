@@ -90,6 +90,7 @@ import {
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
+import type { ControlRetryAbandonment } from './control-retry.js';
 import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
@@ -686,6 +687,19 @@ export class CadreNode implements SAppIdLookup {
    * both read "no row yet" and race a duplicate INSERT (a `CadrePeer` PK conflict).
    */
   private registerSelfInFlight: Promise<SelfRegistrationOutcome> | null = null;
+  /**
+   * When this node last PUBLISHED its own `CadrePeer` address record (inserted or
+   * refreshed), or null if it never has in this session. Stamped by
+   * {@link noteSelfRecordPublished} on every successful publish, wherever it was driven
+   * from — the boot pass, the heartbeat, an address change, a drain or an explicit call.
+   *
+   * Read by {@link escalateIfSelfRecordStale} for the one consequence worth an operator's
+   * attention: once this gap exceeds {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}, every other
+   * machine in the party is already discarding this node's address as stale.
+   */
+  private lastSelfRecordPublishAt: number | null = null;
+  /** Say-once latch for {@link escalateIfSelfRecordStale}; re-armed by the next publish. */
+  private selfRecordStaleWarned = false;
 
   // ── Write-while-alone re-replication (control-write-ensure-replicated) ──────
   /**
@@ -1033,6 +1047,10 @@ export class CadreNode implements SAppIdLookup {
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
+      // Abandoned-write seam. Wired here, before the first control write can run, so a
+      // write lost during the rest of bring-up is reported like any other.
+      this.controlDatabase.setControlWriteAbandonedListener(
+        (abandonment) => this.noteControlWriteAbandoned(abandonment));
 
       // Create strand queryable using the control database
       const queryable = this.createStrandQueryable();
@@ -2189,6 +2207,7 @@ export class CadreNode implements SAppIdLookup {
       const record = this.signSelfRecord(peerId, signingKey, addrs, null);
       if (await this.seedBootstrapService.insertSelfPeerRecord(record)) {
         if (this.committedAlone()) this.pendingSelfPeerWrite = true;
+        this.noteSelfRecordPublished();
         log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
         return 'inserted';
       }
@@ -2226,8 +2245,86 @@ export class CadreNode implements SAppIdLookup {
     const record = this.signSelfRecord(peerId, signingKey, addrs, current);
     await this.controlDatabase.updateSelfPeerRecord(record);
     if (this.committedAlone()) this.pendingSelfPeerWrite = true;
+    this.noteSelfRecordPublished();
     log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
     return 'refreshed';
+  }
+
+  /**
+   * Record that this node's own address record just landed, and re-arm the stale-record
+   * warning. Called from BOTH publishing paths of {@link publishSelfRecord} and nowhere
+   * else — a `skipped` publish wrote nothing, so it must not refresh the stamp.
+   */
+  private noteSelfRecordPublished(): void {
+    this.lastSelfRecordPublishAt = Date.now();
+    this.selfRecordStaleWarned = false;
+  }
+
+  /**
+   * Report an abandoned control write to the embedding app.
+   *
+   * Every control write funnels through `ControlDatabase.lockedWithRetry`, which now tells
+   * this node when it gives one up. Foreground writes ALSO reject to their caller; the
+   * background ones ({@link startRecordRefresh}'s republish and the two replication
+   * drains) are fired unawaited with a `debug`-only catch, so this event is the only thing
+   * that reaches an app at all.
+   *
+   * Reporting only — the one operator-visible escalation lives on the republish path
+   * ({@link escalateIfSelfRecordStale}), where the consequence is measurable.
+   */
+  private noteControlWriteAbandoned(abandonment: ControlRetryAbandonment): void {
+    log('Control write abandoned [%s] after %d/%d attempt(s) in %dms (%s): %o',
+      abandonment.label ?? 'unlabelled', abandonment.attemptsMade, abandonment.attemptsAllowed,
+      abandonment.elapsedMs, abandonment.reason, abandonment.error);
+    this.emit('control:write-abandoned', abandonment);
+  }
+
+  /**
+   * Escalate ONE failed self-address republish to the operator — once — when the node has
+   * not published its own record for longer than a record stays fresh.
+   *
+   * The bar is the CONSEQUENCE, not a failure count: a resolver discards a `CadrePeer`
+   * record older than {@link DEFAULT_PEER_RECORD_MAX_AGE_MS} (15 minutes) and the heartbeat
+   * re-stamps at half that, so by the time this gap opens every other machine in the party
+   * has already stopped accepting this node's address. A count would fire far too early —
+   * one failed heartbeat is already half the budget, and a single miss costs nothing.
+   *
+   * Say-once, re-armed by the next successful publish ({@link noteSelfRecordPublished}), so
+   * a node that stays broken warns once rather than every 7.5 minutes.
+   *
+   * A node that has never published in this session is skipped: it has no record out there
+   * to go stale, and the reason it has none (not a member yet, no signing key, revoked) is
+   * already logged by `registerSelf` itself.
+   *
+   * Only a FAILED republish is checked. A heartbeat whose publish reports `skipped` neither
+   * stamps nor warns, so a node that stops being able to publish without erroring — revoked,
+   * or its row removed — goes quiet here. That is the intended reading: a revoked node has
+   * nothing to publish and its unreachability is the point, not a fault to report.
+   *
+   * NOTE: the second `console.*` in this library, and the reason
+   * {@link warnIfAnnounceAddrsDiscardRelay}'s note says a third should not simply be added:
+   * both are operator warnings about a configuration/health condition an embedder cannot
+   * see otherwise, and both have an event beside them (`control:write-abandoned` carries
+   * the underlying write failure). A third such condition should surface through
+   * {@link CadreNodeEvents} alone unless it likewise degrades the whole party in silence.
+   */
+  private escalateIfSelfRecordStale(reason: string, error: unknown): void {
+    const publishedAt = this.lastSelfRecordPublishAt;
+    if (publishedAt === null || this.selfRecordStaleWarned) {
+      return;
+    }
+    const staleForMs = Date.now() - publishedAt;
+    if (staleForMs < DEFAULT_PEER_RECORD_MAX_AGE_MS) {
+      return;
+    }
+    this.selfRecordStaleWarned = true;
+    console.warn(
+      `[sereus] this machine has not published its own address record for ${Math.round(staleForMs / 60_000)} `
+      + `minutes (last failure: ${reason} — ${error instanceof Error ? error.message : String(error)}). `
+      + 'Other machines in the party discard an address record older than '
+      + `${Math.round(DEFAULT_PEER_RECORD_MAX_AGE_MS / 60_000)} minutes, so any of them not already `
+      + 'connected to this one can no longer reach it. Publishing keeps retrying; this is reported once.'
+    );
   }
 
   /**
@@ -2351,7 +2448,12 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const republish = (reason: string) => {
-      void this.registerSelf().catch((error) => log('Record refresh (%s) failed: %o', reason, error));
+      void this.registerSelf().catch((error) => {
+        log('Record refresh (%s) failed: %o', reason, error);
+        // The only failure in this file that degrades the whole party on its own, so it is
+        // the only one that escalates past `debug`. See escalateIfSelfRecordStale.
+        this.escalateIfSelfRecordStale(reason, error);
+      });
     };
     const reconcile = (reason: string) => {
       void this.reconcileControlCohort().catch((error) =>
@@ -2447,6 +2549,11 @@ export class CadreNode implements SAppIdLookup {
     this.pendingRevocations.clear();
     this.pendingSelfPeerWrite = false;
     this.pendingSelfDeviceWrite = false;
+    // Self-record publication history is per-session too: a restarted node re-publishes
+    // from scratch, and carrying the previous lifetime's stamp forward would either
+    // suppress the stale-record warning or fire it on a node that just came up.
+    this.lastSelfRecordPublishAt = null;
+    this.selfRecordStaleWarned = false;
   }
 
   /**
@@ -4123,6 +4230,7 @@ export class CadreNode implements SAppIdLookup {
     if (this.controlDatabase) {
       this.controlDatabase.setMembershipChangeListener(null);
       this.controlDatabase.setGuardedDeleteListener(null);
+      this.controlDatabase.setControlWriteAbandonedListener(null);
       await this.controlDatabase.close();
       this.controlDatabase = null;
     }

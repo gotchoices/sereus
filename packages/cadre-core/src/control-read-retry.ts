@@ -193,6 +193,14 @@ function causeChain(error: unknown): Error[] {
  * On exhaustion the LAST error is rethrown unchanged. Log lines carry the
  * `Control read [<label>] …` prefix so a read's retries can be attributed among the
  * several reads in flight concurrently in a real party.
+ *
+ * Deliberately carries NO `onAbandon` observer, unlike the write policy
+ * (`control-write-retry.ts`). The hook exists because an abandoned WRITE can have no caller
+ * at all — the background self-record republish is `void`-ed with a `debug`-only catch, so
+ * giving up on it is invisible. Every control read is awaited by the caller that issued it,
+ * so an abandoned read surfaces as that caller's rejection; there is nothing here to lose
+ * silently. If a fire-and-forget read ever appears, this is the seam to reconsider, and the
+ * observer type is already shared (`control-retry.ts`).
  */
 export function retryControlRead<T>(
 	attempt: () => Promise<T>,

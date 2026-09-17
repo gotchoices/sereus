@@ -17,6 +17,38 @@ const log = debug('sereus:cadre:control-db');
  * this loop must not move a single character of them.
  */
 
+/** Which of the loop's two give-up exits fired. */
+export type ControlRetryAbandonReason =
+	/** The classifier declined the failure as non-transient — no retry was attempted. */
+	| 'declined'
+	/** Every allowed attempt ran and failed transiently. */
+	| 'attempts'
+	/** The elapsed budget ran out before the next attempt could be started. */
+	| 'budget';
+
+/**
+ * What the loop gave up on, handed to {@link ControlRetryPolicy.onAbandon} exactly once per
+ * abandoned operation. Enough to attribute the loss without reading the debug log: which
+ * operation, how far it got, why it stopped and what it failed with.
+ */
+export interface ControlRetryAbandonment {
+	/** The operation label ({@link ControlRetryOptions.label}); absent when unlabelled. */
+	label?: string;
+	/** Attempts actually run, first included. */
+	attemptsMade: number;
+	/** Attempts the loop was allowed to run. */
+	attemptsAllowed: number;
+	/** Wall clock from the start of attempt 1 to the give-up, on the policy's clock. */
+	elapsedMs: number;
+	/** Which exit fired. */
+	reason: ControlRetryAbandonReason;
+	/** The error the loop is about to rethrow, unchanged. */
+	error: unknown;
+}
+
+/** Notified once per abandoned operation. Must not throw — the loop catches and logs if it does. */
+export type ControlRetryAbandonListener = (abandonment: ControlRetryAbandonment) => void;
+
 /** A retry policy: what to retry, how often, and under which elapsed-time ceiling. */
 export interface ControlRetryPolicy {
 	/** Total attempts, first included (floored at 1 by the loop). */
@@ -44,6 +76,14 @@ export interface ControlRetryPolicy {
 	 * logged before this loop was shared out of `control-write-retry.ts`.
 	 */
 	logPrefix?: string;
+	/**
+	 * Notified when the loop GIVES UP on an operation — both exits, once each, before the
+	 * error is rethrown. Optional, and on the POLICY rather than hard-coded in the loop, so
+	 * each policy decides for itself: the write policy carries one (an abandoned write may
+	 * have no caller awaiting it, so losing it is silent), the read policy deliberately
+	 * does not (an abandoned read always throws to a caller that is awaiting it).
+	 */
+	onAbandon?: ControlRetryAbandonListener;
 }
 
 /**
@@ -74,6 +114,13 @@ export interface ControlRetryOptions {
 	sleep?: (ms: number) => Promise<void>;
 	/** Clock for the elapsed-budget check. Default: `Date.now`. */
 	now?: () => number;
+	/**
+	 * Per-call abandonment observer, REPLACING the policy's
+	 * ({@link ControlRetryPolicy.onAbandon}) rather than fanning out beside it — one
+	 * observer per call, like every other field here. `ControlDatabase` merges its single
+	 * settable listener in through this seam.
+	 */
+	onAbandon?: ControlRetryAbandonListener;
 }
 
 /**
@@ -88,6 +135,11 @@ export interface ControlRetryOptions {
  * On exhaustion (attempts or budget) the LAST error is rethrown unchanged — never
  * wrapped, so the exact messages downstream code and the integration scenarios assert on
  * survive. A non-retriable failure propagates from the attempt that raised it.
+ *
+ * Both give-up exits also notify the policy's {@link ControlRetryPolicy.onAbandon} (or the
+ * call's, which replaces it) exactly once, before the rethrow. The debug line each exit
+ * already wrote is off unless somebody set `DEBUG=`, and a background write has no caller
+ * to surface the rethrown error — so without an observer the loss is silent everywhere.
  */
 export async function retryControlOperation<T>(
 	attempt: () => Promise<T>,
@@ -100,12 +152,16 @@ export async function retryControlOperation<T>(
 	const sleep = options.sleep ?? defaultSleep;
 	const now = options.now ?? Date.now;
 	const prefix = policy.logPrefix ?? 'Control write';
+	const onAbandon = options.onAbandon ?? policy.onAbandon;
 	// Empty when unlabelled, so an unlabelled line is byte-identical to what the write
 	// loop logged before labels existed.
 	const tag = options.label ? ` [${options.label}]` : '';
 	const start = now();
 	let lastError: unknown;
 	let attemptsMade = 0;
+	// Which exit the loop leaves by. Only the budget check below moves it off the default,
+	// so an unmodified `break` is the attempts exit.
+	let exhaustedBy: ControlRetryAbandonReason = 'attempts';
 	for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber++) {
 		attemptsMade = attemptNumber;
 		try {
@@ -121,6 +177,11 @@ export async function retryControlOperation<T>(
 				// indistinguishable from "the retry is not wired into this path at all".
 				log('%s%s failed non-transiently on attempt %d/%d, not retried here: %s',
 					prefix, tag, attemptNumber, attempts, error);
+				notifyAbandoned(onAbandon, prefix, tag, {
+					...(options.label !== undefined ? { label: options.label } : {}),
+					attemptsMade, attemptsAllowed: attempts, elapsedMs: now() - start,
+					reason: 'declined', error
+				});
 				throw error;
 			}
 			lastError = error;
@@ -129,6 +190,7 @@ export async function retryControlOperation<T>(
 			}
 			const elapsed = now() - start;
 			if (elapsed >= policy.budgetMs) {
+				exhaustedBy = 'budget';
 				break;
 			}
 			const delay = jitteredDelay(delays, attemptNumber);
@@ -138,7 +200,37 @@ export async function retryControlOperation<T>(
 		}
 	}
 	log('%s%s failed after %d/%d attempt(s): %s', prefix, tag, attemptsMade, attempts, lastError);
+	notifyAbandoned(onAbandon, prefix, tag, {
+		...(options.label !== undefined ? { label: options.label } : {}),
+		attemptsMade, attemptsAllowed: attempts, elapsedMs: now() - start,
+		reason: exhaustedBy, error: lastError
+	});
 	throw lastError;
+}
+
+/**
+ * Tell the observer the operation was abandoned, and never let that replace the failure.
+ *
+ * A throwing observer is a bug in the observer, not in the write: the loop is on its way to
+ * rethrowing the real error, and letting the observer's `TypeError` out instead would erase
+ * the very failure it was notified about. Logged and swallowed — the same treatment
+ * `CadreNode.emit` gives a throwing event handler.
+ */
+function notifyAbandoned(
+	listener: ControlRetryAbandonListener | undefined,
+	prefix: string,
+	tag: string,
+	abandonment: ControlRetryAbandonment
+): void {
+	if (!listener) {
+		return;
+	}
+	try {
+		listener(abandonment);
+	} catch (listenerError) {
+		log('%s%s abandonment listener threw (the write\'s own failure is unaffected): %s',
+			prefix, tag, listenerError);
+	}
 }
 
 /**

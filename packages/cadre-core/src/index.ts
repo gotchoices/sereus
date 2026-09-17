@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type RevokedRowRef } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
@@ -34,6 +34,15 @@ export {
   retryControlRead,
   type ControlReadRetryOptions
 } from './control-read-retry.js';
+
+// The bounded retry loop both control policies share. Only the abandonment record leaves
+// this package: it is the payload of the `control:write-abandoned` node event, so an
+// embedding app can type a handler for it.
+export type {
+  ControlRetryAbandonment,
+  ControlRetryAbandonReason,
+  ControlRetryAbandonListener
+} from './control-retry.js';
 
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';

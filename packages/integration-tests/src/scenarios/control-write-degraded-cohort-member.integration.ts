@@ -71,7 +71,7 @@
  * never-answer hold), so everything else about the node stays honest.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import debug from 'debug';
 import { format } from 'node:util';
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -85,6 +85,7 @@ import {
 	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId
 } from '../harness/index.js';
 import type { ForcedCohortHandle, PinnedCoordinatorHandle } from '../harness/index.js';
+import type { ControlRetryAbandonment } from '@serfab/cadre-core';
 
 const log = debug('sereus:integration:degraded-cohort');
 
@@ -132,11 +133,23 @@ const log = debug('sereus:integration:degraded-cohort');
 // Fingerprints this file can still show, and who owns each. NOTE: this table
 // is a second copy of the one in `tickets/.pre-existing-known.md`; that file is
 // authoritative if the two ever disagree, and it is where a new fingerprint
-// gets added first.
+// gets added first. It is kept in sync with the delta at the TOP of that file.
 //
-//  - `pending conflict` with NO preceding stream reset and NO `cancelError`,
-//    clearing by itself
-//    → `control-write-refused-when-a-rival-write-holds-the-block`
+//  - A control write ABANDONED to contention, on any node:
+//    `Control write [<label>] failed non-transiently on attempt 1/3, not retried
+//    here: SyncRetryExhaustedError: sync for collection
+//    default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict:
+//    block(s) held by unresolved rival action(s) <action id>`
+//    → cause is upstream:
+//    `../optimystic/tickets/implement/a-member-that-missed-a-commit-refuses-every-later-write`
+//    (a member that promised a write and then missed its commit keeps that pending
+//    record forever and reads it as a live rival on every later write to the block;
+//    at three members one such holder refuses everything). NOT a retry-budget
+//    problem — upstream measured a contending writer absorbing a LIVE, progressing
+//    rival in two retries, and against a wedged record no budget is enough. As of
+//    this ticket the loss is no longer silent: every node's
+//    `control:write-abandoned` event is watched and `afterEach` fails on a write
+//    abandoned outside a deliberately degraded window.
 //  - `2/3 approvals (needed 3, 0 rejections)` — not a failure, the
 //    deliberately silent-member cases behaving as specified
 //
@@ -145,6 +158,12 @@ const log = debug('sereus:integration:degraded-cohort');
 // Upstream fixed the reset attempt's own pend discharge, and a five-round verification
 // series that day never reproduced the fingerprint — see `tickets/.pre-existing-known.md`
 // for the evidence. "absorbs an injected transient stream reset" below passed all five.
+//
+// CLOSED 2026-09-17 (evening): `Transaction rejected by validators (N/M rejected):
+// … pending conflict …` (owned by `control-write-refused-when-a-rival-write-holds-the-block`).
+// Contention now votes `held` upstream, counting toward neither approvals nor rejections,
+// and that text did not appear once in five isolated runs. A recurrence is a REGRESSION,
+// not a known failure — report it through `tickets/.pre-existing-error.md`.
 //
 // CLOSED 2026-09-17: "7 skipped", `Timeout waiting for B resolves C's signed address
 // record` (owned by `control-peer-row-refresh-invisible-to-third-node`). Upstream fixed
@@ -317,6 +336,12 @@ interface RetryLogCapture {
  * default within a file). Marking any case in here `it.concurrent` would nest
  * two captures, and the inner `restore()` would hand the sink back to the outer
  * wrapper rather than to debug's own — capture per case first if that day comes.
+ *
+ * NOT the seam for "was a write LOST" — {@link LostWrite} is, through the node's
+ * `control:write-abandoned` event, which does not depend on `DEBUG=` being set and
+ * reaches background writes no case is awaiting. This capture stays for what only it can
+ * show: how many ATTEMPTS a named write ran, which is what the retry-budget assertions in
+ * the stalled cases are about.
  */
 function captureControlRetryLogs(): RetryLogCapture {
 	const captured: string[] = [];
@@ -356,6 +381,26 @@ function printRetryDecisions(caseLabel: string, capture: RetryLogCapture): void 
 	}
 }
 
+// ── Abandoned control writes ─────────────────────────────────────
+
+/** One abandoned control write, tagged with which node lost it. */
+interface LostWrite extends ControlRetryAbandonment {
+	node: string;
+}
+
+/**
+ * How long after a degradation is lifted an abandoned write is still counted as that
+ * degradation's doing.
+ *
+ * `restore()` aborts the streams it was holding, so writes that were stalled against the
+ * degraded member settle a moment AFTER the handle is released — the loss belongs to the
+ * window the case opened, not to the healthy period that follows. Generous relative to what
+ * it covers (a stalled write settles well under a second once its streams are aborted) and
+ * far shorter than the gap between cases, so a write genuinely lost while the cohort is
+ * healthy is still reported.
+ */
+const ABANDON_SETTLE_GRACE_MS = 5_000;
+
 // ── Degraded cluster handler ──────────────────────────────────────────────────
 
 /** The structural slice of libp2p's internal registrar this injection needs. */
@@ -370,6 +415,17 @@ interface DegradedHandle {
 	restore(): Promise<void>;
 	/** Inbound cluster streams the wrapper has intercepted so far. */
 	interceptedStreams(): number;
+	/**
+	 * Does holding this handle actually IMPAIR the cohort? False for the pure counter
+	 * {@link observeClusterHandler} installs, which wraps the real handler and delegates
+	 * straight through.
+	 *
+	 * Only this decides whether an abandoned control write is scoped out as deliberately
+	 * provoked (see {@link LostWrite}). The healthy case holds a handle too, and a write lost
+	 * THERE is exactly the failure this file must report — so "a handle is held" is the
+	 * wrong test and this flag is the right one.
+	 */
+	degradesCohort: boolean;
 }
 
 /** Resolve after `ms`, or immediately once `signal` aborts. */
@@ -447,7 +503,8 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
 			await registrar.handle(protocol, original, options);
 			await Promise.allSettled([...pending]);
 		},
-		interceptedStreams: () => intercepted
+		interceptedStreams: () => intercepted,
+		degradesCohort: delayMs > 0
 	};
 }
 
@@ -456,6 +513,9 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
  * The healthy case needs it: a self-only cohort would also commit sub-second, so
  * `forced.callCount()` alone (discovery was consulted) cannot tell the two apart;
  * a non-zero count on the third node proves consensus really fanned out to it.
+ *
+ * Reports `degradesCohort: false` (via the zero delay), which is what keeps the healthy
+ * case honest about an abandoned control write — see {@link DegradedHandle.degradesCohort}.
  */
 function observeClusterHandler(node: CadreNode, partyId: string): Promise<DegradedHandle> {
 	return degradeClusterHandler(node, partyId, 0);
@@ -553,6 +613,8 @@ async function resetFirstProtocolStreams(node: CadreNode, protocol: string, coun
 			await Promise.allSettled([...pending]);
 		},
 		interceptedStreams: () => intercepted,
+		// An injected reset kills a real write; the resulting abandonment is provoked, not found.
+		degradesCohort: true,
 		resetStreams: () => resets,
 		fromPeerStreams: () => fromPeerIntercepted
 	};
@@ -597,6 +659,52 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	let bSigningKey: Ed25519KeyPair;
 	/** Set while a case holds a degradation, so afterAll can clean up a mid-case failure. */
 	let activeDegradation: DegradedHandle | null = null;
+	/** When the last degradation was lifted — opens {@link ABANDON_SETTLE_GRACE_MS}. */
+	let degradationClearedAt: number | null = null;
+	/**
+	 * Control writes the retry funnel GAVE UP on while no case was degrading the cohort —
+	 * background writes included, on every node in the trio. Drained and asserted empty after
+	 * each case.
+	 *
+	 * This is the hole the scenario had: on 2026-09-17, run 4 of a five-run series reported 7
+	 * passed while node B's background `[self-record-update]` had been abandoned permanently
+	 * during it, leaving B publishing no address record. No assertion covered a write nobody
+	 * was awaiting, and the only trace was a debug line that run happened to capture. The
+	 * `control:write-abandoned` event is a better seam than the debug capture below because it
+	 * does not depend on `DEBUG=` being set.
+	 */
+	const lostWrites: LostWrite[] = [];
+
+	/** Watch one node's control writes for abandonment (see {@link lostWrites}). */
+	function watchAbandonedWrites(name: string, node: CadreNode): void {
+		node.on('control:write-abandoned', (abandonment) => {
+			const scoped = activeDegradation?.degradesCohort === true
+				|| (degradationClearedAt !== null && Date.now() - degradationClearedAt < ABANDON_SETTLE_GRACE_MS);
+			console.log(`[abandoned-write ${name}] [${abandonment.label ?? 'unlabelled'}] ${abandonment.reason} `
+				+ `after ${abandonment.attemptsMade}/${abandonment.attemptsAllowed} attempt(s) in ${abandonment.elapsedMs}ms`
+				+ `${scoped ? ' (inside a deliberately degraded window)' : ''}: ${errorChainText(abandonment.error)}`);
+			if (!scoped) {
+				lostWrites.push({ node: name, ...abandonment });
+			}
+		});
+	}
+
+	/**
+	 * Restore the held degradation, open the settle grace, and clear the slot — the one way a
+	 * case ends a degraded window, so {@link watchAbandonedWrites} can tell a deliberately
+	 * provoked loss from a real one.
+	 */
+	async function releaseDegradation(): Promise<void> {
+		const degraded = activeDegradation?.degradesCohort === true;
+		try {
+			await activeDegradation?.restore();
+		} finally {
+			// Only a real degradation opens the grace — releasing the healthy case's counter
+			// must not buy the next few seconds an excuse.
+			degradationClearedAt = degraded ? Date.now() : degradationClearedAt;
+			activeDegradation = null;
+		}
+	}
 
 	beforeAll(async () => {
 		const aKey = await generateKeyPair('Ed25519');
@@ -609,6 +717,10 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// Unlike the isolation scenario, ALL THREE nodes listen (the harness default):
 		// cluster fan-out must be able to dial every cohort member directly.
 		A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
+		// Watch before start(): the boot-time self-publish is itself a background control
+		// write, and losing it is exactly the class this watch exists for. An abandonment
+		// during boot is reported by the FIRST case's afterEach, the earliest check there is.
+		watchAbandonedWrites('A', A);
 		await A.start();
 		const aOwnerKey = await makeOwnOwner(A, aKey);
 		const aPeerId = A.peerId!.toString();
@@ -625,6 +737,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 
 		B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
 		C = new CadreNode(controlNodeConfig({ partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
+		watchAbandonedWrites('B', B);
+		watchAbandonedWrites('C', C);
 		await B.start();
 		await joinMember(A, B, bPeerId);
 		await C.start();
@@ -676,7 +790,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	afterAll(async () => {
 		// Mid-case failures can leave a degradation active; teardown restores it
 		// first so node.stop() is not stopping a node with held-open streams.
-		await activeDegradation?.restore().catch((error: unknown) =>
+		await releaseDegradation().catch((error: unknown) =>
 			console.warn('afterAll: degradation restore failed:', error));
 		pinned?.restore();
 		forced?.restore();
@@ -689,6 +803,24 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 				console.warn('afterAll: node stop failed during teardown:', error));
 		}
 	}, 90_000);
+
+	/**
+	 * No control write — foreground OR background, on any of the three nodes — may be
+	 * abandoned outside a window a case deliberately degraded. A lost background write is
+	 * silent by construction: nobody awaits it, so without this the file can report all
+	 * green while a node has stopped publishing its own address (measured 2026-09-17, run 4
+	 * of five: `7 passed`, B's `[self-record-update]` abandoned for good).
+	 *
+	 * Drains the list either way, so one case's loss is reported once rather than reddening
+	 * every case after it. A loss that lands between cases is reported by the next one.
+	 */
+	afterEach(() => {
+		const lost = lostWrites.splice(0);
+		expect(lost.map((w) => `${w.node} [${w.label ?? 'unlabelled'}] ${w.reason} `
+			+ `after ${w.attemptsMade}/${w.attemptsAllowed}: ${errorChainText(w.error)}`),
+		'a control write was abandoned while the cohort was healthy — it is lost, and nothing else in this file would have failed'
+		).toEqual([]);
+	});
 
 	/** Assert every forced-cohort consultation since `baseline` saw all three peers. */
 	function expectThreePeerCohortConsulted(baseline: number): void {
@@ -727,8 +859,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		} finally {
 			printRetryDecisions('healthy', retryLog);
 			retryLog.restore();
-			await observer.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 		}
 	}, 120_000);
 
@@ -761,8 +892,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		} finally {
 			printRetryDecisions('delayed', retryLog);
 			retryLog.restore();
-			await activeDegradation.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 		}
 		// Two ~55 s delayed writes plus setup: ~110 s measured.
 	}, 300_000);
@@ -842,8 +972,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 				'the stalled write\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {
 			retryLog.restore();
-			await activeDegradation.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 		}
 		// The failed transaction must have rolled back — locally too.
 		expect(await within('isMember (post-failure)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
@@ -898,8 +1027,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// promptly), then join it. On the currently-expected failure path the join
 			// above is never reached, and without this the write would still be in
 			// flight — holding the control write lock — when the next case starts.
-			await activeDegradation.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 			await settled;
 		}
 	}, 240_000);
@@ -954,8 +1082,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 				'the stalled DELETE\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {
 			retryLog.restore();
-			await activeDegradation.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 		}
 		// The failed DELETE must not be queued as a committed-alone write…
 		expect(pendingPeerWrites(A).has(target)).toBe(false);
@@ -1057,8 +1184,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expect(outcome.elapsedMs).toBeLessThan(TRANSIENT_RESET_COMMIT_CEILING_MS);
 		} finally {
 			retryLog.restore();
-			await resets.restore();
-			activeDegradation = null;
+			await releaseDegradation();
 		}
 		// Prove the write path is healthy again with the wrapper gone: an
 		// owner-side write pair commits normally.

@@ -13,6 +13,7 @@ import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { RevocableTable } from './control-authorization.js';
+import type { ControlRetryAbandonment } from './control-retry.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -1249,6 +1250,25 @@ export interface CadreNodeEvents {
   'strand:discovered': { strandId: string; strand: StrandRow };
   'control:connected': void;
   'control:disconnected': void;
+  /**
+   * Emitted when the control-write retry funnel GAVE UP on a local control write — the
+   * classifier declined the failure as non-transient, or every attempt (or the elapsed
+   * budget) ran out. One event per abandoned write, carrying the operation label, how far
+   * it got, why it stopped and the error.
+   *
+   * Exists because an abandoned BACKGROUND write is otherwise invisible: the node's own
+   * self-address republish, the post-connect drain and the replication drain all fire
+   * their writes unawaited with a `debug`-only catch, and that namespace is off unless
+   * something enabled it — so the write is lost and nobody is told. A FOREGROUND write's
+   * caller sees the rethrown error as well as this event.
+   *
+   * What an app does with it is its own call; the node itself only escalates ONE case to
+   * the operator (a self-address republish that has been failing longer than a peer
+   * record stays fresh, at which point other machines are already discarding this node's
+   * address). Treat the rest as telemetry — a control write that was lost, not a strand
+   * or connection state change.
+   */
+  'control:write-abandoned': ControlRetryAbandonment;
   /** Emitted when a seed is received via the seed protocol */
   'seed:received': { partyId: string; peerId: string };
   /** Emitted when a seed is successfully applied */
