@@ -122,11 +122,15 @@ const log = debug('sereus:integration:degraded-cohort');
 // and 2026-09-17 show it. A `0/3 approvals` from a healthy or delayed case
 // today is a REGRESSION, not a known failure — report it.
 //
-// Fingerprints this file can still show, and who owns each:
+// Fingerprints this file can still show, and who owns each. NOTE: this table
+// is a second copy of the one in `tickets/.pre-existing-known.md`; that file is
+// authoritative if the two ever disagree, and it is where a new fingerprint
+// gets added first.
 //
 //  - `pending conflict` after a stream reset whose error carries `cancelError`
 //    → `control-write-retry-does-not-absorb-a-transient-stream-reset`
-//  - `pending conflict` with neither, clearing by itself
+//  - `pending conflict` with NO preceding stream reset and NO `cancelError`,
+//    clearing by itself
 //    → `control-write-refused-when-a-rival-write-holds-the-block`
 //  - "7 skipped", `Timeout waiting for B resolves C's signed address record`
 //    → `control-peer-row-refresh-invisible-to-third-node`

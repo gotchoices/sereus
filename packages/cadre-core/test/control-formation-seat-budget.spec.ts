@@ -479,7 +479,8 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
    * at all. Both need a real multi-node cluster to fail mid-write; this suite boots ONE
    * `CadreNode` with an empty bootstrap list. Faking them as literals here would be a literal
    * dressed as real coverage, which is exactly what this spec exists to avoid.
-   * `control-write-retry-scenario-coverage` produces them from a real cluster.
+   * `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
+   * produces both from a real cluster and asserts this classifier against them.
    */
   describe('isRetriableControlWriteFailure (classifier, against real engine errors)', () => {
     it('never retries a real constraint or authorization failure', async () => {

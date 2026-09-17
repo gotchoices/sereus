@@ -16,11 +16,13 @@ import type { ControlRetryOptions } from './control-retry.js';
  * a moment later, which the degraded-cohort-member scenario measured as safe (a failed
  * write rolls back, nothing half-commits) and effective (the next write commits in ~1 s).
  *
- * A write somebody actually REJECTED after something committed is never retried —
- * re-presenting it would re-present a spent signature against a cohort that already said no.
- * A rejection raised while the cohort is still collecting PROMISES is a different case: nothing
- * has committed yet, so it is re-presented too (see the accepted-tradeoff `NOTE:` on
- * {@link isUncommittedTransactorAggregate}).
+ * A write somebody actually REJECTED is never retried on the strength of the rejection itself —
+ * no matcher here claims a rejection message, at any phase, because re-presenting one would
+ * re-present a spent signature against a cohort that already said no. Exactly one rejection is
+ * re-presented anyway, and only via its WRAPPER: a rejection raised while the cohort is still
+ * collecting PROMISES arrives inside the transactor's `[block:` aggregate, and
+ * {@link isUncommittedTransactorAggregate} claims that aggregate on the wrapper alone. Safe
+ * because nothing has committed at that phase — see the accepted-tradeoff `NOTE:` there.
  *
  * TWO policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every

@@ -128,8 +128,10 @@ const SUPER_MAJORITY_IN_PEND_AGGREGATE =
  * as every other promise-phase failure. `isUncommittedTransactorAggregate` claims the wrapper on
  * its own, whatever the cause inside says (its accepted-tradeoff `NOTE:` explains why that is kept).
  *
- * A real captured message, not a reconstruction: `tickets/.logs/control-write-hears-zero.gate-r1.log`,
- * the `[peer-insert]` write A ran on 2026-09-17, refused by C's unresolved pending action.
+ * A real captured message, not a reconstruction: the `[peer-insert]` write A ran on 2026-09-17,
+ * refused by C's unresolved pending action. It was transcribed from
+ * `tickets/.logs/control-write-hears-zero.gate-r1.log`, which that directory's pruner ages out —
+ * the literal below is the surviving copy, so do not "restore" it from a shorter paraphrase.
  */
 const PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE =
 	'Some peers did not complete: 12D3KooWSsZxd8HWy9sqb9h81WTJZTwyvBQVVtnnzAP9WbvHdq7M[block:BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y](in-flight) cause=Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA; root: Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA';
