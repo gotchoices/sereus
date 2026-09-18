@@ -1,5 +1,5 @@
 description: Strand membership writes (a machine finishing its join, and the other membership changes) now run as one uninterruptible database transaction each, so app writes made at the same moment are no longer swept into them and lost, and background membership writes never join a transaction the app has open.
-files: packages/cadre-core/src/strand-membership-writer.ts (`execStrandTransaction`, `StrandTransactionBusyError`, `StrandWriteOptions`, `combineStatements`, statement builders), packages/cadre-core/src/strand-membership-reconciler.ts (`classifyConsumeFailure` busy kind, `handleConsumeFailure`, `burnLeftoverInvite`, `ensureBinding`), packages/cadre-core/src/strand-instance-manager.ts (`clearOwnMemberPeerBinding`), packages/cadre-core/src/index.ts, packages/cadre-core/test/strand-writer-transaction-isolation.spec.ts (new), packages/cadre-core/test/strand-membership-reconciler.spec.ts, packages/cadre-core/test/strand-seal.spec.ts (comment only), docs/strands.md (join bullet), docs/architecture.md (`consumeInvite` bullet), ../quereus/tickets/plan/exec-batch-as-one-transaction.md
+files: packages/cadre-core/src/strand-member-registry.ts (review NOTE), packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts (review comment fix), packages/cadre-core/src/strand-membership-writer.ts (`execStrandTransaction`, `StrandTransactionBusyError`, `StrandWriteOptions`, `combineStatements`, statement builders), packages/cadre-core/src/strand-membership-reconciler.ts (`classifyConsumeFailure` busy kind, `handleConsumeFailure`, `burnLeftoverInvite`, `ensureBinding`), packages/cadre-core/src/strand-instance-manager.ts (`clearOwnMemberPeerBinding`), packages/cadre-core/src/index.ts, packages/cadre-core/test/strand-writer-transaction-isolation.spec.ts (new), packages/cadre-core/test/strand-membership-reconciler.spec.ts, packages/cadre-core/test/strand-seal.spec.ts (comment only), docs/strands.md (join bullet), docs/architecture.md (`consumeInvite` bullet), ../quereus/tickets/plan/exec-batch-as-one-transaction.md
 ----
 # Strand membership writes are indivisible on the shared connection
 
@@ -53,3 +53,43 @@ commit;
 - Specs identify a writer batch by its `begin transaction` prefix (`queueBehindWriterBatch`, `failNextWriteBatch`), so they depend on the helper's SQL shape.
 - Not converted, by scope: `issueInvite`, `cancelInvite` (single app-called statements) and the founder bootstrap inserts still use plain `db.exec`. The reconciler's reads (`isStrandMember`, `canonicalDatetime`) still run inside an app's open explicit transaction if there is one. They are reads only.
 - `tickets/.pre-existing-known.md` still names this ticket as `implement/strand-writer-transactions-indivisible`.
+
+## Review findings
+
+Read the implement diff (`f5d2f270`) before the handoff, then checked the claims against Quereus 4.19.4's source (`Database.exec`, `_acquireExecMutex`, `TransactionManager.beginTransaction`/`commitTransaction`, `Database.beginTransaction`/`commit`/`rollback`).
+
+**Correctness: confirmed, no defects found.**
+- `exec` holds the mutex for the whole batch and only auto-commits or rolls back implicit transactions, so a mid-batch failure inside the batch's explicit transaction leaves it open (the documented residual 1), and a refused `begin` while another caller's explicit transaction is open does not disturb that transaction. `commitTransaction` rolls back every connection and resets state on any commit-time failure, so commit-time failures leave nothing open, as claimed.
+- The refusal text `Cannot begin transaction: already in a transaction` is thrown in exactly one place (`database-transaction.ts`), which matches the helper's regex. A `begin` during another caller's implicit transaction cannot happen under the mutex, because `exec` commits the implicit transaction after each statement.
+- Dropping the `getAutocommit()` pre-check is correct: the transaction manager reports non-autocommit during any in-flight DML's implicit transaction.
+- Parameter names across the fragment builders checked by hand: no collisions (`combineStatements` would throw if there were).
+- Reconciler: busy is classified before every other check. A busy consume keeps the invitation and retries on the ladder, a busy burn returns before `pending.clear()`, and a busy binding falls to the outer catch. All three are covered by specs.
+
+**Production callers.** Only the reconciler and `clearOwnMemberPeerBinding` are background writers, and both pass `joinOpenTransaction: false`. `StrandMemberRegistry` calls `consumeInvite`/`addMemberByManager` in default (joining) mode, but nothing in cadre-core instantiates it (`EnrollmentService` is built without a registry). Recorded as a tripwire: a `NOTE:` at `strand-member-registry.ts` `registerMember`.
+
+**Residuals (1) and (2)** are accepted as documented in the `NOTE:` on `execStrandTransaction`. Both close with the Quereus primitive requested in `../quereus/tickets/plan/exec-batch-as-one-transaction.md`. A narrower rollback test using Quereus's `_isImplicitTransaction()` would shrink residual (2), but that method is `@internal`, so I didn't use it.
+
+**Related Quereus issue, appended as an arm to that Quereus ticket rather than filed separately (same file, same fix).** `Database.beginTransaction()`/`commit()`/`rollback()` check `isInTransaction()` before taking the mutex. That check is also true during another caller's autocommit statement, so an app's `beginTransaction()` that happens to be called while a background write is in flight throws `Transaction already active`. This is static (read the code, didn't reproduce it). It isn't new with this change: the old `beginTransaction()`/`exec`/`commit()` writer had a wider window.
+
+**Tests.** The implementer's gap "no test that an own-mode writer does not refuse while an app statement is mid-flight" is now closed. A new spec in `strand-writer-transaction-isolation.spec.ts` stubs `getAutocommit()` to `false` (what an in-flight autocommit statement reads as) and asserts that an own-mode `registerMemberPeer` still writes. A pre-check implementation would fail it. Residuals (1) and (2) are still not pinned, for the reason the handoff gives (a test would have to assert the known-wrong outcome). The specs' dependence on the `begin transaction` batch prefix is acceptable: a change to the helper's SQL shape fails those specs loudly and doesn't silently weaken them.
+
+**Docs.**
+- `docs/strands.md` said a batch is "never" swept in. Corrected to name the one exception (a pre-`commit` statement failure) and why the usual join failures don't hit it.
+- `docs/architecture.md` had no general description of `StrandWriteOptions`, so the joining default and the background opt-out appeared only in code. Added a "How the writers transact" paragraph after the writer list. The `sealStrand` bullet's "joining a caller-owned transaction like every other writer" is still accurate for the default mode.
+- A stale comment in `strand-membership-closed-strand-e2e.integration.ts` named the removed `insertRevocation`. Now `revocationStatement`.
+- `tickets/.pre-existing-known.md` updated to show this ticket landed.
+
+**Hygiene.**
+- `strand-membership-writer.ts` is 1987 lines (`wc -l`). It was already large before this change, and the new code is small single-purpose builders. No split filed: the file is one cohesive writer module, and the size predates this ticket.
+- `addManager` logs the generation by reading `promotion.params.managerGeneration`, which ties a log line to a parameter name. Minor, and left as is.
+- No `any`, lowercase SQL throughout, no swallowed errors: the rollback-failure path logs.
+
+**Not converted, by scope (agreed).** `issueInvite`, `cancelInvite` and the founder bootstrap stay plain single-statement `exec`s called by the app itself.
+
+**Runs.**
+- `yarn lint`: clean.
+- `yarn workspace @serfab/cadre-core typecheck`: clean.
+- `yarn workspace @serfab/cadre-core test`: 136 files, 2238 passed, 1 skipped. The skip was there before this change.
+- cadre-core rebuilt.
+- Integration scenarios not re-run in review. The only integration-package change is a comment, and the implementer's 3x runs cover the writer change.
+

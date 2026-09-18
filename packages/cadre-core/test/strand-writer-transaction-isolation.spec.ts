@@ -156,6 +156,22 @@ describe('a writer that must own its transaction', () => {
   }, 30_000);
 });
 
+describe('a writer that must own its transaction, while an app statement is in flight', () => {
+  it('does not refuse on autocommit state alone — only the batch\'s own begin decides', async () => {
+    const { db, founder } = await openAppStrand();
+    // `getAutocommit()` reads false while any caller's autocommit statement is mid-flight (its
+    // implicit transaction). Stubbing it pins that the writer never pre-checks it: a pre-check
+    // would refuse whenever an app write happened to be running and could starve the join.
+    vi.spyOn(db, 'getAutocommit').mockReturnValue(false);
+
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'founder-machine' }, { joinOpenTransaction: false });
+
+    vi.mocked(db.getAutocommit).mockRestore();
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+    expect(db.getAutocommit()).toBe(true);
+  }, 30_000);
+});
+
 describe('a statement-time failure inside a writer batch', () => {
   it('leaves no transaction open: a join for a key that is already a member collides on the Member key', async () => {
     const { db, founder } = await openAppStrand();

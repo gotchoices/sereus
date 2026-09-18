@@ -148,6 +148,9 @@ export class StrandMemberRegistry implements MemberRegistry {
       );
     }
 
+    // NOTE: both writers run in default (joining) mode. Nothing in cadre-core wires this
+    // registry to a live strand today; if a network handler ever drives it on a database
+    // the app also holds, pass `{ joinOpenTransaction: false }` as the reconciler does.
     if (this.admission.mode === 'invite') {
       await consumeInvite(this.db, {
         inviteKey: this.admission.inviteKey,

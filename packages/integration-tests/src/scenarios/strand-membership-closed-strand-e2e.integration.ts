@@ -856,7 +856,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// A bare tombstone naming that LIVE row's stamp, correctly signed by a
 			// committed member (so Revocation.Authorized passes and RowIsGone is the one
-			// rejector). Built inline, mirroring the writer's insertRevocation.
+			// rejector). Built inline, mirroring the writer's revocationStatement.
 			const retireSignature = signStrandApproval(
 				['Strand.Revocation', 'retire', 'MemberPeer', founderPeerStamp],
 				founderKeyPair.privateKeyB64,
