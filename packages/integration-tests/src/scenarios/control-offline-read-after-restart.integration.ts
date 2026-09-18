@@ -6,8 +6,9 @@
  * A cadre member that has fully converged the party's control database over the network
  * can still be missing the *storage blocks* that database is made of: a block committed
  * while its writer was alone has a cohort of one, and the named collection-header blocks
- * (`default/cadrecontrol/CadrePeer`, `default/cadrecontrol/OwnerKey`, …) are written exactly once, at collection
- * creation during the founder's solo genesis — their revision never moves again, so no
+ * (`default/cadrecontrol/CadrePeer`, `default/cadrecontrol/OwnerKey`, …) are written
+ * exactly once, at collection creation during the founder's solo genesis — their revision
+ * never moves again, so no
  * later commit ever carries them to a member that joined after them. While the member is
  * connected that gap is invisible (reads resolve a coordinator that answers from the
  * founder's storage); the moment it restarts with no connections, every table whose
