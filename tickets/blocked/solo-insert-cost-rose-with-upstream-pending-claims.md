@@ -40,3 +40,5 @@ In `BlockStorage.setLatest`, remove the committing action's claim from the map (
 ## Unblock
 
 When the upstream fix lands and the dist is rebuilt, run `yarn workspace @serfab/cadre-core test --run strand-solo-write-budget`. Then re-baseline `INSERT` (expected `ops: 88`) and `LAUNCH` (currently 88, expected about 80) with the new upstream commit in `BASELINE_UPSTREAM`. The provenance comment must attribute the +8 per-pend `saveMetadata` to `9cbc7427`'s pending claims. The `INSERT` comment asks that any rise be explained before the budget moves, and this ticket is that explanation. Do not raise the ceiling to absorb the 11 no-op deletes.
+
+**Carried upstream 2026-09-17:** optimystic `tickets/fix/2-committing-a-block-deletes-a-pending-record-that-is-already-gone.md` (`f1fc816c`), in their fix queue. Optimystic will message when it lands and dist is rebuilt.

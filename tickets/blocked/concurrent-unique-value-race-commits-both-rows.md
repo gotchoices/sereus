@@ -57,3 +57,5 @@ An `../optimystic` change after which a same-instant unique-value loser is refus
 This run did not edit the optimystic board: another runner was active in that checkout. Suggested evidence to append to `../optimystic/tickets/backlog/feat-optimystic-legacy-commit-two-phase.md`, with a request to reconsider filing it as a bug instead of a future enhancement:
 
 > Measured from sereus on 2026-09-17 against `61747f60`: two real nodes in a confirmed two-member cohort, inserting different primary keys that share one secondary-unique value in the same tick. 6 of 6 rounds ended in `PartialCommitError` with the loser's base row and first index durably stored and the unique index not, leaving both rows readable on both nodes under one unique value. The pre-flight cannot catch this shape because neither rival has committed when it runs. For same-instant writers this is the expected outcome, not a narrow window.
+
+**Carried upstream 2026-09-17:** optimystic `tickets/fix/1-two-writers-racing-on-a-unique-value-both-commit.md` (`f1fc816c`), in their fix queue. Optimystic will message when it lands and dist is rebuilt.
