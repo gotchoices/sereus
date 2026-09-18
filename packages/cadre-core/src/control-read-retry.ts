@@ -1,5 +1,5 @@
 import { BlockUnavailableError } from '@optimystic/db-core';
-import { chainMessages, retryControlOperation } from './control-retry.js';
+import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
 
@@ -163,20 +163,6 @@ export function isRetriableControlReadFailure(error: unknown): boolean {
 export function isCohortUnreachableRead(error: unknown): boolean {
 	return causeChain(error).some(link =>
 		link instanceof BlockUnavailableError && link.reason === 'cohort-unreachable');
-}
-
-/**
- * `error` and every `cause` below it, outermost first. Stops at a non-`Error` link (it can
- * carry no further `cause` worth trusting) and at a repeat, so a cyclic chain terminates.
- */
-function causeChain(error: unknown): Error[] {
-	const links: Error[] = [];
-	let current: unknown = error;
-	while (current instanceof Error && !links.includes(current)) {
-		links.push(current);
-		current = current.cause;
-	}
-	return links;
 }
 
 /**

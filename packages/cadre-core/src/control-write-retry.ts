@@ -1,4 +1,6 @@
-import { chainMessages, retryControlOperation } from './control-retry.js';
+import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
+import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
+import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 
 /**
@@ -24,6 +26,11 @@ import type { ControlRetryOptions } from './control-retry.js';
  * says. Safe because nothing has committed at that phase, and deliberately kept — one of the
  * remaining promise-phase rejections is exactly the kind a re-presentation fixes. See the
  * accepted-tradeoff `NOTE:` there for which, and why no blanket rejection veto is wanted.
+ *
+ * A failure that says some of the write may be STORED is a different matter, and never
+ * re-presented whatever text it carries: {@link reportsPossiblyStoredWrite} vetoes it by type
+ * before any matcher runs. The one half-landed write that IS re-presented is a torn write the
+ * library marks final — not saved and unable to land ({@link isFinalTornWrite}).
  *
  * TWO policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
@@ -204,8 +211,11 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  *    rejections (`validatePendOperations`,
  *    `../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts`), so the rejection this tradeoff
  *    was originally written about does not arrive any more. It reaches this funnel as
- *    `SyncRetryExhaustedError` instead, which no matcher here claims and which must stay declined
- *    — by then Optimystic's own collection sync has already spent its ten retries on the race.
+ *    `SyncRetryExhaustedError` instead, which {@link reportsPossiblyStoredWrite} declines by type
+ *    — upstream documents resubmitting after it as unsafe (the attempt that spent the budget may
+ *    have left its log entry standing), and its collection sync has already spent ten retries on
+ *    the race. The torn-write rule beside it: a `TornActionError` is re-presented only when
+ *    `final` is true; any other torn write is declined.
  *  - What remains rejectable at the promise phase is stale revision, block-unavailable,
  *    membership-not-admitted, and a configured validator's refusal. Only the first is worth a
  *    retry — and it is worth one: this loop re-runs the WHOLE write body, reads included
@@ -245,6 +255,51 @@ export function isUncommittedTransactorAggregate(message: string): boolean {
  */
 function reportsIndeterminateCommit(messages: readonly string[]): boolean {
 	return messages.some(message => message.includes(COMMIT_BATCH_TOKEN));
+}
+
+/**
+ * Does any link of the `cause` chain say some of this write may be stored, or may still be?
+ * Such a failure is never re-presented — a re-run could store the write twice.
+ *
+ * - `SyncRetryExhaustedError` (and its `SyncRevisionStalledError` subclass): upstream documents
+ *   resubmitting as unsafe, because the attempt that spent the budget may have left its log
+ *   entry standing.
+ * - `TornActionError` without `final: true`: the write's log entry is stored and nobody could
+ *   establish that the rest can never land — it may be saved already, or land later.
+ * - `CoordinatorPartialCommitError` / `PartialCommitError`: another collection or tree of the
+ *   same transaction is already durable, and re-running the whole body would apply it twice.
+ *
+ * Every one of these embeds text from elsewhere in its message (a responder's refusal, the
+ * underlying failure), which can carry the pend-phase aggregate's prefix and `[block:` token —
+ * so this veto runs before any text matcher.
+ *
+ * Matched by TYPE: each class survives the bridge's and Quereus' rewraps on `cause`. An error
+ * built by a second loaded copy of `@optimystic/db-core` fails `instanceof`, and then this veto
+ * does not fire — falling back to the text classifiers, which is how these failures were
+ * classified before the veto existed. The asymmetry with {@link isFinalTornWrite} is deliberate:
+ * there, a missed `instanceof` means no retry, which is the safe side. No text fallback parses
+ * `TornActionError`'s closing sentence, since upstream says its wording is for log lines only.
+ */
+function reportsPossiblyStoredWrite(links: readonly Error[]): boolean {
+	return links.some(link =>
+		link instanceof SyncRetryExhaustedError
+		|| (link instanceof TornActionError && link.final !== true)
+		|| link instanceof CoordinatorPartialCommitError
+		|| link instanceof PartialCommitError);
+}
+
+/**
+ * A torn write the library marks FINAL: not saved, unable to land, its pending records confirmed
+ * cancelled — so submitting it again stores it once.
+ *
+ * Worth re-presenting, not merely safe to: upstream raises it mostly when a rival holds the
+ * revision this write's log entry claimed, which is contention, and the loop re-runs the write
+ * body's reads, so the next attempt builds on the rival's revision — the same argument that keeps
+ * stale-revision rejections retried (the accepted-tradeoff `NOTE:` on
+ * {@link isUncommittedTransactorAggregate}).
+ */
+function isFinalTornWrite(link: Error): boolean {
+	return link instanceof TornActionError && link.final === true;
 }
 
 /** The coordinator's shortfall, raised pre-commit, with nobody having voted no. */
@@ -323,16 +378,18 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * Did this control write fail because the cluster cohort did not ANSWER — i.e. is
  * re-presenting the SAME signed write a moment later the right response?
  *
- * Classifies by MESSAGE, walking the `cause` chain with the shared {@link chainMessages}
- * (Quereus' own `unwrapError` underneath) —
- * the failure surface is not recognisable by type. The transactor and the coordinator both throw bare `Error`s, and by
- * the time one reaches `ControlDatabase` it is wrapped in a `QuereusError` (the real chain
- * is `QuereusError` → `Error` → `Error`), so the match must work at any depth. Anything
- * that is not an `Error` is never retried.
+ * Classifies the transient cases by MESSAGE, walking the `cause` chain with the shared
+ * {@link chainMessages} (Quereus' own `unwrapError` underneath) — the transactor and the
+ * coordinator both throw bare `Error`s, not recognisable by type. By the time one reaches
+ * `ControlDatabase` it is wrapped in a `QuereusError` (the real chain is `QuereusError` → `Error`
+ * → `Error`), so the match must work at any depth. Anything that is not an `Error` is never
+ * retried.
  *
- * {@link reportsIndeterminateCommit} vetoes the whole chain before any matcher runs, so a
- * failure that reports a commit-phase batch anywhere is never retried on the strength of some
- * other level looking transient.
+ * Two vetoes run over the whole chain before any matcher: {@link reportsPossiblyStoredWrite}
+ * (by type — a spent sync budget, a non-final torn write, a partial commit) and
+ * {@link reportsIndeterminateCommit} (by text — a commit-phase batch). A chain either veto flags,
+ * at any level, is never retried on the strength of some other level looking transient. The one
+ * typed failure claimed as retriable is a final torn write ({@link isFinalTornWrite}).
  *
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
  * network are driven from the REAL engine in `control-formation-seat-budget.spec.ts`, so
@@ -343,7 +400,7 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * aggregate from a real stream reset, which the retry there absorbs end to end.
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
-	return matchesRetriableMessage(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
+	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
 }
 
 /**
@@ -354,25 +411,34 @@ export function isRetriableControlWriteFailure(error: unknown): boolean {
  * default classifier untouched.
  */
 export function isRetriableSchemaInitFailure(error: unknown): boolean {
-	return matchesRetriableMessage(error, RETRIABLE_SCHEMA_INIT_MATCHERS);
+	return matchesRetriableFailure(error, RETRIABLE_SCHEMA_INIT_MATCHERS);
 }
 
 /**
- * Shared body of both classifiers: walk the `cause` chain, let
- * {@link reportsIndeterminateCommit} veto it, then ask `matchers`. The veto runs BEFORE any
- * matcher for every policy — a chain reporting a commit-phase batch is never retried, however
- * transient some other level looks.
+ * Shared body of both classifiers: walk the `cause` chain, let {@link reportsPossiblyStoredWrite}
+ * and then {@link reportsIndeterminateCommit} veto it, then claim a final torn write
+ * ({@link isFinalTornWrite}), then ask `matchers`. The vetoes run BEFORE any matcher for every
+ * policy — a chain reporting a possibly-stored write or a commit-phase batch is never retried,
+ * however transient some other level looks, and a final torn write carried by a partial commit is
+ * still declined because a sibling collection landed.
  */
-function matchesRetriableMessage(
+function matchesRetriableFailure(
 	error: unknown,
 	matchers: readonly ((message: string) => boolean)[]
 ): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
+	const links = causeChain(error);
+	if (reportsPossiblyStoredWrite(links)) {
+		return false;
+	}
 	const messages = chainMessages(error);
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
+	}
+	if (links.some(isFinalTornWrite)) {
+		return true;
 	}
 	return messages.some(message => matchers.some(matches => matches(message)));
 }

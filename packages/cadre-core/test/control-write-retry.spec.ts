@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+	CoordinatorPartialCommitError,
+	SyncRetryExhaustedError,
+	SyncRevisionStalledError,
+	TornActionError,
+} from '@optimystic/db-core';
+import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
+import { QuereusError, StatusCode } from '@quereus/quereus';
+import {
 	CONTROL_WRITE_ATTEMPTS,
 	CONTROL_WRITE_RETRY_BUDGET_MS,
 	SCHEMA_INIT_ATTEMPTS,
@@ -112,7 +120,8 @@ const CANCEL_DISCHARGE_AGGREGATE =
  * `SyncRetryExhaustedError`, raised by `Collection.sync` after it has already spent its own
  * bounded attempts (`db-core/src/collection/collection.ts`) racing a rival action for the
  * same block. Reaches this funnel with no transactor-aggregate wrapper at all, so no matcher
- * here claims it.
+ * here claims it — and as the real class it is vetoed by type besides (the
+ * `typed possibly-stored failures` cases below). This literal pins the text half.
  *
  * THE LIVE SHAPE contention takes today. Since optimystic made "another write holds this
  * block right now" a `held` verdict — counting toward neither approvals nor rejections
@@ -485,6 +494,140 @@ describe('isRetriableSchemaInitFailure', () => {
 	});
 });
 
+/** The control collection most of the typed cases below are raised against. */
+const PEER_COLLECTION = 'default/cadrecontrol/CadrePeer';
+
+/**
+ * A real upstream `TornActionError`: the write's log entry is stored, one block is not known to
+ * hold it. `final` is the only field the classifier may act on; `detail` is upstream's "never
+ * branch on it" text, defaulted here to a rival-holds-revision refusal.
+ */
+function tornWrite(final: boolean, detail = 'block PaWaynQLVfuwhcw4tGh0uX is held at rev 13 by another action'): TornActionError {
+	return new TornActionError(PEER_COLLECTION, 'N7Wj4Q9nOWCkm5G1cxTPWg', 12, ['PaWaynQLVfuwhcw4tGh0uX'],
+		'rival-holds-revision', final, detail);
+}
+
+/**
+ * How a commit failure reaches `ControlDatabase`: the optimystic bridge rethrows the original
+ * error, and Quereus wraps it in a `QuereusError` whose `cause` is that error.
+ */
+function viaQuereus(error: Error): QuereusError {
+	return new QuereusError(`Commit failed: ${error.message}`, StatusCode.ERROR, error);
+}
+
+/**
+ * The bridge's other rethrow shape (`TransactionBridge.mapCommitRefusal`): a new `Error` with a
+ * re-rendered message and the original error as `cause`, then Quereus' wrap over that.
+ */
+function viaRefusalRewrap(error: Error): QuereusError {
+	return viaQuereus(new Error('concurrent modification: another writer changed or removed the row in CadrePeer', { cause: error }));
+}
+
+/** A failure delivered bare, through Quereus, and through the bridge's rewrap — every shape it can take. */
+function everyDelivery(error: Error): Error[] {
+	return [error, viaQuereus(error), viaRefusalRewrap(error)];
+}
+
+/** Both write classifiers — the typed veto and matcher sit in their shared body, so each case holds for both. */
+const WRITE_CLASSIFIERS = [
+	['isRetriableControlWriteFailure', isRetriableControlWriteFailure],
+	['isRetriableSchemaInitFailure', isRetriableSchemaInitFailure],
+] as const;
+
+/**
+ * Failures upstream raises as TYPED errors that say whether any of the write is stored, classified
+ * by class and field rather than by text — built here from the real `@optimystic/*` classes and
+ * wrapped the way they arrive, because `instanceof` is the whole mechanism.
+ *
+ * The rule under test: a torn write is re-presented only when upstream marks it `final` (not
+ * saved, cannot land, its pending records confirmed cancelled); a non-final torn write, a spent
+ * sync budget, and a partial commit are never re-presented, whatever text they carry.
+ */
+describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name, classify) => {
+	it('retries a final torn write, bare and wrapped', () => {
+		for (const delivered of everyDelivery(tornWrite(true))) {
+			expect(classify(delivered)).toBe(true);
+		}
+	});
+
+	it('never retries a non-final torn write — it may be saved already or land later', () => {
+		for (const delivered of everyDelivery(tornWrite(false))) {
+			expect(classify(delivered)).toBe(false);
+		}
+	});
+
+	/**
+	 * `detail` is the responder's own words, and upstream embeds it in the message. When those
+	 * words are a pend-phase aggregate, the message alone would satisfy the text matcher's prefix
+	 * and `[block:` token — this pins the typed veto running first.
+	 */
+	it('never retries a non-final torn write whose detail embeds a pend-phase aggregate', () => {
+		for (const delivered of everyDelivery(tornWrite(false, TRANSACTOR_AGGREGATE))) {
+			expect(classify(delivered)).toBe(false);
+		}
+	});
+
+	/**
+	 * Upstream documents resubmitting after a spent sync budget as unsafe: the attempt that spent
+	 * it may have left its log entry standing. `lastReason` is embedded in the message, so the
+	 * aggregate-bearing variant pins the veto against the text matcher again; the stalled-revision
+	 * subclass is covered by the same `instanceof`.
+	 */
+	it('never retries a SyncRetryExhaustedError, whatever its last reason says', () => {
+		const exhausted = [
+			new SyncRetryExhaustedError(PEER_COLLECTION, 10),
+			new SyncRetryExhaustedError(PEER_COLLECTION, 10, TRANSACTOR_AGGREGATE),
+			new SyncRevisionStalledError(PEER_COLLECTION, 3, { blockId: 'PaWaynQLVfuwhcw4tGh0uX', rev: 13 }, 13, 12,
+				TRANSACTOR_AGGREGATE),
+		];
+		for (const error of exhausted) {
+			for (const delivered of everyDelivery(error)) {
+				expect(classify(delivered)).toBe(false);
+			}
+		}
+	});
+
+	it('never retries a partial commit reporting a final torn sibling — another collection landed', () => {
+		const partial = new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'],
+			[PEER_COLLECTION], tornWrite(true));
+		for (const delivered of everyDelivery(partial)) {
+			expect(classify(delivered)).toBe(false);
+		}
+	});
+
+	/**
+	 * Both partial-commit errors embed their reason's message (`Underlying failure: …`), so a
+	 * pend-phase aggregate from a sibling collection puts the text matcher's prefix and token into
+	 * a message that also reports a durable half. Re-running the whole write body would double-apply
+	 * that half; upstream's contract says the whole transaction must not be blindly retried.
+	 */
+	it('never retries a partial commit whose failure is a pend-phase aggregate', () => {
+		const partials = [
+			new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'], [PEER_COLLECTION],
+				new Error(TRANSACTOR_AGGREGATE)),
+			new PartialCommitError(['default/cadrecontrol/CadrePeer'], ['default/cadrecontrol/CadrePeer$PeerIdIndex'],
+				new Error(TRANSACTOR_AGGREGATE)),
+		];
+		for (const partial of partials) {
+			for (const delivered of everyDelivery(partial)) {
+				expect(classify(delivered)).toBe(false);
+			}
+		}
+	});
+
+	/**
+	 * Neither partial-commit error chains its reason on `cause` today, so a final torn sibling is
+	 * visible only in the text. Hand-assembled so the order is pinned should upstream start
+	 * chaining it: the partial commit's veto must still beat the final torn write's claim.
+	 */
+	it('lets the partial-commit veto beat a final torn write on the same chain', () => {
+		const partial = new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'],
+			[PEER_COLLECTION], tornWrite(true));
+		partial.cause = tornWrite(true);
+		expect(classify(viaQuereus(partial))).toBe(false);
+	});
+});
+
 describe('retryControlWrite', () => {
 	it('returns the second attempt\'s value after one transient failure', async () => {
 		let runs = 0;
@@ -567,6 +710,32 @@ describe('retryControlWrite', () => {
 			throw failure;
 		}, immediatePacing())).rejects.toBe(failure);
 
+		expect(runs).toBe(1);
+	});
+
+	/**
+	 * A final torn write is a lost race against a rival holding the revision the write claimed.
+	 * Re-running the body re-reads, so attempt 2 builds on the rival's revision and commits.
+	 */
+	it('re-runs the body after a final torn write, and not after a non-final one', async () => {
+		let runs = 0;
+		const result = await retryControlWrite(async () => {
+			runs++;
+			if (runs === 1) {
+				throw viaQuereus(tornWrite(true));
+			}
+			return 'committed';
+		}, immediatePacing());
+
+		expect(result).toBe('committed');
+		expect(runs).toBe(2);
+
+		runs = 0;
+		const failure = viaQuereus(tornWrite(false));
+		await expect(retryControlWrite(async () => {
+			runs++;
+			throw failure;
+		}, immediatePacing())).rejects.toBe(failure);
 		expect(runs).toBe(1);
 	});
 

@@ -135,25 +135,25 @@ const log = debug('sereus:integration:degraded-cohort');
 // authoritative if the two ever disagree, and it is where a new fingerprint
 // gets added first. It is kept in sync with the delta at the TOP of that file.
 //
-//  - A control write ABANDONED to contention, on any node:
-//    `Control write [<label>] failed non-transiently on attempt 1/3, not retried
-//    here: SyncRetryExhaustedError: sync for collection
-//    default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict:
-//    block(s) held by unresolved rival action(s) <action id>`
-//    and its sibling wording, `Pend blocks held: n/3 member(s) hold an unresolved
-//    rival action (m/3 approvals)` — both were seen in one run on 2026-09-17
-//    → cause is upstream:
-//    `../optimystic/tickets/implement/a-member-that-missed-a-commit-refuses-every-later-write`
-//    (a member that promised a write and then missed its commit keeps that pending
-//    record forever and reads it as a live rival on every later write to the block;
-//    at three members one such holder refuses everything). NOT a retry-budget
-//    problem — upstream measured a contending writer absorbing a LIVE, progressing
-//    rival in two retries, and against a wedged record no budget is enough. As of
-//    this ticket the loss is no longer silent: every node's
-//    `control:write-abandoned` event is watched and `afterEach` fails on a write
-//    abandoned outside a deliberately degraded window.
 //  - `2/3 approvals (needed 3, 0 rejections)` — not a failure, the
 //    deliberately silent-member cases behaving as specified
+//  - C's background `[self-record-update]` given up during the delayed-member
+//    case with `SyncRetryExhaustedError: … exhausted 10 retries: Conflict race
+//    lost: 1/3 member(s) hold a conflicting winner (2/3 approvals)` — not a
+//    failure. That case holds every request to C for 2 s, so A's write takes
+//    ~55 s and C's own refresh loses the race to it until its sync budget
+//    (~16 s) runs out; A's write then commits. Seen in 2 of 5 runs on
+//    2026-09-17, always labelled "inside a deliberately degraded window". Outside
+//    one, or with `pending conflict` wording, it is a finding.
+//
+// CLOSED 2026-09-17 (closing): a control write abandoned to a DEAD pending record,
+// `SyncRetryExhaustedError: … pending conflict: block(s) held by unresolved rival
+// action(s) <id>` / `Pend blocks held: n/3 member(s) hold an unresolved rival action`
+// (owned upstream by `a-member-that-missed-a-commit-refuses-every-later-write`: a
+// member that missed a commit kept its pending record and refused every later write
+// to the block). Fixed at optimystic `98fd2ab1`; five isolated runs on 13586033 /
+// 2fdb3b97 were 7/7 with neither wording. A recurrence is a REGRESSION — report it
+// through `tickets/.pre-existing-error.md`.
 //
 // CLOSED 2026-09-17: `pending conflict` after a stream reset whose error carried
 // `cancelError` (owned by `control-write-retry-does-not-absorb-a-transient-stream-reset`).
@@ -383,7 +383,9 @@ interface LostWrite extends ControlRetryAbandonment {
  * NOTE: the number is a judgement call, not a measurement. In the one full run made against
  * it (2026-09-17 review pass: 4 failed / 3 passed, all on the upstream wedge) no abandonment
  * landed inside a grace window at all — every loss was either inside a held degradation or
- * many seconds clear of the last release — so that run neither confirmed nor refuted it.
+ * many seconds clear of the last release — so that run neither confirmed nor refuted it. Nor
+ * did the five-run series after the upstream wedge fix: its two in-window losses (C's
+ * `[self-record-update]` in the delayed-member case) both landed while the delay was still held.
  * Both failure modes are visible in the `[abandoned-write …]` lines, which say whether each
  * loss was scoped: TOO SHORT shows up as a case reddening on a write the PREVIOUS case
  * provoked; TOO LONG as a genuine loss right after a release being marked "inside a

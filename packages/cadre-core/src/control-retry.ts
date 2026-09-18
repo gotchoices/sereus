@@ -255,6 +255,22 @@ export function chainMessages(error: Error): string[] {
 }
 
 /**
+ * `error` and every `cause` below it, outermost first — the substrate for the classifiers that
+ * match by TYPE rather than text (the read side's cohort-unreachable check, the write side's
+ * possibly-stored veto). Stops at a non-`Error` link (it can carry no further `cause` worth
+ * trusting) and at a repeat, so a cyclic chain terminates.
+ */
+export function causeChain(error: unknown): Error[] {
+	const links: Error[] = [];
+	let current: unknown = error;
+	while (current instanceof Error && !links.includes(current)) {
+		links.push(current);
+		current = current.cause;
+	}
+	return links;
+}
+
+/**
  * Backoff for the retry that follows attempt `attemptNumber`: the matching base delay
  * (last entry repeats), jittered ±50%, then capped at the list's largest base so no single
  * sleep exceeds it (see {@link ControlRetryPolicy.delaysMs} for why). `Math.random` is
