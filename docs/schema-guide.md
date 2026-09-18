@@ -334,12 +334,14 @@ secondary `unique` column (a username, an email address, a claimed handle) is a 
 stand between two members and a duplicate, the same as the primary key. The permanent guard is
 `packages/integration-tests/src/scenarios/control-concurrent-unique-column-race.integration.ts`.
 
-One thing to watch when handling the refusal: a *concurrent* duplicate can arrive as a plain
-`Error` rather than the engine's `ConstraintError` type, while a *sequential* duplicate (the same
-value inserted after the first has already committed) always comes back as a `ConstraintError`
+One thing to watch when handling either refusal, primary key or secondary `unique` column: a
+*concurrent* duplicate can arrive as a plain `Error` rather than the engine's `ConstraintError`
+type, while a *sequential* duplicate (the same value inserted after the first has already
+committed) always comes back as a `ConstraintError`
 (`../optimystic/tickets/backlog/bug-concurrent-unique-refusal-is-not-a-constraint-error.md`). Both
-shapes carry the same `UNIQUE constraint failed: <Table>.<Column>` text somewhere in the error's
-message chain, so match on that text rather than on the error's type.
+shapes carry the same `UNIQUE constraint failed: <Table>.<Column>` text, in the error's own message
+or in the message of an error on its `cause` chain, so match on that text rather than on the
+error's type. This applies to the `max(id) + 1` retry above as much as to a secondary column.
 
 ---
 

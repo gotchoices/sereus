@@ -84,3 +84,19 @@ No pre-existing failures encountered; nothing written to `.pre-existing-error.md
   rely on this" into a "this is safe, here's the one thing to know about error shape") — worth a
   read-through against the surrounding "Ordering Events" section for flow, since it now argues
   primary-key and secondary-unique safety as one point rather than a rule-plus-exception.
+
+## Review findings
+
+Read the implement diff (`aa2df4ed`) first, then the fix-stage diff (`6253ffdd`) that produced the scenario, then the upstream `../optimystic` sources the docs now describe.
+
+- **Doc accuracy against upstream: checked, one minor gap fixed.** The upstream error-type bug (`../optimystic/tickets/backlog/bug-concurrent-unique-refusal-is-not-a-constraint-error.md`) covers concurrent refusals on the *primary key* as well as on secondary unique columns. The schema-guide note sat only under the secondary-column paragraph, while the paragraph above it tells `max(id) + 1` authors to write their own retry and so to catch the same refusal. I reworded the note in `docs/schema-guide.md` to cover both races, and to say "own message or a message on its `cause` chain" in place of "message chain". I made the matching wording change in both places in `tickets/blocked/report-schema-guide-concurrency-correction-to-issue-5.md`. This review's run confirmed the behavior: all three losers came back as a plain `Error` with `retriable=false`.
+- **"Reserved together before any is made final" (schema guide): checked, holds.** Upstream `txn-bridge.ts` pends every tree of a legacy commit in one batch. The per-tree fallback sweep (the older path that saves each tree separately) remains only for trees on different transactors (separate storage instances) or for test doubles. A table and its own indexes always share one transactor. Upstream already documents the different-transactor case as a `NOTE:` tripwire (`legacyBatch`), so I added nothing here.
+- **`docs/architecture.md` scenario count: checked, correct.** It names four scenarios but says "three guard that". The three are the ones that exercise the secondary index. `control-concurrent-same-pk-insert` is named only as a neighboring scenario, and that is accurate because the primary key is not enforced through a secondary index.
+- **"6 of 6 rounds" in the blocked issue-5 draft: checked, correct.** It is the post-fix measurement recorded in the fix stage (two processes of three rounds each). The scenario header's "6 of 6" is the pre-fix measurement. Both are accurate in context.
+- **Stale references: none left.** Grepped docs, packages and live tickets for the slug, "not yet a safe", "still-open" and "one narrower". The only hits outside `complete/` are unrelated uses of "still-open" (sockets and a write side).
+- **Other docs that should have changed: none needed.** No other doc, including `docs/testing.md` and the package READMEs, lists the uniqueness scenarios.
+- **Code quality, tests, error handling, resource cleanup:** there was no production or test code change in the implement stage, so none of these applied. The scenario file from the fix stage keeps its per-round `console.log` lines on purpose (as instructed) and asserts one-to-one outcomes, never a fixed winner. This run's winners were A, B, A.
+- **Tripwires: none new.** The only conditional concern (a commit spanning several transactors) is already recorded upstream.
+- **Major findings / new tickets: none.**
+
+Validation: `yarn lint` clean. `yarn workspace @serfab/integration-tests vitest run` on the three uniqueness scenarios gave 3 files and 8 tests, all passing (log: `tickets/.logs/concurrent-unique-value-race-commits-both-rows.review.log`).
