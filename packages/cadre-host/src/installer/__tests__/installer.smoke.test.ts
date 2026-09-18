@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -90,6 +90,31 @@ describe('Installer smoke', () => {
     expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
     expect(existsSync(join(tmp, 'identity.key'))).toBe(true);
     expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
+  });
+
+  it('noService on an interactive install skips the enrollment-invite fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    try {
+      const installer = new Installer({ platform: 'linux', installerVersion: 'test-1.0.0' });
+      const result = await installer.install({
+        nonInteractive: false,
+        noService: true,
+        wizard: async () => ({
+          dataDir: tmp,
+          uiPort: 19994,
+          libp2pPort: 14006,
+          upnpEnabled: false,
+          configureDdns: false,
+          ownCadre: false,
+        }),
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.enrollmentInvite).toBeUndefined();
+      expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('uninstall removes data only when --remove-data is set', async () => {

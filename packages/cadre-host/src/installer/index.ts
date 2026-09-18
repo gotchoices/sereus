@@ -165,8 +165,9 @@ export class Installer {
     //    NatService picks them up on first start.
     seedNatSettings(answers.dataDir, answers.libp2pPort, answers.upnpEnabled);
 
-    // 5. Service-host registration.
     const uiUrl = `http://127.0.0.1:${answers.uiPort}/`;
+
+    // 5. Service-host registration.
     if (opts.noService) {
       log('--no-service: skipping service registration, browser open and enrollment invite');
       return { dataDir: answers.dataDir, uiUrl, configPath: cfgPath };

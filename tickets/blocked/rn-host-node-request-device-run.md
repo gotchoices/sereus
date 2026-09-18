@@ -40,7 +40,7 @@ File them as their own tickets rather than growing this one, the way the earlier
 Run by an agent over adb, 23:10–23:18 MDT, right after `rn-device-relay-run-optimystic-95fd269e` (same Metro session and bundle, sereus `76cb6880`, optimystic `95fd269e`). Galaxy Note 9 on Wi-Fi `LivingOnAPrarie` at 192.168.86.35. Windows 11 PC on the same Wi-Fi at 192.168.86.41 (also on Tailscale, 100.67.49.72).
 
 **Still blocked, on a human decision about this PC's firewall.** Everything up to the lent node worked. The phone's dial to the node over the LAN is dropped by Windows. Unblock by doing one of these on the PC, then re-running:
-- mark the Wi-Fi network Private (it is classified **Public**), or
+- mark the Wi-Fi network Private (it is classified **Public**). This alone may not be enough: re-checked 2026-09-18, this PC has no Allow rule for `node.exe` on any profile, only the two Block rules on Public. See the firewall bullets in `docs/reference-app-rn.md` ("Reaching the host from the phone"). Or
 - replace the existing inbound **Block** rules for `C:\Program Files\nodejs\node.exe` on the Public profile with an Allow rule (or add an Allow rule for the orchestrator's ports, 10000–20000).
 
 Changing firewall or network settings on the user's machine was out of bounds for the agent.
