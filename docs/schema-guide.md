@@ -599,7 +599,6 @@ schema "org.sereus.chat" version 1 using (default_vtab_module = 'memory') {
 
 ### Practical Guidance & Patterns
 - Prefer declarative `schema { ... }` blocks; they’re order-independent and diffable.
-- Don't name an app table like one of the strand's built-in membership tables (`Member`, `Invite`, `Header`, … in any letter case): it would share that table's storage, so strand bring-up refuses the schema — the full list is in [`strands.md` → Reserved Table Names](strands.md#reserved-table-names).
 - Model authorization at the data layer using context variables + checks; keep business rules close to data.
 - Use global assertions for invariants spanning multiple tables.
 - Expect some checks to be validated at COMMIT (auto-deferred) when referencing external rows/aggregates.

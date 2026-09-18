@@ -5,10 +5,6 @@
 -- participant key signs messages, attachments, responses, additional device keys
 -- and new invitations; the invitation's own key signs a participant's admission,
 -- the invitation's redemption, and that participant's first device key.
---
--- Table names avoid the strand's own reserved names (`Invite`, `Member`, ...): an
--- app table may not reuse a strand table name (docs/strands.md "Reserved Table
--- Names").
 
 declare schema Chat {
     table Invitation (

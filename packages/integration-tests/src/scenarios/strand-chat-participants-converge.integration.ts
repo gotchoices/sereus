@@ -11,10 +11,10 @@
  * the founder read a null-id "participant" (its own `Strand.Member` row decoded through
  * the app's columns), the joiner's own participant insert reported success and never
  * read back, and its next message failed the foreign key. Renamed to `Participant`, the
- * same run converged. `composeStrand` now refuses the colliding name outright (plugin
- * unit suite); optimystic separately now includes the schema name in that default
- * location (`tree://default/<schema>/<Table>`), so the collision could not recur even
- * under the old name. This scenario pins the working shape: the canonical
+ * same run converged. Optimystic now includes the schema name in that default location
+ * (`tree://default/<schema>/<Table>`) and in the table's catalog key, so the two tables
+ * are stored separately and the collision could not recur even under the old name (the
+ * plugin unit suite pins this). This scenario pins the working shape: the canonical
  * `schemas/chat-simple.qsql`, a closed strand, two parties, exact ids on both machines.
  *
  * The SECOND defect from that device report lives here too. A joiner that wrote its

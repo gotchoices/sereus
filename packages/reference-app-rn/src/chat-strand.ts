@@ -26,9 +26,6 @@ import { insertParticipant, participantDisplayName, type ChatRole } from './chat
 // `MemberPrivateKey`-granular (member vs non-member). The role lives here, in
 // the chat schema, and is assigned on create/join. See the README "Trust model"
 // section for where this boundary sits.
-//
-// The table is `Participant`, not `Member`: `Member` is a table of the built-in
-// `Strand` schema, and app tables may not reuse `Strand` table names.
 
 const CHAT_SCHEMA = `
 table Participant (

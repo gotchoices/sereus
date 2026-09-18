@@ -183,9 +183,7 @@ table Message (
 ```
 
 `schemas/chat-simple.qsql` is the source of record for the above; `composeStrand` supplies the
-`declare schema App { ... }` wrapper, so the file itself is a bare table list. The chat table is
-`Participant` rather than `Member` because app tables may not reuse the built-in `Strand` schema's
-table names ([`docs/strands.md` → Reserved Table Names](strands.md#reserved-table-names)).
+`declare schema App { ... }` wrapper, so the file itself is a bare table list.
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 

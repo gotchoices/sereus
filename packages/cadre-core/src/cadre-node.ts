@@ -3,7 +3,7 @@ import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } fr
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache, assertNoReservedTableNames } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -4772,9 +4772,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * @returns The instance AND the row the strand actually runs under — read the membership
    *   key from the returned row, not from a freshly minted one ({@link FoundStrandResult}).
-   * @throws if the node is not started, the id is blank, the sApp schema declares a table
-   *   named like a strand table (`ReservedTableNameError`, before anything is written), a
-   *   published row of the same id has a different `Type`, or either half rejects.
+   * @throws if the node is not started, the id is blank, a published row of the same id has
+   *   a different `Type`, or either half rejects.
    */
   async foundStrand(config: FoundStrandConfig): Promise<FoundStrandResult> {
     const { strandId, type = 'o', memberPrivateKey, sAppConfig, awaitFirstSync } = config;
@@ -4783,9 +4782,6 @@ export class CadreNode implements SAppIdLookup {
     }
     const controlDatabase = this.controlDatabase;
     const trimmed = requireNonBlank(strandId, 'strand id');
-    // Bring-up (composeStrand) refuses this too, but only AFTER the row below is
-    // published — leaving a cadre-wide row that no machine can ever launch.
-    assertNoReservedTableNames(sAppConfig.schema);
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('foundStrand', trimmed, step, op);
     const tTotal = performance.now();
     const published = await timed('queryStrand', () => controlDatabase.queryStrand(trimmed));

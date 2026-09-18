@@ -2,13 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
-import { defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
+import { MemoryRawStorage, defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
 import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
-import { ReservedTableNameError, assertNoReservedTableNames, strandReservedTableNames } from '../src/reserved-table-names.js';
 import {
 	CONTROL_CLUSTER_POLICY,
 	CONTROL_REPLICATION_BREADTH,
@@ -522,108 +521,89 @@ describe('connectToStrand', () => {
 	});
 });
 
-describe('reserved strand table names', () => {
-	let db: Database;
+describe('an sApp table named like a strand table', () => {
+	// `App.Member` and `Strand.Member` once shared one optimystic collection (the default
+	// location left the engine schema out) and one catalog record, so each decoded the
+	// other's rows. Optimystic now derives both from the schema AND the table name
+	// (`tree://default/<schema>/<Table>`); this pins that the two stay apart through
+	// sereus's own composition, cold and after a warm restart through `hydrate`.
+	const APP_SCHEMA = 'table Member (Id text primary key, Name text)';
+	const strandMember = { Key: 'm1', StampId: 'stamp-m1' };
+	const appMember = { Id: 'a1', Name: 'Alice' };
 
 	beforeEach(async () => {
-		db = new Database();
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		vi.mocked(createLibp2pNode).mockClear();
 	});
 
-	afterEach(() => {
-		db.close();
-	});
-
-	/** The error `promise` rejected with, asserted to be a ReservedTableNameError. */
-	async function refusal(promise: Promise<unknown>): Promise<ReservedTableNameError> {
-		const error = await promise.then(() => undefined, (err: unknown) => err);
-		expect(error).toBeInstanceOf(ReservedTableNameError);
-		return error as ReservedTableNameError;
-	}
-
-	it('reserves every table the strand schema declares, read from the schema itself', () => {
-		expect(strandReservedTableNames()).toEqual(expect.arrayContaining([
-			'Header', 'Invite', 'ConsumedInvite', 'CancelledInvite', 'Member', 'MemberPeer', 'Manager', 'Revocation',
-		]));
-	});
-
-	it('refuses an sApp table named like a strand table, naming the table and the reserved list', async () => {
-		const error = await refusal(connectToStrand(db, {
-			strandId: 'test-strand-reserved',
-			transactor: 'local',
-			schema: 'table Member (Id text primary key, Name text)',
-		}));
-
-		expect(error.tables).toEqual(['Member']);
-		expect(error.message).toContain('Member');
-		for (const name of strandReservedTableNames()) {
-			expect(error.message).toContain(name);
-		}
-	});
-
-	it('compares case-insensitively and reports every colliding table as spelled', async () => {
-		const error = await refusal(connectToStrand(db, {
-			strandId: 'test-strand-reserved-case',
-			transactor: 'test',
-			schema: 'table header (Id text primary key); table Note (Id text primary key); table MEMBERPEER (Id text primary key)',
-		}));
-
-		expect(error.tables).toEqual(['header', 'MEMBERPEER']);
-	});
-
-	it('refuses the `create table` spelling too', () => {
-		expect(() => assertNoReservedTableNames('create table Manager (Id text primary key);'))
-			.toThrow(ReservedTableNameError);
-	});
-
-	it('refuses before anything is applied, created or claimed', async () => {
-		const storage = { getStoreIdentity: () => 'test://reserved-table-refusal' } as unknown as IRawStorage;
-		const storesBefore = defaultCachePool().stats().stores.length;
-
-		await refusal(connectToStrand(db, {
-			strandId: 'test-strand-reserved-nothing',
-			transactor: 'local',
-			storage,
-			schema: 'table Revocation (Id text primary key)',
-		}));
-
-		const { createLibp2pNode } = await import('@optimystic/db-p2p');
-		expect(createLibp2pNode).not.toHaveBeenCalled();
-		expect(defaultCachePool().stats().stores.length).toBe(storesBefore);
-		// The Strand schema is applied unconditionally on every successful compose; its
-		// absence shows the refusal ran before any DDL did.
-		await expect(async () => {
-			for await (const _row of db.eval('select * from Strand.Header')) {
-				// should not reach
-			}
-		}).rejects.toThrow();
-	});
-
-	it('composes a schema whose table names only contain a reserved name', async () => {
-		const result = await connectToStrand(db, {
-			strandId: 'test-strand-reserved-pass',
-			transactor: 'test',
-			schema: 'table Participant (Id text primary key); table ChatMember (Id text primary key); table InviteNote (Id text primary key)',
-		});
-
+	async function selectAll(db: Database, sql: string): Promise<Array<Record<string, SqlValue>>> {
 		const rows: Array<Record<string, SqlValue>> = [];
-		for await (const row of db.eval('select * from App.ChatMember')) {
+		for await (const row of db.eval(sql)) {
 			rows.push(row);
 		}
-		expect(rows).toHaveLength(0);
+		return rows;
+	}
 
-		await result.shutdown();
-	});
+	/** Each table holds exactly its own row, read back through its own columns. */
+	async function expectOwnRows(db: Database): Promise<void> {
+		expect(await selectAll(db, 'select * from App.Member')).toEqual([appMember]);
+		expect(await selectAll(db, 'select Key, StampId from Strand.Member')).toEqual([strandMember]);
+	}
 
-	it('throws the parser error, not a refusal, for a body that does not parse', () => {
-		expect(() => assertNoReservedTableNames('table Member (')).toThrow();
-		expect(() => assertNoReservedTableNames('table Member (')).not.toThrow(ReservedTableNameError);
-	});
+	/** How many tables the strand's two engine schemas hold in `db`'s catalog. */
+	async function strandAndAppTableCount(db: Database): Promise<SqlValue> {
+		const [row] = await selectAll(db,
+			`select count(*) as c from schema() where type = 'table' and "schema" in ('strand', 'app')`);
+		return row.c;
+	}
 
-	it('passes an absent or empty schema', () => {
-		expect(() => assertNoReservedTableNames(undefined)).not.toThrow();
-		expect(() => assertNoReservedTableNames('')).not.toThrow();
+	/** A closed-strand `Header`, then the founding `Member` (the bootstrap branch needs no manager). */
+	async function seedStrandMember(db: Database): Promise<void> {
+		await db.exec(
+			`insert into Strand.Header
+				(Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
+				values (?, ?, ?, ?, ?, ?, ?, ?)`,
+			['strand-id', 'c', 'sapp', '1.0.0', 'schema', 'sig', 'engine', '1.0.0'],
+		);
+		await db.exec(
+			`insert into Strand.Member (Key, StampId)
+				with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
+				values (?, ?)`,
+			[strandMember.Key, strandMember.StampId],
+		);
+	}
+
+	it('keeps its rows apart from the strand table, and across a warm restart', async () => {
+		// One storage instance across both sessions: the second compose hydrates the catalog
+		// the first persisted. A MemoryRawStorage carries no store identity, so it passes
+		// through the storage-cache wrap unwrapped and the reopen is not refused.
+		const storage = new MemoryRawStorage();
+		const options = { strandId: 'test-strand-same-name', transactor: 'local' as const, storage, schema: APP_SCHEMA };
+
+		const cold = new Database();
+		const first = await connectToStrand(cold, options);
+		let created: SqlValue;
+		try {
+			created = await strandAndAppTableCount(cold);
+			await seedStrandMember(cold);
+			await cold.exec('insert into App.Member (Id, Name) values (?, ?)', [appMember.Id, appMember.Name]);
+			await expectOwnRows(cold);
+		} finally {
+			await first.shutdown();
+			cold.close();
+		}
+
+		const warm = new Database();
+		const second = await connectToStrand(warm, options);
+		try {
+			// Every table came back from the persisted catalog. A catalog keyed by bare table
+			// name holds one `Member` record for the two tables, so it hydrates one fewer.
+			expect(second.hydrated!.tables).toBe(created);
+			await expectOwnRows(warm);
+		} finally {
+			await second.shutdown();
+			warm.close();
+		}
 	});
 });
 
