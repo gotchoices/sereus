@@ -89,8 +89,8 @@ const BASELINE_UPSTREAM = 'optimystic fbf165ee';
  * local-transactor baseline measured 1592 over the same blocks), 1979 after the
  * upstream catalog re-read (2026-08-14), 168 with cadre-core's write-through
  * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17),
- * 78 with schema batching (2026-09-14), 80 at {@link BASELINE_UPSTREAM} — the 2 pends that
- * did not create their block now write metadata too. The same batched launch measured 322
+ * 78 with schema batching (2026-09-14), 88 at optimystic `2a1bfedb` (the no-op deletes), 80 at
+ * {@link BASELINE_UPSTREAM} — the 2 pends that did not create their block now write metadata too. The same batched launch measured 322
  * uncached on 2026-09-14 (155 of them `getMetadata`) — a run near that means the
  * cache has left the path.
  */
@@ -104,10 +104,11 @@ const LAUNCH: Budget = { ops: 80, blocks: 17, opBudget: 95, blockBudget: 20 };
  * below disagreed — the comment said 86 while `ops` stayed at 75, so the floor was computed
  * off the older number.) The rise from 80 is explained operation for operation in the
  * {@link BASELINE_UPSTREAM} comment: `saveMetadata` went 14 → 22, now exactly one per pend
- * plus one per commit (11 + 11), and the 11 no-op `deletePendingTransaction` calls of
- * `2a1bfedb` are gone. The budget moved 90 → 98 to keep the same 10 operations of headroom
+ * plus one per commit (11 + 11), and the 11 no-op `deletePendingTransaction` calls from
+ * `9cbc7427` are gone. The budget moved 90 → 98 to keep the same 10 operations of headroom
  * over an explained, intended cost; it was NOT raised to absorb those no-op deletes, which
- * were fixed upstream instead. What is still uneven across commit steps is
+ * were fixed upstream instead. It sits one operation below their return (88 + 11 = 99), so
+ * this phase, not launch (80 + 8 is within 95), is the one that catches them. What is still uneven across commit steps is
  * `saveMaterializedBlock` at 17 against 11 of each other step; that excess has not been
  * attributed to a named change, and the figure repeats exactly across runs. This is the
  * phase carrying the spec's anti-vacuity duty — see the NOTE on {@link SELECT} — so the next
