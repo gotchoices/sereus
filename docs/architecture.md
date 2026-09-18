@@ -581,9 +581,9 @@ reads went back to the scan.
 
 The engine defect was fixed upstream in Optimystic and re-measured here on 2026-09-17: with the
 index restored, both machines' copies of the index sub-collection hold the same revision and the
-same action id, and the scenario that had been red for six weeks passes. So the index is declared
-again and the per-token reads are seeks, not a growing scan of a table that is append-only for the
-life of the party.
+same action id, and the scenario that had failed whenever the index was declared since
+2026-08-12 passes with it declared. So the index is declared again and the per-token reads are
+seeks, not a growing scan of a table that is append-only for the life of the party.
 
 Two `integration-tests` scenarios guard that, and neither may be weakened to get a green run.
 `strand-formation-concurrent-redemption` asserts BOTH machines' views of a raced redemption — the

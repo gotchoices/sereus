@@ -2,16 +2,17 @@
  * Cross-machine uniqueness on a `unique` COLUMN: a value one machine has already committed
  * is refused to the other, and the refused row lands nowhere.
  *
- * Every `unique` column in `schemas/control.qsql` — `OwnerKey.StampId`,
- * `ValidationKey.StampId`, `Strand.StampId`, `Strand.MemberPrivateKey`, `CadrePeer.StampId`
- * — is enforced by the storage engine through a secondary index (the `_uniq_N`
- * sub-collections), not by the table's own tree. That is the same machinery a declared
- * `index` uses, and it was measurably broken across machines between 2026-08-04 and
- * 2026-08-25: a descent on a second machine returned only the rows THAT machine had
- * written, so a row a sibling committed was invisible to the check that should have refused
- * a duplicate. The schema leans on these columns for anti-replay — a removed row's stamp is
- * retired so its never-expiring approval cannot re-seat it — so a uniqueness check that
- * cannot see a sibling's row is an authorization hole, not a performance problem.
+ * Every `unique` column in `schemas/control.qsql` — the `StampId` of each owner-signed table
+ * (`OwnerKey`, `ValidationKey`, `Strand`, `StrandPartyKey`, `CadrePeer`, `DeviceToken`,
+ * `FormationInvite`), plus `Strand.MemberPrivateKey` — is enforced by the storage engine
+ * through a secondary index (the `_uniq_N` sub-collections), not by the table's own tree.
+ * That is the same machinery a declared `index` uses, and it was measurably broken across
+ * machines between 2026-08-04 and 2026-08-25: a descent on a second machine returned only
+ * the rows THAT machine had written, so a row a sibling committed was invisible to the
+ * check that should have refused a duplicate. The schema leans on these columns for
+ * anti-replay — a removed row's stamp is retired so its never-expiring approval cannot
+ * re-seat it — so a uniqueness check that cannot see a sibling's row is an authorization
+ * hole, not a performance problem.
  *
  * Nothing in the suite pinned that. The engine defect was fixed upstream and re-measured
  * here on 2026-09-17 (`complete/restore-formation-usage-token-index`); this file is the
@@ -155,6 +156,13 @@ describe('Cross-machine uniqueness on a unique control column', () => {
 				await holdsStrand(db, refusedId),
 				`node ${label} holds a row that was REFUSED (${refusedId})`,
 			).toBe(false);
+			// NOTE: queryStrandStampId is a FULL-primary-key point lookup, the one read shape
+			// `backlog/debt-composite-pk-point-lookup-unreliable-untracked` has not settled —
+			// its question 1 asks whether that shortcut can return zero rows for a row that
+			// exists, and whether that is multi-column-key specific (`Strand.Id` is single).
+			// If this line alone starts flaking while the `holdsStrand` scans above stay
+			// green, that is evidence for that ticket, NOT a uniqueness regression, and the
+			// fix is there rather than in this assertion.
 			expect(
 				await db.queryStrandStampId(seatedId),
 				`node ${label} must still see the seated row under the stamp it was written with`,

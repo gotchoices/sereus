@@ -39,11 +39,12 @@
  * `TestCadreNetwork` parties), so the e2e file's party-shaped helpers do not apply.
  *
  * This file is also the live guard for cross-machine secondary-index convergence. The
- * invite's seat cap is counted through the `FormationUsageByToken` index, and between
- * 2026-08-12 and 2026-09-17 this scenario was deterministically RED because a descent on
- * a sibling node never saw `FormationUsage` rows the other node had written (a full scan
- * did), so the both-views assertions timed out. That was an engine defect, fixed upstream
- * and re-measured here on 2026-09-17 (`complete/restore-formation-usage-token-index`).
+ * invite's seat cap is counted through the `FormationUsageByToken` index. From 2026-08-12
+ * this scenario was deterministically RED because a descent on a sibling node never saw
+ * `FormationUsage` rows the other node had written (a full scan did), so the both-views
+ * assertions timed out. It went green on 2026-08-25 only because the index was removed,
+ * and failed again whenever the index was re-declared, until the engine defect was fixed
+ * upstream and re-measured here on 2026-09-17 (`complete/restore-formation-usage-token-index`).
  * A both-views failure here again means index convergence has regressed — do NOT weaken
  * these assertions to get a green run.
  */
@@ -92,13 +93,23 @@ interface UsageRow {
 	peerSig: string;
 }
 
-/** ALL usage rows recorded against `token`, as seen by ONE node's database. */
+/**
+ * ALL usage rows recorded against `token`, as seen by ONE node's database.
+ *
+ * Read with NO `where` clause and filtered in TypeScript, deliberately: with
+ * `FormationUsageByToken` declared, `where Token = ?` is claimed by the optimystic vtab and
+ * served by a descent through that index — the same structure `countFormationUsage` reads.
+ * This function is what the seat-cap count is held against below, so it must not share the
+ * structure under test, or a regression that under-reports through the index would make
+ * both sides of that equality agree on the wrong number. A full read of the table is what
+ * converged across machines even while the index did not.
+ */
 async function readUsageRows(db: ControlDatabase, token: string): Promise<UsageRow[]> {
 	const rows: UsageRow[] = [];
 	for await (const row of db.getDatabase().eval(
-		'select Token, UsageStampId, PeerKey, PeerSig, Disclosure from CadreControl.FormationUsage where Token = ?',
-		[token],
+		'select Token, UsageStampId, PeerKey, PeerSig, Disclosure from CadreControl.FormationUsage',
 	)) {
+		if (row.Token !== token) continue;
 		rows.push({
 			token: row.Token as string,
 			usageStampId: row.UsageStampId as string,
@@ -307,7 +318,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 			expect(row.token).toBe(token);
 			expect(verifyFormationConsent(row), `${label}: stored consent row for ${row.peerKey} must re-verify`).toBe(true);
 		}
-		// The index-backed count the seat cap rests on agrees with the row scan.
+		// The index-backed count the seat cap rests on agrees with the table read that does
+		// NOT go through the index — the exact comparison that was wrong from 2026-08-04 to
+		// 2026-08-25, when the count descended a stale index sub-collection while the table
+		// itself had converged.
 		expect(await db.countFormationUsage(token), `${label}: countFormationUsage agrees with the row scan`).toBe(rows.length);
 		return rows;
 	}

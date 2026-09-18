@@ -29,7 +29,7 @@ difficulty: hard
 > optimystic defect (their `bug-index-subcollection-sits-one-revision-behind-on-the-sibling`, fixed
 > by their `a-commit-over-a-gapped-base-forks-the-block`), not an unfixable property of index seeks.
 > Re-measured here with the index restored: both machines' copies of the index sub-collection hold
-> the same revision and the same action id, and the scenario that had been red for six weeks passes.
+> the same revision and the same action id, and the scenario that had failed whenever the index was declared since 2026-08-12 passes with it declared.
 > `complete/restore-formation-usage-token-index` re-declared `FormationUsageByToken`, so
 > `countFormationUsage` is a seek again, and added `control-cross-machine-unique-column` as a
 > permanent guard that a `unique` column refuses a value a sibling machine already committed. The
@@ -49,7 +49,7 @@ difficulty: hard
 > **What this ticket should still deliver**, unchanged by all of the above: a statement of which
 > lookup shapes are safe on a networked strand, and on what the answer depends. The secondary-index
 > arm has an answer with a date on it — a seek CAN serve a stale view of the index collection and
-> silently return fewer rows than exist, it did so for six weeks in 2026-08, and it stopped when
+> silently return fewer rows than exist, it did so from 2026-08-04 until the engine fix re-measured on 2026-09-17, and it stopped when
 > the engine was fixed — but that is a statement about one bug, not about the shape. Questions 1
 > and 2 are still open exactly as written. Note while answering them that every `unique` constraint
 > in the control schema is enforced through a secondary index, which is why
@@ -97,7 +97,9 @@ they are not.
 full-*multi*-column primary-key lookups in `packages/` (the only two-column equality,
 `FormationUsage where Token = ? and StrandId = ?` in `strand-formation-consent.spec.ts`,
 matches no key column at all — that table's key is the single column `UsageStampId` since
-`formation-unique-token-redesign` — so it is served by a scan and is unaffected).
+`formation-unique-token-redesign` — so it is not a primary-key point lookup and is unaffected by
+question 1; since 2026-09-17 its `Token` equality is served by the `FormationUsageByToken`
+secondary index rather than a scan, which is question 3's shape, not this one).
 Single-column primary-key lookups, however, are ordinary and widespread, e.g.:
 
 - `packages/cadre-core/src/strand-member-registry.ts:164` — `isMemberRegistered` reads
