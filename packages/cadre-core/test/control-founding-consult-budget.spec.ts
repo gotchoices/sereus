@@ -109,51 +109,66 @@ const IDLE_TIMER_MS = 3_600_000;
  */
 const MEASURED_ON = '2026-09-17';
 /**
- * The `../optimystic` commit these figures were measured against. Every consult count below
- * fell on 2026-09-17 — roughly by half on the read paths — when that repo stopped re-fetching
- * a block it had already fetched during one refresh and made a refresh of an unchanged
- * collection cost a single request. Commit and distinct-block counts did not move. Quote this
- * commit, not just the date, when the next reader asks whether a count grew or the dependency
- * changed underneath.
+ * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
+ * when the next reader asks whether a count grew or the dependency changed underneath. Two
+ * upstream changes on 2026-09-17 moved the counts, neither the commit counts:
+ *  - at `03ffadc4` every consult count fell roughly by half on the read paths, when that repo
+ *    stopped re-fetching a block it had already fetched during one refresh and made a refresh
+ *    of an unchanged collection cost a single request;
+ *  - at `13586033`, an ancestor of the commit named here, a default-mode commit that touches two or more
+ *    trees — a table and its indexes — became one coordinator batch that pends every tree and
+ *    then commits them all. The per-tree sweep it replaced refreshed each staged tree twice
+ *    before flushing it (a pre-flight refresh, then `sync()`'s own), and each refresh of a
+ *    missing block is a consult; the batch does not refresh before its first attempt. So every
+ *    tree such a commit touched lost exactly 2 consults: genesis 7 → 3, `foundStrand`'s control
+ *    side 13 → 7. Single-tree commits still go through `sync()` and did not move.
  */
-const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
+const BASELINE_UPSTREAM = 'optimystic 8a0b48c7';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 25 consults over 18 blocks, 2 commits. Every
+ * watcher's first poll it leaves running. 26 consults over 19 blocks, 2 commits. Every
  * control table and index block is consulted once as the schema is applied (all missing),
  * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` by
- * the watcher's `queryStrands`. 14 + 5 + 3×2 = 25. History: 24 over 18 blocks in the trace
+ * the watcher's `queryStrands`. 15 + 5 + 3×2 = 26. History: 24 over 18 blocks in the trace
  * that motivated this spec (snapshotted at `start()`'s return, before the seed and the poll),
- * 30 on 2026-09-15, 25 at {@link BASELINE_UPSTREAM} — the catalog went 7 → 5 and each of the
- * three never-written tables 3 → 2.
+ * 30 on 2026-09-15, 25 over 18 at optimystic `03ffadc4` — the catalog went 7 → 5 and each of
+ * the three never-written tables 3 → 2 — and 26 over 19 once Sereus re-declared the
+ * `FormationUsageByToken` index (`restore-formation-usage-token-index`), one more block
+ * consulted once as the schema is applied.
  */
-const COLD: Budget = { consults: 25, blocks: 18, commits: 2, consultBudget: 30, blockBudget: 22, commitBudget: 3 };
+const COLD: Budget = { consults: 26, blocks: 19, commits: 2, consultBudget: 30, blockBudget: 22, commitBudget: 3 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party. 7 consults over 3 blocks, 4 commits:
- * `OwnerKey` ×3 and its unique stamp index ×3, both missing until the insert commits, and
+ * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 4 commits:
+ * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and
  * the never-written `Revocation` ×1. History: 14 over the same 3 blocks in the motivating
- * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved at {@link BASELINE_UPSTREAM}.
+ * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic
+ * `03ffadc4`, then 3 at {@link BASELINE_UPSTREAM} — the insert's commit touches both
+ * `OwnerKey` trees and no longer refreshes them twice before flushing.
  */
-const GENESIS: Budget = { consults: 7, blocks: 3, commits: 4, consultBudget: 9, blockBudget: 4, commitBudget: 5 };
+const GENESIS: Budget = { consults: 3, blocks: 3, commits: 4, consultBudget: 4, blockBudget: 4, commitBudget: 5 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 13 consults over 6
- * blocks, 6 commits: `Strand` ×4 and its two unique indexes ×3 and ×2 (missing until the
+ * `foundStrand`, control network side: the `Strand` row published. 7 consults over 5
+ * blocks, 6 commits: `Strand` ×2 and its `StampId` unique index ×1 (missing until the
  * publish commits), the never-written `Revocation` ×2 and `CadrePeer` ×1, and 1 on a tree
- * block the commit created. History: 25 over the same 6 blocks on 2026-09-15 (×8, ×6, ×4,
- * ×4, ×2, ×1), 13 at {@link BASELINE_UPSTREAM}. Control and strand together now sum to 34
- * consults and 12 commits, against 50 and 12 on 2026-09-15 and 47 and 12 in the trace taken
- * before upstream removed the absence memo.
+ * block the commit created. History: 25 over 6 blocks on 2026-09-15 (×8, ×6, ×4, ×4, ×2,
+ * ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId` index ×3,
+ * `MemberPrivateKey` index ×2), 7 over 5 at {@link BASELINE_UPSTREAM}: the publish's commit
+ * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
+ * was the `MemberPrivateKey` index's only consults. Control and strand together now sum to 28
+ * consults and 12 commits, against 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47
+ * and 12 in the trace taken before upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 13, blocks: 6, commits: 6, consultBudget: 16, blockBudget: 8, commitBudget: 8 };
+const FOUNDING_CONTROL: Budget = { consults: 7, blocks: 5, commits: 6, consultBudget: 9, blockBudget: 7, commitBudget: 8 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 21 consults over 15 blocks, 6 commits: the strand's schema catalog ×5,
  * `Header` ×3, one consult on each other strand table and index as its schema is applied
  * (11, all missing), and 1 each on two tree blocks the bootstrap created. History: 25 over
- * the same 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 at {@link BASELINE_UPSTREAM}
- * — only the two repeatedly-read blocks moved; the 11 apply-once blocks did not.
+ * the same 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 at optimystic `03ffadc4` —
+ * only the two repeatedly-read blocks moved; the 11 apply-once blocks did not — and unchanged
+ * at {@link BASELINE_UPSTREAM}.
  */
 const FOUNDING_STRAND: Budget = { consults: 21, blocks: 15, commits: 6, consultBudget: 26, blockBudget: 18, commitBudget: 8 };
 /**
@@ -205,11 +220,13 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * pass is asserted by its busiest block (more than once before, at most once after) rather than
  * pinned, so an unrelated read added to the pass does not read as a marker regression.
  *
- * Only the "before" column moved at {@link BASELINE_UPSTREAM}: every repeated consult of the
+ * Only the "before" column moved at optimystic `03ffadc4`: every repeated consult of the
  * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
  * filing 4 → 2). The "after" column was already zero and is unchanged, so what this test proves
  * — that the marker removes the repeats entirely — is measured against a smaller "before" than
- * on 2026-09-15 but the same contrast.
+ * on 2026-09-15 but the same contrast. Nothing here moved at {@link BASELINE_UPSTREAM}: the
+ * `authorizePeer` commit touches only the held `CadrePeer` trees, whose refreshes inside the
+ * read-repair window never consulted, so dropping them saved nothing.
  */
 const MARKER_BEFORE_PER_CALL = [1, 1, 1, 1, 1, 1];
 const MARKER_BEFORE_AUTHORIZE = 3;
