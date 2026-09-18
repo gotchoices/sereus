@@ -28,10 +28,11 @@
  * time and waits for the rival's own view to hold the seated row first, so what is under
  * test is a uniqueness DECISION made against a converged view.
  *
- * DELIBERATELY SEQUENTIAL — do not widen this into a same-tick race. Two machines writing
- * one unique value in the same tick is a different and still-open defect: the loser is
- * refused but its row is stored anyway (`blocked/concurrent-unique-value-race-commits-both-rows`).
- * A race here would fail for that reason and bury the property this file exists to hold.
+ * DELIBERATELY SEQUENTIAL — do not widen this into a same-tick race. This file asserts a
+ * uniqueness DECISION made against a converged view; the same-tick shape is a different
+ * property (no converged view exists yet when the race starts) and has its own guard,
+ * `control-concurrent-unique-column-race.integration.ts`. Folding the two together would
+ * bury which property failed if either ever regresses.
  *
  * Sibling of `control-concurrent-same-pk-insert.integration.ts`, which pins the same
  * refusal on a PRIMARY key. Separate files because the two are enforced by different

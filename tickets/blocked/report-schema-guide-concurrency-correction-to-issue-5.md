@@ -1,5 +1,5 @@
 description: A public issue on our own tracker still points readers at a warning we have since corrected — it says a certain kind of concurrent write silently loses data, which is no longer true. Somebody with access needs to post the correction there.
-files: docs/schema-guide.md, tickets/blocked/concurrent-unique-value-race-commits-both-rows.md
+files: docs/schema-guide.md
 difficulty: easy
 ----
 
@@ -15,9 +15,9 @@ Issue **gotchoices/sereus#5** asked whether an sApp can read its rows in commit 
 
 Part of what that section said is no longer true. It warned that if two machines insert a row with the same primary key at the same moment, both are told they succeeded and one row is silently lost, and it called that a tracked, unresolved limitation. The underlying library fixed it; the fix was re-measured against two real machines on 2026-09-17 and holds, and a permanent two-machine regression test now guards it (`packages/integration-tests/src/scenarios/control-concurrent-same-pk-insert.integration.ts`). The loser of that race now gets the ordinary "unique constraint failed" error and nothing is lost.
 
-One narrower problem remains and is newly written down in the same section: the clean refusal covers the *primary key* only. Two rows with different primary keys that share a value in some other column declared unique, raced at the same instant, end with both rows stored even though one writer was told it failed. That is tracked in `tickets/blocked/concurrent-unique-value-race-commits-both-rows.md` and is also outside this repository.
+The narrower gap the same section used to describe — a secondary `unique` column raced at the same instant by two different primary keys — is also fixed now, the same way and re-measured the same day (`packages/integration-tests/src/scenarios/control-concurrent-unique-column-race.integration.ts`, 6 of 6 rounds). One detail is worth passing on: a *concurrent* refusal can arrive as a plain `Error` rather than the engine's `ConstraintError` type (a sequential one always comes back as `ConstraintError`), so code that classifies the error should match the `UNIQUE constraint failed: <Table>.<Column>` text rather than the error's type.
 
-Anyone who read the issue and chose a design around "a duplicate key is silently last-writer-wins" made that choice on information we have since corrected in both directions — the hazard they were warned about is gone, and a different one they were not warned about is real. That is the reason this is worth posting rather than leaving for whoever next reads the guide.
+Anyone who read the issue and chose a design around "a duplicate key is silently last-writer-wins" made that choice on information we have since corrected — the hazard they were warned about is gone. That is the reason this is worth posting rather than leaving for whoever next reads the guide.
 
 ## Draft comment, for a human to review and post
 
@@ -27,8 +27,8 @@ Anyone who read the issue and chose a design around "a duplicate key is silently
 >
 > The practical consequence for a schema author: a `max(id) + 1` integer key is now *correct*, but it is *contended* — the refused writer has to catch the error, recompute against its new view and write again, and the refusals get more frequent the more peers post at once. A locally generated key (a UUID) still never contends and still needs no retry loop, so it remains the recommendation.
 >
-> **One narrower gap remains, and it is newly documented.** The clean refusal covers the primary key. A column that is `unique` but is *not* the primary key is not yet a safe concurrency guard: when two rows with different primary keys race on the same unique value at the same instant, the losing writer is correctly told its insert failed, but its row can still end up stored, leaving two rows under one "unique" value. So do not use a secondary `unique` column (a username, an email address, a claimed handle) as the only thing standing between two members and a duplicate — put the contended value in the primary key, or resolve duplicates on read. We have that measured and tracked; the guide's section now says so.
+> **The narrower gap this thread also flagged — a secondary `unique` column raced at the same instant — is fixed too.** A column that is `unique` but is *not* the primary key now refuses a same-instant duplicate exactly like the primary key does: the losing writer is told its insert failed, and its row lands nowhere on either machine. One detail worth knowing if you write code against this: a *concurrent* refusal can come back as a plain `Error` rather than the engine's `ConstraintError` type (a *sequential* duplicate always comes back as `ConstraintError`), so match on the `UNIQUE constraint failed: <Table>.<Column>` text in the error's message rather than on its type.
 
 ## Before posting
 
-Re-read the "Ordering Events (There Is No Commit-Order Column)" section of `docs/schema-guide.md` as it stands, so the comment and the guide agree. If `concurrent-unique-value-race-commits-both-rows` has landed by the time this is posted, drop the second half of the draft — that caveat is removed from the guide when it does.
+Re-read the "Ordering Events (There Is No Commit-Order Column)" section of `docs/schema-guide.md` as it stands, so the comment and the guide agree.

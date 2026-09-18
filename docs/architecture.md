@@ -585,16 +585,17 @@ same action id, and the scenario that had failed whenever the index was declared
 2026-08-12 passes with it declared. So the index is declared again and the per-token reads are
 seeks, not a growing scan of a table that is append-only for the life of the party.
 
-Two `integration-tests` scenarios guard that, and neither may be weakened to get a green run.
+Three `integration-tests` scenarios guard that, and none may be weakened to get a green run.
 `strand-formation-concurrent-redemption` asserts BOTH machines' views of a raced redemption — the
 cap arm. `control-cross-machine-unique-column` asserts that a `unique` column refuses a value a
-sibling machine has already committed; it exists because **every unique constraint in this schema
-is enforced through the same kind of secondary index**, so cross-machine uniqueness carried the
-same exposure and nothing pinned it. One narrower arm stays open: the same-tick race on a unique
-value, where the loser is refused but its row is stored anyway
-(`tickets/blocked/concurrent-unique-value-race-commits-both-rows`). The intermittent writer-side
-failure on unique-index sub-collections that used to sit beside it closed on 2026-09-17 with the
-upstream sync fixes (`tickets/complete/strand-unique-index-sync-stale-revision`).
+sibling machine has already committed sequentially; it exists because **every unique constraint in
+this schema is enforced through the same kind of secondary index**, so cross-machine uniqueness
+carried the same exposure and nothing pinned it. `control-concurrent-unique-column-race` asserts
+the same refusal at the same instant — two rows with different primary keys racing one secondary
+`unique` value — beside `control-concurrent-same-pk-insert`, which pins the same-tick race on the
+primary key. The intermittent writer-side failure on unique-index sub-collections that used to sit
+beside these closed on 2026-09-17 with the upstream sync fixes
+(`tickets/complete/strand-unique-index-sync-stale-revision`).
 
 ```mermaid
 sequenceDiagram

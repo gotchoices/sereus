@@ -325,16 +325,21 @@ requirement. If it is, the retry is yours to write, and it needs a randomized ba
 refused peer recomputes the same next id from the same view, so retries that fire immediately
 collide with each other again.
 
-**Caveat — a column that is `unique` but not the primary key is not yet a safe concurrency guard.**
-The clean refusal above covers the *primary key*. For a secondary `unique` column raced by two rows
-with different primary keys at the same instant, the losing writer is correctly told its insert
-failed, but its row can still be stored — leaving two rows holding one "unique" value on both
-machines. A table row and each of its indexes are committed one at a time, and the losing row's own
-commit finishes before the unique index refuses it. So do not rely on a secondary `unique` column
-(a username, an email address, a claimed handle) as the only thing standing between two members and
-a duplicate. Put the contended value in the primary key, or accept that duplicates can appear and
-resolve them on read. Tracked in `tickets/blocked/concurrent-unique-value-race-commits-both-rows.md`;
-this caveat can be removed once that lands.
+**A secondary `unique` column is the same safe guard as the primary key, including at the same
+instant.** For a secondary `unique` column raced by two rows with different primary keys at the
+same instant, the losing writer is correctly told its insert failed and its row lands nowhere on
+either machine — a table row and each of its indexes are reserved together before any of them is
+made final, so the unique index can refuse the loser before its table row is ever stored. So a
+secondary `unique` column (a username, an email address, a claimed handle) is a safe thing to
+stand between two members and a duplicate, the same as the primary key. The permanent guard is
+`packages/integration-tests/src/scenarios/control-concurrent-unique-column-race.integration.ts`.
+
+One thing to watch when handling the refusal: a *concurrent* duplicate can arrive as a plain
+`Error` rather than the engine's `ConstraintError` type, while a *sequential* duplicate (the same
+value inserted after the first has already committed) always comes back as a `ConstraintError`
+(`../optimystic/tickets/backlog/bug-concurrent-unique-refusal-is-not-a-constraint-error.md`). Both
+shapes carry the same `UNIQUE constraint failed: <Table>.<Column>` text somewhere in the error's
+message chain, so match on that text rather than on the error's type.
 
 ---
 
