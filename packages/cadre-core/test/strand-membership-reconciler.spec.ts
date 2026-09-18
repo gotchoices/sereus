@@ -334,6 +334,24 @@ describe('waiting and failure classification', () => {
     expect(reconciler.stopped).toBe(false);
   }, 30_000);
 
+  it('after a half-committed join, the idle passes that follow add no escalation warning', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reconciler = reconcilerOver(db, joiner.privateKey, { pendingInvite: slot.source });
+    vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(consumedInviteSavedMemberNot()));
+
+    for (let i = 0; i < IDLE_PASSES_BEFORE_ESCALATION + 2; i++) {
+      await reconciler.reconcile();
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/only partly saved/);
+    expect(reconciler.stopped).toBe(false);
+  }, 30_000);
+
   it('an invitation whose Invite row has not replicated here yet is RETRIED, not dropped', async () => {
     const { db, founder } = await openClosedStrand();
     const joiner = await freshParty();

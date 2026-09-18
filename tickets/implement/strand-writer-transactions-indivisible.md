@@ -61,6 +61,7 @@ Single-statement writers used by background flows (`burnInvite`, `registerMember
 ### Background callers own their transactions
 
 - Reconciler: `consumeInvite`, `burnInvite` and `registerMemberPeer` are called with `{ joinOpenTransaction: false }`. `StrandTransactionBusyError` means "the app is mid-transaction; try again". Classify it before the dead-invite regex in `classifyConsumeFailure`, as retry-next-tick with its own log line. In `burnLeftoverInvite`, a busy refusal must **not** clear the staged invitation, since nothing was tried. Leave it staged for the next pass. `ensureBinding`'s failure already falls to the pass's outer catch and retries.
+  - Since `strand-reconciler-reports-half-committed-join` landed, `classifyConsumeFailure` is an exported pure function returning a `ConsumeFailure` kind, and the private method that acts on it is `handleConsumeFailure` (a `switch` on the kind). Add the busy refusal as a typed check beside `halfCommittedJoin` — before the text checks — returning its own kind (e.g. `{ kind: 'busy' }`), plus a `case` in `handleConsumeFailure` that logs and leaves the invitation staged. Add a classification spec next to the "consume rejection classification" block in `strand-membership-reconciler.spec.ts`.
 - `clearOwnMemberPeerBinding` calls `removeMemberPeer` with `{ joinOpenTransaction: false }`. Its existing best-effort catch logs a busy refusal like any other failure.
 - Export `StrandTransactionBusyError` and `StrandWriteOptions` from `index.ts` next to the writers.
 

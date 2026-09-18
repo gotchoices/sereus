@@ -597,6 +597,9 @@ export class StrandMembershipReconciler {
     );
     log('[%s] half-committed redemption, full error: %o', this.deps.label, error);
     this.deps.pendingInvite?.clear();
+    // The idle passes that follow are the wait this warning already explained; the escalation's
+    // "waiting on the founder rows to replicate" would be a second, misleading warning.
+    this.idleEscalated = true;
   }
 
   /** Decode the party key once; an undecodable key is terminal (nothing can be signed). */
@@ -605,8 +608,7 @@ export class StrandMembershipReconciler {
     try {
       this.keyPair = strandMemberKeyPair(this.deps.partyMemberPrivateKey);
     } catch (error) {
-      this.finish(`the party membership key does not decode — nothing can be signed (${
-        error instanceof Error ? error.message : String(error)})`);
+      this.finish(`the party membership key does not decode — nothing can be signed (${errorMessage(error)})`);
       return undefined;
     }
     return this.keyPair;
