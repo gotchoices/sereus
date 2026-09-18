@@ -621,10 +621,16 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	 * chaining it: the partial commit's veto must still beat the final torn write's claim.
 	 */
 	it('lets the partial-commit veto beat a final torn write on the same chain', () => {
-		const partial = new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'],
-			[PEER_COLLECTION], tornWrite(true));
-		partial.cause = tornWrite(true);
-		expect(classify(viaQuereus(partial))).toBe(false);
+		const partials = [
+			new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'], [PEER_COLLECTION],
+				tornWrite(true)),
+			new PartialCommitError(['default/cadrecontrol/CadrePeer'], ['default/cadrecontrol/CadrePeer$PeerIdIndex'],
+				tornWrite(true)),
+		];
+		for (const partial of partials) {
+			partial.cause = tornWrite(true);
+			expect(classify(viaQuereus(partial))).toBe(false);
+		}
 	});
 });
 

@@ -156,6 +156,20 @@ export default tseslint.config(
 			'no-restricted-syntax': 'off',
 		},
 	},
+	{
+		// cadre-core's main entry must load in a browser and in RN. The optimystic plugin's ROOT
+		// entry reads `fs` / `path` at module load and breaks `vite build` of reference-app-web;
+		// only its '/plugin' subpath is safe. (A graph-wide check is that build itself.)
+		files: ['packages/cadre-core/src/**/*.ts'],
+		rules: {
+			'no-restricted-imports': ['error', {
+				paths: [{
+					name: '@optimystic/quereus-plugin-optimystic',
+					message: 'The root entry imports Node built-ins at load. Use \'@optimystic/quereus-plugin-optimystic/plugin\', or match the error by its `name`.',
+				}],
+			}],
+		},
+	},
 
 	// ---- Type-aware rules (node/library src only) ----
 	// `no-floating-promises` needs type information. Scope it to package `src/` trees

@@ -270,6 +270,11 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   destination) and the three constraint fixtures that drive raw SQL at a bare database
   (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`,
   `control-revocation-reap.spec.ts`).
+- **Project-specific invariant rule:** `no-restricted-imports` bars `packages/cadre-core/src` from
+  the root entry of `@optimystic/quereus-plugin-optimystic`, which reads `fs` / `path` at module load
+  and so breaks `vite build` of `reference-app-web` (cadre-core's main entry must load in a browser
+  and in RN). Its `/plugin` subpath is safe. The lint rule covers only that one entry; the web
+  build is the check over the whole import graph.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
