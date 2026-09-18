@@ -1,6 +1,6 @@
 ----
 description: On a two-node strand, the first write a founder made to a table after a second node attached sometimes failed to commit, saving the rows but not the table's uniqueness index. Two independent measurement passes on 2026-09-17 found zero reproductions across sixteen isolated test runs; this ticket asks review to confirm the close.
-files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, tickets/.pre-existing-known.md (top delta "2026-09-17 (late)"), docs/architecture.md, tickets/blocked/forked-control-collection-sync-livelocks.md, tickets/blocked/concurrent-unique-value-race-commits-both-rows.md, tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked.md
+files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/strand-membership-second-machine.integration.ts, tickets/.pre-existing-known.md (top delta "2026-09-17 (late)"), docs/architecture.md, tickets/blocked/forked-control-collection-sync-livelocks.md, tickets/blocked/concurrent-unique-value-race-commits-both-rows.md, tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked.md
 difficulty: easy
 repro: verified
 ----
@@ -59,3 +59,18 @@ Not re-verified in this pass — review should spot-check that these edits are s
 - Confirm the sixteen logs referenced above are consistent with the summarized pass/fail counts if spot-checked.
 - No code in this repository changed across either pass — this ticket is pure measurement plus documentation bookkeeping. There is nothing to lint, typecheck, or unit-test beyond the integration scenarios already run.
 - If satisfied, move to `complete/` with a `## Review findings` section noting the two-session, sixteen-run confirmation and zero fingerprint matches.
+
+## Review findings
+
+- **Implement diff (`2f9b4224`) read first.** It only rewrote this ticket, apart from one unrelated file: `tickets/fix/degraded-cohort-rerun-after-upstream-dead-pend-fix.md` was added in the same commit. That ticket is about a different upstream fix and belongs to a separate flow. I left it alone.
+- **The 16 measurement logs.** I checked all sixteen (`tickets/.logs/strand-unique-index-sync-stale-revision.run{1..5}`, `.second-machine.run{1..3}`, `.confirm2.run{1..5}`, `.confirm2.second-machine.run{1..3}`). Every closed-strand log ends `Tests 9 passed (9)` and every second-machine log ends `Tests 1 passed (1)`. None of them contains any of the six fingerprint strings. The claimed 90/90 and 6/6 hold.
+- **Bookkeeping from the fix pass (`05fdd6f1`).** All of it is present and correct:
+  - `docs/architecture.md` now shows one open arm and cites `complete/`.
+  - `.pre-existing-known.md` has the closing delta at the top, and the five owned entry lines are removed.
+  - The cross-references in `blocked/forked-control-collection-sync-livelocks`, `blocked/concurrent-unique-value-race-commits-both-rows` and `backlog/debt-composite-pk-point-lookup-unreliable-untracked` are repointed, and each says it does not close with this ticket.
+  - The first `docs/architecture.md` hunk in that commit only touches the end of one line (probably whitespace). The content is unchanged.
+- **Missed site (minor, fixed).** The `NOTE:` above `index FormationUsageByToken` still cited `tickets/fix/strand-unique-index-sync-stale-revision` as "an open, intermittent engine failure". It appears in both `schemas/control.qsql` and the embedded copy in `packages/cadre-core/src/control-schema.ts`. I reworded it the same way in both copies: the failure is now marked as closed on 2026-09-17 and points to `complete/`. I kept the warning itself, which says to suspect this index first if joins start failing with an index-sync error naming FormationUsage. It still applies, because a recurrence would now surface quickly as `SyncRevisionStalledError`. `control-schema-drift.spec.ts` passes, which confirms the two copies still match. `eslint` on the file is clean and `cadre-core` rebuilt without errors.
+- **Historical mentions left alone on purpose.** Narrative blocks in `.pre-existing-known.md`, `.garden-report.md` and older `complete/` tickets are dated history. The top delta in `.pre-existing-known.md` supersedes them, which is how that file works.
+- **Code quality, tests, performance, resource cleanup, error handling, type safety.** Not applicable. No runtime code changed in any pass, and the one source edit is a comment inside the schema text. I did not repeat the integration series: two sessions and 16 isolated runs already meet the ticket's closing bar.
+- **Possibly related upstream tickets (noted, not filed).** `../optimystic` commit `f1fc816c` added upstream tickets about a same-instant unique-value race that stores both rows. They look related to `blocked/concurrent-unique-value-race-commits-both-rows`. That blocked ticket already tracks the problem upstream (see commit `402d8d06`), so I filed nothing new.
+- **Tripwires.** None new. The existing tripwire on the FormationUsage index write path stays in place, reworded as described above.

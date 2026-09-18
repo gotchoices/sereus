@@ -766,11 +766,12 @@ declare schema CadreControl {
     -- redemption and therefore goes red if that convergence regresses.
     --
     -- NOTE: the write side has its own exposure. Every FormationUsage insert now maintains this
-    -- sub-collection as well as the table, and `tickets/fix/strand-unique-index-sync-stale-revision`
-    -- is an open, intermittent engine failure in exactly that step (a table's rows commit while its
-    -- index does not). Nothing has been observed here, and redemptions are rare writes; but if
-    -- joins start failing intermittently with an index-sync error naming FormationUsage, this
-    -- declaration is the first thing to suspect.
+    -- sub-collection as well as the table, and an intermittent engine failure once hit exactly that
+    -- step on other tables (a table's rows committed while its index did not; closed 2026-09-17 with
+    -- the upstream sync fixes, `tickets/complete/strand-unique-index-sync-stale-revision`). Nothing
+    -- has been observed here, and redemptions are rare writes; but if joins start failing
+    -- intermittently with an index-sync error naming FormationUsage, this declaration is the first
+    -- thing to suspect.
     index FormationUsageByToken on FormationUsage (Token);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
