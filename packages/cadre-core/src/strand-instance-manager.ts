@@ -1061,10 +1061,11 @@ export class StrandInstanceManager {
       return;
     }
     try {
+      // Background write on the app's database: never join a transaction the app has open.
       await removeMemberPeer(db, {
         memberKeyPair: strandMemberKeyPair(config.partyMemberPrivateKey),
         peerId
-      });
+      }, { joinOpenTransaction: false });
       log('clearOwnMemberPeerBinding: strand %s — own binding for peer %s cleared', strandId, peerId);
     } catch (error) {
       log('clearOwnMemberPeerBinding: strand %s — best-effort clear failed (strand may already be unreachable): %o',

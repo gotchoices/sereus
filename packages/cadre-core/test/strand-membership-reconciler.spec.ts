@@ -19,6 +19,7 @@ import {
   addMemberByManager,
   sealStrand,
   isStrandMember,
+  StrandTransactionBusyError,
 } from '../src/strand-membership-writer.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
@@ -138,7 +139,7 @@ async function consumeRejection(db: Database, invite: StrandMembershipInvite): P
   return outcome as Error;
 }
 
-/** How a commit failure reaches `db.commit()`'s caller: Quereus wraps it, keeping it on `cause`. */
+/** How a commit failure reaches the committing `exec`'s caller: Quereus wraps it, keeping it on `cause`. */
 function viaQuereus(error: Error): QuereusError {
   return new QuereusError(`Commit failed: ${error.message}`, StatusCode.ERROR, error);
 }
@@ -153,6 +154,23 @@ function consumedInviteSavedMemberNot(): CoordinatorPartialCommitError {
     ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
     new Error('Stale commit for collection default/strand/Member'),
   );
+}
+
+/**
+ * Fail the next membership write batch with `failure`, the way a refused commit reaches the writer:
+ * the batch's `exec` rejects and nothing is written (a commit-time failure leaves no transaction
+ * open). Later batches run for real. Every writer issues its transaction as one `exec` beginning
+ * `begin transaction`, which is what identifies a batch here.
+ */
+function failNextWriteBatch(db: Database, failure: Error): { batches: () => number } {
+  const exec = db.exec.bind(db);
+  let batches = 0;
+  vi.spyOn(db, 'exec').mockImplementation((sql, params, options) => {
+    if (!sql.startsWith('begin transaction')) return exec(sql, params, options);
+    batches += 1;
+    return batches === 1 ? Promise.reject(failure) : exec(sql, params, options);
+  });
+  return { batches: () => batches };
 }
 
 function reconcilerOver(db: Database | undefined, partyKey: string, overrides: ReconcilerOverrides = {}): StrandMembershipReconciler {
@@ -302,6 +320,34 @@ describe('the already-member arm', () => {
     expect(reconciler.done).toBe(true);
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
   }, 30_000);
+
+  it('a burn refused because the app has a transaction open keeps the invitation staged for the next pass', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: joiner.pair.publicKeyB64 });
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      getOwnPeerId: () => 'second-machine',
+    });
+
+    await db.beginTransaction();
+    await reconciler.reconcile();
+    await db.commit();
+
+    // Neither the burn nor the binding joined the app's transaction; both are left for the next pass.
+    expect(slot.staged()).toBeDefined();
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+    expect(reconciler.done).toBe(false);
+
+    await reconciler.reconcile();
+
+    expect((await db.get('select MemberKey from Strand.ConsumedInvite'))?.MemberKey).toBe(joiner.pair.publicKeyB64);
+    expect(slot.staged()).toBeUndefined();
+    expect(reconciler.done).toBe(true);
+  }, 30_000);
 });
 
 describe('waiting and failure classification', () => {
@@ -341,7 +387,7 @@ describe('waiting and failure classification', () => {
     const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const reconciler = reconcilerOver(db, joiner.privateKey, { pendingInvite: slot.source });
-    vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(consumedInviteSavedMemberNot()));
+    failNextWriteBatch(db, viaQuereus(consumedInviteSavedMemberNot()));
 
     for (let i = 0; i < IDLE_PASSES_BEFORE_ESCALATION + 2; i++) {
       await reconciler.reconcile();
@@ -375,6 +421,35 @@ describe('waiting and failure classification', () => {
     slot.set({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
     await reconciler.reconcile();
     expect(reconciler.done).toBe(true);
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('a redemption refused because the app has a transaction open is retried, keeping the invitation', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+
+    await db.beginTransaction();
+    const lines = await captureDebugLog(RECONCILER_NAMESPACE, () => reconciler.reconcile());
+    await db.commit();
+
+    expect(slot.staged()).toBeDefined();
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(false);
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
+    expect(lines.some(line => DEAD_INVITE_LINE.test(line))).toBe(false);
+    expect(lines.some(line => /app has a transaction open/.test(line))).toBe(true);
+
+    // The app's transaction is closed: the next pass redeems the same invitation.
+    await reconciler.reconcile();
+    expect(reconciler.done).toBe(true);
+    expect(slot.staged()).toBeUndefined();
     expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(true);
   }, 30_000);
 
@@ -537,7 +612,7 @@ describe('a half-committed join', () => {
         getOwnPeerId: () => 'joiner-machine',
       });
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(shape.failure()));
+      failNextWriteBatch(db, viaQuereus(shape.failure()));
 
       const lines = await captureDebugLog(RECONCILER_NAMESPACE, () => reconciler.reconcile());
 
@@ -575,7 +650,7 @@ describe('a half-committed join', () => {
       pollIntervalMs: 4_000,
     });
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const commit = vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(consumedInviteSavedMemberNot()));
+    const writes = failNextWriteBatch(db, viaQuereus(consumedInviteSavedMemberNot()));
 
     reconciler.start();
     await reconciler.settle();           // the half-commit: one ladder rung
@@ -583,7 +658,7 @@ describe('a half-committed join', () => {
     await reconciler.settle();           // nothing staged, no member row: idle
 
     expect(clock.delays()).toEqual([INITIAL_JOIN_RETRY_INTERVAL_MS, 4_000]);
-    expect(commit).toHaveBeenCalledTimes(1);
+    expect(writes.batches()).toBe(1);
     expect(reconciler.stopped).toBe(false);
   }, 30_000);
 });
@@ -681,6 +756,24 @@ describe('consume rejection classification', () => {
 
     expect(classifyConsumeFailure(viaQuereus(partial)).kind).toBe('half-committed');
   });
+
+  it('a writer refused by an open transaction is busy, bare or wrapped, before any text check', async () => {
+    const { db, founder } = await openClosedStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const party = await freshParty();
+
+    await db.beginTransaction();
+    const refusal: unknown = await consumeInvite(db, {
+      inviteKey: invite.inviteKey,
+      invitePrivateKey: invite.invitePrivateKey,
+      memberKey: party.pair.publicKeyB64,
+    }, { joinOpenTransaction: false }).then(() => 'resolved', (error: unknown) => error);
+    await db.rollback();
+
+    expect(refusal).toBeInstanceOf(StrandTransactionBusyError);
+    expect(classifyConsumeFailure(refusal)).toEqual({ kind: 'busy' });
+    expect(classifyConsumeFailure(new Error('rewrapped', { cause: refusal }))).toEqual({ kind: 'busy' });
+  }, 30_000);
 
   it('the bare table name no longer classifies a failure as a dead invitation', () => {
     expect(classifyConsumeFailure(new Error('Stale commit for collection default/strand/ConsumedInvite')))

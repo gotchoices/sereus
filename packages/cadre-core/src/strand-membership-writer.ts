@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import type { Database } from '@quereus/quereus';
+import type { Database, SqlValue } from '@quereus/quereus';
 import { digest, sign, verify, generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { SAppConfig } from './types.js';
 import type { Ed25519KeyPair } from './ed25519-key.js';
@@ -126,48 +126,155 @@ export function generateStrandStampId(): string {
   return uint8ArrayToString(bytes, 'base64url');
 }
 
+// ── Write batches (every membership write is one indivisible transaction) ──────
+
 /**
- * Run `fn` inside one explicit strand transaction: begin, fn, commit — with the
- * standard rollback-on-failure shape.
- *
- * Used wherever two `Strand.*` writes must land atomically: the invite-consume
- * pair (Member + ConsumedInvite) and every delete-plus-tombstone pair (the
- * `RevocationRecorded` constraints require the `Revocation` row in the SAME
- * transaction as the delete it retires).
- *
- * JOINS a caller-owned transaction instead of opening its own: Quereus's
- * `Database.beginTransaction()` hard-throws "Transaction already active" on any
- * nesting, and a caller composing several writers in one transaction (e.g. a
- * resign + revoke pair that must land atomically) is exactly the case where the
- * deferred constraints should fire once, at the CALLER's commit. In joined mode
- * commit/rollback belong to the caller, so failures simply propagate.
+ * A membership writer that runs only in a transaction of its own found another
+ * transaction already open on the strand database, and wrote nothing. Raised only
+ * under `joinOpenTransaction: false` (see {@link StrandWriteOptions}) — the background
+ * callers, which treat it as "the app is mid-transaction; try again later".
  */
-async function inStrandTransaction(db: Database, fn: () => Promise<void>): Promise<void> {
-  if (!db.getAutocommit()) {
-    await fn();
+export class StrandTransactionBusyError extends Error {
+  constructor(options?: ErrorOptions) {
+    super(
+      'Another transaction is open on the strand database. This membership write runs only in a '
+      + 'transaction of its own, so nothing was written; retry once that transaction closes.',
+      options,
+    );
+    this.name = 'StrandTransactionBusyError';
+  }
+}
+
+/** Options every transactional membership writer accepts. */
+export interface StrandWriteOptions {
+  /**
+   * Default true: when a transaction is already open on the database, run the writer's
+   * statements inside it. The caller composes several writers in one transaction (e.g. a
+   * resign + revoke pair that must land together) and owns its commit and rollback, so
+   * the deferred constraints fire once, at the caller's commit.
+   *
+   * Background callers (the membership reconciler, the unpublish binding cleanup) pass
+   * false: they share the database with the app and must never join a transaction
+   * someone else opened, so the writer throws {@link StrandTransactionBusyError} instead.
+   */
+  joinOpenTransaction?: boolean;
+}
+
+/**
+ * SQL statements, each terminated by `;`, plus the named parameters they bind. The unit
+ * the writers assemble a batch from: a writer does every read, signature, and
+ * `canonicalDatetime` first, and only then issues all its statements in ONE `db.exec`.
+ */
+interface StrandStatements {
+  sql: string;
+  params: Record<string, SqlValue>;
+}
+
+/**
+ * Join statement fragments into one batch. Named parameters bind across the whole batch,
+ * so each fragment builder uses its own parameter names; a name bound twice would
+ * silently hand one fragment the other's value, so it throws instead.
+ */
+function combineStatements(...fragments: StrandStatements[]): StrandStatements {
+  const params: Record<string, SqlValue> = {};
+  for (const fragment of fragments) {
+    for (const [name, value] of Object.entries(fragment.params)) {
+      if (name in params) {
+        throw new Error(`Strand write batch binds the parameter :${name} in two statements`);
+      }
+      params[name] = value;
+    }
+  }
+  return { sql: fragments.map((fragment) => fragment.sql).join('\n'), params };
+}
+
+/** Quereus's refusal of a `begin` issued while a transaction is already open. */
+const NESTED_BEGIN_REFUSAL = /^Cannot begin transaction: already in a transaction$/;
+
+function isNestedBeginRefusal(error: unknown): boolean {
+  return error instanceof Error && NESTED_BEGIN_REFUSAL.test(error.message);
+}
+
+/**
+ * Run `statements` as one indivisible transaction on the shared strand database.
+ *
+ * The whole transaction is ONE `db.exec` batch — `begin transaction; <statements> commit;`
+ * — because Quereus holds its exec mutex for a whole batch but releases it between
+ * separate calls, and any caller's statement that runs while an explicit transaction is
+ * open lands inside it. A `beginTransaction()` / `exec` / `commit()` sequence therefore
+ * swept the app's concurrent writes into a background writer's transaction, and lost them
+ * when that transaction failed.
+ *
+ * Whether a transaction is already open is decided by the batch's own `begin`, under the
+ * mutex, not by `getAutocommit()` beforehand: that reads false whenever another caller's
+ * autocommit statement is merely in flight, which would make a background writer refuse
+ * spuriously and a composing caller run its statements as separate autocommits.
+ *
+ * - The `begin` succeeds: the batch commits or fails as a unit. A failure at `commit`
+ *   (deferred constraints, a refused optimystic commit) leaves nothing open. A failure at
+ *   an earlier statement leaves the batch's transaction open, so it is rolled back here.
+ * - The `begin` is refused because a transaction is already open: nothing has run. With
+ *   `joinOpenTransaction: false` that is a {@link StrandTransactionBusyError} (with the
+ *   refusal as `cause`), and the open transaction — someone else's — is left alone.
+ *   Otherwise the statements run inside it, and its owner commits or rolls back.
+ *
+ * NOTE: interim until Quereus ships a batch that rolls back before releasing its mutex —
+ * requested as `../quereus/tickets/plan/exec-batch-as-one-transaction.md`; switch to that
+ * API when a Quereus release carries it, which also retires the message match in
+ * {@link isNestedBeginRefusal}. Until then two residual windows remain. (1) A statement
+ * that fails before `commit` (a primary-key collision such as a sibling machine seating the
+ * same `Member` first, an immediate CHECK, a storage read error) releases the mutex with the
+ * batch's transaction still open: an app `exec` already queued behind the batch runs inside
+ * it, and the rollback below discards that app write although its `exec` resolved. The
+ * common failures (an `Invite` not replicated yet, expired, cancelled, sealed, and
+ * optimystic commit refusals) all fail at `commit` and leave nothing open. (2) The rollback
+ * decision reads `getAutocommit()` after the batch has released the mutex, so after a
+ * `commit`-time failure a queued app statement in flight reads as "still open" too; the
+ * rollback then runs after that statement's own commit and finds nothing to undo — unless
+ * an app `beginTransaction()` also slipped in between, which it would end.
+ */
+async function execStrandTransaction(
+  db: Database,
+  statements: StrandStatements,
+  options?: StrandWriteOptions,
+): Promise<void> {
+  try {
+    await db.exec(`begin transaction;\n${statements.sql}\ncommit;`, statements.params);
+    return;
+  } catch (error) {
+    if (!isNestedBeginRefusal(error)) {
+      await rollbackBatchLeftOpen(db, error);
+      throw error;
+    }
+    if (options?.joinOpenTransaction === false) {
+      throw new StrandTransactionBusyError({ cause: error });
+    }
+  }
+  await db.exec(statements.sql, statements.params);
+}
+
+/**
+ * Roll back the batch's own transaction when a statement before `commit` failed and left
+ * it open; a `commit`-time failure has already closed it. See the NOTE on
+ * {@link execStrandTransaction} for what this cannot tell apart.
+ */
+async function rollbackBatchLeftOpen(db: Database, cause: unknown): Promise<void> {
+  if (db.getAutocommit()) {
     return;
   }
-  await db.beginTransaction();
   try {
-    await fn();
-    await db.commit();
-  } catch (error) {
-    // A failed commit() already tears down the transaction, so rollback() would
-    // throw "No transaction active" and mask the real cause — swallow only that.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after strand transaction failure was a no-op: %s', rollbackError);
-    }
-    throw error;
+    await db.rollback();
+    log('Rolled back a strand write batch left open by a failed statement: %s', cause);
+  } catch (rollbackError) {
+    log('Rolling back a failed strand write batch failed (%s): %o', cause, rollbackError);
   }
 }
 
 /**
- * File the `Strand.Revocation` tombstone that retires a deleted row's StampId.
+ * The `Strand.Revocation` tombstone insert that retires a deleted row's StampId.
  *
- * Runs inside the SAME transaction as the delete it accompanies — the guarded
- * tables' `RevocationRecorded` (deferred) requires the tombstone at commit, and
+ * Always batched with the delete it accompanies — the guarded tables'
+ * `RevocationRecorded` (deferred) requires the tombstone at commit, and
  * `Revocation.RowIsGone` (also deferred) requires the row to already be gone, so
  * the pair only ever lands together.
  *
@@ -178,24 +285,26 @@ async function inStrandTransaction(db: Database, fn: () => Promise<void>): Promi
  * removes it. Unlike the sibling tables' nullable contexts, `Revocation`'s
  * context is non-null — both fields are always supplied.
  *
- * @param db - The strand database, INSIDE an open transaction.
  * @param tableName - Which guarded table the stamp belonged to.
  * @param stampId - The retired stamp.
  * @param retiree - The committed member filing the tombstone (the delete's own signer).
  */
-async function insertRevocation(
-  db: Database,
+function revocationStatement(
   tableName: 'Member' | 'Manager' | 'MemberPeer',
   stampId: string,
   retiree: Ed25519KeyPair,
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
-  );
+): StrandStatements {
+  return {
+    sql: `insert into Strand.Revocation (TableName, StampId)
+       with context MemberKey = :revocationSignerKey, Signature = :revocationSignature
+       values (:revocationTable, :revocationStampId);`,
+    params: {
+      revocationSignerKey: retiree.publicKeyB64,
+      revocationSignature: signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64),
+      revocationTable: tableName,
+      revocationStampId: stampId,
+    },
+  };
 }
 
 /** Parameters for {@link bootstrapFounderMembership}. */
@@ -609,51 +718,55 @@ export interface ConsumeInviteParams {
  * @param db - The closed strand's database.
  * @param params - The invite key/secret, the joining member's public key, and an
  *   optional `nowMs` instant for the expiry comparison (default `Date.now()`).
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If any constraint rejects (bad signature, missing invite, or an expired
  *   invite); the whole transaction rolls back (neither the `Member` nor the
  *   `ConsumedInvite` row survives).
+ * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
+ *   transaction is open; nothing was written.
  */
-export async function consumeInvite(db: Database, params: ConsumeInviteParams): Promise<void> {
+export async function consumeInvite(
+  db: Database,
+  params: ConsumeInviteParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { inviteKey, memberKey } = params;
-
-  await inStrandTransaction(db, async () => {
-    // 1. Member — admitted by the deferred invite branch (the matching
-    //    ConsumedInvite below), so no manager signature is supplied.
-    await db.exec(
-      `insert into Strand.Member (Key, StampId)
-         with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-         values (?, ?)`,
-      [memberKey, generateStrandStampId()],
-    );
-
-    // 2. ConsumedInvite — proves possession of the invite private key and that the
-    //    invite has not expired (NotExpired gate against the canonical Now).
-    await insertConsumedInviteRow(db, params);
-  });
+  // Member first — admitted by the deferred invite branch (the matching ConsumedInvite
+  // after it), so no manager signature is supplied.
+  const member: StrandStatements = {
+    sql: `insert into Strand.Member (Key, StampId)
+       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
+       values (:memberKey, :memberStampId);`,
+    params: { memberKey, memberStampId: generateStrandStampId() },
+  };
+  await execStrandTransaction(db, combineStatements(member, await consumedInviteStatement(db, params)), options);
   log('Consumed invite %s -> member %s', inviteKey, memberKey);
 }
 
 /**
- * Insert the `Strand.ConsumedInvite` marker row — the possession-plus-freshness proof
- * shared by {@link consumeInvite} (paired with its `Member` insert inside one
- * transaction) and {@link burnInvite} (standalone, against an already-seated member).
+ * The `Strand.ConsumedInvite` marker row insert — the possession-plus-freshness proof
+ * shared by {@link consumeInvite} (batched after its `Member` insert) and
+ * {@link burnInvite} (alone, against an already-seated member).
  *
  * The invite signature covers `InviteKey || '|' || MemberKey` (the `ValidUsage` gate),
  * and "now" is canonicalised the same way {@link issueInvite} canonicalises
  * `Expiration`, so the schema's `I.Expiration > context.Now` compares like-for-like
- * canonical strings (`canonicalDatetime` is a pure scalar eval, safe mid-transaction).
- * Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
+ * canonical strings. Plain runtime Date.now() — the tess Workflow restriction is on
+ * scripts, not libs.
  */
-async function insertConsumedInviteRow(db: Database, params: ConsumeInviteParams): Promise<void> {
+async function consumedInviteStatement(db: Database, params: ConsumeInviteParams): Promise<StrandStatements> {
   const { inviteKey, invitePrivateKey, memberKey, nowMs } = params;
-  const inviteSignature = signStrandPayload(`${inviteKey}|${memberKey}`, invitePrivateKey);
-  const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
-  await db.exec(
-    `insert into Strand.ConsumedInvite (InviteKey, MemberKey)
-       with context InviteSignature = ?, Now = ?
-       values (?, ?)`,
-    [inviteSignature, nowCanonical, inviteKey, memberKey],
-  );
+  return {
+    sql: `insert into Strand.ConsumedInvite (InviteKey, MemberKey)
+       with context InviteSignature = :consumedSignature, Now = :consumedNow
+       values (:consumedInviteKey, :consumedMemberKey);`,
+    params: {
+      consumedSignature: signStrandPayload(`${inviteKey}|${memberKey}`, invitePrivateKey),
+      consumedNow: await canonicalDatetime(db, nowMs ?? Date.now()),
+      consumedInviteKey: inviteKey,
+      consumedMemberKey: memberKey,
+    },
+  };
 }
 
 /**
@@ -667,20 +780,27 @@ async function insertConsumedInviteRow(db: Database, params: ConsumeInviteParams
  * manager admitted the party directly) may still hold an UNSPENT formation-delivered
  * invitation — a bearer credential whoever presents can join with. Every
  * `ConsumedInvite` constraint is satisfiable without a same-transaction `Member`
- * insert (`MemberExists` reads the live table), so this is one auto-commit statement
- * whose deferred checks fire at its own commit. It seats nobody now or later:
+ * insert (`MemberExists` reads the live table), so this is one statement whose
+ * deferred checks fire at its own commit. It seats nobody now or later:
  * `Member.Authorized`'s invite branch requires a same-transaction FRESH consumption,
  * so the row it leaves is exactly as inert as any other spent invitation's.
  *
  * @param db - The closed strand's database (the member already exists).
  * @param params - The invite key/secret and the EXISTING member's public key, plus the
  *   optional `nowMs` instant for the expiry gate (default `Date.now()`).
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If any constraint rejects — already consumed (the `InviteKey` primary key),
  *   cancelled, expired, or a sealed strand. Callers treat a burn failure as "already
  *   dead" and log rather than retry.
+ * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
+ *   transaction is open; nothing was tried, so the invitation is exactly as live as before.
  */
-export async function burnInvite(db: Database, params: ConsumeInviteParams): Promise<void> {
-  await insertConsumedInviteRow(db, params);
+export async function burnInvite(
+  db: Database,
+  params: ConsumeInviteParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
+  await execStrandTransaction(db, await consumedInviteStatement(db, params), options);
   log('Burned invite %s against existing member %s', params.inviteKey, params.memberKey);
 }
 
@@ -905,20 +1025,35 @@ export interface AddMemberByManagerParams {
  *
  * @param db - The closed strand's database.
  * @param params - The admitting manager keypair and the new member key.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `Member.Authorized` rejects (e.g. a non-manager key); the insert
  *   rolls back, leaving no `Member` row.
  */
-export async function addMemberByManager(db: Database, params: AddMemberByManagerParams): Promise<void> {
+export async function addMemberByManager(
+  db: Database,
+  params: AddMemberByManagerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
+  const { managerKeyPair, memberKey } = params;
+  await execStrandTransaction(db, memberAddByManagerStatement(params), options);
+  log('Admitted member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
+}
+
+/** The manager-signed `Strand.Member` insert behind {@link addMemberByManager}, under a fresh stamp. */
+function memberAddByManagerStatement(params: AddMemberByManagerParams): StrandStatements {
   const { managerKeyPair, memberKey } = params;
   const stampId = generateStrandStampId();
-  const signature = signStrandApproval(['Strand.Member', 'add', memberKey, stampId], managerKeyPair.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Member (Key, StampId)
-       with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
-       values (?, ?)`,
-    [managerKeyPair.publicKeyB64, signature, memberKey, stampId],
-  );
-  log('Admitted member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
+  return {
+    sql: `insert into Strand.Member (Key, StampId)
+       with context ManagerKey = :memberAdmitterKey, ManagerSignature = :memberAdmitterSignature, MemberSignature = null
+       values (:memberKey, :memberStampId);`,
+    params: {
+      memberAdmitterKey: managerKeyPair.publicKeyB64,
+      memberAdmitterSignature: signStrandApproval(['Strand.Member', 'add', memberKey, stampId], managerKeyPair.privateKeyB64),
+      memberKey,
+      memberStampId: stampId,
+    },
+  };
 }
 
 /** Parameters for {@link revokeMember}. */
@@ -980,28 +1115,38 @@ export interface RevokeMemberParams {
  *
  * @param db - The closed strand's database.
  * @param params - The revoking manager keypair and the target member key.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `Member.Authorized` rejects (a non-manager or same-transaction
  *   signer), `Member.NotAManager` rejects (the target still holds a Manager
  *   row), or `Member.MinOneMember` rejects (the removal would empty the member
  *   set); the whole delete+tombstone transaction rolls back.
  */
-export async function revokeMember(db: Database, params: RevokeMemberParams): Promise<void> {
+export async function revokeMember(
+  db: Database,
+  params: RevokeMemberParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { managerKeyPair, memberKey } = params;
   const stampId = await memberStampId(db, memberKey);
   if (stampId == null) {
     log('Member %s already absent; skipping revoke', memberKey);
     return;
   }
-  const signature = signStrandApproval(['Strand.Member', 'remove', memberKey, stampId], managerKeyPair.privateKeyB64);
-  await inStrandTransaction(db, async () => {
-    await db.exec(
-      `delete from Strand.Member
-         with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
-         where Key = ?`,
-      [managerKeyPair.publicKeyB64, signature, memberKey],
-    );
-    await insertRevocation(db, 'Member', stampId, managerKeyPair);
-  });
+  const removal: StrandStatements = {
+    sql: `delete from Strand.Member
+       with context ManagerKey = :memberRemoverKey, ManagerSignature = :memberRemoverSignature, MemberSignature = null
+       where Key = :memberKey;`,
+    params: {
+      memberRemoverKey: managerKeyPair.publicKeyB64,
+      memberRemoverSignature: signStrandApproval(['Strand.Member', 'remove', memberKey, stampId], managerKeyPair.privateKeyB64),
+      memberKey,
+    },
+  };
+  await execStrandTransaction(
+    db,
+    combineStatements(removal, revocationStatement('Member', stampId, managerKeyPair)),
+    options,
+  );
   log('Revoked member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
 }
 
@@ -1040,10 +1185,15 @@ export interface LeaveStrandParams {
  *
  * @param db - The closed strand's database.
  * @param params - The departing member's own keypair.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `Member.Authorized`, `Member.NotAManager`, or `Member.MinOneMember`
  *   rejects; the whole delete+tombstone transaction rolls back.
  */
-export async function leaveStrand(db: Database, params: LeaveStrandParams): Promise<void> {
+export async function leaveStrand(
+  db: Database,
+  params: LeaveStrandParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { memberKeyPair } = params;
   const memberKey = memberKeyPair.publicKeyB64;
   const stampId = await memberStampId(db, memberKey);
@@ -1051,16 +1201,20 @@ export async function leaveStrand(db: Database, params: LeaveStrandParams): Prom
     log('Member %s already absent; skipping leave', memberKey);
     return;
   }
-  const signature = signStrandApproval(['Strand.Member', 'leave', memberKey, stampId], memberKeyPair.privateKeyB64);
-  await inStrandTransaction(db, async () => {
-    await db.exec(
-      `delete from Strand.Member
-         with context ManagerKey = null, ManagerSignature = null, MemberSignature = ?
-         where Key = ?`,
-      [signature, memberKey],
-    );
-    await insertRevocation(db, 'Member', stampId, memberKeyPair);
-  });
+  const departure: StrandStatements = {
+    sql: `delete from Strand.Member
+       with context ManagerKey = null, ManagerSignature = null, MemberSignature = :memberSignature
+       where Key = :memberKey;`,
+    params: {
+      memberSignature: signStrandApproval(['Strand.Member', 'leave', memberKey, stampId], memberKeyPair.privateKeyB64),
+      memberKey,
+    },
+  };
+  await execStrandTransaction(
+    db,
+    combineStatements(departure, revocationStatement('Member', stampId, memberKeyPair)),
+    options,
+  );
   log('Member %s left the strand', memberKey);
 }
 
@@ -1112,10 +1266,17 @@ export interface RegisterMemberPeerParams {
  *
  * @param db - The closed strand's database (the member already exists).
  * @param params - The member's own keypair and the peer id to bind.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `MemberPeer.Authorized`/`MemberExists` rejects (wrong signer, or no
  *   matching `Member` row); the insert rolls back, leaving no `MemberPeer` row.
+ * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
+ *   transaction is open; nothing was written.
  */
-export async function registerMemberPeer(db: Database, params: RegisterMemberPeerParams): Promise<void> {
+export async function registerMemberPeer(
+  db: Database,
+  params: RegisterMemberPeerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { memberKeyPair, peerId } = params;
   const memberKey = memberKeyPair.publicKeyB64;
 
@@ -1125,16 +1286,17 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
   }
 
   const stampId = generateStrandStampId();
-  const signature = signStrandApproval(
-    ['Strand.MemberPeer', 'add', memberKey, peerId, stampId],
-    memberKeyPair.privateKeyB64,
-  );
-  await db.exec(
-    `insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
-       with context Signature = ?, ManagerKey = null, ManagerSignature = null
-       values (?, ?, ?)`,
-    [signature, memberKey, peerId, stampId],
-  );
+  await execStrandTransaction(db, {
+    sql: `insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
+       with context Signature = :peerSignature, ManagerKey = null, ManagerSignature = null
+       values (:peerMemberKey, :peerId, :peerStampId);`,
+    params: {
+      peerSignature: signStrandApproval(['Strand.MemberPeer', 'add', memberKey, peerId, stampId], memberKeyPair.privateKeyB64),
+      peerMemberKey: memberKey,
+      peerId,
+      peerStampId: stampId,
+    },
+  }, options);
   log('Registered MemberPeer (%s, %s)', memberKey, peerId);
 }
 
@@ -1286,10 +1448,17 @@ export type RemoveMemberPeerParams = RemoveOwnPeerParams | RemoveMemberPeerByMan
  * @param db - The closed strand's database.
  * @param params - Either the owning member's keypair, or a manager's keypair plus the
  *   target member key.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `MemberPeer.Authorized` rejects (neither branch satisfied), or if the row
  *   is still present after the delete (see the point-lookup note below).
+ * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
+ *   transaction is open; nothing was written.
  */
-export async function removeMemberPeer(db: Database, params: RemoveMemberPeerParams): Promise<void> {
+export async function removeMemberPeer(
+  db: Database,
+  params: RemoveMemberPeerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const memberKey = 'memberKeyPair' in params ? params.memberKeyPair.publicKeyB64 : params.memberKey;
   const { peerId } = params;
 
@@ -1299,13 +1468,10 @@ export async function removeMemberPeer(db: Database, params: RemoveMemberPeerPar
     return;
   }
 
-  await inStrandTransaction(db, async () => {
-    if ('memberKeyPair' in params) {
-      await deleteOwnMemberPeer(db, params, stampId);
-    } else {
-      await deleteMemberPeerByManager(db, params, stampId);
-    }
-  });
+  const removal = 'memberKeyPair' in params
+    ? ownMemberPeerRemovalStatements(params, stampId)
+    : memberPeerRemovalByManagerStatements(params, stampId);
+  await execStrandTransaction(db, removal, options);
 
   // NOTE: the delete's `where` puts an equality on BOTH composite-PK columns, which the
   // optimystic vtab module serves via a single-key seek that can MISS on a networked
@@ -1322,20 +1488,20 @@ export async function removeMemberPeer(db: Database, params: RemoveMemberPeerPar
 }
 
 /** The self branch: the owning member signs the remove-tagged digest + tombstone. */
-async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams, stampId: string): Promise<void> {
+function ownMemberPeerRemovalStatements(params: RemoveOwnPeerParams, stampId: string): StrandStatements {
   const { memberKeyPair, peerId } = params;
   const memberKey = memberKeyPair.publicKeyB64;
-  const signature = signStrandApproval(
-    ['Strand.MemberPeer', 'remove', memberKey, peerId, stampId],
-    memberKeyPair.privateKeyB64,
-  );
-  await db.exec(
-    `delete from Strand.MemberPeer
-       with context Signature = ?, ManagerKey = null, ManagerSignature = null
-       where MemberKey = ? and PeerId = ?`,
-    [signature, memberKey, peerId],
-  );
-  await insertRevocation(db, 'MemberPeer', stampId, memberKeyPair);
+  const removal: StrandStatements = {
+    sql: `delete from Strand.MemberPeer
+       with context Signature = :peerSignature, ManagerKey = null, ManagerSignature = null
+       where MemberKey = :peerMemberKey and PeerId = :peerId;`,
+    params: {
+      peerSignature: signStrandApproval(['Strand.MemberPeer', 'remove', memberKey, peerId, stampId], memberKeyPair.privateKeyB64),
+      peerMemberKey: memberKey,
+      peerId,
+    },
+  };
+  return combineStatements(removal, revocationStatement('MemberPeer', stampId, memberKeyPair));
 }
 
 /**
@@ -1349,23 +1515,26 @@ async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams, st
  * members' nodes resume answering and dialing that peer. Only clear a binding
  * that should never have existed, or a peer that is truly gone.
  */
-async function deleteMemberPeerByManager(
-  db: Database,
+function memberPeerRemovalByManagerStatements(
   params: RemoveMemberPeerByManagerParams,
   stampId: string,
-): Promise<void> {
+): StrandStatements {
   const { managerKeyPair, memberKey, peerId } = params;
-  const signature = signStrandApproval(
-    ['Strand.MemberPeer', 'manager-remove', memberKey, peerId, stampId],
-    managerKeyPair.privateKeyB64,
-  );
-  await db.exec(
-    `delete from Strand.MemberPeer
-       with context Signature = null, ManagerKey = ?, ManagerSignature = ?
-       where MemberKey = ? and PeerId = ?`,
-    [managerKeyPair.publicKeyB64, signature, memberKey, peerId],
-  );
-  await insertRevocation(db, 'MemberPeer', stampId, managerKeyPair);
+  const removal: StrandStatements = {
+    sql: `delete from Strand.MemberPeer
+       with context Signature = null, ManagerKey = :peerManagerKey, ManagerSignature = :peerManagerSignature
+       where MemberKey = :peerMemberKey and PeerId = :peerId;`,
+    params: {
+      peerManagerKey: managerKeyPair.publicKeyB64,
+      peerManagerSignature: signStrandApproval(
+        ['Strand.MemberPeer', 'manager-remove', memberKey, peerId, stampId],
+        managerKeyPair.privateKeyB64,
+      ),
+      peerMemberKey: memberKey,
+      peerId,
+    },
+  };
+  return combineStatements(removal, revocationStatement('MemberPeer', stampId, managerKeyPair));
 }
 
 // ── Manager rotation (add / remove RBAC admins) ───────────────────────────────
@@ -1433,11 +1602,28 @@ export interface AddManagerParams {
  *
  * @param db - The closed strand's database (founder manager already seated).
  * @param params - The authorizing manager's keypair and the new manager key.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If `Manager.Authorized` rejects, or if `Manager.MemberExists` rejects because
  *   `newManagerKey` holds no `Member` row (admit it first, or use
  *   {@link admitManager}); the insert rolls back.
  */
-export async function addManager(db: Database, params: AddManagerParams): Promise<void> {
+export async function addManager(
+  db: Database,
+  params: AddManagerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
+  const { byManagerKeyPair, newManagerKey } = params;
+  const promotion = await managerAddStatement(db, params);
+  await execStrandTransaction(db, promotion, options);
+  log('Added manager %s (generation %d) by %s', newManagerKey, promotion.params.managerGeneration,
+    byManagerKeyPair.publicKeyB64);
+}
+
+/**
+ * The `Strand.Manager` insert behind {@link addManager}: reads the authorizer's generation,
+ * seats the new manager one above it under a fresh stamp, and signs all three.
+ */
+async function managerAddStatement(db: Database, params: AddManagerParams): Promise<StrandStatements> {
   const { byManagerKeyPair, newManagerKey } = params;
   const authorizer = await managerRow(db, byManagerKeyPair.publicKeyB64);
   // NOTE: +1 saturates at Number.MAX_SAFE_INTEGER, where the successor compares equal
@@ -1447,17 +1633,21 @@ export async function addManager(db: Database, params: AddManagerParams): Promis
   // from outside this function, clamp or reject here rather than emitting a dead row.
   const generation = authorizer == null ? 1 : authorizer.generation + 1;
   const stampId = generateStrandStampId();
-  const signature = signStrandApproval(
-    ['Strand.Manager', 'add', newManagerKey, generation, stampId],
-    byManagerKeyPair.privateKeyB64,
-  );
-  await db.exec(
-    `insert into Strand.Manager (MemberKey, Generation, StampId)
-       with context ManagerKey = ?, Signature = ?
-       values (?, ?, ?)`,
-    [byManagerKeyPair.publicKeyB64, signature, newManagerKey, generation, stampId],
-  );
-  log('Added manager %s (generation %d) by %s', newManagerKey, generation, byManagerKeyPair.publicKeyB64);
+  return {
+    sql: `insert into Strand.Manager (MemberKey, Generation, StampId)
+       with context ManagerKey = :managerAuthorizerKey, Signature = :managerSignature
+       values (:managerMemberKey, :managerGeneration, :managerStampId);`,
+    params: {
+      managerAuthorizerKey: byManagerKeyPair.publicKeyB64,
+      managerSignature: signStrandApproval(
+        ['Strand.Manager', 'add', newManagerKey, generation, stampId],
+        byManagerKeyPair.privateKeyB64,
+      ),
+      managerMemberKey: newManagerKey,
+      managerGeneration: generation,
+      managerStampId: stampId,
+    },
+  };
 }
 
 /** Parameters for {@link admitManager} — the same shape as {@link AddManagerParams}. */
@@ -1490,15 +1680,19 @@ export type AdmitManagerParams = AddManagerParams;
  *
  * @param db - The closed strand's database (founder manager already seated).
  * @param params - The authorizing manager's keypair and the key to admit + promote.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If either half is rejected (`Member.Authorized`, `Manager.Authorized`, a
  *   duplicate `Member` key, …); the whole transaction rolls back, leaving neither row.
  */
-export async function admitManager(db: Database, params: AdmitManagerParams): Promise<void> {
+export async function admitManager(
+  db: Database,
+  params: AdmitManagerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { byManagerKeyPair, newManagerKey } = params;
-  await inStrandTransaction(db, async () => {
-    await addMemberByManager(db, { managerKeyPair: byManagerKeyPair, memberKey: newManagerKey });
-    await addManager(db, { byManagerKeyPair, newManagerKey });
-  });
+  const admission = memberAddByManagerStatement({ managerKeyPair: byManagerKeyPair, memberKey: newManagerKey });
+  const promotion = await managerAddStatement(db, params);
+  await execStrandTransaction(db, combineStatements(admission, promotion), options);
   log('Admitted + promoted manager %s by %s', newManagerKey, byManagerKeyPair.publicKeyB64);
 }
 
@@ -1587,13 +1781,18 @@ export interface RemoveManagerParams {
  *
  * @param db - The closed strand's database.
  * @param params - The authorizing keypair and the target manager key.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If the signer IS the target and it is the sole manager (before writing —
  *   the operation the caller wants is {@link sealStrand}), or if `Manager.Authorized`
  *   rejects (a signer that is neither another existing manager nor the target
  *   itself, or a raw sole-manager `'resign'` whose post-image count is zero); the
  *   whole delete+tombstone transaction rolls back.
  */
-export async function removeManager(db: Database, params: RemoveManagerParams): Promise<void> {
+export async function removeManager(
+  db: Database,
+  params: RemoveManagerParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { byManagerKeyPair, targetManagerKey } = params;
   const target = await managerRow(db, targetManagerKey);
   if (target == null) {
@@ -1611,16 +1810,35 @@ export async function removeManager(db: Database, params: RemoveManagerParams): 
     ['Strand.Manager', tag, targetManagerKey, target.stampId],
     byManagerKeyPair.privateKeyB64,
   );
-  await inStrandTransaction(db, async () => {
-    await db.exec(
-      `delete from Strand.Manager
-         with context ManagerKey = ?, Signature = ?
-         where MemberKey = ?`,
-      [byManagerKeyPair.publicKeyB64, signature, targetManagerKey],
-    );
-    await insertRevocation(db, 'Manager', target.stampId, byManagerKeyPair);
-  });
+  await execStrandTransaction(
+    db,
+    managerRemovalStatements(byManagerKeyPair, signature, targetManagerKey, target.stampId),
+    options,
+  );
   log('Removed manager %s by %s', targetManagerKey, byManagerKeyPair.publicKeyB64);
+}
+
+/**
+ * The `Strand.Manager` delete plus its tombstone, shared by {@link removeManager} and
+ * {@link sealStrand}, which differ only in the action tag `signature` was minted under.
+ */
+function managerRemovalStatements(
+  signer: Ed25519KeyPair,
+  signature: string,
+  targetManagerKey: string,
+  targetStampId: string,
+): StrandStatements {
+  const removal: StrandStatements = {
+    sql: `delete from Strand.Manager
+       with context ManagerKey = :managerRemoverKey, Signature = :managerRemoverSignature
+       where MemberKey = :managerMemberKey;`,
+    params: {
+      managerRemoverKey: signer.publicKeyB64,
+      managerRemoverSignature: signature,
+      managerMemberKey: targetManagerKey,
+    },
+  };
+  return combineStatements(removal, revocationStatement('Manager', targetStampId, signer));
 }
 
 // ── Sealing (the sole manager permanently freezes admission) ──────────────────
@@ -1674,6 +1892,7 @@ export interface SealStrandParams {
  *
  * @param db - The closed strand's database.
  * @param params - The sole manager's own keypair.
+ * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If more than one manager exists (the caller wants {@link removeManager}),
  *   or the supplied keypair holds no `Manager` row while one exists, or the strand
  *   holds no `Manager` row and has never retired one (not founded yet — see
@@ -1682,7 +1901,11 @@ export interface SealStrandParams {
  *   and returns quietly (restart-safe, matching {@link bootstrapFounderMembership}
  *   and {@link removeManager}'s absent-row no-op).
  */
-export async function sealStrand(db: Database, params: SealStrandParams): Promise<void> {
+export async function sealStrand(
+  db: Database,
+  params: SealStrandParams,
+  options?: StrandWriteOptions,
+): Promise<void> {
   const { managerKeyPair } = params;
   const managerCount = await strandTableCount(db, 'Manager');
   if (managerCount === 0) {
@@ -1713,15 +1936,11 @@ export async function sealStrand(db: Database, params: SealStrandParams): Promis
     ['Strand.Manager', 'seal', managerKeyPair.publicKeyB64, self.stampId],
     managerKeyPair.privateKeyB64,
   );
-  await inStrandTransaction(db, async () => {
-    await db.exec(
-      `delete from Strand.Manager
-         with context ManagerKey = ?, Signature = ?
-         where MemberKey = ?`,
-      [managerKeyPair.publicKeyB64, signature, managerKeyPair.publicKeyB64],
-    );
-    await insertRevocation(db, 'Manager', self.stampId, managerKeyPair);
-  });
+  await execStrandTransaction(
+    db,
+    managerRemovalStatements(managerKeyPair, signature, managerKeyPair.publicKeyB64, self.stampId),
+    options,
+  );
   log('Sealed strand: sole manager %s stepped down', managerKeyPair.publicKeyB64);
 }
 

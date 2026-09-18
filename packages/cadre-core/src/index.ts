@@ -284,6 +284,7 @@ export {
   removeManager,
   sealStrand,
   isStrandSealed,
+  StrandTransactionBusyError,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
   type FounderBootstrapParams,
@@ -302,7 +303,8 @@ export {
   type AddManagerParams,
   type AdmitManagerParams,
   type RemoveManagerParams,
-  type SealStrandParams
+  type SealStrandParams,
+  type StrandWriteOptions
 } from './strand-membership-writer.js';
 
 // Engine-canonical datetime helper (shared by control + strand signed-write flows

@@ -551,8 +551,8 @@ describe('a sealed strand', () => {
     const { db, founder } = await openStrand('c');
     const other = await seatMember(db, founder);
 
-    // Both writers join a caller-owned transaction (inStrandTransaction defers to an
-    // open one), so the deferred checks fire once at the caller's commit. That is
+    // Both writers join a caller-owned transaction (a writer runs inside an open one
+    // unless told not to), so the deferred checks fire once at the caller's commit. That is
     // what makes this legal: Member.NotAManager reads the POST-image, where the
     // Manager row is already gone, and Member.MinOneMember sees `other` surviving.
     await inTransaction(db, async () => {

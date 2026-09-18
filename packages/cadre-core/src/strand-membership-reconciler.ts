@@ -59,6 +59,14 @@
  * the loop keeps idling: a fresh formation stages a new invitation, and a manager-side
  * admission (`addMemberByManager`) seats the member row without one.
  *
+ * ## Sharing the database with the app
+ *
+ * The strand `Database` this loop writes to is the one the app holds. Every write here
+ * passes `joinOpenTransaction: false`, so it runs as a transaction of its own and never
+ * joins one the app has open: the writer refuses with `StrandTransactionBusyError`, having
+ * written nothing, and the pass retries on the ladder. A busy refusal is never read as a
+ * dead invitation, and a busy burn leaves the invitation staged for the next pass.
+ *
  * ## Half-committed join
  *
  * On a networked strand optimystic commits `Member` and `ConsumedInvite` as separate
@@ -83,10 +91,12 @@ import type { Ed25519KeyPair } from './ed25519-key.js';
 import type { StrandMembershipInvite } from './types.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import {
+  StrandTransactionBusyError,
   burnInvite,
   consumeInvite,
   isStrandMember,
   registerMemberPeer,
+  type StrandWriteOptions,
 } from './strand-membership-writer.js';
 import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from './strand-revocation-enforcer.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
@@ -112,6 +122,9 @@ export const IDLE_PASSES_BEFORE_ESCALATION = 10;
  * of a shorter interval.
  */
 export const INITIAL_JOIN_RETRY_INTERVAL_MS = 1_000;
+
+/** Every write this loop makes runs in a transaction of its own — see "Sharing the database with the app". */
+const OWN_TRANSACTION: StrandWriteOptions = { joinOpenTransaction: false };
 
 /**
  * The `consumeInvite` rejection that means the strand is SEALED — `ConsumedInvite.NotSealed`
@@ -149,6 +162,8 @@ export interface HalfCommittedJoin {
 /** Where {@link classifyConsumeFailure} routes a failed `consumeInvite`. */
 export type ConsumeFailure =
   | HalfCommittedJoin
+  /** The app had a transaction open, so nothing was tried — keep the invitation, retry. */
+  | { kind: 'busy' }
   /** The strand is sealed — terminal. */
   | { kind: 'sealed' }
   /** Expired, cancelled, or consumed by someone else — drop the invitation, keep waiting. */
@@ -157,10 +172,12 @@ export type ConsumeFailure =
   | { kind: 'retry' };
 
 /**
- * Route a `consumeInvite` rejection. Typed checks run before any text check: a half-committed
- * join is recognised by its error's type anywhere in the `cause` chain, because its message
- * embeds collection names and the underlying failure's text, which a text matcher can misread.
- * The sealed and dead-invitation checks then read the top-level message.
+ * Route a `consumeInvite` rejection. Typed checks run before any text check: a busy refusal
+ * (another transaction was open, so nothing ran) and a half-committed join are recognised by
+ * their error's type anywhere in the `cause` chain. The busy refusal carries Quereus's own
+ * refusal as its cause, and a half-committed join's message embeds collection names and the
+ * underlying failure's text, either of which a text matcher can misread. The sealed and
+ * dead-invitation checks then read the top-level message.
  *
  * A second loaded copy of `@optimystic/db-core` (or of the plugin) would fail `instanceof`; the
  * half-commit then falls through the anchored texts to `retry`, and once the saved `ConsumedInvite`
@@ -168,6 +185,7 @@ export type ConsumeFailure =
  * the old silent outcome, a few passes later, never a wrong write.
  */
 export function classifyConsumeFailure(error: unknown): ConsumeFailure {
+  if (isTransactionBusy(error)) return { kind: 'busy' };
   const halfCommitted = halfCommittedJoin(error);
   if (halfCommitted) return halfCommitted;
   const message = errorMessage(error);
@@ -195,6 +213,11 @@ function halfCommittedJoin(error: unknown): HalfCommittedJoin | undefined {
     }
   }
   return undefined;
+}
+
+/** Whether a writer refused because another transaction was open (see "Sharing the database with the app"). */
+function isTransactionBusy(error: unknown): boolean {
+  return causeChain(error).some((link) => link instanceof StrandTransactionBusyError);
 }
 
 function errorMessage(error: unknown): string {
@@ -401,7 +424,7 @@ export class StrandMembershipReconciler {
       if (!(await this.ensureMembership(db, keyPair))) return;
       // NOTE: the redemption (`Member` + `ConsumedInvite`) and the binding below are two
       // SEPARATE commits — measured at 27 and 18 `/cluster` streams on 2026-09-17.
-      // `inStrandTransaction` would let both run in one transaction (`MemberPeer.MemberExists`
+      // One write batch could carry both (`MemberPeer.MemberExists`
       // reads the LIVE `Member` table, and `MemberPeer.Authorized`'s add branch only verifies a
       // self-signature over the new row), worth perhaps a third of that plus one commit
       // round-trip. Left as two deliberately: the saving is unmeasured, and merging them merges
@@ -478,7 +501,7 @@ export class StrandMembershipReconciler {
         inviteKey: invite.inviteKey,
         invitePrivateKey: invite.invitePrivateKey,
         memberKey: keyPair.publicKeyB64,
-      });
+      }, OWN_TRANSACTION);
     } catch (error) {
       this.handleConsumeFailure(error);
       return false;
@@ -493,7 +516,9 @@ export class StrandMembershipReconciler {
    * failures (already spent, cancelled, expired — or a racing seal) are logged and
    * otherwise ignored, and the stage is cleared either way: with the member row
    * present the invitation has no further local use, and keeping a possibly-dead
-   * credential staged would leave `getPendingMembershipInvite` lying.
+   * credential staged would leave `getPendingMembershipInvite` lying. The one exception
+   * is a busy refusal (the app had a transaction open): nothing was tried, so the
+   * invitation stays staged and the next pass burns it.
    *
    * NOTE: accepted tradeoff — a burn that failed for a TRANSIENT reason is never
    * retried, so that bearer credential stays spendable until it expires. Weighed and
@@ -512,9 +537,14 @@ export class StrandMembershipReconciler {
         inviteKey: invite.inviteKey,
         invitePrivateKey: invite.invitePrivateKey,
         memberKey: keyPair.publicKeyB64,
-      });
+      }, OWN_TRANSACTION);
       log('[%s] burned the leftover invitation (member row already present)', this.deps.label);
     } catch (error) {
+      if (isTransactionBusy(error)) {
+        log('[%s] burning the leftover invitation deferred — the app has a transaction open; it stays staged '
+          + 'for the next pass', this.deps.label);
+        return;
+      }
       log('[%s] burning the leftover invitation failed (already spent, cancelled, or expired) — dropping it: %o',
         this.deps.label, error);
     }
@@ -524,8 +554,8 @@ export class StrandMembershipReconciler {
   /**
    * Step 3 of the pass: write this machine's own `MemberPeer` binding (insert-if-absent)
    * and, on success, latch the done state and stop the loop. A missing transport peer id
-   * (a quiesce racing the pass) defers to the next tick; a write failure is contained by
-   * the pass's outer catch and retried.
+   * (a quiesce racing the pass) defers to the next tick; a write failure — a busy refusal
+   * included — is contained by the pass's outer catch and retried.
    */
   private async ensureBinding(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
     const peerId = this.deps.getOwnPeerId();
@@ -533,18 +563,23 @@ export class StrandMembershipReconciler {
       log('[%s] no live transport peer id this pass — binding deferred', this.deps.label);
       return;
     }
-    await registerMemberPeer(db, { memberKeyPair: keyPair, peerId });
+    await registerMemberPeer(db, { memberKeyPair: keyPair, peerId }, OWN_TRANSACTION);
     this.doneFlag = true;
     this.finish('member row and own MemberPeer binding are both in place');
   }
 
   /**
-   * Act on a `consumeInvite` rejection as {@link classifyConsumeFailure} routes it: half-committed
-   * → warn and drop; sealed → terminal; dead invitation → drop; anything else → retry.
+   * Act on a `consumeInvite` rejection as {@link classifyConsumeFailure} routes it: busy → keep
+   * the invitation and retry; half-committed → warn and drop; sealed → terminal; dead
+   * invitation → drop; anything else → retry.
    */
   private handleConsumeFailure(error: unknown): void {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
+      case 'busy':
+        log('[%s] redeeming the staged invitation deferred — the app has a transaction open on the strand '
+          + 'database; retrying next tick', this.deps.label);
+        return;
       case 'half-committed':
         this.reportHalfCommittedJoin(failure, error);
         return;
