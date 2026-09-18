@@ -1,4 +1,5 @@
 import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
+import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 
@@ -272,11 +273,10 @@ function reportsIndeterminateCommit(messages: readonly string[]): boolean {
  * underlying failure), which can carry the pend-phase aggregate's prefix and `[block:` token —
  * so this veto runs before any text matcher.
  *
- * Matched by TYPE (the plugin's `PartialCommitError` by class name, see
- * {@link LEGACY_PARTIAL_COMMIT_ERROR_NAME}): each survives the bridge's and Quereus' rewraps on
- * `cause`. An error built by a second loaded copy of `@optimystic/db-core` fails `instanceof`, and
- * then this veto does not fire — falling back to the text classifiers, which is how these failures were
- * classified before the veto existed. The asymmetry with {@link isFinalTornWrite} is deliberate:
+ * Matched by TYPE: each survives the bridge's and Quereus' rewraps on `cause`. An error built by a
+ * second loaded copy of `@optimystic/db-core` (or of the plugin, for `PartialCommitError`) fails
+ * `instanceof`, and then this veto does not fire — falling back to the text classifiers, which is how
+ * these failures were classified before the veto existed. The asymmetry with {@link isFinalTornWrite} is deliberate:
  * there, a missed `instanceof` means no retry, which is the safe side. No text fallback parses
  * `TornActionError`'s closing sentence, since upstream says its wording is for log lines only.
  */
@@ -285,16 +285,8 @@ function reportsPossiblyStoredWrite(links: readonly Error[]): boolean {
 		link instanceof SyncRetryExhaustedError
 		|| (link instanceof TornActionError && link.final !== true)
 		|| link instanceof CoordinatorPartialCommitError
-		|| link.name === LEGACY_PARTIAL_COMMIT_ERROR_NAME);
+		|| link instanceof PartialCommitError);
 }
-
-/**
- * `PartialCommitError`'s `name`, matched instead of the class because the class is exported only
- * from `@optimystic/quereus-plugin-optimystic`'s root entry, which reads `fs` / `path` at module
- * load: importing it here put Node built-ins in cadre-core's main graph and broke the browser
- * build. Unit-tested against the real class, so an upstream rename reddens the spec.
- */
-const LEGACY_PARTIAL_COMMIT_ERROR_NAME = 'PartialCommitError';
 
 /**
  * A torn write the library marks FINAL: not saved, unable to land, its pending records confirmed
