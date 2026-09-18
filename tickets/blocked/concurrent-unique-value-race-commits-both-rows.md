@@ -46,7 +46,7 @@ What this measurement adds: for two writers that start at the same instant, the 
 
 **Text-matched error classifiers: checked, no hazard found.** `PartialCommitError` embeds the underlying `UNIQUE constraint failed: …` text inside its own message, and sereus classifies errors by text anywhere in the cause chain. `isRetriableControlWriteFailure` returned `false` for it in all 6 rounds, so the write is not retried. `isStrandIdConflict` matches `Strand.Id` at a word boundary and so does not match `Strand.StampId`. For a torn commit to be misread as "this strand id is already seated", the `Strand` table rows would have to be refused after some other structure was stored. They are saved first, and `insertStrand` writes one table, so that does not arise.
 
-Related: `tickets/fix/strand-unique-index-sync-stale-revision` reports the same end state (rows stored, unique index not) reached through a different trigger, an index whose revision never initialises on the first write after a second node attaches. It has its own root cause. Both are made damaging by the same one-at-a-time save.
+Related: `tickets/complete/strand-unique-index-sync-stale-revision` (closed 2026-09-17) reported the same end state (rows stored, unique index not) reached through a different trigger, an index whose revision never initialised on the first write after a second node attaches. It had its own root cause and closed with the upstream sync fixes; this ticket did not close with it. Both were made damaging by the same one-at-a-time save.
 
 ## Unblock condition
 

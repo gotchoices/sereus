@@ -72,8 +72,8 @@ work makes the *revocation* durable, it does not prevent the two-histories fork 
 `CadrePeer` collection itself. The sequence this ticket describes still constructs the
 fork, and the livelock remains reachable. The only unblock is the upstream fix.
 
-> **Scope note, 2026-07-31 (still stands):**
-> `tickets/blocked/strand-unique-index-sync-stale-revision` records the *same* error class
+> **Scope note, 2026-07-31 (the sibling closed 2026-09-17; the point about scope still stands):**
+> `tickets/complete/strand-unique-index-sync-stale-revision` recorded the *same* error class
 > at the *same* throwing line (`Collection.syncInternal`, `collection.ts:341`) reached with
 > **no fork at all**: a plain two-node closed strand doing ordinary membership writes —
 > nothing partitioned, nothing restarted, no local-only commit anywhere. The revision pairs

@@ -53,9 +53,9 @@ difficulty: hard
 > the engine was fixed — but that is a statement about one bug, not about the shape. Questions 1
 > and 2 are still open exactly as written. Note while answering them that every `unique` constraint
 > in the control schema is enforced through a secondary index, which is why
-> `control-cross-machine-unique-column` now guards that path and why
-> `fix/strand-unique-index-sync-stale-revision` (an intermittent writer-side failure on those same
-> sub-collections) is still open.
+> `control-cross-machine-unique-column` now guards that path. (The intermittent writer-side
+> failure on those same sub-collections, `strand-unique-index-sync-stale-revision`, closed on
+> 2026-09-17 after the upstream sync fixes; it is in `complete/`.)
 
 ## Background
 
