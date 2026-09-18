@@ -6,7 +6,7 @@
  * A cadre member that has fully converged the party's control database over the network
  * can still be missing the *storage blocks* that database is made of: a block committed
  * while its writer was alone has a cohort of one, and the named collection-header blocks
- * (`default/CadrePeer`, `default/OwnerKey`, …) are written exactly once, at collection
+ * (`default/cadrecontrol/CadrePeer`, `default/cadrecontrol/OwnerKey`, …) are written exactly once, at collection
  * creation during the founder's solo genesis — their revision never moves again, so no
  * later commit ever carries them to a member that joined after them. While the member is
  * connected that gap is invisible (reads resolve a coordinator that answers from the
@@ -113,7 +113,9 @@ describe('Control-network peer-join block catch-up', () => {
 			// The two collection headers this file's behavioural reads depend on, named
 			// explicitly so a coverage regression fails naming the load-bearing blocks.
 			const indexB = await readBlockIndex(storeB);
-			expect([...indexB.keys()]).toEqual(expect.arrayContaining(['default/CadrePeer', 'default/OwnerKey']));
+			expect([...indexB.keys()]).toEqual(
+				expect.arrayContaining(['default/cadrecontrol/CadrePeer', 'default/cadrecontrol/OwnerKey']),
+			);
 
 			// ── Phase 4: both nodes stop; B restarts ALONE on its own storage ──
 			await B.stop();
@@ -128,7 +130,9 @@ describe('Control-network peer-join block catch-up', () => {
 			// The headers survived the restart in B's OWN store (nothing was lost at
 			// shutdown — and nothing could have been fetched since).
 			const indexAfter = await readBlockIndex(controlStore(captureB));
-			expect([...indexAfter.keys()]).toEqual(expect.arrayContaining(['default/CadrePeer', 'default/OwnerKey']));
+			expect([...indexAfter.keys()]).toEqual(
+				expect.arrayContaining(['default/cadrecontrol/CadrePeer', 'default/cadrecontrol/OwnerKey']),
+			);
 
 			// ── The property: two control tables answer from B's own storage ──
 			expect(await B.isMember(xPeerId)).toBe(true);

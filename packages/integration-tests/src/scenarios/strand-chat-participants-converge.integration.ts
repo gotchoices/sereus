@@ -5,15 +5,17 @@
  * ── Why this scenario exists ──
  *
  * The chat schema used to name its participant table `Member`. A strand database also
- * holds the built-in `Strand.Member` membership table, and optimystic stores a table
- * declared without an explicit location at `tree://default/<TableName>` — no schema
- * name — so `App.Member` and `Strand.Member` were ONE collection. On a device run the
- * founder read a null-id "participant" (its own `Strand.Member` row decoded through the
- * app's columns), the joiner's own participant insert reported success and never read
- * back, and its next message failed the foreign key. Renamed to `Participant`, the same
- * run converged. `composeStrand` now refuses the colliding name outright (plugin unit
- * suite); this scenario pins the working shape: the canonical `schemas/chat-simple.qsql`,
- * a closed strand, two parties, exact ids on both machines.
+ * holds the built-in `Strand.Member` membership table, and optimystic used to store a
+ * table declared without an explicit location at `tree://default/<TableName>` — no
+ * schema name — so `App.Member` and `Strand.Member` were ONE collection. On a device run
+ * the founder read a null-id "participant" (its own `Strand.Member` row decoded through
+ * the app's columns), the joiner's own participant insert reported success and never
+ * read back, and its next message failed the foreign key. Renamed to `Participant`, the
+ * same run converged. `composeStrand` now refuses the colliding name outright (plugin
+ * unit suite); optimystic separately now includes the schema name in that default
+ * location (`tree://default/<schema>/<Table>`), so the collision could not recur even
+ * under the old name. This scenario pins the working shape: the canonical
+ * `schemas/chat-simple.qsql`, a closed strand, two parties, exact ids on both machines.
  *
  * The SECOND defect from that device report lives here too. A joiner that wrote its
  * participant and a message straight after `addStrand` resolved — the chat app's shape —
@@ -410,12 +412,12 @@ describe('Chat participants on a closed cross-party strand', () => {
 			expect(joined.joiner.getStrand(side.strandId)?.status).toBe('syncing');
 
 			// ── Subject 4c: nothing was written — no collection exists to fork ──
-			// The joiner's strand-scoped raw store holds no `default/<Table>` block — the id
-			// every table's collection lives under (`tree://default/<Table>`): no
-			// `default/Participant`, no `default/Message`, no `default/Member` either. What
-			// it does hold is the schema catalog (`optimystic/schema` plus its hash-named
-			// blocks), which `connectToStrand`'s schema apply writes on every launch, joiner
-			// or founder, before any row exists — measured at 3 blocks here. (The control
+			// The joiner's strand-scoped raw store holds no `default/<schema>/<Table>` block
+			// — the id every table's collection lives under (`tree://default/<schema>/<Table>`):
+			// no `default/app/Participant`, no `default/app/Message`, no `default/strand/Member`
+			// either. What it does hold is the schema catalog (`optimystic/schema` plus its
+			// hash-named blocks), which `connectToStrand`'s schema apply writes on every launch,
+			// joiner or founder, before any row exists — measured at 3 blocks here. (The control
 			// store is a separate scope and is not consulted here.)
 			const strandIndex = await readBlockIndex(joined.capture.forStrand(side.strandId));
 			const blockIds = [...strandIndex.keys()];

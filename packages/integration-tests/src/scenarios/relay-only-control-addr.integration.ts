@@ -45,7 +45,8 @@
  * unauthorized node holds its reservation it is a connected same-party peer, so
  * it joins the owner's Optimystic cohort while holding none of the party's
  * blocks — and the owner's own `authorizePeer` then fails its OwnerKey read with
- * `Block default/OwnerKey is unavailable (claimed-elsewhere)`. Measured: roughly
+ * `Block default/OwnerKey is unavailable (claimed-elsewhere)` (that id is now
+ * `default/cadrecontrol/OwnerKey`; the quote is the error as measured). Measured: roughly
  * half of runs, and in those runs it did NOT recover — a 60 s retry loop reissued
  * the same failure to the end. That is a control-database convergence defect, not
  * a relay one; it is recorded as an arm of

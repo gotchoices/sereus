@@ -1,0 +1,29 @@
+description: One integration test failed on every run because it still expected the storage ids that control-database tables had before optimystic started putting the schema name into a table's default storage location; the test's expectation and two other tests' comments describing the old location have been updated to match.
+files: packages/integration-tests/src/scenarios/control-offline-read-after-restart.integration.ts (header comment, lines 9, 116-118, 130-132), packages/integration-tests/src/scenarios/strand-chat-participants-converge.integration.ts (header lines 7-17, subject 4c comment ~412-419), packages/integration-tests/src/scenarios/relay-only-control-addr.integration.ts (~line 48), tickets/.pre-existing-known.md
+----
+# Control collection ids are schema-qualified — stale test expectation fixed
+
+## What changed
+
+Optimystic (`1208af4b` / `6302f2e8`, 2026-09-16) changed the storage location of a table declared without an explicit `using optimystic('<uri>')` from `tree://default/<Table>` to `tree://default/<schema>/<Table>`, with the schema name lowercased by Quereus. The control schema is `declare schema CadreControl` (`schemas/control.qsql:2`), so the control database's collection-header blocks moved from `default/CadrePeer` / `default/OwnerKey` to `default/cadrecontrol/CadrePeer` / `default/cadrecontrol/OwnerKey`. No sereus product code builds a `default/...` id — only test literals and comments named the old location.
+
+Three files touched:
+
+- `control-offline-read-after-restart.integration.ts`: the header comment and both block-id assertions (previously at lines 116 and 131) now name `default/cadrecontrol/CadrePeer` and `default/cadrecontrol/OwnerKey`. This is the file that was actually failing.
+- `strand-chat-participants-converge.integration.ts`: the file header used to describe the *pre-schema-qualification* default location as an ongoing fact ("optimystic stores a table... at `tree://default/<TableName>` — no schema name"). Rewritten as history — that was the shape at the time the `Member`/`Member` collision happened; optimystic now includes the schema name (`tree://default/<schema>/<Table>`), which on its own would have kept the two tables apart even under the old name. `composeStrand`'s refusal of the colliding name (a separate, still-current guard owned by `retire-reserved-strand-table-names-refusal`) was left untouched. The subject 4c comment, which described the "nothing was written" block-index check, was updated to name `default/app/Participant`, `default/app/Message`, `default/strand/Member` instead of the old unqualified names. **The assertion itself (`id.startsWith('default/')` expecting none) was left unchanged** — it still holds because this specific test writes no rows at all, so no `default/app/...` or `default/strand/...` collection block is ever created; only the comment explaining what those hypothetical ids would look like was stale.
+- `relay-only-control-addr.integration.ts`: line ~48 quotes a historical error message, `Block default/OwnerKey is unavailable (claimed-elsewhere)`, as a measured observation from a withdrawn test case. The quote itself was left verbatim (it's what was actually measured) and a parenthetical was added noting the id is now `default/cadrecontrol/OwnerKey`.
+
+## Validation performed
+
+- `yarn eslint` on all three touched scenario files: clean, no errors.
+- `yarn vitest run src/scenarios/control-offline-read-after-restart.integration.ts` from `packages/integration-tests`, run **3 times in the foreground, isolated**: **3/3 green** (the file's own header comment warns that a single green run proves little given the peer-join catch-up race it guards, hence the 3-run series). ~11s per run.
+- Did not re-run `strand-chat-participants-converge.integration.ts` or `relay-only-control-addr.integration.ts` as whole-file suites — only comments changed in those two, no assertions or logic. `strand-chat-participants-converge.integration.ts` is separately owned (for its test *logic*, not these comments) by `tickets/fix/strand-reconciler-join-transaction-captures-and-loses-concurrent-app-writes`, which is tracked in `.pre-existing-known.md` as part of an unrelated, currently-open upstream regression (`CoordinatorPartialCommitError`) — a reviewer re-running that file whole should expect it may still be red on that unrelated ground, not from anything in this diff.
+
+## Bookkeeping
+
+`tickets/.pre-existing-known.md` updated: the `control-offline-read-after-restart` bullet and its ticket-reference bullet inside the "Delta 2026-09-17 (release gate...)" block are annotated **Resolved 2026-09-18** (pointing at the new entry rather than being deleted, to keep that block's historical run counts intact), and a new entry was added under "Resolved in place" describing the cause and the verification runs. The other four files in that same delta block (`strand-membership-closed-strand-e2e`, `strand-removal-cuts-network`, `strand-chat-participants-converge`, `blind-relay-phone-to-phone-e2e`) are UNCHANGED and still open — they share a distinct, still-live upstream `CoordinatorPartialCommitError` fingerprint that this ticket does not touch.
+
+## Known gaps / things the reviewer should double-check
+
+- I did not independently re-verify the `defaultCollectionUri` lowercasing behavior against `../optimystic/packages/quereus-plugin-optimystic/src/schema/table-identity.ts` beyond what the ticket already cited — I trusted the ticket's cause analysis (`repro: verified`) rather than re-deriving it, since the fix here is purely aligning test literals with observed runtime behavior (confirmed by the 3 green runs).
+- The `strand-chat-participants-converge.integration.ts` header rewrite is prose explaining history; it's a judgment call how much detail to preserve versus trim. Worth a read to confirm it doesn't misstate the `composeStrand` guard, which this ticket was explicitly told not to alter.
