@@ -275,10 +275,17 @@ function reportsIndeterminateCommit(messages: readonly string[]): boolean {
  *
  * Matched by TYPE: each survives the bridge's and Quereus' rewraps on `cause`. An error built by a
  * second loaded copy of `@optimystic/db-core` (or of the plugin, for `PartialCommitError`) fails
- * `instanceof`, and then this veto does not fire — falling back to the text classifiers, which is how
- * these failures were classified before the veto existed. The asymmetry with {@link isFinalTornWrite} is deliberate:
- * there, a missed `instanceof` means no retry, which is the safe side. No text fallback parses
- * `TornActionError`'s closing sentence, since upstream says its wording is for log lines only.
+ * `instanceof`, and then this veto does not fire — falling back to the text classifiers, which is
+ * how these failures were classified before the veto existed. The asymmetry with
+ * {@link isFinalTornWrite} is deliberate: there, a missed `instanceof` means no retry, which is the
+ * safe side. No text fallback parses `TornActionError`'s closing sentence, since upstream says its
+ * wording is for log lines only.
+ *
+ * NOTE: the plugin is registered through its `/plugin` entry (`control-database.ts`) but
+ * `PartialCommitError` is imported from its root entry; the two are one class only because the
+ * plugin's build emits both entries over one shared chunk. If upstream ever bundles the entries
+ * separately, this `instanceof` stops matching with every spec still green — import the class from
+ * the entry the plugin is registered through.
  */
 function reportsPossiblyStoredWrite(links: readonly Error[]): boolean {
 	return links.some(link =>
