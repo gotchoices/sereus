@@ -619,7 +619,7 @@ Messages from the drone (if any are inserted programmatically) replicate back to
 
 The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**.
 
-This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (the same flow on the wire, with a real lent node — but with a Node-hosted requester, not a device).
+This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (a real lent node and a phone-shaped requester dialing in — but a Node-hosted requester, not a device, and one that calls the host's `DonationService` directly rather than over HTTP). No automated test runs the phone's HTTP client against the real `/grants` server; that gap is `tickets/backlog/debt-phone-host-client-against-real-grants-server.md`.
 
 ### On the PC
 

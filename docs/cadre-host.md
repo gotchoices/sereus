@@ -482,6 +482,8 @@ cadre-host is a same-machine management surface. Any local process running as th
 
 Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { code, message } }`. Status mapping is encoded in `src/server/error-handler.ts`.
 
+**An empty JSON body counts as no body.** A request that declares `content-type: application/json` but sends nothing reaches its route with no body, instead of Fastify's default `400 FST_ERR_CTP_EMPTY_JSON_BODY` (`buildFastify` in `src/server/server.ts`). `/grants` serves other people's clients, and sending the JSON content type on every request is a common client habit: the phone app did it, the host refused its body-less `DELETE /grants/:id`, and every failed borrow left a running node holding the grant's node slot. Routes read `request.body ?? {}`, so one that needs a field still answers its own `400 invalid_request` naming it. A non-empty body goes through Fastify's own parser, so malformed JSON and prototype-poisoning payloads are still `400 FST_ERR_CTP_INVALID_JSON_BODY`.
+
 ### Server-Sent Events
 
 `GET /api/events` returns `text/event-stream` and pushes:

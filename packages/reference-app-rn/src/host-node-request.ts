@@ -30,9 +30,12 @@
  * bootstrap address (`bootstrapNodes` is left off the POST body) and is always
  * the side that opens the connection. `addDrone` retains the addresses the host
  * handed over as a durable dial target, which is what lets step 5 — and every
- * reconnect after a restart — find the node at all. The wire-level proof of this
- * whole path is
+ * reconnect after a restart — find the node at all. The proof that a real lent
+ * node comes up and a listener-less requester can dial it is
  * `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`.
+ * That scenario calls `DonationService` directly, not these HTTP routes; nothing
+ * yet runs this module against the real `/grants` server
+ * (`debt-phone-host-client-against-real-grants-server`).
  */
 
 /** Where the flow has got to. Reported through {@link HostNodeRequestDeps.onStage}. */
@@ -162,7 +165,8 @@ interface HostErrorEnvelope {
 /** Mutable context threaded through the steps, so each helper takes one argument. */
 interface Flow {
 	readonly base: string;
-	readonly headers: Record<string, string>;
+	/** The bearer. Every request's headers come from {@link headersFor}, never from this directly. */
+	readonly authorization: string;
 	readonly deps: HostNodeRequestDeps;
 	readonly budgets: HostNodeRequestBudgets;
 	stage: HostNodeRequestStage;
@@ -192,7 +196,7 @@ export async function requestHostNode(
 	}
 	const flow: Flow = {
 		base: normalizeHostUrl(hostUrl),
-		headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+		authorization: `Bearer ${token}`,
 		deps,
 		budgets: { ...DEFAULT_BUDGETS, ...deps.budgets },
 		stage: 'requesting',
@@ -477,7 +481,7 @@ async function endLoan(flow: Flow, donationId: string): Promise<void> {
 		// aborted by the time we get here, and an aborted DELETE leaks the host's node.
 		const res = await flow.deps.fetch(`${flow.base}/grants/${donationId}`, {
 			method: 'DELETE',
-			headers: flow.headers,
+			headers: headersFor(flow, false),
 			signal: abort.signal,
 		});
 		if (!res.ok) {
@@ -492,12 +496,25 @@ async function endLoan(flow: Flow, donationId: string): Promise<void> {
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
 
+/**
+ * The headers for one request: always the bearer, and `content-type:
+ * application/json` only when a body goes with it. Declaring JSON on a request
+ * with no body is refused by a strict server — Fastify, which cadre-host runs,
+ * answers `400 FST_ERR_CTP_EMPTY_JSON_BODY` — and for the body-less `DELETE`
+ * that refusal left the loan, and the host's node, running.
+ */
+function headersFor(flow: Flow, hasBody: boolean): Record<string, string> {
+	return hasBody
+		? { authorization: flow.authorization, 'content-type': 'application/json' }
+		: { authorization: flow.authorization };
+}
+
 /** One request against the host, with the bearer attached and the caller's signal honoured. */
 async function send(flow: Flow, method: string, path: string, body?: unknown): Promise<Response> {
 	try {
 		return await flow.deps.fetch(`${flow.base}${path}`, {
 			method,
-			headers: flow.headers,
+			headers: headersFor(flow, body !== undefined),
 			body: body === undefined ? undefined : JSON.stringify(body),
 			signal: flow.deps.signal,
 		});

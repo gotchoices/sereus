@@ -7,7 +7,7 @@
  * the cross-package integration scenario.
  */
 
-import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,7 @@ import type {
 
 import { registerErrorHandler } from '../error-handler.js';
 import { registerGrantsRoutes } from '../routes/grants.js';
+import { buildFastify } from '../server.js';
 import { DonationService } from '../../donation/donation-service.js';
 import { DonationStore } from '../../donation/donation-store.js';
 import { GrantService } from '../../donation/grant-service.js';
@@ -52,7 +53,7 @@ class FakeOrchestrator implements Orchestrator {
 }
 
 let tmpRoot: string;
-let app: ReturnType<typeof Fastify>;
+let app: FastifyInstance;
 let grants: GrantService;
 let store: DonationStore;
 let token: string;
@@ -78,7 +79,8 @@ beforeEach(() => {
   token = grants.issue({ label: 'Alice', maxNodes: 2 }).token;
   store = new DonationStore(join(tmpRoot, 'donations'));
   const donations = new DonationService({ orchestrator: new FakeOrchestrator(), grants, store });
-  app = Fastify();
+  // The production constructor, so these tests run with the same body parsing.
+  app = buildFastify();
   registerErrorHandler(app);
   registerGrantsRoutes(app, { donations, grants });
 });
@@ -335,5 +337,58 @@ describe('DELETE /grants/:id', () => {
 
     const one = await app.inject({ method: 'GET', url: `/grants/${id}`, headers: bearer(token) });
     expect((one.json() as { data: { donation: { status: string } } }).data.donation.status).toBe('terminated');
+  });
+
+  // The phone app sent `content-type: application/json` on its body-less DELETE, and
+  // Fastify's default parser answered 400 FST_ERR_CTP_EMPTY_JSON_BODY — so the loan,
+  // and the host's node, kept running.
+  it('ends the loan when the DELETE declares JSON but sends no body', async () => {
+    const created = await app.inject({ method: 'POST', url: '/grants', headers: bearer(token), payload: body });
+    const id = (created.json() as { data: { donation: { id: string } } }).data.donation.id;
+
+    const del = await app.inject({
+      method: 'DELETE', url: `/grants/${id}`,
+      headers: { ...bearer(token), 'content-type': 'application/json' },
+    });
+    expect(del.statusCode).toBe(200);
+    expect(store.get(id)?.status).toBe('terminated');
+  });
+});
+
+describe('JSON body parsing (buildFastify)', () => {
+  const json = (t: string) => ({ ...bearer(t), 'content-type': 'application/json' });
+
+  it('treats a declared-JSON empty body as no body, so the route answers its own 400', async () => {
+    const res = await app.inject({ method: 'POST', url: '/grants', headers: json(token) });
+    expect(res.statusCode).toBe(400);
+    const error = (res.json() as { error: { code: string; message: string } }).error;
+    expect(error.code).toBe('invalid_request');
+    expect(error.message).toBe('partyId is required');
+  });
+
+  it('still rejects a non-empty malformed body → 400 FST_ERR_CTP_INVALID_JSON_BODY', async () => {
+    const res = await app.inject({ method: 'POST', url: '/grants', headers: json(token), payload: '{"partyId":' });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('FST_ERR_CTP_INVALID_JSON_BODY');
+  });
+
+  it('still refuses a prototype-poisoning body, as Fastify\'s own parser does', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants', headers: json(token),
+      payload: '{"partyId":"party-P","__proto__":{"polluted":true}}',
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('FST_ERR_CTP_INVALID_JSON_BODY');
+    const list = await app.inject({ method: 'GET', url: '/grants', headers: bearer(token) });
+    expect((list.json() as { data: { donations: unknown[] } }).data.donations).toHaveLength(0);
+  });
+
+  it('parses a well-formed body with a charset parameter on the content type', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants',
+      headers: { ...bearer(token), 'content-type': 'application/json; charset=utf-8' },
+      payload: JSON.stringify(body),
+    });
+    expect(res.statusCode).toBe(201);
   });
 });

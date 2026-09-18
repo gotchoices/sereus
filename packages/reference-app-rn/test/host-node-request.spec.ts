@@ -19,12 +19,16 @@ import {
  *   two bounded retry loops, cancellation, every cleanup path, and the mapping
  *   from the host's `{ ok:false, error:{ code, message } }` envelope to a message
  *   a person can act on.
- * - **NOT covered:** anything on the wire. That a real lent node comes up, that
- *   the seed is accepted, and that a listener-less phone can actually dial it are
- *   proved by
+ * - **NOT covered:** the real host. `FakeHost` knows only the server rules copied
+ *   into it (see {@link parserRefusal}); no test runs this client against the
+ *   real `/grants` server, which is
+ *   `tickets/backlog/debt-phone-host-client-against-real-grants-server.md`. That a
+ *   real lent node comes up, that the seed is accepted, and that a listener-less
+ *   phone can actually dial it are proved by
  *   `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`,
- *   which runs a real `cadre-cli` child. A green file here says the phone drives
- *   the protocol correctly, not that the protocol works.
+ *   which runs a real `cadre-cli` child but calls `DonationService` directly
+ *   rather than over HTTP. A green file here says the phone drives the protocol
+ *   correctly, not that the protocol works.
  *
  * Budgets are overridden to milliseconds throughout (see {@link FAST}), so the
  * deadline tests finish in real time instead of the app's 30–90 second waits.
@@ -53,6 +57,7 @@ interface Call {
 	url: string;
 	body: unknown;
 	authorization: string | undefined;
+	contentType: string | undefined;
 }
 
 /** How a fake host answers one request: a body+status, or a thrown network failure. */
@@ -96,13 +101,14 @@ class FakeHost {
 	readonly fetch: typeof fetch = async (input, init) => {
 		const url = String(input);
 		const path = url.slice(HOST.length);
-		const headers = (init?.headers ?? {}) as Record<string, string>;
+		const headers = new Headers(init?.headers);
 		const call: Call = {
 			method: init?.method ?? 'GET',
 			path,
 			url,
 			body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
-			authorization: headers.authorization,
+			authorization: headers.get('authorization') ?? undefined,
+			contentType: headers.get('content-type') ?? undefined,
 		};
 		this.calls.push(call);
 		this.onCall?.(call);
@@ -110,7 +116,7 @@ class FakeHost {
 		// otherwise the cancellation tests pass against a fake that ignores the signal.
 		if (init?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-		const reply = this.nextReply(call);
+		const reply = parserRefusal(call) ?? this.nextReply(call);
 		if ('throws' in reply) throw reply.throws;
 		return new Response(JSON.stringify(reply.body), {
 			status: reply.status,
@@ -125,6 +131,27 @@ class FakeHost {
 		}
 		return queue.length > 1 ? queue.shift()! : queue[0]!;
 	}
+}
+
+/**
+ * What a strict Fastify server (5.x, as cadre-host runs) answers before any route
+ * sees the request. It reads a body only for the methods that can carry one, and
+ * then needs `application/json` to be declared exactly when there is a body: an
+ * empty body that declares it is `FST_ERR_CTP_EMPTY_JSON_BODY`, and a body that
+ * does not is `FST_ERR_CTP_INVALID_MEDIA_TYPE`. cadre-host now tolerates the
+ * first (`buildFastify` in `packages/cadre-host/src/server/server.ts`); the fake
+ * stays strict so the phone keeps working against a host that does not.
+ */
+function parserRefusal(call: Call): Reply | undefined {
+	if (call.method === 'GET' || call.method === 'HEAD') return undefined;
+	const declaresJson = call.contentType?.startsWith('application/json') ?? false;
+	if (declaresJson && call.body === undefined) {
+		return fail(400, 'FST_ERR_CTP_EMPTY_JSON_BODY', 'Body cannot be empty when content-type is set to \'application/json\'');
+	}
+	if (!declaresJson && call.body !== undefined) {
+		return fail(415, 'FST_ERR_CTP_INVALID_MEDIA_TYPE', `Unsupported Media Type: ${call.contentType ?? ''}`);
+	}
+	return undefined;
 }
 
 /** `/grants/abc123/seed` → `/grants/:id/seed`, so a route needs no id to match. */
@@ -267,6 +294,16 @@ afterEach(() => {
 	warn.mockRestore();
 });
 
+/**
+ * Cleanup ended the loan: one `DELETE` went out AND the host accepted it. A
+ * refused or failed `DELETE` is only logged, so counting the call alone passes
+ * for a loan that is still running on the host.
+ */
+function expectLoanEnded(host: FakeHost): void {
+	expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+	expect(warnings.filter((m) => m.includes('end loan'))).toEqual([]);
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('requestHostNode — the happy path', () => {
@@ -377,7 +414,7 @@ describe('requestHostNode — waiting for the lent node to boot', () => {
 		expect(err.stage).toBe('waiting-for-node');
 		expect(err.message).toContain('did not finish starting');
 		expect(err.detail).toBe('no peer identity yet');
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
 		// `addDrone` never ran, so there is no authorization row to undo.
 		expect(node.removedPeers).toEqual([]);
 	});
@@ -411,7 +448,7 @@ describe('requestHostNode — seeding', () => {
 		// covers "the seed route is not up yet", which does clear on its own.
 		expect(host.countOf('PUT /grants/donation-1/seed')).toBeGreaterThan(1);
 		// Both halves of cleanup: the host's quota slot AND the local authorization row.
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
 	});
 
@@ -439,6 +476,7 @@ describe('requestHostNode — seeding', () => {
 		expect(err.message).toContain('loan ended while this request was still running');
 		expect(host.countOf('PUT /grants/donation-1/seed')).toBe(1);
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
+		expectLoanEnded(host);
 	});
 });
 
@@ -457,7 +495,7 @@ describe('requestHostNode — connecting', () => {
 		expect(err.message).toContain('could not reach it');
 		// Re-driven the whole time it stayed unconnected, not tried once.
 		expect(node.reconcileCount).toBeGreaterThan(1);
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
 	});
 
@@ -536,6 +574,7 @@ describe('requestHostNode — connecting', () => {
 		expect(err.detail).toBe('control node stopped');
 		expect(node.reconcileCount).toBe(1);
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
+		expectLoanEnded(host);
 	});
 });
 
@@ -655,7 +694,7 @@ describe('requestHostNode — failures with nothing, or everything, to undo', ()
 
 		expect(err.message).toContain('without an address to reach it at');
 		expect(node.addDroneArgs).toEqual([]);
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
 	});
 
 	it('rejects a success reply this app cannot read', async () => {
@@ -693,7 +732,33 @@ describe('requestHostNode — failures with nothing, or everything, to undo', ()
 		// `addDrone` writes the authorization row before it mints the seed, so the row
 		// may exist even though the call threw — cleanup has to try either way.
 		expect(node.removedPeers).toEqual([DRONE_PEER]);
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
+	});
+
+	it('ends the loan with the bearer and no JSON content type, because the DELETE has no body', async () => {
+		// The device run that found this: every request carried
+		// `content-type: application/json`, and a body-less DELETE declaring it is
+		// refused by a strict Fastify server — so the loan, and the host's node, lived on.
+		const host = happyHost()
+			.route('GET /grants/:id/peer', fail(404, 'not_found', 'No such donation: donation-1'));
+
+		await rejection('a failure after the node was provisioned', run(host, new FakeNode()));
+
+		const del = host.calls.find((c) => c.method === 'DELETE')!;
+		expect(del.authorization).toBe(`Bearer ${TOKEN}`);
+		expect(del.contentType).toBeUndefined();
+		expectLoanEnded(host);
+	});
+
+	it('declares JSON on the requests that carry a body, and only on those', async () => {
+		const host = happyHost();
+		await run(host, new FakeNode());
+
+		expect(host.calls.map((c) => [`${c.method} ${generalize(c.path)}`, c.contentType])).toEqual([
+			['POST /grants', 'application/json'],
+			['GET /grants/:id/peer', undefined],
+			['PUT /grants/:id/seed', 'application/json'],
+		]);
 	});
 });
 
@@ -716,7 +781,7 @@ describe('requestHostNode — cancellation', () => {
 		expect(host.countOf('GET /grants/donation-1/peer')).toBe(1);
 		// Cleanup runs on the aborted caller's behalf, and its DELETE is NOT bound to
 		// the aborted signal — otherwise cancelling would leave the host's node running.
-		expect(host.countOf('DELETE /grants/donation-1')).toBe(1);
+		expectLoanEnded(host);
 	});
 
 	it('refuses an empty grant token without calling the host', async () => {

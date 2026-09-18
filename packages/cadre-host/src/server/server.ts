@@ -104,13 +104,46 @@ export async function stopListening(
   }
 }
 
-/** Create a bare Fastify instance with the project's logging convention. */
+/**
+ * Create a Fastify instance with the project's logging convention and the
+ * empty-body-tolerant JSON parser (see {@link acceptEmptyJsonBodies}).
+ */
 export function buildFastify(): FastifyInstance {
-  return Fastify({
+  const app = Fastify({
     // Stay quiet by default — request-level logs are noisy on a local UI.
     // Operators can opt in via the `debug` env var (cadre:host:*).
     logger: false,
     disableRequestLogging: true,
+  });
+  acceptEmptyJsonBodies(app);
+  return app;
+}
+
+/**
+ * Treat a request that declares `application/json` but carries no body as a
+ * request with no body (`request.body === undefined`), instead of Fastify's
+ * default `400 FST_ERR_CTP_EMPTY_JSON_BODY`.
+ *
+ * `/grants` is served to other people's clients, and sending the JSON content
+ * type on every request, body or not, is a common client habit — the phone app
+ * did it, and the refused body-less `DELETE /grants/:id` left the loan and its
+ * node running. Every route that reads a body already reads `request.body ?? {}`,
+ * so a route that needs a field still answers its own `invalid_request` naming it.
+ * A non-empty body goes to Fastify's own parser, so malformed JSON is still a 400
+ * and the prototype-poisoning checks are unchanged (`'error'` is Fastify's default
+ * for both).
+ */
+function acceptEmptyJsonBodies(app: FastifyInstance): void {
+  const parseJson = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser<string>('application/json', { parseAs: 'string' }, (request, body, done) => {
+    if (body.length === 0) {
+      done(null, undefined);
+      return;
+    }
+    // Typed as possibly promise-returning; Fastify's default parser is the
+    // callback form and answers through `done`.
+    void parseJson(request, body, done);
   });
 }
 
