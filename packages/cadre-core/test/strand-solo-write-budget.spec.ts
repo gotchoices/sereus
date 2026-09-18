@@ -63,17 +63,24 @@ const within = scopedWithin('strand-write-budget');
  */
 const MEASURED_ON = '2026-09-17';
 /**
- * The `../optimystic` commit these figures were measured against. Launch did not move there;
- * the SELECT phase fell to zero backend operations on 2026-09-17, when that repo made a
- * refresh of an unchanged collection cost one request and stopped re-fetching a block it had
- * already fetched in the same refresh — the selects' one remaining backend read went with it.
+ * The `../optimystic` commit these figures were measured against. At `03ffadc4` (2026-09-17)
+ * the SELECT phase fell to zero backend operations, when that repo made a refresh of an
+ * unchanged collection cost one request and stopped re-fetching a block it had already fetched
+ * in the same refresh — the selects' one remaining backend read went with it. At `9cbc7427`
+ * (same day) a pending record's claimed revision began to be written into the block's metadata
+ * on EVERY pend, ahead of the record for crash ordering — before, only a pend that created the
+ * block wrote metadata. That per-pend `saveMetadata` is an intended cost and is the whole of
+ * the launch (+2) and insert (+8) rises re-baselined at `fbf165ee`. `9cbc7427` also had each
+ * commit issue a `deletePendingTransaction` for its own already-promoted record (+11 insert,
+ * +8 launch, all no-ops); `fbf165ee` removed those, and they must not come back.
  */
-const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
+const BASELINE_UPSTREAM = 'optimystic fbf165ee';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * membership schema (8 tables + 1 index) + the one-table sApp schema applied,
- * open-strand founder bootstrap (Header row only). 78 over 17 blocks: 54 genuine
- * writes over 6 blocks, one `getMetadata` per block, and a handful of cold fills.
+ * open-strand founder bootstrap (Header row only). 80 over 17 blocks: 56 genuine
+ * writes over 6 blocks (8 pends, each writing metadata then the pending record, and 8
+ * commits), one `getMetadata` per block, and a handful of cold fills.
  * The 130 writes of earlier measurements went with upstream's `APPLY SCHEMA`
  * batching (`schema-batch-catalog-coalescing` and
  * `schema-batch-index-tree-flush-deferral` in `../optimystic`): the catalog is
@@ -82,25 +89,31 @@ const BASELINE_UPSTREAM = 'optimystic 03ffadc4';
  * local-transactor baseline measured 1592 over the same blocks), 1979 after the
  * upstream catalog re-read (2026-08-14), 168 with cadre-core's write-through
  * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17),
- * 78 with schema batching (2026-09-14). The same batched launch measured 322
+ * 78 with schema batching (2026-09-14), 80 at {@link BASELINE_UPSTREAM} — the 2 pends that
+ * did not create their block now write metadata too. The same batched launch measured 322
  * uncached on 2026-09-14 (155 of them `getMetadata`) — a run near that means the
  * cache has left the path.
  */
-const LAUNCH: Budget = { ops: 78, blocks: 17, opBudget: 95, blockBudget: 20 };
+const LAUNCH: Budget = { ops: 80, blocks: 17, opBudget: 95, blockBudget: 20 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
- * 80 over 3 blocks — nearly all writes (the cache absorbs the transactor's
+ * 88 over 3 blocks — nearly all writes (the cache absorbs the transactor's
  * re-reads; 366 uncached on 2026-08-13). History: 75 on 2026-08-17, 86 on 2026-09-14, 80 at
- * {@link BASELINE_UPSTREAM}. (Between those last two the measured figure recorded here and
- * the `ops` field below disagreed — the comment said 86 while `ops` stayed at 75, so the
- * floor was computed off the older number. Both say 80 now.) What is uneven across commit
- * steps is `saveMaterializedBlock` at 17 and `saveMetadata` at 14 against 11 of each other
- * step; neither excess has been attributed to a named change, and the figure repeats exactly
- * across runs. This is the phase carrying the spec's anti-vacuity duty — see the NOTE on
- * {@link SELECT} — so with 10 operations of headroom the next rise should be explained
- * before anyone raises the budget.
+ * optimystic `03ffadc4`, 99 at optimystic `2a1bfedb`, 88 at {@link BASELINE_UPSTREAM}.
+ * (Between 2026-08-17 and 2026-09-14 the measured figure recorded here and the `ops` field
+ * below disagreed — the comment said 86 while `ops` stayed at 75, so the floor was computed
+ * off the older number.) The rise from 80 is explained operation for operation in the
+ * {@link BASELINE_UPSTREAM} comment: `saveMetadata` went 14 → 22, now exactly one per pend
+ * plus one per commit (11 + 11), and the 11 no-op `deletePendingTransaction` calls of
+ * `2a1bfedb` are gone. The budget moved 90 → 98 to keep the same 10 operations of headroom
+ * over an explained, intended cost; it was NOT raised to absorb those no-op deletes, which
+ * were fixed upstream instead. What is still uneven across commit steps is
+ * `saveMaterializedBlock` at 17 against 11 of each other step; that excess has not been
+ * attributed to a named change, and the figure repeats exactly across runs. This is the
+ * phase carrying the spec's anti-vacuity duty — see the NOTE on {@link SELECT} — so the next
+ * rise should be explained before anyone raises the budget.
  */
-const INSERT: Budget = { ops: 80, blocks: 3, opBudget: 90, blockBudget: 5 };
+const INSERT: Budget = { ops: 88, blocks: 3, opBudget: 98, blockBudget: 5 };
 /**
  * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 0 operations —
  * after the launch/insert phases every read the selects need is already cached,
@@ -117,7 +130,7 @@ const INSERT: Budget = { ops: 80, blocks: 3, opBudget: 90, blockBudget: 5 };
  * backend operation reappearing on this path is now a failure to explain. Two things keep the
  * zero from being a blind counter. Each select asserts it saw all {@link ROW_COUNT} inserted
  * rows, so the phase provably ran and returned the data at zero backend operations. And
- * launch (78) and insert (80) are counted through the same `CountingRawStorage` instance, on
+ * launch (80) and insert (88) are counted through the same `CountingRawStorage` instance, on
  * the same node, in the same run, immediately before these selects — so those two phases,
  * which have real slack, carry the spec's anti-vacuity duty.
  */
