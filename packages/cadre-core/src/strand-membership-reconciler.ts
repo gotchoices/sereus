@@ -58,10 +58,27 @@
  * consumed by someone else (`ConsumedInvite`'s primary key) — is dropped with a log and
  * the loop keeps idling: a fresh formation stages a new invitation, and a manager-side
  * admission (`addMemberByManager`) seats the member row without one.
+ *
+ * ## Half-committed join
+ *
+ * On a networked strand optimystic commits `Member` and `ConsumedInvite` as separate
+ * collections and can report that only some of them were saved (`CoordinatorPartialCommitError`,
+ * or the plugin's legacy `PartialCommitError`). When `ConsumedInvite` is saved and `Member` is
+ * not, the invitation is spent and the schema seats a `Member` through an invitation only in the
+ * same transaction as a fresh consumption, so this loop can never seat the party from it. Such a
+ * failure is recognised by TYPE before any message text is read (its message names the
+ * `ConsumedInvite` collection, which a text match once mistook for a dead invitation), reported
+ * with ONE `console.warn`, and the invitation is dropped. The loop keeps running like it does
+ * after a dead invitation: a manager admission, or a `Member` row that did land, is picked up by
+ * the next pass, which then writes the binding. Whether sereus should repair such a join itself
+ * is `blocked/strand-half-committed-join-recovery`.
  */
 
 import debug from 'debug';
 import type { Database } from '@quereus/quereus';
+import { CoordinatorPartialCommitError } from '@optimystic/db-core';
+import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
+import { causeChain } from './control-retry.js';
 import type { Ed25519KeyPair } from './ed25519-key.js';
 import type { StrandMembershipInvite } from './types.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
@@ -97,19 +114,92 @@ export const IDLE_PASSES_BEFORE_ESCALATION = 10;
 export const INITIAL_JOIN_RETRY_INTERVAL_MS = 1_000;
 
 /**
- * `consumeInvite` rejections that mean the strand is SEALED — `ConsumedInvite.NotSealed`
- * fired. Terminal for a non-member: nobody can ever be admitted again.
+ * The `consumeInvite` rejection that means the strand is SEALED — `ConsumedInvite.NotSealed`
+ * fired, which Quereus renders `CHECK constraint failed: NotSealed (<its expression>)`.
+ * Terminal for a non-member: nobody can ever be admitted again.
  */
-const SEALED_REJECTION = /NotSealed/;
+const SEALED_REJECTION = /CHECK constraint failed: NotSealed\b/;
 
 /**
  * `consumeInvite` rejections that mean the INVITATION is dead but the loop should keep
- * waiting for membership to arrive another way: expired (`NotExpired`), cancelled
- * (`NotCancelled`), or already consumed by someone else (the `ConsumedInvite.InviteKey`
- * primary key — its UNIQUE-violation message names the table, which no other rejection
- * on this path does).
+ * waiting for membership to arrive another way: expired (`CHECK constraint failed: NotExpired`),
+ * cancelled (`CHECK constraint failed: NotCancelled`), or already consumed by someone else
+ * (`UNIQUE constraint failed: ConsumedInvite.InviteKey`, the primary key).
+ *
+ * Anchored to the engine's full constraint-failure texts, not the bare names: other failures
+ * embed those names — a half-committed join's message names the `default/strand/ConsumedInvite`
+ * collection, which the bare `ConsumedInvite` this used to match read as a dead invitation. The
+ * texts are pinned against the real engine in `strand-membership-reconciler.spec.ts`, so a
+ * rewording in Quereus fails a spec instead of silently turning a dead invitation into an
+ * endless retry.
  */
-const DEAD_INVITE_REJECTION = /NotExpired|NotCancelled|ConsumedInvite/i;
+const DEAD_INVITE_REJECTION =
+  /CHECK constraint failed: (?:NotExpired|NotCancelled)\b|UNIQUE constraint failed: ConsumedInvite\.InviteKey\b/;
+
+/**
+ * A redemption only part of which was saved: the collections (or, on the plugin's legacy
+ * path, tree labels) that were saved and those that were not, as the error reports them.
+ */
+export interface HalfCommittedJoin {
+  kind: 'half-committed';
+  saved: readonly string[];
+  unsaved: readonly string[];
+}
+
+/** Where {@link classifyConsumeFailure} routes a failed `consumeInvite`. */
+export type ConsumeFailure =
+  | HalfCommittedJoin
+  /** The strand is sealed — terminal. */
+  | { kind: 'sealed' }
+  /** Expired, cancelled, or consumed by someone else — drop the invitation, keep waiting. */
+  | { kind: 'dead-invite' }
+  /** Anything else — most often the `Invite` row has not replicated here yet — retry. */
+  | { kind: 'retry' };
+
+/**
+ * Route a `consumeInvite` rejection. Typed checks run before any text check: a half-committed
+ * join is recognised by its error's type anywhere in the `cause` chain, because its message
+ * embeds collection names and the underlying failure's text, which a text matcher can misread.
+ * The sealed and dead-invitation checks then read the top-level message.
+ *
+ * A second loaded copy of `@optimystic/db-core` (or of the plugin) would fail `instanceof`; the
+ * half-commit then falls through the anchored texts to `retry`, and once the saved `ConsumedInvite`
+ * row is visible here a later attempt fails on its primary key and drops the invitation quietly —
+ * the old silent outcome, a few passes later, never a wrong write.
+ */
+export function classifyConsumeFailure(error: unknown): ConsumeFailure {
+  const halfCommitted = halfCommittedJoin(error);
+  if (halfCommitted) return halfCommitted;
+  const message = errorMessage(error);
+  if (SEALED_REJECTION.test(message)) return { kind: 'sealed' };
+  if (DEAD_INVITE_REJECTION.test(message)) return { kind: 'dead-invite' };
+  return { kind: 'retry' };
+}
+
+/**
+ * The first partial-commit error in the `cause` chain, as the lists it reports.
+ *
+ * NOTE: `PartialCommitError` is imported from the plugin's root entry while strands register the
+ * plugin through its `/plugin` entry (`quereus-plugin-sereus`'s `compose-strand.ts`); the two are
+ * one class only because the plugin's build emits both entries over one shared chunk — the same
+ * dependency, and the same remedy if upstream ever bundles them apart, as the NOTE on
+ * `reportsPossiblyStoredWrite` in `control-write-retry.ts`.
+ */
+function halfCommittedJoin(error: unknown): HalfCommittedJoin | undefined {
+  for (const link of causeChain(error)) {
+    if (link instanceof CoordinatorPartialCommitError) {
+      return { kind: 'half-committed', saved: link.committedCollections, unsaved: link.failedCollections };
+    }
+    if (link instanceof PartialCommitError) {
+      return { kind: 'half-committed', saved: link.persisted, unsaved: link.unpersisted };
+    }
+  }
+  return undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * The staged formation invitation seam — `CadreNode`'s in-memory
@@ -390,7 +480,7 @@ export class StrandMembershipReconciler {
         memberKey: keyPair.publicKeyB64,
       });
     } catch (error) {
-      this.classifyConsumeFailure(error);
+      this.handleConsumeFailure(error);
       return false;
     }
     this.deps.pendingInvite?.clear();
@@ -448,28 +538,65 @@ export class StrandMembershipReconciler {
     this.finish('member row and own MemberPeer binding are both in place');
   }
 
-  /** Route a `consumeInvite` rejection: sealed → terminal; dead invitation → drop; else retry. */
-  private classifyConsumeFailure(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    if (SEALED_REJECTION.test(message)) {
-      // The staged credential is dead with the seal; drop it so the cache stays honest.
-      this.deps.pendingInvite?.clear();
-      this.finish('the strand is sealed — nobody can ever be admitted, so the staged invitation is dead');
-      return;
+  /**
+   * Act on a `consumeInvite` rejection as {@link classifyConsumeFailure} routes it: half-committed
+   * → warn and drop; sealed → terminal; dead invitation → drop; anything else → retry.
+   */
+  private handleConsumeFailure(error: unknown): void {
+    const failure = classifyConsumeFailure(error);
+    switch (failure.kind) {
+      case 'half-committed':
+        this.reportHalfCommittedJoin(failure, error);
+        return;
+      case 'sealed':
+        // The staged credential is dead with the seal; drop it so the cache stays honest.
+        this.deps.pendingInvite?.clear();
+        this.finish('the strand is sealed — nobody can ever be admitted, so the staged invitation is dead');
+        return;
+      case 'dead-invite':
+        // NOTE: accepted tradeoff — dropping a dead invitation does not mark the pass idle,
+        // so the next attempt is one ladder rung away rather than a full poll interval. Kept:
+        // the pass AFTER it finds no member row and no invitation, marks itself idle, and
+        // re-arms flat, so the cost is one extra read per dead credential. Revisit if a
+        // source of dead invitations ever repeats per pass.
+        log('[%s] the staged invitation is dead (expired, cancelled, or consumed elsewhere) — dropping it; '
+          + 'a fresh formation stages a new one: %s', this.deps.label, errorMessage(error));
+        this.deps.pendingInvite?.clear();
+        return;
+      case 'retry':
+        log('[%s] consumeInvite failed — retrying next tick (Invite row not yet replicated here, or a transient '
+          + 'write failure): %s', this.deps.label, errorMessage(error));
+        return;
     }
-    if (DEAD_INVITE_REJECTION.test(message)) {
-      // NOTE: accepted tradeoff — dropping a dead invitation does not mark the pass idle,
-      // so the next attempt is one ladder rung away rather than a full poll interval. Kept:
-      // the pass AFTER it finds no member row and no invitation, marks itself idle, and
-      // re-arms flat, so the cost is one extra read per dead credential. Revisit if a
-      // source of dead invitations ever repeats per pass.
-      log('[%s] the staged invitation is dead (expired, cancelled, or consumed elsewhere) — dropping it; '
-        + 'a fresh formation stages a new one: %s', this.deps.label, message);
-      this.deps.pendingInvite?.clear();
-      return;
-    }
-    log('[%s] consumeInvite failed — retrying next tick (Invite row not yet replicated here, or a transient '
-      + 'write failure): %s', this.deps.label, message);
+  }
+
+  /**
+   * A redemption only part of which was saved (see "Half-committed join" in the module doc):
+   * ONE visible warning naming both halves, and the staged invitation dropped. The pass is not
+   * marked idle, so the next one runs a ladder rung later and either finds a `Member` row (a
+   * saved one, or a manager's admission) and writes the binding, or idles flat.
+   *
+   * NOTE: the invitation is dropped whichever half was saved. In the observed shape
+   * (`ConsumedInvite` saved, `Member` not) it is spent and a retry could only fail on
+   * `ConsumedInvite`'s primary key. In the opposite shape (`Member` saved, `ConsumedInvite` not)
+   * keeping it would let the already-member arm burn it; dropping it leaves that bearer
+   * credential spendable until it expires — the state the burn arm's accepted tradeoff already
+   * lands in. Not branched on, because telling the shapes apart means parsing the lists, which
+   * are collection ids on the coordinator path but free-form tree labels on the plugin's legacy
+   * path. Revisit if a `Member`-saved half-commit is ever observed, or when
+   * `blocked/strand-half-committed-join-recovery` is decided.
+   */
+  private reportHalfCommittedJoin(failure: HalfCommittedJoin, error: unknown): void {
+    console.warn(
+      `[sereus] strand ${this.deps.label}: redeeming the staged membership invitation was only partly saved. `
+      + `Saved: [${failure.saved.join(', ')}]. Not saved: [${failure.unsaved.join(', ')}]. `
+      + 'The invitation is dropped: a saved ConsumedInvite row spends it, so it cannot be redeemed again. '
+      + 'If this party\'s Member row is not among the saved, the party is not a member of the strand and '
+      + 'cannot become one from this invitation — a manager must admit it directly (addMemberByManager). '
+      + 'The membership loop keeps checking and completes the join once a Member row for this party appears.'
+    );
+    log('[%s] half-committed redemption, full error: %o', this.deps.label, error);
+    this.deps.pendingInvite?.clear();
   }
 
   /** Decode the party key once; an undecodable key is terminal (nothing can be signed). */

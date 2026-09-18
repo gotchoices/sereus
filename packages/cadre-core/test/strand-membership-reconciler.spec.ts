@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import type { Database } from '@quereus/quereus';
+import { QuereusError, StatusCode, type Database } from '@quereus/quereus';
+import { CoordinatorPartialCommitError } from '@optimystic/db-core';
+import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import {
   StrandMembershipReconciler,
   IDLE_PASSES_BEFORE_ESCALATION,
   INITIAL_JOIN_RETRY_INTERVAL_MS,
+  classifyConsumeFailure,
   type PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
 import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
@@ -21,7 +24,13 @@ import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-memb
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { StrandMembershipInvite } from '../src/types.js';
 import { makeSAppConfig, openRawStrand, tableCount } from './strand-spec-helpers.js';
+import { captureDebugLog } from './capture-debug-log.js';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+
+const RECONCILER_NAMESPACE = 'sereus:cadre:strand-membership-reconciler';
+
+/** The reconciler's debug line for a dropped dead invitation. */
+const DEAD_INVITE_LINE = /staged invitation is dead/;
 
 /**
  * Component coverage for the bring-up membership reconciler: the full joiner ladder
@@ -115,6 +124,35 @@ interface ReconcilerOverrides {
   pollIntervalMs?: number;
   partyMemberPrivateKey?: string;
   getDatabase?: () => Database | undefined;
+}
+
+/** The rejection `consumeInvite` raises for a fresh party presenting `invite`; fails the spec if it resolves. */
+async function consumeRejection(db: Database, invite: StrandMembershipInvite): Promise<Error> {
+  const party = await freshParty();
+  const outcome: unknown = await consumeInvite(db, {
+    inviteKey: invite.inviteKey,
+    invitePrivateKey: invite.invitePrivateKey,
+    memberKey: party.pair.publicKeyB64,
+  }).then(() => 'resolved', (error: unknown) => error);
+  expect(outcome).toBeInstanceOf(Error);
+  return outcome as Error;
+}
+
+/** How a commit failure reaches `db.commit()`'s caller: Quereus wraps it, keeping it on `cause`. */
+function viaQuereus(error: Error): QuereusError {
+  return new QuereusError(`Commit failed: ${error.message}`, StatusCode.ERROR, error);
+}
+
+/**
+ * The half-commit observed on 2026-09-17 (`tickets/.pre-existing-known.md`): `ConsumedInvite`
+ * saved, `Member` and its unique index not.
+ */
+function consumedInviteSavedMemberNot(): CoordinatorPartialCommitError {
+  return new CoordinatorPartialCommitError(
+    ['default/strand/ConsumedInvite'],
+    ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
+    new Error('Stale commit for collection default/strand/Member'),
+  );
 }
 
 function reconcilerOver(db: Database | undefined, partyKey: string, overrides: ReconcilerOverrides = {}): StrandMembershipReconciler {
@@ -365,12 +403,16 @@ describe('waiting and failure classification', () => {
     // …so a second holder's staged copy is dead on arrival (ConsumedInvite's primary key).
     const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
     const reconciler = reconcilerOver(db, loser.privateKey, { pendingInvite: slot.source });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await reconciler.reconcile();
+    const lines = await captureDebugLog(RECONCILER_NAMESPACE, () => reconciler.reconcile());
 
     expect(slot.staged()).toBeUndefined();
     expect(await isStrandMember(db, loser.pair.publicKeyB64)).toBe(false);
     expect(reconciler.stopped).toBe(false);
+    // Classified DEAD by the anchored texts — the quiet debug line, not the half-commit warning.
+    expect(lines.some(line => DEAD_INVITE_LINE.test(line))).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
   }, 30_000);
 
   it('a SEALED strand is terminal: the loop stops rather than retry forever', async () => {
@@ -427,6 +469,204 @@ describe('waiting and failure classification', () => {
 
     expect(reconciler.done).toBe(false);
     expect(reconciler.stopped).toBe(false);
+  });
+});
+
+/**
+ * A redemption only part of which was saved. Injected at `db.commit()` — where optimystic's
+ * partial-commit error surfaces on a networked strand — so the writer's own rollback runs and
+ * nothing lands locally, which is what this machine sees of the `Member` half that failed.
+ */
+describe('a half-committed join', () => {
+  /**
+   * Each shape the reconciler must report the same way: the observed one, the opposite one, and
+   * the plugin's legacy error. For the `Member`-saved shape the manager admission below stands in
+   * for the saved `Member` row appearing; the next pass treats both identically.
+   */
+  const shapes: { name: string; failure: () => Error; saved: string; unsaved: string }[] = [
+    {
+      name: 'ConsumedInvite saved, Member not (observed)',
+      failure: consumedInviteSavedMemberNot,
+      saved: 'Saved: [default/strand/ConsumedInvite]',
+      unsaved: 'Not saved: [default/strand/Member, default/strand/Member/index/_uniq_7.stampid]',
+    },
+    {
+      name: 'Member saved, ConsumedInvite not',
+      failure: () => new CoordinatorPartialCommitError(
+        ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
+        ['default/strand/ConsumedInvite'],
+        new Error('Stale commit for collection default/strand/ConsumedInvite'),
+      ),
+      saved: 'Saved: [default/strand/Member, default/strand/Member/index/_uniq_7.stampid]',
+      unsaved: 'Not saved: [default/strand/ConsumedInvite]',
+    },
+    {
+      name: 'the plugin\'s legacy PartialCommitError',
+      failure: () => new PartialCommitError(['tree#1'], ['tree#0'], new Error('legacy flush failed')),
+      saved: 'Saved: [tree#1]',
+      unsaved: 'Not saved: [tree#0]',
+    },
+  ];
+
+  for (const shape of shapes) {
+    it(`${shape.name}: warns once naming both halves, drops the invitation, and keeps the loop running`, async () => {
+      const { db, founder } = await openClosedStrand();
+      const joiner = await freshParty();
+      const invite = await issueInvite(db, { managerKeyPair: founder });
+      const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+      const reconciler = reconcilerOver(db, joiner.privateKey, {
+        pendingInvite: slot.source,
+        getOwnPeerId: () => 'joiner-machine',
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(shape.failure()));
+
+      const lines = await captureDebugLog(RECONCILER_NAMESPACE, () => reconciler.reconcile());
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      const warning = String(warn.mock.calls[0]![0]);
+      expect(warning).toMatch(/^\[sereus\] strand test-strand: /);
+      expect(warning).toContain(shape.saved);
+      expect(warning).toContain(shape.unsaved);
+      expect(warning).toContain('addMemberByManager');
+      expect(slot.staged()).toBeUndefined();
+      expect(reconciler.done).toBe(false);
+      expect(reconciler.stopped).toBe(false);
+      expect(lines.some(line => DEAD_INVITE_LINE.test(line))).toBe(false);
+
+      // A Member row appears — a manager's admission, or the half that was saved — and the
+      // next pass writes this machine's binding and finishes, with no second warning.
+      await addMemberByManager(db, { managerKeyPair: founder, memberKey: joiner.pair.publicKeyB64 });
+      await reconciler.reconcile();
+
+      expect(reconciler.done).toBe(true);
+      expect(await tableCount(db, 'MemberPeer')).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    }, 30_000);
+  }
+
+  it('with no Member row arriving, the loop idles on the flat poll interval instead of retrying the spent invitation', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const clock = manualScheduler();
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      scheduler: clock.scheduler,
+      pollIntervalMs: 4_000,
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const commit = vi.spyOn(db, 'commit').mockRejectedValueOnce(viaQuereus(consumedInviteSavedMemberNot()));
+
+    reconciler.start();
+    await reconciler.settle();           // the half-commit: one ladder rung
+    clock.tick();
+    await reconciler.settle();           // nothing staged, no member row: idle
+
+    expect(clock.delays()).toEqual([INITIAL_JOIN_RETRY_INTERVAL_MS, 4_000]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(reconciler.stopped).toBe(false);
+  }, 30_000);
+});
+
+/**
+ * {@link classifyConsumeFailure} against the REAL engine's rejections. The message texts are pinned
+ * here on purpose: the classifier matches them, so a rewording in Quereus fails this block rather
+ * than silently turning a dead invitation into an endless retry.
+ */
+describe('consume rejection classification', () => {
+  it('expired: CHECK constraint failed: NotExpired → dead invitation', async () => {
+    const { db, founder } = await openClosedStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder, expiration: Date.now() - 60_000 });
+
+    const error = await consumeRejection(db, invite);
+
+    expect(error.message).toBe('CHECK constraint failed: NotExpired');
+    expect(classifyConsumeFailure(error)).toEqual({ kind: 'dead-invite' });
+  }, 30_000);
+
+  it('cancelled: CHECK constraint failed: NotCancelled → dead invitation', async () => {
+    const { db, founder } = await openClosedStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey: invite.inviteKey });
+
+    const error = await consumeRejection(db, invite);
+
+    expect(error.message).toBe('CHECK constraint failed: NotCancelled');
+    expect(classifyConsumeFailure(error)).toEqual({ kind: 'dead-invite' });
+  }, 30_000);
+
+  it('consumed by another party: UNIQUE constraint failed: ConsumedInvite.InviteKey → dead invitation', async () => {
+    const { db, founder } = await openClosedStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const winner = await freshParty();
+    await consumeInvite(db, {
+      inviteKey: invite.inviteKey,
+      invitePrivateKey: invite.invitePrivateKey,
+      memberKey: winner.pair.publicKeyB64,
+    });
+
+    const error = await consumeRejection(db, invite);
+
+    expect(error.message).toBe('UNIQUE constraint failed: ConsumedInvite.InviteKey');
+    expect(classifyConsumeFailure(error)).toEqual({ kind: 'dead-invite' });
+  }, 30_000);
+
+  it('sealed: CHECK constraint failed: NotSealed → sealed', async () => {
+    const { db, founder } = await openClosedStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    await sealStrand(db, { managerKeyPair: founder });
+
+    const error = await consumeRejection(db, invite);
+
+    // The engine appends the constraint's expression, which follows the schema; the prefix is the contract.
+    expect(error.message.startsWith('CHECK constraint failed: NotSealed')).toBe(true);
+    expect(classifyConsumeFailure(error)).toEqual({ kind: 'sealed' });
+  }, 30_000);
+
+  it('an invitation not yet replicated here: CHECK constraint failed: InviteExists → retry', async () => {
+    const { db } = await openClosedStrand();
+    const phantomPrivate = generatePrivateKey('ed25519', 'base64url') as string;
+    const phantomKey = getPublicKey(phantomPrivate, 'ed25519', 'base64url', 'base64url') as string;
+
+    const error = await consumeRejection(db, { inviteKey: phantomKey, invitePrivateKey: phantomPrivate });
+
+    expect(error.message).toBe('CHECK constraint failed: InviteExists');
+    expect(classifyConsumeFailure(error)).toEqual({ kind: 'retry' });
+  }, 30_000);
+
+  it('a partial commit is half-committed by type, bare or wrapped, although its message names ConsumedInvite', () => {
+    const partial = consumedInviteSavedMemberNot();
+    const expected = {
+      kind: 'half-committed',
+      saved: ['default/strand/ConsumedInvite'],
+      unsaved: ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
+    };
+
+    expect(partial.message).toContain('default/strand/ConsumedInvite');
+    for (const delivered of [partial, viaQuereus(partial), new Error('rewrapped', { cause: viaQuereus(partial) })]) {
+      expect(classifyConsumeFailure(delivered)).toEqual(expected);
+    }
+  });
+
+  it('the plugin\'s legacy PartialCommitError is half-committed, reporting its persisted and unpersisted trees', () => {
+    const partial = new PartialCommitError(['tree#1'], ['tree#0'], new Error('legacy flush failed'));
+
+    expect(classifyConsumeFailure(viaQuereus(partial))).toEqual({ kind: 'half-committed', saved: ['tree#1'], unsaved: ['tree#0'] });
+  });
+
+  it('a partial commit carrying a dead-invitation text in its underlying failure is still half-committed', () => {
+    // Typed checks run before text checks: the embedded constraint text must not win.
+    const partial = new CoordinatorPartialCommitError(['default/strand/ConsumedInvite'], ['default/strand/Member'],
+      new Error('UNIQUE constraint failed: ConsumedInvite.InviteKey'));
+
+    expect(classifyConsumeFailure(viaQuereus(partial)).kind).toBe('half-committed');
+  });
+
+  it('the bare table name no longer classifies a failure as a dead invitation', () => {
+    expect(classifyConsumeFailure(new Error('Stale commit for collection default/strand/ConsumedInvite')))
+      .toEqual({ kind: 'retry' });
   });
 });
 
