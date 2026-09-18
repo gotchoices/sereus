@@ -47,7 +47,7 @@ import {
 	isRetriableControlWriteFailure,
 } from '@serfab/cadre-core';
 import type { CadreNode, ControlDatabase, StrandRow } from '@serfab/cadre-core';
-import { bootConnectedPair, waitUntil } from '../harness/index.js';
+import { bootConnectedPair, describeOutcomes, errorChainText, waitUntil } from '../harness/index.js';
 import type { ConnectedPair } from '../harness/index.js';
 
 /** Cross-node pull-on-read convergence budget; the wait's timeout is the failure. */
@@ -59,39 +59,6 @@ const CONVERGE_MS = 30_000;
  * the wait (which names WHICH node's view is wrong) rather than on vitest's clock.
  */
 const CASE_TIMEOUT_MS = 90_000;
-
-/**
- * Every message in `reason`'s `cause` chain, joined — the surface the production
- * classifiers match on (`isStrandIdConflict`, `isRetriableControlWriteFailure`), because
- * the typed engine error does not survive the trip out of optimystic. A non-`Error` is
- * stringified so a rejection with a non-error reason still names itself in the diff.
- *
- * NOTE: `control-write-degraded-cohort-member.integration.ts` keeps its own copy of this
- * helper (cycle-guarded, joined with ` | `). Two copies of a display-only formatter is under
- * the hoist threshold this suite works to; if a THIRD scenario needs one, hoist it into
- * `src/harness/` rather than growing a fourth shape.
- */
-function errorChainText(reason: unknown): string {
-	if (!(reason instanceof Error)) return String(reason);
-	const messages: string[] = [];
-	let current: unknown = reason;
-	while (current instanceof Error) {
-		messages.push(current.message);
-		current = (current as { cause?: unknown }).cause;
-	}
-	return messages.join(' <- ');
-}
-
-/**
- * Every settled outcome of a race, in order, rejections carrying their full chain — the
- * assertion-failure message, so a red case names WHAT each writer was told rather than
- * just the shape of the status array.
- */
-function describeOutcomes(outcomes: PromiseSettledResult<unknown>[]): string {
-	return outcomes
-		.map((o) => (o.status === 'rejected' ? `rejected(${errorChainText(o.reason)})` : 'fulfilled'))
-		.join(', ');
-}
 
 /**
  * ALL `Strand` rows this node's view holds for `strandId` — a LIST, not `queryStrand`'s

@@ -63,7 +63,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import debug from 'debug';
 import {
-	TestCadreNetwork, waitForControlCohort, observeControlCohorts, forceFullCohort, pinCoordinator
+	TestCadreNetwork, waitForControlCohort, observeControlCohorts, forceFullCohort, pinCoordinator, errorChainText
 } from '../harness/index.js';
 import type {
 	TestParty, TestStrand, ControlCohortObserverHandle, ForcedCohortHandle, PinnedCoordinatorHandle
@@ -103,36 +103,16 @@ interface Settled<T> {
  * read-back can assert the exact row the write created, not merely that a row exists.
  *
  * NOTE: `control-write-degraded-cohort-member.integration.ts` carries its own copy of
- * this and of {@link errorChainText}. Two small copies in two scenario files is
- * cheaper than a harness module nobody else imports; if a THIRD file needs them,
- * extract all three into `harness/` at that point rather than adding another copy.
+ * this one (as `timedSettle`, which drops the value and adds a deadline). Two shapes of a
+ * three-line await wrapper is cheaper than reconciling them into one harness helper with
+ * two modes; the error-chain formatter they BOTH used is now `errorChainText` in
+ * `harness/error-chain.ts`, hoisted when a third scenario needed it.
  */
 async function settle<T>(op: () => Promise<T>): Promise<Settled<T>> {
 	const startedAt = Date.now();
 	let value: T | undefined;
 	const error = await op().then((result) => { value = result; return null; }, (e: unknown) => e);
 	return { value, error, elapsedMs: Date.now() - startedAt };
-}
-
-/**
- * Flatten an error's `.cause` chain into one searchable string — Quereus wraps the
- * transactor's failure, so matching on the outermost message alone under-reports.
- */
-function errorChainText(error: unknown): string {
-	const parts: string[] = [];
-	const seen = new Set<unknown>();
-	let current: unknown = error;
-	while (current != null && !seen.has(current)) {
-		seen.add(current);
-		if (current instanceof Error) {
-			parts.push(current.message);
-			current = current.cause;
-		} else {
-			parts.push(String(current));
-			break;
-		}
-	}
-	return parts.join(' | ');
 }
 
 /** Every machine in `party`, owner first — the full membership a cohort can reach. */

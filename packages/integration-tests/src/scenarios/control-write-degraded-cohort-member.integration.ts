@@ -82,7 +82,7 @@ import {
 } from '@serfab/cadre-core';
 import type { Ed25519KeyPair } from '@serfab/cadre-core';
 import {
-	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId
+	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId, errorChainText
 } from '../harness/index.js';
 import type { ForcedCohortHandle, PinnedCoordinatorHandle } from '../harness/index.js';
 import type { ControlRetryAbandonment } from '@serfab/cadre-core';
@@ -271,27 +271,6 @@ async function timedSettle(label: string, ms: number, op: () => Promise<unknown>
 	const t0 = Date.now();
 	const error = await within(label, ms, () => op().then(() => null, (e: unknown) => e));
 	return { error, elapsedMs: Date.now() - t0 };
-}
-
-/**
- * Flatten an error's `.cause` chain into one searchable string — Quereus may
- * wrap the transactor's failure, so single-message matching under-reports.
- */
-function errorChainText(error: unknown): string {
-	const parts: string[] = [];
-	const seen = new Set<unknown>();
-	let current: unknown = error;
-	while (current != null && !seen.has(current)) {
-		seen.add(current);
-		if (current instanceof Error) {
-			parts.push(current.message);
-			current = current.cause;
-		} else {
-			parts.push(String(current));
-			break;
-		}
-	}
-	return parts.join(' | ');
 }
 
 /**

@@ -570,25 +570,30 @@ redemption is refused as `InvitationExhaustedError`, which
 `StrandFormationManager.provisionAsResponder` reports to the joiner as the same `'Invalid token'`
 a spent invite would give, never as a retryable conflict.
 
-**That bound was broken between 2026-08-04 and 2026-08-25, and is restored by reading the
-usage rows through a table scan rather than a secondary index.** `formation-unique-token-redesign`
-declared a `FormationUsageByToken` index to spare the scan, which put every per-token usage
-read — `countFormationUsage`, and through it the cap and `hasOutstandingFormationInvite` — onto
-an index descent. Across machines that descent returns only the rows the reading machine wrote:
-each node counted only its own redemptions, so the cap over-admitted without bound rather than
-by the concurrency, and a spent invite still read as outstanding to the membership connection
-gate. The index was removed on 2026-08-25 and those reads went back to the scan they had before,
-which converges across machines.
+**That bound was broken between 2026-08-04 and 2026-08-25, and the index that broke it is
+declared again.** `formation-unique-token-redesign` declared a `FormationUsageByToken` index to
+spare the scan, which put every per-token usage read — `countFormationUsage`, and through it the
+cap and `hasOutstandingFormationInvite` — onto an index descent. Across machines that descent
+returned only the rows the reading machine wrote: each node counted only its own redemptions, so
+the cap over-admitted without bound rather than by the concurrency, and a spent invite still read
+as outstanding to the membership connection gate. The index was removed on 2026-08-25 and those
+reads went back to the scan.
 
-The engine defect is upstream in Optimystic and is unfixed — each machine's copy of an index
-sub-collection sits at a different revision while their copies of the table itself agree, and
-the refresh that runs immediately before a descent does not close the gap. It is tracked here in
-`tickets/blocked/secondary-index-seek-blind-to-sibling-rows`. **Every unique constraint in this
-schema is still enforced through such an index**, so cross-machine uniqueness is exposed to the
-same staleness; that arm is tracked separately in
-`tickets/blocked/strand-unique-index-sync-stale-revision`. Re-declaring
-`FormationUsageByToken` is what restores the reproducer — it is what makes the
-`integration-tests` scenario `strand-formation-concurrent-redemption` fail.
+The engine defect was fixed upstream in Optimystic and re-measured here on 2026-09-17: with the
+index restored, both machines' copies of the index sub-collection hold the same revision and the
+same action id, and the scenario that had been red for six weeks passes. So the index is declared
+again and the per-token reads are seeks, not a growing scan of a table that is append-only for the
+life of the party.
+
+Two `integration-tests` scenarios guard that, and neither may be weakened to get a green run.
+`strand-formation-concurrent-redemption` asserts BOTH machines' views of a raced redemption — the
+cap arm. `control-cross-machine-unique-column` asserts that a `unique` column refuses a value a
+sibling machine has already committed; it exists because **every unique constraint in this schema
+is enforced through the same kind of secondary index**, so cross-machine uniqueness carried the
+same exposure and nothing pinned it. Two narrower arms stay open: the same-tick race on a unique
+value, where the loser is refused but its row is stored anyway
+(`tickets/blocked/concurrent-unique-value-race-commits-both-rows`), and an intermittent writer-side
+failure on unique-index sub-collections (`tickets/fix/strand-unique-index-sync-stale-revision`).
 
 ```mermaid
 sequenceDiagram

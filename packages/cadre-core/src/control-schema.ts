@@ -764,25 +764,18 @@ declare schema CadreControl {
 
     -- Token is no longer a primary-key prefix (the key is the redemption nonce), so the
     -- per-token filters — the cap count in Authorized above, and cadre-core's
-    -- countFormationUsage / isTokenUsed / hasOutstandingFormationInvite — are served by a
-    -- table scan: a bare equality on a non-key column is a shape the optimystic vtab declines
-    -- to claim, so the engine applies the filter itself.
+    -- countFormationUsage / isTokenUsed / hasOutstandingFormationInvite — are served by this
+    -- index rather than by a full scan of a table that is append-only and grows for the life
+    -- of the party.
     --
-    -- There WAS an \`index FormationUsageByToken on FormationUsage (Token)\` here, declared by
-    -- \`formation-unique-token-redesign\` purely to spare that scan. It was removed 2026-08-25
-    -- because the tripwire that change recorded ("an under-reporting descent would admit a
-    -- seat the invitation did not pay for — a failure mode a scan could not produce") fired:
-    -- a secondary-index descent on a second machine returns only the rows THAT machine wrote,
-    -- so a cap counted through it under-reports without bound across machines. Measured with
-    -- the engine's own \`index:seek\` trace — each machine's copy of the index sub-collection
-    -- sits at a different revision while their copies of the table itself agree, and the
-    -- refresh that runs immediately before the descent does not close the gap. Tracked in
-    -- \`tickets/blocked/secondary-index-seek-blind-to-sibling-rows.md\`, and upstream as
-    -- \`bug-index-subcollection-sits-one-revision-behind-on-the-sibling\`.
-    --
-    -- DO NOT re-declare it to speed the count up until that is fixed upstream. Re-adding this
-    -- one line is also how the reproducer comes back: it is what makes
-    -- \`strand-formation-concurrent-redemption\` fail.
+    -- The cap count is only ever as correct as this index's convergence across machines. That
+    -- convergence failed once: from 2026-08-04 to 2026-08-25 a descent on a second machine
+    -- returned only the rows THAT machine wrote, so the index was removed and the reads went
+    -- back to the scan. The engine defect was fixed upstream and re-measured here on
+    -- 2026-09-17, so the index is declared again. Its guard is the integration-tests scenario
+    -- \`strand-formation-concurrent-redemption\`, which asserts BOTH machines' views of a raced
+    -- redemption and therefore goes red if that convergence regresses.
+    index FormationUsageByToken on FormationUsage (Token);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
     -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add

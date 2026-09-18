@@ -3,8 +3,12 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts
 difficulty: hard
 ----
 
-> **Question 3 is ANSWERED, 2026-08-25: a secondary-index seek is NOT safe across machines, and
-> the seat cap that hung on one has been taken off it.**
+> **Question 3 is ANSWERED — read the 2026-09-17 correction below with it.** In 2026-08 a
+> secondary-index seek was measured to miss a sibling machine's rows, and the invitation seat
+> cap was taken off the index that served it. The engine defect behind that has since been fixed
+> upstream and the index is back; the 2026-08 account is kept below because the failure it
+> describes is what these lookup shapes can do when the engine is wrong, which is the question
+> this ticket exists to settle.
 >
 > The third numbered question above — added by the review of `formation-unique-token-redesign` —
 > said `countFormationUsage` had moved from a scan onto a descent through the
@@ -19,9 +23,19 @@ difficulty: hard
 > multi-machine party.
 >
 > The index was removed (`complete/formation-usage-index-tripwire-fired`), returning that read to
-> the scan it had before 2026-08-04. Full detail and the reproduction recipe are in
-> `blocked/secondary-index-seek-blind-to-sibling-rows`; the engine defect is upstream and unfixed
-> (`../optimystic/tickets/fix/2-bug-index-subcollection-sits-one-revision-behind-on-the-sibling.md`).
+> the scan it had before 2026-08-04.
+>
+> **Corrected 2026-09-17 — the engine defect is FIXED upstream, and the index is back.** It was an
+> optimystic defect (their `bug-index-subcollection-sits-one-revision-behind-on-the-sibling`, fixed
+> by their `a-commit-over-a-gapped-base-forks-the-block`), not an unfixable property of index seeks.
+> Re-measured here with the index restored: both machines' copies of the index sub-collection hold
+> the same revision and the same action id, and the scenario that had been red for six weeks passes.
+> `complete/restore-formation-usage-token-index` re-declared `FormationUsageByToken`, so
+> `countFormationUsage` is a seek again, and added `control-cross-machine-unique-column` as a
+> permanent guard that a `unique` column refuses a value a sibling machine already committed. The
+> ticket that carried the full reproduction recipe (`secondary-index-seek-blind-to-sibling-rows`) was
+> closed into that work; the measurement is summarised in the 2026-09-17 delta at the top of
+> `tickets/.pre-existing-known.md`.
 >
 > **This does NOT answer question 1, and the two must not be conflated.** Question 1 asks whether
 > the full-primary-key point-lookup shortcut is unreliable and whether that is multi-column
@@ -32,11 +46,16 @@ difficulty: hard
 > in the same window where the index seek does not. Questions 1 and 2 remain open exactly as
 > written.
 >
-> **What this ticket should still deliver**, narrowed by one arm: a statement of which lookup
-> shapes are safe on a networked strand. One line of it can now be written — *a secondary-index
-> seek can serve a stale view of the index collection and silently return fewer rows than exist* —
-> and that line should carry the caveat that every `unique` constraint in the control schema is
-> enforced through such an index (`blocked/strand-unique-index-sync-stale-revision`).
+> **What this ticket should still deliver**, unchanged by all of the above: a statement of which
+> lookup shapes are safe on a networked strand, and on what the answer depends. The secondary-index
+> arm has an answer with a date on it — a seek CAN serve a stale view of the index collection and
+> silently return fewer rows than exist, it did so for six weeks in 2026-08, and it stopped when
+> the engine was fixed — but that is a statement about one bug, not about the shape. Questions 1
+> and 2 are still open exactly as written. Note while answering them that every `unique` constraint
+> in the control schema is enforced through a secondary index, which is why
+> `control-cross-machine-unique-column` now guards that path and why
+> `fix/strand-unique-index-sync-stale-revision` (an intermittent writer-side failure on those same
+> sub-collections) is still open.
 
 ## Background
 

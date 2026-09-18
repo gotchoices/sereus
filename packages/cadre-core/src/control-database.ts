@@ -2974,22 +2974,19 @@ export class ControlDatabase {
   /**
    * Count `FormationUsage` rows recorded against a token (uses consumed so far).
    *
-   * This count IS the seat cap (`enforceFormationUseCap`), so an under-report admits a seat
-   * the invitation never paid for. It is served by a table SCAN, deliberately: a bare
-   * equality on a non-key column is a shape the optimystic vtab declines to claim, so the
-   * engine applies the filter itself over a full read of the table.
+   * Served by a seek through the `FormationUsageByToken` index rather than a full scan of
+   * the table, which is append-only and grows for the life of the party.
    *
-   * NOTE: it was briefly an index seek, and that is what the scan is protecting against.
-   * `formation-unique-token-redesign` took `Token` out of the primary key and declared
-   * `FormationUsageByToken` purely to spare this scan, recording as a tripwire that an
-   * under-reporting descent would admit an unpaid-for seat — "a failure mode a scan could
-   * not produce". The tripwire fired. Across machines a secondary-index descent returns only
-   * the rows the READING machine wrote, so this count under-reported without bound on a
-   * multi-machine party and the cap over-admitted. The index was removed 2026-08-25; the
-   * measurement is recorded in the block comment at the `FormationUsage` declaration in
-   * `schemas/control.qsql`, and the engine defect in
-   * `blocked/secondary-index-seek-blind-to-sibling-rows`. Do NOT re-declare the index to
-   * speed this up while that ticket is open.
+   * NOTE: this count IS the seat cap (`enforceFormationUseCap`), so an under-report admits a
+   * seat the invitation never paid for — and reading it through a secondary index makes the
+   * cap depend on that index converging across machines. It did not, from 2026-08-04 to
+   * 2026-08-25: a descent on a second machine returned only the rows that machine had
+   * written, and the index was removed until the engine was fixed upstream (re-measured
+   * 2026-09-17, `complete/restore-formation-usage-token-index`). The live guard is the
+   * integration-tests scenario `strand-formation-concurrent-redemption`, which asserts both
+   * machines' views of a raced redemption. If it fails on BOTH views again, index
+   * convergence has regressed — fix the engine or take this read off the index, and do not
+   * weaken that scenario's assertions to get a green run.
    *
    * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
    * locked write body — same per-call opt-out, and for the same reason, as

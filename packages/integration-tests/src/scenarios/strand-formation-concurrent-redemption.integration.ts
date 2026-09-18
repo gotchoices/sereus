@@ -38,12 +38,14 @@
  * files. Nothing is shared: this scenario runs on bare `CadreNode`s (no
  * `TestCadreNetwork` parties), so the e2e file's party-shaped helpers do not apply.
  *
- * CURRENTLY RED (2026-08-12, deterministic): a sibling node's index-seek never sees
- * `FormationUsage` rows written on the other node (a full scan does), so the both-views
- * assertions time out. Upstream defect, tracked in
- * `tickets/blocked/secondary-index-seek-blind-to-sibling-rows` and listed in
- * `tickets/.pre-existing-known.md` — this file is the re-measurement instrument for that
- * ticket's unblock condition; do not weaken its assertions to get a green run.
+ * This file is also the live guard for cross-machine secondary-index convergence. The
+ * invite's seat cap is counted through the `FormationUsageByToken` index, and between
+ * 2026-08-12 and 2026-09-17 this scenario was deterministically RED because a descent on
+ * a sibling node never saw `FormationUsage` rows the other node had written (a full scan
+ * did), so the both-views assertions timed out. That was an engine defect, fixed upstream
+ * and re-measured here on 2026-09-17 (`complete/restore-formation-usage-token-index`).
+ * A both-views failure here again means index convergence has regressed — do NOT weaken
+ * these assertions to get a green run.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
