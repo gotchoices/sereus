@@ -34,3 +34,44 @@ Reconnecting to the borrowed node after an app restart cannot be checked yet: th
 ## If the run finds bugs
 
 File them as their own tickets rather than growing this one, the way the earlier device session (`rn-solo-founding-device-run`, completed) did. Update the doc section in place with whatever the run teaches.
+
+## Device run 2026-09-17
+
+Run by an agent over adb, 23:10–23:18 MDT, right after `rn-device-relay-run-optimystic-95fd269e` (same Metro session and bundle, sereus `76cb6880`, optimystic `95fd269e`). Galaxy Note 9 on Wi-Fi `LivingOnAPrarie` at 192.168.86.35. Windows 11 PC on the same Wi-Fi at 192.168.86.41 (also on Tailscale, 100.67.49.72).
+
+**Still blocked, on a human decision about this PC's firewall.** Everything up to the lent node worked. The phone's dial to the node over the LAN is dropped by Windows. Unblock by doing one of these on the PC, then re-running:
+- mark the Wi-Fi network Private (it is classified **Public**), or
+- replace the existing inbound **Block** rules for `C:\Program Files\nodejs\node.exe` on the Public profile with an Allow rule (or add an Allow rule for the orchestrator's ports, 10000–20000).
+
+Changing firewall or network settings on the user's machine was out of bounds for the agent.
+
+### Steps and results
+
+| Step | Result |
+|---|---|
+| Start cadre-host as the doc says (`cadre-host start`) | **Doc step does not work alone.** `start` requires a prior `install`, which also registers an OS service. Installed into a scratch data dir with a no-op service host (as `integration-tests` `test-cadre-host.ts` does, `uiPort 8088`, `noUpnp`), then `node dist/bin/host.js start --data-dir <dir>`: "node-donor mode … local UI: http://127.0.0.1:8088" within about 6 s |
+| `cadre-host grant issue` | Needs `--port 8088`. The CLI defaults to 8765, the installer's default `uiPort`, and the app's placeholder says 8088. With the port: token printed, `maxNodes 1, no expiry` |
+| `adb reverse tcp:8088 tcp:8088`, Host URL `http://127.0.0.1:8088` | **Works.** The forwarded request's `Host` satisfied the loopback origin guard. `POST /grants`, `GET /grants/:id/peer` and `PUT /grants/:id/seed` all succeeded |
+| Phone Connect, solo (party `…000923`, no bootstrap, no relay) | 3336 ms, "Reachable: No — no relay configured" |
+| Request Node, attempt 1 (LAN path) | Loan `grn_cVKw1qjM0876Lrvc` created 05:13:49.98Z and `seeded` 05:13:53.10Z (about 3 s). Progress reached "Connecting to the node…". **Failed about 66 s after the tap** with the modal "The lent node was set up but this phone could not reach it within 60 seconds. Check that the phone and the host are on the same Wi-Fi network." No detail line |
+| Cleanup after attempt 1 | **Bug:** `[host-node-request] the host refused to end loan grn_cVKw1qjM0876Lrvc (HTTP 400)`. The loan stayed `seeded` and the node kept running. Filed `fix/rn-host-node-request-end-loan-refused-by-host` (Fastify `FST_ERR_CTP_EMPTY_JSON_BODY`: the app sends `content-type: application/json` on a body-less `DELETE`). The lent node's authorization-row removal logged no warning |
+| Request Node, attempt 2 | Refused in about 3 s, because the leaked loan held the grant's only slot. Modal "Host node request failed", detail "Grant is already at its node cap", message "This grant has already lent out every node it is allowed to. Ask for a new grant, or end a loan on the host." Clear and actionable |
+| Diagnosis of attempt 1 | From `adb shell`, `nc 192.168.86.41 10004` (and 10000) timed out and `ping` to the PC got no reply, while the router answered. On the PC, `Get-NetConnectionProfile` gave `Wi-Fi 6 … Public`, and `node.exe` has two inbound `Block` rules on the Public profile. **No firewall prompt appeared**, because Windows does not prompt again once a rule exists. The dial gater was not the cause, since a raw TCP connect from the shell fails the same way |
+| Request Node, attempt 3 (loan from attempt 1 ended with a `DELETE` without the JSON header, and `adb reverse tcp:10004 tcp:10004` to forward the new node's WS port) | **Connected.** "Waiting for the node to start…" by +3 s, "Connecting to the node…" by +6.5 s, modal "Host node connected / Loan grn_sbpWiDpqEzkCi89B / Peer ID: 12D3KooWEfZLHkgjitMxUhS2mNWumjogLAnFokWQY8ZGLrgAjMmb" at +25.8 s. About 16 s of the connect stage went to the two unreachable `/ws` addresses (Tailscale, then LAN, 8 s each) before `127.0.0.1` |
+| Lent peer among the phone's control connections | **Yes.** Inspector `Runtime.evaluate` on the phone's `CadreNode`: `getControlNode().getConnections()` = one connection, peer `12D3KooWEfZL…AjMmb`, `/ip4/127.0.0.1/tcp/10004/ws/p2p/…`, `open`, `outbound`. On the PC, adb's socket to port 10004 is `ESTABLISHED` |
+
+The "Asking the host", "Adding the node to this cadre" and "Seeding" progress lines passed between two UI dumps (2–4 s each), so they were not seen on screen. Disconnect-while-requesting was not tried, because the leaked-loan bug above would have made its outcome predictable (a 400 on the `DELETE`).
+
+### The four unproven items
+
+- **Dial permission.** With the permissive gater in place, the phone dialed a loopback `ws://` address and connected. Whether the setting is *needed* was not tested (that would take removing it and rebuilding the bundle). The LAN failure was the firewall, not the gater.
+- **Reaching the host.** Works through `adb reverse` of the management port.
+- **Windows firewall.** The doc's advice does not cover a network marked Public with an existing Block rule, and no prompt appears in that case. Recorded in `fix/docs-borrow-node-from-cadre-host-setup-steps`.
+- **Wording.** The progress lines seen and the three modals fit the screen and read well. The connect-failure message sends the user to check the Wi-Fi network, which was already correct. Adding "and that the host's firewall allows incoming connections" would have pointed at the real cause.
+
+### What remains
+
+1. Fix the PC's firewall or network category as above, then re-run with no port forward except the management port. Expected: "Connected." within about 20 s, the lent peer reached at `192.168.86.41:<ws-port>`.
+2. After `fix/rn-host-node-request-end-loan-refused-by-host` lands, check on the device that a failed request ends its loan (`donations.json` → `terminated`) and that Disconnect during a request does the same.
+
+Cleanup: both loans ended (`terminated`), no lent-node process left, cadre-host stopped, `adb reverse --remove-all` with an empty list after. The temporary install script was deleted. The scratch data dir sits outside the repo.
