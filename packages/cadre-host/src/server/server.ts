@@ -134,6 +134,8 @@ export function buildFastify(): FastifyInstance {
  * for both).
  */
 function acceptEmptyJsonBodies(app: FastifyInstance): void {
+  // NOTE: 'error', 'error' mirrors Fastify's defaults for proto/constructor poisoning; if
+  // buildFastify ever sets `onProtoPoisoning` / `onConstructorPoisoning`, pass them here too.
   const parseJson = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser<string>('application/json', { parseAs: 'string' }, (request, body, done) => {

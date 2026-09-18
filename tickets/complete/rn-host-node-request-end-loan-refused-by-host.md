@@ -51,3 +51,21 @@ Also run: `yarn workspace @serfab/reference-app-rn typecheck`, `yarn workspace @
 
 - `yarn workspace @serfab/reference-app-rn test`, `yarn workspace @serfab/cadre-host test`, both typechecks, and `yarn lint`.
 - By hand against a running host: `curl -X DELETE -H "authorization: Bearer <token>" -H "content-type: application/json" http://127.0.0.1:<port>/grants/<id>` should now answer 200, and the donation should show `terminated`.
+
+## Review findings
+
+Read the implement diff (`6e1fc3ee`) first, then the handoff.
+
+**Correctness, host.** Checked Fastify 5.7.1's `getDefaultJsonParser` (`node_modules/fastify/lib/content-type-parser.js:296`). It is the callback form, so `void parseJson(request, body, done)` answers through `done`, and the request cannot hang. `'error', 'error'` matches Fastify's default proto/constructor-poisoning settings. The parser falls back to the server's `bodyLimit`. A body that is only whitespace is not length 0, so it still goes to the default parser and gets a 400. `buildFastify` is the only Fastify constructor in cadre-host outside the tests (`grep "Fastify(" packages/cadre-host/src`), so every route gets the lenient parser. I re-ran the `request.body` grep, and every body-reading route still uses `?? {}`. No defects found.
+
+**Correctness, phone.** `headersFor` is used by both `send` and `endLoan`. Nothing still reads the removed `flow.headers`, and the typecheck confirms this. `endLoan` logs "end loan" in both of its failure branches, so `expectLoanEnded`'s check that no such warning appeared is meaningful. The fake's `parserRefusal` matches Fastify's `handleRequest` rules: it skips GET and HEAD, returns 400 for an empty body that declares JSON, and returns 415 for a body that does not declare it. No defects found.
+
+**Tests.** The new tests cover the happy path (the content type on each request), the regression (a DELETE that declares JSON with no body → 200 and `terminated`), the error paths (malformed JSON, `__proto__`, and an empty body on a route that needs fields), and a content type with a charset parameter. A body-less DELETE with no content type was already covered by the older DELETE tests. I added no tests.
+
+**Tripwire.** `'error', 'error'` is hardcoded in `acceptEmptyJsonBodies` rather than read from the instance's config. That is fine while `buildFastify` sets neither option. I parked a `NOTE:` at the call in `packages/cadre-host/src/server/server.ts`.
+
+**Hygiene and docs.** The functions are short and the names describe what they do. The comments on `acceptEmptyJsonBodies` and `headersFor` repeat some of the history that is also in the docs. They are long but accurate, so I left them. I read the `docs/cadre-host.md` API-surface paragraph and the `docs/reference-app-rn.md` borrowing section, and both match the code. No other doc covers the parser or the phone's headers.
+
+**Known gaps, carried forward and still tracked elsewhere.** No test runs the phone client against the real `/grants` server; that is `backlog/debt-phone-host-client-against-real-grants-server`. Checking on a device is item 2 of `blocked/rn-host-node-request-device-run`. Making the whole management server lenient was a decision from the fix stage, and I did not revisit it.
+
+**Validation.** `yarn workspace @serfab/reference-app-rn test` passed: 317 tests in 21 files. `yarn workspace @serfab/cadre-host test` passed: 657 tests, with 4 skipped that were already skipped before. `yarn lint` and both typechecks were clean.
