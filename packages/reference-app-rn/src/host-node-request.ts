@@ -178,7 +178,7 @@ interface Flow {
  * phone's authorization for it removed, both best-effort — see {@link cleanup}
  * for why leaving either behind is worse than the failure itself.
  *
- * @param hostUrl The host's management address, e.g. `http://127.0.0.1:8088`.
+ * @param hostUrl The host's management address, e.g. `http://127.0.0.1:8765`.
  * @param grantToken The bearer the host's admin issued.
  */
 export async function requestHostNode(
@@ -400,7 +400,7 @@ async function connectToNode(flow: Flow, dronePeerId: string): Promise<void> {
 			throw new HostNodeRequestError(
 				flow.stage,
 				`The lent node was set up but this phone could not reach it within ${seconds(flow.budgets.connectMs)} seconds. `
-				+ 'Check that the phone and the host are on the same Wi-Fi network.',
+				+ 'Check that the phone and the host are on the same Wi-Fi network, and that the host’s firewall allows incoming connections.',
 			);
 		}
 		passes.ensureRunning();
@@ -599,13 +599,13 @@ function nodeError(flow: Flow, message: string, err: unknown): HostNodeRequestEr
 /**
  * Trim, require a scheme this app can speak, and drop a trailing slash so every
  * path below joins cleanly. Rejecting a missing scheme is worth the strictness:
- * `192.168.1.10:8088` parses as a URL with the *protocol* `192.168.1.10:`, which
+ * `192.168.1.10:8765` parses as a URL with the *protocol* `192.168.1.10:`, which
  * would fail much later and much less clearly.
  */
 function normalizeHostUrl(raw: string): string {
 	const trimmed = raw.trim();
 	if (!trimmed) {
-		throw new HostNodeRequestError('requesting', 'Enter the host’s address, for example http://127.0.0.1:8088.');
+		throw new HostNodeRequestError('requesting', 'Enter the host’s address, for example http://127.0.0.1:8765.');
 	}
 	if (!/^https?:\/\//i.test(trimmed)) {
 		throw new HostNodeRequestError(

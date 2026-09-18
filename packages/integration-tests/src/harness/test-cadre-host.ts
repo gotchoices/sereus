@@ -34,25 +34,8 @@ import {
 	type HostConfigFile,
 	type LocalUiEvent,
 	type LocalUiServer,
-	type ServiceHost,
-	type ServiceHostContext,
-	type ServiceHostStatus,
 	type UpdateSettings,
 } from '@serfab/cadre-host';
-
-/** No-op service-host stub — the installer normally pokes systemd/launchd/NSSM. */
-class FakeServiceHost implements ServiceHost {
-	readonly name = 'cadre-host-test';
-	installed = false;
-	running = false;
-	async install(_ctx: ServiceHostContext): Promise<void> { this.installed = true; this.running = true; }
-	async uninstall(_ctx: ServiceHostContext): Promise<void> { this.installed = false; this.running = false; }
-	async restart(_ctx: ServiceHostContext): Promise<void> { this.running = true; }
-	async status(_ctx: ServiceHostContext): Promise<ServiceHostStatus> {
-		return { installed: this.installed, running: this.running };
-	}
-	renderUnit(_ctx: ServiceHostContext): string | null { return 'fake-unit'; }
-}
 
 /** Default CadreNodeLike for trust-circle — issue/encode tokens without libp2p. */
 export function defaultFakeCadreNode(): CadreNodeLike {
@@ -171,7 +154,7 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		libp2pPort,
 		openBrowser: false,
 		noInvite: true,
-		serviceHost: new FakeServiceHost(),
+		noService: true,
 	});
 
 	const config = readHostConfig(join(dataDir, 'host.config.json'));

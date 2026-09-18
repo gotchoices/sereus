@@ -102,6 +102,7 @@ program
   .option('--own-cadre', 'Also run the host\'s own personal cadre here (founder persona; default: donor-only)')
   .option('--system', 'System-wide install (not yet supported in v1)')
   .option('--node-path <path>', 'Override the node binary embedded in the service unit')
+  .option('--no-service', 'Write the data dir only; register no OS service (run the host with `cadre-host start`)')
   .action(async (opts: {
     nonInteractive?: boolean;
     dataDir?: string;
@@ -113,6 +114,7 @@ program
     ownCadre?: boolean;
     system?: boolean;
     nodePath?: string;
+    service?: boolean;
   }) => {
     const installer = new Installer();
     try {
@@ -127,11 +129,17 @@ program
         ownCadre: opts.ownCadre === true,
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
+        noService: opts.service === false,
       });
       console.log(`cadre-host installed.`);
       console.log(`  Data dir:     ${result.dataDir}`);
       console.log(`  UI:           ${result.uiUrl}`);
-      console.log(`  Service:      ${result.serviceName}`);
+      if (result.serviceName) {
+        console.log(`  Service:      ${result.serviceName}`);
+      } else {
+        console.log('  Service:      not registered (--no-service)');
+        console.log(`  Run the host: cadre-host start --data-dir "${result.dataDir}"`);
+      }
       if (result.enrollmentInvite) {
         printEnrollmentInvite(result.enrollmentInvite);
       }

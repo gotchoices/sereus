@@ -623,25 +623,42 @@ This is a **manual acceptance check**, not something CI runs. The headless cover
 
 ### On the PC
 
+A test session needs a cadre-host data directory and a host running in the foreground, not an OS service. From a repo checkout:
+
 ```bash
-cadre-host start                 # note the management port it binds
-cadre-host grant issue           # prints the grant token to paste into the phone
+yarn workspace @serfab/cadre-host build
+node packages/cadre-host/dist/bin/host.js install --non-interactive --no-service --no-upnp --no-invite --data-dir <dir>
+node packages/cadre-host/dist/bin/host.js start --data-dir <dir>          # prints "cadre-host local UI: http://127.0.0.1:<port>"
+node packages/cadre-host/dist/bin/host.js grant issue "phone test"        # add --port <port> if start bound anything but 8765
 ```
+
+With cadre-host installed globally, replace `node packages/cadre-host/dist/bin/host.js` with `cadre-host`.
+
+- `install --no-service` writes the identity key and `host.config.json` into `<dir>` and registers no OS service. It is needed once per data directory. Without `--no-service`, `install` registers and starts a service (systemd, launchd, or NSSM on Windows, where it fails if `nssm.exe` is not on the PATH).
+- `start` runs the host until Ctrl+C. Run `grant issue` from a second terminal.
+- `grant issue` requires a label, which can be any text. It prints the grant token to paste into the phone.
+
+**The management port** is `uiPort` in `<dir>/host.config.json`: 8765 unless `install` was given `--ui-port`. `start` binds it, or the next free port up to `uiPort+9` if it is taken, and prints the port it bound. `grant issue` talks to 8765 (or `$CADRE_HOST_PORT`) unless given `--port`. The steps below write 8765; use the bound port if it differs.
+
+**If cadre-host is already installed as a service** (a plain `cadre-host install`), that service is the running host. Skip `install` and `start` and run only `grant issue`. Running `start` on top of the service starts a second host on the same data directory, on the next free port.
 
 ### Reaching the host from the phone
 
-The grant surface (`/grants`) is loopback-only in v1: the host's origin guard accepts a `Host` header of `127.0.0.1` or `localhost` and nothing else, so a LAN-IP URL answers `403 forbidden_origin`. Forward the port instead:
+The grant surface (`/grants`) is loopback-only in v1: the host's origin guard accepts a `Host` header of `127.0.0.1` or `localhost` and nothing else, so a LAN-IP URL answers `403 forbidden_origin`. Forward the management port instead:
 
 ```bash
-adb reverse tcp:<managementPort> tcp:<managementPort>
+adb reverse tcp:8765 tcp:8765
 ```
 
-Then enter `http://127.0.0.1:<managementPort>` as the Host URL on the phone.
+Then enter `http://127.0.0.1:8765` as the Host URL on the phone.
 
 Two things `adb reverse` does **not** cover:
 
 - **libp2p traffic.** The phone dials the lent node directly, so the phone must be on the **same Wi-Fi LAN** as the PC. `adb reverse` needs every port named up front, and a lent node's strand nodes listen on ports the OS picks at start, so forwarding the control port alone is not a working setup.
-- **The Windows firewall.** Allow `node.exe` on private networks when prompted, or the phone's dial is dropped before it reaches the node.
+- **The PC's firewall.** The phone's dial reaches the lent node on the PC's LAN address, so the firewall must allow incoming connections to it. On Windows, rules apply per network profile (Private or Public), and a home Wi-Fi can be classified Public. Windows prompts about `node.exe` only while no rule for it exists: answering the prompt with only *Private networks* ticked probably leaves inbound Block rules on the Public profile, and after that no prompt appears. The 2026-09-17 device run hit exactly this: the Wi-Fi was Public, `node.exe` had Block rules on Public, no prompt appeared, and the phone's dials timed out.
+  - **How to check** (PowerShell): `Get-NetConnectionProfile` shows the network's `NetworkCategory`. `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Format-Table DisplayName, Direction, Action, Profile, Enabled` lists the rules for this `node.exe` (`Get-NetFirewallRule -DisplayName "*Node*"` also finds rules for other Node installs). `adb shell nc -w 3 <pc-lan-ip> <ws-port>` tests the path from the phone; a timeout means something between the phone and the node drops the connection. The WebSocket port is described under "If the flow stalls".
+  - **Fix, either one** (administrator PowerShell): mark the network Private (`Set-NetConnectionProfile -InterfaceAlias <alias> -NetworkCategory Private`, with the alias from `Get-NetConnectionProfile`), which works when an Allow rule for `node.exe` covers the Private profile; or add an inbound Allow rule on the profile the network uses, for `node.exe` or for the ports the host gives lent nodes (10000–20000 by default), for example `New-NetFirewallRule -DisplayName "cadre-host lent nodes" -Direction Inbound -Protocol TCP -LocalPort 10000-20000 -Action Allow -Profile Public`.
+  - A Block rule overrides an Allow rule. An existing Block rule for `node.exe` on the network's profile has to be disabled or removed, whichever fix you choose: `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Where-Object Action -eq Block | Disable-NetFirewallRule` disables every Block rule for this `node.exe`.
 
 ### The run
 
@@ -658,7 +675,8 @@ Reconnecting to the lent node after the app relaunches is only observable on a d
 ### If the flow stalls
 
 - **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is ticket `rn-solo-founding-device-run`, which has since landed.
-- **Stuck at "Connecting to the node"**, then failing after 60 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 8 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection.
+- **Stuck at "Connecting to the node"**, then failing after 60 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 8 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection. The host reports a TCP and a WebSocket (`/ws`) address on every address the PC has, and the phone can use only the `/ws` ones. VPN adapters are a common source of extra addresses: on the 2026-09-17 run the host reported six, on the Tailscale address, the LAN address and `127.0.0.1`.
+- **Network or app?** The host also reports `/ip4/127.0.0.1/tcp/<ws-port>/ws` for the lent node, where `<ws-port>` is the node's WebSocket port. The node's page in the host's local UI (Nodes) lists it under Ports as `ws`; it was 10004 for the first loan on a fresh host, but read it rather than assume it. With `adb reverse tcp:<ws-port> tcp:<ws-port>`, the phone's dial to that address reaches the node over USB. If the flow reaches "Connected" with the forward and times out without it, the app works and the cause is the network or the firewall. The forward is only a diagnostic: strand nodes listen on ports the OS picks at start, so it does not make chat work.
 
 ### Not covered here
 

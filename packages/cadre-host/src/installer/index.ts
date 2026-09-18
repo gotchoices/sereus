@@ -68,6 +68,13 @@ export interface InstallOptions {
   system?: boolean;
   /** Path to node.exe / node binary used by the service-host unit. */
   nodePath?: string;
+  /**
+   * Write the data dir (identity, config, NAT seed) but register no OS service.
+   * The host is then run by hand with `cadre-host start`. Nothing is listening
+   * after such an install, so the browser-open and enrollment-invite steps are
+   * skipped too.
+   */
+  noService?: boolean;
   /** Test-only: stub the service-host registration. */
   serviceHost?: ServiceHost;
   /** Test-only: stub the interactive wizard. Production callers leave unset. */
@@ -77,7 +84,8 @@ export interface InstallOptions {
 export interface InstallResult {
   dataDir: string;
   uiUrl: string;
-  serviceName: string;
+  /** The registered service's name; absent when `noService` skipped registration. */
+  serviceName?: string;
   /** Path to the rendered config file. */
   configPath: string;
   /** Generated enrollment invite, unless --no-invite. */
@@ -158,6 +166,11 @@ export class Installer {
     seedNatSettings(answers.dataDir, answers.libp2pPort, answers.upnpEnabled);
 
     // 5. Service-host registration.
+    const uiUrl = `http://127.0.0.1:${answers.uiPort}/`;
+    if (opts.noService) {
+      log('--no-service: skipping service registration, browser open and enrollment invite');
+      return { dataDir: answers.dataDir, uiUrl, configPath: cfgPath };
+    }
     const serviceHost = opts.serviceHost ?? createServiceHost(this.platform);
     const ctx: ServiceHostContext = {
       nodePath: opts.nodePath ?? process.execPath,
@@ -168,7 +181,6 @@ export class Installer {
     await serviceHost.install(ctx);
 
     // 6. Browser open (best-effort).
-    const uiUrl = `http://127.0.0.1:${answers.uiPort}/`;
     const shouldOpenBrowser = opts.openBrowser !== false && !opts.nonInteractive && process.stdout.isTTY;
     if (shouldOpenBrowser) {
       openBrowser(uiUrl);

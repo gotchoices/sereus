@@ -345,7 +345,7 @@ export default function SettingsScreen() {
             itself, so on a phone forward its port with &quot;adb reverse&quot; and use
             a 127.0.0.1 address. Phone and host must be on the same Wi-Fi network.
           </Text>
-          <LabelledInput label="Host URL" value={hostUrl} onChangeText={setHostUrl} placeholder="http://127.0.0.1:8088" testID={TEST_IDS.settings.hostUrlInput} />
+          <LabelledInput label="Host URL" value={hostUrl} onChangeText={setHostUrl} placeholder="http://127.0.0.1:8765" testID={TEST_IDS.settings.hostUrlInput} />
           <LabelledInput label="Grant token" value={hostToken} onChangeText={setHostToken} placeholder="token from cadre-host grant issue" testID={TEST_IDS.settings.hostTokenInput} />
           <Btn
             label="Request Node"

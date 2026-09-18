@@ -336,11 +336,13 @@ Print which push platforms are configured, the APNs bundle id and sandbox/produc
 
 ### `cadre-host start [--data-dir <path>] [--no-tui]`
 
-Run cadre-host in the foreground. Normally invoked by the systemd unit, not directly. `--data-dir` overrides the install-time data directory (also honors `$CADRE_HOST_DATA_DIR`).
+Run cadre-host in the foreground. Normally invoked by the service unit, not directly; after `install --no-service` it is how the host runs. `--data-dir` overrides the install-time data directory (also honors `$CADRE_HOST_DATA_DIR`).
 
-### `cadre-host install [...flags]`
+### `cadre-host install [--no-service] [...flags]`
 
 Run the first-run wizard. See [**Install**](#install) at the top of this README.
+
+`--no-service` writes the data dir (identity, `host.config.json`, `nat.json`) and stops there: no OS service is registered, no browser opens, and no enrollment invite is issued. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example the phone walkthrough in [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md) ("Borrowing a Node From a cadre-host"). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
 
 ### `cadre-host uninstall [--remove-data] [--yes]`
 

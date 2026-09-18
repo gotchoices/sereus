@@ -72,6 +72,26 @@ describe('Installer smoke', () => {
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
   });
 
+  it('noService writes the data dir without registering a service', async () => {
+    const fake = new FakeServiceHost();
+    const installer = new Installer({ platform: 'linux', installerVersion: 'test-1.0.0' });
+    const result = await installer.install({
+      nonInteractive: true,
+      dataDir: tmp,
+      uiPort: 19995,
+      libp2pPort: 14005,
+      noService: true,
+      serviceHost: fake,
+    });
+
+    expect(fake.installCalls).toHaveLength(0);
+    expect(result.serviceName).toBeUndefined();
+    expect(result.uiUrl).toBe('http://127.0.0.1:19995/');
+    expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
+    expect(existsSync(join(tmp, 'identity.key'))).toBe(true);
+    expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
+  });
+
   it('uninstall removes data only when --remove-data is set', async () => {
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
