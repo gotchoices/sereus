@@ -59,3 +59,11 @@ This run did not edit the optimystic board: another runner was active in that ch
 > Measured from sereus on 2026-09-17 against `61747f60`: two real nodes in a confirmed two-member cohort, inserting different primary keys that share one secondary-unique value in the same tick. 6 of 6 rounds ended in `PartialCommitError` with the loser's base row and first index durably stored and the unique index not, leaving both rows readable on both nodes under one unique value. The pre-flight cannot catch this shape because neither rival has committed when it runs. For same-instant writers this is the expected outcome, not a narrow window.
 
 **Carried upstream 2026-09-17:** optimystic `tickets/fix/1-two-writers-racing-on-a-unique-value-both-commit.md` (`f1fc816c`), in their fix queue. Optimystic will message when it lands and dist is rebuilt.
+
+## Unblocked 2026-09-17
+
+Optimystic fixed it: fix `e296a802`, implement `13586033`, review `2fdb3b97`, with dist rebuilt at `fbf165ee`. A legacy-mode commit touching two or more trees now goes through a per-commit `TransactionCoordinator`. Every tree is pended before any is committed, so the unique index refuses the loser before anything is stored. Their two-node mock-mesh spec went from both rows stored in 6/6 rounds to a clean refusal in 18/18, including a same-primary-key mirror race. They ran neither their db-p2p socket suite nor this harness.
+
+To verify: re-run the six-round two-real-node measurement from this ticket and expect the loser's row absent from both views. If it holds, remove the secondary-`unique` caveat from `docs/schema-guide.md`, and handle `blocked/report-schema-guide-concurrency-correction-to-issue-5` accordingly. Also note:
+- A legacy-mode partial commit now surfaces as `CoordinatorPartialCommitError`. Check whether any sereus code matches `PartialCommitError` by name.
+- A concurrent unique refusal may still not arrive as a `ConstraintError` (optimystic `backlog/bug-concurrent-unique-refusal-is-not-a-constraint-error`). Record what error the loser actually gets.

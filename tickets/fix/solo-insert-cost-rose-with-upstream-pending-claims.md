@@ -42,3 +42,9 @@ In `BlockStorage.setLatest`, remove the committing action's claim from the map (
 When the upstream fix lands and the dist is rebuilt, run `yarn workspace @serfab/cadre-core test --run strand-solo-write-budget`. Then re-baseline `INSERT` (expected `ops: 88`) and `LAUNCH` (currently 88, expected about 80) with the new upstream commit in `BASELINE_UPSTREAM`. The provenance comment must attribute the +8 per-pend `saveMetadata` to `9cbc7427`'s pending claims. The `INSERT` comment asks that any rise be explained before the budget moves, and this ticket is that explanation. Do not raise the ceiling to absorb the 11 no-op deletes.
 
 **Carried upstream 2026-09-17:** optimystic `tickets/fix/2-committing-a-block-deletes-a-pending-record-that-is-already-gone.md` (`f1fc816c`), in their fix queue. Optimystic will message when it lands and dist is rebuilt.
+
+## Unblocked 2026-09-17
+
+Optimystic fixed it: implement `8a0ad39b`, review `fbf165ee`, with dist rebuilt at `fbf165ee`. The `setLatest` half landed as proposed. The review **reverted** the `recoverLatest` half, because `StorageRepo.recoverBlock` can reach a leftover-record case after a single lost `setLatest`, and skipping the delete there would wedge the block. Expect insert to be about 88. Launch may stay above about 80 if the launch path runs recovery.
+
+To verify: re-run `strand-solo-write-budget.spec.ts` 3 times and re-baseline against `fbf165ee` if the counts are stable and explained. If launch stays well above 80, record its `deletePendingTransaction` count and whether recovery ran, and report the number upstream (optimystic asked for it). Also check the other budget specs (`control-founding-consult-budget`, `control-start-storage-op-budget`) against this dist.
