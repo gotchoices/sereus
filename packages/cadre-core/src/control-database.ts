@@ -2482,8 +2482,8 @@ export class ControlDatabase {
    * attributes an abandonment reported through {@link setControlWriteAbandonedListener}.
    *
    * The abandonment observer lands LAST, after both the policy and the spec-injected
-   * pacing, so this class's single listener is the one seam for it — a policy that
-   * carried its own would be displaced here rather than fanning out.
+   * pacing, so this class's single listener is the one seam for it — a caller that
+   * smuggled its own in through `policy` would be displaced here rather than fanning out.
    */
   private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}, label?: string): Promise<T> {
     // The label lands LAST so a call site's own name survives both the policy and the

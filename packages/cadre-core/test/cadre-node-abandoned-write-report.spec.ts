@@ -21,8 +21,15 @@ import type { ControlRetryAbandonment } from '../src/control-retry.js';
  * Both methods under test read only private fields and `this.eventHandlers`, so they run on a
  * bare `new CadreNode(config)` through the same private cast
  * `cadre-node-announce-addrs-warning.spec.ts` uses — no libp2p node, no database, no clock to
- * wait out. The wiring that connects them to a real database (`start()` sets the listener,
- * teardown clears it) is asserted where that listener lives, in `control-write-retry.spec.ts`.
+ * wait out.
+ *
+ * NOT covered here, and not covered anywhere in unit tests: that `start()` actually calls
+ * `setControlWriteAbandonedListener` and teardown clears it. That wiring needs a started node
+ * (libp2p plus a control database), the same reason the membership and guarded-delete
+ * listeners beside it are unit-tested only at the `ControlDatabase` end
+ * (`control-write-retry.spec.ts` drives that seam; `control-write-lock.spec.ts` the others).
+ * End to end it is covered by `control-write-degraded-cohort-member.integration.ts`, whose
+ * `afterEach` fails on any abandonment the event did not deliver.
  */
 
 /** The private surface these cases drive. */

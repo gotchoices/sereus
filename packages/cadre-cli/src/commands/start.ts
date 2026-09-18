@@ -221,6 +221,18 @@ export const startCommand = new Command('start')
         console.log('✗ Disconnected from control network');
       });
 
+      // A control write the retry funnel gave up on. This is a long-running headless
+      // process, so it is the operator's only view of it: the node itself only escalates
+      // the one case whose consequence it can measure (its own address record going
+      // stale), and the funnel's own trace is a `debug` line nothing enables by default.
+      // A BACKGROUND write — the self-address republish, the replication drains — has no
+      // caller to reject to either, so without this line it is lost in silence.
+      node.on('control:write-abandoned', ({ label, reason, attemptsMade, attemptsAllowed, error }) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.warn(`⚠ Control write abandoned [${label ?? 'unlabelled'}] `
+          + `after ${attemptsMade}/${attemptsAllowed} attempt(s) (${reason}): ${detail}`);
+      });
+
       node.on('strand:started', ({ strandId }) => {
         console.log(`✓ Strand started: ${strandId}`);
       });

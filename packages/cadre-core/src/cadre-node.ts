@@ -2320,7 +2320,8 @@ export class CadreNode implements SAppIdLookup {
     this.selfRecordStaleWarned = true;
     console.warn(
       `[sereus] this machine has not published its own address record for ${Math.round(staleForMs / 60_000)} `
-      + `minutes (last failure: ${reason} — ${error instanceof Error ? error.message : String(error)}). `
+      + `minutes. The latest attempt (${reason}) failed with: `
+      + `${error instanceof Error ? error.message : String(error)}. `
       + 'Other machines in the party discard an address record older than '
       + `${Math.round(DEFAULT_PEER_RECORD_MAX_AGE_MS / 60_000)} minutes, so any of them not already `
       + 'connected to this one can no longer reach it. Publishing keeps retrying; this is reported once.'

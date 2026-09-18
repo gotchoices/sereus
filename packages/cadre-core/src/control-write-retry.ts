@@ -424,13 +424,13 @@ export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
  * survive. A non-retriable failure propagates from the attempt that raised it.
  *
  * Either way — declined or exhausted — an `options.onAbandon` observer is notified exactly
- * once before the rethrow (a `ControlRetryAbandonment`). That seam exists for WRITES and
- * is deliberately not taken by the read policy (`control-read-retry.ts`): an abandoned read
- * throws to a caller that is awaiting it, so nothing is lost silently there, while an
- * abandoned write may have no caller at all — a background self-record republish is
- * `void`-ed with a `debug` catch, so its failure reaches nobody unless something is
- * listening here. `ControlDatabase.setControlWriteAbandonedListener` is what wires it in
- * production.
+ * once before the rethrow (a `ControlRetryAbandonment`). Only WRITES pass one: an abandoned
+ * read throws to a caller that is awaiting it, so nothing is lost silently there
+ * (`control-read-retry.ts` says so at its own seam), while an abandoned write may have no
+ * caller at all — a background self-record republish is `void`-ed with a `debug` catch, so
+ * its failure reaches nobody unless something is listening here.
+ * `ControlDatabase.setControlWriteAbandonedListener` is the only thing that passes one in
+ * production; `retryControlWrite` itself neither supplies nor requires an observer.
  */
 export function retryControlWrite<T>(
 	attempt: () => Promise<T>,

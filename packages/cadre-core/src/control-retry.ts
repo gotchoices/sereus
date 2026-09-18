@@ -27,7 +27,7 @@ export type ControlRetryAbandonReason =
 	| 'budget';
 
 /**
- * What the loop gave up on, handed to {@link ControlRetryPolicy.onAbandon} exactly once per
+ * What the loop gave up on, handed to {@link ControlRetryOptions.onAbandon} exactly once per
  * abandoned operation. Enough to attribute the loss without reading the debug log: which
  * operation, how far it got, why it stopped and what it failed with.
  */
@@ -76,14 +76,6 @@ export interface ControlRetryPolicy {
 	 * logged before this loop was shared out of `control-write-retry.ts`.
 	 */
 	logPrefix?: string;
-	/**
-	 * Notified when the loop GIVES UP on an operation — both exits, once each, before the
-	 * error is rethrown. Optional, and on the POLICY rather than hard-coded in the loop, so
-	 * each policy decides for itself: the write policy carries one (an abandoned write may
-	 * have no caller awaiting it, so losing it is silent), the read policy deliberately
-	 * does not (an abandoned read always throws to a caller that is awaiting it).
-	 */
-	onAbandon?: ControlRetryAbandonListener;
 }
 
 /**
@@ -115,10 +107,16 @@ export interface ControlRetryOptions {
 	/** Clock for the elapsed-budget check. Default: `Date.now`. */
 	now?: () => number;
 	/**
-	 * Per-call abandonment observer, REPLACING the policy's
-	 * ({@link ControlRetryPolicy.onAbandon}) rather than fanning out beside it — one
-	 * observer per call, like every other field here. `ControlDatabase` merges its single
-	 * settable listener in through this seam.
+	 * Notified when the loop GIVES UP on this call — both exits, once each, before the error
+	 * is rethrown. Per CALL rather than per policy, because the only thing that wants it is
+	 * per `ControlDatabase` instance: `lockedWithRetry` passes a closure over that database's
+	 * single settable listener. One observer per call, like every other field here — a
+	 * second caller does not fan out beside the first, it replaces it.
+	 *
+	 * Nothing on the READ path passes one, deliberately: every control read is awaited by the
+	 * caller that issued it, so an abandoned read surfaces as that caller's rejection. The
+	 * field is on the shared options type rather than the write-only one because the loop is
+	 * shared; if a fire-and-forget read ever appears, it can use this seam as it stands.
 	 */
 	onAbandon?: ControlRetryAbandonListener;
 }
@@ -136,10 +134,10 @@ export interface ControlRetryOptions {
  * wrapped, so the exact messages downstream code and the integration scenarios assert on
  * survive. A non-retriable failure propagates from the attempt that raised it.
  *
- * Both give-up exits also notify the policy's {@link ControlRetryPolicy.onAbandon} (or the
- * call's, which replaces it) exactly once, before the rethrow. The debug line each exit
- * already wrote is off unless somebody set `DEBUG=`, and a background write has no caller
- * to surface the rethrown error — so without an observer the loss is silent everywhere.
+ * Both give-up exits also notify {@link ControlRetryOptions.onAbandon}, when the call
+ * supplies one, exactly once before the rethrow. The debug line each exit already wrote is
+ * off unless somebody set `DEBUG=`, and a background write has no caller to surface the
+ * rethrown error — so without an observer the loss is silent everywhere.
  */
 export async function retryControlOperation<T>(
 	attempt: () => Promise<T>,
@@ -152,7 +150,7 @@ export async function retryControlOperation<T>(
 	const sleep = options.sleep ?? defaultSleep;
 	const now = options.now ?? Date.now;
 	const prefix = policy.logPrefix ?? 'Control write';
-	const onAbandon = options.onAbandon ?? policy.onAbandon;
+	const onAbandon = options.onAbandon;
 	// Empty when unlabelled, so an unlabelled line is byte-identical to what the write
 	// loop logged before labels existed.
 	const tag = options.label ? ` [${options.label}]` : '';

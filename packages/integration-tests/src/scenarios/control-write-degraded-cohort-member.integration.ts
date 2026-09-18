@@ -140,6 +140,8 @@ const log = debug('sereus:integration:degraded-cohort');
 //    here: SyncRetryExhaustedError: sync for collection
 //    default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict:
 //    block(s) held by unresolved rival action(s) <action id>`
+//    and its sibling wording, `Pend blocks held: n/3 member(s) hold an unresolved
+//    rival action (m/3 approvals)` — both were seen in one run on 2026-09-17
 //    → cause is upstream:
 //    `../optimystic/tickets/implement/a-member-that-missed-a-commit-refuses-every-later-write`
 //    (a member that promised a write and then missed its commit keeps that pending
@@ -398,6 +400,15 @@ interface LostWrite extends ControlRetryAbandonment {
  * it covers (a stalled write settles well under a second once its streams are aborted) and
  * far shorter than the gap between cases, so a write genuinely lost while the cohort is
  * healthy is still reported.
+ *
+ * NOTE: the number is a judgement call, not a measurement. In the one full run made against
+ * it (2026-09-17 review pass: 4 failed / 3 passed, all on the upstream wedge) no abandonment
+ * landed inside a grace window at all — every loss was either inside a held degradation or
+ * many seconds clear of the last release — so that run neither confirmed nor refuted it.
+ * Both failure modes are visible in the `[abandoned-write …]` lines, which say whether each
+ * loss was scoped: TOO SHORT shows up as a case reddening on a write the PREVIOUS case
+ * provoked; TOO LONG as a genuine loss right after a release being marked "inside a
+ * deliberately degraded window". Revisit if either appears.
  */
 const ABANDON_SETTLE_GRACE_MS = 5_000;
 
