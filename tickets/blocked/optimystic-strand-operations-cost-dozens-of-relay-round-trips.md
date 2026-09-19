@@ -2,7 +2,7 @@ description: Saving one chat message between two parties takes 50 to 130 back-an
 files:
   - ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts (live read arm refreshes each tree from the network, ~line 1215)
   - ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts (`collectPromises`, the "Failed to get super-majority" shortfall)
-  - ../optimystic/tickets/backlog/bug-a-two-member-cohort-refuses-a-commit-both-members-hold.md (likely the same class as the commit failures below)
+  - ../optimystic/tickets/complete/1-a-two-member-cohort-refuses-a-commit-both-members-hold.md (fixed upstream after 1.0.0; see 2026-09-18 status)
   - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (the scenario the measurements were taken from)
 repro: verified
 ----
@@ -14,6 +14,8 @@ Blocked because the code is in `../optimystic`, a separate repository with its o
 **Carried upstream 2026-09-17:** optimystic `tickets/fix/strand-reads-and-commits-cost-dozens-of-round-trips-over-a-relay.md` (`c5540380`). Unblock when that lands: re-measure with the scenario below and re-run the device relay chat.
 
 **Upstream status 2026-09-17:** two fixes landed at optimystic `012573a2` (unchanged-table refresh, no push-back of commit copies). Remeasure: `complete/relay-round-trips-remeasure-optimystic-012573a2` — reads and B inserts roughly halved or better, 9 `/cluster` per commit remains the main cost, and `TornActionError` with a `storage` joiner rose to 7 of 16 concurrent pairs (2 of them saved despite reporting failure). Stays blocked on those two.
+
+**Upstream status 2026-09-18:** optimystic main `e6ab12c6` + `30f04bd4` (after 1.0.0, not yet published) fixes the two-member `commit-not-durable: 1 of 2 … (local-executed)` refusal: when the coordinator lacks the base block, it now gets one more fetch-and-restore after a remote member reports holding the write. Its ticket is now complete (`bug-a-two-member-cohort-refuses-a-commit-both-members-hold`, `3647c95a`). Checked here at sereus `a4a1bff9` against the local link: `strand-chat-participants-converge` "writes IMMEDIATELY" passed 3 of 3 with no `commit-not-durable` or `local-executed` in the `optimystic:db-p2p:*` debug log. Upstream still open: the joiner never stores the log-tail block it reads through the host, and the "1/2 approvals" shortfall through the delaying relay proxy. Re-measure the round-trip counts and the `storage`-joiner `TornActionError` rate when those land, or when the next optimystic release ships.
 
 ## How it was measured
 
