@@ -134,13 +134,10 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 			expect.arrayContaining(['default/cadrecontrol/CadrePeer']),
 		);
 
-		// ── Phase 2: A stops FIRST — draining any control write still in its commit
-		// phase while B can still answer, instead of tearing it — then B goes DOWN.
-		// A restarts on the same storage afterward. `CadreNode.stop()`'s `cleanup()`
-		// stops the record-refresh and reconcile triggers and then closes the control
-		// database (which drains its write queue) before the control node's libp2p
-		// stops, so this ordering is what actually lets an in-flight write finish
-		// rather than lose its cancel race with B leaving.
+		// ── Phase 2: A stops FIRST, then B; A restarts on the same storage ──────
+		// `CadreNode.stop()`'s `cleanup()` closes the control database (draining its
+		// write queue) before the control node's libp2p stops, so A's in-flight
+		// writes finish while B can still answer rather than being torn by B leaving.
 		await A.stop();
 		await B.stop();
 		// A write A drained during its own stop() commits to both stores, so B's raw
