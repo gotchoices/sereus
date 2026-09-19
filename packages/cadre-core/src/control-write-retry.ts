@@ -307,7 +307,15 @@ function reportsPossiblyStoredWrite(links: readonly Error[]): boolean {
  *
  * NOTE: `CoordinatorStaleLossError` (db-core; "nothing durably committed, safe to re-drive") is not
  * claimed, so it falls to the text matchers; it escapes only after the coordinator's own retry budget
- * ran out. If control writes are seen abandoned on it, claim it here by type beside this one.
+ * ran out. Seen abandoning a control write on 2026-09-18 (`control-delete-while-alone-convergence`,
+ * under load): a node's own storage refused its own pend as a `stale conflict` for the ~14 s the
+ * coordinator spent re-driving, then gave up. Still not claimed here — the failing attempt already
+ * ran past {@link CONTROL_WRITE_RETRY_BUDGET_MS}, so a retry from this loop would never get to run,
+ * and the refusal came from the node's OWN storage disagreeing with its own revision view, which does
+ * not change while the node is alone; re-driving the same write body again would hit the same
+ * refusal. The cause (a commit torn by a sibling that stopped mid-commit, leaving the node with a
+ * revision view its own storage disputes) is `tickets/blocked/forked-control-collection-sync-livelocks.md`
+ * → "Second trigger".
  */
 function isFinalTornWrite(link: Error): boolean {
 	return link instanceof TornActionError && link.final === true;

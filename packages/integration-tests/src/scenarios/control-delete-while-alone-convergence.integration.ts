@@ -16,8 +16,10 @@
  * Optimystic's FRET routing table the write DIALS OUT and fails with
  * "Failed to get super-majority" instead of committing local-only. The only
  * shape that truly commits alone is a writer whose FRET table does not know the
- * sibling at all — hence the restart choreography here: B goes down, then A
- * restarts on the SAME storage (rows survive, FRET view empty) before removing.
+ * sibling at all — hence the restart choreography here: A stops FIRST (draining
+ * any control write still in its commit phase while B can still answer), then
+ * B goes down, then A restarts on the SAME storage (rows survive, FRET view
+ * empty) before removing.
  *
  * Both tests exercise the FIRST-GROWTH SWEEP (the remove commits in a process
  * whose in-memory queue is then discarded — test 2 restarts A once more after
@@ -38,6 +40,11 @@ import {
 	connectControlNodes,
 	randomPeerId,
 	controlNodeConfig,
+	awaitBlockCoverage,
+	readBlockIndex,
+	compareBlockCoverage,
+	blockCoverageIsComplete,
+	formatBlockCoverageGap,
 } from '../harness/index.js';
 
 /**
@@ -68,15 +75,19 @@ interface AloneRemoval {
 }
 
 /**
- * Phases 1–3 shared by both tests: converge X onto B, take B down, restart A on
- * the same storage (zero connections AND an empty FRET view of B), then remove X
- * — the commit that is genuinely local-only. Returns with A live and B down.
+ * Phases 1–3 shared by both tests: converge X onto B, quiesce both nodes (A
+ * first, then B), restart A on the same storage (zero connections AND an empty
+ * FRET view of B), then remove X — the commit that is genuinely local-only.
+ * Returns with A live and B down.
  *
  * Phase order matters: A vouches B BEFORE `connectControlNodes(B, A)` so A's
  * inbound gate admits B's dial, and after every A restart
  * `initializeSeedBootstrap` runs BEFORE any sibling connects — the growth-edge
  * drain is owner-gated (`canAuthorize()`), so a drain fired before the seed
  * bootstrap re-wire would drop the queued tombstone instead of re-issuing it.
+ * A also stops BEFORE B, so a background control write still in its commit
+ * phase drains while B can still answer, instead of being torn by B leaving
+ * mid-commit.
  */
 async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	const partyId = `ctrl-del-alone-${tag}-${Date.now()}`;
@@ -109,10 +120,39 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		// scenario: B pins no owner key, so trust-facing reads are out of scope.
 		expect(await B.isMember(xPeerId)).toBe(true);
 
-		// ── Phase 2: B goes DOWN, A restarts on the same storage ───────────────
-		await B.stop();
-		B = undefined;
+		// Wait for the peer-join catch-up to physically land on B before anything
+		// stops: without this gate, B can be stopped inside the 1 s catch-up debounce
+		// (`peer-join-backfill.ts`), before its raw store ever holds the blocks the
+		// `isMember` check above only proved readable OVER THE NETWORK (see the header
+		// comment on `block-store-probe.ts`). The same gate `control-offline-read-after-restart`
+		// asserts at its own phase 3.
+		await awaitBlockCoverage(storeA, storeB, {
+			description: "peer-join catch-up covers B's raw control store",
+		});
+		const indexB = await readBlockIndex(storeB);
+		expect([...indexB.keys()]).toEqual(
+			expect.arrayContaining(['default/cadrecontrol/CadrePeer']),
+		);
+
+		// ── Phase 2: A stops FIRST — draining any control write still in its commit
+		// phase while B can still answer, instead of tearing it — then B goes DOWN.
+		// A restarts on the same storage afterward. `CadreNode.stop()`'s `cleanup()`
+		// stops the record-refresh and reconcile triggers and then closes the control
+		// database (which drains its write queue) before the control node's libp2p
+		// stops, so this ordering is what actually lets an in-flight write finish
+		// rather than lose its cancel race with B leaving.
 		await A.stop();
+		await B.stop();
+		// A write A drained during its own stop() commits to both stores, so B's raw
+		// store (which survives past B.stop() — only the node object tears down)
+		// should still cover A's here. Measured, not loosened: a flake here is a
+		// replication finding about the drain, not a reason to remove the assertion.
+		const postStopGap = await compareBlockCoverage(storeA, storeB);
+		expect(
+			blockCoverageIsComplete(postStopGap),
+			`B should still cover A's drained writes after both nodes stop — ${formatBlockCoverageGap(postStopGap)}`,
+		).toBe(true);
+		B = undefined;
 		A = nodeOn(partyId, aKey, storeA, 'storage');
 		await A.start();
 		// OwnerKey row survived on storeA — only the seed-bootstrap wiring is
