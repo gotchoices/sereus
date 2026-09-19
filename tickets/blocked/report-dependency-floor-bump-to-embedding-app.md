@@ -96,7 +96,7 @@ release — are both done. `optimystic-testing-barrel-breaks-consumer-install` i
 > 0.9.0 from npm gave you an older layer underneath than anything we had tested on. Every one of our
 > packages now declares the tested version.
 >
-> **This is fixed in 0.11.0, which is the current default install** — `npm install
+> **This is fixed in 1.0.0, which is the current default install** — `npm install
 > @serfab/cadre-core` will get it, and a `^0.9.0` range will not, so please update the version you
 > depend on.
 >
@@ -107,7 +107,7 @@ release — are both done. `optimystic-testing-barrel-breaks-consumer-install` i
 >
 > One more thing worth knowing about 0.9.0: because of the version mismatch, that install also ends
 > up with two incompatible copies of our SQL engine loaded at once. We have not seen it cause a
-> hang, but it is not a configuration we would expect to behave predictably. 0.11.0 resolves to a
+> hang, but it is not a configuration we would expect to behave predictably. 1.0.0 resolves to a
 > single copy.
 >
 > Please be aware we were **not** able to reproduce your freeze at either version — including on the
@@ -119,7 +119,7 @@ release — are both done. `optimystic-testing-barrel-breaks-consumer-install` i
 
 ## Before sending, re-check one thing
 
-**Whether a newer release has superseded 0.11.0.** If so, name that version instead. Everything
+**Whether a newer release has superseded 1.0.0** (`latest` as of 2026-09-18; the draft named 0.11.0 until then). If so, name that version instead. Everything
 else in the reply is version-independent.
 
 The old instruction to re-check "whether cross-machine replication is still broken" has been
