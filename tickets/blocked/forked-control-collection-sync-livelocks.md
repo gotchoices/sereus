@@ -217,6 +217,16 @@ Design constraints, not a prescription:
   `coordinator-repo.ts`, `transaction/coordinator.ts`, `network-transactor.ts`). Whoever
   picks this up must coordinate with that work rather than land on top of it.
 
+## Second trigger: a commit torn by a peer that stopped mid-commit (added 2026-09-18)
+
+Found while working `fix/control-delete-while-alone-flakes-under-full-suite-load`. It is the same upstream shape (a node's revision view and its own storage disagree, and nothing it can do alone moves it forward), reached without any write committed alone.
+
+**How it happens.** A two-node party, A (owner, storage profile) and B. A background control write on A (measured: its own `self-record-update`; in the 2026-09-18 `yarn check` failure the collection was `Revocation`, most likely the ledger-marker filing) has pended on both stores and is in its commit phase when B stops. The commit phase fails, and the cancel cannot discharge the pend because B is gone (`WARN: cancel after failed commit did not discharge actionId=…`). A then stops and restarts alone on the same storage. Its next write to that collection pends at the revision after the last one it can read (rev 5), and its own storage answers `stale conflict` on every attempt. The coordinator re-drives for about 14 s and then throws `CoordinatorStaleLossError: Multi-collection commit lost a stale race for [default/cadrecontrol/CadrePeer, …] — Pend failed for collection default/cadrecontrol/CadrePeer: stale conflict`.
+
+**Measured.** 12 runs of `control-delete-while-alone-convergence` (6 in parallel, twice) with `DEBUG=sereus:cadre:*,optimystic:db-core:*,optimystic:db-p2p:storage-repo,optimystic:quereus-plugin:txn-bridge`: the 2 runs that failed this way both had A's `self-record-update` mid-commit at B's stop. One more run had a torn commit at stop and passed. Not measured: whether the write stays refused after the 14 s, or whether B returning clears it.
+
+**Why sereus cannot fix it.** A retry in `control-write-retry.ts` would not help. The one failing attempt already exceeds that module's 10 s budget, and the refusal comes from A's own storage, which does not change while A is alone. The scenario no longer creates this shape once the implement ticket from that fix work lands (it stops A before B, so A's in-flight writes finish while B can still answer). After that there is no live reproducer here. To reproduce: stop the cohort sibling while the owner has a control write in its commit phase, then restart the owner alone and write to the same collection.
+
 ## Cross-cutting obligations
 
 None triggered on the sereus side: no schema, byte format, golden fixture, or determinism
