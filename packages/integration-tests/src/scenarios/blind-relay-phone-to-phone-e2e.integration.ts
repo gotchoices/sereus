@@ -471,8 +471,9 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 	// quote one mode's number for the other; docs/testing.md holds the full sweep.
 	// NOTE: those durations are a developer machine's. The binding gate on this arm is the
 	// 20 s `JOIN_FINISH_MS` one, which 100 ms of delay already misses; if CI hardware turns
-	// out slower enough to make 10 ms flaky here, lower the delay rather than loosening that
-	// gate — the gate is a product claim about join latency, the delay is only a dial.
+	// out slower enough to make 10 ms flaky here, lower `LINK_LATENCY_MS` rather than
+	// loosening that gate — the gate asserts a product claim about join latency, whereas the
+	// delay is only this arm's chosen link condition.
 	it(`forms the same strand and replicates both ways over a link with ${LINK_LATENCY_MS} ms of latency`, async () => {
 		await runBlindRelayPhoneToPhone({ delayMs: LINK_LATENCY_MS, mode: 'pipelined' });
 	}, 300_000);

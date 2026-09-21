@@ -80,15 +80,25 @@ Two further corrections to the reported diagnosis, from FRET and key-network deb
 
 ## Reproducing any of this
 
+That scenario file now holds TWO tests — the original loopback one and a committed 10 ms latency arm — so each command below runs both. Do not narrow them to one test with `-t`: the frame counters have no end-of-run hook, and the latency arm's install is the only boundary in the file that prints an exact total (see "A caveat on the frame counts" below).
+
 ```bash
-# baseline frame count (no delay, counters only)
+# baseline frame count (no delay, counters only); the FIRST summary line printed after the
+# loopback test passes is the baseline total — later lines belong to the latency arm
 WS_FRAME_STATS=1 yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e
 
-# the reporter's shape — fails
+# the reporter's shape — both tests fail
 WS_SEND_DELAY_MODE=serial WS_SEND_DELAY_MS=10 yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e
 
-# constant one-way latency — passes
+# constant one-way latency — both tests pass (WS_SEND_DELAY_MS pins the whole process,
+# so the committed arm's own 10 ms request is logged and ignored)
 WS_SEND_DELAY_MS=50 yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e
 ```
+
+## A caveat on the frame counts, before this reply is sent
+
+The draft above quotes "4,735 outbound frames across 4 dialed sockets, 2,192 on the busiest". That figure was read off the fixture's periodic 5 s progress line, which is a RUNNING SUBTOTAL, not a total — the environment path has no end-of-run hook at all (vitest recycles its forked workers rather than exiting them). Re-measured on 2026-09-21 at the one boundary that does declare a total, the same loopback journey counts 11,939 and 12,531 frames over two runs.
+
+The two windows are not identical — the boundary-declared one also covers the loopback arm's teardown — so this is a reason to re-measure before sending, not proof the older number is wrong. The 10 ms threshold conclusion, which is what the reply is actually about, does not depend on it: that rests on `pipelined` passing and `serial` failing, both of which still reproduce. But the frame count is quoted to an external reporter as a hard number, so it is worth confirming rather than sending as-is.
 
 All figures above were measured on 2026-09-20 on one Windows machine, four nodes in a single process over the loopback dedicated relay. Single runs except where a spread is given.

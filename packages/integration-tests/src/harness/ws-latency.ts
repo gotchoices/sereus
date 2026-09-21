@@ -84,7 +84,8 @@ export interface WsLatencyHandle {
 	/** True when `WS_SEND_DELAY_MS` pinned the configuration and the requested one was ignored. */
 	readonly pinnedByEnv: boolean;
 	/**
-	 * Unwrap the global constructor and print a final summary. A no-op for an
+	 * Unwrap the global constructor and print a final summary. Safe to call more than once,
+	 * and a no-op once this particular install is no longer the one in force — or for an
 	 * environment-pinned install, which is deliberately process-wide.
 	 */
 	restore(): void;
@@ -121,6 +122,8 @@ function byteLengthOf(data: WsSendData): number {
 
 /** Process-wide totals, printed periodically while a run is in flight. */
 const stats = { sockets: 0, frames: 0, maxFramesPerSocket: 0, maxWaitMs: 0 };
+/** `stats.frames` as of the last line printed, so the same totals are never reported twice. */
+let reportedAtFrames = -1;
 
 function summaryLine(): string {
 	return `[ws-latency] ${stats.sockets} dialed sockets, ${stats.frames} frames, `
@@ -128,15 +131,69 @@ function summaryLine(): string {
 		+ `(delay ${delayMs} ms, mode ${mode})`;
 }
 
+function reportSummary(): void {
+	reportedAtFrames = stats.frames;
+	console.log(summaryLine());
+}
+
+/** Start a fresh measurement window, so one install's totals never include another's. */
+function resetStats(): void {
+	stats.sockets = 0;
+	stats.frames = 0;
+	stats.maxFramesPerSocket = 0;
+	stats.maxWaitMs = 0;
+	reportedAtFrames = -1;
+}
+
 interface ActiveShim {
 	readonly Native: typeof WebSocket;
 	readonly Shim: typeof WebSocket;
-	readonly timer: ReturnType<typeof setInterval>;
+}
+
+/** Progress cadence while a run is in flight. */
+const REPORT_EVERY_MS = 5_000;
+
+let progressTimer: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * Report while a run is in flight. Periodic rather than at the end, because there is no
+ * end-of-run hook to lean on: vitest runs scenarios in forked workers that are recycled
+ * rather than exited, so neither `exit` nor `beforeExit` output ever reaches the terminal
+ * (verified), and an aborted or timed-out run reaches no hook at all — which is when the
+ * summary is wanted most. A tick with no new frames is skipped, so an idle process stays
+ * quiet.
+ *
+ * NOTE: that leaves the ENVIRONMENT path with no closing line — a scenario that finishes
+ * inside one tick prints no totals at all, and a longer one's last tick is a subtotal. The
+ * accurate totals come from a boundary something in the process actually declares:
+ * `installWsLatency` prints the running totals before it zeros them, and its `restore()`
+ * prints that install's final line. For a `WS_FRAME_STATS=1` baseline that is the line the
+ * committed latency arm's install emits — see docs/testing.md → "Where measurements live".
+ * If a scenario ever needs a total with no such boundary in it, give the module an explicit
+ * `reportWsFrameStats()` for the scenario to call rather than trying to infer the end.
+ */
+function startReporting(): void {
+	progressTimer = setInterval(() => {
+		if (stats.frames !== reportedAtFrames) reportSummary();
+	}, REPORT_EVERY_MS);
+	// Unref'd, so reporting never holds the process open.
+	progressTimer.unref();
+}
+
+function stopReporting(): void {
+	if (progressTimer !== undefined) clearInterval(progressTimer);
+	progressTimer = undefined;
 }
 
 let active: ActiveShim | undefined;
-/** True between an `installWsLatency` call and its `restore()` — the double-install guard. */
-let programmaticInstall = false;
+/**
+ * Identity of the install currently in force, between an `installWsLatency` call and its
+ * `restore()` — both the double-install guard and what makes a handle's `restore()` refer to
+ * ITS OWN install. A plain boolean would let a stale handle restored a second time tear down
+ * a later arm's install, which is the silently-wrong-delay failure this fixture exists to
+ * rule out.
+ */
+let activeInstall: object | undefined;
 
 /**
  * Swap the global constructor for one that holds outbound frames. Idempotent by design —
@@ -219,17 +276,13 @@ function wrapGlobalWebSocket(): void {
 
 	globalThis.WebSocket = InstrumentedWebSocket;
 	console.log('[ws-latency] instrumenting dialed WebSockets (per-frame delay %d ms, mode %s)', delayMs, mode);
-	// Periodic rather than at-exit: vitest runs scenarios in a forked worker that an aborted
-	// or timed-out run may never let reach an exit handler, and the summary is most wanted
-	// exactly on those runs. Unref'd, so it never holds the process open.
-	const timer = setInterval(() => { console.log(summaryLine()); }, 5_000);
-	timer.unref();
-	active = { Native, Shim: InstrumentedWebSocket, timer };
+	startReporting();
+	active = { Native, Shim: InstrumentedWebSocket };
 }
 
 function unwrapGlobalWebSocket(): void {
 	if (active === undefined) return;
-	clearInterval(active.timer);
+	stopReporting();
 	if (globalThis.WebSocket === active.Shim) {
 		globalThis.WebSocket = active.Native;
 	} else {
@@ -248,10 +301,10 @@ function unwrapGlobalWebSocket(): void {
  * Sockets constructed under the shim keep it either way, but they read the live delay, so
  * after this they send straight through.
  */
-function restoreInstall(unwrap: boolean): void {
-	if (!programmaticInstall) return;
-	programmaticInstall = false;
-	console.log(summaryLine());
+function restoreInstall(token: object, unwrap: boolean): void {
+	if (activeInstall !== token) return;
+	activeInstall = undefined;
+	reportSummary();
 	delayMs = 0;
 	mode = ENV_MODE;
 	if (unwrap) unwrapGlobalWebSocket();
@@ -274,7 +327,7 @@ export function installWsLatency(options: WsLatencyOptions): WsLatencyHandle {
 		);
 		return { delayMs, mode, pinnedByEnv: true, restore: () => {} };
 	}
-	if (programmaticInstall) {
+	if (activeInstall !== undefined) {
 		throw new Error(
 			`[ws-latency] already installed at ${delayMs} ms (${mode}); restore() it before installing ${options.delayMs} ms`,
 		);
@@ -285,16 +338,14 @@ export function installWsLatency(options: WsLatencyOptions): WsLatencyHandle {
 	const wrappedForStats = active !== undefined;
 	// Counting already under way (WS_FRAME_STATS over a whole run): report what it has seen
 	// before zeroing, or the totals of everything up to this install are silently lost.
-	if (stats.frames > 0) console.log(summaryLine());
+	if (stats.frames > 0) reportSummary();
 	delayMs = options.delayMs;
 	mode = options.mode ?? 'pipelined';
-	stats.sockets = 0;
-	stats.frames = 0;
-	stats.maxFramesPerSocket = 0;
-	stats.maxWaitMs = 0;
+	resetStats();
 	wrapGlobalWebSocket();
-	programmaticInstall = true;
-	return { delayMs, mode, pinnedByEnv: false, restore: () => { restoreInstall(!wrappedForStats); } };
+	const token = {};
+	activeInstall = token;
+	return { delayMs, mode, pinnedByEnv: false, restore: () => { restoreInstall(token, !wrappedForStats); } };
 }
 
 // The environment overrides install at module evaluation, so `WS_SEND_DELAY_MS=... yarn test
