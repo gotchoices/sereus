@@ -29,7 +29,7 @@ await build({
 	platform: 'browser',
 	target: 'es2022',
 	sourcemap: true,
-	minify: false,
+	minify: true,
 	// `react-native` is the only export condition `@optimystic/db-p2p` exposes
 	// for its TCP-free entry. Setting it here makes transitive imports of the
 	// main `@optimystic/db-p2p` specifier (from `@optimystic/quereus-plugin-optimystic`,

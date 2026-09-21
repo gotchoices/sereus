@@ -26,17 +26,20 @@ const bundlePath = resolve(pkgRoot, 'dist', 'plugin-browser.js');
 // Soft caps, set ~20% above the last measurement so ordinary churn passes and a structural jump
 // does not. Bump deliberately if a justified dep increase pushes us over.
 //
-// Measured 2026-09-20: 4,890,498 B raw, 1,162,393 B gzipped (4775.9 / 1135.1 KiB as printed by
+// Measured 2026-09-20: 2,005,190 B raw, 592,933 B gzipped (1958.2 / 579.0 KiB as printed by
 // `yarn workspace @serfab/quereus-plugin-sereus build`, via `scripts/build-browser.mjs`). The
 // figure moves with the linked `../optimystic` and `../quereus` checkouts as well as this
 // package, so re-measure before deciding a breach is a regression rather than a dependency bump.
+//
+// These caps assume `minify: true` in the build script; the same build unminified is about 4.9 MB
+// raw / 1.16 MB gzipped, so switching minification off breaches both.
 //
 // NOTE: this is the only guard on the size of the published browser payload. `publish-package.mjs`
 // runs `yarn build` and ships that `dist/`, so the artifact measured here is the artifact users
 // fetch; `yarn smoke:published` installs the finished tarball and cannot see inside a bundle that
 // was already built before it was packed. Raising a cap is what lets a size regression ship.
-const MAX_RAW_BYTES = 5_900_000;
-const MAX_GZIPPED_BYTES = 1_400_000;
+const MAX_RAW_BYTES = 2_400_000;
+const MAX_GZIPPED_BYTES = 710_000;
 
 const FORBIDDEN_BARE_IMPORTS = [
 	'@libp2p/tcp',
