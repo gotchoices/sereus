@@ -71,3 +71,29 @@ layer to fix it.
 2. Align the versions (root `resolutions` and/or the optimystic package's dep)
    so a single `@libp2p/interface` is shared, then re-install and re-run
    `svelte-check`.
+
+---
+
+## Second instance: the same duplication ships to browsers in the plugin bundle
+
+Found while investigating the browser bundle of `@serfab/quereus-plugin-sereus` (ticket `browser-bundle-doubled-and-its-shape-test-times-out`, now closed out into `tickets/implement/`). Same root cause as above — several physical copies of the same libp2p packages resolved from the nested `node_modules` of the `link:`ed sibling repositories — but the symptom here is shipped bytes rather than a type error, so it is worth recording against the same fix.
+
+**Measured** at `00c731bc` with esbuild's own metafile (`metafile: true`, then rolling `bytesInOutput` up by the `node_modules` directory each module came from; the probe scripts were temporary and are not in the tree). The bundle is 4,890,394 bytes from 1,566 input modules, and **1,636 KiB of that — 34% — is copies beyond the first of a package already in the graph**:
+
+| package | total in bundle | physical copies |
+|---|---|---|
+| `multiformats` | 641 KiB | 23 |
+| `@noble/curves` | 285 KiB | 4 |
+| `@libp2p/crypto` | 239 KiB | 11 |
+| `@libp2p/utils` | 166 KiB | 5 |
+| `@multiformats/multiaddr` | 158 KiB | 8 |
+| `@noble/hashes` | 116 KiB | 6 |
+| `protons-runtime` | 88 KiB | 3 |
+
+The copies come from `../optimystic/packages/*/node_modules/` and `../Fret/packages/fret/node_modules/`. Yarn cannot hoist across a `link:` boundary, so each linked sibling keeps its own tree and esbuild faithfully bundles every one it reaches.
+
+**Why this reaches users and not just the type checker.** `scripts/publish-package.mjs:190` runs `yarn build` in this linked tree and publishes `dist/`, and `dist/plugin-browser.js` is a pre-built artifact inside the tarball. So the duplicates are baked in at pack time and downloaded by every browser that loads the plugin. `yarn smoke:published` installs from the registry and is described in `docs/releasing.md` as "the only gate that can see a defect which exists solely in the published dependency graph", but it cannot see inside an artifact that was already built — by the time the tarball exists, the bundle's dependency graph is frozen. A size cap in `packages/quereus-plugin-sereus/test/browser-bundle.spec.ts` is the only thing watching it; ticket `browser-bundle-shape-test-transform-and-size-guard` tightens that cap and records the gap as a `NOTE:` at the site.
+
+**What this adds to the ticket above:** aligning the versions so a single copy hoists is worth roughly 1.6 MiB of unminified browser payload on top of clearing the two `svelte-check` errors. If the alignment is only partial, the bundle benefits proportionally — this is not all-or-nothing.
+
+**Not a substitute for this ticket:** turning on minification (ticket `browser-bundle-minify-published-payload`) shrinks each copy but does not merge them; the duplication survives minification at roughly 41% of its unminified weight.
