@@ -1,25 +1,35 @@
-description: Every relay test runs over the local machine with almost no delay, so problems that only show on a real phone's slower link (reads piling up, writes taking minutes) pass every test and are first seen on a device. The test harness needs a way to add a realistic delay to one node's connection.
+description: Relay tests can now be run with a slow network, but only by slowing every machine in the test at once. There is no way to model the realistic case of one slow phone talking to a fast desktop, which is where the worst delays were seen on real devices.
+architecture: docs/testing.md#topology-coverage-map
 files:
-  - packages/integration-tests/src/harness/dedicated-relay.ts
-  - packages/integration-tests/src/harness/node-fixtures.ts (`controlNodeConfig`; already has `storageOpDelayMs` for slow storage, nothing for slow links)
-  - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (first user)
-  - docs/testing.md (topology coverage map)
-tradeoffs: A delayed scenario runs minutes rather than seconds and its timings are noisy, so it can only assert that latency stays bounded rather than exact numbers, and a device run may catch the same class more cheaply.
+  - packages/integration-tests/src/harness/ws-latency.ts (the fixture that landed; process-wide by construction)
+  - packages/integration-tests/src/harness/dedicated-relay.ts (one listen address today; the recommended design gives it several)
+  - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (first user; its latency arm runs at 10 ms)
+  - docs/testing.md (topology coverage map; "Where measurements live")
+tradeoffs: The symmetric everything-is-slow case that already landed is the harsher one, so the asymmetric shape may never catch a defect the existing arm misses — and the relay fixture change it needs is real work.
 ----
 
-# Relay scenarios never run with link latency
+# Relay scenarios cannot model one slow machine and one fast one
 
-## Why
+## What already landed
 
-The cross-party device run (`tickets/complete/rn-cross-party-relay-run.md`) delivered phone messages 1–4 minutes late. `blind-relay-phone-to-phone-e2e` covers the same topology and passes in about 2 s, because its gates only check that data arrives within 60 s and loopback adds no delay. The headless investigation for `implement/rn-chat-poll-overlaps-slow-reads` showed the problem appears once 150 ms each way is added on one node's relay link. With no delay, the same code looked fine.
+`packages/integration-tests/src/harness/ws-latency.ts` adds per-frame outbound delay to every WebSocket the test process dials, and `blind-relay-phone-to-phone-e2e.integration.ts` commits an arm at 10 ms of one-way latency. Relay scenarios are no longer blind to link delay in general. The measurements and the two delay modes are written up in `docs/testing.md` → "Where measurements live".
 
-## What is needed
+## What is still missing
 
-A harness fixture that adds delay to one node's traffic to the relay, so a scenario can model "phone behind a relay" while the other party stays on loopback. It should be usable by the blind-relay scenario and the same-party circuit scenario.
+The fixture swaps the global `WebSocket` constructor, which cannot tell one node's sockets from another's, so a delay applies to every machine in the process equally. The original motivation was asymmetric: the cross-party device run (`tickets/complete/rn-cross-party-relay-run.md`) delivered phone messages 1–4 minutes late with a phone on one end and an ordinary machine on the other, and the headless investigation for `rn-chat-poll-overlaps-slow-reads` reproduced the class by adding 150 ms each way **on one node's relay link only**. That shape — a slow phone talking to a fast desktop, where one side's queue builds while the other's does not — is still uncovered.
 
-## Known pitfalls, from the ad-hoc version
+## Expected behaviour
 
-- A TCP proxy in front of the relay's WebSocket port, used as that node's `relayAddrs` entry, works at first. The node then opened a direct connection to the relay's real port, learned from the other party's circuit addresses, and bypassed the proxy: the proxy's byte counter went to 0 while operations kept succeeding quickly. The fixture must make that impossible, or assert it didn't happen.
-- Refusing those direct dials with a connection gater (`denyDialMultiaddr` on the real port, circuit addresses allowed) produced `cohort-unreachable` and `Failed to get super-majority` failures that the device run never showed. So the gater changed behaviour and is not a faithful model. Candidates: have the relay listen only behind the proxy and give the undelayed party its own zero-delay proxy, or add the delay inside the node's transport instead of on the socket.
-- The proxy must keep chunk order (queue each chunk with its due time, write sequentially).
-- Assertions should be bounds (for example "a message is visible to the other party within N s at 150 ms") plus a check that the delayed path was actually used. Exact timings are too noisy.
+A scenario can say "party A's link is slow, party B's is not" and assert bounds on it: for example that a row written on the slow party is visible to the fast one within N seconds at 150 ms, plus a check that the delayed path was actually the one used (a run where the delay was silently bypassed must fail, not pass quickly).
+
+## Recommended design, not yet prototyped
+
+Give `DedicatedRelay` more than one listen address and hand each node its own. The shim already sees the dial URI, so it can key a different delay off the destination port. Nothing can bypass it: a node that learns the relay's real port from another party's circuit addresses and dials it directly still goes through the same global constructor. The cost is the relay fixture change plus per-port bookkeeping in the shim.
+
+## Rejected, with the reason recorded
+
+A delaying TCP proxy per node, which is what the ad-hoc version of this used, does not work here:
+
+- A node opened a direct connection to the relay's real port — learned from the other party's circuit addresses — and bypassed the proxy entirely: the proxy's byte counter fell to zero while operations kept succeeding quickly.
+- Refusing those direct dials with a connection gater (`denyDialMultiaddr` on the real port, circuit addresses allowed) produced `cohort-unreachable` and `Failed to get super-majority` failures the device run never showed, so the gater changes behaviour and is not a faithful model.
+- A proxy also has to keep chunk order by hand (queue each chunk with its due time, write sequentially), which the constructor shim gets for free.

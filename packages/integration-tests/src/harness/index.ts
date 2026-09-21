@@ -21,6 +21,9 @@ export * from './topology.js';
 export * from './strand-join.js';
 export * from './block-store-probe.js';
 export * from './dedicated-relay.js';
+// Safe in the barrel: importing it instruments nothing unless `installWsLatency` is called
+// or one of its environment variables is set, and those are process-wide by intent.
+export * from './ws-latency.js';
 export * from './provider-process-orchestrator.js';
 export * from './fixtures/loopback-http-server.js';
 export * from './fixtures/approval-hook-server.js';

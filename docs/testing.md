@@ -38,6 +38,20 @@ where someone debugging a slow launch actually lands. Do not copy those numbers 
 copy is a second thing to leave stale. The browser bundle's size caps are pinned the same way but
 as ceilings only; see "Browser bundle checks" below.
 
+Link latency is the one measurement with no spec to live in, so it lives here. `packages/integration-tests/src/harness/ws-latency.ts` replaces the global `WebSocket` constructor so every frame a node *dials out* is held for a set delay (the listening side is untouched, so the delay is one-way, not a round trip), and `blind-relay-phone-to-phone-e2e.integration.ts` commits one arm at 10 ms. **A delay figure means nothing without its mode**: `pipelined` releases each frame that long after it was written, so frames stay overlapped in flight — the honest model of latency, and of latency only, since bandwidth stays unlimited; `serial` queues a socket's frames one behind another, which is a per-socket frame-RATE cap (1000 / delay frames per second) and reaches delays an order of magnitude above the configured one. The two are not comparable, and reading a `serial` number as latency is what made gotchoices/sereus#13 report a 10 ms breaking point that does not exist. The sweep behind the committed 10 ms (MEASURED_ON 2026-09-20, one Windows machine, four nodes in one process over the loopback dedicated relay):
+
+| per-frame delay | `pipelined` — constant one-way latency | `serial` — per-socket frame-rate cap |
+| --- | --- | --- |
+| none (counters only) | passes in 3.5 s; 4,735 outbound frames over 4 dialed sockets, busiest socket 2,192 | — |
+| 1 ms | — | fails: joiner's membership rows miss the scenario's 20 s join gate |
+| 2 ms | — | fails: `StrandAwaitingFirstSyncError`; worst observed send wait 2,358 ms |
+| 5 ms | — | fails: `StrandAwaitingFirstSyncError` |
+| 10 ms | passes in 9.3–12.4 s over four runs; worst observed send wait 131–315 ms | fails: `StrandAwaitingFirstSyncError`; worst observed send wait 2,274 ms |
+| 50 ms | passes in 24.6–31.8 s over two runs; worst observed send wait 128–153 ms | — |
+| 100 ms, 150 ms | first sync completes; joiner's membership rows miss the 20 s join gate | — |
+
+Two things that table is not saying. The `pipelined` failures at 100 ms are not a broken strand: the strand becomes writable and the join is still climbing the membership reconciler's retry ladder (1 s doubling to the 30 s poll interval, `strand-membership-reconciler.ts`) when the scenario's deliberately tight 20 s gate expires — slow, and not observed through to completion either way. And the frame count is the multiplier on any per-frame cost, which is why the two modes diverge so sharply on the same scenario; how chatty relayed bring-up is in the first place is a separate question, owned by `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`.
+
 ## Stale-build guard
 
 Every suite that runs *compiled* output — a spawned real `cadre-cli` child, or an in-process
@@ -487,16 +501,24 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-circuit-same-party-e2e.integration.ts`. It also measures the relay-slot cost (one
   reservation per node per network) and characterizes relay restart: control reservations
   recover, strand reservations do not (ticket
-  `bug-strand-relay-reservation-not-resupervised`). Same party; the cross-party half is the
-  line below.
+  `bug-strand-relay-reservation-not-resupervised`). Every connection here is loopback-instant:
+  the LINK CONDITION is covered only on the cross-party line below. Same party; the
+  cross-party half is that line.
 - Relayed strand plane ACROSS parties (two parties, each a single relay-only machine,
   sharing one CLOSED strand through the same dedicated relay: the bound invitation carries a
   `/p2p-circuit` bootstrap address, the stranger-open formation protocol runs over the
   circuit and hands back a relay-routed strand address plus the membership secret, the
   joiner meshes from that seed with no hand-dial, rows replicate both ways, and every
   cross-party connection — control and strand — classifies `relayed` and unlimited) —
-  `blind-relay-phone-to-phone-e2e.integration.ts`. One SHARED relay only; the two-relay
-  shape (each party reserved on a different relay) is not covered.
+  `blind-relay-phone-to-phone-e2e.integration.ts`. It runs the whole journey TWICE from one
+  body: once on bare loopback, and once with 10 ms of one-way per-frame link latency
+  (`harness/ws-latency.ts`, `pipelined` mode — see "Where measurements live" above for what
+  that mode means and why a number quoted without it is misleading). That second arm is the
+  suite's ONLY relayed coverage of a link that is not instant; every other line on this map,
+  relayed or direct, runs at loopback speed. The injected delay is process-wide, so both
+  parties are equally slow — the asymmetric shape (a slow phone talking to a fast desktop) is
+  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. One SHARED relay only; the
+  two-relay shape (each party reserved on a different relay) is not covered.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
