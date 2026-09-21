@@ -54,3 +54,15 @@ The device phone ran optimystic `7cd71341`, from before `a-write-whose-log-entry
 ## Reproducing
 
 Nothing was committed. Copy `blind-relay-phone-to-phone-e2e.integration.ts` and replace its "Data BOTH ways" section with timed inserts and reads. For the latency cases, point A's `relayAddrs` at a local TCP proxy in front of the relay's WebSocket port that delays each chunk in order. Without a gater, A soon opened a direct connection to the relay's real port and bypassed the proxy (exchange count dropped to 0), so check the counter before trusting any delayed timing. `backlog/debt-relay-scenarios-never-see-link-latency` tracks turning this into a reusable fixture.
+
+## Corroborating measurement 2026-09-20: outbound WebSocket frame counts
+
+From the investigation of gotchoices/sereus#13 (`blocked/report-issue-13-latency-threshold-is-a-harness-artifact`), counted by wrapping the global `WebSocket` constructor that `@libp2p/websockets` dials with, so every frame each node writes to the relay is counted. Same `blind-relay-phone-to-phone-e2e` topology as the exchange counts above, four nodes in one process.
+
+A plain passing run — formation, first sync, the joiner's membership rows, and one App row written each way — costs **4,735 outbound frames across 4 dialed sockets, 2,192 of them on the busiest socket**, in 3.5 s. The busiest socket is one node's single connection to the relay, which carries every circuit stream that node has: control, every strand, and FRET maintenance.
+
+With constant one-way latency added, the same work costs substantially more frames, not merely slower ones: ~13,400 frames at 10 ms, and 16,400–21,500 at 50 ms. Four to five times the frames for identical work suggests retry or re-request churn that grows with delay; which layer produces it was not identified and is worth finding.
+
+Two consequences for this ticket's thesis. Any per-frame cost — a real link's per-packet overhead, or a slow device's per-frame crypto — multiplies by roughly 2,200 on the node that carries the most traffic. And because that node has exactly ONE outbound socket, a burst of frames on any one stream head-of-line-blocks every other stream it has, including the FRET maintenance RPCs whose budget is 2 s (`MAINTENANCE_RPC_TIMEOUT_MS` in `../Fret/packages/fret/src/service/fret-service.ts`). An injector that serializes frames makes this visible immediately: worst observed frame wait reached 2.36 s at a 2 ms configured delay.
+
+Reproduce the baseline count with `WS_FRAME_STATS=1 yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e` (`packages/integration-tests/src/harness/ws-latency.ts`).

@@ -73,6 +73,12 @@
  * (`debt-composite-pk-point-lookup-unreliable-untracked`).
  */
 
+// Side-effect import, FIRST so the swap lands before any libp2p node is built. A
+// no-op unless `WS_SEND_DELAY_MS` is set above zero, which is why it can sit in the
+// scenario permanently: at the default 0 this file runs exactly as it did before.
+// Deliberately not re-exported from `harness/index.js` — a side-effect module there
+// would apply to every scenario that imports the barrel.
+import '../harness/ws-latency.js';
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Libp2p } from 'libp2p';
