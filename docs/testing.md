@@ -35,7 +35,8 @@ two storage budgets, the operative consequence — that a control start's durati
 (raw-storage operations) × (device cost per operation), so the *count* is the thing worth
 pinning — is recorded as a `NOTE:` at `control-database.ts`'s `loadSchema` call site, which is
 where someone debugging a slow launch actually lands. Do not copy those numbers here; a second
-copy is a second thing to leave stale.
+copy is a second thing to leave stale. The browser bundle's size caps are pinned the same way but
+as ceilings only; see "Browser bundle checks" below.
 
 ## Stale-build guard
 
@@ -410,6 +411,16 @@ installs anything, so it cannot prove the published artifact at that version act
   `node scripts/lib/published-smoke-scenario.mjs` from anywhere inside this repo, which resolves
   `@serfab/*` through the workspace symlinks — and be explicit that doing so proves the scenario,
   not the registry substrate.
+
+## Browser bundle checks (`@serfab/quereus-plugin-sereus`)
+
+Two specs in the package's `unit` project guard the prebuilt `dist/plugin-browser.js`, the file Quoomb-web's worker fetches and loads. Both build it on demand if it is missing.
+
+- **`test/browser-bundle.spec.ts` reads the file as text**: it parses as ESM, carries no static import of `@libp2p/tcp` or of a listed set of Node-only modules (`node:fs`, `node:net`, …), has a source map beside it, and stays under a raw and a gzipped size cap.
+- **`test/browser-shape.spec.ts` loads it** under jsdom with `fake-indexeddb`: the default export is a function, and calling it reaches the IndexedDB open before failing on libp2p. It does not touch the network, and nothing here loads the bundle in a real browser worker.
+- **The size caps are ceilings only, set about 20% above the last measurement.** The measured bytes, the date and the command live beside the constants in the spec; a copy here would go stale. A cap that sits far above the artifact cannot fire — the previous 8 MiB / 3 MiB caps let the file grow from about 2.5 MiB to 4.66 MiB without a failure — so re-measure and tighten them when the bundle's size changes on purpose, rather than leaving the slack.
+- **The caps are the only guard on the published payload's size.** `scripts/publish-package.mjs` runs `yarn build` and ships that `dist/`, so the artifact the spec measures is the artifact users fetch. `yarn smoke:published` (above) installs the packed tarball and cannot see inside a bundle that was built before packing.
+- **The shape test imports the bundle through Node, not through vitest's transform.** The `unit` project lists it under `server.deps.external` in `vitest.config.ts`. Left to vitest, the multi-megabyte file is run through Vite's transform on every run (and its much larger source map is read), which took several seconds on an idle machine, grew with the file's byte count, and timed out the test's 30 s budget under load. Externalized, the import takes well under a second whatever the size. If this test turns slow, check the externalization before raising the timeout.
 
 ## Topology coverage map
 
