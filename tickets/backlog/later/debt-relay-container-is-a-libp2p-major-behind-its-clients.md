@@ -5,6 +5,7 @@ files:
   - ops/docker/libp2p-infra/src/env.ts (the doc comment that records the skew as a deliberate choice)
   - ops/test/check-node.mjs (the existing node-reachability check — the natural place to hang a real interop assertion)
 difficulty: medium
+external: gotchoices/sereus#13 (reporter kjeib offered the bump as a PR)
 tradeoffs: libp2p's wire protocols are versioned independently of its npm package majors, so this very likely already works and the check may only ever confirm that — a maintainer could reasonably call it ceremony and wait for a failure to justify it.
 ----
 
@@ -84,6 +85,17 @@ configure, and the whole point of the standalone tree is that it can move on its
 alternative — having the container consume the workspace's libp2p through a thin shared package —
 trades the skew for a build-time coupling this image was deliberately built to avoid. Whoever picks
 this up should decide that deliberately rather than reaching for the version bump.
+
+## Arm: accept the outside contributor's bump PR (after the current release)
+
+`kjeib`, reporting gotchoices/sereus#13, offered a PR bumping `ops/docker/libp2p-infra` from libp2p 2.x to 3.x. They report no behavioural change, and that it clears a spurious `TimeoutNaNWarning`. On 2026-09-20 we replied on #13 asking them to send it as its own PR, and told them it would wait until after the current release ships (no relay-container changes before release) and that this ticket tracks its acceptance.
+
+Deferred to `later/` on the maintainer's instruction for that reason. When picked up:
+
+- Find their PR (not yet opened as of 2026-09-20) and review it on its own merits; it is unrelated to the latency finding in #13.
+- Run the interop check described above against the bumped image before merging — the bump settles the skew question from the other side, but "no behavioural change" on their setup is not the reservation-limit and outbound-stream assertions this ticket asks for.
+- Weigh "The other half of the decision" above: accepting the bump chooses "upgrade the container" over a shared package. That is the likely right call, but make it deliberately.
+- Comment on #13 (or the PR) when it merges.
 
 ## Related
 
