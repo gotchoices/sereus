@@ -19,6 +19,8 @@ Blocked because the code is in `../optimystic`, a separate repository with its o
 
 **Upstream status 2026-09-20:** the consensus-round reduction is promoted to optimystic `plan/feat-a-commit-pays-three-consensus-rounds-of-three-calls-each` (candidates: coordinator signs its commit vote first; tail and sweep in one round). Stays blocked here until that lands; then re-measure with the latency fixture.
 
+**Upstream status 2026-09-20 (night):** both candidates landed on optimystic main (`16dd8ba1` commit round carries the coordinator's vote; `e6e84aa1` tail and blocks in one round for a single coordinator), gate green, HEAD `cadcb919`, not yet published (npm still `1.1.0`). Upstream expects about 4 `/cluster` streams per two-party insert instead of 9. Re-measure: `fix/relay-round-trips-remeasure-optimystic-cadcb919`.
+
 ## How it was measured
 
 2026-09-17, sereus `25a5010`, optimystic `ab67fa47` (dist built). Two parties, each a single `CadreNode` with `listenAddrs: []`, connected only through the dedicated loopback relay (the `blind-relay-phone-to-phone-e2e` topology). Chat schema (`Participant`, `Message` with a foreign key to `Participant`). Party A (founder, the phone's role) on `profile: 'transaction'`. A's relay connection went through a counting TCP proxy. Each operation below ran alone, with no polling. Outbound streams were counted by wrapping `newStream` on each strand node's connections. "Exchanges" means how many times traffic on A's relay socket changed direction, roughly one request plus its response per two.
