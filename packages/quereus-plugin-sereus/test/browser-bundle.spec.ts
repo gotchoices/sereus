@@ -77,9 +77,10 @@ describe('browser bundle artifact', () => {
 
 	it('does not statically reference forbidden Node-only modules', () => {
 		for (const spec of FORBIDDEN_BARE_IMPORTS) {
-			// Match `from "spec"` / `from 'spec'` / `import("spec")`. Allow filenames
-			// or comments that mention the literal (they show up because esbuild's
-			// section markers reference the original module path).
+			// Match `from "spec"` / `from 'spec'` / `import("spec")` rather than a plain
+			// substring: a filename or comment that merely names the module is not an import.
+			// Minification strips esbuild's section-marker comments, so no such mention survives
+			// in today's bundle, but the narrow match keeps the check honest either way.
 			const fromRe = new RegExp(`from\\s*['"]${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}['"]`);
 			const importRe = new RegExp(`import\\s*\\(\\s*['"]${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}['"]`);
 			expect(fromRe.test(bundle), `bundle contains \`from "${spec}"\``).toBe(false);

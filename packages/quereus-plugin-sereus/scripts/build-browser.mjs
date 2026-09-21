@@ -28,6 +28,10 @@ await build({
 	format: 'esm',
 	platform: 'browser',
 	target: 'es2022',
+	// NOTE: the map is ~12.8 MB, over six times the minified bundle, and `package.json`
+	// `files` publishes `dist`, so every install of this package downloads it. Kept because
+	// it is what keeps the minified bundle debuggable; revisit if install size becomes a
+	// complaint — dropping `sourcesContent` or excluding the map are the levers.
 	sourcemap: true,
 	minify: true,
 	// `react-native` is the only export condition `@optimystic/db-p2p` exposes

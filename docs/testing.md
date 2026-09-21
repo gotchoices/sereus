@@ -283,7 +283,10 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
 - Scope notes: type-aware linting (`projectService`) is enabled only for the node/library `src` trees;
   the bundler/expo apps (`reference-app-web`, `reference-app-rn`, `cadre-host/ui`) get non-type-aware rules.
   `maestro/` (Maestro JS engine) and non-package trees (`tess/`, `ops/`,
-  `scripts/`) are ignored.
+  `scripts/`) are ignored. The `scripts/` ignore is `**/scripts/**`, so it covers each package's own
+  build and release scripts too (`quereus-plugin-sereus/scripts/build-browser.mjs`,
+  `cadre-host/scripts/sign-manifest.mjs`, the app `run-e2e.mjs` runners): edits to those are
+  human-reviewed, not linted.
 
 ## Declared dependency range vs linked workspace (keep them equal)
 
