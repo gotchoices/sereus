@@ -107,7 +107,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-17';
+const MEASURED_ON = '2026-09-20';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -122,12 +122,17 @@ const MEASURED_ON = '2026-09-17';
  *    missing block is a consult; the batch does not refresh before its first attempt. So every
  *    tree such a commit touched lost exactly 2 consults: genesis 7 → 3, `foundStrand`'s control
  *    side 13 → 7. Single-tree commits still go through `sync()` and did not move.
+ *
+ * One upstream change on 2026-09-20 halved every commit count and moved no consult count: at
+ * `e6e84aa1` a commit whose blocks one coordinator covers sends the log tail and the data blocks
+ * in one commit, where it used to commit the tail first and then the rest. Cold 2 → 1, genesis
+ * 4 → 2, `foundStrand` 6 → 3 on each side, the marker's filing 2 → 1.
  */
-const BASELINE_UPSTREAM = 'optimystic 8a0b48c7';
+const BASELINE_UPSTREAM = 'optimystic cadcb919';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 26 consults over 19 blocks, 2 commits. Every
+ * watcher's first poll it leaves running. 26 consults over 19 blocks, 1 commit. Every
  * control table and index block is consulted once as the schema is applied (all missing),
  * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` by
@@ -138,45 +143,45 @@ const BASELINE_UPSTREAM = 'optimystic 8a0b48c7';
  * `FormationUsageByToken` index (`restore-formation-usage-token-index`), one more block
  * consulted once as the schema is applied.
  */
-const COLD: Budget = { consults: 26, blocks: 19, commits: 2, consultBudget: 30, blockBudget: 22, commitBudget: 3 };
+const COLD: Budget = { consults: 26, blocks: 19, commits: 1, consultBudget: 30, blockBudget: 22, commitBudget: 2 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 4 commits:
+ * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 2 commits:
  * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and
  * the never-written `Revocation` ×1. History: 14 over the same 3 blocks in the motivating
  * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic
- * `03ffadc4`, then 3 at {@link BASELINE_UPSTREAM} — the insert's commit touches both
+ * `03ffadc4`, then 3 at `8a0b48c7` — the insert's commit touches both
  * `OwnerKey` trees and no longer refreshes them twice before flushing.
  */
-const GENESIS: Budget = { consults: 3, blocks: 3, commits: 4, consultBudget: 4, blockBudget: 4, commitBudget: 5 };
+const GENESIS: Budget = { consults: 3, blocks: 3, commits: 2, consultBudget: 4, blockBudget: 4, commitBudget: 3 };
 /**
  * `foundStrand`, control network side: the `Strand` row published. 7 consults over 5
- * blocks, 6 commits: `Strand` ×2 and its `StampId` unique index ×1 (missing until the
+ * blocks, 3 commits: `Strand` ×2 and its `StampId` unique index ×1 (missing until the
  * publish commits), the never-written `Revocation` ×2 and `CadrePeer` ×1, and 1 on a tree
  * block the commit created. History: 25 over 6 blocks on 2026-09-15 (×8, ×6, ×4, ×4, ×2,
  * ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId` index ×3,
- * `MemberPrivateKey` index ×2), 7 over 5 at {@link BASELINE_UPSTREAM}: the publish's commit
+ * `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
  * was the `MemberPrivateKey` index's only consults. Control and strand together now sum to 28
- * consults and 12 commits, against 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47
+ * consults and 6 commits, against 28 and 12 at `8a0b48c7`, 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47
  * and 12 in the trace taken before upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 7, blocks: 5, commits: 6, consultBudget: 9, blockBudget: 7, commitBudget: 8 };
+const FOUNDING_CONTROL: Budget = { consults: 7, blocks: 5, commits: 3, consultBudget: 9, blockBudget: 7, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
- * bootstrap. 21 consults over 15 blocks, 6 commits: the strand's schema catalog ×5,
+ * bootstrap. 21 consults over 15 blocks, 3 commits: the strand's schema catalog ×5,
  * `Header` ×3, one consult on each other strand table and index as its schema is applied
  * (11, all missing), and 1 each on two tree blocks the bootstrap created. History: 25 over
  * the same 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 at optimystic `03ffadc4` —
  * only the two repeatedly-read blocks moved; the 11 apply-once blocks did not — and unchanged
- * at {@link BASELINE_UPSTREAM}.
+ * since.
  */
-const FOUNDING_STRAND: Budget = { consults: 21, blocks: 15, commits: 6, consultBudget: 26, blockBudget: 18, commitBudget: 8 };
+const FOUNDING_STRAND: Budget = { consults: 21, blocks: 15, commits: 3, consultBudget: 26, blockBudget: 18, commitBudget: 4 };
 /**
  * `reconcileControlCohort`, one idle pass on the founded solo party. 4 consults over 2
  * blocks, no commits: the pass's two `CadrePeer` reads (the gate refresh and the sibling
  * enumeration — see the NOTE in `runReconcileControlCohort`), each consulting the
  * never-written `CadrePeer` and `Revocation` once. Nothing on the strand's repo. History:
- * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 at {@link BASELINE_UPSTREAM}.
+ * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 since `03ffadc4`.
  */
 const RECONCILE: Budget = { consults: 4, blocks: 2, commits: 0, consultBudget: 5, blockBudget: 3, commitBudget: 0 };
 /** The strand's repo during the idle reconcile pass: nothing, and nothing allowed. */
@@ -216,7 +221,7 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * | idle `reconcileControlCohort` | 4: `Revocation` ×4 | 0 |
  *
  * The one consult after is on the tree block the marker's own commit created, paid by whichever
- * read runs first. Filing the marker cost 2 consults (`Revocation` ×2) and 2 commits. The reconcile
+ * read runs first. Filing the marker cost 2 consults (`Revocation` ×2) and 1 commit (2 before `e6e84aa1`). The reconcile
  * pass is asserted by its busiest block (more than once before, at most once after) rather than
  * pinned, so an unrelated read added to the pass does not read as a marker regression.
  *
@@ -224,7 +229,7 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
  * filing 4 → 2). The "after" column was already zero and is unchanged, so what this test proves
  * — that the marker removes the repeats entirely — is measured against a smaller "before" than
- * on 2026-09-15 but the same contrast. Nothing here moved at {@link BASELINE_UPSTREAM}: the
+ * on 2026-09-15 but the same contrast. No consult here moved at `8a0b48c7`: the
  * `authorizePeer` commit touches only the held `CadrePeer` trees, whose refreshes inside the
  * read-repair window never consulted, so dropping them saved nothing.
  */
