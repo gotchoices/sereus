@@ -44,4 +44,4 @@ Neither is a reason to hold this ticket. Minification is independent of both and
 - Re-measure raw and gzipped (the build script prints both), then re-tighten `MAX_RAW_BYTES` / `MAX_GZIPPED_BYTES` in `test/browser-bundle.spec.ts` to roughly 20% above the new numbers, updating the recorded measurement comment.
 - Run the package's full unit suite, including `browser-shape.spec.ts` and `browser-bundle.spec.ts`.
 - Note the new published payload size in `docs/testing.md` where the bundle checks are described (the "Browser bundle checks" section added by the prerequisite ticket; it deliberately carries no numbers, so this may need only a check that its wording still holds).
-- Update the stale size in `packages/quereus-plugin-sereus/README.md` (the paragraph under the artifacts table says "~2.5 MiB raw, ~550 KiB gzipped"; the unminified bundle was already 4.66 MiB before this ticket).
+- Update the size in `packages/quereus-plugin-sereus/README.md` (the paragraph under the artifacts table now says "roughly 4.7 MiB raw / 1.1 MiB gzipped" and calls the bundle unminified; both claims change here).

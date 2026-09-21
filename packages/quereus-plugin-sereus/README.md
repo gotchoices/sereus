@@ -27,8 +27,10 @@ environment via the `exports` map:
 | `dist/plugin.js` | `tsc` | TCP + WebSockets | in-memory / FS | Node (`./plugin`) |
 | `dist/plugin-browser.js` | `esbuild` | WebSockets + circuit-relay | IndexedDB | Browser/worker (`./plugin-browser`) |
 
-The browser bundle is a single self-contained ESM file (~2.5 MiB raw, ~550 KiB
-gzipped). It bundles only the TCP-free libp2p surface (`@optimystic/db-p2p/rn`)
+The browser bundle is a single self-contained ESM file, currently unminified and
+roughly 4.7 MiB raw / 1.1 MiB gzipped (the exact measurement and its date live beside
+the size caps in `test/browser-bundle.spec.ts`; a second copy of the numbers here
+would go stale). It bundles only the TCP-free libp2p surface (`@optimystic/db-p2p/rn`)
 and does **not** import `@quereus/quereus` at runtime — registrations are applied
 against the host-supplied `db`, so it reuses the host's Quereus instance rather
 than instantiating a second one.

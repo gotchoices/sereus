@@ -72,10 +72,11 @@ function stubDatabase() {
 
 describe('browser bundle module shape', () => {
 	// The artifact is externalized in `vitest.config.ts` (`server.deps.external`), so this import
-	// is a plain Node load: about half a second, whatever the file's size. Left to vitest it went
-	// through Vite's transform instead, which cost ~8 s on an idle machine and scaled with the
-	// byte count. The 30 s is not tuned to that; it only keeps a genuine hang from stalling the
-	// run. If this test turns slow, check the externalization before raising the number.
+	// is a plain Node load — a fraction of a second warm, a second or two on a cold file cache —
+	// and its cost no longer scales with the file's size. Left to vitest it went through Vite's
+	// transform instead, measured at 8-18 s on an idle machine and growing with the byte count.
+	// The 30 s is not tuned to either figure; it only keeps a genuine hang from stalling the run.
+	// If this test turns slow, check the externalization before raising the number.
 	it('default export is a function', { timeout: 30_000 }, async () => {
 		const mod = await import(pathToFileURL(bundlePath).href) as BrowserPluginModule;
 		expect(typeof mod.default).toBe('function');
