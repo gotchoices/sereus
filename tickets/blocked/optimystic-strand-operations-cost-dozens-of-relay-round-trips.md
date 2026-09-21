@@ -17,6 +17,8 @@ Blocked because the code is in `../optimystic`, a separate repository with its o
 
 **Upstream status 2026-09-18:** optimystic main `e6ab12c6` + `30f04bd4` (after 1.0.0, not yet published) fixes the two-member `commit-not-durable: 1 of 2 … (local-executed)` refusal: when the coordinator lacks the base block, it now gets one more fetch-and-restore after a remote member reports holding the write. Its ticket is now complete (`bug-a-two-member-cohort-refuses-a-commit-both-members-hold`, `3647c95a`). Checked here at sereus `a4a1bff9` against the local link: `strand-chat-participants-converge` "writes IMMEDIATELY" passed 3 of 3 with no `commit-not-durable` or `local-executed` in the `optimystic:db-p2p:*` debug log. Upstream still open: the joiner never stores the log-tail block it reads through the host, and the "1/2 approvals" shortfall through the delaying relay proxy. Re-measure the round-trip counts and the `storage`-joiner `TornActionError` rate when those land, or when the next optimystic release ships.
 
+**Upstream status 2026-09-20:** the consensus-round reduction is promoted to optimystic `plan/feat-a-commit-pays-three-consensus-rounds-of-three-calls-each` (candidates: coordinator signs its commit vote first; tail and sweep in one round). Stays blocked here until that lands; then re-measure with the latency fixture.
+
 ## How it was measured
 
 2026-09-17, sereus `25a5010`, optimystic `ab67fa47` (dist built). Two parties, each a single `CadreNode` with `listenAddrs: []`, connected only through the dedicated loopback relay (the `blind-relay-phone-to-phone-e2e` topology). Chat schema (`Participant`, `Message` with a foreign key to `Participant`). Party A (founder, the phone's role) on `profile: 'transaction'`. A's relay connection went through a counting TCP proxy. Each operation below ran alone, with no polling. Outbound streams were counted by wrapping `newStream` on each strand node's connections. "Exchanges" means how many times traffic on A's relay socket changed direction, roughly one request plus its response per two.
@@ -71,7 +73,9 @@ Reproduce the baseline count with `WS_FRAME_STATS=1 yarn workspace @serfab/integ
 
 **Re-measured 2026-09-20 (evening), same command:** loopback journey 10,795 frames (busiest socket 5,200) at its end-of-test line, 12,219 at the latency arm's install boundary; the 10 ms `pipelined` arm 9,512 (busiest 4,512, worst send wait 158 ms). This agrees with the 2026-09-21 figures: the loopback journey is ~11–12k frames, and 10 ms of latency does not multiply it. The "4,735 / 2,192" figure above matches the latency arm's own mid-run subtotal (4,698 / 2,144), not the baseline.
 
-**Reporter is waiting on this.** gotchoices/sereus#13 was told (2026-09-20) that the 48–130 exchanges per insert are under active root-cause investigation. When this lands or is re-measured, post the new counts on #13.
+**Release: follow-up, not the current one** (maintainer, 2026-09-20). This ticket is where the exchange/frame volume gets addressed.
+
+**Reporter is waiting on this.** gotchoices/sereus#13 was told (2026-09-20) that the 48–130 exchanges per insert are under root-cause investigation, with the fix planned for a release after the current one. When this lands or is re-measured, post the new counts on #13.
 
 ## Static inventory of the write path, 2026-09-20 — where the 48–130 exchanges come from
 
@@ -154,8 +158,11 @@ individually defensible; the problem is that they multiply.
   within one statement — or one transaction — should not be re-asked per tree per
   statement.
 
-With rounds 1 and 3 folded away the depth goes 9 → 4 (pend 2, commit 2) with no change to
-what is agreed or when. That is the number worth carrying upstream, ahead of batching.
+Folding away both takes the depth from 9 to 4 (pend 2, commit 2). Neither is free. Members currently
+sign commit votes without checking anything first, so a member that applies on receipt must first verify
+the promise super-majority itself. The durability gate would then need each member's apply report from the
+commit response. The tail/sweep merge must still never let one member expose a non-tail block without its
+tail. Upstream's ticket spells out these risks.
 
 ### Why this hurts so much more over a relay
 
