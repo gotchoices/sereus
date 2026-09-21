@@ -21,6 +21,23 @@ Blocked because the code is in `../optimystic`, a separate repository with its o
 
 **Upstream status 2026-09-20 (night):** both candidates landed on optimystic main (`16dd8ba1` commit round carries the coordinator's vote; `e6e84aa1` tail and blocks in one round for a single coordinator), gate green, HEAD `cadcb919`, not yet published (npm still `1.1.0`). Upstream expects about 4 `/cluster` streams per two-party insert instead of 9. Re-measure: `fix/relay-round-trips-remeasure-optimystic-cadcb919`.
 
+**Upstream status 2026-09-21: re-measured at optimystic `cadcb919`** (dist built after `e6e84aa1`), sereus `28cbee8a`, same method as the 012573a2 re-measure. Full numbers: `complete/relay-round-trips-remeasure-optimystic-cadcb919`. Upstream's expectation holds: **4 `/cluster` streams per insert from either party, down from 9.**
+
+| Measure | 012573a2 | cadcb919 |
+|---|---|---|
+| A insert, through the proxy (10 reps) | 115–228 ms, 40–51 exchanges, 9 `/cluster` + 1–3 `/repo` | 70–195 ms, 15–42 exchanges, 4 `/cluster` + 0–2 `/repo` |
+| B insert, through the proxy (10 reps) | 109–164 ms, 44–53 exchanges, 9 `/cluster` + 1–4 `/repo` | 95–138 ms, 29–42 exchanges, 4 `/cluster` + 3–6 `/repo` |
+| Unchanged reads by B | 0–1 `/repo`, 0–15 exchanges | unchanged: 0–1 `/repo`, 5–16 exchanges |
+| Insert, 150 ms each way on A's link (3 reps) | A 8.9–9.5 s, B 10.1–37.9 s | A 4.5–5.1 s, B 5.1–5.9 s |
+| Reads, 150 ms each way | A 1.9–2.5 s; B 0.6–1.3 s (one 5.6 s) | A 1.3–1.9 s; B 0.6–1.3 s (one 3 ms) |
+| Concurrent pair, `storage` joiner, no proxy (12 pairs) | 483–2390 ms, 20–92 `/cluster` per side | 268–1097 ms, 4–22 `/cluster` per side |
+| `TornActionError`, `storage` joiner, concurrent pairs | 5 of 12 (7 of 16 with the proxied run) | **0 of 12**; every row landed on both sides |
+| Control pairs, both `transaction` | 0 of 4 | 0 of 4 |
+| Frames, loopback journey at the latency arm's install line (3 runs) | 11,939–12,531 | 8,537–9,338 |
+| Frames, 10 ms arm at its final line (3 runs) | 9,512–13,760 | 6,794–12,830 (no clear change) |
+
+The 27 block-transfer streams after the first insert of every run are now 0–6, and the 45-`/cluster` burst from B about 30 s after the join was not seen (this run waits for B's membership rows before counting, which may be what it was). The full integration suite passed with no failures, including every scenario that reads right after a member returns; sereus does not use the opt-in reactivity that the three-member commit-certificate change affects. At 300 ms round trip an insert still costs about 5 s, so each remaining `/cluster` round is still ~1.2 s on a relayed phone. Nothing in sereus is left to do here; this ticket stays blocked only as the record for gotchoices/sereus#13 until the optimystic release that carries `cadcb919` ships.
+
 ## How it was measured
 
 2026-09-17, sereus `25a5010`, optimystic `ab67fa47` (dist built). Two parties, each a single `CadreNode` with `listenAddrs: []`, connected only through the dedicated loopback relay (the `blind-relay-phone-to-phone-e2e` topology). Chat schema (`Participant`, `Message` with a foreign key to `Participant`). Party A (founder, the phone's role) on `profile: 'transaction'`. A's relay connection went through a counting TCP proxy. Each operation below ran alone, with no polling. Outbound streams were counted by wrapping `newStream` on each strand node's connections. "Exchanges" means how many times traffic on A's relay socket changed direction, roughly one request plus its response per two.
