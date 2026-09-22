@@ -28,7 +28,7 @@ These measurements were taken before optimystic 1.2.0 (4 `/cluster` streams per 
 
 ## Why the phone is so slow
 
-`@chainsafe/libp2p-noise` maps its crypto to a pure-JS build through its `browser` field, and Metro honours that mapping. So React Native runs unaccelerated JS crypto on Hermes, which has no JIT, while Node uses OpenSSL plus WASM. `@optimystic/db-p2p` hardcodes `connectionEncrypters: [noise()]`, so an app can't supply native crypto (Noise's `ICryptoInterface`). The reporter offered a PR for that option. It spans optimystic's `createLibp2pNode` and cadre-core's `buildControlNodeOptions` (`cadre-node.ts`, ~line 1431). Not started. It is the maintainer's layering call.
+`@chainsafe/libp2p-noise` maps its crypto to a pure-JS build through its `browser` field, and Metro honours that mapping. So React Native runs unaccelerated JS crypto on Hermes, which has no JIT, while Node uses OpenSSL plus WASM. `@optimystic/db-p2p` hardcodes `connectionEncrypters: [noise()]`, so an app can't supply native crypto (Noise's `ICryptoInterface`). The reporter offered a PR for that option. Scoped with optimystic on 2026-09-21: `noiseCrypto?: ICryptoInterface` on db-p2p's `NodeOptions`, plus re-exports of the type and `pureJsCrypto`. The reporter's PR goes to optimystic. After it is released, sereus passes the option through cadre-core's `buildControlNodeOptions` and the strand node options (`cadre-node.ts`, ~line 1431). The design is in the #13 reply draft, `blocked/report-issue-13-cpu-cost-follow-up.md`.
 
 That option would shrink the constant. This ticket is about the divergence, which any heavily loaded device can reach.
 
