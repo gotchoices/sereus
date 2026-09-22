@@ -5,19 +5,17 @@ import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
 import { ping } from '@libp2p/ping'
-import { kadDHT } from '@libp2p/kad-dht'
 import { multiaddr } from '@multiformats/multiaddr'
 import { dns, RecordType } from '@multiformats/dns'
 import { dnsJsonOverHttps } from '@multiformats/dns/resolvers'
 
 function usage () {
   console.log(`Usage:
-  node sereus/ops/test/check-node.mjs --target <multiaddr|/dnsaddr/...> [--relay] [--dht] [--all] [--timeout-ms N] [--dns-mode auto|system|doh]
+  node sereus/ops/test/check-node.mjs --target <multiaddr|/dnsaddr/...> [--relay] [--all] [--timeout-ms N] [--dns-mode auto|system|doh]
 
 Options:
   --target       Required. A concrete multiaddr (must include /p2p/<peerId>) or /dnsaddr/<hostname>
   --relay        Expect the remote to advertise circuit relay protocols (heuristic check)
-  --dht          Run a DHT query (dht.findPeer(remotePeerId)) and report success/failure
   --all          If --target resolves to multiple addresses, test all of them (default: first only)
   --timeout-ms   Overall per-target timeout (default: 15000)
   --dns-mode     DNS resolver strategy for /dnsaddr targets:
@@ -31,7 +29,6 @@ function parseArgs (argv) {
   const args = {
     target: null,
     relay: false,
-    dht: false,
     all: false,
     timeoutMs: 15000,
     dnsMode: 'auto'
@@ -42,7 +39,6 @@ function parseArgs (argv) {
     if (a === '--') continue
     if (a === '--target') args.target = argv[++i]
     else if (a === '--relay') args.relay = true
-    else if (a === '--dht') args.dht = true
     else if (a === '--all') args.all = true
     else if (a === '--timeout-ms') args.timeoutMs = Number(argv[++i])
     else if (a === '--dns-mode') args.dnsMode = String(argv[++i] ?? '')
@@ -166,18 +162,7 @@ function looksLikeRelay (protocols) {
   return s.includes('circuit') && s.includes('relay')
 }
 
-async function drainQueryEvents (iter, limit = 200) {
-  const events = []
-  for await (const ev of iter) {
-    events.push(ev)
-    if (events.length >= limit) break
-    if (ev?.name === 'FINAL_PEER') break
-    if (ev?.name === 'QUERY_ERROR') break
-  }
-  return events
-}
-
-async function checkOne (targetMa, { relay, dht, timeoutMs }) {
+async function checkOne (targetMa, { relay, timeoutMs }) {
   const peerIdFromTarget = getPeerIdStr(targetMa)
   if (!peerIdFromTarget) {
     throw new Error(`Target multiaddr must include /p2p/<peerId>: ${targetMa.toString()}`)
@@ -194,8 +179,7 @@ async function checkOne (targetMa, { relay, dht, timeoutMs }) {
     streamMuxers: [yamux()],
     services: {
       identify: identify(),
-      ping: ping(),
-      dht: kadDHT({ clientMode: true })
+      ping: ping()
     }
   })
 
@@ -240,23 +224,6 @@ async function checkOne (targetMa, { relay, dht, timeoutMs }) {
       const ok = looksLikeRelay(protocols)
       if (!ok) throw new Error('relay check failed: did not see relay hop protocol in identify protocol list')
       console.log('relay check: ok (heuristic)')
-    }
-
-    if (dht) {
-      const events = await withTimeout(timeoutMs, async (signal) => {
-        const it = node.services.dht.findPeer(remotePeer, { signal })
-        return await drainQueryEvents(it)
-      }, 'dht.findPeer')
-
-      const final = events.find(e => e?.name === 'FINAL_PEER')
-      const err = events.find(e => e?.name === 'QUERY_ERROR')
-      if (final) {
-        console.log('dht.findPeer: ok (FINAL_PEER)')
-      } else if (err) {
-        throw new Error(`dht.findPeer failed (QUERY_ERROR): ${err.error?.message ?? String(err.error)}`)
-      } else {
-        throw new Error('dht.findPeer did not reach FINAL_PEER (unexpected end)')
-      }
     }
 
     return { remotePeerId: remotePeerStr }
