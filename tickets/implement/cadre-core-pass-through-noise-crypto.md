@@ -9,9 +9,9 @@ files:
 
 # cadre-core: pass `noiseCrypto` through to every node it builds
 
-## Blocked on
+## Unblocked
 
-The option is on optimystic main (4739b170, reviewed 23929726) after 1.2.0 and is **not published**. Importing `NoiseCryptoInterface` would make sereus require an unreleased optimystic and hold up any sereus release. Unblock when an `@optimystic/db-p2p` release that exports `NoiseCryptoInterface` is on npm. Raise the `@optimystic/*` floors to that version in the same change.
+Optimystic 1.3.0 (db-core and db-p2p included) is on npm and exports `NoiseCryptoInterface` and `noisePureJsCrypto` from `@optimystic/db-p2p` and `/rn`. Sereus floors are already `^1.3.0`.
 
 ## Why
 
