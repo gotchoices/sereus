@@ -39,7 +39,7 @@
  * `reference-app-web`) passes through unchanged when no relay is named, and is
  * absorbed by the per-relay entries when one is.
  *
- * Everything else in `NetworkConfig` — `transports`, `connectionGater`,
+ * Everything else in `NetworkConfig` — `transports`, `noiseCrypto`, `connectionGater`,
  * `enableRelay` — is inherited by the caller; this module only owns the two
  * host-endpoint fields above and the relay listen shape. One caveat on
  * `connectionGater`: an OPEN strand's node gets it unchanged, while a CLOSED strand's

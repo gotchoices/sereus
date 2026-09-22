@@ -1649,6 +1649,7 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
+      ...(network?.noiseCrypto && { noiseCrypto: network.noiseCrypto }),
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.

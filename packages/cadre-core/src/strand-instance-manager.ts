@@ -667,6 +667,7 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
+        ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
-import { CachedRawStorage, MemoryRawStorage, defaultCachePool } from '@optimystic/db-p2p';
+import { CachedRawStorage, MemoryRawStorage, defaultCachePool, noisePureJsCrypto } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -468,10 +468,18 @@ describe('CadreNode control-network node options', () => {
       expect(options.transports).toBe(transports);
     });
 
-    it('omits transports and listenAddrs (and still resolves relay) when network is entirely absent', () => {
+    it('forwards a configured noiseCrypto', () => {
+      const noiseCrypto = { ...noisePureJsCrypto };
+      const options = controlOptions(new CadreNode(createConfig({ network: { noiseCrypto } })));
+
+      expect(options.noiseCrypto).toBe(noiseCrypto);
+    });
+
+    it('omits transports, noiseCrypto and listenAddrs (and still resolves relay) when network is entirely absent', () => {
       const options = controlOptions(new CadreNode(createConfig()));
 
       expect('transports' in options).toBe(false);
+      expect('noiseCrypto' in options).toBe(false);
       expect('listenAddrs' in options).toBe(false);
       expect(options.relay).toBe(false);
       expect(options.connectionGater).toBeDefined();

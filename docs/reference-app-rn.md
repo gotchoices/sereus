@@ -120,6 +120,8 @@ network: {
 
 `denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
 
+**Native crypto for Noise (not wired yet).** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so every handshake and every encrypted frame runs pure-JS SHA-256 and ChaCha20-Poly1305 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). `CadreNodeConfig.network.noiseCrypto` takes a replacement, and cadre-core hands it to the control node and every strand node. It must implement the whole interface; spread `noisePureJsCrypto` (exported by `@optimystic/db-p2p`) and override `hashSHA256`, `chaCha20Poly1305Encrypt` and `chaCha20Poly1305Decrypt` with native functions. The wire protocol is unchanged, so a phone with native crypto still talks to nodes without it. This app does not set it yet: choosing and linking a native crypto library is a separate decision.
+
 
 ### Reachability: configuring a relay
 

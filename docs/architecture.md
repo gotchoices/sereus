@@ -1210,6 +1210,10 @@ interface CadreNodeConfig {
     // meaningful while `enableRelay` is on.
     unauthorizedRelayReservationCap?: number;
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)
+    // Noise handshake/encryption primitives for the control node and every strand node
+    // (default: libp2p-noise's own, which is pure JS under React Native). A phone passes
+    // native hashing and ChaCha20-Poly1305 here; the wire protocol is unchanged.
+    noiseCrypto?: NoiseCryptoInterface;
   };
 
   // Hibernation configuration

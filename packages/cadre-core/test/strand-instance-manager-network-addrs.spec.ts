@@ -54,6 +54,9 @@ vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks
  * and the relay dial addrs it resolves beside them are runtime plumbing for the
  * per-relay reservation supervisor, NOT a `createLibp2pNode` option: this file pins
  * that they never reach the node builder.
+ *
+ * `network.noiseCrypto` is the opposite case — inherited literally, because every node
+ * pays the Noise handshake — and is pinned here beside the fields that are not.
  */
 describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
@@ -142,6 +145,16 @@ describe('StrandInstanceManager network-addrs wiring', () => {
     const options = await strandOptions({ announceAddrs: ['not-a-multiaddr'] });
 
     expect('announceAddrs' in options).toBe(false);
+  });
+
+  it('hands the strand node the configured noiseCrypto, and omits the key when unset', async () => {
+    const noiseCrypto = { fake: 'noise-crypto' } as unknown as NonNullable<StartStrandConfig['network']>['noiseCrypto'];
+    const options = await strandOptions({ noiseCrypto });
+
+    expect(options.noiseCrypto).toBe(noiseCrypto);
+
+    vi.clearAllMocks();
+    expect('noiseCrypto' in await strandOptions({ listenAddrs: [] })).toBe(false);
   });
 
   it('still fails the strand start on a malformed relayAddrs entry, which it does use', async () => {

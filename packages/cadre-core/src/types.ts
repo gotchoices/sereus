@@ -1,5 +1,5 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
@@ -366,6 +366,30 @@ export interface NetworkConfig {
    * ```
    */
   transports?: Libp2pTransports;
+  /**
+   * Crypto primitives for the Noise handshake and the encrypted connection that
+   * follows, threaded to both the control node and every strand's cohort node — every
+   * node pays the handshake, so one setting covers them all. When omitted, libp2p-noise
+   * picks its own default.
+   *
+   * React Native is the reason this exists: Metro resolves `@chainsafe/libp2p-noise`'s
+   * browser build, whose default is pure-JS crypto, and on Hermes (no JIT) that
+   * dominates connection setup on a slow phone. An app with native crypto supplies it
+   * here. It must implement every member of the interface; the usual shape spreads
+   * `noisePureJsCrypto` and overrides the hashing and ChaCha20-Poly1305 functions:
+   * ```typescript
+   * import { noisePureJsCrypto } from '@optimystic/db-p2p';
+   *
+   * network: {
+   *   noiseCrypto: { ...noisePureJsCrypto, hashSHA256: nativeSha256, chaCha20Poly1305Encrypt: …, chaCha20Poly1305Decrypt: … }
+   * }
+   * ```
+   *
+   * Only local primitives change — the wire protocol does not, so a node with native
+   * crypto interoperates with one without. See `@optimystic/db-p2p`'s
+   * `NodeOptions.noiseCrypto`.
+   */
+  noiseCrypto?: NoiseCryptoInterface;
   /**
    * Optional async resolver returning the multiaddrs to embed in invites
    * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
