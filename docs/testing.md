@@ -58,6 +58,25 @@ Measured that way on 2026-09-21 (same machine, two runs), the baseline is 11,939
 
 Two things that table is not saying. The `pipelined` failures at 100 ms are not a broken strand: the strand becomes writable and the join is still climbing the membership reconciler's retry ladder (1 s doubling to the 30 s poll interval, `strand-membership-reconciler.ts`) when the scenario's deliberately tight 20 s gate expires — slow, and not observed through to completion either way. And the frame count is the multiplier on any per-frame cost, which is why the two modes diverge so sharply on the same scenario; how chatty relayed bring-up is in the first place is a separate question, owned by `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`.
 
+Relay ROUND TRIPS — what one chat-shaped strand operation costs two people who reach each other only through a relay — are measured by `packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts`, which is committed but **opt-in**: without `RELAY_RRT_MEASURE=1` the whole suite is skipped, so `yarn test` never runs it. It exists because the same measurement was written from scratch three times, once per optimystic re-measure, and each copy was deleted afterwards; by the third, a change in the numbers could no longer be told apart from a difference between the throwaway scenarios. Results and their history live in `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`, not here.
+
+```
+RELAY_RRT_MEASURE=1 RELAY_RRT_CONFIG=control RELAY_RRT_RUNS=3 yarn workspace @serfab/integration-tests exec vitest run relay-round-trip-measure
+```
+
+`RELAY_RRT_CONFIG` selects one or more configurations (comma-separated; all four by default), `RELAY_RRT_RUNS` repeats each of them as separate runs — separate nodes, separate relay, which is the only way to see run-to-run spread — and `RELAY_RRT_REPS` / `RELAY_RRT_DELAY_MS` override a configuration's repetitions and its injected one-way delay. Each run prints one line per operation and then a per-operation table of ranges, which is the form the tickets quote.
+
+| Configuration | Joiner's profile | A's link | What it measures |
+| --- | --- | --- | --- |
+| `config1` | `transaction` | counting proxy | The per-operation baseline: time, streams opened per protocol per side, and direction changes on A's link, for an insert from each side and four reads. |
+| `delayed` | `transaction` | counting proxy, 150 ms each way | The same operations with a round trip that costs 300 ms — what a phone on a real link pays per consensus round. |
+| `config2` | `storage` | direct | Concurrent insert pairs with a storage-profile joiner, the shape that used to produce `TornActionError`, plus a sequential pair as its yardstick. |
+| `control` | `transaction` | direct | `config2`'s control: the same pairs with both parties `transaction`, so a difference can be attributed to the profile rather than to concurrency. |
+
+Two instruments back it, both reusable from `src/harness/`. `counting-proxy.ts` is a TCP proxy in front of the relay's WebSocket port that counts direction changes ("exchanges") and can delay each chunk, together with the connection gater that refuses direct dials to the relay's real port — without that gater the measured party opens a second connection straight to the relay and the counters go quiet, which the scenario's one assertion checks for. Unlike `ws-latency.ts` it is per-link, so ONE party can be slow while the other is not. `stream-counter.ts` counts the streams each node opens, per protocol, leaving out libp2p's own upkeep and FRET's.
+
+Nothing in that file asserts a count or a duration, deliberately: a budget would have to be re-pinned on every optimystic change, which is the opposite of what the file is for. Operation failures are recorded and printed rather than thrown, because an error rate is part of the measurement.
+
 ## Stale-build guard
 
 Every suite that runs *compiled* output — a spawned real `cadre-cli` child, or an in-process

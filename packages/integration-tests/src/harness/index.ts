@@ -21,6 +21,12 @@ export * from './topology.js';
 export * from './strand-join.js';
 export * from './block-store-probe.js';
 export * from './dedicated-relay.js';
+// The relay round-trip measurement's instruments (`scenarios/relay-round-trip-measure`):
+// a per-link counting TCP proxy with the gater that keeps a node from dialing around
+// it, and a per-protocol outbound stream counter. Importing either instruments
+// nothing until it is called.
+export * from './counting-proxy.js';
+export * from './stream-counter.js';
 // Safe in the barrel: importing it instruments nothing unless `installWsLatency` is called
 // or one of its environment variables is set, and those are process-wide by intent.
 export * from './ws-latency.js';

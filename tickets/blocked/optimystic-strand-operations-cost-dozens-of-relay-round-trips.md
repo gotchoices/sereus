@@ -3,7 +3,8 @@ files:
   - ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts (live read arm refreshes each tree from the network, ~line 1215)
   - ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts (`collectPromises`, the "Failed to get super-majority" shortfall)
   - ../optimystic/tickets/complete/1-a-two-member-cohort-refuses-a-commit-both-members-hold.md (fixed upstream after 1.0.0; see 2026-09-18 status)
-  - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (the scenario the measurements were taken from)
+  - packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts (the committed, opt-in measurement — every re-measure from 2026-09-23 on)
+  - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (its topology, and where the pre-2026-09-23 measurements were taken from)
 repro: verified
 ----
 
@@ -57,6 +58,26 @@ Not one error of any kind occurred in seven runs. Two things optimystic asked ab
 
 The one number that moved the wrong way is the control concurrent pair, both parties `transaction`, which went from 276–355 ms to 481–1109 ms and is now slower than the `storage`-joiner pairs in the same session — the opposite of the expected ordering. One run of four pairs against one run of four pairs is weak evidence, and nothing here attributes it to the three fixes; a second control run would settle it. Regression check: the scenarios that read right after a member returns, restarts or joins late, plus both circuit journeys, all pass (7 files, 13 tests) — narrower than the full-suite pass the `cadcb919` re-measure ran. Nothing in sereus is left to do here; this ticket stays blocked as the record for gotchoices/sereus#13.
 
+**Status 2026-09-23 (later): the control-pair slowdown was run-to-run variance, not a regression.** The measurement is now a committed, opt-in scenario (`packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts`, run with `RELAY_RRT_MEASURE=1`; see `docs/testing.md` → "Where measurements live"), so this and every later re-measure use the same file. Re-run against the same optimystic build as the re-measure above (`9e5c1e85`; the two commits since it touch only that repo's tickets, and its `dist` is unchanged), this time three runs of each configuration instead of one.
+
+| Concurrent pair | 9e5c1e85, one run each | 2026-09-23 later, three runs each (12 pairs each) |
+|---|---|---|
+| Both parties `transaction` (the control) | 481–1109 ms, 10–22 `/cluster` per side | 260–907 ms |
+| `storage` joiner | 250–324 ms, one side 4 / the other 10 | 252–600 ms |
+
+Per run, in milliseconds, with the `/cluster` streams each side opened:
+
+- Control: run 1 — 299, 277, 262, 260 (A 10 / B 4 every rep); run 2 — 488, 484, 485, 556 (A 16 / B 10); run 3 — 907, 554, 517, 490 (A 16–22 / B 10–16).
+- `storage` joiner: run 1 — 331, 255, 300, 281 (A 10 / B 4); run 2 — 252, 258, 262, 282 (A 4 / B 10); run 3 — 486, 477, 519, 600 (A 10–16 / B 10–16).
+
+**So the control pairs are not slower than the `storage`-joiner pairs, and there is nothing here to carry upstream as a regression.** The spread is BETWEEN RUNS, not between the two configurations: each run settles into one retry pattern at bring-up and every pair in that run repeats it — the same side loses each time, and it re-drives its commit the same number of times. Three patterns appeared, in both configurations: one side re-driving once (4 and 10 `/cluster`, 250–330 ms), both sides re-driving (16 and 10, 480–560 ms), and one run where a side re-drove three times (22, 907 ms on its first pair). Each re-drive costs 6 extra `/cluster` streams. The 481–1109 ms figure above was one control run that landed in a slower pattern, measured against one `storage`-joiner run that landed in the fastest one.
+
+What is worth carrying upstream is the pattern itself rather than either number: **for identical work, a run costs up to 3.5× another because of how many times a commit is re-driven, and that is decided once per run rather than per pair.** Sequential pairs are unaffected (114–168 ms control, 115–151 ms `storage` joiner, 4 `/cluster` per side in every rep of every run) — the variation is entirely in the contended path.
+
+Errors: **0 of 24 concurrent pairs**, no error of any kind in six runs, all 48 rows present on both sides by id, and every run's `Message` id sets matched within 30 s.
+
+One caveat on comparing older stream counts with new ones. The committed scenario reproduces the earlier numbers for the commit itself (4 `/cluster` per insert from either party), for timings, for exchanges on the relayed link and for the proxy totals (2,173 exchanges and 2.9 MB per `config1` run, against 2,181 and 2,191 before). It does NOT reproduce the earlier split between `/repo` and `/db-p2p/sync` on the joiner's insert: this file records 1 `/repo` plus 1–3 `/db-p2p/sync`, where the deleted scenario recorded 2–3 `/repo` plus 0–1 sync, for the same total of 2–4 streams. Which of the two protocols the joiner uses evidently turns on something neither scenario controls. Treat the counts published before this file as a different baseline for that split only, and compare like with like from here on.
+
 **Draft follow-up for #13** (post after the sereus release that raises the `@optimystic/*` floor; posting is the maintainer's call):
 
 > Follow-up on the round-trip cost: the sereus release <version> requires `@optimystic/*` <version>, which cuts a commit's consensus rounds. In the same two-party relay topology, an insert now opens 4 cluster-protocol streams instead of 9. With 150 ms added each way on one party's link, an insert takes about 5 s, where it took 9–10 s (one run took 38 s). The loopback journey's frame count dropped from about 12k to about 9k. Each remaining round still costs a relayed phone roughly one round trip, so we're keeping this open to look at further reductions.
@@ -97,7 +118,7 @@ The device phone ran optimystic `7cd71341`, from before `a-write-whose-log-entry
 
 ## Reproducing
 
-Nothing was committed. Copy `blind-relay-phone-to-phone-e2e.integration.ts` and replace its "Data BOTH ways" section with timed inserts and reads. For the latency cases, point A's `relayAddrs` at a local TCP proxy in front of the relay's WebSocket port that delays each chunk in order. Without a gater, A soon opened a direct connection to the relay's real port and bypassed the proxy (exchange count dropped to 0), so check the counter before trusting any delayed timing. `backlog/debt-relay-scenarios-never-see-link-latency` tracks turning this into a reusable fixture.
+**The measurement is committed** as `packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts` and runs only under `RELAY_RRT_MEASURE=1`; `docs/testing.md` → "Where measurements live" has the configurations and the command. What follows is the recipe it implements, kept because it explains the shape: copy the `blind-relay-phone-to-phone-e2e` topology and replace its "Data BOTH ways" section with timed inserts and reads; for the latency cases point A's `relayAddrs` at a local TCP proxy in front of the relay's WebSocket port that delays each chunk in order. Without a gater, A soon opened a direct connection to the relay's real port and bypassed the proxy (exchange count dropped to 0), so check the counter before trusting any delayed timing — the committed scenario fails the run on exactly that. Up to 2026-09-23 each re-measure rewrote this from scratch and deleted it afterwards, which is what made the third re-measure unable to tell a change from a scenario difference. `backlog/debt-relay-scenarios-never-see-link-latency` tracks the separate asymmetric-latency fixture (one slow machine, one fast).
 
 ## Corroborating measurement 2026-09-20: outbound WebSocket frame counts
 
