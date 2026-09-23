@@ -41,7 +41,13 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
-import { controlStorageScope } from './storage-scope.js';
+import {
+  assertScopeKeyCharset,
+  assertStrandScopeKey,
+  controlStorageScope,
+  InvalidStrandIdError,
+  isValidStrandScopeKey
+} from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
@@ -1438,6 +1444,12 @@ export class CadreNode implements SAppIdLookup {
    * derivation from it (`db-p2p` namespaces all of the node's protocol ids as
    * `/optimystic/<networkName>/...`), so the node options and the block-transfer
    * protocol prefix the control backfill dials can never drift apart.
+   *
+   * NOTE: the party id goes in UNENCODED here, unlike in `controlStorageScope`. Safe
+   * today because a party id is locally configured rather than replicated in, and both
+   * ends of a connection derive this string identically — an odd party id yields an odd
+   * but consistent protocol id, not a mismatch or an escaped name. If a party id ever
+   * arrives from the network, encode it here as the storage scope key already does.
    */
   private controlNetworkName(): string {
     return `control-${this.config.controlNetwork.partyId}`;
@@ -1550,6 +1562,11 @@ export class CadreNode implements SAppIdLookup {
     // party's records, so two parties on one device must not land in one store.
     // Same key as the cache label, which also makes the shared pool's `stats()` readable.
     const scope = controlStorageScope(this.config.controlNetwork.partyId);
+    // The second seam that hands a scope key to an embedder's provider; the first
+    // (`StrandInstanceManager.startStrand`) asserts the stricter strand rule. Holds by
+    // construction today — base64url is inside the charset — so this guards a future
+    // edit to `controlStorageScope`, not a reachable input.
+    assertScopeKeyCharset(scope);
     const resolved = typeof provider === 'function' ? provider(scope) : provider;
     this.controlStorage = wrapStorageWithCache(resolved, scope);
     return this.controlStorage;
@@ -4071,6 +4088,24 @@ export class CadreNode implements SAppIdLookup {
   private async handleStrandAdded(strand: StrandRow): Promise<void> {
     log('Handling strand added from control network: %s', strand.Id);
 
+    // A replicated row carries whatever id the founding node wrote, and the id becomes a
+    // storage scope key and a libp2p protocol prefix. Checked FIRST — above the
+    // discovery branch below — so a malformed id is never offered to the hosting app as
+    // a strand it could join; that app's `addStrand` could only fail on it.
+    //
+    // Suppressed rather than retried: the id is a property of the row, so every later
+    // attempt fails identically, and without this the watcher's ladder would re-emit
+    // `strand:error` every five minutes for the life of the process. The throw still
+    // matters — the watcher's catch runs `forgetStrand`, dropping the id from
+    // `knownStrands`, so its removed-strand loop never detaches a strand that never ran.
+    if (!isValidStrandScopeKey(strand.Id)) {
+      const error = new InvalidStrandIdError(strand.Id);
+      log('Refusing strand %s: %s', strand.Id, error.message);
+      this.emit('strand:error', { strandId: strand.Id, error });
+      this.strandWatcher?.suppressStrand(strand.Id);
+      throw error;
+    }
+
     // Check if we have sApp config for this strand
     const sAppConfig = this.sAppConfigs.get(strand.Id);
     if (!sAppConfig) {
@@ -4545,6 +4580,9 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const { strandRow, sAppConfig, founder, partyMemberPrivateKey } = config;
+    // Before anything is recorded: an unusable id must not leave a registered sApp
+    // config behind, and must not lift a suppression this node set deliberately.
+    assertStrandScopeKey(strandRow.Id);
     if (partyMemberPrivateKey !== undefined && strandRow.Type !== 'c') {
       // Only a closed strand seats a Member/Manager, so an open launch would drop this
       // key silently. Refuse instead: the caller has confused the party identity key

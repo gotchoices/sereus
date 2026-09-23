@@ -119,8 +119,16 @@ export {
 
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
-// so two parties on one device never share a control store.
-export { controlStorageScope, isControlStorageScope } from './storage-scope.js';
+// so two parties on one device never share a control store. Every key stays within
+// `[A-Za-z0-9._-]`: the control key by base64url encoding, a strand's by
+// `assertStrandScopeKey`, which every strand launch runs.
+export {
+  controlStorageScope,
+  isControlStorageScope,
+  isValidStrandScopeKey,
+  assertStrandScopeKey,
+  InvalidStrandIdError
+} from './storage-scope.js';
 
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';

@@ -14,6 +14,7 @@ import type {
 import { generateStampId, formationConsentMessage } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
+import { mintPlaceholderStrandId } from './strand-id.js';
 import {
   StrandFormationManager,
   type StrandFormationManagerConfig
@@ -375,7 +376,7 @@ export class StrandSolicitationService {
 
     // Fallback: placeholder strandId (for testing without network)
     log('No node provided, using placeholder strandId');
-    const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const strandId = mintPlaceholderStrandId();
 
     return {
       memberKey,

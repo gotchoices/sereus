@@ -18,6 +18,7 @@ import {
 import { removeMemberPeer } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
+import { assertStrandScopeKey } from './storage-scope.js';
 import {
   StrandFirstSyncGate,
   StrandAwaitingFirstSyncError,
@@ -311,7 +312,10 @@ export function getStrandStoragePath(basePath: string, strandId: string): string
  * If the provider is a factory function, call it with the strandId.
  *
  * Called only from {@link StrandInstanceManager.startStrand}, which owns the result
- * for the instance's lifetime — see `strandStorages`.
+ * for the instance's lifetime — see `strandStorages`, and which has already asserted
+ * the id is usable as a scope key. Do not move that assertion here: this function
+ * returns early when no provider is configured, and the id becomes a libp2p protocol
+ * prefix on that path too.
  *
  * @param provider - Storage provider (instance or factory)
  * @param strandId - The strand ID to create storage for
@@ -484,6 +488,15 @@ export class StrandInstanceManager {
 
     log('Starting strand instance: %s (sApp: %s v%s)', strandId, sAppConfig.id, sAppConfig.version);
     const tTotal = performance.now();
+
+    // The id becomes two names below: the storage scope key the embedder's provider
+    // turns into a directory or database name, and `networkName` in buildStrandRuntime,
+    // from which the libp2p protocol prefix `/optimystic/strand-<id>` is built. A
+    // replicated strand row carries whatever id the founding node wrote, so neither is
+    // safe unchecked. Asserted HERE rather than in `resolveStrandStorage` because that
+    // function returns early when no provider is configured — a node with no storage
+    // still reaches buildStrandRuntime and still mints the protocol prefix.
+    assertStrandScopeKey(strandId);
 
     // Verify schema signature before proceeding (fail-closed by default)
     const requireSignature = config.requireSignedSchemas ?? true;

@@ -338,11 +338,16 @@ export class StrandWatcher {
   }
 
   /**
-   * Never offer this strand again this session: a deliberate local stop, as opposed to
-   * a failed launch. Cleared when the strand's control row disappears, because a row
-   * that reappears is a strand the party re-published and the stop said nothing about
-   * it; also cleared by {@link stop}, since sApp configs do not survive it either, and
-   * by {@link unsuppressStrand} when the caller claims the strand again.
+   * Never offer this strand again this session. Two callers, both meaning "the retry
+   * ladder cannot help here": a deliberate local stop, and a launch that can never
+   * succeed — a strand whose id is unusable as a storage scope key
+   * (`CadreNode.handleStrandAdded`), which every later attempt would reject identically.
+   * A launch that merely FAILED is not one of them; that goes to {@link forgetStrand}.
+   *
+   * Cleared when the strand's control row disappears, because a row that reappears is a
+   * strand the party re-published and the stop said nothing about it; also cleared by
+   * {@link stop}, since sApp configs do not survive it either, and by
+   * {@link unsuppressStrand} when the caller claims the strand again.
    */
   suppressStrand(strandId: string): void {
     log('Suppressing strand %s — deliberate local stop, will not be re-offered', strandId);

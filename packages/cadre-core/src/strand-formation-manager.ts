@@ -14,6 +14,7 @@ import {
 // control-database does not import this manager, so this import introduces no cycle.
 import { FormationAbortedError, InvitationExhaustedError } from './control-database.js';
 import { PreSplitStrandIdentityError } from './strand-membership-writer.js';
+import { mintPlaceholderStrandId } from './strand-id.js';
 import { canonicalJson } from './canonical-json.js';
 import type {
   DisclosureValidator,
@@ -599,7 +600,7 @@ export class StrandFormationManager {
     }
 
     // No recorder + no provisioner — a structural placeholder the initiator can still validate.
-    const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const strandId = mintPlaceholderStrandId();
     return this.approve({
       strand: { strandId, createdBy: 'responder' },
       dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }

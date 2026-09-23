@@ -121,13 +121,13 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
  * Factory functions are useful for creating per-scope storage instances.
  *
  * **The argument is an opaque scope key.** Use it directly as a file name, directory
- * name or database name: every key cadre-core mints stays within `[A-Za-z0-9._-]`, so
- * no escaping is needed and none should be assumed. Do not parse it;
- * `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the
- * supported way to mint and recognize the control key. The strand arm of that charset
- * rule is intended but not yet checked — a strand id replicated in from another node
- * in the party reaches this callback verbatim; see
- * `tickets/backlog/bug-strand-scope-key-charset-unenforced`.
+ * name or database name: every key stays within `[A-Za-z0-9._-]`, so no escaping is
+ * needed and none should be assumed. Do not parse it; `controlStorageScope` /
+ * `isControlStorageScope` (`storage-scope.ts`) are the supported way to mint and
+ * recognize the control key. The control key holds the charset by base64url encoding;
+ * a strand's key — its strand id, which may have replicated in from another node in
+ * the party — holds it because `StrandInstanceManager.startStrand` runs
+ * `assertStrandScopeKey` on every launch and refuses a strand that fails it.
  *
  * **Called once per scope per runtime lifetime.** The scopes are the control database
  * (once per `CadreNode.start()`) and each strand id (once per `startStrand`).

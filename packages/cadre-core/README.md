@@ -236,9 +236,10 @@ A **scope key** is what the factory receives. It is the strand id for each stran
 which holds one party's own records and must not be shared between parties. Every key is
 opaque and already safe as a file, directory or database name (always within
 `[A-Za-z0-9._-]`): use it verbatim, do not parse it. `isControlStorageScope(scope)` tells
-the two kinds apart. Caveat, until `bug-strand-scope-key-charset-unenforced` lands: the
-charset is enforced for the control key but only *conventional* for a strand id, which
-reaches the factory verbatim even when the strand row replicated in from another node.
+the two kinds apart. The control key holds the charset by base64url encoding; a strand
+id holds it by check — `assertStrandScopeKey` runs on every strand launch, so a strand
+whose row replicated in from another node with an unusable id is refused rather than
+handed to the factory.
 
 Available storage implementations:
 | Package | Environment | Description |

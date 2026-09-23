@@ -1,6 +1,6 @@
 import debug from 'debug';
-import { randomBytes } from '@optimystic/quereus-plugin-crypto';
 import { FormationAbortedError, type ControlDatabase } from './control-database.js';
+import { mintStrandId } from './strand-id.js';
 import {
   createHttpFormationApprover,
   verifyFormationApproval,
@@ -252,10 +252,10 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * Provision a NEW strand for an UNBOUND invite and record consent against it in ONE
    * transaction (the responder-provisions fallback, now single-use-enforced).
    *
-   * Mints a fresh, globally-unique strand id from {@link randomBytes} — the same
-   * cross-platform CSPRNG `control-database`'s `generateStampId` uses, NOT
-   * `crypto.randomUUID` / `Date.now` / `Math.random` (not uniformly available across
-   * node/browser/RN) — then delegates to {@link ControlDatabase.redeemInvitation}, whose
+   * Mints a fresh, globally-unique strand id with {@link mintStrandId} — an
+   * unguessable CSPRNG id, and one `strand-id.ts` has already checked is usable as a
+   * storage scope key and network name — then delegates to
+   * {@link ControlDatabase.redeemInvitation}, whose
    * single `begin … commit` inserts the consent-authorized `Strand` row AND the matching
    * `FormationUsage` row together (both deferred CHECKs see both rows at commit). That one
    * `FormationUsage` row makes the unbound redemption single-use exactly like the bound
@@ -289,7 +289,7 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'redemption');
     }
-    const strandId = `strand-${randomBytes(128, 'hex') as string}`;
+    const strandId = mintStrandId();
     const invite = await this.controlDatabase.queryFormationInvite(token);
     const approval = await this.obtainApproval({
       token, usageStampId, strandId, peerKey, disclosure,
