@@ -51,3 +51,11 @@ Open questions a design pass should settle, in rough order of importance:
 - A strand id that is not safe as a path or database-name segment never reaches the embedder's storage provider, on any platform.
 - The charset statement in `types.ts`, `storage-scope.ts` and `docs/architecture.md` becomes unconditionally true, and the three "not yet enforced" caveats added during the review of `phone-control-storage-shared-across-parties` come back out.
 - A test drives a hostile strand id — `../../etc/passwd`, an embedded separator, one beginning `control-` — through the launch path and shows it is refused rather than turned into a name.
+
+## Decision (tending, 2026-09-23)
+
+- **Reject, don't encode.** Encoding would rename every deployed strand's folder and orphan its data. A non-conforming id is a bug or an attack, and cadre-core never generates one.
+- **One check at the seam:** validate in `resolveStrandStorage` (and assert the same in `resolveControlStorage` for symmetry) against the charset `types.ts` promises. Also refuse a strand id beginning `control-`, so it can't impersonate a control scope.
+- **An unstorable strand doesn't start, and the node keeps running.** Surface it as the existing `strand:error` on the watcher path, with an error type that names the id and the rule. The watcher must not retry it in a loop: a rejected id is permanent, so it needs no backoff storm. Check how the watcher's retry treats it.
+- **Also validate where ids are created** (`strand-formation-manager.ts`, `strand-solicitation.ts`, `control-formation-recorder.ts`), using the same predicate, so a future generator change fails locally.
+- Do the one sweep the ticket asks for, looking for other remotely supplied strings that become names. Add any it finds as arms of this ticket.

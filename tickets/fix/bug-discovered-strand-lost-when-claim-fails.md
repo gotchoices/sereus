@@ -41,3 +41,7 @@ The unclaimed map is documented as "strands no local sApp config claims". A fail
 ## What would confirm it
 
 Claim a discovered strand with an `addStrand` that rejects once (a stub launch failure is enough), then let the watcher poll several more times: no `strand:discovered` fires and `getDiscoveredStrands()` stays empty, so no path exists to retry the strand. `packages/cadre-core/test/discovered-strands-late-subscriber.spec.ts` already has a bare-watcher harness (no libp2p, no database) this arm can be written against.
+
+## Decision (tending, 2026-09-23)
+
+**Re-offer through the watcher.** A failed app-driven `addStrand` tells the watcher to forget that strand, so a later poll offers it again (`strand:discovered`, and `getDiscoveredStrands()`), with the same backoff a watcher-driven launch failure gets. This keeps one retry mechanism for both failure routes, and the unclaimed map keeps its documented meaning. Add the small public seam on `StrandWatcher` this needs. A deliberate `stopStrand` / `detachStrand` must still mean "don't offer again", so test that too. The reason this matters now: a join on a slow or flaky phone connection is exactly the launch that fails (gotchoices/sereus#13).
