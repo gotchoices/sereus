@@ -111,32 +111,22 @@ const node = await createLibp2p({
   streamMuxers: [yamux()],
   // Tolerate peers whose event loop is saturated, without giving up on dead ones.
   //
-  // libp2p pings every connection every 10 s and, by default, ABORTS it when the
-  // ping times out. The ping uses an AdaptiveTimeout that widens on failure — but
-  // it starts at `minTimeout` (5 s) and the abort destroys the connection on the
-  // FIRST miss, so the widened timeout is never applied to the peer that earned it.
+  // libp2p pings every connection every 10 s and ABORTS it on the first ping that
+  // times out. A React Native client runs Noise's crypto in pure JavaScript on an
+  // engine with no JIT, so during bring-up its event loop is busy for long
+  // stretches and misses a 5 s ping. The relay drops it, it redials, the redial
+  // costs another handshake, and it never catches up (gotchoices/sereus#13).
   //
-  // A React Native client runs Noise's crypto in pure JavaScript under an engine
-  // with no JIT (`@chainsafe/libp2p-noise` resolves its browser build there, where
-  // `defaultCrypto = pureJsCrypto`). On a 2016 handset a single handshake costs
-  // ~231 ms of CPU and a strand bring-up needs thousands of frames, so the JS loop
-  // is saturated for long stretches and cannot answer a 5 s ping. The relay then
-  // drops the connection, the client re-dials, the new connection costs another
-  // handshake, and the cost of re-connecting is what prevents it ever catching up.
+  // Measured on a two-party relayed bring-up at full measured device crypto cost:
+  // stock 0 of 3 runs completed; pinging every 60 s 0 of 2; raising only the
+  // ceiling 0 of 2; raising the floor to 30 s 2 of 3; with the clients also at
+  // 30 s, 4 of 4, in about 90 s (slow but correct).
   //
-  // Measured against a two-party relayed bring-up carrying the full measured
-  // device crypto cost (gotchoices/sereus#13):
-  //
-  //   stock (5 s-60 s)                     0 of 3 runs completed
-  //   ping every 60 s instead of 10 s      0 of 2   (it is not the frequency)
-  //   ceiling raised to 120 s only         0 of 2   (it is not the ceiling)
-  //   floor raised to 30 s only            2 of 3
-  //   floor 30 s + ceiling 600 s (this)    4 of 4   ~90 s, i.e. slow but correct
-  //
-  // The floor matters most: adaptation cannot help a connection that is already
-  // destroyed. Reclamation is preserved — a peer that truly stops answering is
-  // still dropped, after ten minutes rather than five seconds, which is the right
-  // trade for a relay whose job is to keep unreachable clients reachable.
+  // NOTE: below libp2p 3.3 the monitor never feeds its AdaptiveTimeout (no
+  // `cleanUp()` call), so the deadline is exactly `minTimeout` on every ping and
+  // `maxTimeout` has no effect. That is why only the floor mattered above. A dead
+  // peer is still reclaimed, after about 30–40 s (the deadline plus up to one ping
+  // interval). From libp2p 3.3.11 the deadline adapts between the two bounds.
   connectionMonitor: {
     pingTimeout: {
       minTimeout: 30_000,
