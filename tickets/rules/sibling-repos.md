@@ -1,0 +1,3 @@
+**Sibling repositories are read-only.** `../optimystic`, `../quereus` and `../Fret` are linked into this workspace through root `resolutions`, but they belong to other projects, often with their own agents editing them at the same moment. Never build, install into, edit, or run scripts that write in them. That includes `yarn workspace @optimystic/... build`.
+
+If the stale-build guard reports a sibling's `dist` is stale, its source is being edited right now. Stop the work that needs it, and record in the ticket that it is blocked on the sibling's build. Building it yourself compiles someone else's unfinished code into what every test here runs against.
