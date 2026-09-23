@@ -14,13 +14,17 @@
  * what it measures only when you mean to make older numbers incomparable**, and say so
  * in the ticket that does it.
  *
- * One known break with the numbers published before this file existed. It reproduces
- * the deleted scenario's commit cost (4 `/cluster` streams per insert from either
- * party), its timings, its exchanges and its proxy totals, but NOT the split between
- * `/repo` and `/db-p2p/sync` on the joiner's insert: this file records 1 `/repo` plus
- * 1–3 sync where the deleted one recorded 2–3 `/repo` plus 0–1 sync, for the same
- * total. Which of the two the joiner uses turns on something neither scenario
- * controls, so compare that one split only against runs of THIS file.
+ * It reproduces the numbers published before this file existed, including the one that
+ * first looked like a break. The commit cost (4 `/cluster` streams per insert from
+ * either party), the timings, the exchanges and the proxy totals all match. The split
+ * between `/repo` and `/db-p2p/sync` on the joiner's insert LOOKS unstable — the first
+ * session with this file recorded 1 `/repo` plus 1–3 sync where the deleted scenario
+ * had recorded 2–3 `/repo` plus 0–1 sync — but that is the same per-run pattern the
+ * `/cluster` counts show, not a scenario difference: two runs of `config1` on
+ * 2026-09-23 produced `repo=3–4, sync=0` in one and `repo=1, sync=1–3` in the other,
+ * reproducing BOTH published bands from one file. The split is fixed once per run at
+ * bring-up and every rep of that run repeats it, so read it per run and compare bands,
+ * never single reps.
  *
  * ── Running it ──
  *
@@ -53,15 +57,25 @@
  *
  * A's `relayAddrs` name a counting TCP proxy in front of the relay's WebSocket port
  * (`harness/counting-proxy.ts`), so "exchanges" are A's link only, and A carries a
- * gater that refuses direct dials to the relay's real port — without it A opens a
- * second connection straight to the relay and the counters go quiet. B always talks to
- * the relay directly: only one party is instrumented, which is also what makes the
- * delayed configuration a SLOW PHONE talking to a fast peer rather than two slow ones.
+ * gater that refuses direct dials to the relay's real port. B always talks to the relay
+ * directly: only one party is instrumented, which is also what makes the delayed
+ * configuration a SLOW PHONE talking to a fast peer rather than two slow ones.
+ *
+ * The gater is INSURANCE, not a reproduction. The ad-hoc measurements this file
+ * replaces saw A open a second connection straight to the relay, after which the
+ * proxy's counters went quiet — but that does not reproduce here: removing the gater
+ * and running `config1` (1 and 3 reps) and `delayed` (2 reps) on 2026-09-23 left every
+ * one of A's paths on the proxy port. It is kept because a bypass turns a delayed run
+ * into an undelayed one without saying so, and because every published number was
+ * taken with it. Do not expect deleting it to fail a run.
  *
  * ── What it asserts ──
  *
  * Only what makes a run invalid: that A went through the proxy (the relay's real port
  * appears in none of A's connection paths, and the proxy accepted at least one socket).
+ * It has never been seen to fire — see the gater note above — and is checked at two
+ * instants, setup and end, so a connection that opened and closed between them would
+ * slip past it; the proxy totals are the cross-check for that.
  * Nothing here asserts a count or a duration. A budget test would have to be re-pinned
  * on every optimystic change, which is the opposite of what this file is for;
  * `docs/testing.md` → "Where measurements live" lists the budgets that do assert.
@@ -140,9 +154,28 @@ const CONFIGS: Record<string, MeasureConfig> = {
 	},
 };
 
+/**
+ * An integer override, or undefined when the variable is unset. Parsed strictly, and
+ * only under `MEASURE` so a leftover variable cannot fail the skipped default run.
+ * Leniency here has the one failure mode a measurement tool cannot afford: `Number`
+ * turns a typo into `NaN`, `run <= NaN` is false, and the run reports a PASSING test
+ * that measured nothing and printed nothing.
+ */
+function integerEnv(name: string, min: number): number | undefined {
+	const raw = process.env[name];
+	if (!MEASURE || raw === undefined || raw.trim() === '') return undefined;
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < min) {
+		throw new Error(`${name} must be an integer >= ${min}, not ${JSON.stringify(raw)}`);
+	}
+	return value;
+}
+
 const SELECTED = (process.env.RELAY_RRT_CONFIG ?? Object.keys(CONFIGS).join(','))
 	.split(',').map((name) => name.trim()).filter((name) => name.length > 0);
-const RUNS = Number(process.env.RELAY_RRT_RUNS ?? '1');
+const RUNS = integerEnv('RELAY_RRT_RUNS', 1) ?? 1;
+const REPS_OVERRIDE = integerEnv('RELAY_RRT_REPS', 1);
+const DELAY_OVERRIDE_MS = integerEnv('RELAY_RRT_DELAY_MS', 0);
 
 if (MEASURE) {
 	const unknown = SELECTED.filter((name) => !(name in CONFIGS));
@@ -169,6 +202,10 @@ interface OperationSample {
 	readonly exchanges: number;
 	/** Streams opened during the operation, keyed `<side> <short protocol>`. */
 	readonly streams: Map<string, number>;
+	/** Exchanges in the settle window that followed the operation. */
+	readonly settleExchanges: number;
+	/** Streams opened in that settle window, same keys as {@link streams}. */
+	readonly settleStreams: Map<string, number>;
 }
 
 /** `/optimystic/strand-<strandId>/db-p2p/sync/1.0.0` → `db-p2p/sync`. */
@@ -201,31 +238,50 @@ function formatRange(values: number[]): string {
 }
 
 /**
- * The per-operation table the round-trip tickets are written from: one row per
- * operation, each column a range over this run's reps. A stream protocol that some
- * reps did not open counts as zero in those reps, so `0–2` and `2` mean different
- * things.
+ * One cell: every protocol any rep opened in `pick`'s window, each with its range over
+ * the reps. A protocol some reps did not open counts as zero in those reps, so `0–2`
+ * and `2` mean different things.
  */
-function printSummary(samples: OperationSample[], say: (msg: string, ...args: unknown[]) => void): void {
+function streamCell(group: OperationSample[], pick: (sample: OperationSample) => Map<string, number>): string {
+	const protocols = new Set<string>();
+	for (const sample of group) for (const key of pick(sample).keys()) protocols.add(key);
+	const cells = [...protocols].sort().map((key) =>
+		`${key} ${formatRange(group.map((sample) => pick(sample).get(key) ?? 0))}`);
+	return cells.length === 0 ? 'none' : cells.join(', ');
+}
+
+function groupByLabel(samples: OperationSample[]): Map<string, OperationSample[]> {
 	const byLabel = new Map<string, OperationSample[]>();
 	for (const sample of samples) {
 		const group = byLabel.get(sample.label);
 		if (group === undefined) byLabel.set(sample.label, [sample]);
 		else group.push(sample);
 	}
+	return byLabel;
+}
+
+/**
+ * The per-operation table the round-trip tickets are written from: one row per
+ * operation, each column a range over this run's reps.
+ *
+ * The settle columns are the traffic that arrived in the quiet window AFTER the
+ * operation returned — replication the commit caused but did not wait for. It belongs
+ * in the table because the settle window exists to attribute it to the operation, and
+ * it is a separate column because the operation's own cost is what the earlier
+ * published numbers measured.
+ */
+function printSummary(samples: OperationSample[], say: (msg: string, ...args: unknown[]) => void): void {
 	say('summary — each cell is the range over this run\'s reps');
-	say('| Operation | ms | exchanges | streams opened |');
-	say('|---|---|---|---|');
-	for (const [label, group] of byLabel) {
-		const protocols = new Set<string>();
-		for (const sample of group) for (const key of sample.streams.keys()) protocols.add(key);
-		const streamCells = [...protocols].sort().map((key) =>
-			`${key} ${formatRange(group.map((sample) => sample.streams.get(key) ?? 0))}`);
-		say('| %s | %s | %s | %s |',
+	say('| Operation | ms | exchanges | streams opened | settle exch | settle streams |');
+	say('|---|---|---|---|---|---|');
+	for (const [label, group] of groupByLabel(samples)) {
+		say('| %s | %s | %s | %s | %s | %s |',
 			label,
 			formatRange(group.map((sample) => sample.ms)),
 			formatRange(group.map((sample) => sample.exchanges)),
-			streamCells.length === 0 ? 'none' : streamCells.join(', '));
+			streamCell(group, (sample) => sample.streams),
+			formatRange(group.map((sample) => sample.settleExchanges)),
+			streamCell(group, (sample) => sample.settleStreams));
 	}
 }
 
@@ -423,12 +479,13 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			const settleFrom = proxy?.exchanges() ?? 0;
 			await sleep(SETTLE_MS);
 			const after = shortenKeys(tally.take(), strandId);
+			const settleExchanges = (proxy?.exchanges() ?? 0) - settleFrom;
 			const raised = errors.slice(errorsBefore);
 			say('rep%d %s | %d ms | exch %d | during: %s | after(%d exch): %s%s',
 				rep, operationLabel, ms, exchanges, formatStreams(during),
-				(proxy?.exchanges() ?? 0) - settleFrom, formatStreams(after),
+				settleExchanges, formatStreams(after),
 				raised.length === 0 ? '' : ` | ERROR ${raised.join('; ')}`);
-			samples.push({ label: operationLabel, ms, exchanges, streams: during });
+			samples.push({ label: operationLabel, ms, exchanges, streams: during, settleExchanges, settleStreams: after });
 		};
 
 		// ── The operation list, one rep at a time ────────────────────────────
@@ -478,12 +535,14 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			.catch(() => { /* a run that never converges still reports everything it measured */ });
 		say('final convergence: %s (A %d rows, B %d rows)', converged,
 			(await messageIds(aDb)).size, (await messageIds(bDb)).size);
-		expectNoBypass('at the end');
 		if (proxy !== undefined) {
 			say('proxy totals: %d exchanges, %d bytes, %d sockets', proxy.exchanges(), proxy.bytes(), proxy.socketCount());
 		}
 		say('errors (%d):%s', errors.length, errors.length === 0 ? '' : `\n  ${errors.join('\n  ')}`);
 		printSummary(samples, say);
+		// Last, not first: a bypassed run's numbers are void, but they are also the only
+		// evidence for where it went wrong, so print everything before failing on it.
+		expectNoBypass('at the end');
 	} finally {
 		// Before the nodes stop, so no wrapper outlives the tally it writes into.
 		streams?.stop();
@@ -497,8 +556,8 @@ describe.runIf(MEASURE)('relay round-trip measurement (opt-in: RELAY_RRT_MEASURE
 	for (const name of SELECTED) {
 		const config: MeasureConfig = {
 			...CONFIGS[name]!,
-			...(process.env.RELAY_RRT_REPS === undefined ? {} : { reps: Number(process.env.RELAY_RRT_REPS) }),
-			...(process.env.RELAY_RRT_DELAY_MS === undefined ? {} : { delayMs: Number(process.env.RELAY_RRT_DELAY_MS) }),
+			...(REPS_OVERRIDE === undefined ? {} : { reps: REPS_OVERRIDE }),
+			...(DELAY_OVERRIDE_MS === undefined ? {} : { delayMs: DELAY_OVERRIDE_MS }),
 		};
 		// An upper bound on a run that has hung, not a target: a healthy run is a few
 		// minutes. Each operation costs its own time plus the settle window, and bring-up

@@ -78,6 +78,10 @@ export async function startCountingProxy(opts: CountingProxyOptions): Promise<Co
 				bytes += chunk.length;
 				// Counted on ARRIVAL, forwarded later: the delay models the link, and
 				// counting it at the far end would fold the delay into the count.
+				// NOTE: chunk order survives only because `delayMs` is CONSTANT — node
+				// keeps one timer list per duration and fires it in insertion order. A
+				// jittered or per-chunk delay would reorder the stream silently, so such a
+				// delay has to queue each chunk with its due time and write sequentially.
 				if (delayMs > 0) setTimeout(() => { if (!to.destroyed) to.write(chunk); }, delayMs);
 				else to.write(chunk);
 			});
@@ -117,10 +121,18 @@ export async function startCountingProxy(opts: CountingProxyOptions): Promise<Co
  * A gater that refuses every DIRECT dial to `port` — the relay's real WebSocket
  * port — while leaving circuit dials alone.
  *
- * Without it a node routed through {@link startCountingProxy} soon learns the
- * relay's own address (from identify, or from a peer record naming it) and opens a
- * second, direct connection to it; from then on the proxy's counters see a fraction
- * of the traffic, or none, and a delayed run silently measures an undelayed link.
+ * The bypass it guards against: a node routed through {@link startCountingProxy}
+ * learns the relay's own address (from identify, or from a peer record naming it)
+ * and opens a second, direct connection to it; from then on the proxy's counters see
+ * a fraction of the traffic, or none, and a delayed run silently measures an
+ * undelayed link. That was observed by the ad-hoc measurements this harness replaces.
+ *
+ * NOTE: it does NOT reproduce in `scenarios/relay-round-trip-measure`. Removing the
+ * gater there and running `config1` and `delayed` on 2026-09-23 left every path on
+ * the proxy port — libp2p had no reason to re-dial a peer it was already connected
+ * to. The gater stays because the failure is silent when it does happen and every
+ * published number was taken with it, but treat it as insurance, not as a mechanism
+ * this repo can currently demonstrate.
  *
  * Circuit dials must still be allowed: a peer that reserved on the relay directly
  * advertises `/ip4/…/tcp/<real port>/ws/p2p/<relay>/p2p-circuit/p2p/<peer>`, and
