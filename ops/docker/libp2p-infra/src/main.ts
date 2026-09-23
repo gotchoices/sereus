@@ -126,7 +126,10 @@ const node = await createLibp2p({
   // `cleanUp()` call), so the deadline is exactly `minTimeout` on every ping and
   // `maxTimeout` has no effect. That is why only the floor mattered above. A dead
   // peer is still reclaimed, after about 30–40 s (the deadline plus up to one ping
-  // interval). From libp2p 3.3.11 the deadline adapts between the two bounds.
+  // interval). From libp2p 3.3.11 the deadline does adapt, but to ONE average of
+  // every connection's pings on this node, so on a relay with many healthy
+  // clients it most likely stays near `minTimeout` rather than widening for a
+  // slow one. Keep the floor at the patience a slow peer needs.
   connectionMonitor: {
     pingTimeout: {
       minTimeout: 30_000,
