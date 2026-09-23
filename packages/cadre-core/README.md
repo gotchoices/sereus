@@ -239,7 +239,8 @@ opaque and already safe as a file, directory or database name (always within
 the two kinds apart. The control key holds the charset by base64url encoding; a strand
 id holds it by check — `assertStrandScopeKey` runs on every strand launch, so a strand
 whose row replicated in from another node with an unusable id is refused rather than
-handed to the factory.
+handed to the factory, and on `publishStrand`, so this node never writes such an id into
+the party's control database to begin with.
 
 Available storage implementations:
 | Package | Environment | Description |

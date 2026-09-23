@@ -92,7 +92,7 @@ describe('strand scope key validation', () => {
     ['a bare parent directory', '..'],
     ['a bare current directory', '.'],
     ['an embedded separator', 'strand/nested'],
-    ['a Windows separator', 'strand\nested'],
+    ['a Windows separator', 'strand\\nested'],
     ['a control-database prefix', 'control-ZmFrZQ'],
     ['an id over the 128-character cap', `strand-${'a'.repeat(128)}`],
   ])('rejects %s', (_label, strandId) => {

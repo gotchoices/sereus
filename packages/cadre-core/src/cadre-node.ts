@@ -4725,7 +4725,8 @@ export class CadreNode implements SAppIdLookup {
    * @returns The live `Strand` row — the one just inserted, or the matching one already
    *   there. A closed strand's caller should carry THIS row's `MemberPrivateKey` forward:
    *   on a repeat it is the stored key, not the argument.
-   * @throws if the node is not started, exposes no owner signing key, the id is blank, a
+   * @throws if the node is not started, exposes no owner signing key, the id is blank or
+   *   unusable as a storage scope key (`InvalidStrandIdError` — see `storage-scope.ts`), a
    *   row with the same id holds different content, or the control DB rejects the
    *   (unauthorized) insert.
    */
@@ -4734,6 +4735,11 @@ export class CadreNode implements SAppIdLookup {
     // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
     // trims too, and an untrimmed row would be unreachable by the same string.
     const trimmed = requireNonBlank(strandId, 'strand id');
+    // Refuse an unusable id HERE, not only at launch. `addStrand` already asserts, but it
+    // runs after this row is written, and this row replicates: an id no node can turn into
+    // a storage scope key would otherwise reach the whole party's control database and be
+    // declined once per member. Asserted after the trim so the id checked is the id stored.
+    assertStrandScopeKey(trimmed);
     // FounderOwnerKey records THIS machine as the row's publisher (the schema pins it to
     // the signing owner), which is what later lets a relaunch derive founder-ness.
     const desired: StrandRow = {
