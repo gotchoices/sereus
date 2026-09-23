@@ -44,10 +44,10 @@ Pinging less often, or raising only the ceiling, did not help (0 of 2 each). The
 
 ## Status
 
-- **Relay:** PR #15 (kjeib). Reviewed 2026-09-23: merges cleanly over `aa33331c`, typechecks, and the option names exist in the relay's libp2p 2.10. Merging and redeploying the relay is the maintainer's call.
-- **Cadre nodes:** blocked on Optimystic#21. Implemented on optimystic main 2026-09-23 (`7a31ef8d`, reviewed `8e7e0873`) as `NodeOptions.connectionMonitor?: Libp2pConnectionMonitorInit`, with the type exported from db-p2p and `/rn`. Not released yet; waiting on the maintainer. Unblock when an `@optimystic/db-p2p` release with it is on npm, and raise the floors in the same change.
+- **Relay:** PR #15 (kjeib), merged 2026-09-23 by the tending agent with the maintainer's go-ahead. Its comment has been corrected to say that on libp2p 2.10 the deadline is a flat 30 s. It takes effect once the relay is redeployed.
+- **Cadre nodes: unblocked.** Optimystic 1.4.0 is on npm, and sereus floors are `^1.4.0` (`3bc421da`). `@optimystic/db-p2p` and `/rn` export `Libp2pConnectionMonitorInit` (a re-export of libp2p's `ConnectionMonitorInit`), and `NodeOptions.connectionMonitor` passes it to libp2p unchanged. Unset keeps libp2p's default.
 
-## Do (once unblocked)
+## Do
 
 - Add `connectionMonitor?` to `NetworkConfig` (typed from db-p2p's re-export), passed to the control node and every strand node, as `noiseCrypto` is.
 - **Default it** in cadre-core to `{ pingTimeout: { minTimeout: 30_000, maxTimeout: 600_000 } }` when unset, not only on React Native. Every peer of a slow phone runs the monitor on its connection to that phone: the PC party on its relayed connection, and the phone itself on its own. So an opt-in setting on the phone alone would not cover it. An app's explicit value replaces the default.
