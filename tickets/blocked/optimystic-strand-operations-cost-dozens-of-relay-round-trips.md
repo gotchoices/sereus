@@ -38,6 +38,25 @@ Blocked because the code is in `../optimystic`, a separate repository with its o
 
 The 27 block-transfer streams after the first insert of every run are now 0–6, and the 45-`/cluster` burst from B about 30 s after the join was not seen (this run waits for B's membership rows before counting, which may be what it was). The full integration suite passed with no failures, including every scenario that reads right after a member returns; sereus does not use the opt-in reactivity that the three-member commit-certificate change affects. At 300 ms round trip an insert still costs about 5 s, so each remaining `/cluster` round is still ~1.2 s on a relayed phone. Nothing in sereus is left to do here; this ticket stays blocked only as the record for gotchoices/sereus#13 until the optimystic release that carries `cadcb919` ships.
 
+**Upstream status 2026-09-23: re-measured at optimystic `9e5c1e85`** (dist built after it), sereus `fff9f777`, same method and the same runs and reps as the `cadcb919` re-measure. Full numbers: `complete/relay-round-trips-remeasure-optimystic-9e5c1e85`. Three upstream fixes were in scope: a received replica records its source as a holder so it is not pushed back (`9270de5e`), rebalance no longer fetches blocks it already holds (`dcf8ac32`), and a write after another handle's commit fetches the log tail once instead of twice (`9e5c1e85`). **The log-tail fix is the one that shows: the joiner's `/repo` streams per insert fell from 3–6 to 2–3.** The commit is still 4 `/cluster` streams per insert from either party.
+
+| Measure | cadcb919 | 9e5c1e85 |
+|---|---|---|
+| B insert, through the proxy (10 reps) | 95–138 ms, 29–42 exchanges, 4 `/cluster` + 3–6 `/repo` | 78–153 ms, 28–33 exchanges, 4 `/cluster` + **2–3 `/repo`** |
+| A insert, through the proxy (10 reps) | 70–195 ms, 15–42 exchanges, 4 `/cluster` + 0–2 `/repo` | 57–165 ms, 15–28 exchanges, 4 `/cluster` + 0–2 `/repo` |
+| Unchanged reads by B | 1 `/repo`, 5–16 exchanges | unchanged: 1 `/repo`, 4–14 exchanges |
+| Insert, 150 ms each way (3 reps) | A 4.5–5.1 s, B 5.1–5.9 s | A 3.8–4.5 s, B 5.1–6.1 s |
+| Reads, 150 ms each way | A 1.3–1.9 s; B 3 ms–1.3 s | A 1.25–1.89 s; B 3 ms–1.27 s |
+| Concurrent pair, `storage` joiner, no proxy (12 pairs) | 268–1097 ms, 4–22 `/cluster` per side | 250–324 ms, one side 4 / the other 10 |
+| `TornActionError`, `storage` joiner, concurrent pairs | 0 of 12 | **0 of 12**; every row landed on both sides |
+| Control pairs, both `transaction` (4 pairs) | 276–355 ms, A 10 / B 4 `/cluster` | 481–1109 ms, 10–22 `/cluster` per side |
+| Frames, loopback journey (3 runs) | 8,537–9,338 | 7,548–8,739 |
+| Frames, 10 ms arm at its final line (3 runs) | 6,794–12,830 | 6,405–8,025 |
+
+Not one error of any kind occurred in seven runs. Two things optimystic asked about specifically. **`/db-p2p/block-transfer` is sent only by A** (the founder and coordinator) and never by B, which fits "A pushes to B" and does not fit "B fetches" — so the rebalance-fetch reading of the earlier counts looks wrong. The count itself is 5–7 during the first `Message` insert of a run plus a 2–6 tail in the next 3 s, then **zero for every later insert**; the 27-after-the-first-insert figure from `012573a2` is still gone, and nothing accumulates. But `cadcb919` recorded this on one run out of seven with no tail, where this re-measure sees it on every run, and the temporary scenario had to be rewritten from scratch (the earlier copy left no recoverable source), so a scenario difference cannot be ruled out as the cause of that particular change.
+
+The one number that moved the wrong way is the control concurrent pair, both parties `transaction`, which went from 276–355 ms to 481–1109 ms and is now slower than the `storage`-joiner pairs in the same session — the opposite of the expected ordering. One run of four pairs against one run of four pairs is weak evidence, and nothing here attributes it to the three fixes; a second control run would settle it. Regression check: the scenarios that read right after a member returns, restarts or joins late, plus both circuit journeys, all pass (7 files, 13 tests) — narrower than the full-suite pass the `cadcb919` re-measure ran. Nothing in sereus is left to do here; this ticket stays blocked as the record for gotchoices/sereus#13.
+
 **Draft follow-up for #13** (post after the sereus release that raises the `@optimystic/*` floor; posting is the maintainer's call):
 
 > Follow-up on the round-trip cost: the sereus release <version> requires `@optimystic/*` <version>, which cuts a commit's consensus rounds. In the same two-party relay topology, an insert now opens 4 cluster-protocol streams instead of 9. With 150 ms added each way on one party's link, an insert takes about 5 s, where it took 9–10 s (one run took 38 s). The loopback journey's frame count dropped from about 12k to about 9k. Each remaining round still costs a relayed phone roughly one round trip, so we're keeping this open to look at further reductions.
