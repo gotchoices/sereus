@@ -36,7 +36,7 @@ import { signedSApp } from './signed-sapp.js';
  * notification: `CadreNode.getDiscoveredStrands()`. The event is unchanged; it
  * is simply no longer the only way to learn about the strand.
  *
- * Six arms, the cheap ones last:
+ * Seven arms, the cheap ones last:
  *  1. **The restart.** A real node founds an open strand, stops, and a second
  *     node comes up on the same party over the same storage. It subscribes only
  *     AFTER `start()` has resolved and the watcher has already offered the
@@ -62,6 +62,10 @@ import { signedSApp } from './signed-sapp.js';
  *     the permanence of `stopStrand` used to rest on the watcher never un-knowing a
  *     strand, and arm 5 makes it un-know one. So the stop now suppresses the id
  *     explicitly, and a strand the user stopped is never offered again this session.
+ *  7. **...until the app claims it again.** The suppression arm 6 buys is a local
+ *     decision, and `addStrand` is the caller reversing it. Left standing, the strand
+ *     would run with the watcher blind to it — nothing would put the id back in
+ *     `knownStrands`, so no party-wide removal could ever stop it here.
  */
 
 /** `within` scoped to this spec's failure label: `discovered-late-subscriber control op <label> …`. */
@@ -402,6 +406,41 @@ describe('discovered strands survive a late subscriber', () => {
 			expect([...node.getDiscoveredStrands().keys()],
 				'the stopped strand is back on the backlog — a later drain would rejoin it'
 			).toEqual([]);
+		} finally {
+			await watcher.stop();
+		}
+	});
+
+	it('hands a stopped strand back to the watcher once the app claims it again', async () => {
+		// The suppression arm 6 buys is a LOCAL decision, and `addStrand` reverses it. A
+		// claim that leaves the id suppressed runs the strand with the watcher blind to
+		// it: nothing puts the id back in `knownStrands`, which is the set the removed-
+		// strand loop iterates, so a party-wide removal never stops it on this node. The
+		// claim below fails (an unsigned config), which is what makes the watcher's own
+		// re-attempt the visible proof that it is tracking the strand again.
+		const { node, row, watcher, advance, withRunning } = bareWatcher('reclaimed-stop');
+		const discovered: string[] = [];
+		const errors: string[] = [];
+		node.on('strand:discovered', (event) => { discovered.push(event.strandId); });
+		node.on('strand:error', (event) => { errors.push(event.strandId); });
+
+		try {
+			await watcher.start();
+			await watcher.forcePoll();
+			expect(discovered).toEqual([row.Id]);
+
+			await withRunning(() => node.stopStrand(row.Id));
+			await expect(withRunning(() => node.addStrand({ strandRow: row, sAppConfig: unsignedSApp() })))
+				.rejects.toThrow(/missing signature/);
+
+			advance(BARE_POLL_INTERVAL_MS + 1);
+			await watcher.forcePoll();
+
+			expect(errors,
+				'the re-claimed strand is still suppressed — the watcher will never track it again this session, ' +
+				'so a party-wide removal of the row could not stop it locally'
+			).toEqual([row.Id]);
+			expect(discovered, 'the re-claim came back round the discovery branch').toEqual([row.Id]);
 		} finally {
 			await watcher.stop();
 		}

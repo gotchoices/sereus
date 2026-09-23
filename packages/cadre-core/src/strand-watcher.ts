@@ -341,11 +341,29 @@ export class StrandWatcher {
    * Never offer this strand again this session: a deliberate local stop, as opposed to
    * a failed launch. Cleared when the strand's control row disappears, because a row
    * that reappears is a strand the party re-published and the stop said nothing about
-   * it; also cleared by {@link stop}, since sApp configs do not survive it either.
+   * it; also cleared by {@link stop}, since sApp configs do not survive it either, and
+   * by {@link unsuppressStrand} when the caller claims the strand again.
    */
   suppressStrand(strandId: string): void {
     log('Suppressing strand %s — deliberate local stop, will not be re-offered', strandId);
     this.suppressed.add(strandId);
+  }
+
+  /**
+   * Revoke a {@link suppressStrand}: a deliberate local claim overrides the deliberate
+   * local stop that preceded it.
+   *
+   * Not cosmetic — the suppression check runs before the `knownStrands` one, so a
+   * suppressed id is never re-recorded there, and the removed-strand loop iterates
+   * `knownStrands`. A strand re-claimed while still suppressed would therefore run with
+   * the watcher blind to it: a party-wide removal would never stop it locally. That is
+   * reachable whenever the stop found the id already un-known — after a claim that
+   * failed, or for a strand the filter never admitted.
+   */
+  unsuppressStrand(strandId: string): void {
+    if (this.suppressed.delete(strandId)) {
+      log('Strand %s re-claimed — suppression lifted', strandId);
+    }
   }
 
   /**

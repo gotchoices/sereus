@@ -533,8 +533,10 @@ export class CadreNode implements SAppIdLookup {
    * dead entry behind; recovery today is a fresh invitation.
    *
    * NOTE: entries are kept for the node's lifetime, including across a
-   * {@link stopStrand} — a stopped strand may be rediscovered by the watcher and must
-   * still get its seed. Each strand's list is capped at `MAX_STRAND_ADDRS`, but the
+   * {@link stopStrand} — a stopped strand may be claimed again with {@link addStrand}
+   * (the watcher itself will not re-offer it: the stop suppresses the id for the rest of
+   * the session) and must still get its seed. Each strand's list is capped at
+   * `MAX_STRAND_ADDRS`, but the
    * number of KEYS is bounded only by the strands this node has ever formed as an
    * initiator (not by time); if a node ever forms strands at scale, evict on
    * `unpublishStrand` or cap the map.
@@ -4533,7 +4535,9 @@ export class CadreNode implements SAppIdLookup {
    * what the app sees is `strand:error` per failed retry and `strand:started` when one
    * succeeds, never a second `strand:discovered`. {@link detachStrand} (reached via
    * {@link stopStrand}) is what abandons a strand for good, and its stop suppresses the
-   * strand in the watcher so this retry cannot resurrect it.
+   * strand in the watcher so this retry cannot resurrect it — a call to THIS method lifts
+   * that suppression again, since an explicit claim is a deliberate reversal of the
+   * deliberate stop.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
@@ -4556,6 +4560,9 @@ export class CadreNode implements SAppIdLookup {
     // unclaimed backlog — a later `getDiscoveredStrands()` drain must not re-offer it.
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
     this.discoveredStrands.delete(strandRow.Id);
+    // A claim also overrides any earlier `stopStrand` of this id: the watcher must track
+    // the strand again, or a party-wide removal would never stop it here.
+    this.strandWatcher?.unsuppressStrand(strandRow.Id);
     log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
       strandRow.Id, sAppConfig.id, founder ?? 'derived');
 
@@ -4577,6 +4584,15 @@ export class CadreNode implements SAppIdLookup {
       // offered the strand: the `knownStrands` delete is a no-op and the recorded backoff
       // only delays the watcher's own first attempt by one poll interval, which is what
       // should happen right after an attempt that just failed.
+      //
+      // NOTE: the retry relaunches from the CONTROL row plus the registered config, not
+      // from the row and arguments passed here — so a caller that enriched either (a
+      // synthetic `MemberPrivateKey`, an explicit `founder` or `partyMemberPrivateKey`)
+      // is retried with less than it asked for. Inert today: founder-ness re-derives from
+      // `FounderOwnerKey`, the party key re-reads from `StrandPartyKey`, and the row's
+      // shared `MemberPrivateKey` is read only by the founder bootstrap. If a joiner
+      // launch ever starts depending on that key, gate this hand-back on the passed row
+      // matching the control one.
       this.strandWatcher?.forgetStrand(strandRow.Id);
       throw error;
     }
@@ -5887,7 +5903,8 @@ export class CadreNode implements SAppIdLookup {
    * `strand:discovered` again — but never again in THIS session: the stop suppresses the
    * id in the watcher (`StrandWatcher.suppressStrand`) and drops it from
    * {@link getDiscoveredStrands}, so neither a later poll nor a drain can undo a
-   * deliberate stop. Party-wide removal is {@link unpublishStrand}.
+   * deliberate stop. Only an explicit {@link addStrand} does, which is the caller
+   * reversing its own decision. Party-wide removal is {@link unpublishStrand}.
    */
   async stopStrand(strandId: string): Promise<void> {
     if (!this._running) {
