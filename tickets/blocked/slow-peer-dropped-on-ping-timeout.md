@@ -25,7 +25,7 @@ Doubling the per-operation cost multiplied the work by 6.5. Raising timeouts did
 
 ## Cause (reporter, confirmed by the relay's own logs)
 
-libp2p's connection monitor pings every connection every 10 s. By default (`abortConnectionOnPingFailure: true`) it aborts a connection on its FIRST ping timeout. The timeout is adaptive, but its floor is 5 s, and the abort happens before the widened value is ever applied. A peer whose event loop is saturated by pure-JS Noise misses the ping, so the connection is aborted and the client redials. The redial costs a new handshake (~231 ms CPU at S7 rates), which keeps it saturated. The relay logged `aborting connection due to ping failure` 30 times in one failing run. A failing run opens 17–23 sockets and performs 41–59 handshakes; a healthy one opens 4 and performs 12.
+libp2p's connection monitor pings every connection every 10 s. By default (`abortConnectionOnPingFailure: true`) it aborts a connection on its FIRST ping timeout. The timeout is nominally adaptive with a 5 s floor, but below libp2p 3.3 it never adapts (see below), so it is a flat 5 s. A peer whose event loop is saturated by pure-JS Noise misses the ping, so the connection is aborted and the client redials. The redial costs a new handshake (~231 ms CPU at S7 rates), which keeps it saturated. The relay logged `aborting connection due to ping failure` 30 times in one failing run. A failing run opens 17–23 sockets and performs 41–59 handshakes; a healthy one opens 4 and performs 12.
 
 Fix measured at full device cost, `connectionMonitor: { pingTimeout: { minTimeout: 30_000, maxTimeout: 600_000 } }`:
 
