@@ -85,6 +85,13 @@ export class StrandWatcher {
   private provisional: Set<string> = new Set();
   /** Ids whose last launch attempt threw, with the backoff gating their retry. */
   private failureStates: Map<string, StrandFailureState> = new Map();
+  /**
+   * Ids a deliberate local stop has withdrawn from offer for the rest of the session
+   * (see {@link suppressStrand}). Before {@link forgetStrand} existed, `knownStrands`
+   * retention alone made a stop permanent; now that a failed claim can un-know a
+   * strand, the permanence has to be recorded explicitly.
+   */
+  private suppressed: Set<string> = new Set();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private initialPollTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -163,6 +170,7 @@ export class StrandWatcher {
 
       // Find added strands
       for (const strand of currentStrands) {
+        if (this.suppressed.has(strand.Id)) continue; // deliberately stopped locally
         if (this.knownStrands.has(strand.Id)) continue;
         const failure = this.failureStates.get(strand.Id);
         // Clock read per candidate, not once per poll: an earlier strand's launch
@@ -183,17 +191,7 @@ export class StrandWatcher {
           this.failureStates.delete(strand.Id);
         } catch (error) {
           log('Error handling strand add for %s: %o', strand.Id, error);
-          // A failed launch leaves nothing running (StrandInstanceManager drops the
-          // record), so forget the strand and let a later poll retry it — gated by
-          // the backoff recorded here. One case does leave something running: a row
-          // this machine published lands on an instance something else already
-          // attached, and honouring the founder request on it (CadreNode.launchStrand
-          // → StrandInstanceManager.foundExistingStrand) throws. The instance stays up
-          // as a joiner and the retry re-attempts the bootstrap on it, which is what
-          // should happen — but do not read the line above as "nothing is running".
-          this.knownStrands.delete(strand.Id);
-          this.provisional.delete(strand.Id);
-          this.recordFailure(strand.Id);
+          this.forgetStrand(strand.Id);
         }
       }
 
@@ -236,11 +234,23 @@ export class StrandWatcher {
         }
       }
 
-      // Drop backoff state for strands whose control-network row is gone; a row
-      // that reappears is a fresh strand and gets a fresh first attempt.
+      // Drop backoff and suppression state for strands whose control-network row is
+      // gone; a row that reappears is a fresh strand and gets a fresh first attempt,
+      // un-backed-off and un-suppressed.
       for (const strandId of [...this.failureStates.keys()]) {
         if (!currentMap.has(strandId)) {
           this.failureStates.delete(strandId);
+        }
+      }
+      // NOTE: the clear needs a poll that actually SEES the row absent, so a sibling that
+      // unpublishes and re-publishes a locally-stopped id inside one poll interval leaves
+      // it suppressed for the session. Contrived today — re-seating a removed id is
+      // owner-gated and manual — and there is no row version to distinguish the new row
+      // from the old. If re-publishing a removed id ever becomes routine, give the row a
+      // generation column and clear suppression on a change rather than on absence.
+      for (const strandId of [...this.suppressed]) {
+        if (!currentMap.has(strandId)) {
+          this.suppressed.delete(strandId);
         }
       }
     } catch (error) {
@@ -305,7 +315,37 @@ export class StrandWatcher {
     this.knownStrands.clear();
     this.provisional.clear();
     this.failureStates.clear();
+    this.suppressed.clear();
     log('StrandWatcher stopped');
+  }
+
+  /**
+   * Forget a strand whose launch failed outside this watcher, so a later poll
+   * re-offers it — gated by the same backoff a watcher-driven failure gets.
+   *
+   * A failed launch normally leaves nothing running (StrandInstanceManager drops the
+   * record), which is what makes re-offering it correct. One case does leave something
+   * running: a row this machine published lands on an instance something else already
+   * attached, and honouring the founder request on it (CadreNode.launchStrand →
+   * StrandInstanceManager.foundExistingStrand) throws. The instance stays up as a joiner
+   * and the retry re-attempts the bootstrap on it, which is what should happen — but do
+   * not read the line above as "nothing is running".
+   */
+  forgetStrand(strandId: string): void {
+    this.knownStrands.delete(strandId);
+    this.provisional.delete(strandId);
+    this.recordFailure(strandId);
+  }
+
+  /**
+   * Never offer this strand again this session: a deliberate local stop, as opposed to
+   * a failed launch. Cleared when the strand's control row disappears, because a row
+   * that reappears is a strand the party re-published and the stop said nothing about
+   * it; also cleared by {@link stop}, since sApp configs do not survive it either.
+   */
+  suppressStrand(strandId: string): void {
+    log('Suppressing strand %s — deliberate local stop, will not be re-offered', strandId);
+    this.suppressed.add(strandId);
   }
 
   /**

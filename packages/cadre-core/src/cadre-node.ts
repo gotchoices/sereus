@@ -4080,10 +4080,12 @@ export class CadreNode implements SAppIdLookup {
       // already present) keeps auto-starting below, unchanged.
       //
       // Recorded BEFORE the emit so a handler that synchronously drains
-      // `getDiscoveredStrands()` sees this strand too. The watcher never offers
-      // the same strand twice (its `knownStrands` retains the id for the life of
-      // the process), so this map — not the event — is what a late subscriber
-      // reads. See the `strand:discovered` doc in types.ts.
+      // `getDiscoveredStrands()` sees this strand too. The watcher does not offer the
+      // same strand twice — its `knownStrands` retains the id, and the one thing that
+      // un-retains it (a failed `addStrand`, via `StrandWatcher.forgetStrand`) leaves the
+      // sApp config registered, so the retry takes the auto-launch branch below rather
+      // than this one. So this map — not the event — is what a late subscriber reads.
+      // See the `strand:discovered` doc in types.ts.
       this.discoveredStrands.set(strand.Id, strand);
       this.emit('strand:discovered', { strandId: strand.Id, strand });
       return;
@@ -4523,17 +4525,15 @@ export class CadreNode implements SAppIdLookup {
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
-   * automatic relaunch need it. That background relaunch covers only a strand the
-   * WATCHER launched: it forgets a row whose `onStrandAdded` threw and re-attempts it
-   * on a later poll (each failure re-emitting `strand:error`) until it succeeds. A
-   * strand claimed here after it was DISCOVERED gets no such retry — the watcher
-   * already recorded it in its `knownStrands` when it offered it as
-   * `strand:discovered`, and no later poll re-offers a strand it knows. This call has
-   * also already dropped it from {@link getDiscoveredStrands}, so a failed claim
-   * leaves the strand dormant until the caller retries or the node restarts (see
-   * `backlog/bug-discovered-strand-lost-when-claim-fails`).
-   * {@link detachStrand} (reached via {@link stopStrand}) is what abandons a strand
-   * for good.
+   * automatic relaunch need it. A failed launch here hands the strand back to that
+   * relaunch — `StrandWatcher.forgetStrand` drops the id from the watcher's
+   * `knownStrands` and records the backoff, so a later poll re-attempts it on the same
+   * `pollInterval * 2^(failures-1)` ladder a watcher-driven failure gets. Because the
+   * config stays registered, the retry takes `handleStrandAdded`'s auto-launch branch:
+   * what the app sees is `strand:error` per failed retry and `strand:started` when one
+   * succeeds, never a second `strand:discovered`. {@link detachStrand} (reached via
+   * {@link stopStrand}) is what abandons a strand for good, and its stop suppresses the
+   * strand in the watcher so this retry cannot resurrect it.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
@@ -4564,7 +4564,22 @@ export class CadreNode implements SAppIdLookup {
     // formation/responder flows pass one deliberately, since their consent-seated rows
     // carry a null column. See StrandConfig.founder. Same rule for the explicit
     // partyMemberPrivateKey: it wins over the StrandPartyKey control-row read.
-    const instance = await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+    // Only the launch is wrapped, NOT the first-sync wait below: a wait that times out
+    // rejects with the retryable StrandAwaitingFirstSyncError and deliberately leaves the
+    // instance running, so there is nothing to re-offer and forgetting it would only have
+    // the watcher re-enter a launch for a strand that is already up.
+    let instance: StrandInstance;
+    try {
+      instance = await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+    } catch (error) {
+      // Hand the strand back to the watcher's retry ladder. Harmless on the founder path
+      // (`foundStrand` → `publishStrand` + this call), where the watcher may never have
+      // offered the strand: the `knownStrands` delete is a no-op and the recorded backoff
+      // only delays the watcher's own first attempt by one poll interval, which is what
+      // should happen right after an attempt that just failed.
+      this.strandWatcher?.forgetStrand(strandRow.Id);
+      throw error;
+    }
 
     // The first-sync write gate: a JOINING machine's database is withheld until it has
     // received the strand's Header from another member, because a write before that
@@ -4925,13 +4940,20 @@ export class CadreNode implements SAppIdLookup {
     // one never cleared).
     await this.strandManager.clearOwnMemberPeerBinding(trimmed);
     // Converge locally now rather than waiting up to a poll interval. The watcher fires
-    // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose
-    // strandFilter never admitted this strand (the watcher never knew it, so it will never
-    // fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two paths
-    // cannot double-stop into an error.
+    // onStrandRemoved for a strand it tracked; the explicit teardown below covers a node
+    // whose strandFilter never admitted this strand (the watcher never knew it, so it will
+    // never fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two
+    // paths cannot double-stop into an error.
+    //
+    // detachStrand, NOT stopStrand: this is a party-wide removal, not a local abandonment
+    // of a strand that still exists, so it must not SUPPRESS the id in the watcher. The
+    // row is already gone — there is nothing to suppress — and an id re-published before
+    // the next poll's suppression cleanup would then never be offered again this session.
+    // (Same reasoning as handleStrandRemoved, which also avoids stopStrand's `_running`
+    // guard; here the guard is already satisfied by requireOwnerSigningKey above.)
     await this.strandWatcher?.forcePoll();
     if (this.strandManager.getInstance(trimmed)) {
-      await this.stopStrand(trimmed);
+      await this.detachStrand(trimmed);
     }
     log('Unpublished strand %s from control DB under owner %s', trimmed, signingKey.publicKeyB64);
   }
@@ -5862,17 +5884,20 @@ export class CadreNode implements SAppIdLookup {
    * Stop a strand on THIS node only: untrack it from hibernation, drop its sApp config,
    * stop the local instance, and emit `strand:stopped`. The shared `Strand` row is left
    * intact, so on the next node RESTART the strand is rediscovered and surfaces as
-   * `strand:discovered` again — not on the next watcher poll, which never re-offers a
-   * strand it has already seen (`StrandWatcher.knownStrands` retains the id for the life
-   * of the process). The stop also drops the strand from {@link getDiscoveredStrands},
-   * so a drain cannot undo a deliberate stop. Party-wide removal is
-   * {@link unpublishStrand}.
+   * `strand:discovered` again — but never again in THIS session: the stop suppresses the
+   * id in the watcher (`StrandWatcher.suppressStrand`) and drops it from
+   * {@link getDiscoveredStrands}, so neither a later poll nor a drain can undo a
+   * deliberate stop. Party-wide removal is {@link unpublishStrand}.
    */
   async stopStrand(strandId: string): Promise<void> {
     if (!this._running) {
       throw new Error('CadreNode not running');
     }
 
+    // Suppressed HERE and not in detachStrand: the other caller of that method is
+    // `handleStrandRemoved`, which arrives precisely because the control row is gone, and
+    // a row that later reappears is a fresh strand that should be offered again.
+    this.strandWatcher?.suppressStrand(strandId);
     await this.detachStrand(strandId);
   }
 
@@ -5894,6 +5919,10 @@ export class CadreNode implements SAppIdLookup {
    * readings are the intended one: `handleStrandRemoved` arrives because the control row
    * is gone, and an explicit {@link stopStrand} is a deliberate abandonment — neither
    * strand may be re-offered to a later `getDiscoveredStrands()` drain.
+   *
+   * The watcher-level suppression that makes a stop permanent is deliberately NOT here,
+   * only in {@link stopStrand}: the two callers diverge on it. A vanished control row
+   * that reappears is a fresh strand and must be offered again.
    */
   private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);

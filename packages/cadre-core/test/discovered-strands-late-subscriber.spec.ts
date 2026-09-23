@@ -20,7 +20,8 @@ import { signedSApp } from './signed-sapp.js';
  * `Strand` table. A row it has no `sAppConfig` for is surfaced as
  * `strand:discovered` — once. The watcher then records the strand in its
  * `knownStrands` and no later poll re-offers it, so that single event is the
- * only notice the strand ever gets.
+ * only notice the strand ever gets. (Arm 5 below is the one exception, and it
+ * does not produce a second `strand:discovered` either.)
  *
  * sApp configs are in-memory only and are cleared by `stop()`, so after a
  * restart EVERY stored strand takes that branch. And the watcher's first poll
@@ -35,7 +36,7 @@ import { signedSApp } from './signed-sapp.js';
  * notification: `CadreNode.getDiscoveredStrands()`. The event is unchanged; it
  * is simply no longer the only way to learn about the strand.
  *
- * Four arms, the cheap ones last:
+ * Six arms, the cheap ones last:
  *  1. **The restart.** A real node founds an open strand, stops, and a second
  *     node comes up on the same party over the same storage. It subscribes only
  *     AFTER `start()` has resolved and the watcher has already offered the
@@ -52,6 +53,15 @@ import { signedSApp } from './signed-sapp.js';
  *  4. **The other half of the contract.** A backlog that outlives the event has to
  *     forget a strand whose control row is gone, or a drain would try to launch a
  *     row the party removed. Same bare harness.
+ *  5. **A claim that fails does not retire the strand.** The app takes the offer and
+ *     its `addStrand` rejects. The strand has already left the backlog, so without a
+ *     re-offer nothing would ever mention it again — the app would show the strand
+ *     missing until a restart. The watcher re-attempts it once its backoff elapses,
+ *     through the sApp config the failed claim left registered.
+ *  6. **A deliberate stop still means stop.** Arm 5 is what makes this arm necessary:
+ *     the permanence of `stopStrand` used to rest on the watcher never un-knowing a
+ *     strand, and arm 5 makes it un-know one. So the stop now suppresses the id
+ *     explicitly, and a strand the user stopped is never offered again this session.
  */
 
 /** `within` scoped to this spec's failure label: `discovered-late-subscriber control op <label> …`. */
@@ -66,10 +76,36 @@ const OP_TIMEOUT_MS = 15_000;
 /** How long to wait for the watcher's deferred first poll to have offered a strand. */
 const FIRST_POLL_TIMEOUT_MS = 15_000;
 
-/** Test-only window onto the private member the poll helpers below drive. */
+/**
+ * Test-only window onto the private members these arms drive: the watcher the poll
+ * helpers observe, the `_running` guard `addStrand`/`stopStrand` refuse without, and the
+ * two watcher callbacks the bare harness wires by hand.
+ */
 interface CadreNodeInternals {
 	strandWatcher: StrandWatcher | null;
+	_running: boolean;
+	handleStrandAdded(strand: StrandRow): Promise<void>;
+	handleStrandRemoved(strandId: string): Promise<void>;
 }
+
+/** Poll interval the bare harness runs at — and therefore its first retry backoff. */
+const BARE_POLL_INTERVAL_MS = 5_000;
+
+/** The bare harness: a real watcher and a real (never-started) node, wired to each other. */
+interface BareHarness {
+	node: CadreNode;
+	row: StrandRow;
+	/** The queryable's live backing array: mutate it to make the control row appear or vanish. */
+	rows: StrandRow[];
+	watcher: StrandWatcher;
+	/** Step the watcher's injected clock, to cross a retry backoff without waiting. */
+	advance(ms: number): void;
+	/** Run `fn` with the node's `_running` guard set, as a started node would have it. */
+	withRunning<T>(fn: () => Promise<T>): Promise<T>;
+}
+
+/** A config the production signature check refuses — an authored sApp nobody signed. */
+const unsignedSApp = (): SAppConfig => ({ ...signedSApp(), signature: undefined });
 
 const strandId = (tag: string) => `${tag}-${Math.random().toString(36).slice(2)}`;
 
@@ -288,6 +324,88 @@ describe('discovered strands survive a late subscriber', () => {
 			await watcher.stop();
 		}
 	});
+
+	it('re-offers a strand whose CLAIM failed, through the sApp config the failed claim left registered', async () => {
+		// The bug: `addStrand` drops the strand from the backlog before it launches, and the
+		// watcher already counts it as offered — so a claim that rejects leaves the strand
+		// with nothing running and nothing that will ever mention it again.
+		const { node, row, watcher, advance, withRunning } = bareWatcher('failed-claim');
+		const discovered: string[] = [];
+		const errors: string[] = [];
+		node.on('strand:discovered', (event) => { discovered.push(event.strandId); });
+		node.on('strand:error', (event) => { errors.push(event.strandId); });
+
+		try {
+			await watcher.start();
+			await watcher.forcePoll();
+			expect(discovered).toEqual([row.Id]);
+
+			// The claim, and its failure. An unsigned sApp config is refused by
+			// `assertSchemaSignature` at the top of `StrandInstanceManager.startStrand` — a
+			// real rejection off the production path, before any network or storage work.
+			await expect(withRunning(() => node.addStrand({ strandRow: row, sAppConfig: unsignedSApp() })))
+				.rejects.toThrow(/missing signature/);
+			expect([...node.getDiscoveredStrands().keys()],
+				'addStrand left the strand on the backlog — a drain would rescue it and this arm proves nothing'
+			).toEqual([]);
+
+			// Inside the backoff window the watcher must leave the strand alone, exactly as it
+			// does for a launch its own poll failed.
+			await watcher.forcePoll();
+			expect(errors, 'the watcher re-attempted the launch before its own backoff elapsed').toEqual([]);
+
+			advance(BARE_POLL_INTERVAL_MS + 1);
+			await watcher.forcePoll();
+
+			expect(errors,
+				'the failed claim retired the strand: no later poll re-attempted it, so only a restart recovers'
+			).toEqual([row.Id]);
+			expect(discovered,
+				'the retry re-announced the strand as newly discovered — the sApp config did not survive the failed ' +
+				'claim, and an app that auto-joins on discovery would now be racing its own retry'
+			).toEqual([row.Id]);
+		} finally {
+			await watcher.stop();
+		}
+	});
+
+	it('still lets a deliberate stopStrand mean stop, now that a failed claim can un-know a strand', async () => {
+		// The other half of the arm above. `stopStrand` used to be permanent only because
+		// nothing ever removed an id from `knownStrands`; the re-offer removes one. Without
+		// the explicit suppression, this sequence auto-rejoins a strand the user stopped.
+		const { node, row, watcher, advance, withRunning } = bareWatcher('stopped-claim');
+		const discovered: string[] = [];
+		const errors: string[] = [];
+		node.on('strand:discovered', (event) => { discovered.push(event.strandId); });
+		node.on('strand:error', (event) => { errors.push(event.strandId); });
+
+		try {
+			await watcher.start();
+			await watcher.forcePoll();
+			expect(discovered).toEqual([row.Id]);
+
+			await expect(withRunning(() => node.addStrand({ strandRow: row, sAppConfig: unsignedSApp() })))
+				.rejects.toThrow(/missing signature/);
+
+			// The app gives up. This drops the sApp config, so an unsuppressed re-offer would
+			// come back round the DISCOVERY branch rather than the retry one.
+			await withRunning(() => node.stopStrand(row.Id));
+
+			advance(BARE_POLL_INTERVAL_MS + 1);
+			await watcher.forcePoll();
+
+			expect(discovered,
+				'a strand the app deliberately stopped was offered again — the reference app auto-joins on discovery, ' +
+				'so the user would see the strand they stopped come back'
+			).toEqual([row.Id]);
+			expect(errors, 'the watcher re-attempted the launch of a strand the app stopped').toEqual([]);
+			expect([...node.getDiscoveredStrands().keys()],
+				'the stopped strand is back on the backlog — a later drain would rejoin it'
+			).toEqual([]);
+		} finally {
+			await watcher.stop();
+		}
+	});
 });
 
 /**
@@ -296,11 +414,8 @@ describe('discovered strands survive a late subscriber', () => {
  * handlers are reachable on a node that never started — the strand and hibernation
  * managers are built in the constructor — and neither touches the control plane for an
  * unclaimed strand, which is the whole path under test.
- *
- * `rows` is the queryable's live backing array: mutate it to make the control row appear
- * or vanish between polls.
  */
-function bareWatcher(tag: string): { node: CadreNode; row: StrandRow; rows: StrandRow[]; watcher: StrandWatcher } {
+function bareWatcher(tag: string): BareHarness {
 	const node = new CadreNode({
 		controlNetwork: { partyId: freshPartyId(`discovered-${tag}`), bootstrapNodes: [] },
 		profile: 'transaction'
@@ -308,13 +423,34 @@ function bareWatcher(tag: string): { node: CadreNode; row: StrandRow; rows: Stra
 	const row: StrandRow = { Id: strandId(tag), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
 	const rows: StrandRow[] = [row];
 	const queryable: StrandQueryable = { queryStrands: async () => [...rows] };
-	const internals = node as unknown as {
-		handleStrandAdded(s: StrandRow): Promise<void>;
-		handleStrandRemoved(id: string): Promise<void>;
-	};
+	const internals = node as unknown as CadreNodeInternals;
+	// A clock the arms step by hand, so a launch-retry backoff can be crossed without fake
+	// timers or real waiting. Only the watcher reads it.
+	let clock = Date.now();
 	const watcher = new StrandWatcher(queryable, {
 		onStrandAdded: async (strand) => internals.handleStrandAdded(strand),
 		onStrandRemoved: async (id) => internals.handleStrandRemoved(id)
-	}, { mode: 'all' }, 5_000);
-	return { node, row, rows, watcher };
+	}, { mode: 'all' }, BARE_POLL_INTERVAL_MS, undefined, () => clock);
+	// The wiring `CadreNode.start()` normally does. `addStrand`'s re-offer and
+	// `stopStrand`'s suppression both reach the watcher through this field, so without it
+	// arms 5 and 6 would pass vacuously against a node whose watcher is null.
+	internals.strandWatcher = watcher;
+	return {
+		node,
+		row,
+		rows,
+		watcher,
+		advance: (ms) => { clock += ms; },
+		withRunning: async (fn) => {
+			// `addStrand`/`stopStrand` refuse on a node that never started, and this node
+			// deliberately never does.
+			const wasRunning = internals._running;
+			internals._running = true;
+			try {
+				return await fn();
+			} finally {
+				internals._running = wasRunning;
+			}
+		}
+	};
 }

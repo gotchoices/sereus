@@ -1255,13 +1255,19 @@ export interface CadreNodeEvents {
    * Carries the full {@link StrandRow} so the app can join without re-querying
    * the control DB.
    *
-   * **Fired exactly ONCE per strand per session, and it can fire before your
-   * listener is attached.** The strand watcher's first poll runs inside
-   * `CadreNode.start()` (100 ms after the watcher starts), so every strand
-   * already stored for this party is normally offered while the embedding app is
-   * still inside its own `start()` await. The watcher then records the strand as
-   * seen and no later poll re-offers it, so a listener attached a moment late
-   * misses those strands for the life of the process.
+   * **Fired once per strand per session, and it can fire before your listener is
+   * attached.** The strand watcher's first poll runs inside `CadreNode.start()`
+   * (100 ms after the watcher starts), so every strand already stored for this
+   * party is normally offered while the embedding app is still inside its own
+   * `start()` await. The watcher then records the strand as seen and no later poll
+   * re-offers it, so a listener attached a moment late misses those strands for the
+   * life of the process.
+   *
+   * One exception, and it does NOT produce a second event: when an `addStrand` that
+   * claims a discovered strand FAILS, the watcher is told to forget the strand so a
+   * later poll retries it. That claim left the sApp config registered, so the retry
+   * takes the auto-launch branch — what the app sees is `strand:error` per failed
+   * retry and `strand:started` when one succeeds.
    *
    * So an app that auto-joins discovered strands must **subscribe first, then
    * drain `CadreNode.getDiscoveredStrands()`** — the map of strands no local
