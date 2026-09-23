@@ -38,15 +38,19 @@ Fix measured at full device cost, `connectionMonitor: { pingTimeout: { minTimeou
 
 Pinging less often, or raising only the ceiling, did not help (0 of 2 each). The floor is what matters.
 
+**The timeout doesn't actually adapt below libp2p 3.3** (found by optimystic-99, verified 2026-09-23). `ConnectionMonitor` asks its `AdaptiveTimeout` for a deadline on every ping but never calls `cleanUp()`. The moving average stays at zero, so the deadline is always exactly `pingTimeout.minTimeout`, and `maxTimeout` has no effect. That holds in libp2p 2.10.0 (the relay today) and 3.1.3 (what sereus and optimystic resolve). libp2p 3.3.11 fixed it: `cleanUp(signal)` runs in a `finally`. So the reporter's passing configuration was a **flat 30 s deadline** on every node, which also explains why raising only the ceiling did nothing. Consequences:
+- A dead peer is reclaimed after about 30–40 s (the deadline plus up to one 10 s ping interval), not 10 minutes.
+- After PR #14 (relay on 3.3.11), the relay's deadline adapts between 30 s and 600 s. The average is shared across all the relay's connections (one `AdaptiveTimeout` per monitor), but with normal round-trip times the 30 s floor still dominates.
+
 ## Status
 
 - **Relay:** PR #15 (kjeib). Reviewed 2026-09-23: merges cleanly over `aa33331c`, typechecks, and the option names exist in the relay's libp2p 2.10. Merging and redeploying the relay is the maintainer's call.
-- **Cadre nodes:** blocked on Optimystic#21, `NodeOptions.connectionMonitor` with a type re-export. Requested from optimystic-99 on 2026-09-23. Unblock when an `@optimystic/db-p2p` release with it is on npm, and raise the floors in the same change.
+- **Cadre nodes:** blocked on Optimystic#21. Implemented on optimystic main 2026-09-23 (`7a31ef8d`, reviewed `8e7e0873`) as `NodeOptions.connectionMonitor?: Libp2pConnectionMonitorInit`, with the type exported from db-p2p and `/rn`. Not released yet; waiting on the maintainer. Unblock when an `@optimystic/db-p2p` release with it is on npm, and raise the floors in the same change.
 
 ## Do (once unblocked)
 
 - Add `connectionMonitor?` to `NetworkConfig` (typed from db-p2p's re-export), passed to the control node and every strand node, as `noiseCrypto` is.
 - **Default it** in cadre-core to `{ pingTimeout: { minTimeout: 30_000, maxTimeout: 600_000 } }` when unset, not only on React Native. Every peer of a slow phone runs the monitor on its connection to that phone: the PC party on its relayed connection, and the phone itself on its own. So an opt-in setting on the phone alone would not cover it. An app's explicit value replaces the default.
-  - Check the cost: a dead peer is still reclaimed. The adaptive timeout sits near its floor for a peer with a healthy history, so reclaiming a dead peer should take about 30 s rather than 5 s. Confirm that by reading libp2p's `AdaptiveTimeout`, and put the answer in the doc comment. db-p2p caps connections at 16, so check that a dead connection kept 30 s longer can't starve a node of slots.
+  - The cost is settled (see above): on libp2p 3.1.x the deadline is a flat `minTimeout`, so a dead peer is reclaimed after about 30–40 s instead of about 5–15 s. Say so in the doc comment, and that `maxTimeout` only takes effect from libp2p 3.3. db-p2p caps connections at 16. A dead connection kept about 30 s longer is not a starvation risk worth a test, but note it.
 - Test: one spec that the default reaches both node kinds, and that an explicit value replaces it.
 - Reproduction: the reporter offered their ~40-line CPU-cost fixture. If it arrives as a PR, it belongs next to `packages/integration-tests/src/harness/ws-latency.ts`, opt-in by environment variable. With it, confirm stock fails and the default passes at full cost.

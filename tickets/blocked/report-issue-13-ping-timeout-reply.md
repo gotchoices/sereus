@@ -12,6 +12,8 @@ PR #14 (relay libp2p 2 → 3) was reviewed on the same day, and **can't be merge
 - **On a clean install it fails to compile.** `src/env.ts` uses `process`, and `@types/node` is not declared. libp2p 2 pulled it in indirectly and libp2p 3 doesn't, so the Dockerfile's `npm install && npm run build` would fail. Adding `"@types/node": "^22"` to `devDependencies` fixes it. The reporter's "compiles clean" was most likely an existing `node_modules`.
 - With both fixed, and #15 merged too, the relay builds on libp2p 3.3.11 and starts. A libp2p 3.1.3 client (sereus's version) reserved over `/ws`, a second client dialed it through the circuit unlimited, and identify completed over it.
 
+PR #15's code is right, but its comment isn't, on the relay's current libp2p 2.10. It says the timeout "widens on failure" and that a dead peer goes "after ten minutes". In fact the 2.10 (and 3.1.x) monitor never feeds its `AdaptiveTimeout`, so the deadline is a flat `minTimeout` (30 s), and a dead peer is reclaimed in about 30–40 s. That's better than the comment claims. It becomes adaptive once #14 moves the relay to libp2p 3.3.11. The comment below asks for a correction; you could also fix it when merging.
+
 Merge #15 first; it merges cleanly. Then ask for the two #14 changes (comment below), or make them when merging.
 
 ## Draft
@@ -20,7 +22,9 @@ Merge #15 first; it merges cleanly. Then ask for the two #14 changes (comment be
 >
 > **Relay (#15):** merged. Widening the ping timeout rather than disabling the abort is the shape we'd have chosen too, for the reason you give: a dead peer is still reclaimed.
 >
-> **Clients:** Optimystic is adding `NodeOptions.connectionMonitor` (gotchoices/Optimystic#21), with a `Libp2pConnectionMonitorInit` type re-export, as it did for `noiseCrypto`. There's no need to send that PR. Once it's released, cadre-core will pass it through to every node, and will **default** it to your measured values (`minTimeout` 30 s, `maxTimeout` 600 s) rather than leaving it opt-in. Every peer of a slow phone runs the monitor on its connection to that phone, so the phone setting it alone wouldn't cover the PC side.
+> One correction to its comment, which we'll fix on our side: the relay's connection monitor doesn't actually adapt below libp2p 3.3. In 2.10 and 3.1.x it asks `AdaptiveTimeout` for a deadline but never calls `cleanUp()`, so the average stays at zero and every ping gets exactly `minTimeout`. 3.3.11 added the `cleanUp` call. So what your runs measured was a flat 30 s deadline, which is also why raising only the ceiling did nothing, and a dead peer is reclaimed in about 30–40 s, not ten minutes. `maxTimeout` takes effect once #14 lands.
+>
+> **Clients:** Optimystic is adding `NodeOptions.connectionMonitor` (gotchoices/Optimystic#21), with a `Libp2pConnectionMonitorInit` type re-export, as it did for `noiseCrypto`. There's no need to send that PR. Once it's released, cadre-core will pass it through to every node, and will **default** it to your measured values (`minTimeout` 30 s, which on the clients' libp2p 3.1 is the whole deadline) rather than leaving it opt-in. Every peer of a slow phone runs the monitor on its connection to that phone, so the phone setting it alone wouldn't cover the PC side.
 >
 > **Fixture:** we'd still like the CPU-cost fixture as a PR, next to `packages/integration-tests/src/harness/ws-latency.ts`, opt-in by environment variable. It's how we'll confirm the default fixes the full-cost case in our own suite.
 >
