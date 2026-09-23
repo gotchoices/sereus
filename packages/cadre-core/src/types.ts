@@ -400,6 +400,10 @@ export interface NetworkConfig {
    * Typed from `@optimystic/db-p2p`'s re-export of libp2p's `ConnectionMonitorInit`, so
    * an app does not need a direct `libp2p` dependency, and handed to db-p2p's
    * `NodeOptions.connectionMonitor` unchanged.
+   *
+   * An app that widens the ping deadline itself must raise `pingInterval` above it in
+   * the same object, or libp2p aborts the connection on the second overlapping ping —
+   * see {@link DEFAULT_CONNECTION_MONITOR} for why.
    */
   connectionMonitor?: Libp2pConnectionMonitorInit;
   /**
@@ -485,45 +489,62 @@ export interface NetworkConfig {
 
 /**
  * The connection-monitor settings every cadre node runs with when
- * {@link NetworkConfig.connectionMonitor} is unset: a 30 second floor under libp2p's
- * ping deadline in place of its own 5 second one.
+ * {@link NetworkConfig.connectionMonitor} is unset: a 30 second ping deadline in place
+ * of libp2p's 5 second one, and a 35 second gap between pings so a ping is never
+ * outstanding when the next one starts.
  *
- * WHY this is a default and not opt-in. libp2p's monitor pings every connection every
- * 10 seconds and, with its own `abortConnectionOnPingFailure: true`, aborts the
- * connection on the FIRST timeout. A peer whose event loop is saturated by pure-JS
- * Noise crypto — a slow phone under React Native, see {@link NetworkConfig.noiseCrypto}
- * — misses that deadline while perfectly healthy; the other end aborts, the peer
- * redials, and the new handshake saturates it further. Measured on gotchoices/sereus#13
- * at a Galaxy S7's crypto cost, a two-party bring-up failed 3 of 3 runs on stock
- * settings, with 30 `aborting connection due to ping failure` entries in the relay's log
- * for one run, and passed 4 of 4 in about 90 seconds with these settings on every node.
- * The monitor runs on BOTH ends of a connection and either end's abort closes it for
- * both, so a setting the phone alone applies does not cover the peer dropping it. That
- * is what rules out scoping this to React Native.
+ * WHY this is a default and not opt-in. libp2p's monitor pings every connection and,
+ * with its own `abortConnectionOnPingFailure: true`, aborts the connection on the FIRST
+ * timeout. A peer whose event loop is saturated by pure-JS Noise crypto — a slow phone
+ * under React Native, see {@link NetworkConfig.noiseCrypto} — misses that deadline while
+ * perfectly healthy; the other end aborts, the peer redials, and the new handshake
+ * saturates it further. Measured on gotchoices/sereus#13 at a Galaxy S7's crypto cost, a
+ * two-party bring-up failed 3 of 3 runs on stock settings, with 30 `aborting connection
+ * due to ping failure` entries in the relay's log for one run, and passed 4 of 4 in about
+ * 90 seconds once the deadline was widened on every node. The monitor runs on BOTH ends
+ * of a connection and either end's abort closes it for both, so a setting the phone alone
+ * applies does not cover the peer dropping it. That is what rules out scoping this to
+ * React Native.
  *
- * WHAT IT COSTS. A dead peer is reclaimed after about 30-40 seconds — the deadline plus
- * up to one ping interval — where libp2p's defaults took about 5-15 seconds. `db-p2p`
- * caps a node at 16 connections, so the worst case is those slots held some 30 seconds
- * longer than before; at that scale it is not a starvation risk.
+ * WHY `pingInterval` MOVES WITH THE DEADLINE, and is not left at libp2p's 10 seconds.
+ * The monitor opens a ping stream per connection per interval whether or not the previous
+ * ping has answered, and `/ipfs/ping/1.0.0` is registered by `@libp2p/ping` with
+ * `maxOutboundStreams: 1`. A second concurrent ping stream on one connection therefore
+ * fails in `Connection.newStream` with `TooManyOutboundProtocolStreamsError`, which
+ * reaches the monitor's own catch and aborts the connection exactly as a timeout does. A
+ * widened deadline alone is thus capped by the ping interval: measured against two local
+ * libp2p 3.1.3 nodes whose ping handler answered 600ms late, an interval of 300ms with a
+ * 900ms deadline aborted the connection, while a 900ms interval with the same deadline
+ * kept it (the same pair aborted at a 200ms stall only when the deadline was 300ms). An
+ * interval strictly above the deadline is what makes the 30 seconds real.
  *
- * `maxTimeout` has NO effect under libp2p 3.1.3, which sereus resolves today: the
- * deadline is always exactly `minTimeout`, because `ConnectionMonitor` asks its
- * `AdaptiveTimeout` for a deadline but never calls `cleanUp` to report how long the ping
- * took, leaving the moving average the deadline is derived from at zero. It is set here
- * for the version that does adapt.
+ * WHAT IT COSTS. A dead peer is reclaimed 30 to 65 seconds after it stops answering — the
+ * deadline, plus up to one interval of waiting for the ping that will fail — where
+ * libp2p's defaults took about 5 to 15 seconds. `db-p2p` caps a node at 16 connections,
+ * so the worst case is those slots held about a minute longer than before; at that scale
+ * it is not a starvation risk.
  *
- * NOTE: libp2p 3.3 reports ping durations back (`cleanUp` runs in a `finally`). From
- * that version the deadline adapts between these two values, and because the monitor
- * keeps one `AdaptiveTimeout` for all of a node's connections, one slow peer lengthens
- * the deadline for every connection on that node. Re-check the reclaim numbers above,
- * and the matching comment on db-p2p's `NodeOptions.connectionMonitor`, when sereus
- * moves to 3.3.
+ * WHY THE DEADLINE IS PINNED rather than given room to adapt. `pingTimeout` is an
+ * adaptive-timeout init, and equal `minTimeout`/`maxTimeout` clamp it to one value on
+ * every libp2p version. Under libp2p 3.1.3, which sereus resolves today, it is already
+ * flat at `minTimeout`: `ConnectionMonitor` asks its `AdaptiveTimeout` for a deadline but
+ * never calls `cleanUp` to report how long the ping took, so the moving average the
+ * deadline derives from stays at zero. libp2p 3.3 does report ping durations back, and a
+ * ceiling above `pingInterval` would then let the deadline grow past the interval and put
+ * the overlapping-ping abort above straight back. Pinning both ends keeps the interval's
+ * margin true on the version bump instead of making it something to remember. It also
+ * sidesteps 3.3's other surprise: the monitor keeps one `AdaptiveTimeout` for all of a
+ * node's connections, so one slow peer would otherwise lengthen the deadline for every
+ * connection on that node.
  */
 export const DEFAULT_CONNECTION_MONITOR = Object.freeze({
+  // Strictly greater than the deadline below, so the previous ping is always resolved or
+  // aborted before the next one opens a stream. `types.spec.ts` holds the two apart.
+  pingInterval: 35_000,
   // Frozen at both levels, as `CONTROL_CLUSTER_POLICY` is: one object reaches every
   // libp2p node this process builds, so a mutation anywhere would move the deadline
   // for all of them.
-  pingTimeout: Object.freeze({ minTimeout: 30_000, maxTimeout: 600_000 })
+  pingTimeout: Object.freeze({ minTimeout: 30_000, maxTimeout: 30_000 })
 } satisfies Libp2pConnectionMonitorInit);
 
 /**

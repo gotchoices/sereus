@@ -1216,11 +1216,15 @@ interface CadreNodeConfig {
     noiseCrypto?: NoiseCryptoInterface;
     // libp2p's per-connection liveness ping, for the control node and every strand node.
     // Unset takes cadre-core's DEFAULT_CONNECTION_MONITOR — a 30s ping deadline instead of
-    // libp2p's 5s — because that 5s deadline aborts the connection to a peer whose event
-    // loop is saturated by pure-JS Noise crypto, and the monitor runs on BOTH ends, so
-    // only the slow node widening it would not help. A configured value replaces the
-    // default whole; `{}` asks for libp2p's stock behaviour. Cost: a dead peer is
-    // reclaimed after ~30-40s rather than ~5-15s.
+    // libp2p's 5s, and a 35s gap between pings instead of its 10s — because that 5s
+    // deadline aborts the connection to a peer whose event loop is saturated by pure-JS
+    // Noise crypto, and the monitor runs on BOTH ends, so only the slow node widening it
+    // would not help. The interval has to exceed the deadline: libp2p pings again on
+    // schedule regardless of whether the last ping answered, and the second concurrent
+    // ping stream is refused and aborts the connection just as a timeout does. A
+    // configured value replaces the default whole; `{}` asks for libp2p's stock
+    // behaviour. Cost: a dead peer is reclaimed 30-65s after it stops answering rather
+    // than ~5-15s.
     connectionMonitor?: Libp2pConnectionMonitorInit;
   };
 

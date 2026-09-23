@@ -122,22 +122,35 @@ const node = await createLibp2p({
   // ceiling 0 of 2; raising the floor to 30 s 2 of 3; with the clients also at
   // 30 s, 4 of 4, in about 90 s (slow but correct).
   //
-  // NOTE: below libp2p 3.3 the monitor never feeds its AdaptiveTimeout (no
-  // `cleanUp()` call), so the deadline is exactly `minTimeout` on every ping and
-  // `maxTimeout` has no effect. That is why only the floor mattered above. A dead
-  // peer is still reclaimed, after about 30–40 s (the deadline plus up to one ping
-  // interval; measured 34.6 s).
+  // `pingInterval` has to move WITH the deadline, and that is why the run above was
+  // 2 of 3 rather than 3 of 3. The monitor opens a ping stream per connection per
+  // interval whether or not the previous ping has answered, and `@libp2p/ping`
+  // registers `/ipfs/ping/1.0.0` with `maxOutboundStreams: 1`; the second concurrent
+  // ping therefore fails in `Connection.newStream` with
+  // `TooManyOutboundProtocolStreamsError`, which the monitor catches and treats
+  // exactly like a timeout. At the stock 10 s interval a 30 s deadline is really a
+  // 10 s one. Verified against two local libp2p 3.1.3 nodes whose ping handler
+  // answered 600 ms late: a 300 ms interval with a 900 ms deadline aborted the
+  // connection, a 900 ms interval with the same deadline kept it. Keep the interval
+  // strictly above the deadline. Same numbers in `@serfab/cadre-core`'s
+  // DEFAULT_CONNECTION_MONITOR, which is the other end of these connections.
   //
-  // From libp2p 3.3.11 the deadline adapts, but only for one ping: the moving
-  // average spans 5 s and pings come every 10 s, so one fast answer from any
-  // connection resets it to `minTimeout`. A peer that is slow on every ping is
-  // kept; a phone that stalls intermittently during crypto bursts is still
-  // dropped on its first miss. So `minTimeout` stays the setting that matters
-  // on every libp2p version.
+  // The deadline is PINNED (equal floor and ceiling), so it is one value on every
+  // libp2p version. On 2.10 it already is: the monitor never feeds its
+  // AdaptiveTimeout (no `cleanUp()` call), so `maxTimeout` has no effect and only the
+  // floor mattered above. libp2p 3.3.11 does report ping durations back, and a
+  // ceiling above `pingInterval` would let the deadline climb past the interval and
+  // bring the overlapping-ping abort straight back — so the ceiling stays at the
+  // floor rather than at the 600 s this once carried.
+  //
+  // A dead peer is still reclaimed, now 30 to 65 s after it stops answering (the
+  // deadline, plus up to one interval of waiting for the ping that will fail) rather
+  // than the 30-40 s measured at the stock interval.
   connectionMonitor: {
+    pingInterval: 35_000,
     pingTimeout: {
       minTimeout: 30_000,
-      maxTimeout: 600_000
+      maxTimeout: 30_000
     }
   },
   services

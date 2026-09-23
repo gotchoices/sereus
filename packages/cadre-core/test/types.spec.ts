@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { DEFAULT_CONNECTION_MONITOR } from '../src/types.js';
 import type {
   CadreNodeConfig,
   StrandFilter,
@@ -151,5 +152,25 @@ describe('Types', () => {
       }
     });
   });
-});
 
+  /**
+   * The one relationship between these two numbers that cannot be read off either of
+   * them. libp2p's connection monitor opens a ping stream per connection per
+   * `pingInterval` whether or not the previous ping has answered, and `@libp2p/ping`
+   * registers `/ipfs/ping/1.0.0` with `maxOutboundStreams: 1` — so a deadline that
+   * outlives the interval makes the second ping fail with
+   * `TooManyOutboundProtocolStreamsError`, which the monitor treats exactly like a
+   * timeout and aborts the healthy connection. Widening the deadline without widening
+   * the interval is therefore a fix that does nothing past 10 seconds, which is the bug
+   * this default exists to avoid. `maxTimeout` is the bound that matters because libp2p
+   * 3.3 lets the deadline climb toward it.
+   */
+  describe('DEFAULT_CONNECTION_MONITOR', () => {
+    it('keeps the ping interval above the longest ping deadline it allows', () => {
+      expect(DEFAULT_CONNECTION_MONITOR.pingInterval)
+        .toBeGreaterThan(DEFAULT_CONNECTION_MONITOR.pingTimeout.maxTimeout);
+      expect(DEFAULT_CONNECTION_MONITOR.pingTimeout.maxTimeout)
+        .toBeGreaterThanOrEqual(DEFAULT_CONNECTION_MONITOR.pingTimeout.minTimeout);
+    });
+  });
+});
