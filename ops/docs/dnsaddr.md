@@ -3,10 +3,9 @@
 Goal: avoid hardcoding IPs and Peer IDs in clients by publishing **stable DNS names** that resolve to one or more concrete libp2p multiaddrs.
 
 In apps/config, you can then refer to:
-- `/dnsaddr/bootstrap.sereus.org`
 - `/dnsaddr/relay.sereus.org`
 
-Note: throughout this doc, `relay.sereus.org` is used as the worked example, but the **exact same DNSADDR pattern** applies to any infra hostname (including `bootstrap.sereus.org`).
+Note: throughout this doc, `relay.sereus.org` is used as the worked example, but the **exact same DNSADDR pattern** applies to any infra hostname you publish.
 
 ### How DNS resolution works (in this repo)
 libp2p’s DNSADDR resolver queries **TXT** records at:
@@ -53,11 +52,6 @@ Clients can now dial:
 Notes:
 - Use the **host port** you configured (`HOST_PORT` in `env.local`), not the container-internal port.
 
-Bootstrap example:
-- **Host/Name**: `_dnsaddr.bootstrap`
-- **Type**: `TXT`
-- **Value**: `dnsaddr=/dns4/bootstrap.sereus.org/tcp/<HOST_PORT>/p2p/<PEER_ID>`
-
 ### Multiple nodes behind one DNS name
 Add multiple TXT records under the same `_dnsaddr.<hostname>`:
 - `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-1.sereus.org/tcp/<HOST_PORT_1>/p2p/<PEER_ID_1>`
@@ -88,24 +82,11 @@ Check the DNSADDR TXT record(s):
 dig +short _dnsaddr.relay.sereus.org TXT
 ```
 
-Bootstrap equivalents:
-
-```bash
-dig +short bootstrap.sereus.org A
-dig +short _dnsaddr.bootstrap.sereus.org TXT
-```
-
 If you want to query specific resolvers:
 
 ```bash
 dig @1.1.1.1 +short _dnsaddr.relay.sereus.org TXT
 dig @8.8.8.8 +short _dnsaddr.relay.sereus.org TXT
 ```
-
-### “One host, multiple hostnames” (common early-stage pattern)
-Even if you initially run bootstrap+relay on the same machine:
-- keep `bootstrap.sereus.org` and `relay.sereus.org` as separate names
-
-That way you can split roles later without changing clients.
 
 

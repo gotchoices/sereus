@@ -1,11 +1,9 @@
 ## Ops tests: libp2p infra checks
 
-Small scripts to validate that a remote libp2p node is reachable and behaves like a good neighbor (identify/ping and optionally DHT queries), plus standalone STUN and TURN-credential checks.
+Small scripts to validate that a remote libp2p node is reachable and behaves like a good neighbor (identify/ping), plus standalone STUN and TURN-credential checks.
 
 These scripts are meant for ops validation of:
 - relay nodes
-- bootstrap nodes
-- combined bootstrap-relay nodes
 - STUN servers (coturn) — see "STUN check" below
 
 ### Usage
@@ -15,8 +13,7 @@ clone, named `sereus` here (see `../docker/README.md` → "Recommended productio
 layout"). Running from inside the repo instead, drop the leading `sereus/`.
 
 `check-stun` and `check-turn-creds` use only Node's standard library and run as
-they are. `check-node` and the `relay-bootstrap-pair` scripts need libp2p, so
-install their dependencies once:
+they are. `check-node` needs libp2p, so install its dependencies once:
 
 ```bash
 npm --prefix sereus/ops/test install
@@ -24,8 +21,6 @@ npm --prefix sereus/ops/test install
 
 ```bash
 node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay
-node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht
-node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht --all
 ```
 
 If your local DNS resolver can’t see the `_dnsaddr` record yet (propagation/caching), force DoH:
@@ -55,7 +50,7 @@ node sereus/ops/test/check-node.mjs --target /ip4/203.0.113.10/tcp/4011/ws/p2p/1
 - connect/dial succeeds
 - identify succeeds (protocols are learned)
 - ping succeeds (RTT reported)
-- optionally: DHT query succeeds (`dht.findPeer(<remotePeerId>)`)
+- with `--relay`: the remote advertises the circuit-relay hop protocol (heuristic)
 
 ### STUN check (coturn)
 Validate a deployed **STUN** server (`ops/docker/coturn/`) by sending a STUN
@@ -105,73 +100,13 @@ node sereus/ops/test/check-turn-creds.mjs \
 > `--self-test` mode needs neither network nor a build and is the in-CI floor that
 > keeps the issuer and clients in sync.
 
-### Advanced: NAT-to-NAT test pair (bootstrap + relay)
-Goal: validate a real-world scenario where **both devices are behind NAT/firewalls**:
+### Relayed reachability (NAT-to-NAT)
 
-- **Listener**: uses the **relay** to make itself reachable (via a `/p2p-circuit/...` address)
-- **Dialer**: uses the **bootstrap node** (DHT) to discover how to reach the listener, knowing only:
-  - the listener’s **Peer ID**
-  - the **bootstrap address** (and optionally a relay address as a fallback)
-
-Important notes:
-- A “bootstrap node” is not a world-wide/global DHT. It’s just a peer that other nodes dial first to join a **specific overlay**.
-- This test relies on **peer routing** (`dht.findPeer(peerId)`): the dialer asks the DHT for the listener’s `PeerInfo` (including addresses).
-- For this to work behind NAT, the listener must acquire/advertise a **relayed address** that includes `p2p-circuit` via a reachable relay.
-
-Scripts:
-- Listener: `sereus/ops/test/relay-bootstrap-pair/listener.mjs`
-- Dialer: `sereus/ops/test/relay-bootstrap-pair/dialer.mjs`
-
-Run (on two devices):
-
-```bash
-# Listener machine
-node sereus/ops/test/relay-bootstrap-pair/listener.mjs \
-  --relay /dnsaddr/relay.sereus.org \
-  --bootstrap /dnsaddr/bootstrap.sereus.org
-
-# Dialer machine (after copying printed PEER_ID from listener)
-node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
-  --bootstrap /dnsaddr/bootstrap.sereus.org \
-  --peer <LISTENER_PEER_ID>
-```
-
-#### Layered approach to testing (recommended)
-Start simple, then add discovery:
-
-1) **Explicit dial address** (tests the relay path + opening a protocol stream over the relay, no DHT discovery)
-- Start the listener and copy the printed “copy/paste dial address (via relay)”
-- Dialer:
-
-```bash
-node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
-  --bootstrap /dnsaddr/bootstrap.sereus.org \
-  --dial-addr "<PASTE_FROM_LISTENER>"
-```
-
-2) **Relay synthesis fallback** (still no DHT discovery, but less copy/paste)
-
-```bash
-node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
-  --bootstrap /dnsaddr/bootstrap.sereus.org \
-  --peer <LISTENER_PEER_ID> \
-  --relay /dnsaddr/relay.sereus.org
-```
-
-3) **Bootstrap-only discovery** (goal state): dialer uses `dht.findPeer(<peerId>)` to discover a `p2p-circuit` address without `--relay`.
-   - Note: peer routing can take a short time to “soak” on small overlays. If it fails immediately, retry after ~30–60 seconds while the listener remains running and connected to the bootstrap.
-
-Troubleshooting:
-- Add `--verbose` to listener/dialer to print resolved DNSADDR targets and other helpful info.
-- If the dialer fails with `NO_RESERVATION`, it means the listener has not successfully reserved a slot on the relay yet.
-- If you see “limited connection”: that is expected for relayed connections. This test pair explicitly:
-  - opens the dialer stream with `runOnLimitedConnection: true`
-  - registers the listener handler with `runOnLimitedConnection: true`
-  because relay links are intentionally marked limited by libp2p.
-- If you see `StreamResetError: stream reset` during the dialer write, it often means the listener rejected the inbound stream (e.g. handler not allowed on limited connections) or the relay could not open a STOP stream back to the listener (e.g. no active reservation/relay connection).
-- A reservation is only valid while the listener maintains an active connection to the relay; the listener keeps this alive (best-effort) by periodically pinging the relay.
-
-Optional checks:
-- Add `--bootstrap-check` to the dialer to explicitly validate the bootstrap node is responding to DHT queries (`dht.findPeer(bootstrapPeerId)`).
+Two firewalled nodes reach each other through a **relay**: each reserves a slot and dials
+the other's `/p2p-circuit/...` address. There is no separate discovery step to test — Sereus
+has no global DHT; a joiner is handed a reachable node's multiaddr (direct or relay-routed)
+out of band, or dials a known public node in the target strand. Validate the relay itself
+with `check-node.mjs --relay` (above); the cadre/strand relay path is exercised by the
+integration tests under `packages/integration-tests/` (e.g. `blind-relay-phone-to-phone-e2e`).
 
 

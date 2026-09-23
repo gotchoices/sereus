@@ -1,7 +1,7 @@
 services:
   coturn:
     # NOTE: distinct upstream image — NOT the sereus-libp2p-infra:local image the
-    # relay/bootstrap services build. coturn provides STUN/TURN (ICE assistance),
+    # relay service builds. coturn provides STUN/TURN (ICE assistance),
     # which is unrelated to libp2p circuit relay.
     image: coturn/coturn:4.6
     container_name: sereus_coturn

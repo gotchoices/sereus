@@ -15,17 +15,14 @@ import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
 import { ping } from '@libp2p/ping'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
-import { kadDHT } from '@libp2p/kad-dht'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
 import { isWebSocketAddr, parseAnnounceAddrs, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv } from './env.js'
 
-type Role = 'relay' | 'bootstrap' | 'bootstrap-relay'
-
-const ROLE = (process.env.SEREUS_ROLE ?? '').trim() as Role
-if (!ROLE || !['relay', 'bootstrap', 'bootstrap-relay'].includes(ROLE)) {
-  throw new Error(`Missing/invalid SEREUS_ROLE. Expected one of: relay|bootstrap|bootstrap-relay (got ${JSON.stringify(process.env.SEREUS_ROLE)})`)
-}
+// This image runs a single role: a libp2p Circuit Relay v2 hop. Sereus has no global DHT to
+// bootstrap — each strand is its own FRET ring, and nodes are reached by dialing a known
+// participating node directly or through a relay like this one. (The former kad-DHT
+// `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET.)
 
 // `/data` is the container volume; override when running the process directly on a
 // workstation. The identity key is stored here, so a stable DATA_DIR means a stable peer
@@ -94,20 +91,13 @@ const RELAY_MAX_RESERVATIONS = parsePositiveIntEnv('RELAY_MAX_RESERVATIONS', 500
 
 const services: Record<string, any> = {
   identify: identify(),
-  ping: ping()
-}
-
-if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
-  services.relay = circuitRelayServer({
+  ping: ping(),
+  relay: circuitRelayServer({
     reservations: {
       applyDefaultLimit: RELAY_APPLY_DEFAULT_LIMIT,
       maxReservations: RELAY_MAX_RESERVATIONS
     }
   })
-}
-
-if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
-  services.dht = kadDHT({ clientMode: false })
 }
 
 const node = await createLibp2p({
@@ -124,10 +114,8 @@ const node = await createLibp2p({
 
 await node.start()
 
-console.log(`${ROLE} peerId=${node.peerId.toString()}`)
-if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
-  console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
-}
+console.log(`relay peerId=${node.peerId.toString()}`)
+console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
 console.log('listening/advertising on:')
 const addrs = node.getMultiaddrs().map(ma => ma.toString())
 addrs.forEach(ma => console.log(`  ${ma}`))
@@ -150,5 +138,3 @@ if (wsAddrs.length > 0) {
     'behind a TLS front that is /dns4/<host>/tcp/443/tls/ws.'
   ].join('\n'))
 }
-
-
