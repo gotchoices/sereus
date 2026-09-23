@@ -38,7 +38,7 @@ import type {
   RawStorageProvider,
   Libp2pNodeWithRepo
 } from './types.js';
-import { resolveStrandClusterSize, strandClusterPolicy } from './types.js';
+import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 
@@ -681,6 +681,11 @@ export class StrandInstanceManager {
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
         ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
+        // Unconditional, and the same default the control node takes: every node of
+        // every party runs the monitor over its connection to a slow phone, so the
+        // widened ping deadline has to reach the strand nodes too (see
+        // DEFAULT_CONNECTION_MONITOR).
+        connectionMonitor: config.network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the

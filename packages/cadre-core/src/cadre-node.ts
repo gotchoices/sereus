@@ -37,7 +37,7 @@ import type {
   PeerAddressRecord,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
@@ -1669,6 +1669,11 @@ export class CadreNode implements SAppIdLookup {
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
       ...(network?.noiseCrypto && { noiseCrypto: network.noiseCrypto }),
+      // Always present, unlike the conditional spreads around it: an absent
+      // `connectionMonitor` would leave libp2p's 5s ping deadline, which drops a peer
+      // whose event loop is saturated by pure-JS Noise crypto. A configured value
+      // replaces the default whole (see DEFAULT_CONNECTION_MONITOR).
+      connectionMonitor: network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.

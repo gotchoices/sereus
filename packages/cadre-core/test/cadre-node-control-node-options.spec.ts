@@ -9,7 +9,7 @@ import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { controlStorageScope } from '../src/storage-scope.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CONNECTION_MONITOR, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
 import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
@@ -473,6 +473,23 @@ describe('CadreNode control-network node options', () => {
       const options = controlOptions(new CadreNode(createConfig({ network: { noiseCrypto } })));
 
       expect(options.noiseCrypto).toBe(noiseCrypto);
+    });
+
+    /**
+     * `connectionMonitor` is the one `NetworkConfig` field that is DEFAULTED rather
+     * than passed through: libp2p's own 5s ping deadline aborts the connection to a
+     * peer whose event loop is saturated by pure-JS Noise crypto, and the monitor runs
+     * on both ends, so the default has to apply to every node rather than only the slow
+     * one (see `DEFAULT_CONNECTION_MONITOR`). Its strand-node half is pinned in
+     * `strand-instance-manager-network-addrs.spec.ts`.
+     */
+    it('defaults connectionMonitor when unset, and lets a configured value replace it', () => {
+      expect(controlOptions(new CadreNode(createConfig())).connectionMonitor).toBe(DEFAULT_CONNECTION_MONITOR);
+
+      const connectionMonitor = { abortConnectionOnPingFailure: false };
+      const options = controlOptions(new CadreNode(createConfig({ network: { connectionMonitor } })));
+
+      expect(options.connectionMonitor).toBe(connectionMonitor);
     });
 
     it('omits transports, noiseCrypto and listenAddrs (and still resolves relay) when network is entirely absent', () => {

@@ -1214,6 +1214,14 @@ interface CadreNodeConfig {
     // (default: libp2p-noise's own, which is pure JS under React Native). A phone passes
     // native hashing and ChaCha20-Poly1305 here; the wire protocol is unchanged.
     noiseCrypto?: NoiseCryptoInterface;
+    // libp2p's per-connection liveness ping, for the control node and every strand node.
+    // Unset takes cadre-core's DEFAULT_CONNECTION_MONITOR — a 30s ping deadline instead of
+    // libp2p's 5s — because that 5s deadline aborts the connection to a peer whose event
+    // loop is saturated by pure-JS Noise crypto, and the monitor runs on BOTH ends, so
+    // only the slow node widening it would not help. A configured value replaces the
+    // default whole; `{}` asks for libp2p's stock behaviour. Cost: a dead peer is
+    // reclaimed after ~30-40s rather than ~5-15s.
+    connectionMonitor?: Libp2pConnectionMonitorInit;
   };
 
   // Hibernation configuration

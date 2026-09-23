@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
+import { DEFAULT_CONNECTION_MONITOR } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -56,7 +57,8 @@ vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks
  * that they never reach the node builder.
  *
  * `network.noiseCrypto` is the opposite case — inherited literally, because every node
- * pays the Noise handshake — and is pinned here beside the fields that are not.
+ * pays the Noise handshake — and is pinned here beside the fields that are not. So is
+ * `network.connectionMonitor`, which is inherited AND defaulted.
  */
 describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
@@ -155,6 +157,22 @@ describe('StrandInstanceManager network-addrs wiring', () => {
 
     vi.clearAllMocks();
     expect('noiseCrypto' in await strandOptions({ listenAddrs: [] })).toBe(false);
+  });
+
+  /**
+   * Inherited like `noiseCrypto` above, but DEFAULTED rather than merely passed
+   * through, and that is the whole point of the default: libp2p's monitor runs on both
+   * ends of a connection and either end's abort closes it, so the strand nodes talking
+   * to a slow phone have to widen the ping deadline too, not just the phone (see
+   * `DEFAULT_CONNECTION_MONITOR`).
+   */
+  it('defaults the strand node\'s connectionMonitor, and lets a configured value replace it', async () => {
+    expect((await strandOptions()).connectionMonitor).toBe(DEFAULT_CONNECTION_MONITOR);
+
+    vi.clearAllMocks();
+    const connectionMonitor = { abortConnectionOnPingFailure: false };
+
+    expect((await strandOptions({ connectionMonitor })).connectionMonitor).toBe(connectionMonitor);
   });
 
   it('still fails the strand start on a malformed relayAddrs entry, which it does use', async () => {

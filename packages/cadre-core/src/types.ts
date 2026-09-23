@@ -1,5 +1,5 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
-import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
@@ -391,6 +391,18 @@ export interface NetworkConfig {
    */
   noiseCrypto?: NoiseCryptoInterface;
   /**
+   * libp2p's connection monitor — the liveness ping it runs on every connection — for
+   * the control node and every strand node, as {@link noiseCrypto} is. When omitted,
+   * cadre-core applies {@link DEFAULT_CONNECTION_MONITOR} rather than leaving libp2p's
+   * own defaults in place; an explicit value REPLACES that default wholesale, so `{}`
+   * is how an app asks for libp2p's stock behaviour back.
+   *
+   * Typed from `@optimystic/db-p2p`'s re-export of libp2p's `ConnectionMonitorInit`, so
+   * an app does not need a direct `libp2p` dependency, and handed to db-p2p's
+   * `NodeOptions.connectionMonitor` unchanged.
+   */
+  connectionMonitor?: Libp2pConnectionMonitorInit;
+  /**
    * Optional async resolver returning the multiaddrs to embed in invites
    * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
    * is used. Hosts behind NAT supply this to substitute their DDNS hostname
@@ -470,6 +482,49 @@ export interface NetworkConfig {
     strandAddrRefreshMs?: number;
   };
 }
+
+/**
+ * The connection-monitor settings every cadre node runs with when
+ * {@link NetworkConfig.connectionMonitor} is unset: a 30 second floor under libp2p's
+ * ping deadline in place of its own 5 second one.
+ *
+ * WHY this is a default and not opt-in. libp2p's monitor pings every connection every
+ * 10 seconds and, with its own `abortConnectionOnPingFailure: true`, aborts the
+ * connection on the FIRST timeout. A peer whose event loop is saturated by pure-JS
+ * Noise crypto — a slow phone under React Native, see {@link NetworkConfig.noiseCrypto}
+ * — misses that deadline while perfectly healthy; the other end aborts, the peer
+ * redials, and the new handshake saturates it further. Measured on gotchoices/sereus#13
+ * at a Galaxy S7's crypto cost, a two-party bring-up failed 3 of 3 runs on stock
+ * settings, with 30 `aborting connection due to ping failure` entries in the relay's log
+ * for one run, and passed 4 of 4 in about 90 seconds with these settings on every node.
+ * The monitor runs on BOTH ends of a connection and either end's abort closes it for
+ * both, so a setting the phone alone applies does not cover the peer dropping it. That
+ * is what rules out scoping this to React Native.
+ *
+ * WHAT IT COSTS. A dead peer is reclaimed after about 30-40 seconds — the deadline plus
+ * up to one ping interval — where libp2p's defaults took about 5-15 seconds. `db-p2p`
+ * caps a node at 16 connections, so the worst case is those slots held some 30 seconds
+ * longer than before; at that scale it is not a starvation risk.
+ *
+ * `maxTimeout` has NO effect under libp2p 3.1.3, which sereus resolves today: the
+ * deadline is always exactly `minTimeout`, because `ConnectionMonitor` asks its
+ * `AdaptiveTimeout` for a deadline but never calls `cleanUp` to report how long the ping
+ * took, leaving the moving average the deadline is derived from at zero. It is set here
+ * for the version that does adapt.
+ *
+ * NOTE: libp2p 3.3 reports ping durations back (`cleanUp` runs in a `finally`). From
+ * that version the deadline adapts between these two values, and because the monitor
+ * keeps one `AdaptiveTimeout` for all of a node's connections, one slow peer lengthens
+ * the deadline for every connection on that node. Re-check the reclaim numbers above,
+ * and the matching comment on db-p2p's `NodeOptions.connectionMonitor`, when sereus
+ * moves to 3.3.
+ */
+export const DEFAULT_CONNECTION_MONITOR = Object.freeze({
+  // Frozen at both levels, as `CONTROL_CLUSTER_POLICY` is: one object reaches every
+  // libp2p node this process builds, so a mutation anywhere would move the deadline
+  // for all of them.
+  pingTimeout: Object.freeze({ minTimeout: 30_000, maxTimeout: 600_000 })
+} satisfies Libp2pConnectionMonitorInit);
 
 /**
  * Hibernation configuration
