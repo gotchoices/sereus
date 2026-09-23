@@ -1,10 +1,12 @@
 description: A draft reply to the reporter on gotchoices/sereus#13, answering their CPU-cost reproduction and their offer of two PRs. Posting it is a human's call.
 files:
-  - tickets/backlog/bug-slow-peer-crypto-cost-diverges-into-retry-amplification.md (the ticket this reply points to)
+  - tickets/blocked/slow-peer-dropped-on-ping-timeout.md (the ticket this reply points to, since renamed)
   - tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips.md (the round-trip numbers quoted)
 ----
 
 # Human action: reply on #13 to the CPU-cost follow-up
+
+**Posted 2026-09-22** with maintainer approval: https://github.com/gotchoices/sereus/issues/13#issuecomment-5772395837
 
 Posting to a public tracker is the maintainer's call. Optimystic implemented the crypto option itself (4739b170, 23929726), so the draft tells the reporter their PR isn't needed. It also assumes the `^1.2.0` floor patch (`8c94537d`) has been released. If it hasn't, change "sereus 1.2.1" to "sereus 1.2.0, with optimystic 1.2.0 installed".
 
