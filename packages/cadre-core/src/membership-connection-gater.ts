@@ -88,9 +88,10 @@
  *    annex the party's relay capacity.
  *  - An `'admit-for-relay'` connection that is NOT reserving is dropped: it has
  *    {@link RELAY_ADMISSION_RESERVE_DEADLINE_MS} to get a reservation ADMITTED
- *    at that hook, after which the underlying connection is aborted. The
- *    guarantee above thus weakens on relay-enabled nodes from "never in the
- *    conversation" to "in it briefly, and can speak nothing".
+ *    at that hook, after which the gate CLOSES the underlying connection so
+ *    both ends let go of the socket. The guarantee above thus weakens on
+ *    relay-enabled nodes from "never in the conversation" to "in it briefly,
+ *    and can speak nothing".
  *
  * The deadline clears on reservation ADMISSION, not on the reservation's own
  * success: this gate cannot observe the server-side `reserve()` outcome, so a
@@ -197,13 +198,23 @@ export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
 /**
  * How long an `'admit-for-relay'` connection may exist without a relay
  * reservation being ADMITTED at the `denyInboundRelayReservation` hook, after
- * which the gate aborts the underlying connection. A reserving client asks for
+ * which the gate closes the underlying connection. A reserving client asks for
  * its slot immediately after the connection upgrades (`relay-reservation.ts`
  * dials and requests in one drive; a strand node's configured circuit listener
  * does the same from inside its own `listen()`), so a connection idle past this
  * deadline is not reserving.
  */
 export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
+
+/**
+ * Bound on the graceful close of an expired relay-only connection. It exists
+ * because `AbstractMultiaddrConnection.close()` awaits an `idle`/`drain` event
+ * when the connection still has unsent bytes, and that wait has no timeout of
+ * its own — an unsignalled one never ends. This gate writes nothing to a
+ * stranger, so the wait is not reachable today; the bound is here so a timer
+ * callback can never hold an unending await.
+ */
+export const RELAY_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
 
 /**
  * Default cap on concurrent relay reservations held by peers the membership
@@ -351,7 +362,7 @@ export class UnauthorizedReservationBudget {
  *
  * An `'admit-for-relay'` verdict admits the connection and arms a
  * `reserveDeadlineMs` timer against it; the timer is disarmed when a
- * reservation for that peer is ADMITTED at the reservation hook, and aborts the
+ * reservation for that peer is ADMITTED at the reservation hook, and closes the
  * underlying `MultiaddrConnection` when it fires first.
  *
  * NOTE: `base` is spread, so a gater passed as a CLASS INSTANCE would lose its
@@ -470,7 +481,7 @@ export async function decideWithinDeadline<T>(
   }
 }
 
-/** One armed not-reserving deadline: the connection it will abort, and its timer. */
+/** One armed not-reserving deadline: the connection it will close, and its timer. */
 interface PendingReserveDeadline {
   maConn: MultiaddrConnection;
   timer: ReturnType<typeof setTimeout>;
@@ -479,11 +490,11 @@ interface PendingReserveDeadline {
 /**
  * The not-reserving deadlines for `'admit-for-relay'` connections, keyed by
  * remote peerId (a Set per peer — one peer can hold several in-flight
- * connections). `arm` starts a timer that aborts the connection; `disarm`
+ * connections). `arm` starts a timer that closes the connection; `disarm`
  * (called when a reservation for that peer is admitted) cancels every pending
  * timer for the peer. Timers are unref'd so an armed deadline never holds a
  * process open, and a timer that fires against an already-closed connection is
- * a swallowed no-op.
+ * a no-op (`close()` returns at once on any status but `open`).
  *
  * Disarming is final for the connections it cancelled: a peer that reserved
  * once and then lets its reservation lapse keeps a mute connection (the
@@ -528,11 +539,37 @@ class PendingReserveDeadlines {
     if (entries?.size === 0) {
       this.byPeer.delete(remotePeerId);
     }
-    log('Relay-only admission expired for %s — no reservation admitted within %dms, aborting the connection', remotePeerId, this.deadlineMs);
+    log('Relay-only admission expired for %s — no reservation admitted within %dms, closing the connection', remotePeerId, this.deadlineMs);
+    void this.drop(remotePeerId, entry.maConn);
+  }
+
+  /**
+   * End an expired relay-only connection: a bounded graceful close, with
+   * `abort()` only as the escalation. The order cannot be reversed — `abort()`
+   * marks the connection `aborted`, and `close()` returns immediately on any
+   * status that is not `open`, so aborting first would make the close a silent
+   * no-op. Closing a connection the peer already dropped returns at once
+   * without throwing, so the fallback stays unreached in the ordinary case.
+   */
+  private async drop(remotePeerId: string, maConn: MultiaddrConnection): Promise<void> {
     try {
-      entry.maConn.abort(new Error(`relay-only admission expired: no relay reservation admitted within ${this.deadlineMs}ms`));
+      await maConn.close({ signal: AbortSignal.timeout(RELAY_ADMISSION_CLOSE_TIMEOUT_MS) });
+      return;
     } catch (error) {
-      // Aborting a connection that already closed on its own is not a failure.
+      log('Closing the expired relay-only connection from %s failed — aborting: %o', remotePeerId, error);
+    }
+    // NOTE: this fallback cannot actually free a WebSocket. `@libp2p/websockets`'
+    // `sendReset()` calls `websocket.close(1006)`, and 1006 is a reserved code
+    // RFC 6455 forbids an endpoint from sending, so `ws` throws and
+    // `AbstractMessageStream.abort()` swallows it — the local end flips to
+    // `aborted` while the socket stays up. Measured against
+    // @libp2p/websockets@10.1.3 (see tickets/blocked/report-libp2p-websockets-abort-close-code.md).
+    // `MultiaddrConnection` exposes no way down to the raw socket, so this is as
+    // far as this layer can go. Revisit — drop the fallback, or go back to a
+    // plain `abort()` — once that transport sends a legal reset code.
+    try {
+      maConn.abort(new Error(`relay-only admission expired: no relay reservation admitted within ${this.deadlineMs}ms`));
+    } catch (error) {
       log('Aborting the expired relay-only connection from %s threw: %o', remotePeerId, error);
     }
   }

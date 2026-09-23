@@ -31,12 +31,11 @@
  * and A is a storage node — so omitting the flag leaves the relay server ON. On
  * a node running it the gater answers an unplaceable peer with
  * `'admit-for-relay'` rather than a deny (see `membership-connection-gater.ts` →
- * "The relay-reservation seam"): B's dial is ADMITTED and only aborted at the
- * 5 s not-reserving deadline, and B — which learns of that abort no sooner than
- * its next connection-monitor ping — holds the dead connection `open` for
- * several seconds beyond that. Step 3 below then never observes the refusal it
- * exists to pin, and step 5 would be satisfied by the seed dial's own still-live
- * connection rather than by a re-dial, proving nothing. A relay-less owner is
+ * "The relay-reservation seam"): B's dial is ADMITTED and only dropped at the
+ * 5 s not-reserving deadline, so B holds a live connection to A for those five
+ * seconds. Step 3 below then never observes the refusal it exists to pin, and
+ * step 5 would be satisfied by the seed dial's own still-live connection rather
+ * than by a re-dial, proving nothing. A relay-less owner is
  * also the sharper model of the failure this scenario is about: an owner that
  * refuses, or is simply unreachable, at the moment the seed lands.
  *
