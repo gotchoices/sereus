@@ -159,6 +159,7 @@ import debug from 'debug';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
 import { SEED_PROTOCOL } from './seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
+import { withDeadline } from './control-stream.js';
 
 const log = debug('sereus:cadre:connection-gater');
 
@@ -213,6 +214,9 @@ export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
  * its own — an unsignalled one never ends. This gate writes nothing to a
  * stranger, so the wait is not reachable today; the bound is here so a timer
  * callback can never hold an unending await.
+ *
+ * Applied through {@link withDeadline}, not `AbortSignal.timeout`: the latter is
+ * not reliably present on React Native/Hermes, which loads this same module.
  */
 export const RELAY_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
 
@@ -553,7 +557,11 @@ class PendingReserveDeadlines {
    */
   private async drop(remotePeerId: string, maConn: MultiaddrConnection): Promise<void> {
     try {
-      await maConn.close({ signal: AbortSignal.timeout(RELAY_ADMISSION_CLOSE_TIMEOUT_MS) });
+      await withDeadline(
+        RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
+        `relay-only close for ${remotePeerId}`,
+        (signal) => maConn.close({ signal })
+      );
       return;
     } catch (error) {
       log('Closing the expired relay-only connection from %s failed — aborting: %o', remotePeerId, error);
