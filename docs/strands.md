@@ -543,27 +543,35 @@ no longer the case.
   by `packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts`.
   What removal does *not* leave is a way for the removed party to get back in on its own. A
   fresh invitation still reaches a removed party — invitations travel on the control
-  network, which strand removal does not touch — and the removed party's node accepts and
-  files it. Nothing then picks it up: the background loop that would redeem it finished
-  during the original join and is never restarted, so the redemption is not refused, not
-  retried and not reported, it is simply never attempted. Behind that sits a second dead
-  end that is real but never reached today — redeeming means writing a membership row into
-  the strand, and the machines that would carry that write are exactly the ones the
-  remaining members are refusing. So re-admission has to be authored by a remaining manager,
-  by admitting the key directly; handing the removed party an invitation and waiting
-  achieves nothing, and neither does clearing its leftover device records, because that
-  lifts the refusal without restarting anything. Tracked as
-  `backlog/bug-removed-party-cannot-redeem-its-way-back`, which the same scenario file pins.
+  network, which strand removal does not touch — and the removed party's node accepts it,
+  files it, and *tries* to redeem it: staging a fresh invitation restarts the background
+  membership loop that finished during the original join. The attempt then fails, because
+  redeeming means writing a membership row into the strand, and the machines that would
+  carry that write are exactly the ones the remaining members are refusing. The loop keeps
+  retrying quietly and reports the dead end to the app — one console warning plus a
+  `strand:rejoin-blocked` event — either as soon as the node knows it was removed and is
+  holding a credential it cannot spend, or after about ten refused attempts, in which case
+  the report is a suspicion (the invitation may merely not have replicated to that machine
+  yet) and says so. Re-admission therefore has to be authored by a remaining manager, by
+  admitting the party's key directly: that lifts the refusal, replication resumes, and the
+  removed party's still-running loop sees its restored membership, spends the leftover
+  invitation so nobody else can, and finishes by itself. Handing the removed party an
+  invitation and waiting achieves nothing on its own, and neither does clearing its
+  leftover device records. The same scenario file proves the attempt, the report and the
+  manager-authored heal.
 - **It does not cut off past reads, and it does not rotate the member key** — the
   forward-looking bullet above.
 - **It does not cancel an unspent invitation.** Nothing in the membership rules stops a
   removed party from redeeming one it still holds — cancelling is a separate manual step,
   and binding an invitation to its invitee is tracked as `feat-strand-invitee-bound-invites`
   (see the invitation bullet above and the known gaps below). In practice a removed party
-  does not get back in today, but only because of the dead ends in the re-admission bullet
-  above — side effects of how removal is implemented, not guarantees the rules make, and
-  the first of them is a bug due to be fixed. Cancel the invitation rather than rely on
-  either.
+  does not get back in today, but only because the remaining members refuse its machines'
+  strand writes — a side effect of how removal is implemented, not a guarantee the rules
+  make. Its node now genuinely attempts the redemption (the re-admission bullet above), so
+  that network refusal is the *only* barrier left: an invitation the removed party holds
+  will be spent the moment anything lets one of its writes through — a lapse in the
+  refusal, or a manager who admits it for one reason without meaning to honour the
+  invitation. Cancel the invitation at removal time rather than rely on the refusal.
 
 Known gaps remain, all out of scope of the rules above:
 
@@ -592,7 +600,7 @@ Known gaps remain, all out of scope of the rules above:
   keeps no record of who it was meant for. Managers can now cancel invitations, but nothing
   can cancel them *on a member's behalf* at removal time — a manager has to review the
   outstanding invitations and decide. So nothing in the rules stops a removed party holding
-  an unspent, unexpired, uncancelled invitation from re-admitting itself — only
-  implementation dead ends do, and one of them is a bug due to be fixed
-  (`backlog/bug-removed-party-cannot-redeem-its-way-back`). Binding an invitation to a
-  specific invitee is tracked as `feat-strand-invitee-bound-invites`.
+  an unspent, unexpired, uncancelled invitation from re-admitting itself — only the
+  remaining members' refusal of its machines does, and its node does try (see "What
+  removal still does not do"). Binding an invitation to a specific invitee is tracked as
+  `feat-strand-invitee-bound-invites`.

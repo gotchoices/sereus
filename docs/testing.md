@@ -588,14 +588,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   the test; removing that party then cuts both of its machines, the remaining cohort still
   commits, and the removed party can neither read that write nor push one back) —
   `strand-party-removal-via-formation-e2e.integration.ts`. Its second test covers re-joining
-  after a removal: a fresh formation still succeeds (it runs on the control network) and
-  reuses the party's identity, but the invitation is never spent — the joiner's membership
-  reconciler latched `done` during the first join and nothing re-arms it, so no pass even
-  attempts the redemption. Read the comment at that test's negative assertion before citing
-  it: it pins that outcome and the stopped-loop cause, and deliberately does NOT show the
-  denial-of-the-strand-write cause sitting behind it. Re-admission has to be authored by a
-  remaining manager — `backlog/bug-removed-party-cannot-redeem-its-way-back`. Connections here are DIRECT too;
-  the relay-mediated variant stays uncovered, as above.
+  after a removal: a fresh formation still succeeds (it runs on the control network), reuses
+  the party's identity, and re-arms the joiner's membership reconciler, whose every attempt
+  to redeem the invitation is refused by the remaining members — it keeps the invitation
+  staged, reports the dead end (`strand:rejoin-blocked`, the probable trigger, since the
+  removed machine's own gate never sees the removal), and settles the invitation by itself
+  once a remaining manager re-admits the party. Connections here are DIRECT too; the
+  relay-mediated variant stays uncovered, as above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a

@@ -569,8 +569,10 @@ export class CadreNode implements SAppIdLookup {
    * (`strand-membership-reconciler.ts`, wired via `StartStrandConfig.pendingMembershipInvite`
    * in {@link launchStrand}): it deletes the entry once the invitation is redeemed, burned
    * against an already-seated member, or found dead (expired / cancelled / consumed
-   * elsewhere / the strand sealed). Until the strand is actually launched here the entry
-   * just waits.
+   * elsewhere / the strand sealed) — naming the invitation it settled, so a re-formation
+   * that replaced the entry meanwhile keeps its fresh one
+   * ({@link unstageMembershipInvite}). Until the strand is actually launched here the entry
+   * just waits; once launched, staging notifies the manager, which re-arms a finished loop.
    *
    * NOTE: entries live for the node's lifetime (one small pair per formed closed
    * strand), the same unbounded-keys tripwire {@link crossPartyStrandAddrs} documents —
@@ -5427,6 +5429,7 @@ export class CadreNode implements SAppIdLookup {
       revocationEnforcement: this.config.strandRevocationEnforcement,
       membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
+      onRejoinBlocked: (blockedStrandId) => this.emit('strand:rejoin-blocked', { strandId: blockedStrandId }),
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
       firstSync: this.config.strandFirstSync,
@@ -5441,7 +5444,7 @@ export class CadreNode implements SAppIdLookup {
       // cleared once spent, burned, or dead — see pendingMembershipInvites.
       pendingMembershipInvite: {
         get: () => this.pendingMembershipInvites.get(strand.Id),
-        clear: () => { this.pendingMembershipInvites.delete(strand.Id); }
+        clear: (settled) => this.unstageMembershipInvite(strand.Id, settled)
       },
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
@@ -7209,7 +7212,11 @@ export class CadreNode implements SAppIdLookup {
    *    an intact control DB) and mints + persists a fresh one otherwise. The invitation
    *    will admit THIS key's public half as the `Strand.Member`.
    * 2. Stage the invitation in {@link pendingMembershipInvites} for the strand
-   *    bring-up flow (`strand-node-binds-member-peer`) to redeem via `consumeInvite`.
+   *    bring-up flow (`strand-node-binds-member-peer`) to redeem via `consumeInvite`,
+   *    and tell the instance manager, which re-arms an already-finished membership
+   *    reconciler so a RE-formation against a launched strand is attempted at once — the
+   *    removed-party case, where the loop finished long before the removal. A strand not
+   *    launched here yet has no loop to re-arm, and its bring-up finds the entry.
    *
    * Throws — failing the whole {@link formStrand} — when the identity cannot be
    * persisted: a joiner "joined" without a persistable identity could never become a
@@ -7230,16 +7237,24 @@ export class CadreNode implements SAppIdLookup {
         { cause: error }
       );
     }
-    // NOTE: staging alone is not enough on a node whose reconciler for this strand has
-    // already finished. `StrandMembershipReconciler` latches a terminal stopped state on
-    // its `done` path and is rebuilt only by a strand relaunch, so a RE-formation against
-    // an already-launched strand stages an invitation no loop will ever look at. Harmless
-    // for a party that is still a member (the invitation would only be burned), and the
-    // live defect for one that has been REMOVED — which is exactly when an app re-forms.
-    // Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`; pinned by
-    // `strand-party-removal-via-formation-e2e.integration.ts` (test 2).
     this.pendingMembershipInvites.set(strandId, invite);
     log('formStrand: staged membership invitation for strand %s (party key persisted)', strandId);
+    this.strandManager.notifyMembershipInviteStaged(strandId);
+  }
+
+  /**
+   * The reconciler's half of the {@link pendingMembershipInvites} seam: drop `settled`
+   * (spent, burned, or dead) only while it is still the staged entry. A re-formation
+   * replaces the entry between a pass's read and its settle, and the fresh invitation it
+   * staged is the one the re-armed loop is about to redeem — deleting it here would lose
+   * it silently, the very outcome the re-arm exists to prevent.
+   */
+  private unstageMembershipInvite(strandId: string, settled: StrandMembershipInvite): void {
+    if (this.pendingMembershipInvites.get(strandId)?.inviteKey !== settled.inviteKey) {
+      log('strand %s: a fresh membership invitation replaced the one just settled — keeping it staged', strandId);
+      return;
+    }
+    this.pendingMembershipInvites.delete(strandId);
   }
 
   /**

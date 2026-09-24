@@ -1323,6 +1323,27 @@ export interface CadreNodeEvents {
    */
   'strand:revoked': { strandId: string };
   /**
+   * Emitted when this node holds a staged membership invitation for a CLOSED strand
+   * that its own writes cannot redeem — the shape a REMOVED party hits when a manager
+   * hands it a fresh invitation. Redeeming means writing this party's `Strand.Member`
+   * row into the strand, and the machines that would carry that write are the ones the
+   * remaining members refuse, so the attempt is made and fails. Two triggers, reported
+   * at most once per staged invitation:
+   *
+   * - CONFIRMED: the revoked-peer gate already flags this node as removed (the
+   *   `strand:revoked` case) and an invitation is staged.
+   * - PROBABLE: `UNFINISHED_PASSES_BEFORE_ESCALATION` consecutive attempts left the
+   *   invitation staged. This one is a SUSPICION, not a verdict — the invitation's row
+   *   may simply not have replicated here yet on a slow strand — and the accompanying
+   *   warning names both causes.
+   *
+   * Nothing is stopped or torn down. A fresh invitation cannot re-admit a removed
+   * party by itself: the remedy is a remaining manager admitting this party's member
+   * key directly (`addMemberByManager`), after which the membership loop, which keeps
+   * retrying, finishes the join on its own.
+   */
+  'strand:rejoin-blocked': { strandId: string };
+  /**
    * Emitted when the control network advertises a strand this node has no
    * registered `sAppConfig` for — i.e. a strand created by another member, or
    * one this node ran in a previous session (sApp configs are in-memory only and

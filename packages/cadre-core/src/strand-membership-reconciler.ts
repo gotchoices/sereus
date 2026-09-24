@@ -26,38 +26,92 @@
  *   that finds no member row AND no staged invitation is not an unfinished join but a wait
  *   for someone to admit this party — nothing this machine can do faster — so it re-arms on
  *   the flat poll interval and resets the ladder. The loop stops on the done state.
- * - **Done state**: the party's member row is visible locally AND this machine's own
- *   binding is in place — the loop stops for good. A LATER revocation is the enforcer's
- *   business, not this loop's; a resume rebuilds the reconciler and re-verifies from
- *   scratch (every write is idempotent, so re-running is free).
+ * - **Done state**: the party's member row is visible locally, this machine's own binding
+ *   is in place, AND no invitation is still staged — the loop stops. A LATER revocation is
+ *   the enforcer's business, not this loop's; a resume rebuilds the reconciler and
+ *   re-verifies from scratch (every write is idempotent, so re-running is free), and a
+ *   fresh invitation staged on a done loop re-arms it in place ({@link rearm}).
  *
  * ## One pass
  *
- * 1. **Self-revocation check.** If the enforcer flags this node's own party as revoked,
- *    stop rather than fight — re-admission arrives (if ever) via a fresh formation.
+ * 1. **Self-revocation check.** If the enforcer flags this node's own party as revoked and
+ *    no invitation is staged, stop rather than fight — re-admission arrives (if ever) via
+ *    a fresh formation, which re-arms the loop. With an invitation staged the loop reports
+ *    the dead end (below) and carries on: the redemption is attempted like any other, and a
+ *    manager's re-admission lets a later pass finish it.
  * 2. **Ensure membership.** Member row visible → done with this step; if a staged
  *    invitation is still unspent, BURN it ({@link burnInvite} — the `ConsumedInvite` row
- *    alone) so the bearer credential cannot be spent by anyone else, ignoring burn
- *    failures beyond a log. Member row absent + staged invitation → {@link consumeInvite}
+ *    alone) so the bearer credential cannot be spent by anyone else. A burn refused by the
+ *    cohort keeps the invitation staged for the next pass (it is the same write gate a
+ *    redemption faces, and the local member row may be stale — see "Re-arming"); a dead
+ *    invitation is dropped. Member row absent + staged invitation → {@link consumeInvite}
  *    under the party's own key, retried across passes until the `Invite` row has
  *    replicated here and the write commits. Absent with no invitation (founder rows not
  *    yet synced, or a machine whose party never joined) → keep waiting, escalating to one
  *    visible warning after {@link IDLE_PASSES_BEFORE_ESCALATION} passes, never throwing.
  * 3. **Ensure the binding.** {@link registerMemberPeer} (insert-if-absent, restart-safe)
  *    with this node's own strand transport peer id — only after step 2 sees the member
- *    row locally (its deferred `MemberExists` reads the live local table).
+ *    row locally (its deferred `MemberExists` reads the live local table). Done only once
+ *    the binding is in place AND nothing is staged; a binding written while a burn keeps
+ *    being refused leaves the loop live to settle the invitation later.
  *
- * ## Terminal states (stop without done)
+ * ## Stops, and re-arming
+ *
+ * Two kinds of stop. A RE-ARMABLE stop is one a fresh invitation should reopen:
+ *
+ * - **Done** (above).
+ * - **Self-revoked with nothing staged** (step 1 above).
+ *
+ * A PERMANENT stop is one a fresh invitation changes nothing about — {@link rearm} is a
+ * no-op after it:
  *
  * - **Sealed strand**: `consumeInvite` rejected by `ConsumedInvite.NotSealed` — nobody
  *   can ever be admitted, so retrying forever is noise. Terminal-with-log.
- * - **Self-revoked** (step 1 above).
  * - **Undecodable party key**: nothing can be signed; loud log, stop.
+ * - **The public {@link stop}**: `StrandInstanceManager.releaseRuntime` and
+ *   `clearOwnMemberPeerBinding` both call it and mean it — the latter stops the loop and
+ *   awaits {@link settle} precisely so no pass can re-register the binding it is about to
+ *   delete, and a re-arm that restarted the loop would undo that.
+ *
+ * `CadreNode.adoptFormationMembershipInvite` stages every fresh invitation and notifies
+ * the instance manager, which calls {@link rearm}: a done loop reopens and runs one pass
+ * at once; a running loop is merely kicked. This is what lets a party that was REMOVED
+ * from the strand, and then handed a new invitation, actually attempt it — the loop
+ * finished during its first join, long before the removal.
+ *
+ * On a removed party the local replica is usually stale: the cohort cut this machine off
+ * at about the moment the removal was written, so `isStrandMember` still answers true and
+ * a re-armed pass lands in the already-member arm. That is why the burn arm keeps a
+ * refused invitation staged and why the done state requires nothing staged — otherwise
+ * the fresh credential would be dropped on the first refused burn and the loop would latch
+ * done again, with the only trace a debug line.
  *
  * A DEAD invitation that is not terminal for the loop — expired, cancelled, or already
  * consumed by someone else (`ConsumedInvite`'s primary key) — is dropped with a log and
  * the loop keeps idling: a fresh formation stages a new invitation, and a manager-side
  * admission (`addMemberByManager`) seats the member row without one.
+ *
+ * ## Reporting a blocked re-join
+ *
+ * Redeeming (or burning) writes into the strand, and the machines that would carry that
+ * write are exactly the ones the remaining members refuse once this party is removed. So
+ * the attempt is expected to fail, and the failure is REPORTED rather than left to the
+ * ladder: one `console.warn` plus the {@link StrandMembershipReconcilerDeps.onRejoinBlocked}
+ * callback (`CadreNode`'s `strand:rejoin-blocked` event), at most once per re-arm cycle.
+ * Two triggers:
+ *
+ * - **Confirmed** — a pass finds this party self-revoked AND an invitation staged. The node
+ *   knows it was removed and is holding a credential it cannot spend.
+ * - **Probable** — {@link UNFINISHED_PASSES_BEFORE_ESCALATION} consecutive attempted passes
+ *   left the invitation staged. The case that matters most in the field: a removed party
+ *   that never learned it was removed (the removal did not replicate here before the cut).
+ *   It is a suspicion, not a verdict — the invitation's `Invite` row may simply not have
+ *   replicated here yet — and the warning names both causes.
+ *
+ * The remedy in either case is a remaining manager admitting this party's member key
+ * directly (`addMemberByManager`): that lifts the refusal, replication resumes, and the
+ * still-running loop sees the member row, burns the leftover credential and finishes by
+ * itself.
  *
  * ## Sharing the database with the app
  *
@@ -112,6 +166,16 @@ const log = debug('sereus:cadre:strand-membership-reconciler');
 export const IDLE_PASSES_BEFORE_ESCALATION = 10;
 
 /**
+ * Consecutive passes that ran against a live database and ended with the staged
+ * invitation still unsettled — whatever refused it — before the loop reports a probable
+ * blocked re-join (see "Reporting a blocked re-join" in the module doc). The same order
+ * as {@link IDLE_PASSES_BEFORE_ESCALATION}: about five minutes once the ladder reaches the
+ * 30 s cap. Counted by outcome rather than by classified failure because a cut-off machine
+ * can fail before any write is classified: its membership READ may already throw.
+ */
+export const UNFINISHED_PASSES_BEFORE_ESCALATION = 10;
+
+/**
  * First retry delay, ms, for a pass that left the join UNFINISHED — a `consumeInvite`
  * whose `Strand.Invite` row has not replicated to this machine yet, a cohort briefly
  * unwritable, a database not yet published. Doubles per such pass up to the configured
@@ -159,25 +223,30 @@ export interface HalfCommittedJoin {
   unsaved: readonly string[];
 }
 
-/** Where {@link classifyConsumeFailure} routes a failed `consumeInvite`. */
+/** Where {@link classifyConsumeFailure} routes a failed `consumeInvite` or `burnInvite`. */
 export type ConsumeFailure =
   | HalfCommittedJoin
   /** The app had a transaction open, so nothing was tried — keep the invitation, retry. */
   | { kind: 'busy' }
-  /** The strand is sealed — terminal. */
+  /** The strand is sealed — terminal for a non-member; a member's leftover invitation is merely dead. */
   | { kind: 'sealed' }
   /** Expired, cancelled, or consumed by someone else — drop the invitation, keep waiting. */
   | { kind: 'dead-invite' }
-  /** Anything else — most often the `Invite` row has not replicated here yet — retry. */
+  /**
+   * Anything else — the `Invite` row has not replicated here yet, or the cohort refused the
+   * write (a removed party's machines are denied) — keep the invitation, retry.
+   */
   | { kind: 'retry' };
 
 /**
- * Route a `consumeInvite` rejection. Typed checks run before any text check: a busy refusal
- * (another transaction was open, so nothing ran) and a half-committed join are recognised by
- * their error's type anywhere in the `cause` chain. The busy refusal carries Quereus's own
- * refusal as its cause, and a half-committed join's message embeds collection names and the
- * underlying failure's text, either of which a text matcher can misread. The sealed and
- * dead-invitation checks then read the top-level message.
+ * Route a `consumeInvite` or `burnInvite` rejection. Both write the `Strand.ConsumedInvite`
+ * row under the same `NotExpired` / `NotCancelled` / `NotSealed` / primary-key constraints
+ * (a burn writes that row alone), so one classifier serves both. Typed checks run before any
+ * text check: a busy refusal (another transaction was open, so nothing ran) and a
+ * half-committed join are recognised by their error's type anywhere in the `cause` chain.
+ * The busy refusal carries Quereus's own refusal as its cause, and a half-committed join's
+ * message embeds collection names and the underlying failure's text, either of which a text
+ * matcher can misread. The sealed and dead-invitation checks then read the top-level message.
  *
  * A second loaded copy of `@optimystic/db-core` (or of the plugin) would fail `instanceof`; the
  * half-commit then falls through the anchored texts to `retry`, and once the saved `ConsumedInvite`
@@ -234,8 +303,12 @@ function errorMessage(error: unknown): string {
 export interface PendingMembershipInviteSource {
   /** The staged invitation, or `undefined` when none is pending for this strand. */
   get(): StrandMembershipInvite | undefined;
-  /** Drop the staged invitation (spent, burned, or dead). */
-  clear(): void;
+  /**
+   * Drop `settled` (spent, burned, or dead) — only if it is still the staged one. A
+   * re-formation can replace the entry between a pass's {@link get} and this call, and
+   * the fresh invitation it staged must survive the older one being settled.
+   */
+  clear(settled: StrandMembershipInvite): void;
 }
 
 export interface StrandMembershipReconcilerDeps {
@@ -262,10 +335,17 @@ export interface StrandMembershipReconcilerDeps {
   pendingInvite?: PendingMembershipInviteSource;
   /**
    * Whether the revocation enforcer currently flags THIS node's own party as revoked.
-   * When it does, the loop stops rather than fight the enforcer — see the module doc.
-   * Absent (enforcement disarmed) means "not known revoked".
+   * When it does and nothing is staged, the loop stops rather than fight the enforcer;
+   * with an invitation staged it reports the blocked re-join and keeps trying — see the
+   * module doc. Absent (enforcement disarmed) means "not known revoked".
    */
   isSelfRevoked?: () => boolean;
+  /**
+   * Called when the loop reports a blocked re-join (see "Reporting a blocked re-join" in
+   * the module doc) — at most once per re-arm cycle, after the `console.warn`. `CadreNode`
+   * wires it to its `strand:rejoin-blocked` event.
+   */
+  onRejoinBlocked?: () => void;
   /**
    * Timer seam for the retry ladder; omit for real (unref'd) timeouts. Timeouts rather
    * than the enforcer's repeating interval because the delay changes per pass and the next
@@ -307,11 +387,21 @@ export class StrandMembershipReconciler {
   private timer: unknown;
   private started = false;
   private stoppedFlag = false;
+  /**
+   * Whether the last stop was one {@link rearm} may not undo — see "Stops, and re-arming"
+   * in the module doc. Latched by the public {@link stop} and the permanent terminal
+   * states, never cleared.
+   */
+  private permanentlyStopped = false;
   private doneFlag = false;
   /** Lazily decoded party keypair — see {@link StrandMembershipReconcilerDeps.partyMemberPrivateKey}. */
   private keyPair: Ed25519KeyPair | undefined;
   private idlePasses = 0;
   private idleEscalated = false;
+  /** Consecutive attempted passes that left the invitation staged — see {@link UNFINISHED_PASSES_BEFORE_ESCALATION}. */
+  private unfinishedPasses = 0;
+  /** Whether the blocked re-join was already reported this re-arm cycle (one report, either trigger). */
+  private rejoinBlockedReported = false;
   /**
    * Whether the pass that just ran found nothing to act on — no member row and no staged
    * invitation. That is a wait to be admitted, not an unfinished join, so it re-arms on the
@@ -335,12 +425,15 @@ export class StrandMembershipReconciler {
     this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_REVOCATION_POLL_INTERVAL_MS;
   }
 
-  /** True once member row + own binding were both confirmed and the loop stopped. */
+  /**
+   * True once member row + own binding were both confirmed with nothing staged and the
+   * loop stopped. Cleared again by {@link rearm}.
+   */
   get done(): boolean {
     return this.doneFlag;
   }
 
-  /** True once the loop has stopped — done, terminal, or externally stopped. */
+  /** True while the loop is stopped — done, terminal, or externally stopped. */
   get stopped(): boolean {
     return this.stoppedFlag;
   }
@@ -369,12 +462,24 @@ export class StrandMembershipReconciler {
     await this.tail;
   }
 
-  /** Disarm the retry timer; a pass already in flight completes but writes idempotently. */
+  /**
+   * Disarm the retry timer, for good: a later {@link rearm} is refused. A pass already in
+   * flight completes but writes idempotently — {@link settle} is what waits it out.
+   */
   stop(): void {
-    if (this.stoppedFlag) return;
-    this.stoppedFlag = true;
-    this.clearTimer();
-    log('[%s] membership reconciler stopped%s', this.deps.label, this.doneFlag ? ' (done)' : '');
+    this.halt('stopped by the runtime', true);
+  }
+
+  /**
+   * A fresh invitation was staged: reopen a loop that stopped on a re-armable state (done,
+   * or self-revoked with nothing staged) and run one pass at once; merely kick a loop that
+   * is still running; do nothing after a permanent stop. Never rejects, and serialized
+   * like {@link reconcile}: the reopen happens when the queued pass STARTS, after any pass
+   * in flight has settled, so a `done` that pass latches cannot swallow the re-arm — and a
+   * public {@link stop} that lands first still wins, because the queued pass re-checks it.
+   */
+  rearm(): Promise<void> {
+    return this.enqueue(() => this.reopen() ? this.doPass() : Promise.resolve());
   }
 
   /**
@@ -385,13 +490,18 @@ export class StrandMembershipReconciler {
    * published — REPLACES the pending timer rather than running alongside it.
    */
   reconcile(): Promise<void> {
+    return this.enqueue(() => this.doPass());
+  }
+
+  /** Chain `pass` after every pass already queued; the tail never rejects. */
+  private enqueue(pass: () => Promise<void>): Promise<void> {
     // The catch is what keeps the chain alive. `doPass` contains its own failures, but its
     // `finally` calls into the injected scheduler, and a throw from there would leave `tail`
     // REJECTED — after which every later `reconcile()` short-circuits on it and the join
-    // stalls for good, silently. Swallowing it here makes the "never rejects" contract this
-    // method, {@link settle} and the two `void`-ed call sites all rely on structural rather
-    // than incidental.
-    const run = this.tail.then(() => this.doPass()).catch((error) => {
+    // stalls for good, silently. Swallowing it here makes the "never rejects" contract
+    // {@link reconcile}, {@link rearm}, {@link settle} and the `void`-ed call sites all rely
+    // on structural rather than incidental.
+    const run = this.tail.then(pass).catch((error) => {
       log('[%s] reconcile pass threw outside its own handler — the chain continues: %o',
         this.deps.label, error);
     });
@@ -399,28 +509,59 @@ export class StrandMembershipReconciler {
     return run;
   }
 
+  /**
+   * The re-arm itself, run at the head of the queued pass: `false` refuses the pass (a
+   * permanent stop), a running loop is left as it is, and a re-armable stop is reopened
+   * with the idle and unfinished counters, both escalation latches and the retry ladder
+   * reset — a fresh invitation is a fresh cycle.
+   */
+  private reopen(): boolean {
+    if (this.permanentlyStopped) {
+      log('[%s] re-arm refused — the loop is stopped for good', this.deps.label);
+      return false;
+    }
+    if (!this.stoppedFlag) {
+      log('[%s] fresh invitation staged on a running loop — kicking a pass', this.deps.label);
+      return true;
+    }
+    this.stoppedFlag = false;
+    this.doneFlag = false;
+    this.idlePasses = 0;
+    this.idleEscalated = false;
+    this.unfinishedPasses = 0;
+    this.rejoinBlockedReported = false;
+    this.retryDelayMs = undefined;
+    log('[%s] membership reconciler re-armed by a fresh invitation', this.deps.label);
+    return true;
+  }
+
   /** One serialized pass; contains every failure (contract: never rejects). */
   private async doPass(): Promise<void> {
     if (this.stoppedFlag || this.doneFlag) return;
     this.lastPassIdle = false;
     try {
-      if (this.deps.isSelfRevoked?.() === true) {
-        // NOTE: "arrives via a fresh formation" is aspirational, not current behaviour.
-        // A fresh formation stages a new invitation (`adoptFormationMembershipInvite`)
-        // but does NOT re-arm this loop — `finish` latches `stoppedFlag` and `start()`
-        // early-returns on it, so only a strand relaunch (quiesce → resume, or a process
-        // restart) builds a reconciler that would redeem it. The same latch applies on the
-        // `done` path below, which is the case a REMOVED party actually hits: it finished
-        // its first join long before it was removed. Measured end to end in
-        // `strand-party-removal-via-formation-e2e.integration.ts` (test 2), tracked as
-        // `backlog/bug-removed-party-cannot-redeem-its-way-back`.
-        this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation');
+      if (this.deps.isSelfRevoked?.() === true && !this.stagedInviteBlockedBySelfRevocation()) {
+        this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation', false);
         return;
       }
       const keyPair = this.resolveKeyPair();
       if (!keyPair) return; // undecodable key already stopped the loop
       const db = this.deps.getDatabase();
       if (!db) return; // no live database this instant (quiesce race) — next tick decides
+      await this.attempt(db, keyPair);
+    } catch (error) {
+      log('[%s] reconcile pass failed — retrying next tick: %o', this.deps.label, error);
+    } finally {
+      this.scheduleNext();
+    }
+  }
+
+  /**
+   * Steps 2 and 3 against a live database, with the outcome counted toward the probable
+   * blocked re-join report whether the attempt returned or threw.
+   */
+  private async attempt(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
+    try {
       if (!(await this.ensureMembership(db, keyPair))) return;
       // NOTE: the redemption (`Member` + `ConsumedInvite`) and the binding below are two
       // SEPARATE commits — measured at 27 and 18 `/cluster` streams on 2026-09-17.
@@ -433,10 +574,8 @@ export class StrandMembershipReconciler {
       // cost ever shows up in a measurement, try the single transaction and measure against the
       // 27 + 18 baseline.
       await this.ensureBinding(db, keyPair);
-    } catch (error) {
-      log('[%s] reconcile pass failed — retrying next tick: %o', this.deps.label, error);
     } finally {
-      this.scheduleNext();
+      this.noteAttemptOutcome();
     }
   }
 
@@ -503,59 +642,84 @@ export class StrandMembershipReconciler {
         memberKey: keyPair.publicKeyB64,
       }, OWN_TRANSACTION);
     } catch (error) {
-      this.handleConsumeFailure(error);
+      this.handleConsumeFailure(error, invite);
       return false;
     }
-    this.deps.pendingInvite?.clear();
+    this.deps.pendingInvite?.clear(invite);
     log('[%s] redeemed the staged membership invitation — Member row seated under this party\'s key', this.deps.label);
     return true;
   }
 
   /**
-   * The already-member arm: spend a still-staged invitation so nobody else can. Burn
-   * failures (already spent, cancelled, expired — or a racing seal) are logged and
-   * otherwise ignored, and the stage is cleared either way: with the member row
-   * present the invitation has no further local use, and keeping a possibly-dead
-   * credential staged would leave `getPendingMembershipInvite` lying. The one exception
-   * is a busy refusal (the app had a transaction open): nothing was tried, so the
-   * invitation stays staged and the next pass burns it.
+   * The already-member arm: spend a still-staged invitation so nobody else can. The stage
+   * is cleared once the burn lands or the invitation is known dead (already spent,
+   * cancelled, expired, or the strand sealed around a party that is still a member) — with
+   * the member row present a dead credential has no further local use, and keeping it
+   * staged would leave `getPendingMembershipInvite` lying. A refused burn keeps it staged:
+   * a busy refusal tried nothing, and a write the cohort refused is the removed-party shape
+   * ("Stops, and re-arming" in the module doc), where the local member row is stale and the
+   * credential is the one thing a later manager admission lets this loop settle.
    *
-   * NOTE: accepted tradeoff — a burn that failed for a TRANSIENT reason is never
-   * retried, so that bearer credential stays spendable until it expires. Weighed and
-   * kept because it lands in the same state the strand already documents as normal
-   * ("removal does not cancel an unspent invitation", docs/strands.md) and retrying
-   * would mean keeping a dead-or-alive credential staged indefinitely. Revisit if
-   * unspent invitations ever become a real admission risk — which is when
-   * `feat-strand-member-allowlist-admission` lands.
+   * NOTE: this REPLACES an earlier accepted tradeoff that never retried a burn which failed
+   * for a transient reason and dropped the invitation instead. That decision was made when
+   * this arm could only ever see an invitation staged before the first join finished, so a
+   * dropped credential cost nothing but a spendable bearer token. {@link rearm} makes the
+   * arm reachable with a freshly issued invitation the app wants redeemed, and dropping
+   * that one on the first refused write is the silent failure this loop exists to avoid.
    */
   private async burnLeftoverInvite(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
-    const pending = this.deps.pendingInvite;
-    const invite = pending?.get();
-    if (!pending || !invite) return;
+    const invite = this.deps.pendingInvite?.get();
+    if (!invite) return;
     try {
       await burnInvite(db, {
         inviteKey: invite.inviteKey,
         invitePrivateKey: invite.invitePrivateKey,
         memberKey: keyPair.publicKeyB64,
       }, OWN_TRANSACTION);
-      log('[%s] burned the leftover invitation (member row already present)', this.deps.label);
     } catch (error) {
-      if (isTransactionBusy(error)) {
+      this.handleBurnFailure(error, invite);
+      return;
+    }
+    this.deps.pendingInvite?.clear(invite);
+    log('[%s] burned the leftover invitation (member row already present)', this.deps.label);
+  }
+
+  /**
+   * Act on a `burnInvite` rejection as {@link classifyConsumeFailure} routes it. Unlike a
+   * redemption, a sealed strand is not terminal here — the member row is present, so this
+   * party is a member of the sealed strand and only its leftover credential is dead — and a
+   * half-committed burn (one collection, so a report of it means the commit's durability
+   * was in doubt) is retried: the next pass either lands it or fails on the row's primary
+   * key, which drops it as dead.
+   */
+  private handleBurnFailure(error: unknown, invite: StrandMembershipInvite): void {
+    const failure = classifyConsumeFailure(error);
+    switch (failure.kind) {
+      case 'busy':
         log('[%s] burning the leftover invitation deferred — the app has a transaction open; it stays staged '
           + 'for the next pass', this.deps.label);
         return;
-      }
-      log('[%s] burning the leftover invitation failed (already spent, cancelled, or expired) — dropping it: %o',
-        this.deps.label, error);
+      case 'sealed':
+      case 'dead-invite':
+        log('[%s] the leftover invitation is dead (already spent, cancelled, expired, or the strand sealed) — '
+          + 'dropping it: %s', this.deps.label, errorMessage(error));
+        this.deps.pendingInvite?.clear(invite);
+        return;
+      case 'half-committed':
+      case 'retry':
+        log('[%s] burning the leftover invitation was refused — it stays staged and is retried next tick '
+          + '(the cohort refusing this machine, or a transient write failure): %s', this.deps.label, errorMessage(error));
+        return;
     }
-    pending.clear();
   }
 
   /**
    * Step 3 of the pass: write this machine's own `MemberPeer` binding (insert-if-absent)
-   * and, on success, latch the done state and stop the loop. A missing transport peer id
-   * (a quiesce racing the pass) defers to the next tick; a write failure — a busy refusal
-   * included — is contained by the pass's outer catch and retried.
+   * and, once it is in place with nothing staged, latch the done state and stop the loop.
+   * A missing transport peer id (a quiesce racing the pass) defers to the next tick; a
+   * write failure — a busy refusal included — is contained by the pass's outer catch and
+   * retried. A binding written while an invitation is still staged (its burn keeps being
+   * refused) is not done: the loop stays live so a later pass can settle the credential.
    */
   private async ensureBinding(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
     const peerId = this.deps.getOwnPeerId();
@@ -564,8 +728,12 @@ export class StrandMembershipReconciler {
       return;
     }
     await registerMemberPeer(db, { memberKeyPair: keyPair, peerId }, OWN_TRANSACTION);
+    if (this.deps.pendingInvite?.get()) {
+      log('[%s] own MemberPeer binding is in place but an invitation is still staged — not done yet', this.deps.label);
+      return;
+    }
     this.doneFlag = true;
-    this.finish('member row and own MemberPeer binding are both in place');
+    this.finish('member row and own MemberPeer binding are both in place', false);
   }
 
   /**
@@ -573,7 +741,7 @@ export class StrandMembershipReconciler {
    * the invitation and retry; half-committed → warn and drop; sealed → terminal; dead
    * invitation → drop; anything else → retry.
    */
-  private handleConsumeFailure(error: unknown): void {
+  private handleConsumeFailure(error: unknown, invite: StrandMembershipInvite): void {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
       case 'busy':
@@ -581,12 +749,12 @@ export class StrandMembershipReconciler {
           + 'database; retrying next tick', this.deps.label);
         return;
       case 'half-committed':
-        this.reportHalfCommittedJoin(failure, error);
+        this.reportHalfCommittedJoin(failure, error, invite);
         return;
       case 'sealed':
         // The staged credential is dead with the seal; drop it so the cache stays honest.
-        this.deps.pendingInvite?.clear();
-        this.finish('the strand is sealed — nobody can ever be admitted, so the staged invitation is dead');
+        this.deps.pendingInvite?.clear(invite);
+        this.finish('the strand is sealed — nobody can ever be admitted, so the staged invitation is dead', true);
         return;
       case 'dead-invite':
         // NOTE: accepted tradeoff — dropping a dead invitation does not mark the pass idle,
@@ -596,13 +764,65 @@ export class StrandMembershipReconciler {
         // source of dead invitations ever repeats per pass.
         log('[%s] the staged invitation is dead (expired, cancelled, or consumed elsewhere) — dropping it; '
           + 'a fresh formation stages a new one: %s', this.deps.label, errorMessage(error));
-        this.deps.pendingInvite?.clear();
+        this.deps.pendingInvite?.clear(invite);
         return;
       case 'retry':
-        log('[%s] consumeInvite failed — retrying next tick (Invite row not yet replicated here, or a transient '
-          + 'write failure): %s', this.deps.label, errorMessage(error));
+        log('[%s] consumeInvite failed — retrying next tick (Invite row not yet replicated here, the cohort '
+          + 'refusing this machine, or a transient write failure): %s', this.deps.label, errorMessage(error));
         return;
     }
+  }
+
+  /**
+   * Count an attempted pass that left the invitation staged (whatever stopped it — a
+   * refused or busy write, or a read that threw on a cut-off machine); one that settled
+   * it, or finished, ends the streak. At {@link UNFINISHED_PASSES_BEFORE_ESCALATION}
+   * report the PROBABLE blocked re-join.
+   */
+  private noteAttemptOutcome(): void {
+    if (this.doneFlag || !this.deps.pendingInvite?.get()) {
+      this.unfinishedPasses = 0;
+      return;
+    }
+    this.unfinishedPasses += 1;
+    if (this.unfinishedPasses >= UNFINISHED_PASSES_BEFORE_ESCALATION) {
+      this.reportRejoinBlocked(
+        `${this.unfinishedPasses} membership reconcile passes have left the staged membership invitation `
+        + 'unsettled. Either this party was removed from the strand and the remaining members are refusing its '
+        + 'machines, or the invitation\'s Strand.Invite row has not replicated here yet.'
+      );
+    }
+  }
+
+  /**
+   * Step 1's CONFIRMED trigger: self-revoked with an invitation staged. Reports (once per
+   * re-arm cycle) and answers `true` so the pass carries on — the redemption is attempted
+   * and refused like any other write, and a manager's re-admission lets a later pass finish.
+   * `false` (nothing staged) means step 1 stops the loop as before.
+   */
+  private stagedInviteBlockedBySelfRevocation(): boolean {
+    if (!this.deps.pendingInvite?.get()) return false;
+    this.reportRejoinBlocked(
+      'this party is revoked from the strand and holds a staged membership invitation it cannot spend: the '
+      + 'remaining members refuse this machine\'s strand writes, so the redemption cannot land.'
+    );
+    return true;
+  }
+
+  /**
+   * ONE `console.warn` and one callback per re-arm cycle, whichever trigger fires first —
+   * see "Reporting a blocked re-join" in the module doc. `cause` is the trigger's own
+   * sentence; the remedy and the loop's posture are the same for both.
+   */
+  private reportRejoinBlocked(cause: string): void {
+    if (this.rejoinBlockedReported) return;
+    this.rejoinBlockedReported = true;
+    console.warn(
+      `[sereus] strand ${this.deps.label}: ${cause} A fresh invitation cannot re-admit a removed party by itself — `
+      + 'a remaining manager must admit this party\'s member key directly (addMemberByManager). The membership '
+      + 'loop keeps retrying quietly and completes the join once a Member row for this party appears.'
+    );
+    this.deps.onRejoinBlocked?.();
   }
 
   /**
@@ -621,7 +841,7 @@ export class StrandMembershipReconciler {
    * path. Revisit if a `Member`-saved half-commit is ever observed, or when
    * `blocked/strand-half-committed-join-recovery` is decided.
    */
-  private reportHalfCommittedJoin(failure: HalfCommittedJoin, error: unknown): void {
+  private reportHalfCommittedJoin(failure: HalfCommittedJoin, error: unknown, invite: StrandMembershipInvite): void {
     console.warn(
       `[sereus] strand ${this.deps.label}: redeeming the staged membership invitation was only partly saved. `
       + `Saved: [${failure.saved.join(', ')}]. Not saved: [${failure.unsaved.join(', ')}]. `
@@ -631,7 +851,7 @@ export class StrandMembershipReconciler {
       + 'The membership loop keeps checking and completes the join once a Member row for this party appears.'
     );
     log('[%s] half-committed redemption, full error: %o', this.deps.label, error);
-    this.deps.pendingInvite?.clear();
+    this.deps.pendingInvite?.clear(invite);
     // The idle passes that follow are the wait this warning already explained; the escalation's
     // "waiting on the founder rows to replicate" would be a second, misleading warning.
     this.idleEscalated = true;
@@ -643,7 +863,7 @@ export class StrandMembershipReconciler {
     try {
       this.keyPair = strandMemberKeyPair(this.deps.partyMemberPrivateKey);
     } catch (error) {
-      this.finish(`the party membership key does not decode — nothing can be signed (${errorMessage(error)})`);
+      this.finish(`the party membership key does not decode — nothing can be signed (${errorMessage(error)})`, true);
       return undefined;
     }
     return this.keyPair;
@@ -672,9 +892,21 @@ export class StrandMembershipReconciler {
     }
   }
 
-  /** Stop with a reason — the terminal and done paths' shared exit. */
-  private finish(reason: string): void {
-    log('[%s] membership reconciliation stopping: %s', this.deps.label, reason);
-    this.stop();
+  /**
+   * Stop with a reason — the terminal and done paths' shared exit. `permanent` says whether
+   * a fresh invitation may reopen the loop ("Stops, and re-arming" in the module doc).
+   */
+  private finish(reason: string, permanent: boolean): void {
+    this.halt(`membership reconciliation stopping: ${reason}`, permanent);
+  }
+
+  /** Latch the stop and disarm the timer; a permanent latch sticks even on an already-stopped loop. */
+  private halt(reason: string, permanent: boolean): void {
+    if (permanent) this.permanentlyStopped = true;
+    if (this.stoppedFlag) return;
+    this.stoppedFlag = true;
+    this.clearTimer();
+    log('[%s] membership reconciler stopped%s: %s%s', this.deps.label, this.doneFlag ? ' (done)' : '', reason,
+      permanent ? '' : ' — a fresh invitation re-arms it');
   }
 }

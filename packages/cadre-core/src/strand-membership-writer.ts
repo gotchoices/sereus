@@ -790,8 +790,9 @@ async function consumedInviteStatement(db: Database, params: ConsumeInviteParams
  *   optional `nowMs` instant for the expiry gate (default `Date.now()`).
  * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If any constraint rejects — already consumed (the `InviteKey` primary key),
- *   cancelled, expired, or a sealed strand. Callers treat a burn failure as "already
- *   dead" and log rather than retry.
+ *   cancelled, expired, or a sealed strand — or the cohort refuses the write. The
+ *   reconciler routes these through the same classifier as a `consumeInvite` rejection:
+ *   a dead invitation is dropped, a refused write keeps it staged for a retry.
  * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
  *   transaction is open; nothing was tried, so the invitation is exactly as live as before.
  */

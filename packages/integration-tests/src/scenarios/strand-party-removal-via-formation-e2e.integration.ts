@@ -34,14 +34,15 @@
  *      other's device record as an orphan.
  *   2. **Re-joining after removal** (host × 2 machines, joiner × 1). A fresh formation after the
  *      cut still succeeds — formation runs on the CONTROL network, which strand revocation
- *      does not gate — reuses the party's identity and stages a fresh invitation. But the
- *      invitation is never spent, and the reason is not the one the setup suggests: the
- *      joiner's membership reconciler latched a terminal `done` during the FIRST join and
- *      nothing re-arms it, so no pass ever attempts the redemption (the denial of the
- *      strand write would block it too, but is never reached). Re-admission therefore has
- *      to be authored by a remaining manager. Read the comment at the negative assertion
- *      before drawing conclusions from this test — it says exactly which half is pinned.
- *      Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`.
+ *      does not gate — reuses the party's identity and stages a fresh invitation, and staging
+ *      it RE-ARMS the joiner's membership reconciler (which latched `done` during the first
+ *      join). The loop then attempts the redemption and cannot land it: seating a
+ *      `Strand.Member` row is a strand write, and the machines that would carry it are the
+ *      ones being denied. So it keeps the invitation staged, keeps retrying, and reports the
+ *      dead end (`strand:rejoin-blocked`). Re-admission still has to be authored by a
+ *      remaining manager — and once it is, the still-running loop settles the invitation by
+ *      itself. Read the comment at the blocked-report gate for which of the loop's two
+ *      triggers is operative here and why.
  *
  * ── HOW TIMING IS CONTROLLED (read before changing a poll value) ──────────────
  * Two independent per-strand loops poll on the same default cadence, and this file wants
@@ -179,13 +180,16 @@ const NO_CONVERGENCE_BUDGET_MS = 10_000;
 const REMAINING_COHORT_WRITE_BUDGET_MS = 90_000;
 
 /**
- * How long the removed party is watched for a self-service re-admission that must not
- * happen (test 2). Short on purpose: the claim is that nothing moves while the party is
- * cut off, and the paired positive claim — that the manager-side re-admission DOES heal
- * it — runs immediately afterwards on the same fixture, so a strand that had merely
- * stalled fails that instead of passing this.
+ * How long the removed party is given to REPORT that its re-join is blocked (test 2).
+ *
+ * The report fires after `UNFINISHED_PASSES_BEFORE_ESCALATION` (10) attempted passes that
+ * left the invitation staged; the passes climb a ladder capped at {@link RECONCILE_POLL_MS}
+ * (1 s, then 2 s each), and each attempt on a cut-off machine is a strand write or read that
+ * fails only after its peers are found unreachable — the same several-second wobble
+ * {@link REMAINING_COHORT_WRITE_BUDGET_MS} documents on the remaining side. Two minutes is
+ * headroom over ten such attempts, not an expectation.
  */
-const NO_SELF_READMISSION_BUDGET_MS = 8_000;
+const REJOIN_REPORT_BUDGET_MS = 120_000;
 
 /** Explicit test timeouts, per `harness/topology.ts`'s TIME BUDGET rule of thumb (~10-15 s
  *  per libp2p node), plus this file's formation handshake and negative budgets: test 1
@@ -256,6 +260,16 @@ async function memberKeys(db: Database): Promise<string[]> {
 		keys.push(row.Key as string);
 	}
 	return keys;
+}
+
+/** Every spent invitation visible to one machine, as `InviteKey|MemberKey` strings — which
+ *  credential was spent and against which member, via an UNFILTERED scan (header note). */
+async function consumedInvites(db: Database): Promise<string[]> {
+	const spent: string[] = [];
+	for await (const row of db.eval('select InviteKey, MemberKey from Strand.ConsumedInvite')) {
+		spent.push(`${row.InviteKey as string}|${row.MemberKey as string}`);
+	}
+	return spent;
 }
 
 /** Every `Strand.MemberPeer` binding visible to one machine, as `MemberKey|PeerId` strings
@@ -776,7 +790,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 		}
 	}, JOURNEY_TEST_TIMEOUT_MS);
 
-	it('re-forms after removal but cannot re-seat itself, and heals only when a manager re-admits it', async () => {
+	it('re-forms after removal, attempts the fresh invitation, reports that it is blocked, and heals only when a manager re-admits it', async () => {
 		let topology: Topology | undefined;
 		try {
 			// The host keeps TWO machines and the joiner one. The host's second machine is
@@ -860,6 +874,12 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// party can redeem. (The retry is the post-cut write wobble, not the
 			// revocation: issuing the invitation is itself a strand write — see
 			// {@link formStrandWithRetry}.)
+			//
+			// Subscribed BEFORE the formation: staging the invitation re-arms the
+			// joiner's membership loop at once, and the report is what the middle
+			// section of this test waits on.
+			const rejoinBlocked: string[] = [];
+			joinOwner.node.on('strand:rejoin-blocked', ({ strandId: blocked }) => { rejoinBlocked.push(blocked); });
 			const secondInvitation = await publishBoundInvitation(hostOwner.node, strandId);
 			const secondForm = await formStrandWithRetry(
 				joinOwner.node, secondInvitation, 're-join after removal', REMAINING_COHORT_WRITE_BUDGET_MS);
@@ -872,33 +892,35 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			expect(await joinOwner.node.getControlDatabase()!.queryStrandPartyKey(strandId)).toBe(joinPartyKey);
 			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
 
-			// ── …but the invitation is never even ATTEMPTED ─────────────────────────
-			// What is pinned here is the OUTCOME — a fresh formation alone re-admits
-			// nobody — and the mechanism behind it, which is NOT the one the shape of
-			// this test first suggests.
+			// ── The invitation IS attempted now — and cannot land, and says so ───────
+			// Staging the second invitation re-armed the joiner's membership loop, which
+			// had latched `done` during the first join. Every pass it runs now fails,
+			// whichever arm it lands in: if the removal replicated here before the cut,
+			// the party's Member row is gone locally and the pass tries to REDEEM the
+			// invitation (a `Strand.Member` + `ConsumedInvite` write); if not, the stale
+			// row is still there and the pass tries to BURN it (`ConsumedInvite` alone).
+			// Both are strand writes, and the only machines that could carry them are the
+			// two refusing this one. The loop keeps the invitation staged through either
+			// refusal — that is the credential a later re-admission lets it settle — and
+			// after ten such passes reports a PROBABLE blocked re-join.
 			//
-			// Two things would each block the redemption on their own:
-			//   (a) seating a `Strand.Member` row is a STRAND write, and the machines
-			//       that would carry it are precisely the ones being denied; and
-			//   (b) nothing ever tries. `StrandMembershipReconciler` latches a terminal
-			//       `done` once the member row and binding are in place — during the
-			//       FIRST join, above — and `adoptFormationMembershipInvite` stages the
-			//       second invitation without re-arming it. `start()` early-returns on a
-			//       stopped loop, and only a strand relaunch (quiesce → resume, or a
-			//       process restart) builds a new one.
-			//
-			// (b) is what is actually operative, and it comes first: with
-			// `DEBUG=sereus:cadre:strand-membership-reconciler`, all three reconcilers
-			// log "stopped (done)" BEFORE the removal, and not one line is logged during
-			// the window below. So this test does not — and cannot — demonstrate (a);
-			// treating it as proof of (a) is the mistake to avoid.
-			//
-			// The staged-invitation assertions are what discriminate the two: an
-			// invitation the reconciler had merely FAILED to redeem would have been
-			// consumed, burned or dropped by now (it clears its own entry on every
-			// settled outcome). Still staged, untouched, means no pass ran.
-			// `backlog/bug-removed-party-cannot-redeem-its-way-back` carries both arms.
-			await sleep(NO_SELF_READMISSION_BUDGET_MS);
+			// PROBABLE, not CONFIRMED, by construction: the confirmed trigger is the
+			// revoked-peer gate flagging this node as removed, and join[0]'s gate polls at
+			// {@link SUSPENDED_POLL_MS} and is never refreshed by this test, so its own
+			// node never learns it was removed. That is the field shape too — a removed
+			// party is cut off at about the moment the removal is written, so its gate
+			// rarely gets to see it — which is why the probable trigger exists.
+			await waitUntil(
+				() => rejoinBlocked.includes(strandId),
+				{
+					timeoutMs: REJOIN_REPORT_BUDGET_MS, intervalMs: 250,
+					description: "join[0] reports its re-join as blocked (strand:rejoin-blocked)",
+				},
+			);
+			expect(rejoinBlocked).toEqual([strandId]);
+			// Nothing moved on the strand plane: the member row is still gone from the
+			// remaining party's replica, the cut holds, and the credential is still staged
+			// — kept on purpose, not forgotten.
 			expect(await memberKeys(host0.db)).not.toContain(joinerMemberKey);
 			expectCut(host0, join0, 'a fresh formation changes nothing on the strand plane');
 			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
@@ -915,21 +937,37 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			await host0.node.refreshRevocationEnforcement(strandId);
 			await host1.node.refreshRevocationEnforcement(strandId);
 
-			// Reachable again: the gate no longer refuses the dial, and a row the host
-			// writes after the re-admission reaches the re-admitted party.
-			await connectStrandNodes(join0.libp2p, join0.label, host0.libp2p, host0.label, MESH_TIMEOUT_MS);
+			// Reachable again — and the removed party reconnects BY ITSELF: every pass of
+			// its re-armed loop dials the cohort that has been refusing it (the bursts of
+			// `denyInboundEncryptedConnection` on the hosts, with
+			// `DEBUG=sereus:cadre:strand-revocation`), and the first pass after the refresh
+			// gets in. Not dialed explicitly here on purpose: libp2p coalesces concurrent
+			// dials to one peer, so an explicit dial can join one of the loop's own
+			// in-flight dials that the gate refused a moment earlier and inherit its
+			// refusal — measured once as `EncryptionFailedError: Unexpected EOF` on the
+			// first run of this version of the test.
+			await waitUntil(
+				() => strandConnectionsTo(join0, host0) > 0,
+				{ ...GATE, description: "join[0]'s strand node reconnects to host[0] on its own once re-admitted" },
+			);
 			await insertWithRetry(host0, 'after-readmission', 'welcome back', REMAINING_COHORT_WRITE_BUDGET_MS);
 			await awaitRowVisible(join0, 'after-readmission', 'welcome back');
 
-			// The discriminating assertion for (b) above: the strand plane is fully
-			// healed — the row just written by the host reached this very machine — and
-			// the second invitation is STILL staged, neither redeemed nor burned. A
-			// reconciler that was merely network-blocked would have settled it by now;
-			// the loop is gone, not waiting. This is the loose end
-			// `bug-removed-party-cannot-redeem-its-way-back` has to close, and if a fix
-			// re-arms the reconciler this assertion flips — rewrite it to the new
-			// behaviour rather than deleting it.
-			expect(joinOwner.node.getPendingMembershipInvite(strandId)).toEqual(secondForm.membershipInvite);
+			// ── …and the still-running loop settles the invitation by itself ────────
+			// The loop never stopped: with the party a member again and its writes taken,
+			// the next pass spends the second invitation against the restored membership
+			// and un-stages it — the row lands on the REMAINING party's replica, which is
+			// what shows the write went through the cohort rather than only locally. One
+			// report for the whole cycle: the heal is not a second dead end.
+			await waitUntil(
+				() => joinOwner.node.getPendingMembershipInvite(strandId) === undefined,
+				{ ...GATE, description: "join[0]'s re-armed membership loop settles the second invitation once re-admitted" },
+			);
+			await waitUntil(
+				async () => (await consumedInvites(host0.db)).includes(`${secondForm.membershipInvite!.inviteKey}|${joinerMemberKey}`),
+				{ ...GATE, description: "the second invitation is spent against the re-admitted party, visible on host[0]" },
+			);
+			expect(rejoinBlocked).toEqual([strandId]);
 		} finally {
 			await topology?.stop();
 		}

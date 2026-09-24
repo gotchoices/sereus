@@ -6,6 +6,7 @@ import {
   StrandMembershipReconciler,
   IDLE_PASSES_BEFORE_ESCALATION,
   INITIAL_JOIN_RETRY_INTERVAL_MS,
+  UNFINISHED_PASSES_BEFORE_ESCALATION,
   classifyConsumeFailure,
   type PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
@@ -17,6 +18,7 @@ import {
   consumeInvite,
   cancelInvite,
   addMemberByManager,
+  revokeMember,
   sealStrand,
   isStrandMember,
   StrandTransactionBusyError,
@@ -37,7 +39,8 @@ const DEAD_INVITE_LINE = /staged invitation is dead/;
  * Component coverage for the bring-up membership reconciler: the full joiner ladder
  * (redeem the staged invitation → bind this machine's peer id → stop), the
  * already-member burn arm, the idle/no-invitation wait, the dead-invitation and
- * sealed-strand classifications, the self-revocation stop, and the scheduler wiring.
+ * sealed-strand classifications, the self-revocation stop, the re-arm on a fresh
+ * invitation with its blocked re-join report, and the scheduler wiring.
  *
  * Every DB-backed test runs against a REAL closed strand DB on the local transactor
  * (libp2p node + MemoryRawStorage) via the shared helpers — the same apply/DML/
@@ -82,7 +85,8 @@ function inviteSlot(initial?: StrandMembershipInvite): {
   return {
     source: {
       get: () => staged,
-      clear: () => { staged = undefined; },
+      // CadreNode's semantics: only the invitation that was settled is dropped.
+      clear: (settled) => { if (staged?.inviteKey === settled.inviteKey) staged = undefined; },
     },
     staged: () => staged,
     set: (invite) => { staged = invite; },
@@ -121,10 +125,18 @@ interface ReconcilerOverrides {
   getOwnPeerId?: () => string | undefined;
   pendingInvite?: PendingMembershipInviteSource;
   isSelfRevoked?: () => boolean;
+  onRejoinBlocked?: () => void;
   scheduler?: TimeoutScheduler;
   pollIntervalMs?: number;
   partyMemberPrivateKey?: string;
   getDatabase?: () => Database | undefined;
+}
+
+/** A phantom invitation: valid in shape, but its `Strand.Invite` row never reaches this replica. */
+function phantomInvite(): StrandMembershipInvite {
+  const invitePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+  const inviteKey = getPublicKey(invitePrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+  return { inviteKey, invitePrivateKey };
 }
 
 /** The rejection `consumeInvite` raises for a fresh party presenting `invite`; fails the spec if it resolves. */
@@ -181,6 +193,7 @@ function reconcilerOver(db: Database | undefined, partyKey: string, overrides: R
     getOwnPeerId: overrides.getOwnPeerId ?? (() => 'this-machine-peer'),
     pendingInvite: overrides.pendingInvite,
     isSelfRevoked: overrides.isSelfRevoked,
+    onRejoinBlocked: overrides.onRejoinBlocked,
     scheduler: overrides.scheduler,
   }, overrides.pollIntervalMs === undefined ? undefined : { pollIntervalMs: overrides.pollIntervalMs });
 }
@@ -403,9 +416,7 @@ describe('waiting and failure classification', () => {
     const joiner = await freshParty();
     // A credential that is valid in shape but whose Invite row this replica has not
     // seen: consumeInvite fails the deferred InviteExists and must retry next pass.
-    const phantomPrivate = generatePrivateKey('ed25519', 'base64url') as string;
-    const phantomKey = getPublicKey(phantomPrivate, 'ed25519', 'base64url', 'base64url') as string;
-    const slot = inviteSlot({ inviteKey: phantomKey, invitePrivateKey: phantomPrivate });
+    const slot = inviteSlot(phantomInvite());
     const reconciler = reconcilerOver(db, joiner.privateKey, {
       pendingInvite: slot.source,
       getOwnPeerId: () => 'joiner-machine',
@@ -526,13 +537,12 @@ describe('waiting and failure classification', () => {
     expect(await tableCount(db, 'Member')).toBe(1);
   }, 30_000);
 
-  it('stops without writing when the enforcer flags this party as revoked', async () => {
-    const { db, founder } = await openClosedStrand();
+  it('stops without writing when the enforcer flags this party as revoked and nothing is staged', async () => {
+    const { db } = await openClosedStrand();
     const joiner = await freshParty();
-    const invite = await issueInvite(db, { managerKeyPair: founder });
-    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const reconciler = reconcilerOver(db, joiner.privateKey, {
-      pendingInvite: slot.source,
+      pendingInvite: inviteSlot().source,
       isSelfRevoked: () => true,
     });
 
@@ -540,6 +550,7 @@ describe('waiting and failure classification', () => {
 
     expect(reconciler.stopped).toBe(true);
     expect(reconciler.done).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'MemberPeer')).toBe(0);
   }, 30_000);
@@ -563,6 +574,185 @@ describe('waiting and failure classification', () => {
     expect(reconciler.done).toBe(false);
     expect(reconciler.stopped).toBe(false);
   });
+});
+
+/**
+ * A fresh invitation staged after the loop finished — the REMOVED party handed a new
+ * invitation, whose loop latched `done` during its first join. `rearm()` is what
+ * `StrandInstanceManager.notifyMembershipInviteStaged` calls once `CadreNode` stages it.
+ */
+describe('re-arming on a fresh invitation', () => {
+  /** A joiner that has fully joined: member row seated, binding written, loop done. */
+  async function joinedAndDone(): Promise<{
+    db: Database;
+    founder: Ed25519KeyPair;
+    joiner: { privateKey: string; pair: Ed25519KeyPair };
+    slot: ReturnType<typeof inviteSlot>;
+    reconciler: StrandMembershipReconciler;
+  }> {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const first = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: first.inviteKey, invitePrivateKey: first.invitePrivateKey });
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+    await reconciler.reconcile();
+    expect(reconciler.done).toBe(true);
+    expect(reconciler.stopped).toBe(true);
+    return { db, founder, joiner, slot, reconciler };
+  }
+
+  it('a done loop handed a fresh invitation after its party was removed redeems it and seats the member row again', async () => {
+    const { db, founder, joiner, slot, reconciler } = await joinedAndDone();
+    // The removal replicated here, so this replica no longer shows the party as a member.
+    await revokeMember(db, { managerKeyPair: founder, memberKey: joiner.pair.publicKeyB64 });
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(false);
+    const second = await issueInvite(db, { managerKeyPair: founder });
+    slot.set({ inviteKey: second.inviteKey, invitePrivateKey: second.invitePrivateKey });
+
+    await reconciler.rearm();
+
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(true);
+    expect((await db.get('select MemberKey from Strand.ConsumedInvite where InviteKey = ?', [second.inviteKey]))?.MemberKey)
+      .toBe(joiner.pair.publicKeyB64);
+    expect(slot.staged()).toBeUndefined();
+    // The binding survived the removal (insert-if-absent found it), and the loop is done again.
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+    expect(reconciler.done).toBe(true);
+    expect(reconciler.stopped).toBe(true);
+  }, 30_000);
+
+  it('the public stop() is permanent: a later re-arm writes nothing', async () => {
+    // clearOwnMemberPeerBinding stops the loop and awaits settle() so no pass can re-register
+    // the binding it is about to delete; a re-arm that restarted the loop would undo that.
+    const { db, founder, slot, reconciler } = await joinedAndDone();
+    reconciler.stop();
+    const second = await issueInvite(db, { managerKeyPair: founder });
+    slot.set({ inviteKey: second.inviteKey, invitePrivateKey: second.invitePrivateKey });
+
+    await reconciler.rearm();
+
+    expect(reconciler.stopped).toBe(true);
+    expect(slot.staged()).toBeDefined();
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+  }, 30_000);
+
+  it('a stale member row with a refused burn keeps the invitation staged and does not latch done', async () => {
+    // The removed party's replica usually has NOT seen its removal (the cohort cut it off as
+    // the removal was written), so the re-armed pass lands in the already-member arm and its
+    // burn is the write the cohort refuses.
+    const { db, founder, slot, reconciler } = await joinedAndDone();
+    const second = await issueInvite(db, { managerKeyPair: founder });
+    slot.set({ inviteKey: second.inviteKey, invitePrivateKey: second.invitePrivateKey });
+    failNextWriteBatch(db, new Error('Block default/strand/ConsumedInvite is unavailable (peers-unreachable)'));
+
+    await reconciler.rearm();
+
+    expect(slot.staged()).toBeDefined();
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
+
+    // Once the cohort takes the write again (a manager re-admitted the party), the next pass
+    // burns the leftover credential and finishes.
+    await reconciler.reconcile();
+    expect(slot.staged()).toBeUndefined();
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(2);
+    expect(reconciler.done).toBe(true);
+  }, 30_000);
+
+  it('self-revoked with an invitation staged reports the blocked re-join ONCE and keeps going', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onRejoinBlocked = vi.fn();
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      isSelfRevoked: () => true,
+      onRejoinBlocked,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+    // The redemption is attempted — and refused, as a removed party's write would be.
+    failNextWriteBatch(db, new Error('Block default/strand/Member is unavailable (peers-unreachable)'));
+
+    await reconciler.reconcile();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/^\[sereus\] strand test-strand: this party is revoked .*addMemberByManager/);
+    expect(onRejoinBlocked).toHaveBeenCalledTimes(1);
+    expect(slot.staged()).toBeDefined();
+    expect(reconciler.stopped).toBe(false);
+    expect(reconciler.done).toBe(false);
+
+    // Still flagged revoked, the write now lands (a manager re-admitted the party and the
+    // cohort takes this machine's writes again): the join completes with no second report.
+    await reconciler.reconcile();
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(true);
+    expect(reconciler.done).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(onRejoinBlocked).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it('settling an older invitation never un-stages the fresh one a re-formation staged mid-pass', async () => {
+    const { db, founder } = await openClosedStrand();
+    const joiner = await freshParty();
+    const stale = await issueInvite(db, { managerKeyPair: founder });
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey: stale.inviteKey });
+    const fresh = await issueInvite(db, { managerKeyPair: founder });
+    const slot = inviteSlot({ inviteKey: stale.inviteKey, invitePrivateKey: stale.invitePrivateKey });
+    const reconciler = reconcilerOver(db, joiner.privateKey, {
+      pendingInvite: slot.source,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+    // The re-formation lands while the pass is redeeming the STALE invitation it already read.
+    const exec = db.exec.bind(db);
+    vi.spyOn(db, 'exec').mockImplementation((sql, params, options) => {
+      if (sql.startsWith('begin transaction')) slot.set({ inviteKey: fresh.inviteKey, invitePrivateKey: fresh.invitePrivateKey });
+      return exec(sql, params, options);
+    });
+
+    await reconciler.reconcile();
+
+    // The stale one died (cancelled) and was dropped BY NAME; the fresh one is still staged…
+    expect(slot.staged()?.inviteKey).toBe(fresh.inviteKey);
+    expect(reconciler.done).toBe(false);
+    // …and the next pass redeems it.
+    vi.restoreAllMocks();
+    await reconciler.reconcile();
+    expect(await isStrandMember(db, joiner.pair.publicKeyB64)).toBe(true);
+    expect(slot.staged()).toBeUndefined();
+  }, 30_000);
+
+  it('a staged invitation refused for UNFINISHED_PASSES_BEFORE_ESCALATION passes reports a PROBABLE blocked re-join once', async () => {
+    const { db } = await openClosedStrand();
+    const joiner = await freshParty();
+    const slot = inviteSlot(phantomInvite());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onRejoinBlocked = vi.fn();
+    const reconciler = reconcilerOver(db, joiner.privateKey, { pendingInvite: slot.source, onRejoinBlocked });
+
+    for (let i = 0; i < UNFINISHED_PASSES_BEFORE_ESCALATION - 1; i++) {
+      await reconciler.reconcile();
+    }
+    expect(warn).not.toHaveBeenCalled();
+
+    for (let i = 0; i < 3; i++) {
+      await reconciler.reconcile();
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const warning = String(warn.mock.calls[0]![0]);
+    expect(warning).toMatch(/removed from the strand/);
+    expect(warning).toMatch(/not replicated here yet/);
+    expect(warning).toContain('addMemberByManager');
+    expect(onRejoinBlocked).toHaveBeenCalledTimes(1);
+    expect(slot.staged()).toBeDefined();
+    expect(reconciler.stopped).toBe(false);
+  }, 30_000);
 });
 
 /**
@@ -720,10 +910,8 @@ describe('consume rejection classification', () => {
 
   it('an invitation not yet replicated here: CHECK constraint failed: InviteExists → retry', async () => {
     const { db } = await openClosedStrand();
-    const phantomPrivate = generatePrivateKey('ed25519', 'base64url') as string;
-    const phantomKey = getPublicKey(phantomPrivate, 'ed25519', 'base64url', 'base64url') as string;
 
-    const error = await consumeRejection(db, { inviteKey: phantomKey, invitePrivateKey: phantomPrivate });
+    const error = await consumeRejection(db, phantomInvite());
 
     expect(error.message).toBe('CHECK constraint failed: InviteExists');
     expect(classifyConsumeFailure(error)).toEqual({ kind: 'retry' });
@@ -821,9 +1009,7 @@ describe('retry scheduling', () => {
     // A credential whose Invite row this replica has never seen: consumeInvite fails the
     // deferred InviteExists every pass, which is the "the invitation has not replicated
     // here yet" state the ladder exists for.
-    const phantomPrivate = generatePrivateKey('ed25519', 'base64url') as string;
-    const phantomKey = getPublicKey(phantomPrivate, 'ed25519', 'base64url', 'base64url') as string;
-    const phantom: StrandMembershipInvite = { inviteKey: phantomKey, invitePrivateKey: phantomPrivate };
+    const phantom = phantomInvite();
     const slot = inviteSlot();
     const clock = manualScheduler();
     const reconciler = reconcilerOver(db, joiner.privateKey, {

@@ -83,9 +83,23 @@ describe('CadreNode.launchStrand membership-invitation hooks', () => {
     stageInvite(node, 'strand-b', { inviteKey: 'other-pub', invitePrivateKey: 'other-priv' });
 
     await launchStrand(node, 'strand-a');
-    configs[0]!.pendingMembershipInvite!.clear();
+    configs[0]!.pendingMembershipInvite!.clear(invite);
 
     expect(node.getPendingMembershipInvite('strand-a')).toBeUndefined();
     expect(node.getPendingMembershipInvite('strand-b')).toBeDefined();
+  });
+
+  it('clear() of an invitation a re-formation has since replaced leaves the fresh one staged', async () => {
+    const node = new CadreNode(createConfig());
+    const { configs } = injectFakeStrandManager(node);
+    stageInvite(node, 'strand-a', invite);
+    await launchStrand(node, 'strand-a');
+    const fresh: StrandMembershipInvite = { inviteKey: 'fresh-pub', invitePrivateKey: 'fresh-priv' };
+    stageInvite(node, 'strand-a', fresh);
+
+    // The reconciler settles the invitation it READ, which the re-formation has replaced.
+    configs[0]!.pendingMembershipInvite!.clear(invite);
+
+    expect(node.getPendingMembershipInvite('strand-a')).toEqual(fresh);
   });
 });

@@ -121,6 +121,7 @@ function subscribe(node: CadreNode): void {
 	node.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
 	node.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));
 	node.on('strand:revoked', ({ strandId }) => record('strand:revoked', strandId));
+	node.on('strand:rejoin-blocked', ({ strandId }) => record('strand:rejoin-blocked', strandId));
 	node.on('seed:received', ({ peerId }) => record('seed:received', peerId));
 	node.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
 	node.on('seed:error', ({ error }) => record('seed:error', error));

@@ -215,6 +215,18 @@ export interface StartStrandConfig {
   onSelfRevoked?: (strandId: string) => void;
 
   /**
+   * Called when the membership reconciler reports a blocked re-join — this node holds a
+   * staged membership invitation for the strand that its writes cannot redeem, which is
+   * what a REMOVED party handed a fresh invitation hits (see "Reporting a blocked
+   * re-join" in `strand-membership-reconciler.ts` for the two triggers, one of them a
+   * suspicion rather than a verdict). At most once per staged invitation, and only for
+   * closed strands with a party key. `CadreNode` wires it to its `strand:rejoin-blocked`
+   * event; nothing is stopped or torn down — a remaining manager admitting this party's
+   * key directly is the remedy, and the loop finishes the join by itself once that lands.
+   */
+  onRejoinBlocked?: (strandId: string) => void;
+
+  /**
    * Tuning for the JOINING machine's first-sync write gate (`strand-first-sync-gate.ts`),
    * forwarded from {@link CadreNodeConfig.strandFirstSync}: the Header probe cadence while
    * a non-founder launch is `'syncing'`, and the default budget {@link whenWritable} waits
@@ -793,7 +805,8 @@ export class StrandInstanceManager {
                 const ownPeerId = instance.libp2pNode?.peerId.toString();
                 return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
               }
-            : undefined
+            : undefined,
+          onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
         }, {
           pollIntervalMs: config.membershipReconciliation?.pollIntervalMs
             ?? config.revocationEnforcement?.pollIntervalMs
@@ -1035,6 +1048,24 @@ export class StrandInstanceManager {
       return;
     }
     await enforcer.refresh();
+  }
+
+  /**
+   * A fresh membership invitation was staged for `strandId` (`CadreNode`'s
+   * `adoptFormationMembershipInvite`): re-arm the strand's membership reconciler so the
+   * invitation is attempted now rather than never — the loop finished during the first
+   * join and would otherwise stay stopped until a relaunch. Quiet no-op when no reconciler
+   * is armed: a first formation stages before the strand is added, and bring-up then arms
+   * a loop that finds the invitation by itself. Returns at once; the pass runs on the
+   * loop's own serialized chain and never rejects.
+   */
+  notifyMembershipInviteStaged(strandId: string): void {
+    const reconciler = this.membershipReconcilers.get(strandId);
+    if (!reconciler) {
+      log('notifyMembershipInviteStaged: strand %s has no armed membership reconciler — bring-up will find the invitation', strandId);
+      return;
+    }
+    void reconciler.rearm();
   }
 
   /**
