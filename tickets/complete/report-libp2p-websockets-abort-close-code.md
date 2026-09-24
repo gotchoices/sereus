@@ -97,3 +97,8 @@ A second, independent suggestion: `AbstractMessageStream.abort()` swallowing a f
 **If nothing is decided**, option 3 is what happens, and it is survivable — which is why this is not urgent. Every option is fully reversible.
 
 Record the issue or pull request link here once it is sent, so the next person can tell whether upstream has moved and whether the gater's `abort()` fallback can go away.
+
+## Resolution (2026-09-24)
+
+The maintainer sent the revised report upstream (response 1). Our call site keeps its graceful-close-then-abort workaround until a fixed `@libp2p/websockets` ships; at that point drop the workaround comment's caveat and re-run `control-stream-authz` and `relay-only-control-addr`.
+

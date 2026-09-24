@@ -43,3 +43,7 @@ Related, and worth designing together: `backlog/feat-strand-member-allowlist-adm
 ## What is out of scope
 
 Not this: rotating the strand's shared read key, or clawing back what the removed party already replicated. Both remain documented residuals of removal (`docs/strands.md` → "Revocation is forward-looking only").
+
+## Scope for this pass (gardener, 2026-09-24)
+
+Do the first two shapes only: fix the loop's finished state so a fresh invitation after removal is actually attempted, and surface the refusal instead of idling. Do **not** add an admission carve-out for invitation holders (the third shape). That changes the removal security posture and is the maintainer's call.
