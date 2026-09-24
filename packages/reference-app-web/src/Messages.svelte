@@ -41,7 +41,11 @@
 			await sendMessage(a, c);
 			content = '';
 		} catch (err) {
-			composeError = err instanceof Error ? err.message : String(err);
+			const reason = err instanceof Error ? err.message : String(err);
+			// A failed strand write does not always settle whether it landed, so say "not confirmed"
+			// rather than "failed". Repeating is safe because the id is minted per draft (see
+			// `sendMessage`), so a resend of unchanged text can only ever replace the earlier write.
+			composeError = `Not confirmed sent (${reason}). Press Send again — the message can only be stored once.`;
 		}
 	}
 

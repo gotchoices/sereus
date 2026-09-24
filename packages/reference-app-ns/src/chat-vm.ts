@@ -14,6 +14,8 @@ import type { StrandInstance } from '@serfab/cadre-core';
 import {
 	insertParticipant,
 	insertMessage,
+	messageExists,
+	newChatMessageId,
 	queryMessages,
 	queryParticipants,
 	type ChatMessage,
@@ -22,6 +24,16 @@ import { getCadreVm, type CadreViewModel } from './cadre-vm';
 import { TEST_IDS } from './test-ids';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
+
+/**
+ * A draft the user has submitted at least once, and the message id minted for it. Held
+ * across a failed send so pressing Send again re-presents the SAME primary key rather than
+ * minting a second one — see {@link ChatViewModel.send}.
+ */
+interface PendingDraft {
+	id: string;
+	text: string;
+}
 
 /** Row shape bound by the chat ListView item template. */
 export interface ChatRow {
@@ -55,10 +67,18 @@ export class ChatViewModel extends Observable {
 	private _draft = '';
 	private _loading = true;
 	private _error = '';
+	/**
+	 * Last send failure, kept apart from the poll's {@link _error} so a poll that succeeds a
+	 * second later does not wipe the one message the user needs to read — that a resend is safe.
+	 * Cleared by the next send, not by time.
+	 */
+	private _sendError = '';
 	private _participantCount = 0;
 
 	private strand: StrandInstance | null = null;
 	private participantId: string | null = null;
+	/** The draft awaiting a resolved send, so a resend reuses its id — see {@link send}. */
+	private pendingDraft: PendingDraft | null = null;
 	private registered = false;
 	/** Strand whose participant insert is still running, so polls don't start another. */
 	private registeringStrand: StrandInstance | null = null;
@@ -97,12 +117,13 @@ export class ChatViewModel extends Observable {
 		return this._loading;
 	}
 
+	/** A send that did not confirm wins over a poll error — it is the one the user can act on. */
 	get error(): string {
-		return this._error;
+		return this._sendError || this._error;
 	}
 
 	get errorVisibility(): 'visible' | 'collapse' {
-		return this._error ? 'visible' : 'collapse';
+		return this.error ? 'visible' : 'collapse';
 	}
 
 	/** Chat status-bar text — combines connection status with participant count. */
@@ -218,7 +239,23 @@ export class ChatViewModel extends Observable {
 		}
 	}
 
-	/** Send the current draft; optimistic append then reconcile on next poll. */
+	/**
+	 * Send the current draft; optimistic append then reconcile on next poll.
+	 *
+	 * A strand write can fail without settling whether it landed, so the message id belongs to
+	 * the draft and not to the attempt: the first Send mints one and {@link pendingDraft} holds
+	 * it until a send resolves. Pressing Send again on unchanged text re-presents that same key,
+	 * so the primary key guarantees at most one row however many attempts the user makes.
+	 *
+	 * The text match is load-bearing, not an optimisation. If the user edits the text after a
+	 * failed send and the first attempt HAD landed, reusing its id would report the edit as sent
+	 * while the stored row kept the old text. Edited text is a different message, and the earlier
+	 * attempt landing under its own id is correct — the user did submit that text.
+	 *
+	 * The draft is cleared only once the send resolves: a failed send that emptied the box made
+	 * the user re-type, and a re-typed message is a new draft with a new id — the path that
+	 * posted the message twice.
+	 */
 	async send(): Promise<void> {
 		const text = this._draft.trim();
 		if (!text) return;
@@ -227,10 +264,39 @@ export class ChatViewModel extends Observable {
 		if (!strand) throw new Error('No strand attached');
 		if (!participantId) throw new Error('No participant id');
 
-		this.draft = '';
-		const message = await insertMessage(strand, participantId, text);
-		this._messages.push(this.toRow(message, participantId));
-		this.setError('');
+		const resend = this.pendingDraft?.text === text ? this.pendingDraft : null;
+		const draft = resend ?? { id: newChatMessageId(), text };
+		this.pendingDraft = draft;
+		this.setSendError('');
+
+		try {
+			// On a resend, read before writing: the earlier attempt may have landed despite
+			// reporting failure, and re-inserting a stored key raises rather than reporting success.
+			// NOTE: an attempt that lands in the window between this read and the insert below still
+			// raises a unique violation, so the user sees an error for a message that IS stored. The
+			// next tap of Send reads the row and reports success, so the app self-corrects in one
+			// more tap and still cannot store a duplicate. Not worth retry machinery in a reference app.
+			if (resend && (await messageExists(strand, draft.id))) {
+				// Nothing written: the row is a previous attempt's, so let the next poll bring it in.
+				this.pendingDraft = null;
+				this.draft = '';
+				await this.refresh();
+				return;
+			}
+
+			const message = await insertMessage(strand, draft.id, participantId, text);
+			this.pendingDraft = null;
+			this.draft = '';
+			this._messages.push(this.toRow(message, participantId));
+			this.setError('');
+		} catch (err) {
+			// Not "failed": the write may in fact have landed. Repeating is safe because `draft.id`
+			// survives this rejection, so a resend of unchanged text replaces rather than adds.
+			this.setSendError(
+				`Not confirmed sent (${errMessage(err)}). Press Send again — it can only be stored once.`,
+			);
+			throw err;
+		}
 	}
 
 	private toRow(message: ChatMessage, ownId: string | null): ChatRow {
@@ -266,8 +332,23 @@ export class ChatViewModel extends Observable {
 
 	private setError(error: string): void {
 		if (error === this._error) return;
+		const before = this.error;
 		this._error = error;
-		this.notifyPropertyChange('error', error);
+		this.notifyErrorChange(before);
+	}
+
+	private setSendError(error: string): void {
+		if (error === this._sendError) return;
+		const before = this.error;
+		this._sendError = error;
+		this.notifyErrorChange(before);
+	}
+
+	/** Notify only when the COMBINED text changed — a masked poll error is not a visible change. */
+	private notifyErrorChange(before: string): void {
+		const after = this.error;
+		if (after === before) return;
+		this.notifyPropertyChange('error', after);
 		this.notifyPropertyChange('errorVisibility', this.errorVisibility);
 	}
 

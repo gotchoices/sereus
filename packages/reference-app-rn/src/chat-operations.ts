@@ -120,28 +120,44 @@ export async function queryParticipants(strand: StrandInstance): Promise<ChatPar
 // ── Message operations ───────────────────────────────────────────────────────
 
 /**
- * Insert a chat message.
+ * Mint a `Message` primary key locally. A read-then-increment of max(Id) would need a
+ * retry loop: two peers posting concurrently read the same local max before either
+ * replicates, and the duplicate key is refused — one poster is told UNIQUE constraint
+ * failed and has to recompute and post again. See docs/schema-guide.md "Ordering Events
+ * (There Is No Commit-Order Column)".
+ *
+ * Mint once per message the user composed, NOT once per attempt to store it: a strand
+ * write can fail with an outcome nobody can settle (a non-final TornActionError, a lost
+ * commit response), so a key minted per attempt turns a manual resend into a second row.
+ * See docs/schema-guide.md "Client-Generated Keys and Retrying a Write", and `chat-send.ts`
+ * for the composer rule that holds the key across attempts.
+ */
+export function newChatMessageId(): string {
+  return uuid();
+}
+
+/**
+ * Insert a chat message under the caller's `id`.
+ *
+ * The key is a parameter rather than something this function invents, so that two attempts
+ * at one composed message carry one key and the primary key can refuse the duplicate.
+ * See {@link newChatMessageId}.
  *
  * @param strand         Active strand instance
+ * @param id             The message's primary key, minted by the caller
  * @param participantId  The sending participant's Id
  * @param content        Message text
  * @returns              The inserted message
  */
 export async function insertMessage(
   strand: StrandInstance,
+  id: string,
   participantId: string,
   content: string,
 ): Promise<ChatMessage> {
   const db = getDb(strand);
   // Quereus datetime columns store T-separated ISO form; any valid input coerces on read.
   const now = new Date().toISOString();
-
-  // Generate the primary key locally as a UUID. A read-then-increment of
-  // max(Id) would need a retry loop: two peers posting concurrently read the same
-  // local max before either replicates, and the duplicate key is refused — one
-  // poster is told UNIQUE constraint failed and has to recompute and post again.
-  // See docs/schema-guide.md "Ordering Events (There Is No Commit-Order Column)".
-  const id = uuid();
 
   await db.exec(
     `insert into App.Message (Id, ParticipantId, Content, Timestamp)
@@ -155,6 +171,23 @@ export async function insertMessage(
     Content: content,
     Timestamp: now,
   };
+}
+
+/**
+ * Whether a message with this id is already stored — the point lookup a resend does before
+ * writing, to tell "the earlier attempt never landed" from "it landed but its outcome never
+ * came back". One key lookup, and only the resend path pays for it.
+ *
+ * Deliberately NOT `insert or ignore`: Quereus applies IGNORE to every constraint on the row,
+ * matching SQLite, so a foreign-key failure would silently drop the message instead of
+ * reporting it.
+ */
+export async function messageExists(strand: StrandInstance, id: string): Promise<boolean> {
+  const db = getDb(strand);
+  for await (const _row of db.eval('select Id from App.Message where Id = ?', [id])) {
+    return true;
+  }
+  return false;
 }
 
 /**

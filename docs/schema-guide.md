@@ -345,6 +345,52 @@ error's type. This applies to the `max(id) + 1` retry above as much as to a seco
 
 ---
 
+### Client-Generated Keys and Retrying a Write
+
+The patterns above mint the primary key on the client. That is the right shape, and it carries one
+corollary worth stating on its own: **mint the key once per logical event, and hold it across
+every attempt to store that event.** A key minted inside the insert call makes the insert
+unrepeatable, and an unrepeatable insert turns any retry into a second row.
+
+The reason is that a write can fail without settling whether it landed. Optimystic can raise a
+`TornActionError` that is not marked `final` (some of the write may be stored), a
+`SyncRetryExhaustedError`, or a partial-commit error; a commit can also be accepted while the
+response back to the writer is lost. Cadre names exactly this class in
+`packages/cadre-core/src/control-write-retry.ts` → `reportsPossiblyStoredWrite`, and its only job
+is to refuse to re-run such a write, "because a re-run could store the write twice". Control
+writes get that protection automatically, from the funnel every one of them passes through.
+**Strand writes do not** — `StrandDatabase.getDatabase()` hands your app a raw Quereus `Database`
+and your app calls `exec` on it, with no retry funnel in between. Whatever repeats the write —
+usually a person pressing Send again — is where the protection has to live.
+
+With a stable key, it lives in the key itself: two attempts at one event carry one primary key, so
+the primary key refuses the duplicate no matter how many attempts are made or how late a torn
+write lands. A retry then has two things to do beyond re-presenting the key:
+
+- **Read before re-writing.** `select <Key> from <Table> where <Key> = ?` distinguishes "the
+  earlier attempt never landed" from "it landed but its outcome never came back". Row present:
+  report success and write nothing. Row absent: insert normally. It is one key lookup, and only
+  the retry path pays for it.
+- **Do not reach for `insert or ignore` instead.** It is shorter and it does work against strand
+  tables, but Quereus applies `IGNORE` to *every* constraint on the row, matching SQLite — a NOT
+  NULL, CHECK or foreign-key violation also silently skips the row. A message whose author row is
+  missing would vanish without a word rather than failing loudly.
+
+The key must belong to the event the user composed, not to the attempt: if the user edits the
+text after a failed attempt, that is a different event and it needs a new key. Reusing the old one
+would report the edit as stored while the stored row still held the pre-edit text. The three
+reference chat apps implement exactly this — see `insertChatMessage` /
+`newChatMessageId` in `packages/reference-app-web/src/lib/chat-dml.ts` and the composer rule in
+`packages/reference-app-rn/src/chat-send.ts`.
+
+This is also why the writes cadre-core itself re-runs are safe: they key their rows on values they
+derive rather than mint — the membership reconciler's `MemberPeer` binding is keyed on the node's
+own peer id and its `ConsumedInvite` row on the invitation key
+(`packages/cadre-core/src/strand-membership-reconciler.ts`) — so a second pass re-presents the
+same key and the second write is refused rather than duplicated.
+
+---
+
 ### Common Table Expressions (CTE), Recursive, and Hints
 
 ```sql
@@ -605,6 +651,7 @@ schema "org.sereus.chat" version 1 using (default_vtab_module = 'memory') {
 - Keep views as read models; avoid complex write logic in views.
 - Use seeds for deterministic bootstrap (roles, system users, defaults).
 - Index for uniqueness and query speed; prefer named composite PKs where natural.
+- Mint a client-generated primary key once per logical event and hold it across retries — a strand write can fail without settling whether it landed, so a key minted per attempt turns a manual retry into a duplicate row. See [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
 - Per-user state (read position, drafts, preferences) has no private home yet: a per-party key in the strand table partitions it but hides nothing from other members — see [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim).
 
 This guide is intentionally compact and example-first. With it, an agent should be able to author strand schemas that enforce consent, membership, multi-tenancy, and audit/security directly in Quereus.

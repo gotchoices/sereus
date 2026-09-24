@@ -74,7 +74,7 @@ import {
 } from './strand-storage.js';
 import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
-import { insertChatMessage, selectChatMessages } from './chat-dml.js';
+import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 
 /**
  * db-p2p's transport-factory element type. The WebRTC factories from
@@ -908,12 +908,23 @@ export function getStrandConnectionCount(strandId: string): number {
  * strand's database (`getStrand(strandId)`), NOT the solo chat strand. Returns the
  * new message id. Reuses the shared chat DML so the write is byte-identical to the
  * Messages UI path (including the load-bearing Participant-before-Message FK ordering).
+ *
+ * Mints the key here rather than holding it across attempts, because nothing re-presents
+ * this write: the e2e test calls it once and asserts on the id it returns. The composer,
+ * which the user CAN press twice, holds its id instead (`messages.svelte.ts`).
  */
 export async function writeChatMessage(
 	strandId: string,
 	message: { participantName: string; content: string },
 ): Promise<string> {
-	return insertChatMessage(requireStrandDatabase(strandId), message.participantName, message.content);
+	const id = newChatMessageId();
+	await insertChatMessage(
+		requireStrandDatabase(strandId),
+		id,
+		message.participantName,
+		message.content,
+	);
+	return id;
 }
 
 /**

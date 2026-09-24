@@ -9,12 +9,12 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import type { StrandInstance } from '@serfab/cadre-core';
 import {
   insertParticipant,
-  insertMessage,
   queryMessages,
   queryParticipants,
   type ChatMessage,
   type ChatParticipant,
 } from './chat-operations';
+import { ChatSender } from './chat-send';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -156,17 +156,30 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   // ── Send ───────────────────────────────────────────────────────────────
 
+  // One sender for the life of the hook: it holds the id minted for the draft in the
+  // composer, so pressing Send again after a failed send re-presents that same primary key
+  // rather than storing the message a second time. See `chat-send.ts`.
+  const senderRef = useRef<ChatSender | null>(null);
+  if (!senderRef.current) senderRef.current = new ChatSender();
+  const sender = senderRef.current;
+
   const send = useCallback(async (content: string) => {
     const s = strandRef.current;
     const pid = participantIdRef.current;
     if (!s) throw new Error('No strand attached');
     if (!pid) throw new Error('No participant ID');
 
-    const msg = await insertMessage(s, pid, content);
-    // Optimistic update — append immediately, next poll will reconcile
-    setMessages(prev => [...prev, msg]);
+    const { message } = await sender.send(s, pid, content);
+    if (message) {
+      // Optimistic update — append immediately, next poll will reconcile
+      setMessages(prev => [...prev, message]);
+    } else {
+      // A resend that found the row already stored wrote nothing, and that row belongs to an
+      // earlier attempt, not this one — re-read the list rather than inventing it.
+      await refresh();
+    }
     setError(null);
-  }, []);
+  }, [sender, refresh]);
 
   return { messages, participants, loading, error, send, refresh };
 }

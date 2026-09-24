@@ -11,7 +11,13 @@
 
 import { startSolo } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
-import { insertParticipant, insertMessage, queryMessages, type ChatMessage } from './chat-operations';
+import {
+	insertParticipant,
+	insertMessage,
+	newChatMessageId,
+	queryMessages,
+	type ChatMessage,
+} from './chat-operations';
 
 const DEFAULT_PARTY_ID = 'reference-chat-party-ns';
 
@@ -38,7 +44,9 @@ export async function runSoloSmoke(message = 'hello'): Promise<SoloSmokeResult> 
 
 	const participantId = crypto.randomUUID();
 	await insertParticipant(strand, participantId, 'NS Solo');
-	await insertMessage(strand, participantId, message);
+	// Minted here: the smoke writes once and never re-presents the write, so nothing needs to
+	// hold the key across attempts (the chat composer does — `chat-vm.ts`).
+	await insertMessage(strand, newChatMessageId(), participantId, message);
 
 	const messages = await queryMessages(strand);
 	const echoed = messages.some((m) => m.Content === message);

@@ -31,17 +31,27 @@ export default function ChatScreen() {
   });
 
   const [draft, setDraft] = useState('');
+  const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
   const handleSend = async () => {
     const text = draft.trim();
     if (!text) return;
-    setDraft('');
+    setSendError(null);
     try {
       await chat.send(text);
+      // Clear only once the write has resolved. A failed send keeps the text in the box so
+      // the user presses Send again rather than re-typing it — a re-typed message is a new
+      // draft, and a new draft is what used to mint a second id and post the message twice.
+      setDraft('');
       listRef.current?.scrollToEnd({ animated: true });
     } catch (err) {
       console.warn('Send failed:', err);
+      // Not "failed": a strand write can fail without settling whether it landed. Repeating is
+      // safe because the id belongs to the draft (`chat-send.ts`), so a resend of unchanged
+      // text can only ever replace the earlier write.
+      const reason = err instanceof Error ? err.message : String(err);
+      setSendError(`Not confirmed sent (${reason}). Press Send again — it can only be stored once.`);
       chat.refresh().catch(() => {});
     }
   };
@@ -79,10 +89,10 @@ export default function ChatScreen() {
         onSelect={cadre.selectStrand}
       />
 
-      {/* Error banner */}
-      {chat.error && (
+      {/* Error banner — a send that did not confirm wins over a stale poll error. */}
+      {(sendError ?? chat.error) && (
         <View style={styles.errorBar}>
-          <Text style={styles.errorText}>{chat.error}</Text>
+          <Text style={styles.errorText}>{sendError ?? chat.error}</Text>
         </View>
       )}
 

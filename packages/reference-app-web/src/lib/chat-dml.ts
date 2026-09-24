@@ -32,32 +32,62 @@ function quereusTimestamp(): string {
 }
 
 /**
- * Register (idempotently) the author as a `Participant`, then append a `Message`. The
- * `Participant` row MUST exist before the `Message` insert or the
+ * Mint a `Message` primary key. Generated locally as a UUID: a read-then-increment of
+ * `max(Id)` would need a retry loop, because a duplicate key from two concurrent peers is
+ * refused — one poster is told `UNIQUE constraint failed` and has to recompute and post
+ * again (docs/schema-guide.md, "Ordering Events (There Is No Commit-Order Column)").
+ *
+ * Mint once per message the user composed, NOT once per attempt to store it: a strand write
+ * can fail with an outcome nobody can settle (a non-final `TornActionError`, a lost commit
+ * response), so a key minted per attempt turns a manual resend into a second row. See
+ * docs/schema-guide.md, "Client-Generated Keys and Retrying a Write".
+ */
+export function newChatMessageId(): string {
+	return crypto.randomUUID();
+}
+
+/**
+ * Register (idempotently) the author as a `Participant`, then append a `Message` under the
+ * caller’s `id`. The `Participant` row MUST exist before the `Message` insert or the
  * `Message.ParticipantId → Participant.Id` foreign-key check rejects the write — this is
  * load-bearing for a fresh formed strand whose `Participant` table starts empty.
  * `Participant.Id = participantName` keeps the demo single-field while still exercising the
- * FK join. The primary key is generated locally as a UUID: a read-then-increment
- * of `max(Id)` would need a retry loop, because a duplicate key from two concurrent
- * peers is refused — one poster is told `UNIQUE constraint failed` and has to
- * recompute and post again (docs/schema-guide.md, "Ordering Events (There Is No
- * Commit-Order Column)"). Returns the new message id.
+ * FK join.
+ *
+ * The key is a parameter rather than something this function invents so that two attempts at
+ * one composed message carry one key and the primary key can refuse the duplicate. See
+ * {@link newChatMessageId}.
  */
 export async function insertChatMessage(
 	database: Database,
+	id: string,
 	participantName: string,
 	content: string,
-): Promise<string> {
+): Promise<void> {
 	await database.exec('insert or ignore into App.Participant (Id, Name) values (?, ?)', [
 		participantName,
 		participantName,
 	]);
-	const id = crypto.randomUUID();
 	await database.exec(
 		'insert into App.Message (Id, ParticipantId, Content, Timestamp) values (?, ?, ?, ?)',
 		[id, participantName, content, quereusTimestamp()],
 	);
-	return id;
+}
+
+/**
+ * Whether a `Message` with this id is already stored — the point lookup a resend does before
+ * writing, to tell "the earlier attempt never landed" from "it landed but its outcome never
+ * came back". One key lookup; only the resend path pays for it.
+ *
+ * Deliberately NOT `insert or ignore`: Quereus applies `IGNORE` to every constraint on the
+ * row, matching SQLite, so a foreign-key failure (the `Participant`-before-`Message` ordering
+ * above) would silently drop the message instead of reporting it.
+ */
+export async function chatMessageExists(database: Database, id: string): Promise<boolean> {
+	for await (const _row of database.eval('select Id from App.Message where Id = ?', [id])) {
+		return true;
+	}
+	return false;
 }
 
 /**
