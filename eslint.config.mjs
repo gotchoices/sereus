@@ -68,10 +68,16 @@ const CADRE_PEER_WRITE_GUARD = [
 // same line.
 //
 // Mirrors ../optimystic/eslint.config.js, which closed this class in its own packages.
+//
+// NOTE: the messages below name two in-repo examples by path — `withDeadline` in
+// packages/cadre-core/src/control-stream.ts and `startBudget` in
+// packages/cadre-core/src/formation-approval.ts. Nothing imports either from here, so a
+// rename or a move leaves the advice pointing at nothing without failing anything; re-check
+// these two when either file is refactored.
 const PHONE_RUNTIME_GUARD = [
 	{
 		selector: "CallExpression[callee.object.name='AbortSignal'][callee.property.name='timeout']",
-		message: 'AbortSignal.timeout is missing or unreliable on Hermes/React Native and NativeScript. Use an explicit AbortController plus a timer, cleared on every exit path — see startBudget in packages/cadre-core/src/formation-approval.ts.',
+		message: 'AbortSignal.timeout is missing or unreliable on Hermes/React Native and NativeScript. Inside cadre-core, run the work under withDeadline (src/control-stream.ts), which already wires a timer to an AbortController. Elsewhere, use an explicit AbortController plus a timer, cleared on every exit path — see startBudget in packages/cadre-core/src/formation-approval.ts.',
 	},
 	{
 		selector: "CallExpression[callee.object.name='AbortSignal'][callee.property.name='any']",

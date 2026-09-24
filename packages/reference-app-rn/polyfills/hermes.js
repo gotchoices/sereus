@@ -325,9 +325,10 @@ if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'functi
 
 // The listeners this attaches come back off the inputs when the combined signal aborts.
 // `{ once: true }` only removes the listener that actually fired, and callers combine a
-// long-lived signal with a short-lived one — `p-wait-for` (pulled in by libp2p,
-// @libp2p/websockets, @libp2p/circuit-relay-v2, @libp2p/webrtc and @libp2p/tcp) pairs
-// the caller's signal with an `AbortSignal.timeout`, which always fires.
+// long-lived signal with a short-lived one — `p-wait-for` (shipped code reaches it only
+// through @libp2p/webrtc's private-to-public listener; libp2p, @libp2p/websockets,
+// @libp2p/circuit-relay-v2 and @libp2p/tcp list it as a devDependency, so it is absent from
+// their dist) pairs the caller's signal with an `AbortSignal.timeout`, which always fires.
 //
 // NOTE: a combination whose inputs ALL fail to abort keeps its listeners for as long as
 // the inputs live: the DOM holds dependent signals weakly, and Hermes gives this no hook
