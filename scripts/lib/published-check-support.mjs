@@ -14,7 +14,8 @@ import { findPackageDir, readJson } from './published-smoke-support.mjs';
 /** Accepted command-line flags, mapped to the option they set. */
 const KNOWN_FLAGS = new Map([
 	['--allow-dirty', 'allowDirty'],
-	['--keep', 'keep']
+	['--keep', 'keep'],
+	['--skip-gates', 'skipGates']
 ]);
 
 /** The scopes whose resolved copies the run exists to report on. */
@@ -24,25 +25,11 @@ const SIBLING_SCOPES = ['@optimystic/', '@quereus/'];
 const DEP_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
 
 /**
- * `yarn install` in the worktree. Dropping `resolutions` necessarily rewrites the
- * lockfile, and Yarn makes installs immutable by default whenever `CI` is set —
- * without the flag this fails in exactly the environment the check is most wanted in.
- */
-export const INSTALL_ARGS = ['install', '--no-immutable'];
-
-/**
- * The root scripts run in the worktree, in order. `build` first because every other
- * one reads compiled output: `lint` is type-aware, `typecheck` walks the same
- * programs, and `test` runs against each package's `dist`.
- */
-export const WORKTREE_GATES = ['build', 'lint', 'typecheck', 'test'];
-
-/**
  * Parse the flags, rejecting anything unrecognised. A silently ignored typo
  * (`--allowdirty`) would check a commit the caller did not mean to check.
  */
 export function parseFlags(argv) {
-	const flags = { allowDirty: false, keep: false };
+	const flags = { allowDirty: false, keep: false, skipGates: false };
 	for (const arg of argv) {
 		const option = KNOWN_FLAGS.get(arg);
 		if (!option) {
@@ -108,10 +95,11 @@ export function workspacePackages(rootDir) {
 
 /**
  * The dependency names the report covers: every name the root `resolutions` block
- * redirects with `link:` — the exact set the worktree de-links — plus any other
- * `@optimystic/*` or `@quereus/*` package a workspace declares. The latter arrive
- * from the registry in both install shapes, so they are unchanged by the de-link and
- * are printed beside the rest to say so.
+ * pins — the whole key, since the whole key is what the worktree drops, so a
+ * non-`link:` pin also resolves differently there and belongs in the report — plus
+ * any other `@optimystic/*` or `@quereus/*` package a workspace declares. The latter
+ * arrive from the registry in both install shapes, so they are unchanged by the
+ * de-link and are printed beside the rest to say so.
  */
 export function reportedSiblingNames(rootManifest, workspaces) {
 	const names = new Set(Object.keys(rootManifest.resolutions ?? {}));

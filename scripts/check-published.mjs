@@ -33,6 +33,12 @@
  * would otherwise describe a commit rather than what the caller is looking at.
  * `--allow-dirty` proceeds anyway, still from `HEAD`. `--keep` retains the worktree.
  *
+ * `--skip-gates` stops after step 4. The install and the report are the fast half —
+ * minutes, not the better part of an hour — and they answer the question that fails
+ * most often: whether the published siblings resolve at all, and at which versions.
+ * It is also the only form of this script that finishes inside an agent's or a
+ * reviewer's patience, so it is what proves the steps around the gates still work.
+ *
  * Do NOT run `yarn smoke:published` inside the worktree. It packs this repository's
  * own tarballs into its own scratch project outside the repo and never reads
  * `resolutions`, so running it there measures nothing the main tree has not already.
@@ -49,8 +55,6 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-	INSTALL_ARGS,
-	WORKTREE_GATES,
 	delinkedManifest,
 	dirtyPaths,
 	longPath,
@@ -64,6 +68,20 @@ import { hoistedVersions, readJson } from './lib/published-smoke-support.mjs';
 import { capture, run } from './lib/run-command.mjs';
 
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * `yarn install` in the worktree. Dropping `resolutions` necessarily rewrites the
+ * lockfile, and Yarn makes installs immutable by default whenever `CI` is set —
+ * without the flag this fails in exactly the environment the check is most wanted in.
+ */
+const INSTALL_ARGS = ['install', '--no-immutable'];
+
+/**
+ * The root scripts run in the worktree, in order. `build` first because every other
+ * one reads compiled output: `lint` is type-aware, `typecheck` walks the same
+ * programs, and `test` runs against each package's `dist`.
+ */
+const WORKTREE_GATES = ['build', 'lint', 'typecheck', 'test'];
 
 /**
  * Refuse a tree that differs from `HEAD`. Reporting the paths matters more than the
@@ -106,6 +124,16 @@ function delinkWorktree(worktreeDir) {
  * the same shape `smoke-published-install.mjs` prints, and for the same reason: the
  * point of the run is which artifacts were tested, and a package with its own
  * `node_modules` did not test the hoisted one.
+ *
+ * NOTE: accepted tradeoff — several names print `(not installed)` on a healthy run
+ * and that is not a fault. On 2026-09-24 three of ten did: `@optimystic/demo` has a
+ * `resolutions` entry but nothing here depends on it, and `db-p2p-storage-ns`/`-rn`
+ * are wanted only by reference apps that hoist into their own `node_modules`, where
+ * the second list below shows them resolved. Filtering them out was weighed and
+ * declined: hiding a name the root manifest names is the worse failure, because a
+ * sibling that genuinely failed to install would then vanish from the report
+ * instead of standing out. Revisit if the hoisted list ever grows long enough that
+ * the real signal is hard to find in it.
  */
 function reportResolved(worktreeDir, workspaces, names) {
 	console.log('\n=== what the worktree resolved ===');
@@ -151,7 +179,14 @@ function removeWorktree(worktreeDir, scratchDir) {
 	rmSync(longPath(scratchDir), { recursive: true, force: true });
 }
 
-function cleanup(worktreeDir, scratchDir, ok, keep) {
+function cleanup(worktreeDir, scratchDir, { added, ok, keep }) {
+	if (!added) {
+		// `git worktree add` never got as far as registering anything, so there is no
+		// worktree to name in the advice below and nothing but an empty scratch
+		// directory to drop.
+		rmSync(longPath(scratchDir), { recursive: true, force: true });
+		return;
+	}
 	if (!ok || keep) {
 		console.log(`\nworktree left in place: ${worktreeDir}`);
 		console.log(`remove it with: git worktree remove --force "${worktreeDir}"  (then "git worktree prune" if that reports Filename too long)`);
@@ -178,9 +213,11 @@ function main(flags) {
 	console.log(`check-published: checking ${head} against the published sibling packages.`);
 	console.log(`worktree: ${worktreeDir}`);
 
+	let added = false;
 	let ok = false;
 	try {
 		run('git', ['worktree', 'add', '--detach', worktreeDir, head], rootDir);
+		added = true;
 		delinkWorktree(worktreeDir);
 
 		run('yarn', INSTALL_ARGS, worktreeDir);
@@ -191,15 +228,17 @@ function main(flags) {
 		const workspaces = workspacePackages(worktreeDir);
 		reportResolved(worktreeDir, workspaces, reportedSiblingNames(readJson(join(rootDir, 'package.json')), workspaces));
 
-		for (const gate of WORKTREE_GATES) {
+		for (const gate of flags.skipGates ? [] : WORKTREE_GATES) {
 			run('yarn', [gate], worktreeDir);
 		}
 
 		ok = true;
-		console.log(`\ncheck-published: PASSED — ${head} builds, lints, type-checks and tests against the published siblings.`);
+		console.log(flags.skipGates
+			? `\ncheck-published: installed — ${head} resolves the published siblings above. No gate was run (--skip-gates).`
+			: `\ncheck-published: PASSED — ${head} builds, lints, type-checks and tests against the published siblings.`);
 		return 0;
 	} finally {
-		cleanup(worktreeDir, scratchDir, ok, flags.keep);
+		cleanup(worktreeDir, scratchDir, { added, ok, keep: flags.keep });
 	}
 }
 

@@ -169,9 +169,9 @@ test('reparsePointsUnder does not descend into a link, so a cycle cannot hang it
 	});
 });
 
-test('parseFlags accepts the documented flags and defaults both to false', () => {
-	assert.deepEqual(parseFlags([]), { allowDirty: false, keep: false });
-	assert.deepEqual(parseFlags(['--allow-dirty', '--keep']), { allowDirty: true, keep: true });
+test('parseFlags accepts the documented flags and defaults them all to false', () => {
+	assert.deepEqual(parseFlags([]), { allowDirty: false, keep: false, skipGates: false });
+	assert.deepEqual(parseFlags(['--allow-dirty', '--keep', '--skip-gates']), { allowDirty: true, keep: true, skipGates: true });
 });
 
 test('parseFlags rejects a typo instead of silently checking the wrong commit', () => {

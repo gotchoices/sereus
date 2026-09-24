@@ -16,11 +16,25 @@
 
 import { spawnSync } from 'node:child_process';
 
+/**
+ * Whether this platform needs the shell, and the arguments in the form it accepts.
+ *
+ * The shell re-splits the command line, so anything it would read as whitespace or
+ * as an operator has to be quoted back into a single argument; without a shell the
+ * argument vector is passed through untouched and the same quoting would corrupt it.
+ * Both entry points below go through this — a caller that passed a path with a space
+ * to only one of them would otherwise get a different command than it wrote.
+ */
+function spawnShape(commandArgs) {
+	const shell = process.platform === 'win32';
+	return {
+		shell,
+		args: shell ? commandArgs.map((arg) => (/[\s"&|<>^]/.test(arg) ? `"${arg}"` : arg)) : commandArgs
+	};
+}
+
 export function run(command, commandArgs, cwd, { quiet = false } = {}) {
-	const useShell = process.platform === 'win32';
-	const finalArgs = useShell
-		? commandArgs.map((arg) => (/[\s"&|<>^]/.test(arg) ? `"${arg}"` : arg))
-		: commandArgs;
+	const { shell: useShell, args: finalArgs } = spawnShape(commandArgs);
 	console.log(`\n$ ${command} ${commandArgs.join(' ')}   (in ${cwd})`);
 	const result = spawnSync(command, finalArgs, {
 		cwd,
@@ -42,7 +56,8 @@ export function run(command, commandArgs, cwd, { quiet = false } = {}) {
 
 /** The trimmed stdout of a command that is expected to succeed and say something. */
 export function capture(command, commandArgs, cwd) {
-	const result = spawnSync(command, commandArgs, { cwd, encoding: 'utf8', shell: process.platform === 'win32' });
+	const { shell, args } = spawnShape(commandArgs);
+	const result = spawnSync(command, args, { cwd, encoding: 'utf8', shell });
 	if (result.error) {
 		throw new Error(`${command} failed to start: ${result.error.message}`);
 	}
