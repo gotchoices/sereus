@@ -370,7 +370,13 @@ write lands. A retry then has two things to do beyond re-presenting the key:
 - **Read before re-writing.** `select <Key> from <Table> where <Key> = ?` distinguishes "the
   earlier attempt never landed" from "it landed but its outcome never came back". Row present:
   report success and write nothing. Row absent: insert normally. It is one key lookup, and only
-  the retry path pays for it.
+  the retry path pays for it. An equality on every primary-key column is served as a single tree
+  descent with no filter added by the SQL engine, and whether that descent can come back empty for
+  a row that exists on a networked strand is an open question
+  (`tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked.md`) — which is survivable
+  here precisely because the key is stable: a lookup that wrongly reports "absent" leads to an
+  insert the primary key then refuses, so the writer gets an error to report and never a second
+  row. Do not invert that and treat the read as the thing keeping the row unique.
 - **Do not reach for `insert or ignore` instead.** It is shorter and it does work against strand
   tables, but Quereus applies `IGNORE` to *every* constraint on the row, matching SQLite — a NOT
   NULL, CHECK or foreign-key violation also silently skips the row. A message whose author row is
@@ -381,7 +387,12 @@ text after a failed attempt, that is a different event and it needs a new key. R
 would report the edit as stored while the stored row still held the pre-edit text. The three
 reference chat apps implement exactly this — see `insertChatMessage` /
 `newChatMessageId` in `packages/reference-app-web/src/lib/chat-dml.ts` and the composer rule in
-`packages/reference-app-rn/src/chat-send.ts`.
+`packages/reference-app-rn/src/chat-send.ts`, `packages/reference-app-ns/src/chat-vm.ts`
+(`ChatViewModel.send`) and `packages/reference-app-web/src/lib/messages.svelte.ts` (`sendMessage`).
+They also show what still needs deciding: a key held until a send resolves and nothing else can
+outlive the draft it was minted for, so the *same* text composed again later is mistaken for a
+retry — `tickets/backlog/bug-chat-retry-key-outlives-the-draft-it-belongs-to.md`. Hold the key
+while the event is still the one being composed, and let it go when it is not.
 
 This is also why the writes cadre-core itself re-runs are safe: they key their rows on values they
 derive rather than mint — the membership reconciler's `MemberPeer` binding is keyed on the node's

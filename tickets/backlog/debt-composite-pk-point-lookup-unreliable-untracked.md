@@ -108,6 +108,7 @@ Single-column primary-key lookups, however, are ordinary and widespread, e.g.:
 - `packages/cadre-core/src/control-database.ts` — several control-database reads keyed by
   their primary key (`CadreControl.Strand where Id = ?`, `CadrePeer where PeerId = ?`,
   `DeviceToken where PeerId = ?`, `FormationInvite where Token = ?`).
+- **Added by review of `bug-chat-resend-after-uncertain-failure-can-store-message-twice` (2026-09-24).** Three new sites, all `select Id from App.Message where Id = ?` on a **strand** table rather than a control one: `chatMessageExists` in `packages/reference-app-web/src/lib/chat-dml.ts` and `messageExists` in `packages/reference-app-rn/src/chat-operations.ts` and `packages/reference-app-ns/src/chat-operations.ts`. Each is the read a chat composer does before re-presenting a message whose first write failed without settling whether it landed. Listed as evidence of how ordinary this shape is, not as a risk to chase: unlike the enrollment sites above, a miss here degrades safely — reading "absent" for a stored message leads to an insert that the primary key refuses, so the user gets an error and presses Send again, and no duplicate row can be stored on either answer. Each site carries a `NOTE:` pointing here.
 
 Whether any of these are actually at risk depends entirely on question 1. That is the point
 of the ticket: **decide, once, with evidence** — rather than rewriting call sites one at a

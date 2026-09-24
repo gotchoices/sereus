@@ -79,6 +79,8 @@ export class ChatViewModel extends Observable {
 	private participantId: string | null = null;
 	/** The draft awaiting a resolved send, so a resend reuses its id — see {@link send}. */
 	private pendingDraft: PendingDraft | null = null;
+	/** True while a send is in flight, so a second tap cannot race it — see {@link send}. */
+	private sending = false;
 	private registered = false;
 	/** Strand whose participant insert is still running, so polls don't start another. */
 	private registeringStrand: StrandInstance | null = null;
@@ -255,10 +257,16 @@ export class ChatViewModel extends Observable {
 	 * The draft is cleared only once the send resolves: a failed send that emptied the box made
 	 * the user re-type, and a re-typed message is a new draft with a new id — the path that
 	 * posted the message twice.
+	 *
+	 * Because the box keeps its text for the whole commit, the composer stays tappable for
+	 * seconds on a slow strand, so a send already in flight makes this a no-op: a second tap is
+	 * the same intent, and acting on it would re-present the draft's key against its own
+	 * in-flight insert — one of the two loses on a unique violation and reports "not confirmed"
+	 * for a message that was stored. Silent, like the empty-draft no-op above it.
 	 */
 	async send(): Promise<void> {
 		const text = this._draft.trim();
-		if (!text) return;
+		if (!text || this.sending) return;
 		const strand = this.strand;
 		const participantId = this.participantId;
 		if (!strand) throw new Error('No strand attached');
@@ -267,6 +275,7 @@ export class ChatViewModel extends Observable {
 		const resend = this.pendingDraft?.text === text ? this.pendingDraft : null;
 		const draft = resend ?? { id: newChatMessageId(), text };
 		this.pendingDraft = draft;
+		this.sending = true;
 		this.setSendError('');
 
 		try {
@@ -296,6 +305,8 @@ export class ChatViewModel extends Observable {
 				`Not confirmed sent (${errMessage(err)}). Press Send again — it can only be stored once.`,
 			);
 			throw err;
+		} finally {
+			this.sending = false;
 		}
 	}
 

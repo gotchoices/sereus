@@ -33,10 +33,19 @@ export default function ChatScreen() {
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<FlatList<ChatMessage>>(null);
+  // Because the box keeps its text until the write resolves (below), the Send control stays
+  // live for the whole commit — seconds, on a slow strand. A second tap in that window is the
+  // same intent, not a new message, and acting on it would re-present the draft's key against
+  // its own in-flight insert: one of the two loses on a unique violation and reports "not
+  // confirmed" for a message that was stored. A ref, not state, so a tap arriving before a
+  // re-render is still seen. `onSubmitEditing` routes here too, which is why the guard is here
+  // rather than on the button alone.
+  const sendingRef = useRef(false);
 
   const handleSend = async () => {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || sendingRef.current) return;
+    sendingRef.current = true;
     setSendError(null);
     try {
       await chat.send(text);
@@ -53,6 +62,8 @@ export default function ChatScreen() {
       const reason = err instanceof Error ? err.message : String(err);
       setSendError(`Not confirmed sent (${reason}). Press Send again — it can only be stored once.`);
       chat.refresh().catch(() => {});
+    } finally {
+      sendingRef.current = false;
     }
   };
 

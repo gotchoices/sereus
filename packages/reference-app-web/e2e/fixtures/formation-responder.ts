@@ -273,8 +273,13 @@ export async function startFormationResponder(opts?: {
 			if (!seedPromise) {
 				seedPromise = (async () => {
 					const db = requireStrandDatabase(node, strandId);
-					// Minted here: `ensureSeeded` is single-flight and a rejected attempt resets to a
-					// fresh call, so nothing re-presents a key across attempts.
+					// Minted per attempt, not held across them: a rejection here resets `seedPromise`,
+					// so the retry seeds under a fresh key. That is safe only because the failure this
+					// retry exists for — an attempt before the cohort is ready — rejects without
+					// storing anything. A failure that stored the row and then failed to say so would
+					// seed twice; holding the key the way the composer does (see
+					// docs/schema-guide.md, "Client-Generated Keys and Retrying a Write") is what a
+					// fixture with a real uncertain-failure path would need.
 					const id = newChatMessageId();
 					await insertChatMessage(db, id, SEED_PARTICIPANT, seedContent);
 					seededMessage.id = id;

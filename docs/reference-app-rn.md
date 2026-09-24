@@ -369,6 +369,7 @@ packages/reference-app-rn/
     node-local-slots.ts       # DurableSlots for the owner anchor + bootstrap peers
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
+    chat-send.ts              # Composer send rule: one message id per draft, held across retries
     strand-selection.ts       # Which strand the chat screen is showing
     background-runner.ts      # AppState-driven hibernate / bounded resume
     app-state.ts              # AppState seam the runner is tested against
@@ -606,6 +607,8 @@ Switch to the **Chat** tab. Type a message and send. The message is:
 3. Visible on both nodes
 
 Messages from the drone (if any are inserted programmatically) replicate back to the phone the same way. The chat screen polls for new messages every 2 seconds.
+
+A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send the message can be stored at most once. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
 
 ### Quick Reference
 

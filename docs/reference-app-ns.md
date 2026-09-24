@@ -151,6 +151,7 @@ nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
 |---|---|
 | `src/use-cadre.ts` + `src/cadre-context.tsx` | `src/cadre-vm.ts` (`CadreViewModel`, `getCadreVm()` singleton) |
 | `src/use-chat.ts` | `src/chat-vm.ts` (`ChatViewModel`, `getChatVm()` singleton) |
+| `src/chat-send.ts` (`ChatSender` — extracted so the send rule is testable without React) | folded into `ChatViewModel.send`, which holds the pending draft itself (untestable under Node — `debt-ns-chat-vm-unit-tests`) |
 | `src/test-ids.ts` (`testID`) | `src/test-ids.ts` (same strings, surfaced via `automationText`) |
 | `app/settings.tsx` | `app/settings/settings-page.{xml,ts}` + `settings-view-model.ts` |
 | `app/index.tsx` | `app/chat/chat-page.{xml,ts}` |

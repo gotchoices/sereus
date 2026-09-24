@@ -181,6 +181,13 @@ export async function insertMessage(
  * Deliberately NOT `insert or ignore`: Quereus applies IGNORE to every constraint on the row,
  * matching SQLite, so a foreign-key failure would silently drop the message instead of
  * reporting it.
+ *
+ * NOTE: an equality on every primary-key column is served as one tree descent with no filter
+ * from the SQL engine, and whether that descent can miss a row that exists on a networked
+ * strand is open — tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked.md.
+ * A miss here is benign in a way the enrollment sites that ticket lists are not: reading
+ * "absent" for a stored message leads to an insert the primary key then refuses, so the user
+ * sees an error and re-presses Send, and no duplicate can be stored either way.
  */
 export async function messageExists(strand: StrandInstance, id: string): Promise<boolean> {
   const db = getDb(strand);
