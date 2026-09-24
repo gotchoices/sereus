@@ -68,8 +68,17 @@ export function distBackedDependencies(packageDir: string): Map<string, Origin> 
 	return checkable;
 }
 
-/** Names the repo root's `resolutions` redirects to a sibling checkout with `link:`. */
-function linkedResolutions(packageDir: string): Set<string> {
+/**
+ * Names the repo root's `resolutions` redirects to a sibling checkout with `link:`.
+ *
+ * Exported because a suite's expectations for such a dependency depend on the
+ * install shape in front of it. With the `resolutions` block in place the
+ * dependency reaches `node_modules` as a symlink and is checkable; without it
+ * (`yarn check:published`'s de-linked worktree, and any consumer's checkout) the
+ * same name arrives from the registry and is deliberately skipped, so a spec that
+ * asserts `'linked'` unconditionally fails for a reason that is not a defect.
+ */
+export function linkedResolutions(packageDir: string): Set<string> {
 	const repoRoot = findWorkspaceRoot(packageDir);
 	if (repoRoot === undefined) throw new Error(`Could not locate the monorepo root from ${packageDir}`);
 

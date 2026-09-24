@@ -1,8 +1,8 @@
 # Testing, gates, and release checks
 
 The rules and coverage guarantees behind this repo's four root gates — `yarn typecheck`,
-`yarn dep-check`, `yarn lint`, `yarn test` — plus the one release-time check that is
-deliberately *not* a gate (`yarn smoke:published`).
+`yarn dep-check`, `yarn lint`, `yarn test` — plus the two release-time checks that are
+deliberately *not* gates (`yarn smoke:published`, `yarn check:published`).
 
 This document holds **policy and rationale**: what each gate covers, what it deliberately does
 not, and why. It is not a status board. Current pass/fail state lives in the suites themselves;
@@ -472,6 +472,20 @@ installs anything, so it cannot prove the published artifact at that version act
   `node scripts/lib/published-smoke-scenario.mjs` from anywhere inside this repo, which resolves
   `@serfab/*` through the workspace symlinks — and be explicit that doing so proves the scenario,
   not the registry substrate.
+
+## Running our own suites against the published siblings — `yarn check:published` (a release step, not a test)
+
+This is the third face of the same subject as the two sections above, and it covers what neither of them can. The range gate proves a declared range *admits* the linked version but installs nothing. `yarn smoke:published` installs our own packed tarballs into a scratch project and runs one ported scenario there, but that project lives outside the repo and never reads `resolutions` at all. What neither does is run **this repository's own suites** against **registry copies of the two sibling projects** — which is what `scripts/check-published.mjs` does.
+
+- It adds a detached git worktree at `HEAD` under the OS temp dir, deletes the `resolutions` key from that worktree's root `package.json` and changes nothing else, runs `yarn install --no-immutable` there, reports what every `@optimystic/*` and `@quereus/*` name resolved to, and then runs `yarn build`, `yarn lint`, `yarn typecheck` and `yarn test` in the worktree.
+- **Outside the repository**, for the same reason the smoke's scratch project is: inside, the root `workspaces` glob and the ESLint config would both start seeing it. **`--no-immutable`** because dropping `resolutions` necessarily rewrites the lockfile, and Yarn makes installs immutable by default whenever `CI` is set — without the flag it fails in exactly the environment the check is most wanted in.
+- **The worktree is built from `HEAD`, so a dirty working tree is refused** and the differing paths are printed. `--allow-dirty` proceeds anyway, still from `HEAD`; the uncommitted changes are not what gets checked, and the script says so. `--keep` retains the worktree.
+- **Do not run `yarn smoke:published` inside the worktree.** It packs this repository's own tarballs into its own scratch project outside the repo and never sees `resolutions`, so running it there measures nothing the main tree has not already measured. For the same reason `check:published` runs the four root scripts rather than `yarn check`, which chains the smoke onto them.
+- **Not a gate, and not runnable inside a ticket.** It needs the network and it is slow: on one Windows machine with a warm Yarn cache the install alone took 1m36s, and `yarn test` adds the whole integration suite on top. Whether it runs before a release is the maintainer's call.
+- **A failure means one of three things, and the report at the top says which.** A sibling version resolved from the registry that is older than what `resolutions` links (the declared range is behind — `yarn upgrade:optimystic` / `yarn upgrade:quereus`, then re-run the range gate); a real defect against the published artifact at that version (fix it, here or upstream); or a suite that assumed the linked install shape. The last one is a defect in the test, not in the code: `test-harness/build-targets-spec.ts` and `test-harness/build-freshness.spec.ts` each decide their expectation from whether the root manifest links the name (`linkedResolutions` in `test-harness/build-targets.ts`), and a new assertion about `'linked'` should do the same rather than be relaxed to "absent is fine", which asserts nothing.
+- **`cpu-features` fails to build during the install and is not a failure.** It is an optional native dependency of `ssh2`; Yarn reports `couldn't be built successfully (exit code 1)` and carries on, and the runs are unaffected.
+- **Removing the worktree needs the Windows path, twice over.** Every symlink and junction under the worktree is unlinked first, because a recursive delete that followed one is what emptied the sibling checkouts in the incident recorded under "Scratch worktrees and clones" above — this worktree has no sibling junctions, but it is full of the ones yarn writes for the workspaces themselves. Then `git worktree remove --force` is tried, and on deep `node_modules` paths it fails with `Filename too long` (observed on this machine, 2026-09-24) having already de-registered the worktree; the script falls back to a `\\?\`-prefixed recursive delete and `git worktree prune`.
+- **The decisions are unit-tested even though the run itself is not**, the same split as the smoke script: the manifest edit, the dirty-tree reading, the reported package set and the link removal live in `scripts/lib/published-check-support.mjs` and are pinned against fixtures by `scripts/check-published.test.mjs` (`yarn test:published-check-support`, in `yarn test`; no network, under a second). What remains unproven is the orchestration — the four gates in the worktree, and the POSIX half of the spawn shim in `scripts/lib/run-command.mjs`, which has never run off Windows.
 
 ## Browser bundle checks (`@serfab/quereus-plugin-sereus`)
 
