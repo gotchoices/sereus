@@ -312,6 +312,17 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   destination) and the three constraint fixtures that drive raw SQL at a bare database
   (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`,
   `control-revocation-reap.spec.ts`).
+- **Phone-runtime API guard:** the same rule (`PHONE_RUNTIME_GUARD` in `eslint.config.mjs`) flags
+  `AbortSignal.timeout(…)`, `AbortSignal.any(…)`, `Promise.withResolvers(…)` and `new DOMException(…)` in
+  first-party source (`packages/*/src` and `cadre-host/ui/src`), because Hermes (React Native) and NativeScript's
+  V8 lack or mis-implement them and the polyfills exist for dependencies, not for us to lean on. The messages
+  name the replacement (an explicit `AbortController` + timer, an explicit signal relay released in a
+  `finally`, a hand-built `{ promise, resolve, reject }`, a plain named `Error`). `AbortSignal.prototype.throwIfAborted()`
+  is deliberately not banned: libp2p requires it regardless. The one exemption is the NativeScript abort
+  polyfill's feature-detected `DOMException` fallback, an `eslint-disable-next-line` at the site — not a
+  config-level exemption, which would also switch off the `CadrePeer` selectors sharing the rule. Note that a
+  later config entry setting `no-restricted-syntax` replaces the earlier one's selectors for the files it
+  matches; the config composes each scope's list from shared constants for that reason.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in

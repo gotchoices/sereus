@@ -18,6 +18,7 @@ import { markPolyfilled } from './registry';
 
 /** `DOMException` is not guaranteed on NS either; fall back to a named Error. */
 function abortError(message: string, name: string): Error {
+	// eslint-disable-next-line no-restricted-syntax -- feature-detected on this line: a DOMException is only constructed where the runtime already has one, and the fallback below is the plain named Error the guard asks for.
 	if (typeof DOMException !== 'undefined') return new DOMException(message, name);
 	const err = new Error(message);
 	err.name = name;
@@ -63,12 +64,17 @@ class AbortSignalPolyfill extends EventTarget {
 	}
 
 	// The listeners this attaches come back off the inputs once the combined signal
-	// settles. A combination whose inputs never abort keeps its listeners for as long as
+	// settles.
+	//
+	// NOTE: a combination whose inputs ALL fail to abort keeps its listeners for as long as
 	// the inputs live — the DOM holds dependent signals weakly, and this runtime gives no
-	// hook to do the same. Optimystic's repo client
-	// (../optimystic/packages/db-p2p/src/repo/client.ts) hits this on every RPC that
-	// succeeds — its deadline controller is cleared, not aborted — see backlog ticket
-	// bug-abortsignal-any-leaks-listeners-on-hermes.
+	// hook to do the same. No caller does that today: `p-wait-for`, the only dependency that
+	// calls `AbortSignal.any`, always pairs the caller's signal with an `AbortSignal.timeout`,
+	// which always fires. If one ever does, fix it at that call site — an explicit
+	// combination it can release, as optimystic's repo client and quereus's
+	// `combineAbortSignals` do — not here: this has no way to learn a combination is finished.
+	// First-party source is kept off `AbortSignal.any` by `PHONE_RUNTIME_GUARD` in
+	// eslint.config.mjs.
 	static any(signals: Iterable<AbortSignalPolyfill>): AbortSignalPolyfill {
 		const combined = new AbortSignalPolyfill();
 		const list = Array.from(signals);

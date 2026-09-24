@@ -28,6 +28,78 @@ import tseslint from 'typescript-eslint';
 import globals from 'globals';
 import svelte from 'eslint-plugin-svelte';
 
+// ---- `no-restricted-syntax` selector sets ----
+// A flat-config entry that sets `no-restricted-syntax` REPLACES the rule's options for every
+// file it matches — entries do not merge — so each scope below spells out its full list, built
+// from these shared pieces. Adding a selector set means adding it to every scope that should
+// keep it, and to any exemption entry that switches the rule off for a file that should not
+// lose it.
+
+// `CadreControl.CadrePeer` writes must go through ControlDatabase. Literal SQL only: a
+// statement assembled from variables slips through, as does an unqualified
+// `insert into CadrePeer` (every control statement in the tree names the schema). Deliberate —
+// this targets the copy-paste mistake, not a determined bypass.
+const CADRE_PEER_WRITE_MESSAGE = 'Write CadreControl.CadrePeer through ControlDatabase.insertCadrePeer / reauthorizeCadrePeer / deleteCadrePeer — they wrap mutateCadrePeer, which refreshes the party-membership snapshot the control-traffic gate reads. Direct SQL skips that refresh.';
+const CADRE_PEER_WRITE_SQL = 'insert\\s+into\\s+CadreControl\\.CadrePeer|update\\s+CadreControl\\.CadrePeer|delete\\s+from\\s+CadreControl\\.CadrePeer';
+const CADRE_PEER_WRITE_GUARD = [
+	{
+		// Plain-string SQL (the form the specs use).
+		selector: `Literal[value=/${CADRE_PEER_WRITE_SQL}/i]`,
+		message: CADRE_PEER_WRITE_MESSAGE,
+	},
+	{
+		// Backtick SQL (the form the sources use).
+		selector: `TemplateElement[value.raw=/${CADRE_PEER_WRITE_SQL}/i]`,
+		message: CADRE_PEER_WRITE_MESSAGE,
+	},
+];
+
+// Web APIs the phone runtimes lack. Both phone apps (Hermes under React Native, V8 under
+// NativeScript) run our first-party source, and the polyfills in reference-app-rn/polyfills/
+// hermes.js and reference-app-ns/src/polyfills/ exist for the dependencies (libp2p and friends)
+// that call these. Our own code should not add to that dependence: a polyfill is a fallback
+// for code we do not control, and it cannot see when a caller is finished with what it made —
+// `AbortSignal.any` in particular leaves listeners on its inputs if none of them ever aborts.
+// The replacements are plain constructs every runtime has.
+//
+// `AbortSignal.prototype.throwIfAborted()` is deliberately not banned: libp2p and its
+// dependencies require it regardless, both phone apps polyfill it, and banning it here would
+// move that requirement into this file without removing it. Optimystic's config draws the
+// same line.
+//
+// Mirrors ../optimystic/eslint.config.js, which closed this class in its own packages.
+const PHONE_RUNTIME_GUARD = [
+	{
+		selector: "CallExpression[callee.object.name='AbortSignal'][callee.property.name='timeout']",
+		message: 'AbortSignal.timeout is missing or unreliable on Hermes/React Native and NativeScript. Use an explicit AbortController plus a timer, cleared on every exit path — see startBudget in packages/cadre-core/src/formation-approval.ts.',
+	},
+	{
+		selector: "CallExpression[callee.object.name='AbortSignal'][callee.property.name='any']",
+		message: 'AbortSignal.any is missing on Hermes/React Native and NativeScript, and the polyfill cannot release the listeners it attaches to inputs that never abort. Combine signals with an explicit relay whose removeEventListener runs in a finally — see startBudget in packages/cadre-core/src/formation-approval.ts.',
+	},
+	{
+		selector: "CallExpression[callee.object.name='Promise'][callee.property.name='withResolvers']",
+		message: 'Promise.withResolvers is ES2024 and Hermes/React Native does not provide it. Build the { promise, resolve, reject } triple by hand instead.',
+	},
+	{
+		selector: "NewExpression[callee.name='DOMException']",
+		message: 'DOMException construction is not guaranteed under Hermes/React Native or NativeScript. Throw a plain Error with its `name` set instead.',
+	},
+];
+
+// `packages/*/src` is the first-party source of every package, including the two browser-only
+// apps (reference-app-web, cadre-host/ui) where these APIs exist — accepted deliberately: they
+// have no uses there today, and a browser-only need is one `eslint-disable-next-line` with its
+// reason. `cadre-host/ui/src` sits one level deeper than the `packages/*/src` glob reaches.
+//
+// NOTE: `.svelte` component scripts are outside this scope, so a browser-app component could
+// use these APIs unflagged. None does today (searched packages/*/src and cadre-host/ui/src,
+// 2026-09-24); if one starts to, add the `.svelte` globs here.
+const PHONE_RUNTIME_SCOPE = [
+	'packages/*/src/**/*.{ts,tsx,mts,cts}',
+	'packages/cadre-host/ui/src/**/*.{ts,tsx,mts,cts}',
+];
+
 export default tseslint.config(
 	// ---- Global ignores (generated / vendored / out-of-scope) ----
 	{
@@ -108,40 +180,41 @@ export default tseslint.config(
 		},
 	},
 
-	// ---- `CadreControl.CadrePeer` writes must go through ControlDatabase ----
+	// ---- `no-restricted-syntax`: CadrePeer writes everywhere, phone-runtime APIs in package src ----
 	// Every write to the party-membership table has to refresh the in-memory snapshot of
 	// approved members, or the node starts denying control traffic from the member it just
 	// approved. `ControlDatabase.mutateCadrePeer` is what triggers that refresh, and the
-	// three public methods below are the only writers that wrap it. A raw
+	// three public methods named in the message are the only writers that wrap it. A raw
 	// `getDatabase().exec('insert into CadreControl.CadrePeer …')` compiles and runs
 	// happily while skipping the refresh — a mistake that has been made twice — so flag
-	// the SQL itself.
+	// the SQL itself (CADRE_PEER_WRITE_GUARD, above).
 	//
-	// Literal SQL only: a statement assembled from variables slips through, as does an
-	// unqualified `insert into CadrePeer` (every control statement in the tree names the
-	// schema). Deliberate — this targets the copy-paste mistake, not a determined bypass.
+	// First-party package source additionally gets PHONE_RUNTIME_GUARD (above). A later entry
+	// replaces an earlier one's options for the files it matches, so the source scope repeats
+	// the CadrePeer selectors rather than adding to them.
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {
-			'no-restricted-syntax': ['error',
-				{
-					// Plain-string SQL (the form the specs use).
-					selector: "Literal[value=/insert\\s+into\\s+CadreControl\\.CadrePeer|update\\s+CadreControl\\.CadrePeer|delete\\s+from\\s+CadreControl\\.CadrePeer/i]",
-					message: 'Write CadreControl.CadrePeer through ControlDatabase.insertCadrePeer / reauthorizeCadrePeer / deleteCadrePeer — they wrap mutateCadrePeer, which refreshes the party-membership snapshot the control-traffic gate reads. Direct SQL skips that refresh.',
-				},
-				{
-					// Backtick SQL (the form the sources use).
-					selector: "TemplateElement[value.raw=/insert\\s+into\\s+CadreControl\\.CadrePeer|update\\s+CadreControl\\.CadrePeer|delete\\s+from\\s+CadreControl\\.CadrePeer/i]",
-					message: 'Write CadreControl.CadrePeer through ControlDatabase.insertCadrePeer / reauthorizeCadrePeer / deleteCadrePeer — they wrap mutateCadrePeer, which refreshes the party-membership snapshot the control-traffic gate reads. Direct SQL skips that refresh.',
-				},
-			],
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD],
 		},
 	},
 	{
-		// The exemptions (flat config: a later entry wins, so this must follow the rule).
+		files: PHONE_RUNTIME_SCOPE,
+		rules: {
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD],
+		},
+	},
+	{
+		// The exemptions (flat config: a later entry wins, so these must follow the rules).
+		// The destination itself — these ARE the wrapped writers. It is package source, so
+		// only the CadrePeer selectors come off; the phone-runtime ones stay.
+		files: ['packages/cadre-core/src/control-database.ts'],
+		rules: {
+			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD],
+		},
+	},
+	{
 		files: [
-			// The destination itself — these ARE the wrapped writers.
-			'packages/cadre-core/src/control-database.ts',
 			// Constraint fixtures: all drive raw SQL at a bare Quereus database on purpose,
 			// to test the schema's authorization/revocation CHECKs. No membership snapshot
 			// exists in any — there is no ControlDatabase in the picture at all.
