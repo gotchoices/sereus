@@ -67,6 +67,8 @@ yarn typecheck
 
 The repo uses Yarn 4 workspaces. The root `package.json` links `@quereus/*` and `@optimystic/*` to sibling checkouts (`../quereus`, `../optimystic`) — clone those alongside this repo for local development.
 
+**Yarn settings and the publish token.** `.yarnrc.yml` is committed and holds no secret: it selects the `node-modules` linker (Yarn 4's default, Plug'n'Play, breaks native modules and the stale-build guard) and the React Native peer-dependency patches. Publishing needs an npm token, which is yours to keep out of the repo — put it in your account-level Yarn config with `yarn config set npmAuthToken <token> --home`, or export `YARN_NPM_AUTH_TOKEN`. If you already have a local `.yarnrc.yml` from before it was committed (it held the token), git will refuse to check the committed one out over it: move the token to your account-level config first, then delete the local `.yarnrc.yml`, then pull.
+
 ### Ops (running bootstrap/relay nodes)
 
 If you're operating infrastructure (e.g. **libp2p relay** and/or **bootstrap** nodes), start here:

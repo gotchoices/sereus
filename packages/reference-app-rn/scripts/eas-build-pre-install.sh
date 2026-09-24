@@ -3,8 +3,9 @@
 # Runs before `yarn install` on EAS build servers.
 #
 # Fixes two issues:
-# 1. .yarnrc.yml is gitignored (contains auth token locally) but EAS needs it
-#    for node-modules linker and hoisting config
+# 1. The committed .yarnrc.yml has no hoisting limits, which the RN build needs
+#    on top of the node-modules linker, so the build server's checkout gets
+#    its own copy below
 # 2. Root package.json has portal: resolutions pointing to sibling repos
 #    (../optimystic, ../quereus) that don't exist on EAS — strip them so
 #    yarn resolves from npm instead
