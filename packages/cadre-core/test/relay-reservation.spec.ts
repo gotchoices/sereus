@@ -533,6 +533,64 @@ describe('driveRelayReservation deadline', () => {
   }, 30_000);
 });
 
+describe('driveRelayReservation cancellation', () => {
+  // Stopping a node used to leave the drive already in flight running against it:
+  // it finished its dial, asked for a slot, then polled the addresses of a node
+  // whose transports were being torn down, until its own `timeoutMs` expired.
+  // Measured at ~9.5 s of a 10 s budget before the process could exit, with a relay
+  // failure logged for a caller that had already asked the node to stop.
+  const TIMEOUT_MS = 10_000;
+  // Far under `TIMEOUT_MS`, far over what an abort itself costs: the bound that
+  // separates "cancelled" from "ran to its own deadline" without being fragile.
+  const PROMPT_MS = 1_000;
+
+  it('returns promptly, and reports cancelled, when aborted while dialing', async () => {
+    const client = await startSearchClient();
+    const controller = new AbortController();
+
+    // A blackholed addr: the dial hangs, so the drive is certainly still in it.
+    const drive = driveRelayReservation(client, [await blackholeRelayAddr(4001)], {
+      timeoutMs: TIMEOUT_MS,
+      pollMs: 100,
+      signal: controller.signal
+    });
+    await sleep(200);
+
+    const started = Date.now();
+    controller.abort();
+    const result = await drive;
+
+    // `cancelled` rather than an `error`: nothing was learned about the relay.
+    expect(result).toEqual({ error: null, cancelled: true });
+    expect(Date.now() - started).toBeLessThan(PROMPT_MS);
+  }, 30_000);
+
+  it('returns promptly when aborted while polling for a circuit addr', async () => {
+    // A peer that is up but not a relay: the dial succeeds and the hop request is
+    // rejected, both in well under the sleep below, so the drive is in the POLL by
+    // the time it is aborted. Different code path from the dial case — and the
+    // phase that absorbed whatever delay the other two shed.
+    const id = await fixedIdentity();
+    await startFixedNonRelay(id);
+    const client = await startSearchClient();
+    const controller = new AbortController();
+
+    const drive = driveRelayReservation(client, [id.addr], {
+      timeoutMs: TIMEOUT_MS,
+      pollMs: 100,
+      signal: controller.signal
+    });
+    await sleep(750);
+
+    const started = Date.now();
+    controller.abort();
+    const result = await drive;
+
+    expect(result).toEqual({ error: null, cancelled: true });
+    expect(Date.now() - started).toBeLessThan(PROMPT_MS);
+  }, 30_000);
+});
+
 describe('findCircuitRelayTransport (libp2p seam)', () => {
   // TRIPWIRE for a libp2p upgrade. `driveRelayReservation` reaches through
   // `node.components.transportManager` to the circuit-relay transport's
@@ -821,8 +879,8 @@ describe('superviseRelayReservation', () => {
 
     const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
     await supervisor.firstAttempt;
-    // Stop BETWEEN attempts: `stop()` clears the timer but cannot abort a drive
-    // that is already in flight, and one still running would muddy the assertion.
+    // Stop BETWEEN attempts, so this test is about the timer alone; cancelling the
+    // drive in flight is the next test's subject.
     await waitFor(
       () => !supervisor.driving && supervisor.retryAtMs !== null,
       'an attempt to finish and the next to be scheduled'
@@ -838,6 +896,29 @@ describe('superviseRelayReservation', () => {
     // Idempotent, and a second stop must not throw.
     expect(() => supervisor.stop()).not.toThrow();
   }, 60_000);
+
+  it('cancels the drive that is in flight when stopped', async () => {
+    // The other half of `stop()`. Every caller (`CadreNode.start()`'s cleanup, an
+    // app's own `reserveRelays`, `StrandInstanceManager.releaseRuntime`) stops the
+    // supervisor before tearing its node down, so an attempt that outlived `stop()`
+    // spent the rest of its `timeoutMs` dialing and polling a half-dismantled node.
+    const client = await startSearchClient();
+    const supervisor = superviseRelayReservation(client, [await blackholeRelayAddr(4001)], {
+      ...FAST_SUPERVISOR,
+      // The production default, so the drive is nowhere near its own deadline.
+      timeoutMs: 10_000
+    });
+    await waitFor(() => supervisor.driving, 'the first drive to start');
+
+    const started = Date.now();
+    supervisor.stop();
+    await waitFor(() => !supervisor.driving, 'the drive in flight to end', 5_000);
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // A cancelled drive is not a failure, so it leaves no error behind for
+    // `getRelayReservationState()` to report.
+    expect(supervisor.lastError).toBeNull();
+  }, 30_000);
 });
 
 /**

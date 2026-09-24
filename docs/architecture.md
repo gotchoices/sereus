@@ -928,8 +928,11 @@ supervisor keeps trying. "Held" is judged per relay (a circuit addr through
 *that* relay's peer id), so losing one relay re-drives only that one. The
 supervisors are stopped first in `releaseRuntime`, so quiesce, stop, a failed
 launch's rollback and removal after revocation all end them before the node
-they supervise is torn down. The configured `<relay>/p2p-circuit` shape strand
-nodes used to inherit is no longer producible from a `NetworkConfig` at all —
+they supervise is torn down — and `stop()` ends the *attempt* as well as the
+loop, cancelling a drive that is already dialing or polling, so teardown no
+longer trails a reservation attempt against a node being dismantled. The
+configured `<relay>/p2p-circuit` shape strand nodes used to inherit is no
+longer producible from a `NetworkConfig` at all —
 see "Reservation loss recovers on every node" below for why.
 
 **Proven end to end over a standalone relay** (same party, both machines
