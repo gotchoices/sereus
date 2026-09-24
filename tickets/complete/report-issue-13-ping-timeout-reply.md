@@ -4,6 +4,8 @@ files:
   - packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR`, the client half)
 ----
 
+**Superseded and posted 2026-09-24** (maintainer-approved): rewritten against the final state (35 s / 30 s pinned, the WebSocket 1006 abort finding) and posted as #13 https://github.com/gotchoices/sereus/issues/13#issuecomment-5808300699, #16 https://github.com/gotchoices/sereus/issues/16#issuecomment-5808300502 and PR #14 https://github.com/gotchoices/sereus/pull/14#issuecomment-5808300904. The draft below is kept for the record and no longer current.
+
 # Human action: answer #13's root cause, PR #15 and PR #14
 
 PR #15 was reviewed on 2026-09-23: it merges cleanly over `aa33331c`, typechecks against the relay's libp2p 2.10, and changes nothing but `connectionMonitor` in `ops/docker/libp2p-infra/src/main.ts`. Merging it also means redeploying the relay for it to take effect. Before posting, fill in the optimystic version if it has been released by then.
