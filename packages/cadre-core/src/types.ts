@@ -1328,7 +1328,8 @@ export interface CadreNodeEvents {
    * hands it a fresh invitation. Redeeming means writing this party's `Strand.Member`
    * row into the strand, and the machines that would carry that write are the ones the
    * remaining members refuse, so the attempt is made and fails. Two triggers, reported
-   * at most once per staged invitation:
+   * at most once per re-arm of the membership loop (a further invitation staged while the
+   * loop is still running does not reset the report):
    *
    * - CONFIRMED: the revoked-peer gate already flags this node as removed (the
    *   `strand:revoked` case) and an invitation is staged.

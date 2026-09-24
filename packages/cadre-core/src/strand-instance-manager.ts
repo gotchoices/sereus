@@ -219,8 +219,9 @@ export interface StartStrandConfig {
    * staged membership invitation for the strand that its writes cannot redeem, which is
    * what a REMOVED party handed a fresh invitation hits (see "Reporting a blocked
    * re-join" in `strand-membership-reconciler.ts` for the two triggers, one of them a
-   * suspicion rather than a verdict). At most once per staged invitation, and only for
-   * closed strands with a party key. `CadreNode` wires it to its `strand:rejoin-blocked`
+   * suspicion rather than a verdict). At most once per re-arm of the loop — a further
+   * invitation staged while the loop is still running does not reset the report — and
+   * only for closed strands with a party key. `CadreNode` wires it to its `strand:rejoin-blocked`
    * event; nothing is stopped or torn down — a remaining manager admitting this party's
    * key directly is the remedy, and the loop finishes the join by itself once that lands.
    */

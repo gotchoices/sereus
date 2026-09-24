@@ -169,9 +169,10 @@ export const IDLE_PASSES_BEFORE_ESCALATION = 10;
  * Consecutive passes that ran against a live database and ended with the staged
  * invitation still unsettled — whatever refused it — before the loop reports a probable
  * blocked re-join (see "Reporting a blocked re-join" in the module doc). The same order
- * as {@link IDLE_PASSES_BEFORE_ESCALATION}: about five minutes once the ladder reaches the
- * 30 s cap. Counted by outcome rather than by classified failure because a cut-off machine
- * can fail before any write is classified: its membership READ may already throw.
+ * as {@link IDLE_PASSES_BEFORE_ESCALATION}: about three minutes at the default cadence
+ * (the ladder's five doubling rungs, then five passes at the 30 s cap). Counted by outcome
+ * rather than by classified failure because a cut-off machine can fail before any write is
+ * classified: its membership READ may already throw.
  */
 export const UNFINISHED_PASSES_BEFORE_ESCALATION = 10;
 
@@ -521,6 +522,10 @@ export class StrandMembershipReconciler {
       return false;
     }
     if (!this.stoppedFlag) {
+      // NOTE: a running loop keeps its counters and its once-per-cycle report latch, so a
+      // party whose loop already reported and is then re-formed AGAIN gets no second report
+      // for the replacement invitation. If that second report is ever wanted, key the latch
+      // on the staged invitation's key rather than on the re-arm.
       log('[%s] fresh invitation staged on a running loop — kicking a pass', this.deps.label);
       return true;
     }
@@ -541,6 +546,11 @@ export class StrandMembershipReconciler {
     this.lastPassIdle = false;
     try {
       if (this.deps.isSelfRevoked?.() === true && !this.stagedInviteBlockedBySelfRevocation()) {
+        // NOTE: the enforcer's flag lags a re-admission by up to one of its polls. If the
+        // pass that settled the last staged invitation then failed to write the binding, this
+        // stop lands with the binding missing until the next resume rebuilds the loop. A
+        // missing binding only mis-credits diversity today; if it ever gates admission, make
+        // this stop also require the binding to be in place.
         this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation', false);
         return;
       }
