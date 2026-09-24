@@ -217,3 +217,4 @@
 {"slug":"retire-rn-legacy-identity-migration","file":"retire-rn-legacy-identity-migration.md","completedAt":"2026-08-20","commit":"5dc917dd9684c1e0a38f4c587695d4b4f86d9408","prunedAt":"2026-09-21T00:56:10.629Z"}
 {"slug":"wake-and-cohort-dials-mishandle-peer-address-lists","file":"wake-and-cohort-dials-mishandle-peer-address-lists.md","completedAt":"2026-08-20","commit":"dfc3aaf7edb262fa2fbffbcb52a450ea0b571827","prunedAt":"2026-09-21T00:56:10.629Z"}
 {"slug":"cut-the-interim-release","file":"cut-the-interim-release.md","completedAt":"2026-08-22","commit":"4aac875bc60d914473582994aac63f088fab93d2","prunedAt":"2026-09-21T05:54:30.262Z"}
+{"slug":"formation-usage-index-tripwire-fired","file":"formation-usage-index-tripwire-fired.md","completedAt":"2026-08-25","commit":"0658819e80bfecc6e5cbca32bedbdbcb93097147","prunedAt":"2026-09-24T15:53:27.979Z"}
