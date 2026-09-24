@@ -336,6 +336,12 @@ function aborted(signal: AbortSignal | undefined): boolean {
  * process alive for the rest of its duration, which is exactly the delay a
  * cancelled drive exists to shed. So the timer is cleared on both endings, not
  * only on its own.
+ *
+ * NOTE: no spec catches a wait that skips this helper. The cancellation specs
+ * assert prompt RETURN, which a `Promise.race` gives with its losing timer still
+ * pending — only the process actually exiting proves the clearing, and that was
+ * measured by hand rather than pinned. If a wait is ever added outside this
+ * helper, pin it with a spawned-child process-exit test instead.
  */
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (aborted(signal)) {

@@ -567,9 +567,13 @@ describe('driveRelayReservation cancellation', () => {
 
   it('returns promptly when aborted while polling for a circuit addr', async () => {
     // A peer that is up but not a relay: the dial succeeds and the hop request is
-    // rejected, both in well under the sleep below, so the drive is in the POLL by
-    // the time it is aborted. Different code path from the dial case — and the
-    // phase that absorbed whatever delay the other two shed.
+    // refused, which leaves the drive in the POLL — a different code path from the
+    // dial case, and the phase that absorbed whatever delay the other two shed.
+    //
+    // Gated on the refusal libp2p records in the reservation store's `relayFilter`
+    // rather than on a sleep long enough that the drive has PROBABLY got there: a
+    // sleep that guessed short would still pass, silently re-testing the request
+    // phase the first case already covers.
     const id = await fixedIdentity();
     await startFixedNonRelay(id);
     const client = await startSearchClient();
@@ -580,7 +584,7 @@ describe('driveRelayReservation cancellation', () => {
       pollMs: 100,
       signal: controller.signal
     });
-    await sleep(750);
+    await waitFor(() => relayFilterHas(client, id.addr), 'the reservation request to be refused');
 
     const started = Date.now();
     controller.abort();

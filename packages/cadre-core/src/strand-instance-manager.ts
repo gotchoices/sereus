@@ -890,10 +890,9 @@ export class StrandInstanceManager {
     // Relay supervisors FIRST of all — before anything below is torn down — so no
     // re-drive is scheduled against a node being stopped. `stop()` is synchronous
     // and never awaits a drive, so a relay that is down cannot delay this teardown.
-    // NOTE: a drive ALREADY in flight cannot be aborted (the drive takes no
-    // AbortSignal — `backlog/bug-relay-drive-not-cancellable`); it fails soft
-    // against the stopped node within its own 10 s deadline and its result is
-    // discarded.
+    // `stop()` also cancels the drive already in flight, so an attempt started
+    // moments before this does not keep dialing and polling the node the lines
+    // below are stopping; its result is discarded either way.
     const relaySupervisors = this.relaySupervisors.get(instance.strandId);
     if (relaySupervisors) {
       relaySupervisors.forEach((supervisor) => supervisor.stop());
