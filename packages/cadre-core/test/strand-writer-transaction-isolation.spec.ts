@@ -131,7 +131,7 @@ describe('a writer that must own its transaction', () => {
     await db.commit();
 
     expect(refusal).toBeInstanceOf(StrandTransactionBusyError);
-    expect(((refusal as Error).cause as Error).message).toBe('Cannot begin transaction: already in a transaction');
+    expect(((refusal as Error).cause as Error).message).toMatch(/^Cannot begin transaction: /);
     expect(await noteCount(db)).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'ConsumedInvite')).toBe(0);

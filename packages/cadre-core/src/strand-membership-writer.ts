@@ -188,8 +188,11 @@ function combineStatements(...fragments: StrandStatements[]): StrandStatements {
   return { sql: fragments.map((fragment) => fragment.sql).join('\n'), params };
 }
 
-/** Quereus's refusal of a `begin` issued while a transaction is already open. */
-const NESTED_BEGIN_REFUSAL = /^Cannot begin transaction: already in a transaction$/;
+/**
+ * Quereus's refusal of a `begin` issued while a transaction is already open: the published
+ * 4.19.x wording, and the `TransactionActiveError` wording on Quereus main.
+ */
+const NESTED_BEGIN_REFUSAL = /^Cannot begin transaction: (?:already in a transaction|a transaction is already active)$/;
 
 function isNestedBeginRefusal(error: unknown): boolean {
   return error instanceof Error && NESTED_BEGIN_REFUSAL.test(error.message);

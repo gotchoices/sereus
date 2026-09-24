@@ -318,7 +318,7 @@ interface ConnectedRelay {
 /**
  * Whether `signal` has been aborted.
  *
- * A function rather than an inline `signal?.aborted` because `AbortSignal.aborted`
+ * A function rather than an inline `signal?.aborted` because a signal's `aborted` flag
  * is a readonly boolean: one `if (signal?.aborted)` narrows every LATER read of it
  * to `false`, and TypeScript then rejects the re-check as a comparison that can
  * never hold. Re-checking after each await is exactly what cancellation is, so the
