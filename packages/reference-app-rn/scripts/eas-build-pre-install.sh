@@ -3,9 +3,9 @@
 # Runs before `yarn install` on EAS build servers.
 #
 # Fixes two issues:
-# 1. The committed .yarnrc.yml has no hoisting limits, which the RN build needs
-#    on top of the node-modules linker, so the build server's checkout gets
-#    its own copy below
+# 1. The committed .yarnrc.yml has no nmHoistingLimits, which the RN build needs
+#    on top of the node-modules linker — appended below, not restated, so the
+#    two cannot drift
 # 2. Root package.json has portal: resolutions pointing to sibling repos
 #    (../optimystic, ../quereus) that don't exist on EAS — strip them so
 #    yarn resolves from npm instead
@@ -22,23 +22,20 @@ corepack prepare yarn@4.12.0 --activate
 # Navigate to monorepo root (EAS runs this from the package directory)
 MONO_ROOT="$(cd ../.. && pwd)"
 
-echo "=== EAS pre-install: generating .yarnrc.yml ==="
-cat > "$MONO_ROOT/.yarnrc.yml" << 'YARNRC'
-nodeLinker: node-modules
+echo "=== EAS pre-install: adding hoisting limits to .yarnrc.yml ==="
+YARNRC="$MONO_ROOT/.yarnrc.yml"
+if [ ! -f "$YARNRC" ]; then
+	echo "$YARNRC is missing — it is committed, so the checkout is wrong" >&2
+	exit 1
+fi
+# Appending twice would give Yarn a duplicate key, and EAS may re-run this hook.
+if ! grep -q '^nmHoistingLimits:' "$YARNRC"; then
+	cat >> "$YARNRC" << 'YARNRC_APPEND'
 
-# Hoisting limits for React Native
+# Hoisting limits for React Native (added by the EAS pre-install hook)
 nmHoistingLimits: workspaces
-
-# Package extensions for peer dependencies
-packageExtensions:
-  "react-native@*":
-    peerDependencies:
-      "@babel/core": "*"
-      "@babel/runtime": "*"
-  "@react-native-community/cli-platform-android@*":
-    peerDependencies:
-      "@react-native/gradle-plugin": "*"
-YARNRC
+YARNRC_APPEND
+fi
 
 echo "=== EAS pre-install: stripping portal resolutions from package.json ==="
 node -e "

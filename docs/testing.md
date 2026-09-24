@@ -81,7 +81,7 @@ Nothing in that file asserts a count or a duration, deliberately: a budget would
 
 ## Scratch worktrees and clones
 
-To check a fresh install, add a worktree or clone *beside* this repo, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. The install settings (`.yarnrc.yml`) come with the checkout; the publish token does not and is not needed (see the README's "As a contributor").
+To check a fresh install, add a worktree or clone *beside* this repo, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. The install settings (`.yarnrc.yml`) come with the checkout; the publish token does not and is not needed (see [the README](../README.md#as-a-contributor)).
 
 **Do not delete such a worktree with `git worktree remove --force`, or any recursive delete, while its `node_modules` still holds the `link:` junctions.** On Windows, `git worktree remove --force` followed those junctions and deleted the contents of the linked packages in `../optimystic`, `../quereus` and `../Fret` — tracked files, `dist/` and per-package `node_modules` — rather than just the links. Unlink each junction first with a non-recursive delete (`[System.IO.Directory]::Delete(<link>, $false)`), find them by walking without following reparse points, and only then remove the directory. Restoring what git tracks is one command; the untracked build output is rebuilt by the sibling's owner. Not measured on other platforms.
 
