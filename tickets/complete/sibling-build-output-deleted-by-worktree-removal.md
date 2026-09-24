@@ -47,3 +47,7 @@ Alternatives rejected: an agent here rebuilding the siblings breaks the rule tha
 ## Prevention already written down
 
 `docs/testing.md` → "Scratch worktrees and clones" now says not to delete such a worktree recursively while its `node_modules` holds `link:` junctions, and how to unlink them first. The scratch directory itself was removed after its ten junctions were unlinked with non-recursive deletes and a walk (without following links) found no more.
+
+## Resolution (2026-09-24)
+
+optimystic-59 reinstalled and rebuilt `../optimystic` and `../Fret`; `../quereus` was rebuilt by its own runner. Full sereus `yarn check` green afterwards (`156f41af`).
