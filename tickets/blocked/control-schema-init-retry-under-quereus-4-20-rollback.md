@@ -29,3 +29,13 @@ Every `@quereus/quereus` range in sereus 1.4.0 is `^4.19.4`, and so is `@optimys
 2. If it does not, fix it here, or bump to an optimystic release that fixes it. Correct the safety argument in `control-write-retry.ts` and `control-database.ts` either way.
 3. Check `compose-strand.ts`'s strand and app schema applies against the same behaviour.
 4. If a sereus release must cap Quereus below 4.20.0 in the meantime, that is the maintainer's call. Write it up; don't do it.
+
+## Update 2026-09-25: optimystic's finding
+
+optimystic fixed this on its main (`1942a941`, reviewed `dfb9f6bc`), not yet released.
+- **With the fix:** a failed `apply schema` under 4.20.0 is unwound through the plugin's hooks and the restored state is committed, so memory and storage agree. A `drop table` counts as irreversible: it stays dropped and is reported as a partial migration.
+- **The retry holds:** re-applying on the same Database after the unwind reaches agreement on both sides (optimystic's mid-loop test).
+- **Released 1.5.0 is not safe with 4.20.0.** It has no `dropIndex` hook, so an unwound `create index` stays in storage.
+- **optimystic's fix raises its ranges to `^4.20.0`.**
+
+**Unblock when** the maintainer chooses between an optimystic 1.5.1 patch and a sereus `<4.20.0` cap. With a patch, do the steps above against 1.5.1: raise both floors, and add the forced-refusal test.
