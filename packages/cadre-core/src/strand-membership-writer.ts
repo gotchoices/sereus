@@ -230,6 +230,17 @@ async function execStrandTransaction(
       throw new StrandTransactionBusyError({ cause: error });
     }
   }
+  // NOTE: the join retry cannot ask for `{ transaction: true }` — the point is to run INSIDE the
+  // caller's transaction — so it is atomic only for as long as that transaction stays open. Every
+  // joining caller today opens its transaction, awaits the writer, then commits, so the
+  // transaction cannot close in the window between the refusal above and this line. If a caller
+  // ever closes its transaction concurrently with a writer call it did not await, these statements
+  // run as separate autocommit statements instead of one unit. The writers whose statements are
+  // circularly dependent (`consumeInvite`'s Member + ConsumedInvite, every delete + its Revocation
+  // tombstone) fail loudly on their own deferred checks in that case; a writer whose statements are
+  // each valid alone (`admitManager`) could commit only the first. If a caller ever needs to write
+  // membership rows without awaiting, give it `joinOpenTransaction: false` rather than relying on
+  // this path.
   await db.exec(statements.sql, statements.params);
 }
 

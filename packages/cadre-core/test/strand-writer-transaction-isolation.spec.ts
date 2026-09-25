@@ -160,7 +160,7 @@ describe('a writer that must own its transaction', () => {
 });
 
 describe('a writer that must own its transaction, while an app statement is in flight', () => {
-  it('does not refuse on autocommit state alone — only the batch\'s own begin decides', async () => {
+  it('does not refuse on autocommit state alone — only the batch itself decides', async () => {
     const { db, founder } = await openAppStrand();
     // `getAutocommit()` reads false while any caller's autocommit statement is mid-flight (its
     // implicit transaction). Stubbing it pins that the writer never pre-checks it: a pre-check
