@@ -384,9 +384,25 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * that landed is exactly the `UNIQUE constraint failed: CadrePeer.PeerId` failure that veto exists
  * to prevent.
  *
- * Schema init does not have that problem: `apply schema` is a diff rather than a replay and a
- * failed `create table` leaves the catalog clean, so a re-run emits only the tables that did not
- * land (the full argument is at the `loadSchema` call site in `control-database.ts`).
+ * Schema init does not have that problem: `apply schema` is a diff rather than a replay, and a
+ * failed apply is taken back whole — Quereus unwinds every step it ran and verifies the catalog
+ * against a pre-apply fingerprint — so a re-run emits exactly the DDL the live catalog is missing.
+ * The full argument, including the plugin-side dependency that unwind carries, is at the
+ * `loadSchema` call site in `control-database.ts`.
+ *
+ * RETRIED DELIBERATELY, not by oversight: the failures Quereus cannot take back. When the unwind
+ * does not complete — an undo statement threw, the post-unwind catalog did not match the pre-apply
+ * fingerprint, that catalog could not be re-collected to check, or a step the differ marks
+ * irreversible because it discards data (dropping a table or a column, narrowing a column's type —
+ * none of which a `CadreControl` diff generates today) poisoned the journal before it ran, leaving
+ * nothing unwound — Quereus keeps the failing step's own message, APPENDS the reason the
+ * schema could not be restored, and carries the original as `cause`. So a transient cause
+ * underneath still matches here, and neither veto ({@link reportsPossiblyStoredWrite},
+ * {@link reportsIndeterminateCommit}) looks for that reason text. Retrying over a partially migrated
+ * schema is safe for the same reason the ordinary re-run is: the plugin commits whatever its write
+ * batch holds, so storage and the catalog are left in step either way, and the next apply diffs
+ * against what is really there. Vetoing it instead would turn a healable transient outage into a
+ * dead start.
  */
 const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] = [
 	...RETRIABLE_CONTROL_WRITE_MATCHERS,
@@ -482,10 +498,11 @@ export type ControlWriteRetryOptions = ControlRetryOptions;
  * {@link CONTROL_WRITE_RETRY_BUDGET_MS}.
  *
  * NOTE: exactly one call site opts in today, and the re-run safety this policy assumes is that
- * site's, not a general property — `apply schema` is a diff and a failed `create table` leaves the
- * catalog clean. A second opt-in must re-derive that argument for its own write body first; if this
- * policy ever grows a third consumer, rename it for what the callers share rather than widening it
- * by default.
+ * site's, not a general property — `apply schema` is a diff, and a failed apply is unwound whole
+ * and verified against the pre-apply catalog (full argument at the `loadSchema` call site in
+ * `control-database.ts`). A second opt-in must re-derive that argument for its own write body
+ * first; if this policy ever grows a third consumer, rename it for what the callers share rather
+ * than widening it by default.
  */
 export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
 	attempts: SCHEMA_INIT_ATTEMPTS,

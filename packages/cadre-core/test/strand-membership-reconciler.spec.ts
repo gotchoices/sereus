@@ -171,14 +171,14 @@ function consumedInviteSavedMemberNot(): CoordinatorPartialCommitError {
 /**
  * Fail the next membership write batch with `failure`, the way a refused commit reaches the writer:
  * the batch's `exec` rejects and nothing is written (a commit-time failure leaves no transaction
- * open). Later batches run for real. Every writer issues its transaction as one `exec` beginning
- * `begin transaction`, which is what identifies a batch here.
+ * open). Later batches run for real. Every writer issues its transaction as one `exec` carrying
+ * `{ transaction: true }`, which is what identifies a batch here.
  */
 function failNextWriteBatch(db: Database, failure: Error): { batches: () => number } {
   const exec = db.exec.bind(db);
   let batches = 0;
   vi.spyOn(db, 'exec').mockImplementation((sql, params, options) => {
-    if (!sql.startsWith('begin transaction')) return exec(sql, params, options);
+    if (options?.transaction !== true) return exec(sql, params, options);
     batches += 1;
     return batches === 1 ? Promise.reject(failure) : exec(sql, params, options);
   });
@@ -711,7 +711,7 @@ describe('re-arming on a fresh invitation', () => {
     // The re-formation lands while the pass is redeeming the STALE invitation it already read.
     const exec = db.exec.bind(db);
     vi.spyOn(db, 'exec').mockImplementation((sql, params, options) => {
-      if (sql.startsWith('begin transaction')) slot.set({ inviteKey: fresh.inviteKey, invitePrivateKey: fresh.invitePrivateKey });
+      if (options?.transaction === true) slot.set({ inviteKey: fresh.inviteKey, invitePrivateKey: fresh.invitePrivateKey });
       return exec(sql, params, options);
     });
 

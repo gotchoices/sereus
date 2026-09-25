@@ -307,6 +307,17 @@ export async function composeStrand(
 		// SEAM: this and the Strand apply above are the single composition point
 		// where strand-level declarative DDL is applied. Keep new schema wiring
 		// here so it stays a one-location edit across Node, browser, and cadre-core.
+		//
+		// NOTE: neither apply is retried — a failure tears the strand down and throws,
+		// and a later connect builds a fresh `Database` and re-hydrates from storage. A
+		// failed apply is normally taken back whole (Quereus unwinds its migration steps
+		// and verifies the catalog against a pre-apply fingerprint), so the next connect
+		// diffs against the state the apply started from. The sApp schema is the one
+		// supplied by the EMBEDDER, and the steps that DISCARD data — dropping a table,
+		// dropping a column, narrowing a column's type — are irreversible to Quereus's
+		// differ: once one has run, any later step that fails leaves the schema partially
+		// migrated instead of restored. No schema in this repo evolves that way, so this
+		// is a note for whoever first ships a migration that does.
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
 			await db.exec(`
