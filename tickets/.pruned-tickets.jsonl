@@ -219,3 +219,5 @@
 {"slug":"cut-the-interim-release","file":"cut-the-interim-release.md","completedAt":"2026-08-22","commit":"4aac875bc60d914473582994aac63f088fab93d2","prunedAt":"2026-09-21T05:54:30.262Z"}
 {"slug":"formation-usage-index-tripwire-fired","file":"formation-usage-index-tripwire-fired.md","completedAt":"2026-08-25","commit":"0658819e80bfecc6e5cbca32bedbdbcb93097147","prunedAt":"2026-09-24T15:53:27.979Z"}
 {"slug":"control-reads-blocked-by-stalled-write","file":"control-reads-blocked-by-stalled-write.md","completedAt":"2026-08-25","commit":"e4278a128f1a97b8865041378ebf153155952fa1","prunedAt":"2026-09-24T16:12:13.860Z"}
+{"slug":"debt-build-guard-wiring-unasserted","file":"debt-build-guard-wiring-unasserted.md","completedAt":"2026-08-26","commit":"af7610ec3987066834ff35e4b6cea3a3e49e1089","prunedAt":"2026-09-25T17:26:05.060Z"}
+{"slug":"debt-plugin-strand-node-omits-cluster-policy","file":"debt-plugin-strand-node-omits-cluster-policy.md","completedAt":"2026-08-26","commit":"89923ee18f1ec2049a02299e2d00b8a7befd78a0","prunedAt":"2026-09-25T17:26:05.060Z"}
