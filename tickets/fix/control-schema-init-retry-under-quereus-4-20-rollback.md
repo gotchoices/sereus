@@ -39,3 +39,7 @@ optimystic fixed this on its main (`1942a941`, reviewed `dfb9f6bc`), not yet rel
 - **optimystic's fix raises its ranges to `^4.20.0`.**
 
 **Unblock when** the maintainer chooses between an optimystic 1.5.1 patch and a sereus `<4.20.0` cap. With a patch, do the steps above against 1.5.1: raise both floors, and add the forced-refusal test.
+
+## Unblocked for the test work 2026-09-25
+
+optimystic's fix is built at `../optimystic` HEAD `90e2bc88` (full check green against Quereus 4.20.0). Do steps 1–3 against the linked tree now. Leave the `@optimystic/*` floors alone until the maintainer publishes the fix; the gardener raises them then.

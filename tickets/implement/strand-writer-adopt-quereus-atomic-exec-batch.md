@@ -25,3 +25,7 @@ The same Quereus change reworded the nested-`begin` refusal from `Cannot begin t
 3. Delete `rollbackBatchLeftOpen`, `NESTED_BEGIN_REFUSAL` and `isNestedBeginRefusal`. The atomic batch rolls back under its own mutex, which closes both residual windows in the current NOTE.
 4. Replace that NOTE with a short description of the new behaviour. Update `docs/strands.md` if it describes the windows.
 5. Add a test in `strand-writer-transaction-isolation.spec.ts` for the case the old batch could not handle: a statement that fails before `commit`, while an app `exec` is queued behind the batch. The app's write must survive.
+
+## Unblocked 2026-09-25
+
+`@quereus/quereus` 4.20.0 is on npm and carries `ExecOptions.transaction` and `TransactionActiveError`. Step 1: raise the `@quereus/quereus` floor to `^4.20.0` in the same change, because the code needs the new API. Do **not** raise the `@optimystic/*` floors here. optimystic 1.5.0 is unsafe with Quereus 4.20.0 (see `control-schema-init-retry-under-quereus-4-20-rollback`), and the release notes say sereus must not ship until the optimystic patch is out and those floors are raised.
