@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { TransactionActiveError } from '@quereus/quereus';
 import type { Database } from '@quereus/quereus';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import {
@@ -47,14 +48,16 @@ function neverIssuedInvite(memberKey: string): ConsumeInviteParams {
 /**
  * Run `appWrite` the moment a writer issues its transaction batch, so the app's statement is
  * queued on the connection directly behind the batch — the interleaving that decides whether
- * the app's write can land inside the writer's transaction.
+ * the app's write can land inside the writer's transaction. A writer's batch is the `exec`
+ * carrying `{ transaction: true }`; every other `exec` on this connection is a plain read or
+ * an app statement.
  */
 function queueBehindWriterBatch(db: Database, appWrite: () => Promise<void>): { appWrite: () => Promise<void> } {
   let issued: Promise<void> | undefined;
   const exec = db.exec.bind(db);
   vi.spyOn(db, 'exec').mockImplementation((sql, params, options) => {
     const running = exec(sql, params, options);
-    if (issued === undefined && sql.startsWith('begin transaction')) {
+    if (issued === undefined && options?.transaction === true) {
       issued = appWrite();
     }
     return running;
@@ -131,7 +134,7 @@ describe('a writer that must own its transaction', () => {
     await db.commit();
 
     expect(refusal).toBeInstanceOf(StrandTransactionBusyError);
-    expect(((refusal as Error).cause as Error).message).toMatch(/^Cannot begin transaction: /);
+    expect((refusal as Error).cause).toBeInstanceOf(TransactionActiveError);
     expect(await noteCount(db)).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
@@ -178,7 +181,8 @@ describe('a statement-time failure inside a writer batch', () => {
     const invite = await issueInvite(db, { managerKeyPair: founder });
 
     // `Member`'s primary key refuses the insert at statement time, before `commit` — the failure
-    // shape that leaves the batch's own transaction open until the writer rolls it back.
+    // shape the batch rolls back rather than commits, and the one a hand-rolled batch could not
+    // unwind before letting the next caller in.
     await expect(consumeInvite(db, { ...invite, memberKey: founder.publicKeyB64 })).rejects.toThrow(/UNIQUE constraint failed/);
 
     expect(db.getAutocommit()).toBe(true);
@@ -186,6 +190,25 @@ describe('a statement-time failure inside a writer batch', () => {
     expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
     await db.exec(`insert into Note (Id, Body) values (1, 'after the failed batch')`);
     expect(await noteCount(db)).toBe(1);
+  }, 30_000);
+
+  it('keeps an app write queued directly behind it — the batch rolls back before releasing the connection', async () => {
+    const { db, founder } = await openAppStrand();
+    const invite = await issueInvite(db, { managerKeyPair: founder });
+    const app = queueBehindWriterBatch(db, () => db.exec(`insert into Note (Id, Body) values (1, 'app row')`));
+
+    // The shape the hand-rolled `begin … commit` batch could not survive: it released Quereus's
+    // execution mutex with its transaction still open, so this app write ran INSIDE the failed
+    // membership transaction and was discarded by the writer's rollback although its `exec` had
+    // resolved. The atomic batch rolls back under the same mutex hold, so the app write cannot
+    // get in and runs afterwards on its own.
+    await expect(consumeInvite(db, { ...invite, memberKey: founder.publicKeyB64 })).rejects.toThrow(/UNIQUE constraint failed/);
+    await app.appWrite();
+
+    expect(await noteCount(db)).toBe(1);
+    expect(db.getAutocommit()).toBe(true);
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
   }, 30_000);
 });
 
