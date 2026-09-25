@@ -627,7 +627,8 @@ export class ControlDatabase {
     //  - `apply schema` is a DIFF, not a replay. Quereus collects the live catalog, diffs
     //    the declared schema against it, and only emits DDL for what is missing — which is
     //    exactly why `initialize` hydrates persisted optimystic schemas BEFORE getting here.
-    //    Tables that already landed generate no statements on the second pass.
+    //    A table the live catalog already lists generates no statements at all, which is what
+    //    makes an apply over an already-complete schema (a warm start) a no-op.
     //  - a failed apply is taken back WHOLE (Quereus 4.20.0). The migration loop keeps an
     //    undo journal; when a step fails it runs that journal in reverse, re-renders the
     //    catalog, compares it against a fingerprint taken BEFORE the apply, and only then
@@ -652,8 +653,9 @@ export class ControlDatabase {
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable
     // convergence fault a retry cannot heal (tracked separately) and must keep propagating.
-    // The one case the unwind cannot cover — an undo statement that itself failed — is
-    // retried deliberately rather than vetoed; why, on `RETRIABLE_SCHEMA_INIT_MATCHERS`.
+    // The cases the unwind cannot cover — a failed undo statement, a post-unwind catalog
+    // that does not match its fingerprint, an irreversible step — are retried deliberately
+    // rather than vetoed; why, on `RETRIABLE_SCHEMA_INIT_MATCHERS`.
     //
     // This is the ONE call site on a non-default policy: the re-run safety argued above is
     // also what lets schema init absorb optimystic's self-coordination grace refusal, which

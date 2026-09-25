@@ -17,6 +17,14 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * catalog that disagrees with the blocks. The argument in full is at the `loadSchema` call site;
  * this file pins the property it rests on.
  *
+ * NOTE: those batch hooks are unreleased — `../optimystic` HEAD calls itself 1.5.0, the same
+ * version the registry serves without them, so `@optimystic/quereus-plugin-optimystic: ^1.5.0`
+ * admits both and the range gate cannot tell them apart. This spec is therefore expected to fail
+ * under `yarn check:published` (which runs these suites against registry copies of the siblings)
+ * until the hooks ship under a version the floor can name. That is a THIRD triage arm beyond the
+ * three `docs/testing.md` lists for that script: not a stale range, not a defect, not a spec that
+ * assumed the linked install shape — a real upstream capability the published artifact lacks.
+ *
  * ONE behaviour, over real optimystic storage: a refused DDL step part-way through the apply
  * leaves storage and the catalog in step, and the next apply reaches the complete schema.
  *
@@ -78,9 +86,11 @@ interface StorageGate {
  * Wrap `inner` so that, until {@link StorageGate.heal}, every call naming `blockId` throws instead
  * of reaching it. One block's outage, with the rest of the store working normally.
  *
- * A `Proxy` rather than a hand-written delegate: every `IRawStorage` method takes the block id
- * first, so this keeps holding for methods the interface grows later instead of passing them
- * through ungated.
+ * A `Proxy` rather than a hand-written delegate: every `IRawStorage` method that names a block
+ * takes its id first, so this keeps holding for methods the interface grows later instead of
+ * passing them through ungated. The store-wide ones (`getStoreIdentity`, `listBlockIds`,
+ * `getApproximateBytesUsed`) name no block and so fall through untouched, which is what they
+ * should do — the outage is one block's, not the store's.
  *
  * Refusing until healed rather than spending a fixed budget of refusals, because the number is not
  * a property of the apply: the layer below absorbs the first refused read and retries it, so a
@@ -178,30 +188,41 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			// this block at all, so leaving the gate shut across it changes nothing.)
 			expect(gate.refusals(), 'the gate must have refused at least once').toBeGreaterThan(0);
 
-			// The assertion this file exists for. Quereus reports an unwind that did NOT
-			// complete by prefixing this sentence to the original error; its ABSENCE is how we
-			// know the journal ran in reverse, the catalog matched its pre-apply fingerprint,
-			// and the plugin committed the restored state to storage. If the engine's unwind —
-			// or the plugin's batch hooks under it — ever silently stops working, this notices.
+			// Quereus reports an unwind that did NOT complete by appending its reason to the
+			// original error; the absence of that sentence is the engine's own verdict that
+			// the journal ran in reverse and the catalog matched its pre-apply fingerprint.
 			expect(message).not.toContain('partially migrated');
+
+			// And the unwind was TOTAL, which is the claim the call-site comment rests on:
+			// the four tables that HAD landed are gone from the catalog too, so attempt 2
+			// re-emits the whole schema rather than resuming at CadrePeer. Without this the
+			// test would also pass on an engine that left them in place, since the re-apply's
+			// diff reaches the complete schema either way.
+			expect(await readCatalog(internals.db!), 'the failed apply must be taken back whole')
+				.toEqual(new Map());
 
 			// --- Attempt 2: the same Database, re-applying the same schema --------------
 			// Exactly what `lockedWithRetry` re-runs, minus the classifier that (rightly)
-			// declines this particular failure. The re-apply diffs against the restored
-			// catalog, so it re-emits the whole schema rather than resuming at CadrePeer:
-			// measured 2026-09-25, `schema()` lists NO `cadrecontrol` object between the two
-			// applies, including the four tables that had already landed.
+			// declines this particular failure.
 			gate.heal();
 			await internals.loadSchema();
 
-			const catalog = await readCatalog(internals.db!);
-			expect(catalog.get('table')).toEqual([...CONTROL_TABLE_NAMES]);
-			// `toContain` rather than an equality: optimystic may expose covering structures of
-			// its own alongside the one index the schema declares.
-			expect(catalog.get('index') ?? []).toContain('FormationUsageByToken');
+			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
+			// that appeared uninvited both fail here: nine tables and the one index
+			// `schemas/control.qsql` declares, and nothing of the plugin's own alongside them
+			// (measured 2026-09-25).
+			expect(await readCatalog(internals.db!)).toEqual(new Map([
+				['table', [...CONTROL_TABLE_NAMES]],
+				['index', ['FormationUsageByToken']]
+			]));
 		} finally {
-			await controlDb.close();
-			await node.stop();
+			// Nested, not sequential: a `close()` that throws must not strand the libp2p node
+			// in the worker for the rest of the run.
+			try {
+				await controlDb.close();
+			} finally {
+				await node.stop();
+			}
 		}
 	});
 });
