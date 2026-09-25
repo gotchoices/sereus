@@ -20,8 +20,11 @@ vi env.local
 Copy the `peerId=...` value from logs.
 
 ### Publish DNSADDR
-Follow `../../docs/dnsaddr.md` and publish a TXT record at:
-- `_dnsaddr.relay.sereus.org`
+Follow `../../docs/dnsaddr.md` and publish, at `_dnsaddr.relay.sereus.org`, **one TXT
+record per transport the relay listens on** — a `tcp` record *and* a `ws` record (phones
+and browsers can't dial raw TCP). Same `<PEER_ID>` in each; use the **host** ports
+(`HOST_PORT` for tcp, `HOST_WS_PORT` for ws — the ws host port maps to container 4002, so
+publish the host port, not 4002).
 
 ### Validate
 From your ops root (one-time: `npm --prefix sereus/ops/test install`):
