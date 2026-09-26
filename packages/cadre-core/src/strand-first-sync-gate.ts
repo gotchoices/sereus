@@ -64,12 +64,30 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
 
 /**
  * How long `CadreNode.addStrand` waits for a joining machine's first sync before rejecting
- * with {@link StrandAwaitingFirstSyncError}. Measured: over a direct connection the
- * joiner reads the founder's rows about 1.3 s after `addStrand` would previously have
- * resolved; a relayed path is slower, and a phone that just redeemed an invitation has the
- * host reachable moments ago, so 30 s is generous without leaving an app hanging.
+ * with {@link StrandAwaitingFirstSyncError}.
+ *
+ * Measured over a DIRECT connection (2026-09-16): the joiner reads the founder's rows about
+ * 1.3 s after `addStrand` would previously have resolved. That is still the fast case, and it
+ * is not what this budget has to cover.
+ *
+ * Measured over a RELAYED SLOW LINK (2026-09-26): one Windows developer machine, two
+ * relay-only `CadreNode`s (`listenAddrs: []`) on a shared loopback dedicated relay, with a
+ * 900 ms one-way per-frame outbound delay applied to every websocket — a round trip of about
+ * 1.8 s. Time from `addStrand` to writable, for a machine holding nothing of the strand yet:
+ * 23, 27, 31 and 41 s over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42
+ * and 46 s over three runs at a 5000 ms one. The second band matters because widening that
+ * deadline makes a consult against a peer that cannot answer cost longer, and this phase runs
+ * several of those. The previous 30 s default sat INSIDE the first band, so roughly half of
+ * those joins were rejected as "not writable yet" while the sync was progressing normally and
+ * went on to complete.
+ *
+ * What 120 s costs: this wait is what an app's `addStrand` sits in before it is told "not
+ * yet", so a strand none of whose members is reachable at all takes two minutes to report
+ * instead of thirty seconds. That cost is bounded — the rejection is retryable, the strand
+ * stays launched and keeps probing, and `strand:writable` fires the moment the sync lands, so
+ * an app that listens for the event rather than awaiting the call is unaffected either way.
  */
-export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 30_000;
+export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 120_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */
 export interface StrandFirstSyncConfig {

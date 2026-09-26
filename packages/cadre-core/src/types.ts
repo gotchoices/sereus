@@ -743,10 +743,12 @@ export interface CadreNodeConfig {
    * to a table it has never fetched creates a private copy of it that never merges.
    * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
    * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing);
-   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 30 s;
-   * `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is deliberately no way to disable
-   * the gate: a machine that already holds the Header is never gated, so nothing that works
-   * today is blocked by it.
+   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
+   * 120 s — sized for a machine joining through a relay on a slow link, where the first sync
+   * was measured at 23-46 s, so the previous 30 s default rejected about half of those joins
+   * while they were still progressing; `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is
+   * deliberately no way to disable the gate: a machine that already holds the Header is never
+   * gated, so nothing that works today is blocked by it.
    */
   strandFirstSync?: StrandFirstSyncConfig;
 

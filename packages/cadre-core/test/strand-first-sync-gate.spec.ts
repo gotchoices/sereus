@@ -142,7 +142,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
 
     const startedAt = Date.now();
     await expect(manager.whenWritable('gate-default-wait')).rejects.toThrow(StrandAwaitingFirstSyncError);
-    // Well under the module default of 30 s: the retained config's budget applied.
+    // Well under the module default of 120 s: the retained config's budget applied.
     expect(Date.now() - startedAt).toBeLessThan(5_000);
 
     await manager.stopAll();
