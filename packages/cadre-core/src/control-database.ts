@@ -2995,16 +2995,27 @@ export class ControlDatabase {
    * Served by a seek through the `FormationUsageByToken` index rather than a full scan of
    * the table, which is append-only and grows for the life of the party.
    *
-   * NOTE: this count IS the seat cap (`enforceFormationUseCap`), so an under-report admits a
-   * seat the invitation never paid for — and reading it through a secondary index makes the
-   * cap depend on that index converging across machines. It did not, from 2026-08-04 to
-   * 2026-08-25: a descent on a second machine returned only the rows that machine had
-   * written, and the index was removed until the engine was fixed upstream (re-measured
-   * 2026-09-17, `complete/restore-formation-usage-token-index`). The live guard is the
-   * integration-tests scenario `strand-formation-concurrent-redemption`, which asserts both
-   * machines' views of a raced redemption. If it fails on BOTH views again, index
-   * convergence has regressed — fix the engine or take this read off the index, and do not
-   * weaken that scenario's assertions to get a green run.
+   * This read is NOT the seat cap. The authoritative cap is the deferred `Authorized` CHECK
+   * in `schemas/control.qsql` — `FI.TotalUses > (select count(1) from
+   * committed.FormationUsage U where U.Token = new.Token)` — evaluated by the validating
+   * cohort against the committed snapshot at commit time. Every caller of this method is a
+   * permissive PRE-check that runs ahead of it, and a transiently short read costs each of
+   * them only a worse outcome for the ATTEMPT, never a seat the invitation did not pay for:
+   * {@link assertSeatRemains} loses its named exhaustion error and falls back to the CHECK's
+   * generic refusal; `ControlFormationUsageRecorder.isTokenUsed` reports not-used and lets
+   * the redemption proceed to the CHECK, which decides; {@link hasOutstandingFormationInvite}
+   * holds the stranger-admission door open slightly longer.
+   *
+   * NOTE: index convergence still gates the cap — just at the CHECK, not here, since the
+   * CHECK's own count is served by the same `FormationUsageByToken` index. That convergence
+   * failed from 2026-08-04 to 2026-08-25: a descent on a second machine returned only the
+   * rows that machine had written, and the index was removed until the engine was fixed
+   * upstream (re-measured 2026-09-17, `complete/restore-formation-usage-token-index`). The
+   * live guard is the integration-tests scenario `strand-formation-concurrent-redemption`,
+   * which asserts both machines' views of a raced redemption. If it fails on BOTH views
+   * again, index convergence has regressed — fix the engine or take this read off the index,
+   * and do not weaken that scenario's assertions to get a green run. A failure on ONE view
+   * only is that scenario's own bounded wait timing out, which its message spells out.
    *
    * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
    * locked write body — same per-call opt-out, and for the same reason, as
