@@ -52,3 +52,7 @@ Sereus keeps working up to about a 2.5-second round trip and fails silently abov
 ## Reversibility
 
 High. A declared ceiling in a document and two passthrough fields are both cheap to change; no data format, protocol or stored state is involved, and the measurement that would justify a different ceiling is committed and takes about two minutes to run.
+
+## Decision (maintainer, 2026-09-26)
+
+Accepted: support relayed links up to a **3-second round trip**, and ask optimystic to pass `connectionManager.dialTimeout` and `connectionManager.inboundUpgradeTimeout` through `NodeOptions`, with no default of its own. **Start after the next sereus release.** Remaining steps: the `docs/architecture.md` wording above; the request to optimystic, including the 375 ms one-way finding on its own 3 s dial defaults; and, once optimystic releases it, declaring both limits from `DECLARED_LINK_ROUND_TRIP_MS` (raised to cover 3 s) in cadre-core.
