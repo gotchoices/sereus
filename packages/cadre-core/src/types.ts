@@ -618,9 +618,11 @@ export interface ControlNetworkConfig {
  * The two `*ClusterPolicy` BUILDERS are the same objects with the block-repair
  * corroboration yardstick declared from the machines enrolled in this party
  * ({@link resolveRepairYardstick}) and, if the host set one, its own per-peer read
- * deadline in place of {@link COHORT_READ_DEADLINE_MS}; handed neither, each returns
- * its frozen base constant unchanged. A network picks the derived numbers up when its
- * libp2p node is built, which for a strand is every wake from hibernation.
+ * deadline in place of {@link COHORT_READ_DEADLINE_MS}. Both arrive in one named
+ * declarations object, because both are plain numbers meaning unrelated things;
+ * declaring neither returns the frozen base constant unchanged. A network picks the
+ * derived numbers up when its libp2p node is built, which for a strand is every wake
+ * from hibernation.
  */
 export {
   MIN_CLUSTER_SIZE,

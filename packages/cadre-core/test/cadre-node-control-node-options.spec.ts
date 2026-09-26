@@ -9,7 +9,7 @@ import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { controlStorageScope } from '../src/storage-scope.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { COHORT_READ_DEADLINE_MS, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CONNECTION_MONITOR, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CONNECTION_MONITOR, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
 import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
@@ -142,37 +142,21 @@ describe('CadreNode control-network node options', () => {
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
     });
 
-    it('declares the cohort read deadline rather than taking Optimystic\'s LAN default', () => {
-      // Optimystic's own default is 1000 ms, short of one round trip between two parties that
-      // reach each other only through a relay — so every cohort peer reads as silent and the
-      // read is declined. See COHORT_READ_DEADLINE_MS for the measurement behind 5000.
-      const options = controlOptions(new CadreNode(createConfig()));
-
-      expect(options.clusterPolicy?.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
-      expect(COHORT_READ_DEADLINE_MS).toBeGreaterThan(1000);
-    });
-
-    it('lets a host replace the cohort read deadline for the control network', () => {
-      // 12000, not 5000: the override must differ from the declared default or a node that
-      // ignored `network.cohortQueryTimeoutMs` entirely would still pass. The repair yardstick
-      // stays undeclared — a deadline is not a machine count, and the two must not bleed.
+    it('routes network.cohortQueryTimeoutMs into the control node\'s read deadline', () => {
+      // What this file owns is the WIRING: that the host's field reaches `clusterPolicy` at all.
+      // The builder's own contract — the frozen base by identity when nothing is declared, a
+      // count and a deadline not shadowing each other, and that 5000 exceeds Optimystic's
+      // 1000 ms LAN default — is pinned on the builder itself, in
+      // `quereus-plugin-sereus/test/plugin.spec.ts`.
+      //
+      // 12000, not 5000: an override equal to the declared default would also pass against a
+      // node that dropped `network` on the floor.
       const options = controlOptions(new CadreNode(createConfig({
         network: { cohortQueryTimeoutMs: 12_000 }
       })));
 
       expect(options.clusterPolicy?.cohortQueryTimeoutMs).toBe(12_000);
-      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBeUndefined();
-      expect(options.clusterPolicy?.assumedClusterSize).toBe(2);
       expect(options.clusterPolicy).not.toBe(CONTROL_CLUSTER_POLICY);
-    });
-
-    it('keeps the frozen policy by identity when a network block declares no deadline', () => {
-      // The shape a real host has: `network` set for transports or relays, with no
-      // `cohortQueryTimeoutMs` in it. Present-but-undefined must read as "asked for nothing",
-      // or the identity assertions throughout this file break on every configured node.
-      const options = controlOptions(new CadreNode(createConfig({ network: {} })));
-
-      expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
     });
   });
 
@@ -255,22 +239,6 @@ describe('CadreNode control-network node options', () => {
 
       expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(CONTROL_REPLICATION_BREADTH);
       expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(16);
-    });
-
-    it('declares a recorded count and a host deadline together', async () => {
-      // The one path where both of the builder's conditional spreads run. They are independent
-      // numbers with independent sources — the node-local machine record and the host's network
-      // config — so a builder that let one shadow the other would silently drop a declaration.
-      const config = createConfig({ network: { cohortQueryTimeoutMs: 12_000 } });
-      const store = new MemoryEnrolledMachineStore(config.controlNetwork.partyId);
-      await store.record(5);
-      const node = new CadreNode({ ...config, enrolledMachines: { store } });
-      captureEnrolledMachines(node);
-
-      const options = controlOptions(node);
-
-      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(5);
-      expect(options.clusterPolicy?.cohortQueryTimeoutMs).toBe(12_000);
     });
 
     it('fails closed when the injected store is scoped to another party', () => {

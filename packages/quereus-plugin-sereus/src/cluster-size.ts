@@ -45,10 +45,28 @@ export const MIN_CLUSTER_SIZE = 2;
  * instead of 1 s. A joining machine's first sync runs several such consults, so it is the cost
  * that binds — and the first-sync band measured at BOTH deadlines, against the 120 s budget it
  * has to fit, is recorded once, on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` in cadre-core's
- * `strand-first-sync-gate.ts`. Re-measure it there before raising this further: at 5000 against
- * the 30 s budget that preceded 120 s, this change would have turned a slow-but-working join
- * into the very `StrandAwaitingFirstSyncError` the report named. 3000 is the fallback if that
- * margin ever goes — still 1.7x the reported round trip, and a doomed consult costs 40% less.
+ * `strand-first-sync-gate.ts`. At 5000 against the 30 s budget that preceded 120 s, this change
+ * would have turned a slow-but-working join into the very `StrandAwaitingFirstSyncError` the
+ * report named. 3000 is the fallback if that margin ever goes — still 1.7x the reported round
+ * trip, and a doomed consult costs 40% less.
+ *
+ * **What else it lengthens, which the first-sync budget is only the largest case of.** Every
+ * cadre-core deadline that wraps an Optimystic read or commit was sized when one silent peer
+ * cost 1 s and a whole reconcile pass cost 5 s; those are now 5 s and 25 s. Two consequences
+ * are already true rather than hypothetical:
+ *
+ *  - The inbound membership admission gate reads the control database uncached and FAILS OPEN
+ *    after 2 s (`ADMISSION_DECISION_TIMEOUT_MS`, cadre-core's
+ *    `membership-connection-gater.ts`), so a decision whose read consults a silent peer can no
+ *    longer settle inside that deadline at all: an unplaced peer is admitted at the connection
+ *    layer for the whole 5 s instead of roughly 1 s. It is admitted to nothing more than a
+ *    connection — the per-protocol stream gates still decide, and unplaced relay reservations
+ *    stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`) — which is why this is a widened cost
+ *    and not a hole. `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns
+ *    the audit of the rest.
+ *  - `CONTROL_READ_RETRY_BUDGET_MS` (1500 ms) now terminates the control-read retry loop after
+ *    the FIRST attempt whenever that attempt burned this deadline, so a read failing that way
+ *    gets no second presentation. Its own doc carries the coupling.
  *
  * **One value for both networks, not two.** The reason to widen is the link, and a phone's
  * control node and its strand nodes share it; nothing about control traffic or strand traffic
@@ -57,11 +75,11 @@ export const MIN_CLUSTER_SIZE = 2;
  * and {@link strandClusterPolicy}.
  *
  * NOTE: this number and the first-sync budget are coupled, and the margin between them is about
- * 2.6x today. If this is raised again, or a deployment's first sync grows more collections than
- * the two-table scenario measured above, re-measure the first-sync band before shipping —
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` carries the recipe's result and `docs/testing.md` the
- * recipe. Nothing warns when the margin goes; the symptom is `StrandAwaitingFirstSyncError` on a
- * join that was progressing normally, which is the failure this pair of numbers exists to end.
+ * 2.6x today. Re-measure the first-sync band before raising this again, or when a deployment's
+ * first sync grows more collections than the two-table scenario measured above —
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` carries the result and `docs/testing.md` the recipe.
+ * Nothing warns when the margin goes; the symptom is `StrandAwaitingFirstSyncError` on a join
+ * that was progressing normally, which is the failure this pair of numbers exists to end.
  */
 export const COHORT_READ_DEADLINE_MS = 5000;
 
@@ -479,71 +497,101 @@ function asKnownMachineCount(servingMachines?: number): number | undefined {
 }
 
 /**
- * {@link CONTROL_CLUSTER_POLICY} with the repair yardstick declared from `enrolledMachines`
- * (see {@link resolveRepairYardstick}) and the per-peer read deadline replaced by a host's
- * `cohortQueryTimeoutMs` if it supplied one; the frozen base object ITSELF when neither is
- * given, so the cold path is provably today's behaviour and identity assertions keep holding.
- *
- * The first parameter keeps the name `enrolledMachines`, unlike {@link strandClusterPolicy}'s,
- * because for the CONTROL network the two quantities are one and the same by construction: every
- * enrolled machine runs the control node, so the machines enrolled in the party ARE the machines
- * serving this network.
- *
- * `cohortQueryTimeoutMs` is passed through UNVALIDATED, by design: Optimystic already refuses a
- * value that is not a finite number above zero or is above its `MAX_COHORT_QUERY_TIMEOUT_MS`, and
- * it throws where the libp2p node is constructed rather than falling back to its own default. A
- * second check here would only duplicate a message the host already gets. See
- * {@link COHORT_READ_DEADLINE_MS} for the value this replaces.
+ * The per-network declarations `controlClusterPolicy` and `strandClusterPolicy` accept, reduced to
+ * the two things they have in common. Named rather than positional at the public builders because
+ * every one of these is a `number` and they mean unrelated things: a machine COUNT and a
+ * millisecond DURATION transposed would compile, and would put a 5 ms read deadline or a yardstick
+ * of 5000 on a real node. A third number is already queued for these builders
+ * (`backlog/feat-strand-yardstick-from-serving-machines`).
  */
-export function controlClusterPolicy(
-	enrolledMachines?: number,
-	cohortQueryTimeoutMs?: number
+interface PolicyDeclarations {
+	/** The frozen base policy to declare onto. */
+	base: NonNullable<NodeOptions['clusterPolicy']>;
+	/** Ceiling on the repair yardstick — a block never lives on more machines than the cohort is wide. */
+	yardstickCap: number;
+	/** Machines serving this network; a degenerate value is treated as absent. */
+	machines: number | undefined;
+	/** The host's per-peer read deadline in place of {@link COHORT_READ_DEADLINE_MS}. */
+	cohortQueryTimeoutMs: number | undefined;
+}
+
+/**
+ * The base policy with whatever was declared onto it — or the base object ITSELF, by identity,
+ * when nothing was, which is the production path for both networks today and so is provably
+ * byte-for-byte the old behaviour.
+ *
+ * The two spreads are independent, so neither declaration can shadow the other: they arrive from
+ * unrelated sources (a node-local machine record, the host's network config) and either may be
+ * present alone.
+ *
+ * `cohortQueryTimeoutMs` is passed through UNVALIDATED, by design. Optimystic already refuses a
+ * value that is not a finite number above zero, or is above its `MAX_COHORT_QUERY_TIMEOUT_MS`, and
+ * it THROWS where the libp2p node is constructed rather than falling back to its own default — so a
+ * second check here would only duplicate a message the host already gets, at a site that cannot
+ * name the node being built.
+ */
+function declarePolicy(
+	{ base, yardstickCap, machines, cohortQueryTimeoutMs }: PolicyDeclarations
 ): NonNullable<NodeOptions['clusterPolicy']> {
-	const known = asKnownMachineCount(enrolledMachines);
+	const known = asKnownMachineCount(machines);
 	if (known === undefined && cohortQueryTimeoutMs === undefined) {
-		return CONTROL_CLUSTER_POLICY;
+		return base;
 	}
 	return Object.freeze({
-		...CONTROL_CLUSTER_POLICY,
+		...base,
 		...(known !== undefined && {
-			repairCorroborationClusterSize: resolveRepairYardstick(known, CONTROL_REPLICATION_BREADTH)
+			repairCorroborationClusterSize: resolveRepairYardstick(known, yardstickCap)
 		}),
 		...(cohortQueryTimeoutMs !== undefined && { cohortQueryTimeoutMs })
 	} satisfies NonNullable<NodeOptions['clusterPolicy']>);
 }
 
 /**
- * {@link STRAND_CLUSTER_POLICY} with the repair yardstick declared from `servingMachines` — the
- * machines that serve THIS strand — and this strand's own `clusterSize` (already resolved by
- * {@link resolveStrandClusterSize}, so it is at least {@link MIN_CLUSTER_SIZE} and the formula's
- * two clamps can never cross), and the per-peer read deadline replaced by a host's
- * `cohortQueryTimeoutMs` if it supplied one; the frozen base object ITSELF when neither is given.
+ * {@link CONTROL_CLUSTER_POLICY} with the block-repair corroboration yardstick declared from
+ * `enrolledMachines` (see {@link resolveRepairYardstick}) and the per-peer read deadline replaced
+ * by the host's `cohortQueryTimeoutMs`; the frozen base object ITSELF when neither is declared, so
+ * identity assertions keep holding — including for the host that passes a `network` block with
+ * neither field in it, whose declarations arrive present-but-`undefined`.
+ *
+ * The count is named `enrolledMachines` here, unlike {@link strandClusterPolicy}'s, because for the
+ * CONTROL network the two quantities are one and the same by construction: every enrolled machine
+ * runs the control node, so the machines enrolled in the party ARE the machines serving this
+ * network.
+ */
+export function controlClusterPolicy(
+	declared: { enrolledMachines?: number; cohortQueryTimeoutMs?: number } = {}
+): NonNullable<NodeOptions['clusterPolicy']> {
+	return declarePolicy({
+		base: CONTROL_CLUSTER_POLICY,
+		yardstickCap: CONTROL_REPLICATION_BREADTH,
+		machines: declared.enrolledMachines,
+		cohortQueryTimeoutMs: declared.cohortQueryTimeoutMs
+	});
+}
+
+/**
+ * {@link STRAND_CLUSTER_POLICY} with the block-repair corroboration yardstick declared from
+ * `servingMachines` — the machines that serve THIS strand — capped at this strand's own
+ * `clusterSize` (already resolved by {@link resolveStrandClusterSize}, so it is at least
+ * {@link MIN_CLUSTER_SIZE} and the formula's two clamps can never cross), and the per-peer read
+ * deadline replaced by the host's `cohortQueryTimeoutMs`; the frozen base object ITSELF when
+ * neither is declared.
  *
  * **The no-count path is the production path today.** No authenticated per-strand serving count
  * exists, and the party's enrolled-machine count is emphatically not one (see
- * {@link resolveRepairYardstick}'s contract section), so cadre-core passes nothing and every
- * strand node of a host that declared no deadline runs the frozen constant. The parameter and its
+ * {@link resolveRepairYardstick}'s contract section), so cadre-core declares no count and every
+ * strand node of a host that declared no deadline runs the frozen constant. The field and its
  * threading through `StartStrandConfig.servingMachines` stay in place as the seam that
  * `backlog/feat-strand-yardstick-from-serving-machines` plugs a real count into.
- *
- * `cohortQueryTimeoutMs` is passed through unvalidated for the same reason as
- * {@link controlClusterPolicy}'s — Optimystic throws on a degenerate value inside `addStrand`,
- * where the strand's libp2p node is constructed.
  */
 export function strandClusterPolicy(
 	clusterSize: number,
-	servingMachines?: number,
-	cohortQueryTimeoutMs?: number
+	declared: { servingMachines?: number; cohortQueryTimeoutMs?: number } = {}
 ): NonNullable<NodeOptions['clusterPolicy']> {
-	const known = asKnownMachineCount(servingMachines);
-	if (known === undefined && cohortQueryTimeoutMs === undefined) {
-		return STRAND_CLUSTER_POLICY;
-	}
-	return Object.freeze({
-		...STRAND_CLUSTER_POLICY,
-		...(known !== undefined && {
-			repairCorroborationClusterSize: resolveRepairYardstick(known, clusterSize)
-		}),
-		...(cohortQueryTimeoutMs !== undefined && { cohortQueryTimeoutMs })
-	} satisfies NonNullable<NodeOptions['clusterPolicy']>);
+	return declarePolicy({
+		base: STRAND_CLUSTER_POLICY,
+		yardstickCap: clusterSize,
+		machines: declared.servingMachines,
+		cohortQueryTimeoutMs: declared.cohortQueryTimeoutMs
+	});
 }

@@ -1666,15 +1666,13 @@ export class CadreNode implements SAppIdLookup {
       // itself, so the unknown case is provably byte-for-byte the old behaviour.
       // The yardstick moves ALONE: `assumedClusterSize` stays pinned at 2, because a
       // party of phones cannot promise three quarters of its machines are awake.
-      //
-      // The second argument is the host's per-peer cohort read deadline, if it set one.
-      // Absent, the base policy's COHORT_READ_DEADLINE_MS stands — and with no enrolled
-      // count either, this is still the frozen constant by identity. A degenerate value
-      // is Optimystic's to refuse, in createControlNode below.
-      clusterPolicy: controlClusterPolicy(
-        this.declaredEnrolledMachines,
-        network?.cohortQueryTimeoutMs
-      ),
+      // With neither declared this is still the frozen constant by identity, which is the
+      // production path. A degenerate deadline is Optimystic's to refuse, in
+      // createControlNode below.
+      clusterPolicy: controlClusterPolicy({
+        enrolledMachines: this.declaredEnrolledMachines,
+        cohortQueryTimeoutMs: network?.cohortQueryTimeoutMs
+      }),
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),

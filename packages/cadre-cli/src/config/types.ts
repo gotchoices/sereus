@@ -86,6 +86,15 @@ export interface CliConfigFile {
      * `NetworkConfig.unauthorizedRelayReservationCap` in `@serfab/cadre-core`.
      */
     unauthorizedRelayReservationCap?: number;
+    /**
+     * How long ONE peer of a block's replication group gets to answer ONE read-path request,
+     * in milliseconds, for this machine's control node and every strand node it runs. Unset
+     * takes cadre's own 5000 ms, chosen for two parties that reach each other only through a
+     * relay; a deployment that is all LAN can lower it so a departed peer stops holding up a
+     * read for that long. A value that is not a finite number above zero fails startup where
+     * the node is built. See `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
+     */
+    cohortQueryTimeoutMs?: number;
   };
 
   /** Hibernation settings */
@@ -174,6 +183,8 @@ export interface ResolvedConfig {
     enableRelay?: boolean;
     /** See `CadreConfig.network.unauthorizedRelayReservationCap`. */
     unauthorizedRelayReservationCap?: number;
+    /** See `CadreConfig.network.cohortQueryTimeoutMs`. */
+    cohortQueryTimeoutMs?: number;
   };
   hibernation?: {
     enabled: boolean;

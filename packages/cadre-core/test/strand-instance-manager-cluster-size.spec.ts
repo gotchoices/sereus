@@ -150,11 +150,10 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // DEFAULT_SUPER_MAJORITY_THRESHOLD (0.75) at both the coordinator and the cluster member.
     expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
 
-    // Declared, not left to default — and this is the assertion that catches the omission,
-    // because Optimystic's own default (1000 ms) is a LAN budget that reads every peer on a
-    // relayed link as silent. See COHORT_READ_DEADLINE_MS for the measurement.
+    // Declared, not left to Optimystic's 1000 ms LAN default, which reads every peer on a
+    // relayed link as silent. Why 5000, and that it exceeds the upstream default, are pinned on
+    // the constant in `quereus-plugin-sereus/test/plugin.spec.ts`.
     expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
-    expect(COHORT_READ_DEADLINE_MS).toBeGreaterThan(1000);
   });
 
   it('passes the frozen STRAND_CLUSTER_POLICY BY IDENTITY when no machine count is known', async () => {
@@ -172,35 +171,23 @@ describe('StrandInstanceManager cluster size wiring', () => {
     );
   });
 
-  it('still passes STRAND_CLUSTER_POLICY BY IDENTITY when the network block declares no deadline', async () => {
-    // The shape a real host has: a `network` block set for transports or relays, with no
-    // `cohortQueryTimeoutMs` in it. `config.network?.cohortQueryTimeoutMs` is then `undefined`
-    // rather than the key being absent, and that must still be "the host asked for nothing"
-    // — a builder that treated a present-but-undefined field as an override would return a
-    // derived look-alike here and break every identity assertion in this file.
-    const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-policy-empty-network', { network: {} }));
-
-    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
-      expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
-    );
-  });
-
-  it('forwards a host cohortQueryTimeoutMs, replacing the declared deadline on the strand node', async () => {
-    // 12000, not 5000: the override has to differ from COHORT_READ_DEADLINE_MS or a manager
-    // that dropped `config.network` on the floor would still pass. The repair yardstick stays
-    // undeclared — a deadline is not a machine count, and the two arguments must not bleed.
+  it('routes network.cohortQueryTimeoutMs into the strand node\'s read deadline', async () => {
+    // The wiring this file owns: the host's field reaches `clusterPolicy` on the strand node
+    // too, not only the control node. The builder's own contract is pinned on the builder, in
+    // `quereus-plugin-sereus/test/plugin.spec.ts`.
+    //
+    // 12000, not 5000: an override equal to the declared default would also pass against a
+    // manager that dropped `config.network` on the floor. Deep equality against the builder's
+    // own output — the idiom the serving-machine test below uses — pins the deadline AND the
+    // absence of a repair yardstick in one assertion.
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-policy-deadline', {
       network: { cohortQueryTimeoutMs: 12_000 }
     }));
 
-    // Deep equality against the builder's own output, the idiom the serving-machine test below
-    // uses: it pins the deadline AND the absence of a repair yardstick in one assertion, and a
-    // policy carrying 12000 cannot be the frozen constant.
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({
-        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, undefined, 12_000)
+        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { cohortQueryTimeoutMs: 12_000 })
       })
     );
   });
@@ -237,7 +224,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({
-        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 5)
+        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: 5 })
       })
     );
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(

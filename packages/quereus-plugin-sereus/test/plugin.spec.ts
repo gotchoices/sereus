@@ -9,6 +9,7 @@ import { connectToStrand } from '../src/connect.js';
 import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
+	COHORT_READ_DEADLINE_MS,
 	CONTROL_CLUSTER_POLICY,
 	CONTROL_REPLICATION_BREADTH,
 	DEFAULT_STRAND_CLUSTER_SIZE,
@@ -710,15 +711,56 @@ describe('resolveRepairYardstick', () => {
 });
 
 describe('controlClusterPolicy / strandClusterPolicy', () => {
-	it('returns the frozen base constant BY IDENTITY when the count is unknown', () => {
-		// Identity, not equality: the unknown path must be provably today's behaviour, and
-		// every existing consumer and identity assertion has to keep working. For a strand
+	it('returns the frozen base constant BY IDENTITY when nothing is declared', () => {
+		// Identity, not equality: the nothing-declared path must be provably today's behaviour,
+		// and every existing consumer and identity assertion has to keep working. For a strand
 		// this is the ONLY path production takes — no per-strand serving count exists yet
-		// (`backlog/feat-strand-yardstick-from-serving-machines`), so cadre-core hands
-		// `strandClusterPolicy` nothing and every strand node runs the frozen constant.
-		expect(controlClusterPolicy(undefined)).toBe(CONTROL_CLUSTER_POLICY);
+		// (`backlog/feat-strand-yardstick-from-serving-machines`), so cadre-core declares no
+		// count and every strand node runs the frozen constant.
 		expect(controlClusterPolicy()).toBe(CONTROL_CLUSTER_POLICY);
 		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE)).toBe(STRAND_CLUSTER_POLICY);
+
+		// The shape a real caller hands in: cadre-core reads both fields off config that may not
+		// carry them, so BOTH arrive present-and-`undefined` for a host that configured a
+		// `network` block with neither in it. That has to read as "declared nothing" too, or
+		// every identity assertion breaks on every configured node.
+		expect(controlClusterPolicy({ enrolledMachines: undefined, cohortQueryTimeoutMs: undefined }))
+			.toBe(CONTROL_CLUSTER_POLICY);
+		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: undefined, cohortQueryTimeoutMs: undefined }))
+			.toBe(STRAND_CLUSTER_POLICY);
+	});
+
+	it('declares the cohort read deadline on both policies, above Optimystic\'s LAN default', () => {
+		// Optimystic's own default is 1000 ms, shorter than one round trip between two parties
+		// that reach each other only through a relay — so every cohort peer reads as silent and
+		// the read is declined. This is the assertion that reddens if the field is dropped, or
+		// "tidied" back to the upstream default; see COHORT_READ_DEADLINE_MS for the measurement,
+		// and `docs/testing.md` for why no end-to-end scenario can gate it.
+		expect(COHORT_READ_DEADLINE_MS).toBeGreaterThan(1000);
+		expect(CONTROL_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
+		expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
+	});
+
+	it('replaces the declared deadline with the host\'s, on either network', () => {
+		// 12000, not 5000: an override equal to the declared value would also pass against a
+		// builder that ignored the field entirely.
+		expect(controlClusterPolicy({ cohortQueryTimeoutMs: 12_000 }).cohortQueryTimeoutMs).toBe(12_000);
+		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { cohortQueryTimeoutMs: 12_000 }).cohortQueryTimeoutMs)
+			.toBe(12_000);
+
+		// A deadline is not a machine count: declaring one must not declare the other.
+		expect(controlClusterPolicy({ cohortQueryTimeoutMs: 12_000 }))
+			.not.toHaveProperty('repairCorroborationClusterSize');
+	});
+
+	it('declares a count and a deadline together without either shadowing the other', () => {
+		// The one call where both conditional spreads run. The two numbers reach the builder from
+		// unrelated sources — a node-local machine record and the host's network config — so a
+		// builder that let one spread shadow the other would silently drop a declaration.
+		const policy = controlClusterPolicy({ enrolledMachines: 5, cohortQueryTimeoutMs: 12_000 });
+
+		expect(policy.repairCorroborationClusterSize).toBe(5);
+		expect(policy.cohortQueryTimeoutMs).toBe(12_000);
 	});
 
 	it('treats a degenerate count as unknown rather than clamping it', () => {
@@ -726,13 +768,13 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 		// term rather than clamping it, so rounding one here would hide a caller bug
 		// behind a number nobody chose.
 		for (const bad of [0, -1, 2.5, Number.NaN]) {
-			expect(controlClusterPolicy(bad)).toBe(CONTROL_CLUSTER_POLICY);
-			expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, bad)).toBe(STRAND_CLUSTER_POLICY);
+			expect(controlClusterPolicy({ enrolledMachines: bad })).toBe(CONTROL_CLUSTER_POLICY);
+			expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: bad })).toBe(STRAND_CLUSTER_POLICY);
 		}
 	});
 
 	it('declares the repair yardstick without disturbing the admission yardstick', () => {
-		const policy = controlClusterPolicy(5);
+		const policy = controlClusterPolicy({ enrolledMachines: 5 });
 
 		expect(policy).not.toBe(CONTROL_CLUSTER_POLICY);
 		expect(policy.repairCorroborationClusterSize).toBe(5);
@@ -750,20 +792,24 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 
 		expect(policy.allowDownsize).toBe(true);
 		expect(policy.sizeTolerance).toBe(CONTROL_CLUSTER_POLICY.sizeTolerance);
+		// The declared read deadline rides through the base spread untouched — a caller that
+		// declares only a count must not lose it and fall back to Optimystic's 1000 ms.
+		expect(policy.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
 		expect(Object.isFrozen(policy)).toBe(true);
 	});
 
 	it('caps the strand yardstick at that strand\'s own breadth', () => {
 		// Exercises the derived path the strand seam will use once a serving count exists;
 		// nothing reaches it in production today.
-		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 8).repairCorroborationClusterSize)
+		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: 8 }).repairCorroborationClusterSize)
 			.toBe(DEFAULT_STRAND_CLUSTER_SIZE);
-		expect(strandClusterPolicy(MIN_CLUSTER_SIZE, 5).repairCorroborationClusterSize)
+		expect(strandClusterPolicy(MIN_CLUSTER_SIZE, { servingMachines: 5 }).repairCorroborationClusterSize)
 			.toBe(MIN_CLUSTER_SIZE);
 
-		const policy = strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 3);
+		const policy = strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: 3 });
 		expect(policy.repairCorroborationClusterSize).toBe(3);
 		expect(policy.assumedClusterSize).toBe(STRAND_CLUSTER_POLICY.assumedClusterSize);
+		expect(policy.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
 		expect(policy).not.toHaveProperty('superMajorityThreshold');
 		expect(Object.isFrozen(policy)).toBe(true);
 	});
@@ -771,10 +817,12 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 	it('leaves the base constants themselves untouched', () => {
 		// A builder that mutated its base instead of spreading it would poison every
 		// other consumer of the shared constant, and the freeze would hide it in dev.
-		controlClusterPolicy(9);
-		strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 9);
+		controlClusterPolicy({ enrolledMachines: 9, cohortQueryTimeoutMs: 12_000 });
+		strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: 9, cohortQueryTimeoutMs: 12_000 });
 
 		expect(CONTROL_CLUSTER_POLICY).not.toHaveProperty('repairCorroborationClusterSize');
 		expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('repairCorroborationClusterSize');
+		expect(CONTROL_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
+		expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
 	});
 });
