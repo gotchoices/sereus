@@ -145,9 +145,15 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  *
  * Validated here rather than downstream because nothing downstream would: every consumer
  * multiplies this value into a `setTimeout` deadline, where a zero silently turns a budget into
- * "give up immediately" and a `NaN` turns it into "never time out". Throws where the node is
- * built — inside `CadreNode.start()` for the control network, inside `CadreNode.addStrand` for
- * a strand — which is the same place `cohortQueryTimeoutMs` refuses a bad value.
+ * "give up immediately" and a `NaN` turns it into "never time out".
+ *
+ * Both node bring-up paths call this EAGERLY — `CadreNode.start()`, and
+ * `StrandInstanceManager.buildStrandRuntime` behind `addStrand`/`resumeStrand` — so a bad
+ * declaration fails the same start that Optimystic's own check on `cohortQueryTimeoutMs` fails.
+ * The eager call is what makes that true: every budget derived here is behind a condition (a
+ * node with no control storage builds no catch-up, a node with no relay addrs drives no
+ * reservation), so waiting for a first consumer would let a broken declaration boot and then
+ * throw inside a best-effort path that logs and carries on.
  */
 export function resolveLinkRoundTripMs(linkRoundTripMs?: number): number {
 	if (linkRoundTripMs === undefined) {

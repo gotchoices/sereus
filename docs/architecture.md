@@ -1252,6 +1252,18 @@ interface CadreNodeConfig {
     // Optimystic throws on a non-finite, non-positive, or absurdly large value where the
     // libp2p node is built (`CadreNode.start()` for control, `addStrand` for a strand).
     cohortQueryTimeoutMs?: number;
+    // The round trip this node assumes between itself and another machine, for the control
+    // node and every strand node — the same one-setting-covers-both-networks shape as
+    // `cohortQueryTimeoutMs` above, and for the same reason. Unset takes 2000 ms. NOT a
+    // timeout: it is the one declared assumption cadre's own dial and relay-reservation
+    // deadlines are DERIVED from, each multiplied by the number of exchanges that operation
+    // was measured to cost (see "Dial budgets are counted in round trips, not milliseconds").
+    // Raise it for a link slower than the relayed phone-to-phone band sereus assumes; above
+    // about 2500 it buys nothing, because two libp2p budgets sereus cannot reach abandon the
+    // connection first. Refused where the libp2p node is built (`CadreNode.start()` for
+    // control, `addStrand`/`resumeStrand` for a strand) if it is not a finite number above
+    // zero, since every consumer multiplies it into a deadline.
+    linkRoundTripMs?: number;
   };
 
   // Hibernation configuration

@@ -59,10 +59,11 @@ import { peerJoinPushBudget } from './link-budget.js';
 // `link-budget.ts` ("The ceiling this does NOT lift") and
 // `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`.
 //
-// RETRY, and why it backs off. A run that did not finish cleanly re-arms on a doubling
-// backoff (`retryBackoffMs` to `maxRetryBackoffMs`), and a `connection:open` arriving while
-// that wait is outstanding is DROPPED rather than collapsing it back to the debounce. Both
-// halves are load-bearing:
+// RETRY, and why it backs off. A run whose PUSH FAILED — the transport threw, which is what
+// a dial or response deadline expiring looks like here — re-arms on a doubling backoff
+// (`retryBackoffMs` to `maxRetryBackoffMs`), and a `connection:open` arriving while that wait
+// is outstanding is DROPPED rather than collapsing it back to the debounce. Both halves are
+// load-bearing:
 //
 // - Without the re-arm, a transient push failure over a stable connection left the peer
 //   partially copied until its next reconnect (read repair still covered reads meanwhile).
@@ -74,10 +75,25 @@ import { peerJoinPushBudget } from './link-budget.js';
 //   budgets its dial at `transferTimeoutMs ?? 30000` — the one dial budget in the stack
 //   above the measured relayed setup cost — so it succeeded where this one could not.
 //
-// A DENIED run is deliberately exempt: the membership gate answering "no" is a policy
-// answer, not an unreachable peer, and the control network's join order (connect, then
-// authorize) means the retry is driven on purpose by `scheduleConnectedPeers()` the moment
-// the membership commit lands. Backing that off would delay every control-network join.
+// A NON-CLEAN run is NOT on its own enough to re-arm, and the distinction is what keeps the
+// backoff from becoming a worse problem than the one it fixes. `clean` also goes false for
+// outcomes no amount of retrying can change: the membership gate DENIED the peer; this
+// network's raw storage implements no `listBlockIds`, so the catch-up is inert; or the
+// receiver reported blocks in `missing`, which it does per block for a payload it cannot
+// parse and for a revision whose retained commit proof this node does not hold (a push
+// carrying no proof is refused outright by a receiver running the default
+// `requirePushCertificate: true`, and an unretained proof is the ordinary case — see
+// {@link Chunk.proofs}). Re-arming on those would re-push the WHOLE store to that peer every
+// `maxRetryBackoffMs` for as long as the node runs, and report the failure below as a link
+// budget problem when nothing about the link is wrong. All three still leave the peer
+// un-memoized, so its next `connection:open` retries — the behaviour that predates the
+// backoff, and the right one for a verdict rather than a timeout. Denial in particular is
+// re-driven on purpose by `scheduleConnectedPeers()` the moment the membership commit lands,
+// because the control network's join order is connect-then-authorize.
+//
+// A re-arm is also skipped when the peer is no longer CONNECTED. This module's trigger is
+// `connection:open`, so a peer that went away already has one: re-arming instead would leave
+// a machine dialing a peer it cannot see once a minute for the rest of its uptime.
 //
 // After `PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES` consecutive failures one `console.warn`
 // names the peer and the budget, because otherwise a machine on a too-slow link says
@@ -91,12 +107,11 @@ import { peerJoinPushBudget } from './link-budget.js';
 // expensive, pre-check `libp2p.peerStore` for this network's block-transfer protocol before
 // enumerating.
 //
-// NOTE: a backoff re-arm fires whether or not the peer is still connected — this module
-// subscribes to `connection:open` only — so a peer that disconnected mid-backoff costs one
-// more dial attempt before its next failure lengthens the wait again. Bounded and cheap at
-// the connection counts these meshes hold; if a node ever holds many transient peers,
-// subscribe to `connection:close` and drop the pending re-arm there rather than shortening
-// the backoff.
+// NOTE: a peer that disconnects INSIDE a backoff wait still costs the one attempt that wait
+// was already armed for — the connectivity check is made when the re-arm is decided, not when
+// the timer fires, and this module subscribes to `connection:open` only. One dial, not a
+// recurring one; if a node ever holds many transient peers, subscribe to `connection:close`
+// and clear the pending timer there.
 
 const log = debug('sereus:cadre:peer-join-backfill');
 
@@ -388,7 +403,7 @@ export class PeerJoinBackfill {
     }
     this.inFlight.add(key);
     try {
-      const { result, clean } = await this.runCatchUp(peerId);
+      const { result, clean, pushFailed } = await this.runCatchUp(peerId);
       // NOTE: a run that hit `maxBlocks` is still "clean" and still memoizes the peer, so
       // the tail past the ceiling never reaches it. Deliberate: enumeration is not
       // resumable, so not memoizing would re-push the same prefix on every reconnect
@@ -399,9 +414,10 @@ export class PeerJoinBackfill {
         this.failures.delete(key);
         this.retryAfter.delete(key);
         this.warned.delete(key);
-      } else if (!clean && !result.denied && !this.stopped && this.started) {
-        // Denial is exempt: it is the gate's answer, not an unreachable peer, and the
-        // membership path re-drives it deliberately. See the module comment.
+      } else if (pushFailed && !this.stopped && this.started && this.isConnected(peerId)) {
+        // `pushFailed`, not `!clean`: a denial, an inert store and a receiver's per-block
+        // rejection are all verdicts a retry cannot change, and re-arming on them would
+        // re-push the whole store to that peer forever. See the module comment.
         //
         // Gated on `started` too: the re-arm exists to REPLACE a connection:open-driven retry,
         // so a caller driving `catchUpPeer` by hand against a backfill that was never started
@@ -427,8 +443,13 @@ export class PeerJoinBackfill {
     }
   }
 
+  /** Whether this network's libp2p node still holds a connection to that peer. */
+  private isConnected(peerId: PeerId): boolean {
+    return this.deps.libp2p.getConnections(peerId).length > 0;
+  }
+
   /**
-   * Re-arm one peer's catch-up after a run that did not finish cleanly, on a wait that doubles
+   * Re-arm one peer's catch-up after a run whose push failed, on a wait that doubles
    * per consecutive failure up to `maxRetryBackoffMs`. Sets {@link retryAfter} alongside the
    * timer, which is what makes `connection:open` churn inside the wait free.
    */
@@ -471,8 +492,12 @@ export class PeerJoinBackfill {
     );
   }
 
-  /** The actual copy. `clean` = every chunk pushed and the remote persisted every block. */
-  private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean }> {
+  /**
+   * The actual copy. `clean` = every chunk pushed and the remote persisted every block.
+   * `pushFailed` = at least one push THREW, which is the only non-clean outcome a retry can
+   * change; the others are verdicts (denied, inert store, blocks the receiver refused).
+   */
+  private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean; pushFailed: boolean }> {
     const result = emptyResult();
     const { storage } = this.deps;
 
@@ -489,7 +514,7 @@ export class PeerJoinBackfill {
       }
       if (!authorized) {
         result.denied = true;
-        return { result, clean: false };
+        return { result, clean: false, pushFailed: false };
       }
     }
 
@@ -498,7 +523,7 @@ export class PeerJoinBackfill {
         this.loggedNoListBlockIds = true;
         log('[%s] raw storage does not implement listBlockIds(); backfill is inert', this.deps.label);
       }
-      return { result, clean: false };
+      return { result, clean: false, pushFailed: false };
     }
 
     const client = this.createPushClient(peerId);
@@ -617,6 +642,6 @@ export class PeerJoinBackfill {
     }
 
     const clean = !chunkFailed && result.rejected.length === 0;
-    return { result, clean };
+    return { result, clean, pushFailed: chunkFailed };
   }
 }

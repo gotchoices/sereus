@@ -41,7 +41,7 @@ import type {
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
-import { peerJoinPushBudget, relayReservationBudgetMs } from './link-budget.js';
+import { peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -588,6 +588,12 @@ export class StrandInstanceManager {
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
     const { sAppConfig } = config;
+
+    // Refuse a bad `linkRoundTripMs` before any strand bring-up, for the reason
+    // `CadreNode.start()` does: every budget derived from it here is behind a condition
+    // (backfill disabled, no relay addrs), so a zero or NaN declaration would otherwise
+    // surface later inside a path that logs and carries on. `link-budget.ts`.
+    resolveLinkRoundTripMs(config.network?.linkRoundTripMs);
 
     // The store the instance OWNS (resolved once in `startStrand`), not a fresh
     // resolution: a rebuild must reach the same backend through the same warm cache.

@@ -92,7 +92,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs } from './link-budget.js';
+import { peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -959,6 +959,11 @@ export class CadreNode implements SAppIdLookup {
       // throws on a malformed `relayAddrs` entry, and that failure belongs on the same
       // logged-and-cleaned-up path as every other one in start().
       this.warnIfAnnounceAddrsDiscardRelay();
+      // Refuse a bad `linkRoundTripMs` HERE rather than wherever a budget is first derived
+      // from it: every consumer of it is conditional (no control storage, no relays, no dial
+      // yet), so a node with a zero or NaN declaration would otherwise boot and fail later
+      // inside a best-effort path that logs and carries on. `link-budget.ts`.
+      resolveLinkRoundTripMs(this.config.network?.linkRoundTripMs);
 
       // Install the WebRTC TURN-relay tracker BEFORE any libp2p bring-up, so it
       // wraps globalThis.RTCPeerConnection before the control node can create one.

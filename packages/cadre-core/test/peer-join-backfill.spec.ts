@@ -101,6 +101,8 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
 /** A fake libp2p surface: event registry + a controllable connection list. */
 function makeLibp2p(connections: Array<{ remotePeer: PeerId }> = []) {
   const handlers = new Map<string, Set<(evt: unknown) => void>>();
+  const open = [...connections];
+  const holds = (remotePeer: PeerId) => open.some((c) => c.remotePeer.toString() === remotePeer.toString());
   return {
     node: {
       addEventListener: (type: string, handler: (evt: unknown) => void) => {
@@ -111,12 +113,24 @@ function makeLibp2p(connections: Array<{ remotePeer: PeerId }> = []) {
       removeEventListener: (type: string, handler: (evt: unknown) => void) => {
         handlers.get(type)?.delete(handler);
       },
-      getConnections: () => connections
+      // Narrows to one peer when asked about one, as libp2p's own does — the catch-up asks
+      // before re-arming a failed run, so a fake that ignored the argument would answer
+      // "connected" for every peer that ever connected.
+      getConnections: (peerId?: PeerId) =>
+        peerId ? open.filter((c) => c.remotePeer.toString() === peerId.toString()) : open
     } as unknown as Libp2p,
     dispatchConnectionOpen(remotePeer: PeerId) {
+      // Record the connection before the event: a peer that just opened one IS connected, and
+      // anything consulting getConnections() has to agree with the event it was handed.
+      if (!holds(remotePeer)) open.push({ remotePeer });
       for (const handler of handlers.get('connection:open') ?? []) {
         handler({ detail: { remotePeer } });
       }
+    },
+    /** Drop a peer's connection without an event — this module has no `connection:close` path. */
+    dropConnection(remotePeer: PeerId) {
+      const at = open.findIndex((c) => c.remotePeer.toString() === remotePeer.toString());
+      if (at >= 0) open.splice(at, 1);
     },
     listenerCount(type: string) {
       return handlers.get(type)?.size ?? 0;
@@ -471,6 +485,53 @@ describe('PeerJoinBackfill', () => {
 
     // …and the re-arm fires on its own, with no further connection:open.
     await until(() => pushes.length === 2, 4000);
+
+    backfill.stop();
+  });
+
+  it('does not re-arm when the receiver REFUSED the blocks — only a failed push retries', async () => {
+    // A run is also non-clean when every chunk was delivered and the receiver reported the
+    // blocks in `missing` — which it does for a revision whose retained commit proof this node
+    // does not hold, the ordinary case. That verdict does not change on a retry, so re-arming
+    // on it would re-push the whole store to that peer every backoff for the node's lifetime.
+    const { backfill, pushes, fake } = makeBackfill(
+      { b1: committed('b1') },
+      { debounceMs: 1, retryBackoffMs: 30, maxRetryBackoffMs: 30 },
+      { respond: (push) => ({ missing: [...push.ids] }) }
+    );
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pushes.length).toBe(1);
+
+    // The peer is not memoized either, so a reconnect still retries — which is what covers a
+    // refusal that turns out to have been transient after all.
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 2);
+
+    backfill.stop();
+  });
+
+  it('does not re-arm a peer that is no longer connected', async () => {
+    // The trigger is connection:open, so a peer that went away already has its retry. Re-arming
+    // one anyway would leave the node dialing a peer it cannot see, once per backoff, for the
+    // rest of its uptime.
+    let dropPeer = (): void => {};
+    const { backfill, pushes, fake } = makeBackfill(
+      { b1: committed('b1') },
+      { debounceMs: 1, retryBackoffMs: 30, maxRetryBackoffMs: 30 },
+      { respond: () => { dropPeer(); throw new Error('dial timeout') } }
+    );
+    // The peer goes away mid-push, which is exactly what a dial failing to it looks like.
+    dropPeer = () => fake.dropConnection(peer('p1'));
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pushes.length).toBe(1);
 
     backfill.stop();
   });
