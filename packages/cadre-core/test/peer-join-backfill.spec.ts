@@ -9,6 +9,7 @@ import {
   type PeerJoinBackfillConfig,
   type PeerJoinBackfillPushClient
 } from '../src/peer-join-backfill.js';
+import { peerJoinPushBudget } from '../src/link-budget.js';
 
 /**
  * Unit coverage for the peer-join block catch-up (shared by strand and control
@@ -203,7 +204,9 @@ describe('PeerJoinBackfill', () => {
     expect(allIds).toEqual(['b1', 'b2', 'b3']);
     for (const push of pushes) {
       expect(push.reason).toBe('replication');
-      expect(push.options).toEqual({ dialTimeoutMs: 3000, responseTimeoutMs: 10_000 });
+      // Both deadlines are DERIVED from the declared link round trip (`link-budget.ts`), not
+      // typed here — a fixed 3000 ms dial could never open a relayed connection at all.
+      expect(push.options).toEqual(peerJoinPushBudget());
       for (const [i, id] of push.ids.entries()) {
         expect(push.meta?.blockMeta?.[id]).toEqual({ rev: blocks[id]!.latest!.rev, actionId: blocks[id]!.latest!.actionId });
         // The buffer is the block's own JSON, encoded once.
@@ -442,6 +445,32 @@ describe('PeerJoinBackfill', () => {
     fake.dispatchConnectionOpen(peer('p1'));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(pushes.length).toBe(1);
+
+    backfill.stop();
+  });
+
+  it('re-arms a failed catch-up on a backoff, and drops connection churn inside that wait', async () => {
+    // The 2026-09-26 relayed reproduction: one peer re-opened a connection about every 14.5 s
+    // for a 200-second run, each event starting a catch-up whose dial could not finish. Churn
+    // inside the wait must cost nothing, and the retry must still happen without one.
+    const { backfill, pushes, fake } = makeBackfill(
+      { b1: committed('b1') },
+      { debounceMs: 1, retryBackoffMs: 1000, maxRetryBackoffMs: 1000 },
+      { respond: () => { throw new Error('dial timeout') } }
+    );
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+
+    for (let i = 0; i < 20; i++) {
+      fake.dispatchConnectionOpen(peer('p1'));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(pushes.length).toBe(1);
+
+    // …and the re-arm fires on its own, with no further connection:open.
+    await until(() => pushes.length === 2, 4000);
 
     backfill.stop();
   });

@@ -316,7 +316,8 @@ export interface NetworkConfig {
    *
    * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
    * out that first attempt, which costs the drive's whole timeout
-   * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s) against a relay that is unreachable
+   * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, four link round trips at
+   * {@link linkRoundTripMs} — 8 s at its default) against a relay that is unreachable
    * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
    * case libp2p's own discovery lands a reservation independently).
    *
@@ -429,6 +430,33 @@ export interface NetworkConfig {
    * Fractional values are accepted — this is a duration, not a count of peers.
    */
   cohortQueryTimeoutMs?: number;
+  /**
+   * The round trip this node assumes between itself and another machine, in milliseconds, for
+   * the control node and every strand node — as {@link cohortQueryTimeoutMs} is, and for the
+   * same reason: the setting describes the LINK, and a phone's control node and its strand
+   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (2000 ms).
+   *
+   * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
+   * reservation deadlines are DERIVED from, each by the number of round trips that operation
+   * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
+   * reservation drive, and the control-cohort dial budgets. Reaching another machine through a
+   * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
+   * speed above which it can never open a connection — which is the defect this declaration
+   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement
+   * behind them, and the ceiling that no declaration here can lift are in `link-budget.ts`.
+   *
+   * Raise it for a link slower than the relayed phone-to-phone band sereus assumes; the cost is
+   * the ordinary cost of longer deadlines, a peer that is genuinely gone holding each operation
+   * that much longer before it is abandoned and retried. Above about 2500 it buys nothing: two
+   * libp2p budgets that sereus cannot reach abandon the connection first
+   * (`tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`).
+   *
+   * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
+   * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
+   * zero, because every consumer multiplies it into a deadline where a zero means "give up at
+   * once" and a `NaN` means "never".
+   */
+  linkRoundTripMs?: number;
   /**
    * Optional async resolver returning the multiaddrs to embed in invites
    * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
@@ -636,6 +664,14 @@ export {
   controlClusterPolicy,
   strandClusterPolicy
 } from '@serfab/quereus-plugin-sereus';
+
+/**
+ * The declared link round trip every cadre-owned dial and reservation deadline is derived from,
+ * re-exported beside {@link NetworkConfig.linkRoundTripMs} so a host reading the setting finds
+ * the default it replaces. The counts, the measurement and the derivation live in
+ * `link-budget.ts`.
+ */
+export { DECLARED_LINK_ROUND_TRIP_MS } from './link-budget.js';
 
 /**
  * Main configuration for a CadreNode

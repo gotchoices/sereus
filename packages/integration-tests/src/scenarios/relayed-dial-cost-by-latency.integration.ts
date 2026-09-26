@@ -43,13 +43,28 @@
  * is 2). A budget of B milliseconds therefore stops being able to open a relayed connection
  * above a one-way delay of B/8 — B/4 stated as a round trip between the two machines.
  *
+ * **Re-run** the same day, same machine, when cadre's budgets were changed to count round trips:
+ * relayed dial 20-25 ms at no delay, 7 255-7 279 ms at 900 ms one-way, 12 066-12 094 ms at
+ * 1 500 ms one-way, across both listener arms. Within about 40 ms of the figures above, and
+ * still 60-95 ms ABOVE four round trips of pure delay — the handshakes, which no delay figure
+ * contains. So the COUNT is the repeatable quantity, and a budget derived from it needs a
+ * declared round trip with a little headroom rather than one equal to the measured link.
+ *
  * Against that, the budgets in force:
  *
  * | budget | value | relayed dial impossible above |
  * | --- | --- | --- |
- * | `peer-join-backfill.ts` `dialTimeoutMs`, and Optimystic's `DEFAULT_DIAL_TIMEOUT_MS` | 3 s | 375 ms one-way (0.75 s round trip) |
+ * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 8 s at the default declared link | 1000 ms one-way, and moves with `NetworkConfig.linkRoundTripMs` |
+ * | Optimystic's `DEFAULT_DIAL_TIMEOUT_MS` (`rpc-deadline.ts`, fixed; outside this repo) | 3 s | 375 ms one-way (0.75 s round trip) |
  * | libp2p `connectionManager.dialTimeout` (its own default; db-p2p neither sets nor exposes it) | 10 s | 1250 ms one-way (2.5 s round trip) |
  * | libp2p `connectionManager.inboundUpgradeTimeout` (db-p2p sets 10_000) | 10 s | same, on the LISTENER's side |
+ *
+ * The first row is what this measurement is FOR: cadre-core no longer types dial budgets as
+ * milliseconds. `link-budget.ts` holds one round-trip count per operation, taken from the table
+ * above, times one declared link round trip — so re-run this before changing a count there, and
+ * update the counts here if a libp2p upgrade moves them. Before that change the peer-join block
+ * catch-up allowed its dial 3 s, so over a relay it had never once been able to copy a
+ * rejoining machine's missing blocks at any link slow enough to matter.
  *
  * The listener's budget is the one that makes the failure look like nothing at all. Above the
  * ceiling the dialer's own `dial()` still resolves — measured 12 050 ms at 1500 ms one-way —

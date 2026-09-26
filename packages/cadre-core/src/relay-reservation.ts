@@ -106,6 +106,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import { trailingPeerId } from './peer-record.js';
+import { relayReservationBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:relay-reservation');
 
@@ -139,8 +140,22 @@ export interface RelayReservationState {
   retryAtMs: number | null;
 }
 
-/** How long {@link driveRelayReservation} waits for a reservation to appear. */
-export const DEFAULT_RELAY_RESERVE_TIMEOUT_MS = 10_000;
+/**
+ * How long {@link driveRelayReservation} waits for a reservation to appear, at the DEFAULT
+ * declared link round trip: `RELAY_RESERVATION_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS`
+ * (2000 ms) = 8000 ms, where it was a fixed 10_000 before.
+ *
+ * Counted rather than chosen because this one deadline bounds the whole drive — dial the relay,
+ * request the reservation, wait — and each of those costs a fixed number of exchanges, not a
+ * fixed number of milliseconds. `link-budget.ts` carries the counts, the measurement behind
+ * them, and the ceiling above which no relayed connection can be established whatever this says.
+ *
+ * A host on a slower link moves it by declaring `NetworkConfig.linkRoundTripMs`, which both
+ * call sites thread in (`CadreNode.reserveRelays` for the control node,
+ * `StrandInstanceManager`'s per-relay supervisors for a strand). This constant is the fallback
+ * for a caller that declares nothing.
+ */
+export const DEFAULT_RELAY_RESERVE_TIMEOUT_MS = relayReservationBudgetMs();
 export const DEFAULT_RELAY_RESERVE_POLL_MS = 250;
 
 export interface RelayReserveOptions {

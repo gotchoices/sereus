@@ -811,7 +811,8 @@ export class SeedBootstrapService {
     // (`dialPeerAddrs`), so an owner whose first address never answers neither
     // stalls seed application nor goes undialed at its other addresses.
     // NOTE: `handleSeedStream` acks only after this loop, so an unreachable owner
-    // can hold the ack for up to `dialBudget.totalMs` (30 s) each, past a sender's
+    // can hold the ack for up to `dialBudget.totalMs` each — 32 s at the default declared link
+    // round trip, more on a host that declared a slower one (`link-budget.ts`) — past a sender's
     // 10 s `seedDeliverTimeoutMs`; the seed is still applied. If senders start
     // reporting accepted seeds as timed out, ack before dialing.
     const selfPeerId = this.libp2pNode.peerId?.toString();

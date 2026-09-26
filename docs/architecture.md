@@ -1085,6 +1085,14 @@ the connection crosses the cap. Both settings are environment-configurable
 (`RELAY_APPLY_DEFAULT_LIMIT`, `RELAY_MAX_RESERVATIONS`) — see
 `ops/docker/libp2p-infra/README.md`.
 
+#### Dial budgets are counted in round trips, not milliseconds
+
+Opening a connection to another machine through a relay costs a **fixed number of exchanges**, so every deadline written as a number of milliseconds has a link speed above which it can never open one — and the failure looks like an absent peer rather than a timeout. Measured (`packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`, opt-in with `RELAY_DIAL_COST=1`, whose doc comment is the single home of the numbers): a relayed dial costs **four link round trips**, dialing the relay itself costs one, requesting a reservation on an open relay connection costs one, and negotiating a protocol over an established circuit costs one. At a link round trip of 1.8 s a relayed dial took 7.3 s; at 3 s it took 12.1 s.
+
+So cadre declares the link once and derives from it, rather than carrying a list of independently chosen timeouts. `NetworkConfig.linkRoundTripMs` (default 2000 ms, which states the relayed phone-to-phone link sereus assumes) feeds `packages/cadre-core/src/link-budget.ts`, which holds the round-trip count for each operation and is the only place a new dial's budget should be written. It currently derives the peer-join block catch-up's per-push dial and response deadlines, the relay reservation drive's whole-drive deadline, and the control-cohort per-address and per-peer dial budgets. A host that knows its deployment is slower raises the one declaration and moves them all; a per-field override (`strandBackfill`, `controlBackfill`, `controlCohort`) still wins where one is given.
+
+**This does not make sereus work at any speed.** Above roughly a 2.5-second link round trip, two libp2p budgets of 10 000 ms each abandon the connection before any cadre deadline is consulted — `connectionManager.dialTimeout` (libp2p's own default, which `@optimystic/db-p2p` neither sets nor exposes) and `connectionManager.inboundUpgradeTimeout` (which it sets) — and the listener's is the one that makes the failure silent: the dialer's own dial resolves while the listener has already discarded the half-built connection, so every stream on it dies with `Unexpected EOF`. Lifting that needs an upstream change and a decision about how slow a link sereus intends to carry: `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`.
+
 ## Deployment Configurations
 
 ### Minimal (Single Phone)

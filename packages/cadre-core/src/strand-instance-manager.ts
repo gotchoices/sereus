@@ -41,6 +41,7 @@ import type {
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
+import { peerJoinPushBudget, relayReservationBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -853,7 +854,15 @@ export class StrandInstanceManager {
             // The same prefix the receiver registered its block-transfer handler
             // under — derived from networkName above, never re-spelled here.
             protocolPrefix
-          }, config.backfill);
+          }, {
+            // Dial and response deadlines counted in link round trips, not fixed milliseconds:
+            // a relayed dial costs a fixed number of exchanges, so a fixed budget has a link
+            // speed above which this catch-up can never reach the peer at all. See
+            // `link-budget.ts`. Spread BEFORE the host's own config so an explicit
+            // `strandBackfill.dialTimeoutMs` still wins.
+            ...peerJoinPushBudget(config.network?.linkRoundTripMs),
+            ...config.backfill
+          });
           backfill.start();
           this.backfills.set(strandId, backfill);
         } else {
@@ -868,10 +877,12 @@ export class StrandInstanceManager {
       // The strand's database is up, and the supervisor keeps trying on its backoff;
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
       //
-      // NOTE: a relay that is down costs this launch one full drive (10 s), and
-      // `StrandWatcher` launches strands one at a time — so N strands cost N × 10 s
-      // of bring-up during a relay outage. If that ever matters, stop awaiting here
-      // (the circuit addr then lands after `active`) rather than shortening the drive.
+      // NOTE: a relay that is down costs this launch one full drive — the reservation budget
+      // counted from the declared link round trip, 8 s at its default (`link-budget.ts`) — and
+      // `StrandWatcher` launches strands one at a time, so N strands cost N of those in
+      // bring-up during a relay outage, and MORE on a host that declared a slower link. If that
+      // ever matters, stop awaiting here (the circuit addr then lands after `active`) rather
+      // than shortening the drive.
       t0 = performance.now();
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
@@ -962,8 +973,11 @@ export class StrandInstanceManager {
   /**
    * One {@link superviseRelayReservation} per relay dial addr, each over exactly
    * that relay so "held" is judged per relay (`circuitMultiaddrsVia`) and losing
-   * one relay re-drives only that one. Default timings — the control node's (2 s
-   * doubling to 60 s between failed attempts, a 5 s liveness check while held).
+   * one relay re-drives only that one. Default retry timings — the control node's (2 s
+   * doubling to 60 s between failed attempts, a 5 s liveness check while held). Each DRIVE's
+   * own deadline is counted in link round trips at this host's declared
+   * `network.linkRoundTripMs` (`link-budget.ts`), so the same declaration that lengthens the
+   * control node's drive lengthens these.
    *
    * Each supervisor's `beforeRedrive` is the caller's
    * {@link StartStrandConfig.announceDelegateToRelay} for THIS relay and THIS
@@ -982,7 +996,9 @@ export class StrandInstanceManager {
     }
     const announce = config.announceDelegateToRelay;
     const delegatePeerId = node.peerId.toString();
+    const timeoutMs = relayReservationBudgetMs(config.network?.linkRoundTripMs);
     return relayDialAddrs.map((relayAddr) => superviseRelayReservation(node, [relayAddr], {
+      timeoutMs,
       ...(announce && { beforeRedrive: () => announce(strandId, relayAddr, delegatePeerId) })
     }));
   }

@@ -170,6 +170,7 @@ export {
   PeerJoinBackfill,
   DEFAULT_PEER_JOIN_BACKFILL,
   MAX_BLOCK_MESSAGE_BYTES,
+  PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES,
   type PeerJoinBackfillConfig,
   type PeerJoinBackfillDeps,
   type PeerJoinBackfillResult,
@@ -440,10 +441,27 @@ export {
   directBeforeRelayed,
   DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   DEFAULT_PEER_DIAL_BUDGET,
   type PeerDialBudget,
   type AddrDialer
 } from './peer-dial.js';
+
+// Dial and reservation budgets counted in link round trips rather than fixed milliseconds, so
+// one declared assumption about the link moves them all — see `NetworkConfig.linkRoundTripMs`.
+export {
+  DECLARED_LINK_ROUND_TRIP_MS,
+  RELAYED_DIAL_ROUND_TRIPS,
+  RELAY_RESERVATION_ROUND_TRIPS,
+  CIRCUIT_REQUEST_ROUND_TRIPS,
+  PUSH_TRANSFER_ALLOWANCE_MS,
+  resolveLinkRoundTripMs,
+  relayedDialBudgetMs,
+  relayReservationBudgetMs,
+  circuitRequestBudgetMs,
+  peerJoinPushBudget,
+  type PeerJoinPushBudget
+} from './link-budget.js';
 
 // Seed trust policy (trust anchor for incoming seeds)
 export {

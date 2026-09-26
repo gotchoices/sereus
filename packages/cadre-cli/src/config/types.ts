@@ -95,6 +95,16 @@ export interface CliConfigFile {
      * the node is built. See `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
      */
     cohortQueryTimeoutMs?: number;
+    /**
+     * The round trip this machine assumes between itself and another machine, in milliseconds.
+     * Unset takes cadre's own 2000 ms, which states the relayed phone-to-phone link sereus
+     * assumes. It is not a timeout: cadre's own dial and relay-reservation deadlines are derived
+     * from it, each by the number of exchanges that operation was measured to cost, so a
+     * deployment on a slower link raises this one number instead of a list of timeouts. A value
+     * that is not a finite number above zero fails startup where the node is built. See
+     * `NetworkConfig.linkRoundTripMs` in `@serfab/cadre-core`.
+     */
+    linkRoundTripMs?: number;
   };
 
   /** Hibernation settings */
@@ -185,6 +195,8 @@ export interface ResolvedConfig {
     unauthorizedRelayReservationCap?: number;
     /** See `CadreConfig.network.cohortQueryTimeoutMs`. */
     cohortQueryTimeoutMs?: number;
+    /** See `CadreConfig.network.linkRoundTripMs`. */
+    linkRoundTripMs?: number;
   };
   hibernation?: {
     enabled: boolean;

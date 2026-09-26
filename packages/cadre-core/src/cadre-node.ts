@@ -89,10 +89,10 @@ import {
 } from './control-cohort.js';
 import {
   dialPeerAddrs,
-  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
-  DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
+import { peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -1529,6 +1529,11 @@ export class CadreNode implements SAppIdLookup {
       // before looking anywhere else; if catch-up pushes start showing up as
       // connection-churn noise, raise it.
       debounceMs: 250,
+      // Dial and response deadlines counted in link round trips, not fixed milliseconds — a
+      // relayed dial that cannot finish inside the budget fails identically on every retry.
+      // See `link-budget.ts`. Spread BEFORE the host's own config so an explicit
+      // `controlBackfill.dialTimeoutMs` still wins.
+      ...peerJoinPushBudget(this.config.network?.linkRoundTripMs),
       ...this.config.controlBackfill
     });
     this.controlBackfill.start();
@@ -3104,15 +3109,22 @@ export class CadreNode implements SAppIdLookup {
    * {@link SeedBootstrapService} this node builds — `applySeed`'s owner dials and
    * `dialInvite`.
    *
-   * See {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} for why a peer's dial is
-   * bounded as a whole, and {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}
-   * for why each address is bounded as well.
+   * See `peer-dial.ts`'s `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` for why a peer's dial is
+   * bounded as a whole, and `DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS` for why each
+   * address is bounded as well.
+   *
+   * Both are DERIVED from `network.linkRoundTripMs` rather than fixed, because the slowest
+   * address either has to cover is a relayed dial and that costs a fixed number of exchanges —
+   * `link-budget.ts` has the counts. A host's explicit `controlCohort` values still win, so a
+   * test that drives dead addresses on purpose keeps the duration it chose.
    */
   private controlDialBudget(): PeerDialBudget {
     const cohort = this.config.network?.controlCohort;
+    const perAddressMs = cohort?.perAddressDialTimeoutMs
+      ?? relayedDialBudgetMs(this.config.network?.linkRoundTripMs);
     return {
-      perAddressMs: cohort?.perAddressDialTimeoutMs ?? DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
-      totalMs: cohort?.dialTimeoutMs ?? DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
+      perAddressMs,
+      totalMs: cohort?.dialTimeoutMs ?? CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS * perAddressMs,
     };
   }
 
@@ -5689,8 +5701,10 @@ export class CadreNode implements SAppIdLookup {
    * caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
-   * timeouts (10 s each: dial by peer id, then by addr) before the 10 s drive even
-   * starts, so one failed re-drive can hold the supervisor `driving` for ~30 s.
+   * timeouts (10 s each: dial by peer id, then by addr) before the reservation drive even
+   * starts, so one failed re-drive holds the supervisor `driving` for those 20 s plus the
+   * drive's own deadline — 28 s at the default declared link round trip, and longer on a host
+   * that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the
    * control node holds no connection to the relay (the drive's own dial fails
@@ -6222,13 +6236,15 @@ export class CadreNode implements SAppIdLookup {
    * local), and only then does it reach out. Everything above in {@link start}
    * has completed by the time this runs.
    *
-   * BUDGET: the supervisor's first attempt — `relay-reservation.ts`'s
-   * `DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s — is what `start()` waits on — deliberately the module default rather
-   * than a boot-specific one. A healthy dial-plus-reserve is sub-second even over
-   * a WAN, so 10 s is slack for a slow link; going much longer would make a dead
-   * relay indistinguishable from a hung start, and much shorter would fail nodes
-   * on links that were merely slow. The retries carry on in the background after
-   * this resolves, exactly as they do for a {@link reserveRelays} caller.
+   * BUDGET: the supervisor's first attempt is what `start()` waits on — deliberately the drive's
+   * ordinary deadline rather than a boot-specific one. That deadline is now COUNTED, four link
+   * round trips at the declared `network.linkRoundTripMs` (8 s at its default, where it was a
+   * fixed 10 s): a healthy dial-plus-reserve is sub-second even over a WAN, so this is slack for
+   * a slow link, while going much longer would make a dead relay indistinguishable from a hung
+   * start and much shorter would fail nodes on links that were merely slow. A host that declares
+   * a slower link lengthens it without touching this path — `link-budget.ts`. The retries carry
+   * on in the background after this resolves, exactly as they do for a {@link reserveRelays}
+   * caller.
    *
    * `network.requireRelay === false` softens only the outcome below: a first
    * attempt that lands no `/p2p-circuit` address is logged instead of thrown, and
@@ -6294,7 +6310,13 @@ export class CadreNode implements SAppIdLookup {
       this.relayReserveError = 'control node unavailable';
       return this.getRelayReservationState();
     }
-    const supervisor = superviseRelayReservation(this.controlNode, addrs, opts);
+    // The drive's deadline is counted in link round trips (`link-budget.ts`), so a host that
+    // declared a slower link gets a longer drive without naming a number here. A caller's own
+    // `timeoutMs` still wins.
+    const supervisor = superviseRelayReservation(this.controlNode, addrs, {
+      timeoutMs: relayReservationBudgetMs(this.config.network?.linkRoundTripMs),
+      ...opts
+    });
     this.relayReserveSupervisor = supervisor;
     await supervisor.firstAttempt;
     // Read through `this`, not `supervisor`: an overlapping call may have replaced
