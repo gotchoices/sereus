@@ -572,9 +572,10 @@ a spent invite would give, never as a retryable conflict.
 
 **That bound was broken between 2026-08-04 and 2026-08-25, and the index that broke it is
 declared again.** `formation-unique-token-redesign` declared a `FormationUsageByToken` index to
-spare the scan, which put every per-token usage read — `countFormationUsage`, and through it the
-cap and `hasOutstandingFormationInvite` — onto an index descent. Across machines that descent
-returned only the rows the reading machine wrote: each node counted only its own redemptions, so
+spare the scan, which put every per-token usage read — `countFormationUsage`,
+`hasOutstandingFormationInvite`, and the cap CHECK's own `count(1)` over
+`committed.FormationUsage` — onto an index descent. Across machines that descent returned only
+the rows the reading machine wrote: each node counted only its own redemptions, so
 the cap over-admitted without bound rather than by the concurrency, and a spent invite still read
 as outstanding to the membership connection gate. The index was removed on 2026-08-25 and those
 reads went back to the scan.

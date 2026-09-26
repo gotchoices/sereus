@@ -75,13 +75,12 @@ const CONVERGE_MS = 30_000;
  * clock — a bare per-test timeout loses the both-nodes diagnostic those waits raise, which
  * is the whole point of this scenario.
  *
- * The worst case is case 2 at seven waits: publishing the invite (1), then each node's row
- * scan and its separately-converging {@link waitForUsageCount} (4), then the over-admission
- * arm's count on each node (2) — 210 s of waits plus 60 s of sessions. Raise this WITH the
- * wait count: every wait added to a case has to fit under it, or the case dies holding the
- * evidence.
+ * The worst case is five waits: publishing the invite (1), then each node's row scan and its
+ * separately-converging {@link waitForUsageCount} (4) — 150 s of waits plus 60 s of sessions.
+ * Raise this WITH the wait count: every wait added to a case has to fit under it, or the case
+ * dies holding the evidence.
  */
-const CASE_TIMEOUT_MS = 300_000;
+const CASE_TIMEOUT_MS = 240_000;
 
 /** One redemption attempt: which joiner, dialed through which responder node. */
 interface Attempt {
@@ -299,9 +298,11 @@ describe('Concurrent invitation redemption across two machines', () => {
 	 *
 	 * The table and the `FormationUsageByToken` index are separate collections in the storage
 	 * engine, with separate logs and independent cross-machine catch-up, so a row scan that
-	 * has converged says nothing about when this count will. Every assertion on the count is
-	 * therefore a bounded wait, matching the row scan's — an immediate read compares a value
-	 * that was waited for against one that was not.
+	 * has converged says nothing about when this count will. The FIRST assertion on a node's
+	 * count is therefore a bounded wait, matching the row scan's — an immediate read there
+	 * compares a value that was waited for against one that was not. A LATER read of the same
+	 * node's count within one case is already behind that wait and needs no second one; the two
+	 * such reads in this file say so at their site.
 	 *
 	 * A pass that had to wait logs how long the catch-up took, so a convergence that slows
 	 * from milliseconds to tens of seconds stays visible in the run output instead of being
@@ -480,13 +481,14 @@ describe('Concurrent invitation redemption across two machines', () => {
 			// observable — the audit story the design traded strict enforcement for.
 			const invite = await dbA().queryFormationInvite(token);
 			expect(invite?.totalUses).toBe(1);
-			// Same bounded wait as every other count assertion here: the overage is a
-			// cross-machine quantity, so a node that has not finished catching up is a slow
-			// run, not an unobservable overage.
-			const totalUses = invite!.totalUses!;
+			// Read immediately, deliberately: `assertRowsMatchApprovals` above already WAITED
+			// for each node's count to equal the two approved rows, and the table is
+			// append-only, so `> 1` is established on both nodes before this line. A wait here
+			// could only ever return on its first read, while still reserving two CONVERGE_MS
+			// slots of the per-case budget.
 			for (const [db, label] of [[dbA(), 'node A'], [dbB(), 'node B']] as const) {
-				await waitForUsageCount(db, label, token, (count) => count > totalUses,
-					`above the invite's ${totalUses}-seat cap`);
+				expect(await db.countFormationUsage(token), `${label}: the overage must be observable`)
+					.toBeGreaterThan(invite!.totalUses!);
 			}
 			console.log('[concurrent-redemption] case 2 outcome: BOTH landed (accepted over-admission, 2 rows against a 1-use invite)');
 		} else {
@@ -506,11 +508,8 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// "Once the cohort agrees": both nodes' committed views hold exactly the case-2
 		// rows before the third redemption is issued.
 		for (const [db, label] of [[dbA(), 'node A'], [dbB(), 'node B']] as const) {
-			await waitUntil(async () => (await db.countFormationUsage(token)) === case2ApprovedKeys.length, {
-				timeoutMs: CONVERGE_MS,
-				intervalMs: 250,
-				description: `${label} agrees on the committed case-2 rows`,
-			});
+			await waitForUsageCount(db, label, token, (count) => count === case2ApprovedKeys.length,
+				`${case2ApprovedKeys.length} (the committed case-2 rows)`);
 		}
 
 		// A reader who watched case 2 pass with two rows will assume the cap is dead —
@@ -524,6 +523,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 			J2!.formStrand(invitationVia(token, pair!.B), { purpose: 'case3-via-B' }),
 		).rejects.toThrow(/Formation rejected: Invalid token/);
 
+		// Read immediately: each node's count is already behind the wait at the top of this
+		// case, and the row a refusal must NOT have written would have been written by the node
+		// that SERVED that refusal — locally, on the view read here — so nothing new has to
+		// cross machines for these reads to be able to fail.
 		expect(await dbA().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
 		expect(await dbB().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
 	}, CASE_TIMEOUT_MS);

@@ -3014,8 +3014,11 @@ export class ControlDatabase {
    * live guard is the integration-tests scenario `strand-formation-concurrent-redemption`,
    * which asserts both machines' views of a raced redemption. If it fails on BOTH views
    * again, index convergence has regressed — fix the engine or take this read off the index,
-   * and do not weaken that scenario's assertions to get a green run. A failure on ONE view
-   * only is that scenario's own bounded wait timing out, which its message spells out.
+   * and do not weaken that scenario's assertions to get a green run. A failure on ONE view is
+   * NOT automatically that scenario being slow: one-way convergence lag, and the 2026-08 defect
+   * itself, both present that way whenever only the sibling node wrote the rows. What separates
+   * them is the failure message, which prints both nodes' rows and counts — a sibling holding
+   * rows the failing view is missing is a convergence problem, not a slow run.
    *
    * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
    * locked write body — same per-call opt-out, and for the same reason, as
