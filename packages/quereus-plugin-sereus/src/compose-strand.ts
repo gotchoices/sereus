@@ -246,6 +246,13 @@ export async function composeStrand(
 				coordinatedRepo = options.coordinatedRepo;
 				log('Using injected libp2p node');
 			} else {
+				// NOTE: this path takes the frozen policy whole, so it takes COHORT_READ_DEADLINE_MS
+				// with no way to override it — `StrandConnectionOptions` has no counterpart to
+				// cadre-core's `NetworkConfig.cohortQueryTimeoutMs`. Fine today: every production
+				// strand comes up through cadre-core, which does thread the field, and this path is
+				// the plugin's own connect/e2e route where 5000 ms is the right answer anyway. If a
+				// plugin embedder ever needs a different deadline, `strandClusterPolicy(clusterSize,
+				// undefined, <ms>)` is the call to reach for here.
 				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, clusterPolicy: STRAND_CLUSTER_POLICY, storage });
 				createdNode = created;
 				node = created;

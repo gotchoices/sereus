@@ -687,7 +687,15 @@ export class StrandInstanceManager {
         // returns the frozen STRAND_CLUSTER_POLICY itself, declaring nothing. Resolved
         // HERE rather than at `startStrand`, so a wake from hibernation would pick up a
         // serving set that changed while the strand slept.
-        clusterPolicy: strandClusterPolicy(strandClusterSize, config.servingMachines),
+        //
+        // The third argument is the host's per-peer cohort read deadline, if it set one —
+        // the same field the control node reads, because the two networks ride one link.
+        // Absent, the base policy's COHORT_READ_DEADLINE_MS stands.
+        clusterPolicy: strandClusterPolicy(
+          strandClusterSize,
+          config.servingMachines,
+          config.network?.cohortQueryTimeoutMs
+        ),
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },

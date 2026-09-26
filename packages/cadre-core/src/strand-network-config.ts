@@ -40,8 +40,8 @@
  * absorbed by the per-relay entries when one is.
  *
  * Everything else in `NetworkConfig` — `transports`, `noiseCrypto`, `connectionMonitor`,
- * `connectionGater`, `enableRelay` — is inherited by the caller; this module only owns
- * the two host-endpoint fields above and the relay listen shape. One caveat on
+ * `cohortQueryTimeoutMs`, `connectionGater`, `enableRelay` — is inherited by the caller; this
+ * module only owns the two host-endpoint fields above and the relay listen shape. One caveat on
  * `connectionGater`: an OPEN strand's node gets it unchanged, while a CLOSED strand's
  * node composes revoked-peer denial onto it in `strand-instance-manager.ts` (every
  * supplied hook still honored — see `strand-revocation-enforcer.ts`).

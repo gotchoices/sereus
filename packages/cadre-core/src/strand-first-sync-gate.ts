@@ -79,11 +79,15 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * (`docs/testing.md` → "Link latency"). A round trip therefore costs about
  * 1.8 s. Time from `addStrand` to writable, for a machine holding nothing of the strand yet:
  * 23, 27, 31 and 41 s over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42
- * and 46 s over three runs at a 5000 ms one. The second band matters because widening that
- * deadline makes a consult against a peer that cannot answer cost longer, and this phase runs
- * several of those. The previous 30 s default sat INSIDE the first band, so roughly half of
- * those joins were rejected as "not writable yet" while the sync was progressing normally and
- * went on to complete.
+ * and 46 s over three runs at a 5000 ms one. **The second band is the one in force**: sereus
+ * declares 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`),
+ * because 1000 ms is shorter than one round trip on that link and leaves every cohort read with
+ * no answer to corroborate against. Widening that deadline makes a consult against a peer that
+ * cannot answer cost longer, and this phase runs several of those — which is why the two bands
+ * are both recorded here, and why a change to either number has to be weighed against the
+ * other. 120 s clears the worst sample of the band in force by about 2.6x. The previous 30 s
+ * default sat INSIDE the first band, so roughly half of those joins were rejected as "not
+ * writable yet" while the sync was progressing normally and went on to complete.
  *
  * NOTE: accepted tradeoff — what 120 s costs. This wait is what an app's `addStrand` sits in
  * before it is told "not yet", so a strand none of whose members is reachable at all takes two
