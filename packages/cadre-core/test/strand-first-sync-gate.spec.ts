@@ -323,6 +323,8 @@ describe('StrandFirstSyncGate', () => {
   interface FakeState {
     held: boolean;
     throws?: boolean;
+    /** `schemaManager.getSchema` throws — a probe failure OUTSIDE the read guards. */
+    schemaThrows?: boolean;
     tables?: string[];
     unreachable?: string[];
     reads?: string[];
@@ -342,9 +344,12 @@ describe('StrandFirstSyncGate', () => {
         yield { Count: state.held ? 1 : 0 };
       },
       schemaManager: {
-        getSchema: (name: string) => name === 'App' && state.tables
-          ? { getAllTables: () => (state.tables ?? []).map((t) => ({ name: t, isView: false })) }
-          : undefined
+        getSchema: (name: string) => {
+          if (state.schemaThrows) throw new Error('schema not loaded');
+          return name === 'App' && state.tables
+            ? { getAllTables: () => (state.tables ?? []).map((t) => ({ name: t, isView: false })) }
+            : undefined;
+        }
       }
     } as unknown as Database;
     return { getDatabase: () => db, close: async () => {} } as unknown as StrandDatabase;
@@ -455,6 +460,28 @@ describe('StrandFirstSyncGate', () => {
     expect(scheduler.pending()).toBe(1);
 
     state.unreachable = [];
+    await scheduler.fire();
+    expect(onHeaderHeld).toHaveBeenCalledTimes(1);
+    expect(gate.isOpen).toBe(true);
+  });
+
+  // A probe that throws where the read guards cannot catch it (the `App` schema lookup)
+  // must still be "not yet": the loop is fired from `void probe()`, so an escaping
+  // rejection would unschedule the gate for good and the strand would stay withheld for
+  // the whole first-sync budget — the one failure the gate must not have.
+  it('a probe that throws outside the read guards reschedules instead of killing the loop', async () => {
+    const state: FakeState = { held: true, tables: ['Message'], schemaThrows: true };
+    const scheduler = fakeScheduler();
+    const onHeaderHeld = vi.fn();
+    const gate = new StrandFirstSyncGate({ label: 'g', database: fakeDatabase(state), onHeaderHeld, scheduler });
+
+    gate.start();
+    await scheduler.fire();
+    expect(onHeaderHeld).not.toHaveBeenCalled();
+    expect(gate.isOpen).toBe(false);
+    expect(scheduler.pending()).toBe(1);
+
+    state.schemaThrows = false;
     await scheduler.fire();
     expect(onHeaderHeld).toHaveBeenCalledTimes(1);
     expect(gate.isOpen).toBe(true);

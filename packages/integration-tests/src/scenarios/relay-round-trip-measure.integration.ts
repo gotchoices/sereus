@@ -396,8 +396,9 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			listenAddrs: [],
 			relayAddrs: [relay.dialAddr],
 			// The delayed configuration puts 300 ms of round trip under every message of
-			// the join; the default 30 s first-sync gate is a bring-up budget, not part of
-			// what is measured, so it is widened rather than allowed to end the run.
+			// the join; the first-sync gate's default is a bring-up budget, not part of
+			// what is measured, so it is pinned to this scenario's own budget rather than
+			// left to track a library default the run does not control.
 			strandFirstSync: { timeoutMs: GATE.timeoutMs },
 		}));
 		await B.start();

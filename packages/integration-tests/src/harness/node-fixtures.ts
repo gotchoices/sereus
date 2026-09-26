@@ -119,7 +119,8 @@ export interface ControlNodeOpts {
   /**
    * The joining machine's first-sync write gate (`CadreNodeConfig.strandFirstSync`):
    * how long `addStrand` / `whenStrandWritable` wait for a joiner to receive the
-   * strand's Header before rejecting (default 30 s), and the probe cadence. A
+   * strand's Header before rejecting (default `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
+   * sized for a relayed slow link and stated at that constant), and the probe cadence. A
    * scenario that asserts the rejection itself passes a SHORT `timeoutMs`; one
    * whose join rides a slow path (a relay) may need a longer one.
    */
