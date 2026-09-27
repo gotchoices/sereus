@@ -88,3 +88,27 @@ The maintainer wants this in the next sereus release.
 - **What headless checks can prove:** that the package builds and packs, that the Metro resolution test passes, that the polyfill specs pass from the package, and that the reference app bundles with Metro (`expo export` or an equivalent bundle-only command, if one runs here) with native crypto on and with the optional peers missing.
 - **Device runs are human tasks:** a native build and a device run of the reference app with `full` and `symmetric` modes can't be done by an agent here. File them as one blocked device-run ticket, like `blocked/rn-host-node-request-device-run`, not as a gate on completing this ticket.
 - **Split** into ordered implement tickets small enough for one runner pass each, for example: package skeleton and publishing; polyfills and tests move; Metro helper; crypto adapter; reference app switches over and turns native crypto on; docs.
+
+## Context from sereus-rn (the ticket's author), 2026-09-27
+
+**Sources** (read-only, under `../sereus-chat/apps/mobile/`):
+- `src/cadre/noise-crypto.ts`: the adapter, about 200 lines (sereus-chat commits `72d05be` and `b84ee82`).
+- `src/cadre/CadreService.ts`: the wiring near line 416. `setNoiseCryptoMode` (about lines 519–550) rebuilds the node when the mode changes.
+- `package.json`: `react-native-quick-crypto` ^1.1.7 and `react-native-nitro-modules` ^0.37.1. `@craftzdog/react-native-buffer` is imported but arrives only through quick-crypto, so the kit should declare it explicitly.
+- Measurements: `../sereus-chat/design/specs/mobile/STATUS.md` (upstreaming proposal around lines 364–376; device figures around 395 and 1100–1270) and `../sereus-chat/test/stack/handshake-cost.mjs`.
+
+**Differences the plan must reconcile:**
+- **Metro.** sereus-chat does not force the libp2p `browser`-field variants. It sets `unstable_conditionsByPlatform` (react-native, import, require, default) with `unstable_enablePackageExports`, and adds a `@babel/runtime` redirect to its CommonJS helpers; without that redirect `_interopRequireDefault is not a function`. Find out whether reference-app-rn needs that redirect or avoids the problem another way.
+- **`crypto` shim.** sereus-chat's exports a `sign()` that throws a clear error, because cadre-core's `push-notifier-fcm` imports `node:crypto`'s `sign` when installed from npm. Compare it with reference-app-rn's `polyfills/node-crypto.js`.
+- **Other stubs.** sereus-chat stubs `http2` when installed from npm (for `push-notifier-apns`), and stubs `path` and `fs` when linked to local source. These may be obsolete now that push lives in its own package. Check before carrying them over.
+- **Versions.** sereus-chat is bare RN 0.82 without Expo; reference-app-rn is Expo ~53 with RN 0.79.6. quick-crypto 1.x runs on nitro modules and **requires the new architecture**. Check that reference-app-rn has it enabled (`app.json` / `newArchEnabled`). If it doesn't, turning it on is its own implement step, with its own device-run task.
+
+**Ruled out:**
+- Writing any cryptography. The adapter only ports `@chainsafe/libp2p-noise`'s own Node `ICryptoInterface` onto quick-crypto.
+- Changing the DER prefixes (keep them byte-for-byte), or dropping the spread of `noisePureJsCrypto` first, which makes gaps fall back to the slow path rather than fail.
+- Dropping the `off` / `symmetric` / `full` switch. `symmetric` stays the default because `full` has had less device time.
+- Hard dependencies on native modules.
+
+**Suggested test (headless):** run the adapter under Node with `react-native-quick-crypto` aliased to `node:crypto`, which implements the same API. Check that handshake and encrypt/decrypt results match `noisePureJsCrypto`. That covers the DER prefixes and output shapes without a device, and mocks nothing this repo owns.
+
+**Suggested split** (alongside the gardener's above): (1) skeleton, polyfills module and Metro helper; (2) crypto adapter, with reference-app-rn switched over and `noiseCrypto` turned on; (3) docs. The gardener's finer split is fine too, as long as each step fits one runner pass.
