@@ -174,7 +174,13 @@ function cadreResolveRequest(upstream, projectRoot) {
  * already sit inside the app's `node_modules`.
  *
  * A peer the app has not installed fails with Metro's usual "unable to resolve", and only
- * if something imports it.
+ * if something imports it. Metro's error still names the real importer: it takes the
+ * origin from its own graph, not from the context this rule rewrites.
+ *
+ * NOTE: moving the origin to the app also means the importing package's own
+ * `browser` / `react-native` field no longer redirects a peer name (Metro reads that
+ * field from the origin's package). No dependency does this today; if one ever
+ * aliases a peer that way, apply its redirect before this rule.
  *
  * @param {string} moduleName
  */

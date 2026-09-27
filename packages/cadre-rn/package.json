@@ -21,10 +21,7 @@
     "./polyfills": "./polyfills/index.js",
     "./polyfills/webrtc": "./polyfills/webrtc.js",
     "./boot-check": "./polyfills/boot-check.js",
-    "./metro": {
-      "require": "./metro/index.cjs",
-      "default": "./metro/index.cjs"
-    },
+    "./metro": "./metro/index.cjs",
     "./package.json": "./package.json"
   },
   "repository": {

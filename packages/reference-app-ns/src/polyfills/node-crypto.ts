@@ -2,7 +2,7 @@
  * Minimal `node:crypto` shim for the NativeScript runtime.
  *
  * Provides only `createHash()` (SHA-256 / SHA-512) via @noble/hashes, ported
- * from packages/reference-app-rn/polyfills/node-crypto.js. Used by
+ * from packages/cadre-rn/shims/node-crypto.js. Used by
  * `multiformats/hashes/sha2`, which does:
  *   import crypto from 'crypto';
  *   crypto.createHash('sha256').update(input).digest();

@@ -2,7 +2,7 @@
  * Minimal `node:os` shim for the NativeScript runtime.
  *
  * Only the surface `@libp2p/utils` touches. Unlike the RN port
- * (packages/reference-app-rn/polyfills/node-os.js) this does NOT import
+ * (packages/cadre-rn/shims/node-os.js) this does NOT import
  * `react-native` — NativeScript has no such module. `networkInterfaces`
  * returns `{}` so libp2p falls back to its other discovery paths; the rest are
  * advisory and never gate behaviour.
