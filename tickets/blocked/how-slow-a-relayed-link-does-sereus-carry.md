@@ -56,3 +56,17 @@ High. A declared ceiling in a document and two passthrough fields are both cheap
 ## Decision (maintainer, 2026-09-26)
 
 Accepted: support relayed links up to a **3-second round trip**, and ask optimystic to pass `connectionManager.dialTimeout` and `connectionManager.inboundUpgradeTimeout` through `NodeOptions`, with no default of its own. **Start after the next sereus release.** Remaining steps: the `docs/architecture.md` wording above; the request to optimystic, including the 375 ms one-way finding on its own 3 s dial defaults; and, once optimystic releases it, declaring both limits from `DECLARED_LINK_ROUND_TRIP_MS` (raised to cover 3 s) in cadre-core.
+
+## Upstream status (2026-09-27)
+
+optimystic `92a7dc1e` (main, not yet released) adds `NodeOptions.connectionManager?: Libp2pConnectionTimeouts` (`dialTimeout`, `inboundUpgradeTimeout`), exported from the main and `/rn` entries.
+- With nothing declared, libp2p's own `dialTimeout` applies, and `inboundUpgradeTimeout` stays at 10 000.
+- Set both on every node, relays included.
+- It will ship as 1.6.1 or 1.7.0; 1.6.0 is already published.
+- **Not covered:** db-p2p's own 3 s RPC dial deadlines, filed upstream as `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection`. Until that lands, the documented ceiling must say that relayed links above about 375 ms one-way still fail at those RPC dials.
+- **Unblock when** that optimystic release is on npm. Then:
+  - raise the floor;
+  - declare both timeouts from `DECLARED_LINK_ROUND_TRIP_MS` on the control and strand nodes;
+  - raise the declared round trip to cover 3 s;
+  - write the `docs/architecture.md` wording;
+  - add the two settings to the relay container (`ops/docker/libp2p-infra`), coordinating with issue #17's Phase 1.
