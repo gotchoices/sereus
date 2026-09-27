@@ -35,7 +35,9 @@
  * came up gated (`'syncing'`), when B's strand node first held a connection to A's, when
  * the strand became writable, and when the row written while B was away became readable.
  * Run with `DEBUG=sereus:cadre:strand-first-sync,sereus:cadre:timing` to see each gate
- * probe's failure and the launch's phase timings.
+ * probe's failure and the launch's phase timings, and add
+ * `optimystic:db-p2p:coordinator-repo*` to see how each block read was served (locally,
+ * from a peer, or declined as `cluster-fetch:peers-silent` / `cluster-fetch:no-quorum`).
  *
  * ── Running it ──
  *
@@ -43,8 +45,9 @@
  *
  * `REATTACH_ARMS=<arm>[,<arm>…]` selects arms (all three by default), `REATTACH_RUNS=<n>`
  * repeats each as separate runs (separate nodes, separate relay), `REATTACH_DELAY_MS`
- * overrides the 900 ms one-way delay, and `REATTACH_MISSED_WRITES` how many rows A writes
- * while B is away (default 1).
+ * overrides the 900 ms one-way delay, `REATTACH_MISSED_WRITES` how many rows A writes
+ * while B is away (default 1), and `REATTACH_COHORT_READ_MS` both parties'
+ * `network.cohortQueryTimeoutMs` (default: cadre's own, `COHORT_READ_DEADLINE_MS`).
  *
  * Nothing here asserts a duration: a budget test would gate on this machine's speed. The
  * only failure is an arm that never becomes writable inside {@link WRITABLE_WAIT_MS}.
@@ -60,7 +63,7 @@ import {
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
-import type { StrandRow } from '@serfab/cadre-core';
+import type { CadreNodeConfig, StrandRow } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	sleep,
@@ -103,6 +106,7 @@ const SELECTED = (process.env.REATTACH_ARMS ?? ARMS.join(','))
 const RUNS = integerEnv('REATTACH_RUNS', 1) ?? 1;
 const DELAY_MS = integerEnv('REATTACH_DELAY_MS', 0) ?? 900;
 const MISSED_WRITES = integerEnv('REATTACH_MISSED_WRITES', 1) ?? 1;
+const COHORT_READ_MS = integerEnv('REATTACH_COHORT_READ_MS', 1);
 
 if (MEASURE) {
 	const unknown = SELECTED.filter((name) => !(ARMS as readonly string[]).includes(name));
@@ -119,6 +123,11 @@ async function readDataRows(db: Database): Promise<Map<string, string>> {
 	const rows = new Map<string, string>();
 	for await (const row of db.eval('select Key, Val from App.Data')) rows.set(row.Key as string, row.Val as string);
 	return rows;
+}
+
+/** A party's config with the `REATTACH_COHORT_READ_MS` override, when one was given. */
+function withCohortReadDeadline(config: CadreNodeConfig): CadreNodeConfig {
+	return COHORT_READ_MS === undefined ? config : { ...config, network: { ...config.network, cohortQueryTimeoutMs: COHORT_READ_MS } };
 }
 
 function connectedTo(node: Libp2p, peerId: string): boolean {
@@ -161,10 +170,10 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 		relay = await startDedicatedRelay();
 
 		const aKey = await generateKeyPair('Ed25519');
-		A = new CadreNode(controlNodeConfig({
+		A = new CadreNode(withCohortReadDeadline(controlNodeConfig({
 			partyId: `reattach-a-${runTag}`, privateKey: aKey, profile: 'storage', enableRelay: false,
 			listenAddrs: [], relayAddrs: [relay.dialAddr],
-		}));
+		})));
 		await A.start();
 		await makeOwnOwner(A, aKey);
 		A.initializeStrandSolicitation({
@@ -183,11 +192,11 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 
 		const bKey = await generateKeyPair('Ed25519');
 		const bStorage = arm === 'reattach-kept' ? captureRawStorage().provider : () => new MemoryRawStorage();
-		B = new CadreNode(controlNodeConfig({
+		B = new CadreNode(withCohortReadDeadline(controlNodeConfig({
 			partyId: `reattach-b-${runTag}`, privateKey: bKey, enableRelay: false,
 			listenAddrs: [], relayAddrs: [relay.dialAddr], storageProvider: bStorage,
 			strandFirstSync: { timeoutMs: WRITABLE_WAIT_MS },
-		}));
+		})));
 		await B.start();
 		await makeOwnOwner(B, bKey);
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
@@ -238,8 +247,8 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 			{ timeoutMs: WRITABLE_WAIT_MS, intervalMs: 500, description: `B reads ${expectKey}` });
 		const rowAt = since();
 		await connectionWatch;
-		say('RESULT arm=%s delay=%d missed=%d | launch->connected %s ms | launch->writable %d ms | launch->row %d ms',
-			arm, link.delayMs, arm === 'fresh' ? 0 : MISSED_WRITES,
+		say('RESULT arm=%s delay=%d missed=%d cohortRead=%s | launch->connected %s ms | launch->writable %d ms | launch->row %d ms',
+			arm, link.delayMs, arm === 'fresh' ? 0 : MISSED_WRITES, COHORT_READ_MS ?? 'default',
 			connectedAt === undefined ? 'never' : String(connectedAt), writableAt, rowAt);
 	} finally {
 		await Promise.allSettled([B?.stop(), A?.stop()]);

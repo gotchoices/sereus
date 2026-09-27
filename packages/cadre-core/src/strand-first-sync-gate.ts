@@ -17,9 +17,17 @@
  * freshly initialized `StrandDatabase` back from the app — `StrandInstance.database` stays
  * unset and the instance reports `'syncing'` — and probes on a cadence until the Header is
  * readable AND a read of each app table settles, at which point the database is published
- * and the instance goes `'active'`. A machine that already holds the Header (a restart, a
- * hibernation resume, a founder) passes the probe on the first try and is never gated, so
- * offline-first writes on a machine that has synced before keep working.
+ * and the instance goes `'active'`. A machine whose store already holds the Header and every
+ * app table (a founder, and normally a restart or a hibernation resume) passes the probe on
+ * the first try and is never gated, so offline-first writes on a machine that has synced
+ * before keep working.
+ *
+ * "Has synced before" is decided by what the local store actually holds, not by whether this
+ * machine once read the strand: a machine that left soon after its first sync can hold less
+ * than it read, and is then gated like a joiner. The re-attach measurement on
+ * {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS} saw exactly that — a machine back over the store
+ * it kept, without the `Strand.Header` collection it had read before it left. Gating it is
+ * right: writing into a collection this machine does not hold would fork it.
  *
  * Why the app tables too: the Header is ONE collection. It reaches a joiner ahead of the
  * founder's app-table collections (peer-join backfill and pull-on-read deliver those
@@ -36,10 +44,12 @@
  * every machine; the first write to it still creates its collection — see `docs/strands.md`
  * ("Joining") for that residual.
  *
- * Owned by `StrandInstanceManager`: created in `buildStrandRuntime` for a non-founder launch
- * whose first probe finds no Header, stopped and dropped in `releaseRuntime` (so a quiesce →
- * resume rebuild re-probes over the same store), and force-opened when a founder request
- * runs the bootstrap against the still-gated database (`foundExistingStrand`).
+ * Owned by `StrandInstanceManager`: created in `buildStrandRuntime` for every launch, armed
+ * only for a non-founder launch whose first probe fails, stopped and dropped in
+ * `releaseRuntime` (so a quiesce → resume rebuild re-probes over the same store), and opened
+ * by `publishDatabase` whenever the database is published without its loop — a launch that
+ * needed no gate, or a founder request that ran the bootstrap against the still-gated
+ * database (`foundExistingStrand`).
  *
  * NOTE: the gate covers app and membership tables, not the schema catalog. Every launch —
  * joiner or founder — writes the catalog collection (`optimystic/schema` plus two
@@ -63,49 +73,81 @@ const log = debug('sereus:cadre:strand-first-sync');
 export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
 
 /**
- * How long `CadreNode.addStrand` waits for a joining machine's first sync before rejecting
- * with {@link StrandAwaitingFirstSyncError}.
+ * How long `CadreNode.addStrand` waits for a machine's first sync before rejecting with
+ * {@link StrandAwaitingFirstSyncError}. It has to cover the slowest attach sereus carries,
+ * which is not a first join: a machine RE-attaching through a relay on a slow link can take
+ * longer than one joining for the first time.
  *
  * Measured over a DIRECT connection (2026-09-16): the joiner reads the founder's rows about
- * 1.3 s after `addStrand` would previously have resolved. That is still the fast case, and it
- * is not what this budget has to cover.
+ * 1.3 s after `addStrand` would previously have resolved. That is the fast case, and it is not
+ * what this budget has to cover.
  *
- * Measured over a RELAYED SLOW LINK (2026-09-26): one Windows developer machine, two
+ * Every harness figure below was taken on one shape: one Windows developer machine, two
  * relay-only `CadreNode`s (`listenAddrs: []`) on a shared loopback dedicated relay, with a
  * 900 ms one-way per-frame outbound delay applied to every websocket by
  * `integration-tests/src/harness/ws-latency.ts` in `pipelined` mode — frames stay overlapped
  * in flight, so the figure is latency and bandwidth stays unlimited; the harness's other mode
  * (`serial`) is a per-socket frame-rate cap and its delays are NOT comparable
- * (`docs/testing.md` → "Link latency"). A round trip therefore costs about
- * 1.8 s. Time from `addStrand` to writable, for a machine holding nothing of the strand yet:
- * 23, 27, 31 and 41 s over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42
- * and 46 s over three runs at a 5000 ms one. **The second band is the one in force**: sereus
- * declares 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`),
- * because 1000 ms is shorter than one round trip on that link and leaves every cohort read with
- * no answer to corroborate against. Widening that deadline makes a consult against a peer that
- * cannot answer cost longer, and this phase runs several of those — which is why the two bands
- * are both recorded here, and why a change to either number has to be weighed against the
- * other. 120 s clears the worst sample of the band in force by about 2.6x. The previous 30 s
- * default sat INSIDE the first band, so roughly half of those joins were rejected as "not
- * writable yet" while the sync was progressing normally and went on to complete.
+ * (`docs/testing.md` → "Link latency"). A round trip therefore costs about 1.8 s. Times run
+ * from the `addStrand` call to writable.
  *
- * NOTE: accepted tradeoff — what 120 s costs. This wait is what an app's `addStrand` sits in
- * before it is told "not yet", so a strand none of whose members is reachable at all takes two
- * minutes to report instead of thirty seconds. The slow report was weighed against refusing
- * joins that were working, and the refusal is the worse failure. The cost is bounded — the
- * rejection is retryable, the strand stays launched and keeps probing, and `strand:writable`
- * fires the moment the sync lands, so an app that listens for the event rather than awaiting
- * the call is unaffected either way. Revisit if the gate ever learns whether ANY other member
- * is connected: "no peer at all" could then be reported at once and this budget would only
- * ever be spent on a sync that is actually in progress.
+ * FRESH JOIN (2026-09-26), a machine holding nothing of the strand yet: 23, 27, 31 and 41 s
+ * over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42 and 46 s over three
+ * runs at a 5000 ms one; the re-attach scenario below later took 38.7, 38.7 and 56.9 s for
+ * the same fresh join. **The 5000 ms band, 35-57 s, is the one in force**: sereus declares
+ * 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`), because
+ * 1000 ms is shorter than one round trip on that link and leaves every cohort read with no
+ * answer to corroborate against. Widening that deadline makes a consult against a peer that
+ * cannot answer cost longer, and this phase runs several of those — which is why both bands
+ * are recorded here, and why a change to either number has to be weighed against the other.
+ *
+ * RE-ATTACH (2026-09-26, the opt-in
+ * `integration-tests/src/scenarios/strand-reattach-first-sync-measure.integration.ts` — re-run
+ * it before changing this number): B attached once on an undelayed link, left with
+ * `stopStrand`, A wrote while it was away, the delay was raised, and B called `addStrand`
+ * again.
+ *  - Over an EMPTY store (one minted per launch, cadre's default with no storage provider):
+ *    gated in all four runs and writable at 38.7-56.8 s, the same as a fresh join.
+ *  - Over the store it KEPT (a phone with durable storage), bimodal. In 3 of 8 runs the store
+ *    held everything and the launch came up writable (5.6 s, the launch itself). In the other
+ *    5 it lacked the `Strand.Header` collection B had read on its first attach, so B was gated
+ *    like a joiner and became writable at 64.1-78.7 s — the slowest attach measured, about
+ *    twice a fresh join. Why syncing over a partial store is slower sits inside optimystic
+ *    (`tickets/blocked/report-reattach-over-partial-replica-to-optimystic`).
+ *  - Neither a redial nor catching up on missed writes explains the time: B's strand node
+ *    connected to A's at 11 s in every arm, fresh join included, and a run with 20 missed
+ *    writes fell inside the run-to-run spread of those with 1.
+ * This budget covers WRITABLE, not caught up: in the gated kept-store runs the row A wrote
+ * while B was away became readable only at 140-162 s.
+ *
+ * Two samples from outside this harness, neither reproduced here and neither discarded: a
+ * reporter's re-attach of the same shape (optimystic #22; their harness, storage and delay
+ * injector are unknown to us) opened the gate at about 150 s, after the previous 120 s budget
+ * had already rejected; and a real Galaxy S7 joining fresh through relay.sereus.org took 178 s.
+ *
+ * 300 s clears the worst harness sample (79 s) by about 3.8x, the reporter's re-attach by 2x
+ * and the device join by about 1.7x. 240 s was rejected: it clears the device join by only
+ * 1.35x, and that sample was not a re-attach. History: the original 30 s sat INSIDE the 1000 ms
+ * fresh band and refused about half of those joins while their sync was progressing normally;
+ * 120 s was sized from fresh joins only and refused the reporter's re-attach.
+ *
+ * NOTE: accepted tradeoff — what 300 s costs. This wait is what an app's `addStrand` sits in
+ * before it is told "not yet", so a strand none of whose members is reachable at all takes five
+ * minutes to report instead of two. The slow report was weighed against refusing attaches that
+ * were working, and the refusal is the worse failure. The cost is bounded — the rejection is
+ * retryable, the strand stays launched and keeps probing, and `strand:writable` fires the
+ * moment the sync lands, so an app that listens for the event rather than awaiting the call is
+ * unaffected either way. Revisit if the gate ever learns whether ANY other member is connected:
+ * "no peer at all" could then be reported at once and this budget would only ever be spent on a
+ * sync that is actually in progress — worth more the longer this budget gets.
  */
-export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 120_000;
+export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 300_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */
 export interface StrandFirstSyncConfig {
   /**
-   * Default wait for `CadreNode.addStrand` (and `whenStrandWritable`) before a joining
-   * machine that has reached no other member is reported as not yet writable. Default
+   * Default wait for `CadreNode.addStrand` (and `whenStrandWritable`) before a machine whose
+   * first sync has not completed is reported as not yet writable. Default
    * {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS}.
    */
   timeoutMs?: number;
@@ -114,11 +156,12 @@ export interface StrandFirstSyncConfig {
 }
 
 /**
- * Thrown by `CadreNode.addStrand` / `whenStrandWritable` when a joining machine has not
- * received the strand's data from any other member within the wait budget. RETRYABLE: the
- * strand stays launched and keeps probing, so a later `addStrand` (or `whenStrandWritable`)
- * for the same strand completes the attach once another member is reachable; the
- * `strand:writable` event fires at that moment too.
+ * Thrown by `CadreNode.addStrand` / `whenStrandWritable` when a machine has not received the
+ * strand's data from another member within the wait budget — because no other member is
+ * reachable, or because one is and the sync is still arriving over a slow link; the gate
+ * cannot tell the two apart. RETRYABLE: the strand stays launched and keeps probing, so a
+ * later `addStrand` (or `whenStrandWritable`) for the same strand completes the attach once
+ * the data has arrived; the `strand:writable` event fires at that moment too.
  */
 export class StrandAwaitingFirstSyncError extends Error {
   readonly strandId: string;
@@ -126,10 +169,11 @@ export class StrandAwaitingFirstSyncError extends Error {
 
   constructor(strandId: string, waitedMs: number) {
     super(
-      `Strand ${strandId} is not writable yet: no member of this strand has been reachable ` +
-      `since this machine joined, so it has not received the strand's data (waited ${waitedMs} ms). ` +
-      'The strand stays launched and keeps trying — call addStrand again, or wait for the ' +
-      "'strand:writable' event, once another member is reachable."
+      `Strand ${strandId} is not writable yet: this machine has not yet received the strand's data ` +
+      `from another member (waited ${waitedMs} ms). Either no other member is reachable, or the ` +
+      'link to one is slow and the sync is still in progress. The strand stays launched and keeps ' +
+      'trying — call addStrand or whenStrandWritable(strandId) again to keep waiting, or listen ' +
+      "for the 'strand:writable' event."
     );
     this.name = 'StrandAwaitingFirstSyncError';
     this.strandId = strandId;
@@ -243,14 +287,16 @@ export class StrandFirstSyncGate {
   }
 
   /**
-   * Force-open: the caller has just written the Header itself (a founder bootstrap run
-   * against the gated database). Stops the loop; `onHeaderHeld` is NOT invoked.
+   * Open without the probe loop: the caller is publishing the database itself — a launch
+   * whose first probe passed (or a founder's), which never armed the loop, or a founder
+   * bootstrap just run against the gated database. Stops the loop; `onHeaderHeld` is NOT
+   * invoked.
    */
   open(): void {
     if (this.opened) return;
     this.opened = true;
     this.stop();
-    log('[%s] first-sync gate opened by the caller (Header written locally)', this.deps.label);
+    log('[%s] database published by the caller; first-sync gate not needed or force-opened', this.deps.label);
   }
 
   /** Disarm the loop; a probe already in flight completes and is then ignored. */

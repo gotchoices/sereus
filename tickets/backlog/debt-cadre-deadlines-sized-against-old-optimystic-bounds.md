@@ -8,7 +8,7 @@ files:
   - packages/cadre-core/src/strand-formation-protocol.ts (DEFAULT_PROVISION_TIMEOUT_MS, 12000)
   - packages/cadre-core/src/seed-bootstrap.ts (DEFAULT_SEED_READ_TIMEOUT_MS / DEFAULT_SEED_DELIVER_TIMEOUT_MS, 10000)
   - packages/cadre-core/src/control-cohort.ts (DEFAULT_CONTROL_COHORT_RECONCILE_MS, 15000)
-  - packages/cadre-core/src/strand-first-sync-gate.ts (DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS, 120000 — the one that WAS weighed)
+  - packages/cadre-core/src/strand-first-sync-gate.ts (DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS, 300000 — the one that WAS weighed, and re-weighed for re-attach)
 severity: edge-case
 likelihood: normal-use
 tradeoffs: Nothing is observably broken — every deadline named here wraps a path that either fails open by design or retries, so the visible effect is slower and vaguer failures on slow links rather than wrong answers; and the honest fix is per-case judgement across eight sites with no single mechanical check at the end of it, which a maintainer may reasonably defer until a deployment actually reports one of these timeouts firing.
@@ -31,7 +31,7 @@ Cadre has its own deadlines layered on top of those, and each was chosen against
 | `CONTROL_WRITE_RETRY_BUDGET_MS` | 10 000 ms | yes (vs 5 000 per round) | **no** |
 | `DEFAULT_PROVISION_TIMEOUT_MS` | 12 000 ms | yes (vs 5 000 per round) | **no** |
 | `DEFAULT_CONTROL_COHORT_RECONCILE_MS` | 15 000 ms | yes (vs 5 000 per round) | **no** |
-| `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` | 120 000 ms | yes | yes |
+| `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` | 300 000 ms (120 000 when this ticket was filed) | yes | yes |
 
 Only the last one was weighed when the per-peer deadline was raised; its own doc comment records the measurement that justifies it. The other six were not considered, and nothing anywhere states that they depend on a number declared in `quereus-plugin-sereus`.
 

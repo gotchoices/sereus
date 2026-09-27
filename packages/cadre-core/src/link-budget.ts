@@ -81,7 +81,7 @@
  * **Why 2 000.** It states the slowest link sereus already claims to support, and two other
  * budgets fix that claim independently: `COHORT_READ_DEADLINE_MS`
  * (`quereus-plugin-sereus/src/cluster-size.ts`, 5 000 ms) and
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`strand-first-sync-gate.ts`, 120 000 ms) were both
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`strand-first-sync-gate.ts`) were both
  * sized against two parties reaching each other only through a public relay at a round trip
  * near 1.8 s. Declaring 2 000 rounds that band up and leaves about 720 ms over the worst
  * relayed dial measured at it (7 279 ms against a derived 8 000 ms).

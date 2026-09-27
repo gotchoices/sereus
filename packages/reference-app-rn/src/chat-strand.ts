@@ -174,10 +174,10 @@ export async function createClosedChatStrand(
  * The role write below is safe ONLY because `addStrand` resolves once the strand is
  * writable: a joining machine's database is withheld until it has received the
  * strand's data from the host, since a write before that forks the table it touches
- * (the joiner's own rows silently vanish). If no host is reachable within the node's
- * `strandFirstSync.timeoutMs`, `addStrand` rejects with the retryable
- * `StrandAwaitingFirstSyncError` and the strand stays launched — call this again once
- * the host is reachable.
+ * (the joiner's own rows silently vanish). If that data has not arrived within the node's
+ * `strandFirstSync.timeoutMs` (no host reachable, or a slow link still syncing), `addStrand`
+ * rejects with the retryable `StrandAwaitingFirstSyncError` and the strand stays launched —
+ * call this again to keep waiting.
  *
  * @param cadreNode         Running CadreNode
  * @param strandId          The closed strand's id

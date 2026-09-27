@@ -43,9 +43,9 @@ export const MIN_CLUSTER_SIZE = 2;
  * **What it costs**, in the terms Optimystic's own field doc uses: a peer that is truly gone
  * now holds a read of a block missing locally for up to 5 s before the read is declined
  * instead of 1 s. A joining machine's first sync runs several such consults, so it is the cost
- * that binds — and the first-sync band measured at BOTH deadlines, against the 120 s budget it
- * has to fit, is recorded once, on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` in cadre-core's
- * `strand-first-sync-gate.ts`. At 5000 against the 30 s budget that preceded 120 s, this change
+ * that binds — and the first-sync band measured at BOTH deadlines, against the budget it has
+ * to fit, is recorded once, on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` in cadre-core's
+ * `strand-first-sync-gate.ts`. At 5000 against the 30 s budget that preceded it, this change
  * would have turned a slow-but-working join into the very `StrandAwaitingFirstSyncError` the
  * report named. 3000 is the fallback if that margin ever goes — still 1.7x the reported round
  * trip, and a doomed consult costs 40% less.
@@ -74,10 +74,11 @@ export const MIN_CLUSTER_SIZE = 2;
  * cadre-core's `NetworkConfig.cohortQueryTimeoutMs`, threaded to {@link controlClusterPolicy}
  * and {@link strandClusterPolicy}.
  *
- * NOTE: this number and the first-sync budget are coupled, and the margin between them is about
- * 2.6x today. Re-measure the first-sync band before raising this again, or when a deployment's
- * first sync grows more collections than the two-table scenario measured above —
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` carries the result and `docs/testing.md` the recipe.
+ * NOTE: this number and the first-sync budget are coupled; the margin between that budget and
+ * the slowest first sync measured is stated on it. Re-measure the first-sync band before raising
+ * this again, or when a deployment's first sync grows more collections than the two-table
+ * scenario measured above — `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` carries the result and
+ * `docs/testing.md` the recipe.
  * Nothing warns when the margin goes; the symptom is `StrandAwaitingFirstSyncError` on a join
  * that was progressing normally, which is the failure this pair of numbers exists to end.
  */

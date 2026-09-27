@@ -124,7 +124,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
     const error = await manager.whenWritable('gate-syncing', { timeoutMs: 20 }).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(StrandAwaitingFirstSyncError);
     expect((error as StrandAwaitingFirstSyncError).strandId).toBe('gate-syncing');
-    expect((error as Error).message).toMatch(/no member of this strand has been reachable/);
+    expect((error as Error).message).toMatch(/has not yet received the strand's data from another member/);
 
     // Retryable: nothing was torn down and nothing was announced.
     expect(manager.hasStrand('gate-syncing')).toBe(true);
@@ -142,7 +142,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
 
     const startedAt = Date.now();
     await expect(manager.whenWritable('gate-default-wait')).rejects.toThrow(StrandAwaitingFirstSyncError);
-    // Well under the module default of 120 s: the retained config's budget applied.
+    // Well under the module default (DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS): the retained config's budget applied.
     expect(Date.now() - startedAt).toBeLessThan(5_000);
 
     await manager.stopAll();

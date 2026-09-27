@@ -1248,7 +1248,7 @@ interface CadreNodeConfig {
     // Cost of a larger value: a peer that is truly GONE holds a read of a locally-missing
     // block for that long before the read is declined, and a joining machine's first sync
     // runs several such consults — weigh a change against the first-sync budget
-    // (`CadreNodeConfig.strandFirstSync`, default 120 s). Not re-validated here:
+    // (`CadreNodeConfig.strandFirstSync`, default `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`). Not re-validated here:
     // Optimystic throws on a non-finite, non-positive, or absurdly large value where the
     // libp2p node is built (`CadreNode.start()` for control, `addStrand` for a strand).
     cohortQueryTimeoutMs?: number;
