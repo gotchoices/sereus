@@ -86,11 +86,13 @@ export interface HostNodeRequestBudgets {
 	seedRetryMs: number;
 	/**
 	 * Wait for the control connection to the lent node to come up, counted from
-	 * before the first dial. 60 s covers most of two full dials of the lent node at
-	 * cadre-core's per-peer limit (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`, 32 s at the
-	 * default declared link round trip — it is derived now, not fixed, so a host that
+	 * before the first dial. 120 s covers two full dials of the lent node at
+	 * cadre-core's per-peer limit (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`, 56 s at the
+	 * default declared link round trip — it is derived, not fixed, so a host that
 	 * declares a slower link moves it: see `link-budget.ts`): room for a first dial that
 	 * finds nothing answering yet and a second one after it. See {@link connectToNode}.
+	 * A full dial only costs that much when the lent node's addresses are silently
+	 * dropped; one that is refused fails at once, and one that works answers in seconds.
 	 */
 	connectMs: number;
 	/** Gap between polls in each of the waits above. */
@@ -128,7 +130,7 @@ export interface HostNodeRequestResult {
 const DEFAULT_BUDGETS: HostNodeRequestBudgets = {
 	nodeStartupMs: 90_000,
 	seedRetryMs: 30_000,
-	connectMs: 60_000,
+	connectMs: 120_000,
 	pollIntervalMs: 1_000,
 	cleanupMs: 10_000,
 };
@@ -389,7 +391,7 @@ async function putSeed(flow: Flow, donationId: string, encodedSeed: string): Pro
  * pass joins it, so this never dials twice at once.
  *
  * NOTE: a pass dials the cadre's members one after another, owners first, and an
- * unreachable member costs up to cadre-core's per-peer limit (30 s) before the
+ * unreachable member costs up to cadre-core's per-peer limit (56 s) before the
  * lent node's turn. A cadre with an offline owner device can therefore use most
  * of `connectMs` before this node is dialed. If that shows up, dial the lent node
  * ahead of the pass rather than raising the budget again.

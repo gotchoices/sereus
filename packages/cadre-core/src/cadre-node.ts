@@ -92,7 +92,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { connectionManagerTimeouts, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -1692,6 +1692,10 @@ export class CadreNode implements SAppIdLookup {
       // whose event loop is saturated by pure-JS Noise crypto. A configured value
       // replaces the default whole (see DEFAULT_CONNECTION_MONITOR).
       connectionMonitor: network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
+      // libp2p's own dial and inbound-upgrade limits, from the same declared link as every
+      // cadre dial budget. Left to db-p2p, both stay at 10 s, which cannot open a relayed
+      // connection above a 2.5 s round trip — and the listener's side of that fails silently.
+      connectionManager: connectionManagerTimeouts(network?.linkRoundTripMs),
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.
@@ -5708,7 +5712,7 @@ export class CadreNode implements SAppIdLookup {
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
    * timeouts (10 s each: dial by peer id, then by addr) before the reservation drive even
    * starts, so one failed re-drive holds the supervisor `driving` for those 20 s plus the
-   * drive's own deadline — 28 s at the default declared link round trip, and longer on a host
+   * drive's own deadline — 34 s at the default declared link round trip, and longer on a host
    * that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the
@@ -6243,7 +6247,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * BUDGET: the supervisor's first attempt is what `start()` waits on — deliberately the drive's
    * ordinary deadline rather than a boot-specific one. That deadline is now COUNTED, four link
-   * round trips at the declared `network.linkRoundTripMs` (8 s at its default, where it was a
+   * round trips at the declared `network.linkRoundTripMs` (14 s at its default, where it was a
    * fixed 10 s): a healthy dial-plus-reserve is sub-second even over a WAN, so this is slack for
    * a slow link, while going much longer would make a dead relay indistinguishable from a hung
    * start and much shorter would fail nodes on links that were merely slow. A host that declares

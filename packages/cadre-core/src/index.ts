@@ -457,6 +457,7 @@ export {
   PUSH_TRANSFER_ALLOWANCE_MS,
   resolveLinkRoundTripMs,
   relayedDialBudgetMs,
+  connectionManagerTimeouts,
   relayReservationBudgetMs,
   circuitRequestBudgetMs,
   peerJoinPushBudget,

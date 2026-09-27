@@ -35,63 +35,80 @@
  *
  * | operation                                            | link round trips | at the declared default |
  * | ---------------------------------------------------- | ---------------- | ----------------------- |
- * | open a relayed connection to another machine          | 4                | 8 000 ms                |
- * | dial the relay itself                                 | 1                | 2 000 ms                |
- * | request a reservation on an open relay connection     | 1                | 2 000 ms                |
- * | negotiate a protocol over an established circuit      | 1                | 2 000 ms                |
+ * | open a relayed connection to another machine          | 4                | 14 000 ms               |
+ * | dial the relay itself                                 | 1                | 3 500 ms                |
+ * | request a reservation on an open relay connection     | 1                | 3 500 ms                |
+ * | negotiate a protocol over an established circuit      | 1                | 3 500 ms                |
  *
- * **Measured** 2026-09-26, one Windows machine, loopback dedicated relay, re-run for this
- * change: a relayed dial took 20-25 ms at no delay, **7 255-7 279 ms at 900 ms one-way**, and
- * **12 066-12 094 ms at 1 500 ms one-way**. Four link round trips of pure delay would be 7 200
- * and 12 000, so the real cost sits about 60-95 ms ABOVE the arithmetic — the handshakes and a
- * phone's pure-JS crypto, which no delay figure contains. That residue is small but it is why
- * {@link DECLARED_LINK_ROUND_TRIP_MS} carries headroom over the band sereus supports rather
- * than matching it exactly: a declaration equal to the measured round trip would derive a
- * budget marginally BELOW the dial it has to contain.
+ * **Measured** 2026-09-26, one Windows machine, loopback dedicated relay: a relayed dial took
+ * 20-25 ms at no delay, **7 255-7 279 ms at 900 ms one-way**, and **12 066-12 094 ms at 1 500 ms
+ * one-way**. Four link round trips of pure delay would be 7 200 and 12 000, so the real cost
+ * sits about 60-95 ms ABOVE the arithmetic — the handshakes, which no delay figure contains.
+ * That residue is why {@link DECLARED_LINK_ROUND_TRIP_MS} carries headroom over the link sereus
+ * supports rather than matching it exactly: a declaration equal to the supported round trip
+ * would derive a budget marginally BELOW the dial it has to contain.
  *
- * ── The ceiling this does NOT lift ──
+ * ── libp2p's own two limits ──
  *
- * Above roughly 1 250 ms one-way — a 2.5-second link round trip — no relayed connection can be
- * established by this stack whatever cadre declares here. Two budgets of 10 000 ms each inside
- * libp2p bound the same dial and cannot be reached from sereus at all:
- * `connectionManager.dialTimeout` (libp2p's own default, which `@optimystic/db-p2p`'s
- * `libp2p-node-base.ts` neither sets nor exposes) and `connectionManager.inboundUpgradeTimeout`
- * (which it sets to 10 000). Both appear in the same re-run: at 1 500 ms one-way the dial under
- * libp2p's default failed with `The operation was aborted due to timeout`, and with the shipped
- * inbound-upgrade budget the DIALER's own 12 094 ms dial resolved while the LISTENER had
- * already thrown the half-built connection away — so the first stream over it died with
+ * Two limits inside libp2p bound the same relayed dial as cadre's budgets do, and both were
+ * 10 000 ms until `@optimystic/db-p2p` 1.7.0 let an embedder set them: the DIALER's
+ * `connectionManager.dialTimeout`, which bounds every dial that carries no abort signal of its
+ * own, and the LISTENER's `connectionManager.inboundUpgradeTimeout`, which is how long the
+ * machine being called lets a half-built connection finish its handshakes. At 10 000 ms each,
+ * no relayed connection could be opened above about 1 250 ms one-way (a 2.5-second link round
+ * trip) whatever cadre declared. The listener's limit is the one that makes that failure
+ * silent: at 1 500 ms one-way the dialer's own 12 094 ms dial RESOLVED while the listener had
+ * already thrown the connection away at 10 s, so the first stream over it died with
  * `Unexpected EOF - stream closed while reading 0/1 bytes` and the listener reported no peer at
- * all. That is why a too-slow link produces silence rather than an error.
+ * all. cadre now declares both from this module ({@link connectionManagerTimeouts}) on the
+ * control node and every strand node.
  *
- * Two consequences for a reader choosing a declaration. Below that ceiling, the DEFAULT
- * declaration of 2 000 ms does not reach it: four round trips of 2 000 ms is 8 000 ms, which
- * covers a one-way delay up to 1 000 ms, so a deployment somewhere between 1 000 and 1 250 ms
- * one-way has to declare its own (about 2 200-2 500) to use the band libp2p still allows. And
- * declaring much ABOVE 2 500 buys nothing: the budgets here grow, and
- * the connection still fails inside libp2p. Lifting that needs an upstream change and a
- * decision about how slow a link sereus intends to carry —
- * `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`. A reader who raised these
- * numbers and still cannot connect at 1 500 ms one-way has met that ceiling, not this module.
+ * ── What still fails at the supported link ──
+ *
+ * - **Optimystic's own request dials.** `@optimystic/db-p2p`'s RPC clients dial with fixed
+ *   3 000 ms deadlines of their own (`DEFAULT_DIAL_TIMEOUT_MS`, the `pushDialTimeoutMs`
+ *   defaults), which neither limit above reaches because a caller's signal replaces
+ *   `dialTimeout`. So an Optimystic request that has to OPEN a relayed connection fails above
+ *   375 ms one-way. A request over a connection that is already open does not dial, and the
+ *   connections cadre opens itself are budgeted here. Upstream:
+ *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic.
+ * - **Cadre deadlines still typed as milliseconds.** The strand wake, strand-address and seed
+ *   delivery deadlines, and the cohort read deadline, bound exchanges over the same link but do
+ *   not derive from it: `tickets/backlog/debt-three-more-dial-deadlines-ignore-the-declared-link`.
+ * - **A machine that declares a faster link than its peers.** Every machine is the listener
+ *   for the others, so its `inboundUpgradeTimeout` — derived from ITS declaration — bounds
+ *   connections other machines open to it. A peer declaring 3 500 ms dialing a machine that
+ *   declared 500 ms gets exactly the silent failure above. Declare the same link on every
+ *   machine of a party.
  */
+
+import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
 
 /**
  * The link round trip cadre assumes when a host declares none, in milliseconds. A deployment
  * that knows its own link states it with `NetworkConfig.linkRoundTripMs` instead.
  *
- * **Why 2 000.** It states the slowest link sereus already claims to support, and two other
- * budgets fix that claim independently: `COHORT_READ_DEADLINE_MS`
- * (`quereus-plugin-sereus/src/cluster-size.ts`, 5 000 ms) and
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`strand-first-sync-gate.ts`) were both
- * sized against two parties reaching each other only through a public relay at a round trip
- * near 1.8 s. Declaring 2 000 rounds that band up and leaves about 720 ms over the worst
- * relayed dial measured at it (7 279 ms against a derived 8 000 ms).
+ * **Why 3 500.** Sereus supports two machines that reach each other only through a relay up to
+ * a **3-second link round trip** (1 500 ms each way — a congested mobile or satellite link;
+ * `docs/architecture.md` → "Relay Integration"). The worst relayed dial measured at that link
+ * was 12 094 ms, above the 12 000 ms a declaration of exactly 3 000 would derive, so the
+ * declaration rounds the supported link up to the next half second. 3 500 derives 14 000 ms
+ * and leaves about 1.9 s over that dial: room for a phone's Noise handshake, which the
+ * loopback measurement on a desktop does not contain. (The previous 2 000 followed the same
+ * convention for the 1.8 s band sereus supported before, with about 720 ms to spare.)
  *
- * Raising it is how a deployment that KNOWS its link is slower moves every derived budget at
- * once. The cost is the ordinary cost of a longer deadline: a peer that is genuinely gone holds
- * the operation for that much longer before it is abandoned and retried. Above about 2 500 it
- * buys nothing — see the module doc's ceiling paragraph.
+ * Two budgets outside this module were sized against the 1.8 s band and do NOT move with it:
+ * `COHORT_READ_DEADLINE_MS` (`quereus-plugin-sereus/src/cluster-size.ts`, 5 000 ms) and
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`strand-first-sync-gate.ts`). The module doc's
+ * "What still fails" list carries the first.
+ *
+ * What 3 500 costs, against 2 000: a peer that is genuinely gone holds each operation longer
+ * before it is abandoned and retried — a relayed dial or a reservation drive 14 s instead of
+ * 8 s, and a control-cohort dial of one peer across all its addresses 56 s instead of 32 s.
+ * Raise it further for a link slower still; lower it only on a deployment where EVERY machine
+ * of the party is that close, for the reason the "What still fails" list gives.
  */
-export const DECLARED_LINK_ROUND_TRIP_MS = 2000;
+export const DECLARED_LINK_ROUND_TRIP_MS = 3500;
 
 /**
  * Link round trips one relayed connection setup costs: transport, encryption and multiplexer
@@ -132,10 +149,10 @@ export const CIRCUIT_REQUEST_ROUND_TRIPS = 2;
  *
  * NOTE: 6 000 ms is not a measurement of any throughput — it is the residue of the 10 000 ms
  * this deadline shipped as before it was split into a latency part and a transfer part, chosen
- * so that at the default declaration the derived value is the same 10 000 and no fast link got
- * slower. Nobody has measured how long 1 MiB takes to cross a relayed mobile link. If pushes
- * ever time out with the transfer only part done, measure that and raise THIS, not the declared
- * round trip.
+ * so that at the declaration then in force (2 000 ms) the derived value stayed 10 000 and no
+ * fast link got slower. Nobody has measured how long 1 MiB takes to cross a relayed mobile
+ * link. If pushes ever time out with the transfer only part done, measure that and raise THIS,
+ * not the declared round trip.
  */
 export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
 
@@ -173,6 +190,30 @@ export function resolveLinkRoundTripMs(linkRoundTripMs?: number): number {
  */
 export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
 	return RELAYED_DIAL_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+}
+
+/**
+ * libp2p's two connection-manager limits for a node at the declared link, handed to
+ * `@optimystic/db-p2p`'s `NodeOptions.connectionManager` on the control node and every strand
+ * node.
+ *
+ * Both bound the same thing — opening a relayed connection, measured at 8 one-way link delays,
+ * which is {@link RELAYED_DIAL_ROUND_TRIPS} (4) link round trips — so both are
+ * {@link relayedDialBudgetMs}: 4 x 3 500 = 14 000 ms at the default declaration, covering the
+ * 12 094 ms measured at the supported 3-second link.
+ *
+ * The listener's limit is deliberately NOT smaller than the dialer's. The listener's clock
+ * starts only when the relay hands it the circuit, a few one-way delays after the dialer's
+ * started, and both sides finish the handshakes at about the same moment; so with equal limits
+ * the listener never discards a connection that the dialer's own dial would still accept. A
+ * listener limit below the dialer's is what produced the silent failure in the module doc.
+ *
+ * The cost of a longer `inboundUpgradeTimeout` is that a peer which opens a connection and then
+ * stalls its handshake holds that half-built connection 14 s instead of 10 s.
+ */
+export function connectionManagerTimeouts(linkRoundTripMs?: number): Libp2pConnectionTimeouts {
+	const budgetMs = relayedDialBudgetMs(linkRoundTripMs);
+	return { dialTimeout: budgetMs, inboundUpgradeTimeout: budgetMs };
 }
 
 /**

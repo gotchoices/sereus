@@ -53,11 +53,12 @@ import { peerJoinPushBudget } from './link-budget.js';
 // link slow enough to matter it had never once managed to. The reproduction is
 // `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`.
 //
-// It does NOT work at every speed. Above roughly 1250 ms one-way, two libp2p budgets that
-// sereus cannot reach abandon the connection before any deadline here is consulted, and the
-// listener's one makes that failure look like an absent peer rather than a timeout — see
-// `link-budget.ts` ("The ceiling this does NOT lift") and
-// `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`.
+// It does NOT work at every speed. Above the declared link, libp2p's own dial and
+// inbound-upgrade limits — derived from the same declaration — abandon the connection before
+// any deadline here is consulted, and the listener's one makes that failure look like an absent
+// peer rather than a timeout. That is also what happens when the machine being caught up
+// declared a FASTER link than this one, since its limit is the listener's. See
+// `link-budget.ts` ("libp2p's own two limits", "What still fails at the supported link").
 //
 // RETRY, and why it backs off. A run whose PUSH FAILED — the transport threw, which is what
 // a dial or response deadline expiring looks like here — re-arms on a doubling backoff
@@ -145,7 +146,7 @@ export interface PeerJoinBackfillConfig {
   maxChunkBlocks?: number;
   /**
    * Per-push dial deadline, ms. Default {@link peerJoinPushBudget}'s `dialTimeoutMs` — four link
-   * round trips at the declared link, 8000 ms as shipped. NOT a fixed number: a relayed dial
+   * round trips at the declared link, 14 000 ms as shipped. NOT a fixed number: a relayed dial
    * costs a fixed number of exchanges, so a host on a slower link moves this (and every other
    * cadre dial budget) by declaring `NetworkConfig.linkRoundTripMs`. Naming it here still wins
    * over the derived value — `link-budget.ts` has the counts and the measurement.
@@ -154,7 +155,7 @@ export interface PeerJoinBackfillConfig {
   /**
    * Per-push response deadline, ms. Default {@link peerJoinPushBudget}'s `responseTimeoutMs` —
    * two link round trips at the declared link plus a transfer allowance for the chunk's own
-   * bytes, 10_000 ms as shipped. Derived differently from {@link dialTimeoutMs} because it
+   * bytes, 13 000 ms as shipped. Derived differently from {@link dialTimeoutMs} because it
    * bounds a data transfer over a connection that is already open, not a dial.
    */
   responseTimeoutMs?: number;
@@ -487,8 +488,8 @@ export class PeerJoinBackfill {
       `[cadre:${this.deps.label}] peer-join block catch-up to peer ${key} has failed ${failures} times in a row `
       + `(dial budget ${this.config.dialTimeoutMs}ms, response budget ${this.config.responseTimeoutMs}ms). `
       + 'That peer may not be holding blocks committed before it joined. If it is reachable only through a relay, '
-      + 'these budgets are derived from network.linkRoundTripMs (see link-budget.ts); above about a 2.5-second '
-      + 'round trip no relayed connection can be established at all, whatever they are set to.'
+      + 'these budgets and libp2p\'s own connection limits are derived from network.linkRoundTripMs (see link-budget.ts); '
+      + 'a link slower than that declaration, or a peer that declared a faster one, cannot open a relayed connection at all.'
     );
   }
 

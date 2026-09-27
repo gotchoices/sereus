@@ -37,3 +37,7 @@ The obvious shape, and the one the codebase already uses for shared constants th
 Whether the integration harness should take the same settings or deliberately keep libp2p's — a harness that pings on the production schedule is slower to notice a node it killed — is part of the same decision and should be answered explicitly rather than by default.
 
 Picking that shape is a design call, which is why it is written up rather than done inline.
+
+## Second arm (2026-09-26, from `relayed-links-up-to-a-three-second-round-trip`): the connection limits
+
+cadre-core now also sets libp2p's `connectionManager.dialTimeout` and `inboundUpgradeTimeout` on the control node and every strand node, derived from `NetworkConfig.linkRoundTripMs` (`connectionManagerTimeouts()` in `packages/cadre-core/src/link-budget.ts`, 14 s each at the default). The same three sites miss it and keep libp2p's 10 s. Its failure is sharper than the ping one: a node built at one of these sites is the LISTENER for connections other machines open to it, and above a 2.5-second round trip it discards a half-built relayed connection while the dialer's own dial still succeeds, so every stream on that connection dies with `Unexpected EOF` and nothing reports why. Whatever shape settles the ping settings should carry these two limits as well — with the extra wrinkle that they are derived from a declaration, not a constant, so moving them down to `quereus-plugin-sereus` means moving the derivation (or taking the limits as an input) rather than moving one frozen value.

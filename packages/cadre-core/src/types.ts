@@ -317,7 +317,7 @@ export interface NetworkConfig {
    * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
    * out that first attempt, which costs the drive's whole timeout
    * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, four link round trips at
-   * {@link linkRoundTripMs} — 8 s at its default) against a relay that is unreachable
+   * {@link linkRoundTripMs} — 14 s at its default) against a relay that is unreachable
    * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
    * case libp2p's own discovery lands a reservation independently).
    *
@@ -434,22 +434,25 @@ export interface NetworkConfig {
    * The round trip this node assumes between itself and another machine, in milliseconds, for
    * the control node and every strand node — as {@link cohortQueryTimeoutMs} is, and for the
    * same reason: the setting describes the LINK, and a phone's control node and its strand
-   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (2000 ms).
+   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (3500 ms).
    *
    * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
    * reservation deadlines are DERIVED from, each by the number of round trips that operation
    * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
-   * reservation drive, and the control-cohort dial budgets. Reaching another machine through a
-   * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
-   * speed above which it can never open a connection — which is the defect this declaration
-   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement
-   * behind them, and the ceiling that no declaration here can lift are in `link-budget.ts`.
+   * reservation drive, the control-cohort dial budgets, and libp2p's own `dialTimeout` and
+   * `inboundUpgradeTimeout` on every node. Reaching another machine through a relay costs a
+   * fixed number of exchanges, so a deadline written as milliseconds has a link speed above
+   * which it can never open a connection — which is the defect this declaration exists to make
+   * impossible to reintroduce one budget at a time. The counts, the measurement behind them,
+   * and what still fails at the supported link are in `link-budget.ts`.
    *
-   * Raise it for a link slower than the relayed phone-to-phone band sereus assumes; the cost is
-   * the ordinary cost of longer deadlines, a peer that is genuinely gone holding each operation
-   * that much longer before it is abandoned and retried. Above about 2500 it buys nothing: two
-   * libp2p budgets that sereus cannot reach abandon the connection first
-   * (`tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`).
+   * The default covers the slowest link sereus supports, a 3-second round trip through a relay.
+   * Raise it for a link slower still; the cost is the ordinary cost of longer deadlines, a peer
+   * that is genuinely gone holding each operation that much longer before it is abandoned and
+   * retried. Lower it only if EVERY machine of the party is that close: this node is also the
+   * listener for connections other machines open to it, and its `inboundUpgradeTimeout` comes
+   * from this value, so a node declaring a faster link than its peers discards their
+   * half-built connections — silently, from the dialer's side.
    *
    * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
    * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
@@ -568,6 +571,12 @@ export interface NetworkConfig {
  * 900ms deadline aborted the connection, while a 900ms interval with the same deadline
  * kept it (the same pair aborted at a 200ms stall only when the deadline was 300ms). An
  * interval strictly above the deadline is what makes the 30 seconds real.
+ *
+ * WHAT THE LINK NEEDS OF IT. One ping opens a fresh stream and echoes over it: a protocol
+ * negotiation plus the echo, two link round trips by `link-budget.ts`'s counts (a `newStream`
+ * over a relayed circuit measured 3016 ms at 1500 ms one-way). At the slowest link sereus
+ * supports, a 3-second relayed round trip, that is about 6 s — well inside the 30 s deadline,
+ * which exists for the phone's CPU rather than the link.
  *
  * WHAT IT COSTS. A dead peer is reclaimed 30 to 65 seconds after it stops answering — the
  * deadline, plus up to one interval of waiting for the ping that will fail — where

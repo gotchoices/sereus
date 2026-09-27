@@ -2,26 +2,30 @@
  * What ONE relayed libp2p connection setup costs at a given link delay — opt-in, and never
  * part of `yarn test`.
  *
- * This is the reproduction for `strand-node-never-redials-through-a-relay-at-a-three-second-round-trip`:
+ * This was the reproduction for `strand-node-never-redials-through-a-relay-at-a-three-second-round-trip`:
  * two machines that reach each other only through a relay stop being able to connect at all
- * once the link is slow enough, and every dial budget in the stack is a fixed number of
+ * once the link is slow enough, and every dial budget in the stack was a fixed number of
  * milliseconds rather than a number of round trips. The measurement below is what turns that
  * into arithmetic: it times the relayed dial under a budget far above any the stack imposes,
- * and then re-runs it under the two budgets that actually bound it in production.
+ * and then re-runs it under the budgets that actually bound it in production. It is now also
+ * the proof that the limits cadre-core declares carry the slowest link sereus supports (a
+ * 3-second round trip, 1500 ms one-way — `docs/architecture.md` → "Relay Integration").
  *
  * Deliberately BARE libp2p — websockets + noise + yamux + circuit-relay-v2 + identify, with
- * `@optimystic/db-p2p`'s own `connectionManager` values and cadre-core's
- * `DEFAULT_CONNECTION_MONITOR` — and no cadre, no Optimystic, no database. The cost being
- * measured is the transport's, so a cadre stack on top of it could only hide the signal.
- * Keeping the two `connectionManager` numbers in step with `libp2p-node-base.ts` is this
- * file's contract; they are what the measurement is ABOUT.
+ * cadre-core's `DEFAULT_CONNECTION_MONITOR` — and no cadre, no Optimystic, no database. The
+ * cost being measured is the transport's, so a cadre stack on top of it could only hide the
+ * signal. The two arms differ ONLY in libp2p's connection-manager limits, which are what the
+ * measurement is ABOUT: the `db-p2p fallback` arm keeps the values `libp2p-node-base.ts` falls
+ * back to when nothing is declared (keeping those in step is this file's contract), and the
+ * `cadre-core declared` arm imports `connectionManagerTimeouts()` itself, so it cannot drift.
  *
  * ── Running it ──
  *
  *   RELAY_DIAL_COST=1 yarn workspace @serfab/integration-tests exec vitest run relayed-dial-cost-by-latency
  *
  * Without `RELAY_DIAL_COST=1` the suite is skipped. `RELAY_DIAL_COST_DELAYS=<ms>[,<ms>…]`
- * picks the one-way delays to sweep (default `0,900,1500`); one delay costs about 40 s.
+ * picks the one-way delays to sweep (default `0,900,1500`); one arm at one delay costs about
+ * 40 s.
  *
  * ── What it measured, 2026-09-26, one Windows machine, loopback dedicated relay ──
  *
@@ -54,26 +58,42 @@
  *
  * | budget | value | relayed dial impossible above |
  * | --- | --- | --- |
- * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 8 s at the default declared link | 1000 ms one-way, and moves with `NetworkConfig.linkRoundTripMs` |
+ * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 14 s at the default declared link | 1750 ms one-way, and moves with `NetworkConfig.linkRoundTripMs` |
+ * | libp2p `connectionManager.dialTimeout` and `inboundUpgradeTimeout`, as cadre-core declares them on every node (`connectionManagerTimeouts`) | the same 14 s | the same 1750 ms one-way |
+ * | the same two, left to db-p2p (libp2p's own 10 s default; db-p2p's fallback 10_000) | 10 s | 1250 ms one-way (2.5 s round trip) |
  * | Optimystic's `DEFAULT_DIAL_TIMEOUT_MS` (`rpc-deadline.ts`, fixed; outside this repo) | 3 s | 375 ms one-way (0.75 s round trip) |
- * | libp2p `connectionManager.dialTimeout` (its own default; db-p2p neither sets nor exposes it) | 10 s | 1250 ms one-way (2.5 s round trip) |
- * | libp2p `connectionManager.inboundUpgradeTimeout` (db-p2p sets 10_000) | 10 s | same, on the LISTENER's side |
  *
- * The first row is what this measurement is FOR: cadre-core no longer types dial budgets as
- * milliseconds. `link-budget.ts` holds one round-trip count per operation, taken from the table
- * above, times one declared link round trip — so re-run this before changing a count there, and
- * update the counts here if a libp2p upgrade moves them. Before that change the peer-join block
- * catch-up allowed its dial 3 s, so over a relay it had never once been able to copy a
- * rejoining machine's missing blocks at any link slow enough to matter.
+ * The first two rows are what this measurement is FOR: cadre-core no longer types dial budgets
+ * as milliseconds. `link-budget.ts` holds one round-trip count per operation, taken from the
+ * table above, times one declared link round trip — so re-run this before changing a count
+ * there, and update the counts here if a libp2p upgrade moves them. Before that change the
+ * peer-join block catch-up allowed its dial 3 s, so over a relay it had never once been able to
+ * copy a rejoining machine's missing blocks at any link slow enough to matter. The last row is
+ * outside this repo and still in force: an Optimystic request that has to open its own relayed
+ * connection fails above 375 ms one-way (optimystic's
+ * `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection`).
  *
  * The listener's budget is the one that makes the failure look like nothing at all. Above the
  * ceiling the dialer's own `dial()` still resolves — measured 12 050 ms at 1500 ms one-way —
  * but the listener abandoned the half-built connection at 10 s, so the dialer holds a
  * connection whose every stream dies with `Unexpected EOF - stream closed while reading 0/1
- * bytes` and the listener never reports a peer at all. The two arms below are what shows that
- * it is the listener and not the link: at 1500 ms one-way with the shipped 10 s, `newStream`
- * fails with exactly that error and the listener holds 0 relayed connections; with 120 s the
- * same `newStream` takes 3031 ms and the listener holds 1.
+ * bytes` and the listener never reports a peer at all. The two arms are what shows that it is
+ * the listener and not the link: at 1500 ms one-way under db-p2p's fallback 10 s, `newStream`
+ * fails with exactly that error and the listener holds 0 relayed connections; with a 120 s
+ * listener limit (the arm this file carried before cadre-core declared its own) the same
+ * `newStream` took 3031 ms and the listener held 1.
+ *
+ * **Proved** 2026-09-26, same machine, with `RELAY_DIAL_COST_DELAYS=0,1500`, once cadre-core
+ * declared both limits (14 000 ms each at its default link): at 1500 ms one-way, the
+ * `cadre-core declared` arm's relayed dial took 12 061 ms, `newStream` over it took 3016 ms,
+ * the listener held 1 relayed connection after the stream, and a second dial with no signal of
+ * its own completed in 12 068 ms inside the node's `dialTimeout`. The `db-p2p fallback` arm in
+ * the same run reproduced the failure: dial 12 061 ms, `newStream` `Unexpected EOF` after
+ * 2465 ms, listener holding 0, the signal-less dial aborted at 10 015 ms. Both arms' 3000 ms
+ * dial failed at 3 s, as the last row of the table says it must. At 0 ms every operation in
+ * both arms took 13-43 ms. The arm's assertions pin the passing half, at every delay up to
+ * {@link SUPPORTED_ONE_WAY_MS}; the connection was not held past one liveness-ping cycle
+ * (35 s), which this file does not wait for.
  *
  * Read the listener's count AFTER the stream, not the one right after the dial. That earlier
  * one is 0 at every delay, healthy links included — the dialer's `dial()` resolves a moment
@@ -90,6 +110,7 @@ import { identify } from '@libp2p/identify';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
+import { connectionManagerTimeouts } from '@serfab/cadre-core';
 import { installWsLatency, startDedicatedRelay } from '../harness/index.js';
 
 const MEASURE = process.env.RELAY_DIAL_COST === '1';
@@ -107,13 +128,41 @@ function delays(): number[] {
 	});
 }
 
+/** libp2p's two connection-manager limits, as `@optimystic/db-p2p`'s `NodeOptions.connectionManager` carries them. */
+interface ConnectionLimits {
+	dialTimeout?: number;
+	inboundUpgradeTimeout?: number;
+}
+
 /**
- * The listener-side budget each arm builds its nodes with: the 10 s `libp2p-node-base.ts`
- * ships (libp2p's own default), and a 120 s control that is above the measured setup cost at
- * every delay swept. The pair is the discriminator — a failure that disappears at 120 s is the
- * listener giving up, not the link.
+ * The connection-manager limits each arm builds BOTH its nodes with — both, because each node
+ * is the listener for the other's dial. The pair is the discriminator: a failure present under
+ * db-p2p's fallback and gone under cadre-core's declaration is those limits giving up, not the
+ * link.
  */
-const INBOUND_UPGRADE_TIMEOUTS = [10_000, 120_000];
+const DB_P2P_FALLBACK = {
+	name: 'db-p2p fallback',
+	// What `libp2p-node-base.ts` gives a node that declares nothing: `inboundUpgradeTimeout`
+	// 10_000, and no `dialTimeout`, so libp2p's own 10 s applies.
+	limits: { inboundUpgradeTimeout: 10_000 } as ConnectionLimits
+};
+const CADRE_DECLARED = {
+	name: 'cadre-core declared',
+	// What cadre-core declares on the control node and every strand node at its default link.
+	limits: connectionManagerTimeouts() as ConnectionLimits
+};
+const ARMS = [DB_P2P_FALLBACK, CADRE_DECLARED];
+
+/**
+ * The slowest link sereus supports, one-way: a 3-second round trip (`docs/architecture.md` →
+ * "Relay Integration"). At or below it the `cadre-core declared` arm must open a connection
+ * the listener holds and a stream works on.
+ */
+const SUPPORTED_ONE_WAY_MS = 1500;
+
+/** Report keys the assertions read back. */
+const LISTENER_AFTER_STREAM = 'listener holds the connection, after the stream';
+const OWN_DIAL_TIMEOUT = 'relayed dial (the node\'s own dialTimeout)';
 
 /** Far above every budget in the stack, so the unbounded arm measures the cost, not a limit. */
 const UNBOUNDED_MS = 300_000;
@@ -154,16 +203,15 @@ function reservationStore(node: Libp2p): ReservationStoreLike {
 	throw new Error('node has no circuit-relay transport');
 }
 
-async function makeNode(inboundUpgradeTimeout: number): Promise<Libp2p> {
+async function makeNode(limits: ConnectionLimits): Promise<Libp2p> {
 	return await createLibp2p({
 		// The bare SEARCH listen address, the shape every cadre node takes.
 		addresses: { listen: ['/p2p-circuit'] },
 		transports: [webSockets(), circuitRelayTransport()],
 		connectionEncrypters: [noise()],
 		streamMuxers: [yamux()],
-		// `libp2p-node-base.ts`'s own two values (`maxConnections` 16, `inboundUpgradeTimeout`
-		// 10_000) — the second is what the arms vary.
-		connectionManager: { maxConnections: 16, inboundUpgradeTimeout },
+		// `libp2p-node-base.ts`'s own `maxConnections` 16, plus the two limits the arms vary.
+		connectionManager: { maxConnections: 16, ...limits },
 		// cadre-core's DEFAULT_CONNECTION_MONITOR, so the liveness ping does not tear a slow
 		// link down underneath the measurement (`complete/slow-peer-dropped-on-ping-timeout`).
 		connectionMonitor: { pingInterval: 35_000, pingTimeout: { minTimeout: 30_000, maxTimeout: 30_000 } },
@@ -207,8 +255,8 @@ async function timed<T>(into: Record<string, unknown>, key: string, fn: () => Pr
 
 describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_COST=1)', () => {
 	for (const delayMs of delays()) {
-		for (const inboundUpgradeTimeout of INBOUND_UPGRADE_TIMEOUTS) {
-			it(`measures a relayed dial at ${delayMs} ms one-way, listener inboundUpgradeTimeout ${inboundUpgradeTimeout} ms`, async () => {
+		for (const arm of ARMS) {
+			it(`measures a relayed dial at ${delayMs} ms one-way, ${arm.name} connection limits ${JSON.stringify(arm.limits)}`, async () => {
 				// Before any node exists: the shim swaps the global constructor, which is read at
 				// dial time, and a node dials during start().
 				const latency = installWsLatency({ delayMs, mode: 'pipelined' });
@@ -218,8 +266,8 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 				let dialer: Libp2p | undefined;
 				let listener: Libp2p | undefined;
 				try {
-					dialer = await makeNode(inboundUpgradeTimeout);
-					listener = await makeNode(inboundUpgradeTimeout);
+					dialer = await makeNode(arm.limits);
+					listener = await makeNode(arm.limits);
 					await listener.handle('/relay-dial-cost/1.0.0', (stream) => { void stream.close(); });
 
 					for (const [label, node] of [['dialer', dialer], ['listener', listener]] as const) {
@@ -240,29 +288,38 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 					if (conn !== undefined) {
 						await timed(measured, 'newStream over that circuit', () =>
 							underBudget(UNBOUNDED_MS, (signal) => conn.newStream('/relay-dial-cost/1.0.0', { signal })));
-						measured['listener holds the connection, after the stream'] = relayedConnectionCount(listener);
+						measured[LISTENER_AFTER_STREAM] = relayedConnectionCount(listener);
 						await conn.close().catch(() => { /* measuring, not asserting teardown */ });
 					}
 					await new Promise((resolve) => setTimeout(resolve, 1000));
 
-					// 2. The same dial under libp2p's connection-manager default, which is what
-					//    every caller that passes no signal of its own gets.
-					await timed(measured, 'relayed dial (libp2p default 10 s)', () => dialer!.dial(target));
+					// 2. The same dial under the node's own `dialTimeout`, which is what every
+					//    caller that passes no signal of its own gets.
+					await timed(measured, OWN_DIAL_TIMEOUT, () => dialer!.dial(target));
 					await Promise.all(dialer.getConnections()
 						.filter((c) => String(c.remoteAddr).includes('p2p-circuit'))
 						.map((c) => c.close().catch(() => { /* as above */ })));
 					await new Promise((resolve) => setTimeout(resolve, 1000));
 
-					// 3. And under the 3 s budget the peer-join backfill and every Optimystic RPC use.
-					await timed(measured, 'relayed dial (3000 ms budget)', () =>
+					// 3. And under the 3 s budget every Optimystic RPC dials with (outside this repo).
+					await timed(measured, 'relayed dial (Optimystic RPC budget 3000 ms)', () =>
 						underBudget(3000, (signal) => dialer!.dial(target, { signal })));
 
-					// The one claim, rather than a measurement: given enough budget, a relayed dial
-					// DOES complete at every delay swept — so every failure above is a budget.
+					// The claim every arm makes, rather than a measurement: given enough budget, a
+					// relayed dial DOES complete at every delay swept — so every failure above is a
+					// budget.
 					expect(typeof measured['relayed dial (300 s budget)']).toBe('number');
+					if (arm === CADRE_DECLARED && delayMs <= SUPPORTED_ONE_WAY_MS) {
+						// And the one this arm exists for: at the supported link, cadre-core's limits
+						// open a connection the LISTENER holds, a stream works on it, and a dial with
+						// no signal of its own completes inside the node's own `dialTimeout`.
+						expect(measured[LISTENER_AFTER_STREAM]).toBe(1);
+						expect(typeof measured['newStream over that circuit']).toBe('number');
+						expect(typeof measured[OWN_DIAL_TIMEOUT]).toBe('number');
+					}
 				} finally {
 					console.log(
-						`[relayed-dial-cost] one-way ${delayMs} ms, listener inboundUpgradeTimeout ${inboundUpgradeTimeout} ms ->`,
+						`[relayed-dial-cost] one-way ${delayMs} ms, ${arm.name} ${JSON.stringify(arm.limits)} ->`,
 						JSON.stringify(measured, null, 1)
 					);
 					await Promise.resolve(dialer?.stop()).catch(() => { /* teardown */ });

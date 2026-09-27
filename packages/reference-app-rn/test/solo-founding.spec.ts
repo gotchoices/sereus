@@ -42,11 +42,11 @@ const FOUNDING_DEADLINE_MS = 10_000;
 const LIFECYCLE_DEADLINE_MS = 30_000;
 /**
  * The same two bounds for a node whose relay is configured but unreachable. Each adds
- * roughly one relay drive — `DEFAULT_RELAY_RESERVE_TIMEOUT_MS` (10 s), which a refused
+ * roughly one relay drive — `DEFAULT_RELAY_RESERVE_TIMEOUT_MS` (14 s), which a refused
  * dial spends polling in case libp2p's own discovery lands a reservation anyway.
  * `start()` waits out the control node's first attempt, and every strand launch waits
  * out its own supervisors' (`strand-instance-manager.ts` → `awaitFirstRelayAttempts`).
- * That ~10 s per strand launch is a real, accepted regression in founding latency on a
+ * That ~14 s per strand launch is a real, accepted regression in founding latency on a
  * phone whose relay is down; the deadlines here are sized for it rather than hiding it.
  */
 const RELAY_LIFECYCLE_DEADLINE_MS = 45_000;

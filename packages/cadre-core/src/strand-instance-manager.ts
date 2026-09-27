@@ -41,7 +41,7 @@ import type {
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
-import { peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { connectionManagerTimeouts, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -711,6 +711,10 @@ export class StrandInstanceManager {
         // widened ping deadline has to reach the strand nodes too (see
         // DEFAULT_CONNECTION_MONITOR).
         connectionMonitor: config.network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
+        // The same declared-link limits the control node takes, and for the same reason: a
+        // strand node is the listener for every other member's strand node (`link-budget.ts`,
+        // `connectionManagerTimeouts`).
+        connectionManager: connectionManagerTimeouts(config.network?.linkRoundTripMs),
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the
@@ -884,7 +888,7 @@ export class StrandInstanceManager {
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
       //
       // NOTE: a relay that is down costs this launch one full drive — the reservation budget
-      // counted from the declared link round trip, 8 s at its default (`link-budget.ts`) — and
+      // counted from the declared link round trip, 14 s at its default (`link-budget.ts`) — and
       // `StrandWatcher` launches strands one at a time, so N strands cost N of those in
       // bring-up during a relay outage, and MORE on a host that declared a slower link. If that
       // ever matters, stop awaiting here (the circuit addr then lands after `active`) rather

@@ -6,9 +6,10 @@ files:
   - packages/cadre-core/src/strand-addr-protocol.ts (DEFAULT_ADDR_TIMEOUT_MS 10_000)
   - packages/cadre-core/src/seed-bootstrap.ts (DEFAULT_SEED_DELIVER_TIMEOUT_MS 10_000, and the owner-dial ack NOTE that already outgrew it)
   - docs/architecture.md (Relay Integration -> "Dial budgets are counted in round trips, not milliseconds" — the claim this ticket makes true)
+  - packages/quereus-plugin-sereus/src/cluster-size.ts (COHORT_READ_DEADLINE_MS 5000 — the fourth arm, added 2026-09-26)
 severity: edge-case
 likelihood: unusual
-tradeoffs: Nothing is broken at the shipped default, and each of these three deadlines wraps a best-effort path that logs and carries on, so a maintainer may reasonably wait until a real slow-link deployment reports one of them firing rather than converting three more sites now — the counting exercise is judgement per site, not a mechanical substitution.
+tradeoffs: Nothing regressed — each of these deadlines already failed above a 2.5-second round trip before the supported link was raised to 3 seconds — and each of the three dial deadlines wraps a best-effort path that logs and carries on, so a maintainer may reasonably wait until a real slow-link deployment reports one of them firing rather than converting three more sites now — the counting exercise is judgement per site, not a mechanical substitution.
 
 # Three more dial deadlines still ignore the declared link
 
@@ -47,3 +48,10 @@ No repro to run: the values are read off the named constants, and the four-excha
 ## Related, but not this
 
 `debt-cadre-deadlines-sized-against-old-optimystic-bounds` also names `seed-bootstrap.ts`, and both tickets are about deadlines that were chosen without reference to something underneath them. They do not resolve at the same site. That one is about cadre's READ and COMMIT deadlines against Optimystic's per-peer and per-round bounds, and its fix is a written-down ladder plus a per-site decision about intent. This one is about DIAL deadlines against the declared link, and its fix is arithmetic in `link-budget.ts`. The seed site appears in both because it has one deadline of each kind.
+
+## Update (2026-09-26, from `relayed-links-up-to-a-three-second-round-trip`): the premise changed, and a fourth arm
+
+**"Nothing is wrong at the shipped default" is no longer true.** Sereus now states that it supports two machines that reach each other only through a relay up to a 3-second link round trip (`docs/architecture.md` → Relay Integration), the declared default rose from 2000 to 3500 ms, and libp2p's own dial and inbound-upgrade limits are now derived from it too (14 s each at the default). So at the supported link every other cadre dial path opens its connection, and these three do not: a 10 000 ms deadline over a dial that costs four link round trips cannot open a relayed connection above a 2.5-second round trip. Nothing regressed — they failed there before too — but they are now the cadre-owned reason the stated ceiling is not fully true. The numbers in the second arm moved as well: the owner-dial budget that can hold the seed receiver's ack is now 56 000 ms at the default, against the sender's fixed 10 000.
+
+**Fourth arm: the per-peer cohort read deadline.** `COHORT_READ_DEADLINE_MS` (5000 ms, `packages/quereus-plugin-sereus/src/cluster-size.ts`) bounds one read-path request to one cohort peer. That request opens a fresh protocol stream per call (`@optimystic/db-p2p`'s `openProtocolStream`), so over an open relayed circuit it costs a protocol negotiation plus the request and its answer — `CIRCUIT_REQUEST_ROUND_TRIPS` (2) link round trips, 6 s at a 3-second round trip, which is above 5 s. `repro: static` — arithmetic from the counts in `link-budget.ts`, not measured at that link; the opt-in `strand-reattach-first-sync-measure` scenario at 1500 ms one-way would confirm it by counting `cluster-fetch:peers-silent` lines. It is not a dial deadline, but it is the same class — a deadline over exchanges on the link, written as milliseconds rather than derived from the declared round trip — and it resolves the same way, with one difference that makes it harder: its doc comment couples it to `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, so deriving it means re-measuring the first-sync band at the new link as well. It is `NetworkConfig.cohortQueryTimeoutMs` on the cadre side, so a deployment can raise it by hand today.
+

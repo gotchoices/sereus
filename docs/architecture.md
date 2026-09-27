@@ -1089,9 +1089,19 @@ the connection crosses the cap. Both settings are environment-configurable
 
 Opening a connection to another machine through a relay costs a **fixed number of exchanges**, so every deadline written as a number of milliseconds has a link speed above which it can never open one — and the failure looks like an absent peer rather than a timeout. Measured (`packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`, opt-in with `RELAY_DIAL_COST=1`, whose doc comment is the single home of the numbers): a relayed dial costs **four link round trips**, dialing the relay itself costs one, requesting a reservation on an open relay connection costs one, and negotiating a protocol over an established circuit costs one. At a link round trip of 1.8 s a relayed dial took 7.3 s; at 3 s it took 12.1 s.
 
-So cadre declares the link once and derives from it, rather than carrying a list of independently chosen timeouts. `NetworkConfig.linkRoundTripMs` (default 2000 ms, which states the relayed phone-to-phone link sereus assumes) feeds `packages/cadre-core/src/link-budget.ts`, which holds the round-trip count for each operation and is the only place a new dial's budget should be written. It currently derives the peer-join block catch-up's per-push dial and response deadlines, the relay reservation drive's whole-drive deadline, and the control-cohort per-address and per-peer dial budgets. A host that knows its deployment is slower raises the one declaration and moves them all; a per-field override (`strandBackfill`, `controlBackfill`, `controlCohort`) still wins where one is given.
+**Sereus supports a relayed machine up to a 3-second link round trip.** A machine that reaches its cadre only through a circuit relay pays a fixed number of round trips per connection, not a fixed number of milliseconds: about eight one-way link delays to open one. Sereus supports such a machine up to a **3-second round trip** (1.5 s each way) — a congested mobile or satellite link. Every dial budget on that path is therefore derived from a declared link round trip rather than chosen as a duration, and the two libp2p limits that bound it (`connectionManager.dialTimeout` and `connectionManager.inboundUpgradeTimeout`) are declared, not left at their defaults. Above the declared ceiling a relayed connection cannot be opened at all, and the machine must say so rather than wait.
 
-**This does not make sereus work at any speed.** Above roughly a 2.5-second link round trip, two libp2p budgets of 10 000 ms each abandon the connection before any cadre deadline is consulted — `connectionManager.dialTimeout` (libp2p's own default, which `@optimystic/db-p2p` neither sets nor exposes) and `connectionManager.inboundUpgradeTimeout` (which it sets) — and the listener's is the one that makes the failure silent: the dialer's own dial resolves while the listener has already discarded the half-built connection, so every stream on it dies with `Unexpected EOF`. Lifting that needs an upstream change and a decision about how slow a link sereus intends to carry: `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`.
+So cadre declares the link once and derives from it, rather than carrying a list of independently chosen timeouts. `NetworkConfig.linkRoundTripMs` (default 3500 ms: the supported 3-second round trip, rounded up to cover the handshakes a pure-delay figure does not contain) feeds `packages/cadre-core/src/link-budget.ts`, which holds the round-trip count for each operation and is the only place a new dial's budget should be written. It currently derives the peer-join block catch-up's per-push dial and response deadlines, the relay reservation drive's whole-drive deadline, the control-cohort per-address and per-peer dial budgets, and libp2p's own `dialTimeout` and `inboundUpgradeTimeout` on the control node and every strand node (14 s each at the default). A host that knows its deployment is slower raises the one declaration and moves them all; a per-field override (`strandBackfill`, `controlBackfill`, `controlCohort`) still wins where one is given. The relay container sets the same two libp2p limits by hand (`ops/docker/libp2p-infra/src/main.ts`).
+
+The listener's limit is the one that decides whether a too-slow connection fails loudly or silently. Left at libp2p's 10 s, the machine being called discarded a half-built relayed connection above about a 2.5-second round trip while the caller's own dial still resolved, so the caller held a connection whose every stream died with `Unexpected EOF` and the called machine reported no peer at all. With both limits derived from the same declaration, the listener's clock starts after the dialer's and stops at the same limit, so above the ceiling the dialer's own dial fails with a timeout instead. That only holds when both machines declare the same link: every machine is the listener for the others, so **declare the same `linkRoundTripMs` on every machine of a party** — a machine declaring a faster link than its peers cuts their connections off silently.
+
+**Known limits at the supported round trip:**
+
+- **Optimystic's own request dials** still use fixed 3 s deadlines (`@optimystic/db-p2p`'s `DEFAULT_DIAL_TIMEOUT_MS` and its `pushDialTimeoutMs` defaults), which the declared libp2p limits do not reach because a caller's own deadline replaces `dialTimeout`. An Optimystic request that has to open a relayed connection itself therefore fails above about **375 ms one-way**. Requests over a connection that is already open do not dial, and the connections cadre opens itself are budgeted as above. Filed upstream as optimystic's `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection`.
+- **Four cadre deadlines are still fixed milliseconds**: the strand wake, strand-address and seed-delivery deadlines (10 s each, which cannot open a relayed connection above a 2.5-second round trip), and the per-peer cohort read deadline (`COHORT_READ_DEADLINE_MS`, 5 s, where one read over an open circuit costs about two link round trips — 6 s at 3 s, by the counts, not measured). `tickets/backlog/debt-three-more-dial-deadlines-ignore-the-declared-link`.
+- The strand first-sync wait (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`) was sized from measurements at a 1.8-second round trip, not 3.
+
+The measurement behind all of this — and the proof that the declared limits open and keep a relayed connection at 1500 ms one-way — is `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts` (opt-in, `RELAY_DIAL_COST=1`).
 
 ## Deployment Configurations
 
@@ -1254,13 +1264,14 @@ interface CadreNodeConfig {
     cohortQueryTimeoutMs?: number;
     // The round trip this node assumes between itself and another machine, for the control
     // node and every strand node — the same one-setting-covers-both-networks shape as
-    // `cohortQueryTimeoutMs` above, and for the same reason. Unset takes 2000 ms. NOT a
-    // timeout: it is the one declared assumption cadre's own dial and relay-reservation
-    // deadlines are DERIVED from, each multiplied by the number of exchanges that operation
-    // was measured to cost (see "Dial budgets are counted in round trips, not milliseconds").
-    // Raise it for a link slower than the relayed phone-to-phone band sereus assumes; above
-    // about 2500 it buys nothing, because two libp2p budgets sereus cannot reach abandon the
-    // connection first. Refused where the libp2p node is built (`CadreNode.start()` for
+    // `cohortQueryTimeoutMs` above, and for the same reason. Unset takes 3500 ms, which
+    // covers the 3-second relayed round trip sereus supports. NOT a timeout: it is the one
+    // declared assumption cadre's own dial and relay-reservation deadlines, and libp2p's
+    // `dialTimeout` and `inboundUpgradeTimeout`, are DERIVED from, each multiplied by the
+    // number of exchanges that operation was measured to cost (see "Dial budgets are counted
+    // in round trips, not milliseconds"). Raise it for a link slower still; declare the same
+    // value on every machine of a party, since each is the listener for the others.
+    // Refused where the libp2p node is built (`CadreNode.start()` for
     // control, `addStrand`/`resumeStrand` for a strand) if it is not a finite number above
     // zero, since every consumer multiplies it into a deadline.
     linkRoundTripMs?: number;

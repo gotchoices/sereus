@@ -97,10 +97,13 @@ export interface CliConfigFile {
     cohortQueryTimeoutMs?: number;
     /**
      * The round trip this machine assumes between itself and another machine, in milliseconds.
-     * Unset takes cadre's own 2000 ms, which states the relayed phone-to-phone link sereus
-     * assumes. It is not a timeout: cadre's own dial and relay-reservation deadlines are derived
-     * from it, each by the number of exchanges that operation was measured to cost, so a
-     * deployment on a slower link raises this one number instead of a list of timeouts. A value
+     * Unset takes cadre's own 3500 ms, which covers the slowest link sereus supports: two
+     * machines reaching each other through a relay at a 3-second round trip. It is not a timeout:
+     * cadre's own dial and relay-reservation deadlines, and libp2p's dial and inbound-upgrade
+     * limits, are derived from it, each by the number of exchanges that operation was measured to
+     * cost, so a deployment on a slower link raises this one number instead of a list of
+     * timeouts. Every machine of a party should declare the same value — this machine is the
+     * listener for the others, and a faster declaration here cuts their connections off. A value
      * that is not a finite number above zero fails startup where the node is built. See
      * `NetworkConfig.linkRoundTripMs` in `@serfab/cadre-core`.
      */
