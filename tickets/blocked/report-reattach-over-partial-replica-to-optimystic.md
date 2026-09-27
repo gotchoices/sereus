@@ -30,3 +30,7 @@ If nothing is done: re-attaches over a slow relayed link keep working, but in th
 
 - Point 1's guess (replication unfinished at detach) is inferred, not shown: the scenario detaches B a few seconds after its first sync and never inspects B's raw store before the stop. Adding a `captureRawStorage(...).forStrand(strandId)` check just before `stopStrand` would confirm it; worth doing if the maintainers ask.
 - Point 3 is a pattern across 12 runs (the other 4 took 42.3, 49.5, 64.1 s and did not repeat), not a traced timer. Say so, as the text does.
+
+## Sent (2026-09-27)
+
+The maintainer asked that upstream findings go to optimystic's tending agent. Sent to optimystic-tend as a message, not a public post. **Unblock when** optimystic says what it filed; then move this ticket to complete with that reference.
