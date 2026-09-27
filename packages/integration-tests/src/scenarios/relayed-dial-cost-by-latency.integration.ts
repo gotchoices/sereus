@@ -110,6 +110,7 @@ import { identify } from '@libp2p/identify';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
+import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
 import { connectionManagerTimeouts } from '@serfab/cadre-core';
 import { installWsLatency, startDedicatedRelay } from '../harness/index.js';
 
@@ -128,10 +129,9 @@ function delays(): number[] {
 	});
 }
 
-/** libp2p's two connection-manager limits, as `@optimystic/db-p2p`'s `NodeOptions.connectionManager` carries them. */
-interface ConnectionLimits {
-	dialTimeout?: number;
-	inboundUpgradeTimeout?: number;
+interface Arm {
+	name: string;
+	limits: Libp2pConnectionTimeouts;
 }
 
 /**
@@ -140,16 +140,16 @@ interface ConnectionLimits {
  * db-p2p's fallback and gone under cadre-core's declaration is those limits giving up, not the
  * link.
  */
-const DB_P2P_FALLBACK = {
+const DB_P2P_FALLBACK: Arm = {
 	name: 'db-p2p fallback',
 	// What `libp2p-node-base.ts` gives a node that declares nothing: `inboundUpgradeTimeout`
 	// 10_000, and no `dialTimeout`, so libp2p's own 10 s applies.
-	limits: { inboundUpgradeTimeout: 10_000 } as ConnectionLimits
+	limits: { inboundUpgradeTimeout: 10_000 }
 };
-const CADRE_DECLARED = {
+const CADRE_DECLARED: Arm = {
 	name: 'cadre-core declared',
 	// What cadre-core declares on the control node and every strand node at its default link.
-	limits: connectionManagerTimeouts() as ConnectionLimits
+	limits: connectionManagerTimeouts()
 };
 const ARMS = [DB_P2P_FALLBACK, CADRE_DECLARED];
 
@@ -203,7 +203,7 @@ function reservationStore(node: Libp2p): ReservationStoreLike {
 	throw new Error('node has no circuit-relay transport');
 }
 
-async function makeNode(limits: ConnectionLimits): Promise<Libp2p> {
+async function makeNode(limits: Libp2pConnectionTimeouts): Promise<Libp2p> {
 	return await createLibp2p({
 		// The bare SEARCH listen address, the shape every cadre node takes.
 		addresses: { listen: ['/p2p-circuit'] },

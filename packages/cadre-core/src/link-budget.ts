@@ -210,6 +210,12 @@ export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
  *
  * The cost of a longer `inboundUpgradeTimeout` is that a peer which opens a connection and then
  * stalls its handshake holds that half-built connection 14 s instead of 10 s.
+ *
+ * NOTE: derived from the declaration alone, so a per-field override that raises a cadre dial
+ * budget above it (`controlCohort.perAddressDialTimeoutMs`, `strandBackfill.dialTimeoutMs`)
+ * does not raise these; a dial that outlasts the listener's limit gets the silent failure
+ * again. If such overrides start being used for slow links, raise the declaration instead or
+ * take the largest configured dial budget here.
  */
 export function connectionManagerTimeouts(linkRoundTripMs?: number): Libp2pConnectionTimeouts {
 	const budgetMs = relayedDialBudgetMs(linkRoundTripMs);

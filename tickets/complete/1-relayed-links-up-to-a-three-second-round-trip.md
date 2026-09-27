@@ -17,7 +17,7 @@ files:
   - tickets/backlog/debt-three-more-dial-deadlines-ignore-the-declared-link.md, tickets/backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults.md (arms appended)
 ----
 
-# Relayed links up to a 3-second round trip — review handoff
+# Relayed links up to a 3-second round trip
 
 ## What was decided (maintainer, 2026-09-26)
 
@@ -96,3 +96,15 @@ None beyond the scenario's new assertions (opt-in, not part of `yarn test`). `co
   - The first-sync wait, sized from measurements at 1.8 s.
   - The stated 3 s ceiling is therefore true for the connections cadre opens itself, not yet for every path. The docs say so.
 - **A longer `inboundUpgradeTimeout`** (14 s instead of 10 s) lets a peer that stalls its handshake hold a half-built connection 4 s longer. This is stated at `connectionManagerTimeouts`.
+
+
+## Review findings
+
+Read the implement diff (`67dacc94`) first, then the handoff. Checked: `connectionManagerTimeouts` against db-p2p 1.7.0's `NodeOptions.connectionManager` (it reads both keys, falls back to 10 000 / libp2p's default); libp2p 3.1.3's dial queue (`options.signal ?? AbortSignal.timeout(dialTimeout)`, confirming a caller's signal replaces `dialTimeout`, as the docs claim); the other libp2p limits on the same path (`in/outboundStreamProtocolNegotiationTimeout`, 10 s, bound one negotiation — about one round trip, 3 s at the supported link — so they are not a hidden ceiling); that validation of `linkRoundTripMs` still happens where the node is built (`connectionManagerTimeouts` goes through `resolveLinkRoundTripMs`); every derived number quoted in comments (14 s, 56 s, 13 s, 34 s for the strand-addr + drive NOTE) against the arithmetic; stale references to the old numbers and to the superseded `how-slow-a-relayed-link-does-sereus-carry` ticket across `packages/*/src` and `docs/` (none left outside history comments and the garden report); the containing limits the implementer re-checked (`connectMs`, solo-founding deadlines) and the reconcile/seed-ack NOTEs; docs (`architecture.md`, `testing.md`, `reference-app-rn.md`, CLI config doc, release note) against the new behavior.
+
+- **Fixed (minor, DRY/type safety):** the measurement scenario declared its own `ConnectionLimits` interface duplicating db-p2p's exported `Libp2pConnectionTimeouts` and cast both arms to it. Replaced with the imported type and a small `Arm` interface; no casts left.
+- **Tripwire parked:** `connectionManagerTimeouts` derives from the declaration only, so a per-field override that raises a cadre dial budget above it (`controlCohort.perAddressDialTimeoutMs`, `strandBackfill.dialTimeoutMs`) reintroduces the silent listener-side failure. `NOTE:` at `connectionManagerTimeouts` in `packages/cadre-core/src/link-budget.ts`.
+- **Considered and declined — wiring test for `connectionManager`:** the implementer flagged the absence. It is plain wiring with no branching, the same line in both builders, and the opt-in scenario already pins the behavior the limits exist for; per the project's test bar, not added. If it is ever dropped the failure is silent and slow-link-only, which is the argument for adding one if this wiring is refactored.
+- **Major / tickets:** none filed. The remaining gaps (Optimystic's fixed 3 s RPC dials, the four fixed cadre deadlines, node builders outside cadre-core, the unmeasured first-sync wait) are already carried by the upstream ticket and the two backlog arms the implementer appended; the site-claim is theirs.
+- **Accepted as stated in the handoff, not re-litigated:** `connectMs` 60 s → 120 s (documented, user-visible), relay container change unbuilt (`@ts-nocheck`, keys confirmed in libp2p's types), longer `inboundUpgradeTimeout` for stalled handshakes (documented at the site).
+- **Validation:** `yarn lint` clean; `@serfab/integration-tests` typecheck clean after the edit; cadre-core `link-budget`, `cadre-node-control-node-options`, `strand-instance-manager-network-addrs`, `peer-join-backfill`, `relay-reservation` specs: 5 files, 157 passed. The implementer's full-suite runs (cadre-core 2282, reference-app-rn 294, cadre-cli 236, integration scenarios in three batches) were not repeated; this pass changed only a type in the opt-in scenario and a comment. The opt-in scenario itself was not re-run (its change is type-only).
