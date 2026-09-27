@@ -34,3 +34,7 @@ If nothing is done: re-attaches over a slow relayed link keep working, but in th
 ## Sent (2026-09-27)
 
 The maintainer asked that upstream findings go to optimystic's tending agent. Sent to optimystic-tend as a message, not a public post. **Unblock when** optimystic says what it filed; then move this ticket to complete with that reference.
+
+## Filed upstream (2026-09-27)
+
+optimystic main `bd111c86`: `tickets/fix/reattach-over-a-partial-replica-reads-absent.md` (findings 1 and 3a) and `tickets/fix/catch-up-from-a-stale-replica-is-slower-than-from-empty.md` (finding 2 and the ~18 s steps; depends on the first). optimystic-tend thinks kjeib's phone report (every read `solo-self-skip`) is the same shape; send it the GitHub issue number when kjeib files it.
