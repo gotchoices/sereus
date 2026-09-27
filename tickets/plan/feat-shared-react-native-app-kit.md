@@ -73,3 +73,18 @@ One package in this monorepo, for example `@serfab/cadre-rn`, that a React Nativ
 - **Where the crypto adapter belongs is still open.** The choice is between this kit and `@optimystic/db-p2p/rn`, as sereus-chat proposes. Optimystic is a read-only sibling here (see `tickets/rules/sibling-repos.md`), so putting it there means asking optimystic to take it. The plan should settle this. It is reasonable to ship the adapter here now and move it if optimystic adopts it.
 - **The mode switch stays.** Apps need `off` to reproduce connection-monitor timeouts without reinstalling.
 - **Docs:** `docs/reference-app-rn.md` changes from "copy these files" to "depend on the kit". sereus-chat and sereus-health should be told the package exists, but changing their code is up to those projects.
+
+## Gardener notes for the plan stage (2026-09-27)
+
+The maintainer wants this in the next sereus release.
+- **Read-only siblings:** `../sereus-chat` and `../sereus-health` are read-only too, the same as `../optimystic` (`tickets/rules/sibling-repos.md`). Read and port from them; never write, build or install there.
+- **Adapter placement, decided for now:** ship the Noise crypto adapter in this kit. Offering it to optimystic is a later, separate step.
+- **Publishing:** the new package must be publishable and part of the release chain:
+  - `publishConfig`, `files`, and `exports` for each subpath;
+  - covered by `yarn smoke:published` (today 5 publishable workspaces) and by `yarn check:dep-ranges`;
+  - included in the release scripts' package list.
+
+  Match how `@serfab/cadre-core` is set up.
+- **What headless checks can prove:** that the package builds and packs, that the Metro resolution test passes, that the polyfill specs pass from the package, and that the reference app bundles with Metro (`expo export` or an equivalent bundle-only command, if one runs here) with native crypto on and with the optional peers missing.
+- **Device runs are human tasks:** a native build and a device run of the reference app with `full` and `symmetric` modes can't be done by an agent here. File them as one blocked device-run ticket, like `blocked/rn-host-node-request-device-run`, not as a gate on completing this ticket.
+- **Split** into ordered implement tickets small enough for one runner pass each, for example: package skeleton and publishing; polyfills and tests move; Metro helper; crypto adapter; reference app switches over and turns native crypto on; docs.
