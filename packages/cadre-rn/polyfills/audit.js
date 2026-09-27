@@ -43,9 +43,6 @@ const PROBES = [
 	{ path: 'process.env' },
 	{ path: 'queueMicrotask' },
 	{ path: 'performance.now' },
-	// event.js imports event-target-polyfill, which installs EventTarget when
-	// absent without marking the registry, so `native` here cannot rule that out.
-	{ path: 'EventTarget' },
 	{ path: 'WebSocket' },
 	{ path: 'AbortController' },
 	{ path: 'TextEncoder' },
@@ -68,6 +65,7 @@ const PROBES = [
 	{ path: 'AbortSignal.timeout', key: 'AbortSignal.timeout' },
 	{ path: 'AbortSignal.any', key: 'AbortSignal.any' },
 	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
+	{ path: 'EventTarget', key: 'EventTarget' },
 	{ path: 'CustomEvent', key: 'CustomEvent' },
 	{ path: 'Intl.PluralRules', key: 'Intl.PluralRules' },
 	// Present means webrtc.js ran, so the reference app reads `polyfilled`; an app without

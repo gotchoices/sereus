@@ -1,9 +1,9 @@
 description: Move the React Native reference app's startup patches for missing browser features into the shared kit package, so other Sereus phone apps import them instead of keeping their own drifting copies.
 prereq: rn-kit-package-and-native-noise-crypto
 architecture: docs/reference-app-rn.md#polyfills
-files: packages/cadre-rn/polyfills/ (index.js, boot-check.js new; hermes.js, event.js, intl-pluralrules.js, registry.js, webrtc.js, audit.js, reload-reason.js moved), packages/cadre-rn/package.json, packages/cadre-rn/vitest.config.ts, packages/cadre-rn/tsconfig.typecheck.json, packages/cadre-rn/test/polyfills/ (hermes-polyfills.spec.ts, reload-reason.spec.ts moved), packages/cadre-rn/README.md, packages/reference-app-rn/index.js, packages/reference-app-rn/metro.config.js, packages/reference-app-rn/package.json, packages/reference-app-rn/vitest.config.ts, packages/reference-app-rn/test/global-setup.ts, packages/reference-app-rn/test/polyfills/dependency-globals.spec.ts, packages/reference-app-rn/test/polyfills/metro-resolution.ts, packages/reference-app-rn/README.md, knip.ts, yarn.lock, docs/reference-app-rn.md, docs/architecture.md, docs/testing.md, eslint.config.mjs (comment), tickets/implement/3-rn-kit-metro-helper.md, tickets/blocked/rn-native-noise-crypto-device-run.md
+files: packages/cadre-rn/polyfills/ (index.js, boot-check.js new; hermes.js, event.js, intl-pluralrules.js, registry.js, webrtc.js, audit.js, reload-reason.js moved), packages/cadre-rn/package.json, packages/cadre-rn/vitest.config.ts, packages/cadre-rn/tsconfig.typecheck.json, packages/cadre-rn/test/polyfills/ (hermes-polyfills.spec.ts, reload-reason.spec.ts moved), packages/cadre-rn/README.md, packages/reference-app-rn/index.js, packages/reference-app-rn/metro.config.js, packages/reference-app-rn/package.json, packages/reference-app-rn/vitest.config.ts, packages/reference-app-rn/test/global-setup.ts, packages/reference-app-rn/test/polyfills/dependency-globals.spec.ts, packages/reference-app-rn/test/polyfills/metro-resolution.ts, packages/reference-app-rn/README.md, knip.ts, yarn.lock, docs/reference-app-rn.md, docs/architecture.md, docs/testing.md, eslint.config.mjs (comment), tickets/implement/3-rn-kit-metro-helper.md, tickets/blocked/rn-native-noise-crypto-device-run.md, packages/reference-app-ns/src/polyfills/ (audit, event, hermes, intl-pluralrules, websocket comments), ops/docker/libp2p-infra/README.md
 ----
-# Review: polyfills move into `@serfab/cadre-rn`
+# Complete: polyfills move into `@serfab/cadre-rn`
 
 Second of the four kit tickets (design context: `rn-kit-package-and-native-noise-crypto`). The seven runtime-global polyfill files moved (`git mv`) from `packages/reference-app-rn/polyfills/` to `packages/cadre-rn/polyfills/`. The three Node built-in shims (`node-crypto.js`, `node-os.js`, `empty.js`) stay in the app until `rn-kit-metro-helper`.
 
@@ -61,3 +61,25 @@ No tests added. Moved: `hermes-polyfills.spec.ts` and `reload-reason.spec.ts` in
 ## Other tickets touched
 
 Paths only: `backlog/bug-rn-debug-placeholders-printed-raw`, `backlog/debt-verify-reload-diagnostics-on-device`, `blocked/report-libp2p-websockets-buffered-amount`. Added evidence: `implement/3-rn-kit-metro-helper` (the interim rule it replaces, the one-copy check list, the `webrtc/index.js` resolution fact) and `blocked/rn-native-noise-crypto-device-run` step 2 (the `event-target-shim` effect).
+
+## Review findings
+
+Read the implement diff (`3242e8be`, with the renames in `1009852e`) before the handoff. Ran `yarn lint` (clean), `yarn dep-check` (pass; the only kit warning is the pre-existing unused `runPolyfillAudit` export), kit `typecheck` + `test` (39 pass), app `typecheck` + `test` (294 pass), and `yarn workspace @serfab/reference-app-rn test:bundle` (succeeds, after the `event.js` change below).
+
+**Fixed in this pass**
+
+- **Broken table in `docs/reference-app-rn.md` § Other global polyfills.** The `event.js` row had lost its Notes cell, and that text had become a fifth cell on the new `webrtc.js` row. Each row now has its own four cells.
+- **`EventTarget` was misreported.** The drift guard's entry said "Hermes provides it" (`by: 'react-native'`), and the boot audit always read `native`. The implementer suspected this; it is wrong. React Native 0.79.6's `Libraries/Core` installs no `EventTarget` (every `polyfillGlobal` name was checked), Expo 53's `src/winter` installs none, and Hermes has no DOM APIs. On the phone it is always `event-target-polyfill`'s. The fix is at the source, not only in the text: `event.js` now records whether `EventTarget` existed, loads the package with `require` so that check runs before it, and then marks `EventTarget` in the registry. The audit probe has `key: 'EventTarget'`, the drift guard lists it as `by: 'polyfill', file: 'event.js'` (so its existing "file still marks the key" test covers it), and the "always reads `native`" limit is gone from `docs/reference-app-rn.md` § Guards. Checked in Node with `EventTarget`/`Event`/`CustomEvent` deleted (both keys marked, `CustomEvent` works), and by the bundle build. Step 2 of `blocked/rn-native-noise-crypto-device-run` now expects `EventTarget` to read `polyfilled`.
+- **Stale paths to the moved files.** The NativeScript app's `src/polyfills/{audit,event,hermes,intl-pluralrules,websocket}.ts` and `ops/docker/libp2p-infra/README.md` pointed at `packages/reference-app-rn/polyfills/…`. They now point at `packages/cadre-rn/polyfills/…`. The `node-crypto.ts` / `node-os.ts` references are still correct, because those shims stayed in the app. The built `reference-app-ns/platforms/**/bundle.js` copies are generated output and were not touched.
+
+**Checked, no change**
+
+- Exports and packaging: the three subpaths are plain string targets on files in `files`. None has `types`, which is fine for side-effect imports from JS or TS. Optional peers match what the files import (`hermes.js` → get-random-values, `webrtc.js` → webrtc, `reload-reason.js` → react-native).
+- The interim `isKitPeerImport` rule in `metro.config.js`: it rewrites only bare peer specifiers from files under the kit's real path. `path.relative` plus the `isAbsolute` check covers other Windows drives. `packages/cadre-rn/node_modules` holds only Vite caches, so no nested dependency is redirected. `rn-kit-metro-helper` already records that it replaces this rule.
+- Entry order: `index.js` loads `hermes` → `intl-pluralrules` → `event`. `event.js`'s `CustomEvent extends Event` runs after the package installs `Event`. The `webrtc.js` load-order note matches what the source shows.
+- Tests: the two moved specs are unchanged apart from the path and type edits described above. The kit's inline `resolvePackageDir` is similar to the app's `metro-resolution.ts` but walks different roots (the kit's, not Metro's `nodeModulesPaths`), so it is not duplicated logic. No tests added: the `EventTarget` fix is covered by the drift guard's existing marks check, and the other fixes are comments and docs.
+- Docs: `architecture.md`, `testing.md`, `reference-app-rn.md`, and both READMEs were read against the new layout. Apart from the table and the `EventTarget` limit above, they match.
+
+**Not verified (unchanged from the handoff):** no device run (`blocked/rn-native-noise-crypto-device-run`), no `yarn smoke:published`, no root `yarn test` across every workspace.
+
+**Tickets and tripwires:** none filed. Nothing found here is major or conditional.

@@ -7,7 +7,7 @@
  * those are NOT polyfilled here (unlike the RN/Hermes port). Every patch below is
  * guarded by a `typeof` check, so it no-ops where the runtime already has the API.
  *
- * Ported and trimmed from packages/reference-app-rn/polyfills/hermes.js. See the
+ * Ported and trimmed from packages/cadre-rn/polyfills/hermes.js. See the
  * V8/JSC re-audit table in tickets/.../reference-app-ns-runtime.
  */
 

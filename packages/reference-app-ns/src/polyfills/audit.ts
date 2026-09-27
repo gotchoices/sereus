@@ -7,7 +7,7 @@
  * @valor/nativescript-websockets) and BEFORE any cadre/libp2p code, so the real V8/JSC surface is visible and
  * a regression (an API silently going missing) surfaces loudly at startup.
  *
- * packages/reference-app-rn/polyfills/audit.js is the same audit for the React
+ * packages/cadre-rn/polyfills/audit.js is the same audit for the React
  * Native app, with its own probe list. That duplication is deliberate: the two
  * runtimes have different surfaces (this list probes `AbortController` itself,
  * which React Native provides and NativeScript does not), so a shared list would

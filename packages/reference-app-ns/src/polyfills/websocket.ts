@@ -20,7 +20,7 @@ import { markPolyfilled } from './registry';
 // happens. The socket opens, the handshake is never written, and every outbound
 // dial dies on the dial timeout.
 //
-// Same gap fixed for React Native in packages/reference-app-rn/polyfills/hermes.js
+// Same gap fixed for React Native in packages/cadre-rn/polyfills/hermes.js
 // (commit 7a0fd6c); ported here from source inspection, not a device run.
 //
 // Reporting 0 is honest: the plugin hands each frame to the native socket on

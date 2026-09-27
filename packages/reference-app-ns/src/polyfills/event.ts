@@ -6,7 +6,7 @@
  * installs spec-complete `EventTarget` + `Event` (handling `once`, capture, and
  * AbortSignal-based removal) but does NOT include `CustomEvent`, which libp2p's
  * `safeDispatchEvent` uses internally — so add a minimal shim on top. Ported
- * from packages/reference-app-rn/polyfills/event.js.
+ * from packages/cadre-rn/polyfills/event.js.
  */
 
 import 'event-target-polyfill';

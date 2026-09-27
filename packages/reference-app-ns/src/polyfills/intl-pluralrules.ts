@@ -7,7 +7,7 @@
  * at-boot audit reports `Intl.PluralRules` MISSING for exactly this reason — the
  * RN-derived guard on `typeof Intl !== 'undefined'` short-circuited). Create the
  * `Intl` namespace when missing, then install a lightweight English shim. Ported
- * and hardened from packages/reference-app-rn/polyfills/intl-pluralrules.js.
+ * and hardened from packages/cadre-rn/polyfills/intl-pluralrules.js.
  */
 
 import { markPolyfilled } from './registry';

@@ -105,6 +105,7 @@ const PROVIDED: Record<string, Provision> = {
 	'Symbol.asyncIterator': { by: 'polyfill', file: 'hermes.js', key: 'Symbol.asyncIterator' },
 	ReadableStream: { by: 'polyfill', file: 'hermes.js', key: 'ReadableStream' },
 	DOMException: { by: 'polyfill', file: 'hermes.js', key: 'DOMException' },
+	EventTarget: { by: 'polyfill', file: 'event.js', key: 'EventTarget' },
 	CustomEvent: { by: 'polyfill', file: 'event.js', key: 'CustomEvent' },
 	'Intl.PluralRules': { by: 'polyfill', file: 'intl-pluralrules.js', key: 'Intl.PluralRules' },
 	RTCPeerConnection: { by: 'polyfill', file: 'webrtc.js', key: 'RTCPeerConnection' },
@@ -113,7 +114,6 @@ const PROVIDED: Record<string, Provision> = {
 	'performance.now': { by: 'react-native', why: 'installed by Libraries/Core/setUpPerformance.js' },
 	WebSocket: { by: 'react-native', why: 'installed by Libraries/Core/setUpXHR.js' },
 	Blob: { by: 'react-native', why: 'installed by Libraries/Core/setUpXHR.js' },
-	EventTarget: { by: 'react-native', why: 'Hermes provides it; polyfills/event.js in @serfab/cadre-rn backfills older engines' },
 	TextEncoder: { by: 'react-native', why: 'Hermes ships TextEncoder (it is TextDecoder that is missing)' },
 	'crypto.getRandomValues': { by: 'react-native', why: 'installed by the react-native-get-random-values native module' },
 	AggregateError: {

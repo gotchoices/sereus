@@ -10,8 +10,15 @@
  * uses internally, so we add a minimal shim for it on top.
  */
 
-import 'event-target-polyfill';
-import { markPolyfilled } from './registry';
+const { markPolyfilled } = require('./registry');
+
+// The package installs EventTarget only where the runtime has none, and records nothing
+// itself, so the check has to happen before it loads — hence `require`, which runs in
+// place, rather than a hoisted `import`. Neither Hermes nor React Native 0.79 / Expo 53
+// provides EventTarget, so on the phone the audit should read `polyfilled`.
+const hadEventTarget = typeof globalThis.EventTarget !== 'undefined';
+require('event-target-polyfill');
+if (!hadEventTarget) markPolyfilled('EventTarget');
 
 if (typeof globalThis.CustomEvent === 'undefined') {
 	globalThis.CustomEvent = class CustomEvent extends Event {
