@@ -24,6 +24,7 @@ import {
 	declaredRange,
 	findPackageDir,
 	hoistedVersions,
+	missingExportTargets,
 	nestedCopies,
 	parseFlags,
 	publishableWorkspaces,
@@ -229,6 +230,25 @@ test('tarballProvenance reports no lockfile rather than claiming the tarballs we
 		assert.deepEqual(
 			tarballProvenance(root, [{ manifest: { name: '@scope/alpha' }, tarballName: 'scope-alpha.tgz' }]),
 			{ lockfilePresent: false, wrong: [] }
+		);
+	});
+});
+
+test('missingExportTargets reports only the targets absent from the installed package', () => {
+	withTempDir((root) => {
+		const dir = join(root, 'node_modules', '@scope', 'alpha');
+		writeManifest(dir, {
+			name: '@scope/alpha',
+			exports: {
+				'./present': { types: './dist/present.d.ts', import: './dist/present.js' },
+				'./nested': { 'react-native': { import: './polyfills/absent.js' }, import: './dist/present.js' }
+			}
+		});
+		writeFile(join(dir, 'dist', 'present.js'), 'x');
+		writeFile(join(dir, 'dist', 'present.d.ts'), 'x');
+		assert.deepEqual(
+			missingExportTargets(root, [{ manifest: { name: '@scope/alpha' } }]),
+			[{ name: '@scope/alpha', key: './nested → react-native → import', target: './polyfills/absent.js' }]
 		);
 	});
 });

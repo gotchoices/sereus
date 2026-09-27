@@ -34,7 +34,7 @@ export function undoCommands(version) {
 
 /**
  * Every refusal that can be decided from the repository alone, in severity order. Kept separate
- * from the registry check below so a broken bump is reported without five network round-trips
+ * from the registry check below so a broken bump is reported without six network round-trips
  * first — and so a registry outage cannot mask a failure the operator could have fixed offline.
  *
  * `state` is `{ version, tagName, packages: [{ name, version }], tag, tagExists, tagCommit,

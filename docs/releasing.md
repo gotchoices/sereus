@@ -5,14 +5,15 @@
 Sereus uses [bumpp](https://github.com/antfu/bumpp) for version bumping and follows semver.
 Tags use the `v` prefix (e.g. `v0.1.0`). All packages in the monorepo share one version number.
 
-Five workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
+Six workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
 record — `yarn smoke:published` derives its set from them, so a package becomes covered the moment
 it gets a `pub:*` script:
 
-`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`.
+`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`, `cadre-rn`.
 
 Publish order matters and `yarn pub` already encodes it (dependency chain first):
-`quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` → `cadre-host`.
+`quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` → `cadre-host` → `cadre-rn`
+(`cadre-rn` depends on no `@serfab/*` package, so its place is free; it goes last).
 
 ## Prerequisites
 
@@ -240,7 +241,7 @@ SEREUS_DIST_TAG=alpha yarn pub
 $env:SEREUS_DIST_TAG = 'alpha'; yarn pub
 ```
 
-The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is five
+The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is six
 `&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
 command in that chain. `--tag` works for a single package's own script, where there is no chain to
 lose the flag partway through:

@@ -1600,6 +1600,8 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 - [Reference App: Polyfills](reference-app-rn.md#polyfills) — working implementations in `packages/reference-app-rn/polyfills/`
 - [@optimystic/db-p2p README: React Native](https://github.com/gotchoices/optimystic/blob/master/packages/db-p2p/README.md#react-native) — polyfill checklist for any RN consumer of db-p2p
 
+**`@serfab/cadre-rn`** ([README](../packages/cadre-rn/README.md)) is the publishable kit a React Native app depends on for these platform pieces instead of copying them from the reference app. Every entry point is a subpath with no root import, so an app installs only the native modules the parts it imports need. Today it carries `@serfab/cadre-rn/noise-crypto`: `buildNoiseCrypto(mode)` returns a `NetworkConfig.noiseCrypto` backed by `react-native-quick-crypto`, because Metro resolves `@chainsafe/libp2p-noise`'s pure-JavaScript browser build and on Hermes that dominates connection setup.
+
 ### Reference apps (cadre on edge platforms)
 
 Three reference apps exercise the **same** cadre/strand stack on edge platforms —

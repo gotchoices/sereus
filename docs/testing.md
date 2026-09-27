@@ -176,7 +176,7 @@ files are type-checked where possible (vitest itself never type-checks).
   parallel despite binding real network ports; now expressed as top-level `pool: 'forks'` +
   `fileParallelism: false`).
   Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
-  `quereus-plugin-sereus`, `integration-tests`) or the package's main `tsconfig.json`
+  `cadre-rn`, `quereus-plugin-sereus`, `integration-tests`) or the package's main `tsconfig.json`
   (`reference-app-ns`, `reference-app-rn`, `reference-app-web`).
   Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
@@ -234,8 +234,8 @@ files are type-checked where possible (vitest itself never type-checks).
   live in `scripts/lib/typecheck-programs.mjs`; the config gate's 16 fixtures pass unmodified across
   that refactor.
 - Per-package scope:
-  - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `integration-tests`,
-    `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
+  - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `cadre-rn`,
+    `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, checked by the separate `typecheck:e2e` script — which is chained into
     that package's `build`, **not** into root `yarn typecheck`, so the fast gate does not cover them)

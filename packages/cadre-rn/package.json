@@ -1,0 +1,66 @@
+{
+  "name": "@serfab/cadre-rn",
+  "version": "1.5.0",
+  "type": "module",
+  "description": "React Native kit for Sereus apps - native crypto for libp2p-noise, with polyfills and Metro configuration to follow",
+  "files": [
+    "src",
+    "dist",
+    "!dist/test",
+    "!**/*.tsbuildinfo",
+    "README.md"
+  ],
+  "exports": {
+    "./noise-crypto": {
+      "types": "./dist/noise-crypto.d.ts",
+      "import": "./dist/noise-crypto.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/sereus.git",
+    "directory": "packages/cadre-rn"
+  },
+  "author": "Got Choices Foundation",
+  "license": "MIT",
+  "keywords": [
+    "sereus",
+    "cadre",
+    "react-native",
+    "libp2p",
+    "noise",
+    "crypto"
+  ],
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
+    "test": "vitest run",
+    "dev:test": "vitest"
+  },
+  "dependencies": {
+    "@optimystic/db-p2p": "^1.6.0"
+  },
+  "peerDependencies": {
+    "@craftzdog/react-native-buffer": "^6.1.2",
+    "react-native-quick-crypto": "^1.1.7"
+  },
+  "peerDependenciesMeta": {
+    "@craftzdog/react-native-buffer": {
+      "optional": true
+    },
+    "react-native-quick-crypto": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@craftzdog/react-native-buffer": "^6.1.2",
+    "@types/node": "^25.0.10",
+    "react-native-quick-crypto": "^1.1.7",
+    "rimraf": "^6.1.2",
+    "typescript": "^5.9.3",
+    "uint8arraylist": "^2.4.8",
+    "vitest": "^4.0.17"
+  }
+}
