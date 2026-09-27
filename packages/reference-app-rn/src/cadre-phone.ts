@@ -141,8 +141,9 @@ let node: CadreNode | null = null;
 
 /**
  * The Noise crypto mode {@link node} was built with, recorded here rather than read
- * back out of cadre-core, which keeps only the implementation. Null while no node is
- * running.
+ * back out of cadre-core, which keeps only the implementation. Set before
+ * `node.start()`, so a failed start leaves it set; {@link getNoiseCryptoMode} gates on
+ * `isRunning`.
  */
 let nodeNoiseCryptoMode: NoiseCryptoMode | null = null;
 
@@ -329,7 +330,7 @@ function initializeFormationResponder(cadre: CadreNode): void {
  * to show what a device run is measuring. Null before start and after stop.
  */
 export function getNoiseCryptoMode(): NoiseCryptoMode | null {
-  return nodeNoiseCryptoMode;
+  return node?.isRunning ? nodeNoiseCryptoMode : null;
 }
 
 /**

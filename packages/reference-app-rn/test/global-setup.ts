@@ -41,9 +41,10 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
  */
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
-	// No spec here loads it yet (the app imports only its uncompiled polyfills, from
-	// index.js); listed because build-targets.spec.ts holds every workspace dependency to
-	// this list, and it covers `/noise-crypto` once src/ imports that.
+	// No spec here loads it: `src/cadre-phone.ts` and `src/noise-crypto-config.ts` import
+	// `/noise-crypto`, which loads react-native-quick-crypto and so cannot run under Node,
+	// and specs reach those files only through mocks. Listed because build-targets.spec.ts
+	// holds every workspace dependency to this list, and typecheck reads its `.d.ts`.
 	{ packageName: '@serfab/cadre-rn', distEntry: 'dist/noise-crypto.js', location: 'workspace' },
 	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },

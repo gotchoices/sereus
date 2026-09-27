@@ -134,7 +134,7 @@ Every mode but `off` starts from optimystic's `noisePureJsCrypto` and overrides 
 | source | how | when to use it |
 | --- | --- | --- |
 | `EXPO_PUBLIC_NOISE_CRYPTO` | build-time env var: `off`, `symmetric` or `full`, read by [`src/noise-crypto-config.ts`](../packages/reference-app-rn/src/noise-crypto-config.ts). Unset or blank means `symmetric`, the kit's `DEFAULT_NOISE_CRYPTO_MODE`. Any other value throws an error naming the three, because silently running a different mode would corrupt the measurement the switch exists for | a build that should start in another mode |
-| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, beside **Relay**, prefilled from the env var | switching one device between modes |
+| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, below **Relay**, prefilled from the env var | switching one device between modes |
 
 Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or host-node request in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
 
