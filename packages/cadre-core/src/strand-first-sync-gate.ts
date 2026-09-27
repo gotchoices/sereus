@@ -64,12 +64,42 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
 
 /**
  * How long `CadreNode.addStrand` waits for a joining machine's first sync before rejecting
- * with {@link StrandAwaitingFirstSyncError}. Measured: over a direct connection the
- * joiner reads the founder's rows about 1.3 s after `addStrand` would previously have
- * resolved; a relayed path is slower, and a phone that just redeemed an invitation has the
- * host reachable moments ago, so 30 s is generous without leaving an app hanging.
+ * with {@link StrandAwaitingFirstSyncError}.
+ *
+ * Measured over a DIRECT connection (2026-09-16): the joiner reads the founder's rows about
+ * 1.3 s after `addStrand` would previously have resolved. That is still the fast case, and it
+ * is not what this budget has to cover.
+ *
+ * Measured over a RELAYED SLOW LINK (2026-09-26): one Windows developer machine, two
+ * relay-only `CadreNode`s (`listenAddrs: []`) on a shared loopback dedicated relay, with a
+ * 900 ms one-way per-frame outbound delay applied to every websocket by
+ * `integration-tests/src/harness/ws-latency.ts` in `pipelined` mode — frames stay overlapped
+ * in flight, so the figure is latency and bandwidth stays unlimited; the harness's other mode
+ * (`serial`) is a per-socket frame-rate cap and its delays are NOT comparable
+ * (`docs/testing.md` → "Link latency"). A round trip therefore costs about
+ * 1.8 s. Time from `addStrand` to writable, for a machine holding nothing of the strand yet:
+ * 23, 27, 31 and 41 s over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42
+ * and 46 s over three runs at a 5000 ms one. **The second band is the one in force**: sereus
+ * declares 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`),
+ * because 1000 ms is shorter than one round trip on that link and leaves every cohort read with
+ * no answer to corroborate against. Widening that deadline makes a consult against a peer that
+ * cannot answer cost longer, and this phase runs several of those — which is why the two bands
+ * are both recorded here, and why a change to either number has to be weighed against the
+ * other. 120 s clears the worst sample of the band in force by about 2.6x. The previous 30 s
+ * default sat INSIDE the first band, so roughly half of those joins were rejected as "not
+ * writable yet" while the sync was progressing normally and went on to complete.
+ *
+ * NOTE: accepted tradeoff — what 120 s costs. This wait is what an app's `addStrand` sits in
+ * before it is told "not yet", so a strand none of whose members is reachable at all takes two
+ * minutes to report instead of thirty seconds. The slow report was weighed against refusing
+ * joins that were working, and the refusal is the worse failure. The cost is bounded — the
+ * rejection is retryable, the strand stays launched and keeps probing, and `strand:writable`
+ * fires the moment the sync lands, so an app that listens for the event rather than awaiting
+ * the call is unaffected either way. Revisit if the gate ever learns whether ANY other member
+ * is connected: "no peer at all" could then be reported at once and this budget would only
+ * ever be spent on a sync that is actually in progress.
  */
-export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 30_000;
+export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 120_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */
 export interface StrandFirstSyncConfig {
@@ -242,8 +272,7 @@ export class StrandFirstSyncGate {
   private async probe(): Promise<void> {
     if (this.stopped || this.opened || this.probing) return;
     this.probing = true;
-    const held = await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label)
-      .finally(() => { this.probing = false; });
+    const held = await this.probeHeld();
     // Re-check after the await: a release or a force-open may have landed mid-read.
     if (this.stopped || this.opened) return;
     if (!held) {
@@ -254,5 +283,24 @@ export class StrandFirstSyncGate {
     this.stop();
     log('[%s] first-sync gate opened: Strand.Header and every App table read from a peer', this.deps.label);
     this.deps.onHeaderHeld();
+  }
+
+  /**
+   * One probe's answer, with a throw from OUTSIDE {@link strandFirstSyncComplete}'s own read
+   * guards — the `App` schema lookup, or `getDatabase()` itself — reported as "not yet" like
+   * any failing read. The loop is scheduled from `void this.probe()`, so an escaping rejection
+   * would be unhandled AND leave nothing scheduled: the strand would stay gated for the whole
+   * `timeoutMs` and never recover, which is the one failure this gate must not have.
+   */
+  private async probeHeld(): Promise<boolean> {
+    try {
+      return await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label);
+    } catch (error) {
+      log('[%s] first-sync probe threw (treated as not yet synced): %s', this.deps.label,
+        error instanceof Error ? error.message : String(error));
+      return false;
+    } finally {
+      this.probing = false;
+    }
   }
 }

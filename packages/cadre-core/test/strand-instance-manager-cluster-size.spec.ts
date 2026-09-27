@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
-import { DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY, strandClusterPolicy } from '../src/types.js';
+import { COHORT_READ_DEADLINE_MS, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY, strandClusterPolicy } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -149,6 +149,11 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // Absent on purpose: omitting it is what selects Optimystic's
     // DEFAULT_SUPER_MAJORITY_THRESHOLD (0.75) at both the coordinator and the cluster member.
     expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
+
+    // Declared, not left to Optimystic's 1000 ms LAN default, which reads every peer on a
+    // relayed link as silent. Why 5000, and that it exceeds the upstream default, are pinned on
+    // the constant in `quereus-plugin-sereus/test/plugin.spec.ts`.
+    expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
   });
 
   it('passes the frozen STRAND_CLUSTER_POLICY BY IDENTITY when no machine count is known', async () => {
@@ -163,6 +168,27 @@ describe('StrandInstanceManager cluster size wiring', () => {
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
+    );
+  });
+
+  it('routes network.cohortQueryTimeoutMs into the strand node\'s read deadline', async () => {
+    // The wiring this file owns: the host's field reaches `clusterPolicy` on the strand node
+    // too, not only the control node. The builder's own contract is pinned on the builder, in
+    // `quereus-plugin-sereus/test/plugin.spec.ts`.
+    //
+    // 12000, not 5000: an override equal to the declared default would also pass against a
+    // manager that dropped `config.network` on the floor. Deep equality against the builder's
+    // own output — the idiom the serving-machine test below uses — pins the deadline AND the
+    // absence of a repair yardstick in one assertion.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-deadline', {
+      network: { cohortQueryTimeoutMs: 12_000 }
+    }));
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { cohortQueryTimeoutMs: 12_000 })
+      })
     );
   });
 
@@ -198,7 +224,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({
-        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 5)
+        clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { servingMachines: 5 })
       })
     );
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(

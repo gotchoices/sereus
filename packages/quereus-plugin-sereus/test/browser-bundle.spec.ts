@@ -23,9 +23,23 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, '..');
 const bundlePath = resolve(pkgRoot, 'dist', 'plugin-browser.js');
 
-// Soft caps. Bump deliberately if a justified dep increase pushes us over.
-const MAX_RAW_BYTES = 8 * 1024 * 1024;       // 8 MiB
-const MAX_GZIPPED_BYTES = 3 * 1024 * 1024;   // 3 MiB
+// Soft caps, set ~20% above the last measurement so ordinary churn passes and a structural jump
+// does not. Bump deliberately if a justified dep increase pushes us over.
+//
+// Measured 2026-09-20: 2,005,190 B raw, 592,933 B gzipped (1958.2 / 579.0 KiB as printed by
+// `yarn workspace @serfab/quereus-plugin-sereus build`, via `scripts/build-browser.mjs`). The
+// figure moves with the linked `../optimystic` and `../quereus` checkouts as well as this
+// package, so re-measure before deciding a breach is a regression rather than a dependency bump.
+//
+// These caps assume `minify: true` in the build script; the same build unminified is about 4.9 MB
+// raw / 1.16 MB gzipped, so switching minification off breaches both.
+//
+// NOTE: this is the only guard on the size of the published browser payload. `publish-package.mjs`
+// runs `yarn build` and ships that `dist/`, so the artifact measured here is the artifact users
+// fetch; `yarn smoke:published` installs the finished tarball and cannot see inside a bundle that
+// was already built before it was packed. Raising a cap is what lets a size regression ship.
+const MAX_RAW_BYTES = 2_400_000;
+const MAX_GZIPPED_BYTES = 710_000;
 
 const FORBIDDEN_BARE_IMPORTS = [
 	'@libp2p/tcp',
@@ -63,9 +77,10 @@ describe('browser bundle artifact', () => {
 
 	it('does not statically reference forbidden Node-only modules', () => {
 		for (const spec of FORBIDDEN_BARE_IMPORTS) {
-			// Match `from "spec"` / `from 'spec'` / `import("spec")`. Allow filenames
-			// or comments that mention the literal (they show up because esbuild's
-			// section markers reference the original module path).
+			// Match `from "spec"` / `from 'spec'` / `import("spec")` rather than a plain
+			// substring: a filename or comment that merely names the module is not an import.
+			// Minification strips esbuild's section-marker comments, so no such mention survives
+			// in today's bundle, but the narrow match keeps the check honest either way.
 			const fromRe = new RegExp(`from\\s*['"]${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}['"]`);
 			const importRe = new RegExp(`import\\s*\\(\\s*['"]${spec.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')}['"]`);
 			expect(fromRe.test(bundle), `bundle contains \`from "${spec}"\``).toBe(false);

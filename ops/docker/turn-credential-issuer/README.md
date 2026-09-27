@@ -17,7 +17,7 @@ this service mints **short-lived, per-request** TURN credentials on demand.
   with coturn — never in a client bundle. The issuer signs; coturn verifies.
 - It is **not** a TLS terminator and **not** a libp2p node. It listens plain HTTP;
   you front it with your existing reverse proxy (nginx/caddy), exactly like the
-  relay/bootstrap nodes and the static manifest.
+  relay node and the static manifest.
 - It has **one runtime dependency**, `@libp2p/crypto` — the same library the
   clients sign with, used to verify peer assertions (below). Everything else is
   Node built-ins.

@@ -45,7 +45,7 @@ import type { CadreNodeConfig } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { getChatSAppConfig, CHAT_SAPP_ID } from '../../src/lib/chat-strand.js';
-import { insertChatMessage, selectChatMessages } from '../../src/lib/chat-dml.js';
+import { insertChatMessage, newChatMessageId, selectChatMessages } from '../../src/lib/chat-dml.js';
 
 /** Author display name the responder seeds its known message under. */
 const SEED_PARTICIPANT = 'responder';
@@ -273,7 +273,15 @@ export async function startFormationResponder(opts?: {
 			if (!seedPromise) {
 				seedPromise = (async () => {
 					const db = requireStrandDatabase(node, strandId);
-					const id = await insertChatMessage(db, SEED_PARTICIPANT, seedContent);
+					// Minted per attempt, not held across them: a rejection here resets `seedPromise`,
+					// so the retry seeds under a fresh key. That is safe only because the failure this
+					// retry exists for — an attempt before the cohort is ready — rejects without
+					// storing anything. A failure that stored the row and then failed to say so would
+					// seed twice; holding the key the way the composer does (see
+					// docs/schema-guide.md, "Client-Generated Keys and Retrying a Write") is what a
+					// fixture with a real uncertain-failure path would need.
+					const id = newChatMessageId();
+					await insertChatMessage(db, id, SEED_PARTICIPANT, seedContent);
 					seededMessage.id = id;
 					return { id, content: seedContent };
 				})().catch((err: unknown) => {

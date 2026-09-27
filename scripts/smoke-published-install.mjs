@@ -33,7 +33,8 @@
  * The decisions this makes about the repo and about an installed tree live in
  * `scripts/lib/published-smoke-support.mjs` and are unit-tested by
  * `scripts/smoke-published-install.test.mjs`; what stays here is the orchestration
- * and the reporting.
+ * and the reporting. Spawning a build tool is shared with
+ * `scripts/check-published.mjs` through `scripts/lib/run-command.mjs`.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -52,6 +53,7 @@ import {
 	staleWorkspaces,
 	tarballProvenance
 } from './lib/published-smoke-support.mjs';
+import { run } from './lib/run-command.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(scriptDir, '..');
@@ -96,45 +98,6 @@ const SCENARIO_DIRECT_DEPS = [
 	'@libp2p/crypto',
 	'@libp2p/peer-id'
 ];
-
-/**
- * `.cmd` shims (yarn, npm on Windows) cannot be spawned without a shell on modern
- * node, so shell out there and quote anything with whitespace.
- *
- * Output streams as it goes by default — a silent redirect would let an agent
- * runner's idle timer expire on the multi-minute `yarn build`. `quiet` captures
- * instead, and is only for commands that finish in well under a second: `yarn pack`
- * lists every file it archives, which is ~900 lines across the publishable set and
- * buries the report this script exists to print. A quiet command that fails echoes
- * everything it captured before throwing.
- *
- * NOTE: only the win32 branch has ever run. If this is ever used on macOS or Linux,
- * expect the first failure here (`shell: false`) and in the `file:` spec's backslash
- * normalisation in `writeScratchProject`.
- */
-function run(command, commandArgs, cwd, { quiet = false } = {}) {
-	const useShell = process.platform === 'win32';
-	const finalArgs = useShell
-		? commandArgs.map((arg) => (/[\s"&|<>^]/.test(arg) ? `"${arg}"` : arg))
-		: commandArgs;
-	console.log(`\n$ ${command} ${commandArgs.join(' ')}   (in ${cwd})`);
-	const result = spawnSync(command, finalArgs, {
-		cwd,
-		stdio: quiet ? 'pipe' : 'inherit',
-		shell: useShell,
-		encoding: quiet ? 'utf8' : undefined
-	});
-	if (result.error) {
-		throw new Error(`${command} failed to start: ${result.error.message}`);
-	}
-	if (result.status !== 0) {
-		if (quiet) {
-			process.stderr.write(result.stdout ?? '');
-			process.stderr.write(result.stderr ?? '');
-		}
-		throw new Error(`${command} ${commandArgs.join(' ')} exited with code ${result.status}`);
-	}
-}
 
 /**
  * The hoisted view first, then only the *differences* each installed package sees from
@@ -204,6 +167,8 @@ function writeScratchProject(scenarioPath, projectDir, workspaces, tarballDir) {
 		// A relative `file:` spec, and declared at the top level so each tarball also
 		// satisfies the others' registry ranges (`@serfab/cadre-host` depends on
 		// `@serfab/cadre-cli@^0.9.0`, which the hoisted tarball answers).
+		// NOTE: the backslash normalisation is win32-only, like the shell branch in
+		// `run-command.mjs`; neither has ever run on macOS or Linux.
 		dependencies[manifest.name] = `file:${relative(projectDir, join(tarballDir, tarballName)).split('\\').join('/')}`;
 	}
 	for (const depName of SCENARIO_DIRECT_DEPS) {

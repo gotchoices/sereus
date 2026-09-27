@@ -86,6 +86,25 @@ export interface CliConfigFile {
      * `NetworkConfig.unauthorizedRelayReservationCap` in `@serfab/cadre-core`.
      */
     unauthorizedRelayReservationCap?: number;
+    /**
+     * How long ONE peer of a block's replication group gets to answer ONE read-path request,
+     * in milliseconds, for this machine's control node and every strand node it runs. Unset
+     * takes cadre's own 5000 ms, chosen for two parties that reach each other only through a
+     * relay; a deployment that is all LAN can lower it so a departed peer stops holding up a
+     * read for that long. A value that is not a finite number above zero fails startup where
+     * the node is built. See `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
+     */
+    cohortQueryTimeoutMs?: number;
+    /**
+     * The round trip this machine assumes between itself and another machine, in milliseconds.
+     * Unset takes cadre's own 2000 ms, which states the relayed phone-to-phone link sereus
+     * assumes. It is not a timeout: cadre's own dial and relay-reservation deadlines are derived
+     * from it, each by the number of exchanges that operation was measured to cost, so a
+     * deployment on a slower link raises this one number instead of a list of timeouts. A value
+     * that is not a finite number above zero fails startup where the node is built. See
+     * `NetworkConfig.linkRoundTripMs` in `@serfab/cadre-core`.
+     */
+    linkRoundTripMs?: number;
   };
 
   /** Hibernation settings */
@@ -174,6 +193,10 @@ export interface ResolvedConfig {
     enableRelay?: boolean;
     /** See `CadreConfig.network.unauthorizedRelayReservationCap`. */
     unauthorizedRelayReservationCap?: number;
+    /** See `CadreConfig.network.cohortQueryTimeoutMs`. */
+    cohortQueryTimeoutMs?: number;
+    /** See `CadreConfig.network.linkRoundTripMs`. */
+    linkRoundTripMs?: number;
   };
   hibernation?: {
     enabled: boolean;

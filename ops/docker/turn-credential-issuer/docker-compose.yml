@@ -2,7 +2,7 @@
 # (/ice-servers.json) with freshly-minted, short-lived coturn TURN credentials.
 #
 # The service listens PLAIN HTTP on ISSUER_PORT. Front it with your existing TLS
-# reverse proxy (nginx/caddy) — same model as the relay/bootstrap nodes and the
+# reverse proxy (nginx/caddy) — same model as the relay node and the
 # static ICE manifest (see ../../docs/ice-servers.md). Do NOT expose it without
 # TLS in front: the manifest carries TURN credentials.
 #

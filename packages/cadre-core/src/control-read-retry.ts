@@ -66,6 +66,18 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * per read, so a membership read can spend up to two budgets back to back — still inside
  * 2 s only because each stays well under it. Do not raise these numbers without
  * re-checking against `ADMISSION_DECISION_TIMEOUT_MS`.
+ *
+ * NOTE: the obligation runs the other way too, and the number that dominates this budget is
+ * declared in another package. One attempt whose cohort consult finds a silent peer costs
+ * `clusterPolicy.cohortQueryTimeoutMs`, which sereus declares at 5000 ms
+ * (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`) for relayed phone
+ * links — more than three times this budget, so such an attempt is never retried and the
+ * admission gate above it has already fail-opened. That is a widened cost of a deliberate
+ * choice, not a hole (the stream gates still decide), and the whole ladder of cadre-core
+ * deadlines against Optimystic's is audited by
+ * `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds`. What this budget still
+ * buys is the failure it was built for: the ~25 ms transactor read-phase aggregate off a
+ * stream still forming, which retries twice well inside 1500 ms.
  */
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 

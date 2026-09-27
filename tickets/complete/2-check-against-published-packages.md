@@ -1,0 +1,71 @@
+description: The test suite could only be run against working copies of two sibling projects on the developer's disk. It can now also run against the versions users download, via a new documented command.
+architecture: docs/testing.md
+files:
+  - test-harness/build-targets.ts
+  - test-harness/build-targets-spec.ts
+  - test-harness/build-freshness.spec.ts
+  - scripts/check-published.mjs
+  - scripts/check-published.test.mjs
+  - scripts/lib/published-check-support.mjs
+  - scripts/lib/run-command.mjs
+  - scripts/smoke-published-install.mjs
+  - package.json
+  - docs/testing.md
+----
+
+# Complete — let the suite run against the published dependency packages
+
+## What landed
+
+**Arm 1 — the assertions that hard-coded "linked".** Both sites now decide their expectation from the root manifest instead of assuming the `resolutions` block is there. `linkedResolutions` in `test-harness/build-targets.ts` is exported for that. In `test-harness/build-targets-spec.ts`, an `expectFound` entry of `'linked'` asserts `'linked'` exactly as before when the root manifest links the name, and otherwise asserts both that `distBackedDependencies` omits it (correct — a packed copy's mtimes cannot be judged) and that `resolveLinkedPackageFrom` reports `'not-linked'`, i.e. a real directory is installed there. The second half is what stops the case going vacuous. `test-harness/build-freshness.spec.ts`'s two `node_modules chain, on this checkout` cases go through one `expectResolves` helper that builds the same either/or expectation. The eight `expectFound` blocks are unchanged.
+
+**Arm 2 — the command.** `yarn check:published` → `scripts/check-published.mjs`. It refuses a dirty tree (printing the differing paths; `--allow-dirty` overrides and says loudly that HEAD is still what gets checked), adds a detached worktree at HEAD under the OS temp dir, deletes the `resolutions` key from that worktree's root manifest and nothing else, runs `yarn install --no-immutable`, prints what every `@optimystic/*` and `@quereus/*` name resolved to (hoisted, then every workspace that resolved its own copy instead), runs `yarn build`, `yarn lint`, `yarn typecheck`, `yarn test` there, and removes the worktree — unlinking every symlink and junction first, then falling back from `git worktree remove --force` to a `\\?\`-prefixed delete plus `git worktree prune` when Windows rejects the path length. `--keep` retains the worktree. `--skip-gates` (added in review, see below) stops after the report.
+
+**Shared spawn shim.** `run()` — the Windows `.cmd`/shell shim — moved out of `scripts/smoke-published-install.mjs` into `scripts/lib/run-command.mjs` rather than being copied into the new script; `capture()` is new beside it. The smoke script is otherwise unchanged except for one relocated `NOTE:`.
+
+**Decisions unit-tested, orchestration run.** The manifest edit, the dirty-tree reading, the reported package set, the workspace scan, the nested-copy report, the link removal and the flag parsing live in `scripts/lib/published-check-support.mjs` and are pinned by `scripts/check-published.test.mjs` (`yarn test:published-check-support`, chained into root `yarn test`). Everything around the four gates is covered by `yarn check:published --skip-gates`, which was run.
+
+## Review findings
+
+Reviewed the implement diff against `398528e7` before reading its handoff. Ran lint, both script support suites, the whole root `test:*` chain individually, the range gate and the three coverage checks, all nine specs the change affects, and — after the fix below made it possible — the script itself. Everything green; five things fixed inline, one parked as a `NOTE:`, no ticket filed.
+
+**Fixed inline — the script had no form anyone could actually run, so its orchestration had never run at all.** This was the handoff's own largest stated gap ("`yarn check:published` has never been run end to end"), and the reason given was structural rather than incidental: the four gates run far past any agent's or reviewer's wall-clock patience, and there was no way to ask for less. So the worktree lifecycle, the manifest strip, the install, the report and the Windows removal were verified only by hand-driving the library functions, and nothing exercised the script. Added `--skip-gates`, which stops after the report; documented it in `docs/testing.md` and in the script header as the half that answers the question which fails most often — whether the published siblings resolve at all, and at which versions. Then ran it: `node scripts/check-published.mjs --allow-dirty --skip-gates` finished in about 90 seconds with exit 0. Install resolved `@optimystic/*` 1.5.0 and `@quereus/quereus` 4.19.4 from the registry; `cpu-features` failed to build and was correctly ignored; the report printed all ten names plus twelve nested copies across the three reference apps; `git worktree remove --force` failed with `Filename too long` exactly as predicted and the `\\?\` fallback finished it. Afterwards `git worktree list` was clean, no temp directory survived, the main tree's `yarn.lock` was untouched and both sibling checkouts were intact. What is still unproven is only the four `run('yarn', gate)` calls in the loop.
+
+**Fixed inline — `capture` did not quote shell arguments although `run`, four lines above it in the same new module, did.** `run` wraps any argument containing whitespace or a shell operator before handing the line to `cmd.exe`; `capture`, written fresh this ticket, passed its arguments through unquoted with `shell: true`. No caller is affected today — both pass fixed `git` arguments with no whitespace — but two functions in one module meaning different things by the same argument is how the next caller gets a silently different command than it wrote. Both now go through one `spawnShape`, which also states why the quoting is conditional on the shell.
+
+**Fixed inline — a failed `git worktree add` gave advice about a worktree that does not exist, and leaked the scratch directory.** `cleanup` ran from a `finally` and assumed the worktree had been created whenever it was reached, so a git failure on the very first step printed "worktree left in place: <path>" and a `git worktree remove` command for a path that was never registered, while the `mkdtemp` directory stayed behind. It now takes an `added` flag and, when nothing was registered, silently drops the empty scratch directory instead.
+
+**Fixed inline — two untested constants sat in the module whose stated purpose is the opposite.** `scripts/lib/published-check-support.mjs` opens by explaining that it holds the parts that "can be exercised against fixtures... without a git worktree, an install, or a network", and `check-published.mjs` says what stays there is "the orchestration". `INSTALL_ARGS` and `WORKTREE_GATES` are orchestration, are not exercised by the test file, and are not exercisable by it. Moved to the entry script with their doc comments; the lib's export surface shrinks by two.
+
+**Fixed inline — `reportedSiblingNames`'s doc comment described a filter the code does not apply.** It said the set was "every name the root `resolutions` block redirects with `link:`"; the code takes every key of the block, and its own unit test asserts that a non-`link:` pin is included. Taking the whole key is right — the worktree drops the whole key, so a version pin resolves differently there too and belongs in the report — so the comment was corrected rather than the code. Indistinguishable today: all ten current `resolutions` entries are `link:`.
+
+**Checked and confirmed independently, no change — the de-linked branch of Arm 1.** This is the half a green main-tree run cannot see and the part of the change most worth doubting, so it was verified rather than taken from the handoff. Built a throwaway fixture (a manifest with `workspaces` and no `resolutions`, one workspace declaring `@optimystic/db-core`, a real registry-shaped directory under `node_modules`) and drove `describeBuildTargets` at it twice: the registry branch passed for the real name and failed for a misspelled one with `expected 'unresolved' to be 'not-linked'`. The vacuity guard does its job in both install shapes. Fixture and throwaway spec deleted; `git status` clean afterwards.
+
+**Parked as a `NOTE:` at `reportResolved`, not filed — several names print `(not installed)` on a healthy run.** The handoff flagged `@optimystic/demo`; the real run showed three of ten, since `db-p2p-storage-ns` and `-rn` are wanted only by reference apps that hoist into their own `node_modules` and appear resolved in the second list. This is fine but reads as alarm to anyone meeting the report for the first time, and the handoff's reasoning for leaving it was about to be deleted with the handoff. The note records what was declined (filtering those names out), why (hiding a name the root manifest names would make a sibling that genuinely failed to install disappear rather than stand out), and the revisit condition (if the hoisted list grows long enough to bury the real signal).
+
+**No test added, and that is deliberate.** Nothing found in this pass was a defect a test would have caught: three of the five fixes are a comment, a constant's location, and an argument that no current caller passes. The `parseFlags` case was updated to cover `--skip-gates` because it asserts the whole flag table and would otherwise have gone stale. The registry branch of `build-targets-spec.ts` is the one genuinely untested path in ordinary runs, and a permanent fixture test for it was weighed and declined: its entire body is two `expect` calls, a committed fixture would mean faking a monorepo root to test the test harness's harness, and the branch does run — under `yarn check:published`, where a failure announces itself. The throwaway fixture above proved both directions without leaving anything behind. No existing test was cut; each of the twelve in `check-published.test.mjs` pins a distinct decision.
+
+**Nothing found in these categories, having looked.** No correctness defect in the test-harness changes — all nine affected specs were read and run (61 passed), and the branch selection was traced for a misspelled name, an absent name and a real one. No resource leak: the worktree, the scratch directory, the registration and the links were all confirmed gone after a real run. No stale documentation: `docs/testing.md` is the only doc touching this subject, every claim in the new section was checked against the run, and its "not runnable inside a ticket" and "what remains unproven" sentences were corrected to match what `--skip-gates` now makes true. No file is near a size worth splitting — by `wc -l` the largest new file is `scripts/check-published.mjs` at 252 lines, of which about 80 are the header and the doc comments.
+
+## What was run
+
+- `yarn lint` — green, whole repo (exit 0).
+- `yarn dep-check` — green: `all declared ranges admit their linked workspace version (10 linked package(s))`, alongside knip's pre-existing unused-export noise. None of the new files is flagged.
+- `yarn check:vitest-typecheck-coverage`, `yarn check:test-file-typecheck-coverage`, `yarn check:stale-build-guard-wiring` — green.
+- Every root script suite in the `yarn test` chain, individually: 169 tests, 0 failures, exit 0 each. Includes `test:published-check-support` (12) and `test:published-smoke-support` (23) after the `run()` move.
+- All nine affected spec files via `yarn exec vitest run` (root default config, no `globalSetup`): 61 passed.
+- The de-linked branch of Arm 1, against a throwaway fixture: registry branch passes for a real name, fails for a misspelled one.
+- `node scripts/check-published.mjs --allow-dirty --skip-gates`: exit 0 in about 90 s, worktree registered / de-linked / installed / reported / removed, Windows fallback fired and finished, no leaks.
+- `node scripts/check-published.mjs --nope` and `--skipgates`: exit 1, named the flag, added no worktree.
+
+## Known gaps for whoever runs this next
+
+**The four gates inside the worktree have still never run.** `--skip-gates` closes everything around them; the loop itself does not fit in a ticket's wall clock. Expect surprises there on the first full run from a committed HEAD, and treat whatever the `test` gate turns up as new information — nothing so far has exercised the `integration-tests`, `cadre-cli`, `cadre-host`, `cadre-provider` or reference-app suites against registry copies of the siblings.
+
+**`yarn typecheck` and the full `yarn test` could not be run in the main tree, in review as in implement.** `../optimystic` has no `dist` in any package this repo links, and `../quereus` still has `tickets/.in-progress` — its runner is mid-ticket. `tickets/rules/sibling-repos.md` and `docs/testing.md` both forbid building them, so every sibling-dependent gate here is blocked on the siblings' own builds. This is the documented mid-ticket state and not a test failure, so nothing was written to `tickets/.pre-existing-error.md`. The affected specs were run through vitest directly instead, which is sound because they need no `dist`; what went unexercised is the normal path that reaches them. Re-run `yarn test` once the siblings are built. Note that the de-linked worktree does not depend on the siblings' build state at all — registry copies ship their own `dist` and `.d.ts` — which is why `yarn check:published` was runnable here when `yarn test` was not.
+
+**The POSIX half of `scripts/lib/run-command.mjs` has still never executed**, as it never had in its previous home. The `shell: false` branch and the quoting it skips remain unproven off Windows; the `NOTE:` at the top of the module says so.
+
+**`scripts/lib/published-check-support.mjs` imports `findPackageDir` and `readJson` from `published-smoke-support.mjs`.** Both are generic and duplicating them would be worse, but they live in a module named for the other script. If a third script wants them, move them to a module of their own rather than growing the coupling.
+
+**`workspacePackages` re-derives the `packages/*` glob that `scripts/lib/typecheck-programs.mjs` already derives**; a `NOTE:` at the site says both must be taught if `workspaces` ever grows a second root. Reaching into the typecheck lib for it would drag `typescript` into a script that has nothing to do with it.

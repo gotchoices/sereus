@@ -13,7 +13,7 @@
 
 import { getCadreNode, getChatStrandId } from './cadre-web.js';
 import type { StrandInstance } from '@serfab/cadre-core';
-import { insertChatMessage, selectChatMessages } from './chat-dml.js';
+import { chatMessageExists, insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 import { pushError } from './diagnostics.svelte.js';
 
 const REFRESH_INTERVAL_MS = 4_000;
@@ -46,6 +46,19 @@ const state = $state<MessagesState>({
 let pollHandle: ReturnType<typeof setInterval> | null = null;
 let visibilityListener: (() => void) | null = null;
 let refreshInFlight = false;
+
+/**
+ * A composed message that has been submitted at least once, and the id minted for it. Held
+ * across a failed send so pressing Send again re-presents the SAME primary key rather than
+ * minting a second one — see {@link sendMessage}.
+ */
+interface PendingDraft {
+	id: string;
+	author: string;
+	content: string;
+}
+
+let pendingDraft: PendingDraft | null = null;
 
 export function messagesState(): MessagesState {
 	return state;
@@ -114,14 +127,38 @@ export async function refresh(): Promise<void> {
  * Register (idempotently) the author as a participant, then append a message.
  * Participant.Id = the author name keeps the demo single-field while still
  * exercising the Participant↔Message foreign-key join.
+ *
+ * A strand write can fail without settling whether it landed, so the id belongs to the
+ * composed message and not to the attempt: the first Send mints one and {@link pendingDraft}
+ * holds it until a send resolves. Pressing Send again on unchanged text re-presents that same
+ * key, so the primary key guarantees at most one row however many attempts the user makes.
+ *
+ * The author/content match is load-bearing, not an optimisation. If the user edits the text
+ * after a failed send and the first attempt HAD landed, reusing the id would report the edit
+ * as sent while the stored row kept the old text. Edited text is a different message, and the
+ * earlier attempt landing under its own id is correct — the user did submit that text.
  */
 export async function sendMessage(author: string, content: string): Promise<void> {
 	const strand = activeStrand();
 	if (!strand) throw new Error('Chat strand not active');
+	const resend =
+		pendingDraft?.author === author && pendingDraft.content === content ? pendingDraft : null;
+	const draft = resend ?? { id: newChatMessageId(), author, content };
+	pendingDraft = draft;
 	state.loading = true;
 	state.error = null;
 	try {
-		await insertChatMessage(db(strand), author, content);
+		// On a resend, read before writing: the earlier attempt may have landed even though it
+		// reported failure, and re-inserting a stored key raises rather than reporting success.
+		// NOTE: an attempt that lands in the window between this read and the insert below still
+		// raises a unique violation, so the user sees an error for a message that IS stored. The
+		// next Send reads the row and reports success, so the app self-corrects in one more tap
+		// and still cannot store a duplicate. Not worth retry machinery in a reference app.
+		const alreadyStored = resend !== null && (await chatMessageExists(db(strand), draft.id));
+		if (!alreadyStored) {
+			await insertChatMessage(db(strand), draft.id, author, content);
+		}
+		pendingDraft = null;
 		await refresh();
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);

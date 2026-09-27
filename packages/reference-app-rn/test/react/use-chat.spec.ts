@@ -20,9 +20,13 @@ import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useChat, type UseChatResult } from '../../src/use-chat';
 import { queryMessages, type ChatMessage } from '../../src/chat-operations';
 
+// `chat-send.ts` (reached through the hook's sender) imports from here too, so the mock has
+// to carry its whole surface even though this spec never sends.
 vi.mock('../../src/chat-operations', () => ({
   insertParticipant: vi.fn(async () => {}),
   insertMessage: vi.fn(),
+  messageExists: vi.fn(async () => false),
+  newChatMessageId: vi.fn(() => 'id'),
   queryMessages: vi.fn(),
   queryParticipants: vi.fn(async () => []),
 }));

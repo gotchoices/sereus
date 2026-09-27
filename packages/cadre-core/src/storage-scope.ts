@@ -23,12 +23,13 @@
  * encoding the React Native app's `secureStoreKeySegment` uses on a party id for the
  * same reason.
  *
- * THE STRAND ARM OF THAT CHARSET RULE IS NOT YET ENFORCED. The strand scope key is
- * `StrandRow.Id`, and the ids cadre-core itself mints are `strand-<digits>-<base36>`
- * / `strand-<hex>`, which satisfy the charset. But a strand row replicated into the
- * control database by another node in the party carries whatever id THAT node wrote,
- * and nothing validates its shape before `resolveStrandStorage` hands it to the
- * provider. See `tickets/backlog/bug-strand-scope-key-charset-unenforced`.
+ * THE STRAND ARM OF THAT CHARSET RULE IS ENFORCED HERE. A strand's scope key is
+ * `StrandRow.Id`, and a strand row replicated into the control database by another
+ * node in the party carries whatever id THAT node wrote. `assertStrandScopeKey`
+ * (below) is the check that makes the charset true of strand keys too; it runs
+ * unconditionally at the top of `StrandInstanceManager.startStrand`, so no strand id
+ * reaches an embedder's provider — or a libp2p protocol prefix — unvalidated. Ids
+ * cadre-core mints come from `strand-id.ts`, which is built on the same predicate.
  */
 
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
@@ -66,13 +67,97 @@ export function controlStorageScope(partyId: string): string {
 /**
  * Whether a scope key names a control database rather than a strand.
  *
- * A prefix test. Safe as one against the strand ids cadre-core mints, which are
- * `strand-`-prefixed (`strand-formation-manager.ts`, `strand-solicitation.ts`,
- * `control-formation-recorder.ts`) and so can never collide. It is NOT a security
- * boundary: a strand id replicated in from another node is unvalidated text that
- * could begin `control-`, which is one more reason to close the gap the module
- * comment names.
+ * A prefix test, and a sound one: a strand scope key can never begin `control-`,
+ * because {@link isValidStrandScopeKey} rejects that prefix and
+ * {@link assertStrandScopeKey} runs on every strand launch.
  */
 export function isControlStorageScope(scope: string): boolean {
 	return scope.startsWith(CONTROL_SCOPE_PREFIX);
+}
+
+/**
+ * The longest strand scope key accepted.
+ *
+ * The longest id cadre-core mints is 39 characters (`strand-` plus the 32 hex
+ * characters of `randomBytes(128, 'hex')` — 128 BITS, so 16 bytes), so this leaves
+ * ample room while keeping a key clear of the 255-BYTE limit every mainstream
+ * filesystem puts on one path component. The charset is ASCII, so characters and
+ * bytes are the same count here.
+ */
+const MAX_STRAND_SCOPE_KEY_LENGTH = 128;
+
+/** The charset every scope key stays within — see the module comment. */
+const SCOPE_KEY_CHARSET = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Whether a strand id is usable as a storage scope key and as a libp2p network name.
+ *
+ * A strand id is not minted locally in the general case — a strand row replicates in
+ * from another node in the party carrying whatever id THAT node wrote — and both
+ * places it lands turn it straight into a name: the embedder's storage provider
+ * (a directory under cadre-cli's storage path, a LevelDB filename, an IndexedDB
+ * database name) and the strand node's protocol prefix `/optimystic/strand-<id>`.
+ *
+ * Valid means all of:
+ * - non-empty, and at most {@link MAX_STRAND_SCOPE_KEY_LENGTH} characters;
+ * - within `[A-Za-z0-9._-]`, so no separator, drive letter, NUL or non-ASCII text;
+ * - not `.` or `..`, which the charset admits but every filesystem reads as a
+ *   directory rather than a name;
+ * - not `control-`-prefixed, which would let a strand's store masquerade as a
+ *   party's control database (see {@link isControlStorageScope}).
+ */
+export function isValidStrandScopeKey(strandId: string): boolean {
+	return strandId.length > 0
+		&& strandId.length <= MAX_STRAND_SCOPE_KEY_LENGTH
+		&& SCOPE_KEY_CHARSET.test(strandId)
+		&& strandId !== '.'
+		&& strandId !== '..'
+		&& !isControlStorageScope(strandId);
+}
+
+/**
+ * Thrown when a strand id cannot be used as a storage scope key or network name.
+ *
+ * NOT retryable: the id is a property of the strand row, so every later attempt on
+ * the same row fails identically. Callers that poll — `CadreNode.handleStrandAdded`
+ * via `StrandWatcher` — suppress the strand rather than scheduling a retry.
+ */
+export class InvalidStrandIdError extends Error {
+	readonly strandId: string;
+
+	constructor(strandId: string) {
+		super(
+			`Strand id ${JSON.stringify(strandId)} cannot be used as a storage scope key: ` +
+			`a strand id must be 1-${MAX_STRAND_SCOPE_KEY_LENGTH} characters within [A-Za-z0-9._-], ` +
+			"must not be '.' or '..', and must not begin 'control-'. " +
+			'This strand was created by a node that does not mint conforming ids; it cannot be ' +
+			'started here, because the id becomes a file, directory or database name.'
+		);
+		this.name = 'InvalidStrandIdError';
+		this.strandId = strandId;
+	}
+}
+
+/** {@link isValidStrandScopeKey} as an assertion, throwing {@link InvalidStrandIdError}. */
+export function assertStrandScopeKey(strandId: string): void {
+	if (!isValidStrandScopeKey(strandId)) {
+		throw new InvalidStrandIdError(strandId);
+	}
+}
+
+/**
+ * The charset half of the rule on its own, for the CONTROL key.
+ *
+ * {@link assertStrandScopeKey} cannot serve here: it rejects the `control-` prefix by
+ * design. Asserted at the seam that calls the provider (`CadreNode.resolveControlStorage`)
+ * rather than inside {@link controlStorageScope}, so the guarantee belongs to the call
+ * that hands a key out and not to one particular way of minting one.
+ */
+export function assertScopeKeyCharset(scope: string): void {
+	if (!SCOPE_KEY_CHARSET.test(scope)) {
+		throw new Error(
+			`Storage scope key ${JSON.stringify(scope)} leaves the [A-Za-z0-9._-] charset ` +
+			'embedders rely on to use it directly as a file, directory or database name.'
+		);
+	}
 }

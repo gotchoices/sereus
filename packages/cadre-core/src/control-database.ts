@@ -627,17 +627,35 @@ export class ControlDatabase {
     //  - `apply schema` is a DIFF, not a replay. Quereus collects the live catalog, diffs
     //    the declared schema against it, and only emits DDL for what is missing — which is
     //    exactly why `initialize` hydrates persisted optimystic schemas BEFORE getting here.
-    //    Tables that already landed generate no statements on the second pass.
-    //  - a failed `create table` leaves the catalog CLEAN. `SchemaManager.createTable` calls
-    //    the module's `create` first and only registers the table on success, so the table
-    //    that failed is not in the catalog, and neither are the ones after it.
+    //    A table the live catalog already lists generates no statements at all, which is what
+    //    makes an apply over an already-complete schema (a warm start) a no-op.
+    //  - a failed apply is taken back WHOLE (Quereus 4.20.0). The migration loop keeps an
+    //    undo journal; when a step fails it runs that journal in reverse, re-renders the
+    //    catalog, compares it against a fingerprint taken BEFORE the apply, and only then
+    //    rethrows the step's own error. So attempt 2 does not resume where attempt 1 died —
+    //    it re-emits the whole schema, because the catalog is back where the apply started.
     //
-    // Together: attempt 2 re-emits exactly the failed table and its successors. No
-    // `if not exists` juggling, no per-table loop, no statement splitting.
+    // Together: attempt 2 emits exactly the DDL the live catalog is missing, whatever
+    // attempt 1 reached. No `if not exists` juggling, no per-table loop, no statement
+    // splitting.
+    //
+    // That second bullet carries a dependency the pre-4.20.0 argument did not have. The
+    // unwind Quereus performs is the CATALOG's; whether STORAGE follows it is the optimystic
+    // plugin's doing. Quereus runs the forward steps, the undo steps and the verification
+    // all inside the module's `beginSchemaBatch`/`endSchemaBatch` pair, and the plugin puts
+    // each undo statement (`drop table`, `drop index if exists`) through its ordinary hooks
+    // in that one write batch, then commits the restored state. On a plugin build WITHOUT
+    // those batch hooks storage would be left holding objects the catalog no longer lists,
+    // and the re-run would diff against a catalog that disagrees with the blocks. So this
+    // argument is a statement about the pair, not about Quereus alone — pinned by
+    // `test/control-schema-apply-unwind.spec.ts`.
     //
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable
     // convergence fault a retry cannot heal (tracked separately) and must keep propagating.
+    // The cases the unwind cannot cover — a failed undo statement, a post-unwind catalog
+    // that does not match its fingerprint, an irreversible step — are retried deliberately
+    // rather than vetoed; why, on `RETRIABLE_SCHEMA_INIT_MATCHERS`.
     //
     // This is the ONE call site on a non-default policy: the re-run safety argued above is
     // also what lets schema init absorb optimystic's self-coordination grace refusal, which
@@ -2977,16 +2995,30 @@ export class ControlDatabase {
    * Served by a seek through the `FormationUsageByToken` index rather than a full scan of
    * the table, which is append-only and grows for the life of the party.
    *
-   * NOTE: this count IS the seat cap (`enforceFormationUseCap`), so an under-report admits a
-   * seat the invitation never paid for — and reading it through a secondary index makes the
-   * cap depend on that index converging across machines. It did not, from 2026-08-04 to
-   * 2026-08-25: a descent on a second machine returned only the rows that machine had
-   * written, and the index was removed until the engine was fixed upstream (re-measured
-   * 2026-09-17, `complete/restore-formation-usage-token-index`). The live guard is the
-   * integration-tests scenario `strand-formation-concurrent-redemption`, which asserts both
-   * machines' views of a raced redemption. If it fails on BOTH views again, index
-   * convergence has regressed — fix the engine or take this read off the index, and do not
-   * weaken that scenario's assertions to get a green run.
+   * This read is NOT the seat cap. The authoritative cap is the deferred `Authorized` CHECK
+   * in `schemas/control.qsql` — `FI.TotalUses > (select count(1) from
+   * committed.FormationUsage U where U.Token = new.Token)` — evaluated by the validating
+   * cohort against the committed snapshot at commit time. Every caller of this method is a
+   * permissive PRE-check that runs ahead of it, and a transiently short read costs each of
+   * them only a worse outcome for the ATTEMPT, never a seat the invitation did not pay for:
+   * {@link assertSeatRemains} loses its named exhaustion error and falls back to the CHECK's
+   * generic refusal; `ControlFormationUsageRecorder.isTokenUsed` reports not-used and lets
+   * the redemption proceed to the CHECK, which decides; {@link hasOutstandingFormationInvite}
+   * holds the stranger-admission door open slightly longer.
+   *
+   * NOTE: index convergence still gates the cap — just at the CHECK, not here, since the
+   * CHECK's own count is served by the same `FormationUsageByToken` index. That convergence
+   * failed from 2026-08-04 to 2026-08-25: a descent on a second machine returned only the
+   * rows that machine had written, and the index was removed until the engine was fixed
+   * upstream (re-measured 2026-09-17, `complete/restore-formation-usage-token-index`). The
+   * live guard is the integration-tests scenario `strand-formation-concurrent-redemption`,
+   * which asserts both machines' views of a raced redemption. If it fails on BOTH views
+   * again, index convergence has regressed — fix the engine or take this read off the index,
+   * and do not weaken that scenario's assertions to get a green run. A failure on ONE view is
+   * NOT automatically that scenario being slow: one-way convergence lag, and the 2026-08 defect
+   * itself, both present that way whenever only the sibling node wrote the rows. What separates
+   * them is the failure message, which prints both nodes' rows and counts — a sibling holding
+   * rows the failing view is missing is a convergence problem, not a slow run.
    *
    * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
    * locked write body — same per-call opt-out, and for the same reason, as

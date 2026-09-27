@@ -7,9 +7,7 @@ Docker-related operational resources for Sereus.
 - If you don’t have Docker installed: see **Installing Docker (optional)** at the bottom
 
 ### Contents
-- `bootstrap/`: Docker Compose resources for running a **libp2p bootstrap node** (peer discovery seed).
-- `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal).
-- `bootstrap-relay/`: A **combined bootstrap + relay node** (single process) for smaller deployments.
+- `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal). This is the one shared libp2p infra service worth operating — Sereus has no global DHT to seed, so there is no standalone "bootstrap" node (a former kad-DHT `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET).
 - `sereus-node/`: **Pointer only** (see `sereus-node/README.md`). A headless cadre node belongs to one user's cadre rather than being shared infrastructure, so unlike the other folders here it has no `env.example`/`docker-compose.yml` and is not installable via `../scripts/install`. Its canonical Docker template ships with `@serfab/cadre-cli` at `../../packages/cadre-cli/docker/`.
 - `coturn/`: A **STUN server** (optionally TURN) for WebRTC ICE assistance — lets browser/mobile peers form **direct** connections instead of relaying. Distinct purpose and distinct upstream image (`coturn/coturn`), not the shared `sereus-libp2p-infra:local` image. See `../docs/ice-servers.md`.
 - `turn-credential-issuer/`: A tiny HTTP service that serves the **dynamic ICE-config manifest** (`/ice-servers.json`) — STUN-only when TURN is off, or STUN **plus** a freshly-minted short-lived coturn credential when TURN is on. Co-locate with `coturn/` (shares its `TURN_SECRET`). Builds its own local image (`sereus-turn-credential-issuer:local`). See `../docs/ice-servers.md`.
@@ -20,8 +18,6 @@ Docker-related operational resources for Sereus.
 <sereus-ops>/
   <repo>/               # git clone of ser (name is up to you)
   relay/                # site instance
-  bootstrap/            # site instance
-  bootstrap-relay/      # site instance
   coturn/               # site instance (STUN/TURN — ICE assistance)
   turn-credential-issuer/  # site instance (dynamic ICE manifest — co-located with coturn)
 ```
@@ -46,8 +42,6 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
 ```bash
 ./sereus/ops/scripts/install docker relay
-./sereus/ops/scripts/install docker bootstrap
-./sereus/ops/scripts/install docker bootstrap-relay
 ./sereus/ops/scripts/install docker coturn
 ./sereus/ops/scripts/install docker turn-credential-issuer
 ```
@@ -75,25 +69,16 @@ After `./svc up`, run:
 ```
 
 You should see output like:
-- `relay peerId=<PEER_ID>` (or `bootstrap peerId=...`)
+- `relay peerId=<PEER_ID>`
 
 Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 
 `env.local` (operator-facing knobs):
-- `HOST_PORT`: host port for raw TCP (container listens on 4001). Defaults:
-  - relay: `4001`
-  - bootstrap: `4002`
-  - bootstrap-relay: `4003`
+- `HOST_PORT`: host port for raw TCP (container listens on 4001). Default `4001`.
 - `HOST_WS_PORT`: host port for WebSockets (container listens on 4002). Phones have
   no raw-TCP transport and can only reach a node here, so this is published by
-  default too. Defaults:
-  - relay: `4011`
-  - bootstrap: `4012`
-  - bootstrap-relay: `4013`
-
-  These sit in their own block rather than continuing `400x`, because `4002` and
-  `4003` are already the TCP host ports of the other two roles — a host running
-  more than one role would otherwise collide.
+  default too. Default `4011` (kept out of the `400x` block so a host running the
+  relay alongside coturn/turn stacks does not collide).
 - `HOST_BIND_IP`: optional bind IP (default `0.0.0.0`)
 - `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
 - `LISTEN_ADDRS`: advanced; leave empty. Overrides the multiaddrs the container binds
@@ -103,13 +88,13 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
   do set it, include the WebSocket address: a non-empty announce set replaces the
   advertised addresses, so announcing only TCP hides the WebSocket listener from
   phones. The container warns at startup when it is in that state
-- `RELAY_APPLY_DEFAULT_LIMIT` (`relay`, `bootstrap-relay` only): advanced; leave empty. Setting it to `true` re-applies libp2p's per-reservation cap and **breaks relayed cadre traffic** — see `libp2p-infra/README.md`
-- `RELAY_MAX_RESERVATIONS` (`relay`, `bootstrap-relay` only): advanced; concurrent reservation slots (default `500`)
+- `RELAY_APPLY_DEFAULT_LIMIT`: advanced; leave empty. Setting it to `true` re-applies libp2p's per-reservation cap and **breaks relayed cadre traffic** — see `libp2p-infra/README.md`
+- `RELAY_MAX_RESERVATIONS`: advanced; concurrent reservation slots (default `500`)
 
 `coturn` uses a different knob set (`STUN_PUBLIC_HOST`, `LISTENING_PORT=3478`, `TURN_ENABLED`, …) — see `coturn/env.example` and `coturn/README.md`.
 
 ### Image/build note
-`relay`, `bootstrap`, and `bootstrap-relay` all run the same image (`sereus-libp2p-infra:local`) built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`SEREUS_ROLE`, `LISTEN_ADDRS`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
+The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`LISTEN_ADDRS`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
 
 `coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 
@@ -126,8 +111,6 @@ See `../test/README.md`.
 
 ### Quickstarts
 - `quickstarts/relay.md`: run a **public relay**
-- `quickstarts/bootstrap.md`: run a **private bootstrap** peer (discovery seed)
-- `quickstarts/bootstrap-relay.md`: run a **combined** bootstrap + relay node
 - `quickstarts/coturn.md`: run a **public STUN server** (coturn) for WebRTC ICE assistance
 - `quickstarts/turn-credential-issuer.md`: serve the **dynamic ICE manifest** + mint short-lived TURN credentials
 

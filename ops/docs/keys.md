@@ -3,7 +3,7 @@
 ### What matters
 - In libp2p, a node’s **Peer ID** is derived from its **private key**.
 - If the private key changes, the Peer ID changes.
-- For infrastructure peers (relay/bootstrap), you generally want the Peer ID to be **stable**.
+- For an infrastructure peer (the relay), you generally want the Peer ID to be **stable**.
 
 ### Standard practice for ops
 - **Generate on first start**, and **persist to disk**.

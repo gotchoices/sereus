@@ -1024,9 +1024,10 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  * had two live members die on startup over a single unanswered peer.
  *
  * Re-running the whole `exec` is safe because `apply schema` is a diff, not a replay, and a
- * failed `create table` leaves the catalog clean — so attempt 2 re-emits exactly the failed
- * table and its successors. The reasoning lives at the call site; these cases pin the
- * behaviour.
+ * failed apply is unwound whole and verified against the pre-apply catalog — so attempt 2
+ * emits exactly the DDL the live catalog is missing. The reasoning lives at the call site
+ * (`ControlDatabase.loadSchema`); these cases pin the RETRY LOOP over a stubbed `exec`, and
+ * `control-schema-apply-unwind.spec.ts` pins the unwind property itself against real storage.
  *
  * It is also the ONE caller on a non-default policy ({@link SCHEMA_INIT_RETRY_POLICY}): same
  * classifier plus optimystic's self-coordination grace refusal, over more attempts and a longer
@@ -1054,7 +1055,8 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 
 			expect(runs).toBe(2);
 			// The retry re-presents the SAME schema text: Quereus diffs it against the live
-			// catalog, so the tables that landed on attempt 1 emit no DDL the second time.
+			// catalog, so attempt 2 emits only what is actually missing — everything, once
+			// the failed apply has been unwound.
 			expect(executed[1]).toBe(executed[0]);
 			expect(executed[0]).toContain('CadreControl');
 		}

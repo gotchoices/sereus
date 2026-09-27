@@ -12,7 +12,6 @@
     "@libp2p/circuit-relay-v2": "^4.2.4",
     "@libp2p/crypto": "^5.1.18",
     "@libp2p/identify": "^4.1.5",
-    "@libp2p/kad-dht": "^16.2.6",
     "@libp2p/ping": "^3.1.4",
     "@libp2p/tcp": "^11.0.19",
     "@libp2p/websockets": "^10.1.12",
@@ -20,6 +19,7 @@
     "libp2p": "^3.3.8"
   },
   "devDependencies": {
+    "@types/node": "^22",
     "typescript": "^5.8.3"
   }
 }

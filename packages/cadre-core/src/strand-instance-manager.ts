@@ -18,6 +18,7 @@ import {
 import { removeMemberPeer } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
+import { assertStrandScopeKey } from './storage-scope.js';
 import {
   StrandFirstSyncGate,
   StrandAwaitingFirstSyncError,
@@ -37,9 +38,10 @@ import type {
   RawStorageProvider,
   Libp2pNodeWithRepo
 } from './types.js';
-import { resolveStrandClusterSize, strandClusterPolicy } from './types.js';
+import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
+import { peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -214,6 +216,19 @@ export interface StartStrandConfig {
   onSelfRevoked?: (strandId: string) => void;
 
   /**
+   * Called when the membership reconciler reports a blocked re-join — this node holds a
+   * staged membership invitation for the strand that its writes cannot redeem, which is
+   * what a REMOVED party handed a fresh invitation hits (see "Reporting a blocked
+   * re-join" in `strand-membership-reconciler.ts` for the two triggers, one of them a
+   * suspicion rather than a verdict). At most once per re-arm of the loop — a further
+   * invitation staged while the loop is still running does not reset the report — and
+   * only for closed strands with a party key. `CadreNode` wires it to its `strand:rejoin-blocked`
+   * event; nothing is stopped or torn down — a remaining manager admitting this party's
+   * key directly is the remedy, and the loop finishes the join by itself once that lands.
+   */
+  onRejoinBlocked?: (strandId: string) => void;
+
+  /**
    * Tuning for the JOINING machine's first-sync write gate (`strand-first-sync-gate.ts`),
    * forwarded from {@link CadreNodeConfig.strandFirstSync}: the Header probe cadence while
    * a non-founder launch is `'syncing'`, and the default budget {@link whenWritable} waits
@@ -311,7 +326,10 @@ export function getStrandStoragePath(basePath: string, strandId: string): string
  * If the provider is a factory function, call it with the strandId.
  *
  * Called only from {@link StrandInstanceManager.startStrand}, which owns the result
- * for the instance's lifetime — see `strandStorages`.
+ * for the instance's lifetime — see `strandStorages`, and which has already asserted
+ * the id is usable as a scope key. Do not move that assertion here: this function
+ * returns early when no provider is configured, and the id becomes a libp2p protocol
+ * prefix on that path too.
  *
  * @param provider - Storage provider (instance or factory)
  * @param strandId - The strand ID to create storage for
@@ -485,6 +503,15 @@ export class StrandInstanceManager {
     log('Starting strand instance: %s (sApp: %s v%s)', strandId, sAppConfig.id, sAppConfig.version);
     const tTotal = performance.now();
 
+    // The id becomes two names below: the storage scope key the embedder's provider
+    // turns into a directory or database name, and `networkName` in buildStrandRuntime,
+    // from which the libp2p protocol prefix `/optimystic/strand-<id>` is built. A
+    // replicated strand row carries whatever id the founding node wrote, so neither is
+    // safe unchecked. Asserted HERE rather than in `resolveStrandStorage` because that
+    // function returns early when no provider is configured — a node with no storage
+    // still reaches buildStrandRuntime and still mints the protocol prefix.
+    assertStrandScopeKey(strandId);
+
     // Verify schema signature before proceeding (fail-closed by default)
     const requireSignature = config.requireSignedSchemas ?? true;
     assertSchemaSignature(sAppConfig, { requireSignature });
@@ -561,6 +588,12 @@ export class StrandInstanceManager {
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
     const { sAppConfig } = config;
+
+    // Refuse a bad `linkRoundTripMs` before any strand bring-up, for the reason
+    // `CadreNode.start()` does: every budget derived from it here is behind a condition
+    // (backfill disabled, no relay addrs), so a zero or NaN declaration would otherwise
+    // surface later inside a path that logs and carries on. `link-budget.ts`.
+    resolveLinkRoundTripMs(config.network?.linkRoundTripMs);
 
     // The store the instance OWNS (resolved once in `startStrand`), not a fresh
     // resolution: a rebuild must reach the same backend through the same warm cache.
@@ -661,12 +694,23 @@ export class StrandInstanceManager {
         // returns the frozen STRAND_CLUSTER_POLICY itself, declaring nothing. Resolved
         // HERE rather than at `startStrand`, so a wake from hibernation would pick up a
         // serving set that changed while the strand slept.
-        clusterPolicy: strandClusterPolicy(strandClusterSize, config.servingMachines),
+        // The read deadline is the same field the control node reads, because the two
+        // networks ride one link; absent, the base policy's COHORT_READ_DEADLINE_MS stands.
+        clusterPolicy: strandClusterPolicy(strandClusterSize, {
+          servingMachines: config.servingMachines,
+          cohortQueryTimeoutMs: config.network?.cohortQueryTimeoutMs
+        }),
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
+        ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
+        // Unconditional, and the same default the control node takes: every node of
+        // every party runs the monitor over its connection to a slow phone, so the
+        // widened ping deadline has to reach the strand nodes too (see
+        // DEFAULT_CONNECTION_MONITOR).
+        connectionMonitor: config.network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the
@@ -774,7 +818,8 @@ export class StrandInstanceManager {
                 const ownPeerId = instance.libp2pNode?.peerId.toString();
                 return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
               }
-            : undefined
+            : undefined,
+          onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
         }, {
           pollIntervalMs: config.membershipReconciliation?.pollIntervalMs
             ?? config.revocationEnforcement?.pollIntervalMs
@@ -815,7 +860,15 @@ export class StrandInstanceManager {
             // The same prefix the receiver registered its block-transfer handler
             // under — derived from networkName above, never re-spelled here.
             protocolPrefix
-          }, config.backfill);
+          }, {
+            // Dial and response deadlines counted in link round trips, not fixed milliseconds:
+            // a relayed dial costs a fixed number of exchanges, so a fixed budget has a link
+            // speed above which this catch-up can never reach the peer at all. See
+            // `link-budget.ts`. Spread BEFORE the host's own config so an explicit
+            // `strandBackfill.dialTimeoutMs` still wins.
+            ...peerJoinPushBudget(config.network?.linkRoundTripMs),
+            ...config.backfill
+          });
           backfill.start();
           this.backfills.set(strandId, backfill);
         } else {
@@ -830,10 +883,12 @@ export class StrandInstanceManager {
       // The strand's database is up, and the supervisor keeps trying on its backoff;
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
       //
-      // NOTE: a relay that is down costs this launch one full drive (10 s), and
-      // `StrandWatcher` launches strands one at a time — so N strands cost N × 10 s
-      // of bring-up during a relay outage. If that ever matters, stop awaiting here
-      // (the circuit addr then lands after `active`) rather than shortening the drive.
+      // NOTE: a relay that is down costs this launch one full drive — the reservation budget
+      // counted from the declared link round trip, 8 s at its default (`link-budget.ts`) — and
+      // `StrandWatcher` launches strands one at a time, so N strands cost N of those in
+      // bring-up during a relay outage, and MORE on a host that declared a slower link. If that
+      // ever matters, stop awaiting here (the circuit addr then lands after `active`) rather
+      // than shortening the drive.
       t0 = performance.now();
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
@@ -871,10 +926,9 @@ export class StrandInstanceManager {
     // Relay supervisors FIRST of all — before anything below is torn down — so no
     // re-drive is scheduled against a node being stopped. `stop()` is synchronous
     // and never awaits a drive, so a relay that is down cannot delay this teardown.
-    // NOTE: a drive ALREADY in flight cannot be aborted (the drive takes no
-    // AbortSignal — `backlog/bug-relay-drive-not-cancellable`); it fails soft
-    // against the stopped node within its own 10 s deadline and its result is
-    // discarded.
+    // `stop()` also cancels the drive already in flight, so an attempt started
+    // moments before this does not keep dialing and polling the node the lines
+    // below are stopping; its result is discarded either way.
     const relaySupervisors = this.relaySupervisors.get(instance.strandId);
     if (relaySupervisors) {
       relaySupervisors.forEach((supervisor) => supervisor.stop());
@@ -925,8 +979,11 @@ export class StrandInstanceManager {
   /**
    * One {@link superviseRelayReservation} per relay dial addr, each over exactly
    * that relay so "held" is judged per relay (`circuitMultiaddrsVia`) and losing
-   * one relay re-drives only that one. Default timings — the control node's (2 s
-   * doubling to 60 s between failed attempts, a 5 s liveness check while held).
+   * one relay re-drives only that one. Default retry timings — the control node's (2 s
+   * doubling to 60 s between failed attempts, a 5 s liveness check while held). Each DRIVE's
+   * own deadline is counted in link round trips at this host's declared
+   * `network.linkRoundTripMs` (`link-budget.ts`), so the same declaration that lengthens the
+   * control node's drive lengthens these.
    *
    * Each supervisor's `beforeRedrive` is the caller's
    * {@link StartStrandConfig.announceDelegateToRelay} for THIS relay and THIS
@@ -945,7 +1002,9 @@ export class StrandInstanceManager {
     }
     const announce = config.announceDelegateToRelay;
     const delegatePeerId = node.peerId.toString();
+    const timeoutMs = relayReservationBudgetMs(config.network?.linkRoundTripMs);
     return relayDialAddrs.map((relayAddr) => superviseRelayReservation(node, [relayAddr], {
+      timeoutMs,
       ...(announce && { beforeRedrive: () => announce(strandId, relayAddr, delegatePeerId) })
     }));
   }
@@ -1017,6 +1076,24 @@ export class StrandInstanceManager {
       return;
     }
     await enforcer.refresh();
+  }
+
+  /**
+   * A fresh membership invitation was staged for `strandId` (`CadreNode`'s
+   * `adoptFormationMembershipInvite`): re-arm the strand's membership reconciler so the
+   * invitation is attempted now rather than never — the loop finished during the first
+   * join and would otherwise stay stopped until a relaunch. Quiet no-op when no reconciler
+   * is armed: a first formation stages before the strand is added, and bring-up then arms
+   * a loop that finds the invitation by itself. Returns at once; the pass runs on the
+   * loop's own serialized chain and never rejects.
+   */
+  notifyMembershipInviteStaged(strandId: string): void {
+    const reconciler = this.membershipReconcilers.get(strandId);
+    if (!reconciler) {
+      log('notifyMembershipInviteStaged: strand %s has no armed membership reconciler — bring-up will find the invitation', strandId);
+      return;
+    }
+    void reconciler.rearm();
   }
 
   /**

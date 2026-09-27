@@ -15,7 +15,7 @@ through the libp2p circuit relay.
   effort removes, so TURN stays **off** until deliberately enabled. See the policy
   note in `../../docs/ice-servers.md`.
 - This is **not** a libp2p relay. It pulls the upstream `coturn/coturn` image, not
-  the `sereus-libp2p-infra:local` image the `relay`/`bootstrap` services build.
+  the `sereus-libp2p-infra:local` image the `relay` service builds.
 
 ### How to deploy (Ubuntu)
 Use the common installer-driven workflow documented in `../README.md` (Ops/Docker).

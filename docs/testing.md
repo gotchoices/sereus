@@ -1,8 +1,8 @@
 # Testing, gates, and release checks
 
 The rules and coverage guarantees behind this repo's four root gates — `yarn typecheck`,
-`yarn dep-check`, `yarn lint`, `yarn test` — plus the one release-time check that is
-deliberately *not* a gate (`yarn smoke:published`).
+`yarn dep-check`, `yarn lint`, `yarn test` — plus the two release-time checks that are
+deliberately *not* gates (`yarn smoke:published`, `yarn check:published`).
 
 This document holds **policy and rationale**: what each gate covers, what it deliberately does
 not, and why. It is not a status board. Current pass/fail state lives in the suites themselves;
@@ -35,7 +35,61 @@ two storage budgets, the operative consequence — that a control start's durati
 (raw-storage operations) × (device cost per operation), so the *count* is the thing worth
 pinning — is recorded as a `NOTE:` at `control-database.ts`'s `loadSchema` call site, which is
 where someone debugging a slow launch actually lands. Do not copy those numbers here; a second
-copy is a second thing to leave stale.
+copy is a second thing to leave stale. The browser bundle's size caps are pinned the same way but
+as ceilings only; see "Browser bundle checks" below.
+
+Link latency is the one measurement with no spec to live in, so it lives here. `packages/integration-tests/src/harness/ws-latency.ts` replaces the global `WebSocket` constructor so every frame a node *dials out* is held for a set delay (the listening side is untouched, so the delay is one-way, not a round trip), and `blind-relay-phone-to-phone-e2e.integration.ts` commits one arm at 10 ms. **A delay figure means nothing without its mode**: `pipelined` releases each frame that long after it was written, so frames stay overlapped in flight — the honest model of latency, and of latency only, since bandwidth stays unlimited; `serial` queues a socket's frames one behind another, which is a per-socket frame-RATE cap (1000 / delay frames per second) and reaches delays an order of magnitude above the configured one. The two are not comparable, and reading a `serial` number as latency is what made gotchoices/sereus#13 report a 10 ms breaking point that does not exist. The sweep behind the committed 10 ms (MEASURED_ON 2026-09-20, one Windows machine, four nodes in one process over the loopback dedicated relay):
+
+| per-frame delay | `pipelined` — constant one-way latency | `serial` — per-socket frame-rate cap |
+| --- | --- | --- |
+| none (counters only) | passes in 3.5 s; 4,735 outbound frames over 4 dialed sockets, busiest socket 2,192 | — |
+| 1 ms | — | fails: joiner's membership rows miss the scenario's 20 s join gate |
+| 2 ms | — | fails: `StrandAwaitingFirstSyncError`; worst observed send wait 2,358 ms |
+| 5 ms | — | fails: `StrandAwaitingFirstSyncError` |
+| 10 ms | passes in 9.3–12.4 s over four runs; worst observed send wait 131–315 ms | fails: `StrandAwaitingFirstSyncError`; worst observed send wait 2,274 ms |
+| 50 ms | passes in 24.6–31.8 s over two runs; worst observed send wait 128–153 ms | — |
+| 100 ms, 150 ms | first sync completes; joiner's membership rows miss the 20 s join gate | — |
+
+Reproduce any row with `WS_SEND_DELAY_MS=<ms> WS_SEND_DELAY_MODE=<mode> yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e`, or with `WS_FRAME_STATS=1` for the counters-only row. `WS_SEND_DELAY_MS` pins the whole process, so the committed 10 ms arm's own request is logged and ignored and both tests in that file run at the delay you asked for.
+
+**Read the right line.** The environment path has no end-of-run hook — vitest recycles its forked workers rather than exiting them, so neither `exit` nor `beforeExit` output reaches the terminal — and the fixture therefore reports on a 5 s timer. Every one of those lines is a RUNNING SUBTOTAL, and a scenario that finishes inside one tick prints none at all. Exact totals come only from a boundary something in the process declares, and under `WS_FRAME_STATS=1` this file has one: the committed latency arm's `installWsLatency` prints the accumulated counters immediately before zeroing them, and its `restore()` prints that arm's closing line. So the first summary after the loopback test passes is the baseline total, and the last line of the run is the 10 ms arm's total. Do not filter the run down to one test with `-t` when you want a total — that removes the only boundary in the file.
+
+Measured that way on 2026-09-21 (same machine, two runs), the baseline is 11,939 and 12,531 frames and the 10 ms `pipelined` arm 12,200 and 13,760 — so on this hardware the delay does NOT multiply the frame count. That does not match the 4,735-frame baseline in the row below, and the two windows are not the same (the boundary-declared one also covers the loopback arm's teardown), so treat any frames-vs-delay RATIO built on the older figure as unconfirmed until it is re-measured at a declared boundary. `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips` carries the ratio claim that depends on it.
+
+Two things that table is not saying. The `pipelined` failures at 100 ms are not a broken strand: the strand becomes writable and the join is still climbing the membership reconciler's retry ladder (1 s doubling to the 30 s poll interval, `strand-membership-reconciler.ts`) when the scenario's deliberately tight 20 s gate expires — slow, and not observed through to completion either way. And the frame count is the multiplier on any per-frame cost, which is why the two modes diverge so sharply on the same scenario; how chatty relayed bring-up is in the first place is a separate question, owned by `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`.
+
+**The cohort read deadline's band has no spec either, and no committed scenario.** `COHORT_READ_DEADLINE_MS` (5000 ms, `packages/quereus-plugin-sereus/src/cluster-size.ts`) is how long one cohort peer gets to answer one read-path request; its measurement, its declined-read counts and its first-sync band live in that constant's doc comment, which is the single copy. What lives here is why there is no test and how to re-measure. There is no test because the journey passes at BOTH 1000 ms and 5000 ms on the shape that was measured (two relay-only `CadreNode`s on one shared loopback dedicated relay, 900 ms one-way `pipelined` delay raised after formation), so a committed scenario at that delay would gate nothing, and above it a run breaks on redialling instead (`tickets/fix/strand-node-never-redials-through-a-relay-at-a-three-second-round-trip`) — there is no delay at which a stable pass/fail gate for this exists. What the deadline changes at 900 ms is the COUNT of declined reads, which is a log-line count, not an assertion.
+
+To re-measure, or to compare a third value, add the shape as a new opt-in configuration of `relay-round-trip-measure.integration.ts` rather than writing a fresh scenario — that file exists because this measurement was rebuilt from scratch three times and each copy was deleted afterwards. It needs one addition first: the injected delay must be raisable AFTER the strand has formed and first synced, because formation's own 5 s per-step budget is what breaks if the link is slow from the start, and both instruments hold their delay in a closure with no setter (`harness/counting-proxy.ts` is the better host for one; `backlog/debt-relay-scenarios-never-see-link-latency` owns that fixture's shape). The shape to build: A founds a closed strand and publishes a bound invitation; B forms, attaches and reads a row; `B.stopStrand(strandId)`; A writes a second row (its first attempts are refused while A's cohort view still counts B, so retry for a few seconds); raise the one-way delay to 900 ms; `B.addStrand(...)` again against the same raw-storage capture (`harness/block-store-probe.ts`'s `captureRawStorage`, so B re-attaches over its own stale store rather than an empty one), wait for the strand connection, then `whenStrandWritable` and read the row written while B was away. Count `cluster-fetch:peers-silent` / `cluster-fetch:no-quorum` lines under `DEBUG='optimystic:db-p2p:coordinator-repo*'`.
+
+One layer below every scenario above — beneath cadre, beneath Optimystic, beneath any database — `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts` measures what a single relayed libp2p connection costs at a given one-way delay — bare libp2p against the dedicated relay, with `@optimystic/db-p2p`'s own `connectionManager` values, so nothing above the transport can hide the signal. Run it with `RELAY_DIAL_COST=1 yarn workspace @serfab/integration-tests exec vitest run relayed-dial-cost-by-latency`; it is skipped otherwise. The numbers and what they imply about each dial budget in the stack live in that file's own doc comment, which is their single home — do not copy them here. The headline: a relayed dial costs a FIXED NUMBER OF ROUND TRIPS, so any budget stated in milliseconds has a link speed above which it can never open one. That is no longer only a finding: `packages/cadre-core/src/link-budget.ts` derives every cadre-owned dial and relay-reservation deadline from one declared link round trip (`NetworkConfig.linkRoundTripMs`) times the count this measurement gives for that operation, so re-run it before changing a count there.
+
+Relay ROUND TRIPS — what one chat-shaped strand operation costs two people who reach each other only through a relay — are measured by `packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts`, which is committed but **opt-in**: without `RELAY_RRT_MEASURE=1` the whole suite is skipped, so `yarn test` never runs it. It exists because the same measurement was written from scratch three times, once per optimystic re-measure, and each copy was deleted afterwards; by the third, a change in the numbers could no longer be told apart from a difference between the throwaway scenarios. Results and their history live in `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`, not here.
+
+```
+RELAY_RRT_MEASURE=1 RELAY_RRT_CONFIG=control RELAY_RRT_RUNS=3 yarn workspace @serfab/integration-tests exec vitest run relay-round-trip-measure
+```
+
+`RELAY_RRT_CONFIG` selects one or more configurations (comma-separated; all four by default), `RELAY_RRT_RUNS` repeats each of them as separate runs — separate nodes, separate relay, which is the only way to see run-to-run spread — and `RELAY_RRT_REPS` / `RELAY_RRT_DELAY_MS` override a configuration's repetitions and its injected one-way delay. Each run prints one line per operation and then a per-operation table of ranges, which is the form the tickets quote.
+
+| Configuration | Joiner's profile | A's link | What it measures |
+| --- | --- | --- | --- |
+| `config1` | `transaction` | counting proxy | The per-operation baseline: time, streams opened per protocol per side, and direction changes on A's link, for an insert from each side and four reads. |
+| `delayed` | `transaction` | counting proxy, 150 ms each way | The same operations with a round trip that costs 300 ms — what a phone on a real link pays per consensus round. |
+| `config2` | `storage` | direct | Concurrent insert pairs with a storage-profile joiner, the shape that used to produce `TornActionError`, plus a sequential pair as its yardstick. |
+| `control` | `transaction` | direct | `config2`'s control: the same pairs with both parties `transaction`, so a difference can be attributed to the profile rather than to concurrency. |
+
+Two instruments back it, both reusable from `src/harness/`. `counting-proxy.ts` is a TCP proxy in front of the relay's WebSocket port that counts direction changes ("exchanges") and can delay each chunk, together with the connection gater that refuses direct dials to the relay's real port. Unlike `ws-latency.ts` it is per-link, so ONE party can be slow while the other is not. `stream-counter.ts` counts the streams each node opens, per protocol, leaving out libp2p's own upkeep and FRET's.
+
+The gater is insurance rather than a demonstrated necessity. The bypass it guards against — the measured party opening a second connection straight to the relay, after which the counters go quiet — was seen by the throwaway measurements this scenario replaces, but it does not reproduce here: removing the gater on 2026-09-23 and running `config1` and `delayed` left every one of the measured party's paths on the proxy port. Keep it, because the failure is silent when it does happen and every published number was taken with it; do not expect deleting it to fail a run.
+
+Nothing in that file asserts a count or a duration, deliberately: a budget would have to be re-pinned on every optimystic change, which is the opposite of what the file is for. Operation failures are recorded and printed rather than thrown, because an error rate is part of the measurement.
+
+## Scratch worktrees and clones
+
+To check a fresh install, add a worktree or clone *beside* this repo, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. The install settings (`.yarnrc.yml`) come with the checkout; the publish token does not and is not needed (see [the README](../README.md#as-a-contributor)).
+
+**Do not delete such a worktree with `git worktree remove --force`, or any recursive delete, while its `node_modules` still holds the `link:` junctions.** On Windows, `git worktree remove --force` followed those junctions and deleted the contents of the linked packages in `../optimystic`, `../quereus` and `../Fret` — tracked files, `dist/` and per-package `node_modules` — rather than just the links. Unlink each junction first with a non-recursive delete (`[System.IO.Directory]::Delete(<link>, $false)`), find them by walking without following reparse points, and only then remove the directory. Restoring what git tracks is one command; the untracked build output is rebuilt by the sibling's owner. Not measured on other platforms.
 
 ## Stale-build guard
 
@@ -270,6 +324,17 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   destination) and the three constraint fixtures that drive raw SQL at a bare database
   (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`,
   `control-revocation-reap.spec.ts`).
+- **Phone-runtime API guard:** the same rule (`PHONE_RUNTIME_GUARD` in `eslint.config.mjs`) flags
+  `AbortSignal.timeout(…)`, `AbortSignal.any(…)`, `Promise.withResolvers(…)` and `new DOMException(…)` in
+  first-party source (`packages/*/src` and `cadre-host/ui/src`), because Hermes (React Native) and NativeScript's
+  V8 lack or mis-implement them and the polyfills exist for dependencies, not for us to lean on. The messages
+  name the replacement (an explicit `AbortController` + timer, an explicit signal relay released in a
+  `finally`, a hand-built `{ promise, resolve, reject }`, a plain named `Error`). `AbortSignal.prototype.throwIfAborted()`
+  is deliberately not banned: libp2p requires it regardless. The one exemption is the NativeScript abort
+  polyfill's feature-detected `DOMException` fallback, an `eslint-disable-next-line` at the site — not a
+  config-level exemption, which would also switch off the `CadrePeer` selectors sharing the rule. Note that a
+  later config entry setting `no-restricted-syntax` replaces the earlier one's selectors for the files it
+  matches; the config composes each scope's list from shared constants for that reason.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
@@ -282,7 +347,10 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
 - Scope notes: type-aware linting (`projectService`) is enabled only for the node/library `src` trees;
   the bundler/expo apps (`reference-app-web`, `reference-app-rn`, `cadre-host/ui`) get non-type-aware rules.
   `maestro/` (Maestro JS engine) and non-package trees (`tess/`, `ops/`,
-  `scripts/`) are ignored.
+  `scripts/`) are ignored. The `scripts/` ignore is `**/scripts/**`, so it covers each package's own
+  build and release scripts too (`quereus-plugin-sereus/scripts/build-browser.mjs`,
+  `cadre-host/scripts/sign-manifest.mjs`, the app `run-e2e.mjs` runners): edits to those are
+  human-reviewed, not linted.
 
 ## Declared dependency range vs linked workspace (keep them equal)
 
@@ -411,6 +479,36 @@ installs anything, so it cannot prove the published artifact at that version act
   `@serfab/*` through the workspace symlinks — and be explicit that doing so proves the scenario,
   not the registry substrate.
 
+## Running our own suites against the published siblings — `yarn check:published` (a release step, not a test)
+
+This is the third face of the same subject as the two sections above, and it covers what neither of them can. The range gate proves a declared range *admits* the linked version but installs nothing. `yarn smoke:published` installs our own packed tarballs into a scratch project and runs one ported scenario there, but that project lives outside the repo and never reads `resolutions` at all. What neither does is run **this repository's own suites** against **registry copies of the two sibling projects** — which is what `scripts/check-published.mjs` does.
+
+- It adds a detached git worktree at `HEAD` under the OS temp dir, deletes the `resolutions` key from that worktree's root `package.json` and changes nothing else, runs `yarn install --no-immutable` there, reports what every `@optimystic/*` and `@quereus/*` name resolved to, and then runs `yarn build`, `yarn lint`, `yarn typecheck` and `yarn test` in the worktree.
+- **Outside the repository**, for the same reason the smoke's scratch project is: inside, the root `workspaces` glob and the ESLint config would both start seeing it. **`--no-immutable`** because dropping `resolutions` necessarily rewrites the lockfile, and Yarn makes installs immutable by default whenever `CI` is set — without the flag it fails in exactly the environment the check is most wanted in.
+- **The worktree is built from `HEAD`, so a dirty working tree is refused** and the differing paths are printed. `--allow-dirty` proceeds anyway, still from `HEAD`; the uncommitted changes are not what gets checked, and the script says so. `--keep` retains the worktree.
+- **`--skip-gates` stops after the report**, skipping all four gates. That is the fast half of the run — minutes rather than the better part of an hour — and it answers the question that fails most often on its own: whether the published siblings resolve at all, and at which versions. It is also the only form of the script that finishes inside an agent's or a reviewer's patience, which is what keeps everything around the gates (the worktree, the manifest edit, the install, the report, the Windows removal) from going unexercised between releases.
+- **Do not run `yarn smoke:published` inside the worktree.** It packs this repository's own tarballs into its own scratch project outside the repo and never sees `resolutions`, so running it there measures nothing the main tree has not already measured. For the same reason `check:published` runs the four root scripts rather than `yarn check`, which chains the smoke onto them.
+- **Not a gate, and the full run is not runnable inside a ticket.** It needs the network and it is slow: on one Windows machine with a warm Yarn cache the install alone took 50s–1m36s, and `yarn test` adds the whole integration suite on top. Whether it runs before a release is the maintainer's call. `--skip-gates` is the part that does fit in a ticket.
+- **A failure means one of three things, and the report at the top says which.** A sibling version resolved from the registry that is older than what `resolutions` links (the declared range is behind — `yarn upgrade:optimystic` / `yarn upgrade:quereus`, then re-run the range gate); a real defect against the published artifact at that version (fix it, here or upstream); or a suite that assumed the linked install shape. The last one is a defect in the test, not in the code: `test-harness/build-targets-spec.ts` and `test-harness/build-freshness.spec.ts` each decide their expectation from whether the root manifest links the name (`linkedResolutions` in `test-harness/build-targets.ts`), and a new assertion about `'linked'` should do the same rather than be relaxed to "absent is fine", which asserts nothing.
+- **`cpu-features` fails to build during the install and is not a failure.** It is an optional native dependency of `ssh2`; Yarn reports `couldn't be built successfully (exit code 1)` and carries on, and the runs are unaffected.
+- **Removing the worktree needs the Windows path, twice over.** Every symlink and junction under the worktree is unlinked first, because a recursive delete that followed one is what emptied the sibling checkouts in the incident recorded under "Scratch worktrees and clones" above — this worktree has no sibling junctions, but it is full of the ones yarn writes for the workspaces themselves. Then `git worktree remove --force` is tried, and on deep `node_modules` paths it fails with `Filename too long` (observed on this machine, 2026-09-24) having already de-registered the worktree; the script falls back to a `\\?\`-prefixed recursive delete and `git worktree prune`.
+- **The decisions are unit-tested even though the run itself is not**, the same split as the smoke script: the manifest edit, the dirty-tree reading, the reported package set and the link removal live in `scripts/lib/published-check-support.mjs` and are pinned against fixtures by `scripts/check-published.test.mjs` (`yarn test:published-check-support`, in `yarn test`; no network, under a second). The orchestration around them is covered instead by running `yarn check:published --skip-gates`, which exercises every step but the gate loop; what remains unproven is the four gates inside the worktree, and the POSIX half of the spawn shim in `scripts/lib/run-command.mjs`, which has never run off Windows.
+
+## Browser bundle checks (`@serfab/quereus-plugin-sereus`)
+
+Two specs in the package's `unit` project guard the prebuilt `dist/plugin-browser.js`, the file Quoomb-web's worker fetches and loads. Both build it on demand if it is missing.
+
+- **`test/browser-bundle.spec.ts` reads the file as text**: it parses as ESM, carries no static import of `@libp2p/tcp` or of a listed set of Node-only modules (`node:fs`, `node:net`, …), has a source map beside it, and stays under a raw and a gzipped size cap.
+- **`test/browser-shape.spec.ts` loads it** under jsdom with `fake-indexeddb`: the default export is a function, and calling it reaches the IndexedDB open before failing on libp2p. It does not touch the network, and nothing here loads the bundle in a real browser worker.
+- **The size caps are ceilings only, set about 20% above the last measurement.** They carry no anti-vacuity floor of the kind the budget assertions above have, because a bundle that collapsed to a stub would fail the ESM parse and the shape test long before a floor saw it. The measured bytes, the date and the command live beside the constants in the spec; a copy here would go stale. A cap that sits far above the artifact cannot fire — the previous 8 MiB / 3 MiB caps let the unminified file grow from about 2.5 MiB to 4.66 MiB without a failure — so re-measure and tighten them when the bundle's size changes on purpose, rather than leaving the slack.
+- **The bundle is built minified** (`minify: true` in `scripts/build-browser.mjs`) and the caps are set against that build, so turning minification off makes the file more than twice as large and fails both caps. The source map beside it embeds the original sources, so a minified bundle still resolves in devtools. Minification does not merge the duplicate copies of shared dependencies that the linked sibling checkouts pull in; that is a dependency-deduplication problem, not something a cap or a build flag here fixes.
+- **The caps are the only guard on the published payload's size.** `scripts/publish-package.mjs` runs `yarn build` and ships that `dist/`, so the artifact the spec measures is the artifact users fetch. `yarn smoke:published` (above) installs the packed tarball and cannot see inside a bundle that was built before packing.
+- **The shape test imports the bundle through Node, not through vitest's transform.** The `unit` project lists it under `server.deps.external` in `vitest.config.ts`. Left to vitest, the multi-megabyte file is run through Vite's transform on every run (and its much larger source map is read), which took 8-18 s on an idle machine, grew with the file's byte count, and timed out the test's 30 s budget under load. Externalized, the import is a plain Node load — a fraction of a second warm, a second or two on a cold file cache — and no longer scales with the file's size. If this test turns slow, check the externalization before raising the timeout.
+
+## Asserting a quantity that has to travel between machines
+
+An integration assertion about a value that has to reach a second machine is made through a bounded wait — `waitUntil` from `packages/integration-tests/src/harness/wait-utils.ts` — never through an immediate read, and its timeout message carries **every** machine's view of the quantity, not only the view that failed. The trap is not the obvious missing wait; it is waiting for one value and then hard-asserting a second one in the next statement. Two values that converge independently become ready at different moments, so the second assertion is a race the test itself created: a table and a secondary index over it are separate collections in the storage engine, with separate logs and independent catch-up, and a converged row scan says nothing about when the index-backed count will agree. `strand-formation-concurrent-redemption.integration.ts` is the worked example — its `FormationUsage` row scan and its `countFormationUsage` seek are each waited for, and either timeout prints both nodes' rows and counts, because whether the sibling machine holds what the failing view is missing is what tells a lost write apart from one-way convergence lag. Print the catch-up delay on a pass that had to wait, so a convergence that slows from milliseconds to tens of seconds shows up in the run output instead of being absorbed by a green run; do not assert on that delay without a measured baseline behind the threshold. The converse is worth stating, because the convention otherwise reads as "wait before every read": once a test has waited for a quantity on a given node, a later read of that same quantity on that same node is already behind that wait and needs no second one — a monotonic count observed at two is still at least two. Adding a wait there cannot change the outcome and still reserves its whole budget against the per-test timeout. Leave the bare read and say at the site why it is sound, so the next reader does not mistake it for the omission this convention is about.
+
 ## Topology coverage map
 
 Which network shapes the integration suite (`packages/integration-tests/src/scenarios/`)
@@ -472,16 +570,24 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-circuit-same-party-e2e.integration.ts`. It also measures the relay-slot cost (one
   reservation per node per network) and characterizes relay restart: control reservations
   recover, strand reservations do not (ticket
-  `bug-strand-relay-reservation-not-resupervised`). Same party; the cross-party half is the
-  line below.
+  `bug-strand-relay-reservation-not-resupervised`). Every connection here is loopback-instant:
+  the LINK CONDITION is covered only on the cross-party line below. Same party; the
+  cross-party half is that line.
 - Relayed strand plane ACROSS parties (two parties, each a single relay-only machine,
   sharing one CLOSED strand through the same dedicated relay: the bound invitation carries a
   `/p2p-circuit` bootstrap address, the stranger-open formation protocol runs over the
   circuit and hands back a relay-routed strand address plus the membership secret, the
   joiner meshes from that seed with no hand-dial, rows replicate both ways, and every
   cross-party connection — control and strand — classifies `relayed` and unlimited) —
-  `blind-relay-phone-to-phone-e2e.integration.ts`. One SHARED relay only; the two-relay
-  shape (each party reserved on a different relay) is not covered.
+  `blind-relay-phone-to-phone-e2e.integration.ts`. It runs the whole journey TWICE from one
+  body: once on bare loopback, and once with 10 ms of one-way per-frame link latency
+  (`harness/ws-latency.ts`, `pipelined` mode — see "Where measurements live" above for what
+  that mode means and why a number quoted without it is misleading). That second arm is the
+  suite's ONLY relayed coverage of a link that is not instant; every other line on this map,
+  relayed or direct, runs at loopback speed. The injected delay is process-wide, so both
+  parties are equally slow — the asymmetric shape (a slow phone talking to a fast desktop) is
+  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. One SHARED relay only; the
+  two-relay shape (each party reserved on a different relay) is not covered.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
@@ -513,14 +619,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   the test; removing that party then cuts both of its machines, the remaining cohort still
   commits, and the removed party can neither read that write nor push one back) —
   `strand-party-removal-via-formation-e2e.integration.ts`. Its second test covers re-joining
-  after a removal: a fresh formation still succeeds (it runs on the control network) and
-  reuses the party's identity, but the invitation is never spent — the joiner's membership
-  reconciler latched `done` during the first join and nothing re-arms it, so no pass even
-  attempts the redemption. Read the comment at that test's negative assertion before citing
-  it: it pins that outcome and the stopped-loop cause, and deliberately does NOT show the
-  denial-of-the-strand-write cause sitting behind it. Re-admission has to be authored by a
-  remaining manager — `backlog/bug-removed-party-cannot-redeem-its-way-back`. Connections here are DIRECT too;
-  the relay-mediated variant stays uncovered, as above.
+  after a removal: a fresh formation still succeeds (it runs on the control network), reuses
+  the party's identity, and re-arms the joiner's membership reconciler, whose every attempt
+  to redeem the invitation is refused by the remaining members — it keeps the invitation
+  staged, reports the dead end (`strand:rejoin-blocked`, the probable trigger, since the
+  removed machine's own gate never sees the removal), and settles the invitation by itself
+  once a remaining manager re-admits the party. Connections here are DIRECT too; the
+  relay-mediated variant stays uncovered, as above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 - **Uncovered**: the two-relay circuit shape — each party holding its reservation on a

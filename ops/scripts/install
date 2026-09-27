@@ -7,7 +7,7 @@ Usage:
   ./sereus/ops/scripts/install docker <service> [dest_dir]
 
 Where:
-  <service>  one of: relay | bootstrap | bootstrap-relay | coturn | turn-credential-issuer
+  <service>  one of: relay | coturn | turn-credential-issuer
   [dest_dir] optional path to create the site instance directory.
              If omitted, defaults to ./docker-<service> in the current directory.
 
@@ -54,7 +54,7 @@ dest="${3:-}"
 [[ "$mode" == "docker" ]] || die "only 'docker' mode is scaffolded right now"
 
 case "$service" in
-  relay|bootstrap|bootstrap-relay) ;;
+  relay) ;;
   # coturn (STUN/TURN) — pull-only upstream image (coturn/coturn), no local build
   # context. The env.local + svc + data/ scaffold flow below is image-agnostic and
   # works unchanged; coturn also bind-mounts its repo-resident entrypoint.sh +

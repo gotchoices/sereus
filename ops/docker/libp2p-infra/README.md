@@ -1,19 +1,22 @@
 # sereus libp2p infra
 
-Container image for the party-operated libp2p relay/bootstrap nodes. Built by
-`Dockerfile` from `src/main.ts`; entry point picks its behavior off
-`SEREUS_ROLE` (`relay` | `bootstrap` | `bootstrap-relay`).
+Container image for a party-operated libp2p **relay** node — a single Circuit Relay v2 hop.
+Built by `Dockerfile` from `src/main.ts`.
+
+Sereus has no global DHT to bootstrap: each strand is its own FRET ring, and a node joins
+by dialing a known participating node directly or reaching it through a relay like this one.
+(A former `bootstrap` role ran a libp2p kad-DHT server; it was removed once cadre-core
+replaced kad-DHT with FRET, which no kad-DHT client consumes.)
 
 ## Environment variables
 
-| Variable | Applies to | Default | Purpose |
-| --- | --- | --- | --- |
-| `DATA_DIR` | all | `/data` | Where the identity key is persisted. `/data` is the container volume; set it to a writable path when running the process directly on a workstation. A stable value means a stable peer id across restarts. |
-| `SEREUS_ROLE` | all | *(required)* | `relay` \| `bootstrap` \| `bootstrap-relay`. |
-| `LISTEN_ADDRS` | all | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. Both TCP and WebSockets are listened on by default: **React Native has no raw-TCP transport**, so a mobile client can only reach this over `/ws` (or `/wss` behind a TLS front). Override to bind one transport only. |
-| `ANNOUNCE_ADDRS` | all | unset | Comma-separated multiaddrs to advertise instead of the bound listen address (e.g. behind a reverse proxy/DNS front). |
-| `RELAY_APPLY_DEFAULT_LIMIT` | `relay`, `bootstrap-relay` | `false` | See below. |
-| `RELAY_MAX_RESERVATIONS` | `relay`, `bootstrap-relay` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATA_DIR` | `/data` | Where the identity key is persisted. `/data` is the container volume; set it to a writable path when running the process directly on a workstation. A stable value means a stable peer id across restarts. |
+| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. Both TCP and WebSockets are listened on by default: **React Native has no raw-TCP transport**, so a mobile client can only reach this over `/ws` (or `/wss` behind a TLS front). Override to bind one transport only. |
+| `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise instead of the bound listen address (e.g. behind a reverse proxy/DNS front). |
+| `RELAY_APPLY_DEFAULT_LIMIT` | `false` | See below. |
+| `RELAY_MAX_RESERVATIONS` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
 
 ### `RELAY_APPLY_DEFAULT_LIMIT`
 
@@ -57,7 +60,7 @@ relayed cadre traffic.
 
 Both variables are parsed strictly at startup (`true`/`false` for the former,
 a positive integer for the latter) and a malformed value throws immediately,
-the same way a bad `SEREUS_ROLE` does. An empty value is treated as unset and
+naming the variable. An empty value is treated as unset and
 takes the default. The resolved values are logged next to the `peerId` line on
 startup.
 
@@ -70,18 +73,16 @@ fails a moment later inside libp2p, which names it too.
 
 ## Setting these on a deployed node
 
-The site-instance stacks (`../relay/`, `../bootstrap/`, `../bootstrap-relay/`)
-forward every image-level variable above from `env.local` into the container
-except `DATA_DIR`, which stays at its `/data` default because that is where the
-stacks mount the host data directory — overriding it would write the identity key
-somewhere that is not persisted. Anything not listed in a stack's
-`docker-compose.yml` `environment:` block never reaches the process, so a new
+The `../relay/` site-instance stack forwards every image-level variable above from
+`env.local` into the container except `DATA_DIR`, which stays at its `/data` default
+because that is where the stack mounts the host data directory — overriding it would
+write the identity key somewhere that is not persisted. Anything not listed in the
+stack's `docker-compose.yml` `environment:` block never reaches the process, so a new
 image-level variable must be added there too. See `../README.md`.
 
-The stacks also have to *publish* the ports the process binds. Both default listen
+The stack also has to *publish* the ports the process binds. Both default listen
 addresses are published: container `4001` and container `4002` (WebSockets), the
-latter under `HOST_WS_PORT` so it does not collide with the host-port block the
-other roles use. Overriding `LISTEN_ADDRS` to bind different ports means changing
+latter under `HOST_WS_PORT`. Overriding `LISTEN_ADDRS` to bind different ports means changing
 those mappings to match — a listener nothing maps to is bound inside the container
 and unreachable from anywhere else, with no error to show for it.
 
@@ -123,10 +124,10 @@ Further points that matter for a phone:
   connections are *limited* and the optimystic database services abort their
   streams — peers connect and then fail every read and write, which is a
   confusing way to find out.
-- Dial the **host** port, not the container port. Running this image from a site
-  stack, WebSockets are published on `HOST_WS_PORT` (`4011` relay, `4012`
-  bootstrap, `4013` bootstrap-relay by default); running the process directly on a
-  workstation it is `4002`. The examples below use `4002` for the direct case.
+- Dial the **host** port, not the container port. Running this image from the relay
+  site stack, WebSockets are published on `HOST_WS_PORT` (`4011` by default); running
+  the process directly on a workstation it is `4002`. The examples below use `4002`
+  for the direct case.
 - An Android emulator reaches the host at the reserved address `10.0.2.2`, so
   `/ip4/10.0.2.2/tcp/4002/ws` works with no port forwarding. A USB-attached
   device needs `adb reverse tcp:4002 tcp:4002` first, then dials

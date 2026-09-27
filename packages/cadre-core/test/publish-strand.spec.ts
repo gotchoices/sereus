@@ -4,6 +4,7 @@ import type { Database } from '@quereus/quereus';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { InvalidStrandIdError } from '../src/storage-scope.js';
 import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
 
@@ -115,13 +116,18 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     await expect(stopped.publishStrand('strand-' + rand(), 'o')).rejects.toThrow(/must be started/i);
   });
 
-  it('rejects an empty or whitespace-only id before any write', async () => {
+  it('rejects an id it could not use as a name, before any write', async () => {
     ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
 
     for (const blank of ['', '   ', '\t\n']) {
       await expect(node.publishStrand(blank, 'o')).rejects.toThrow(/required/i);
     }
+
+    // A published row replicates to the whole party, and every node there turns the id
+    // into a file, directory or database name. Refusing it only at launch would let one
+    // node poison every member's control database with a strand none of them can start.
+    await expect(node.publishStrand('../../etc/passwd', 'o')).rejects.toThrow(InvalidStrandIdError);
 
     expect(await db.queryStrands()).toEqual([]);
   }, 60_000);

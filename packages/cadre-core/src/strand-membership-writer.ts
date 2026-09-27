@@ -1,5 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
+import { TransactionActiveError } from '@quereus/quereus';
 import type { Database, SqlValue } from '@quereus/quereus';
 import { digest, sign, verify, generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { SAppConfig } from './types.js';
@@ -188,50 +189,30 @@ function combineStatements(...fragments: StrandStatements[]): StrandStatements {
   return { sql: fragments.map((fragment) => fragment.sql).join('\n'), params };
 }
 
-/** Quereus's refusal of a `begin` issued while a transaction is already open. */
-const NESTED_BEGIN_REFUSAL = /^Cannot begin transaction: already in a transaction$/;
-
-function isNestedBeginRefusal(error: unknown): boolean {
-  return error instanceof Error && NESTED_BEGIN_REFUSAL.test(error.message);
-}
-
 /**
  * Run `statements` as one indivisible transaction on the shared strand database.
  *
- * The whole transaction is ONE `db.exec` batch — `begin transaction; <statements> commit;`
- * — because Quereus holds its exec mutex for a whole batch but releases it between
- * separate calls, and any caller's statement that runs while an explicit transaction is
- * open lands inside it. A `beginTransaction()` / `exec` / `commit()` sequence therefore
- * swept the app's concurrent writes into a background writer's transaction, and lost them
- * when that transaction failed.
+ * `exec(..., { transaction: true })` begins, runs, and commits or rolls back the whole
+ * batch under a single hold of Quereus's execution mutex. That is what makes the
+ * transaction indivisible on a `Database` the app shares with the background writers: no
+ * other caller's statement can run inside it, so none is ever swept into a membership
+ * write and lost when that write fails — not even a statement that fails before `commit`
+ * (a primary-key collision, an immediate CHECK, a storage read error), whose rollback also
+ * happens before the mutex is released. A hand-rolled `begin` / … / `commit` batch is not
+ * equivalent, and a `beginTransaction()` / `exec` / `commit()` sequence even less so:
+ * those are separate mutex acquisitions.
  *
- * Whether a transaction is already open is decided by the batch's own `begin`, under the
- * mutex, not by `getAutocommit()` beforehand: that reads false whenever another caller's
+ * Whether a transaction is already open is decided by the batch itself, under the mutex,
+ * not by `getAutocommit()` beforehand: that reads false whenever another caller's
  * autocommit statement is merely in flight, which would make a background writer refuse
  * spuriously and a composing caller run its statements as separate autocommits.
  *
- * - The `begin` succeeds: the batch commits or fails as a unit. A failure at `commit`
- *   (deferred constraints, a refused optimystic commit) leaves nothing open. A failure at
- *   an earlier statement leaves the batch's transaction open, so it is rolled back here.
- * - The `begin` is refused because a transaction is already open: nothing has run. With
- *   `joinOpenTransaction: false` that is a {@link StrandTransactionBusyError} (with the
- *   refusal as `cause`), and the open transaction — someone else's — is left alone.
- *   Otherwise the statements run inside it, and its owner commits or rolls back.
- *
- * NOTE: interim until Quereus ships a batch that rolls back before releasing its mutex —
- * requested as `../quereus/tickets/plan/exec-batch-as-one-transaction.md`; switch to that
- * API when a Quereus release carries it, which also retires the message match in
- * {@link isNestedBeginRefusal}. Until then two residual windows remain. (1) A statement
- * that fails before `commit` (a primary-key collision such as a sibling machine seating the
- * same `Member` first, an immediate CHECK, a storage read error) releases the mutex with the
- * batch's transaction still open: an app `exec` already queued behind the batch runs inside
- * it, and the rollback below discards that app write although its `exec` resolved. The
- * common failures (an `Invite` not replicated yet, expired, cancelled, sealed, and
- * optimystic commit refusals) all fail at `commit` and leave nothing open. (2) The rollback
- * decision reads `getAutocommit()` after the batch has released the mutex, so after a
- * `commit`-time failure a queued app statement in flight reads as "still open" too; the
- * rollback then runs after that statement's own commit and finds nothing to undo — unless
- * an app `beginTransaction()` also slipped in between, which it would end.
+ * - No transaction was open: the batch commits or fails as a unit, leaving nothing open.
+ * - One was already open, so the batch refuses with `TransactionActiveError` having run
+ *   nothing. With `joinOpenTransaction: false` that becomes a
+ *   {@link StrandTransactionBusyError} (with the refusal as `cause`), and the open
+ *   transaction — someone else's — is left alone. Otherwise the statements run inside it,
+ *   and its owner commits or rolls back.
  */
 async function execStrandTransaction(
   db: Database,
@@ -239,35 +220,28 @@ async function execStrandTransaction(
   options?: StrandWriteOptions,
 ): Promise<void> {
   try {
-    await db.exec(`begin transaction;\n${statements.sql}\ncommit;`, statements.params);
+    await db.exec(statements.sql, statements.params, { transaction: true });
     return;
   } catch (error) {
-    if (!isNestedBeginRefusal(error)) {
-      await rollbackBatchLeftOpen(db, error);
+    if (!(error instanceof TransactionActiveError)) {
       throw error;
     }
     if (options?.joinOpenTransaction === false) {
       throw new StrandTransactionBusyError({ cause: error });
     }
   }
+  // NOTE: the join retry cannot ask for `{ transaction: true }` — the point is to run INSIDE the
+  // caller's transaction — so it is atomic only for as long as that transaction stays open. Every
+  // joining caller today opens its transaction, awaits the writer, then commits, so the
+  // transaction cannot close in the window between the refusal above and this line. If a caller
+  // ever closes its transaction concurrently with a writer call it did not await, these statements
+  // run as separate autocommit statements instead of one unit. The writers whose statements are
+  // circularly dependent (`consumeInvite`'s Member + ConsumedInvite, every delete + its Revocation
+  // tombstone) fail loudly on their own deferred checks in that case; a writer whose statements are
+  // each valid alone (`admitManager`) could commit only the first. If a caller ever needs to write
+  // membership rows without awaiting, give it `joinOpenTransaction: false` rather than relying on
+  // this path.
   await db.exec(statements.sql, statements.params);
-}
-
-/**
- * Roll back the batch's own transaction when a statement before `commit` failed and left
- * it open; a `commit`-time failure has already closed it. See the NOTE on
- * {@link execStrandTransaction} for what this cannot tell apart.
- */
-async function rollbackBatchLeftOpen(db: Database, cause: unknown): Promise<void> {
-  if (db.getAutocommit()) {
-    return;
-  }
-  try {
-    await db.rollback();
-    log('Rolled back a strand write batch left open by a failed statement: %s', cause);
-  } catch (rollbackError) {
-    log('Rolling back a failed strand write batch failed (%s): %o', cause, rollbackError);
-  }
 }
 
 /**
@@ -790,8 +764,9 @@ async function consumedInviteStatement(db: Database, params: ConsumeInviteParams
  *   optional `nowMs` instant for the expiry gate (default `Date.now()`).
  * @param options - Whether to join an already-open transaction (see {@link StrandWriteOptions}).
  * @throws If any constraint rejects — already consumed (the `InviteKey` primary key),
- *   cancelled, expired, or a sealed strand. Callers treat a burn failure as "already
- *   dead" and log rather than retry.
+ *   cancelled, expired, or a sealed strand — or the cohort refuses the write. The
+ *   reconciler routes these through the same classifier as a `consumeInvite` rejection:
+ *   a dead invitation is dropped, a refused write keeps it staged for a retry.
  * @throws {StrandTransactionBusyError} Under `joinOpenTransaction: false`, when another
  *   transaction is open; nothing was tried, so the invitation is exactly as live as before.
  */

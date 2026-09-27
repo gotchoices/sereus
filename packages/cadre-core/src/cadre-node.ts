@@ -37,11 +37,17 @@ import type {
   PeerAddressRecord,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
-import { controlStorageScope } from './storage-scope.js';
+import {
+  assertScopeKeyCharset,
+  assertStrandScopeKey,
+  controlStorageScope,
+  InvalidStrandIdError,
+  isValidStrandScopeKey
+} from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
@@ -83,10 +89,10 @@ import {
 } from './control-cohort.js';
 import {
   dialPeerAddrs,
-  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
-  DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
+import { peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -533,8 +539,10 @@ export class CadreNode implements SAppIdLookup {
    * dead entry behind; recovery today is a fresh invitation.
    *
    * NOTE: entries are kept for the node's lifetime, including across a
-   * {@link stopStrand} — a stopped strand may be rediscovered by the watcher and must
-   * still get its seed. Each strand's list is capped at `MAX_STRAND_ADDRS`, but the
+   * {@link stopStrand} — a stopped strand may be claimed again with {@link addStrand}
+   * (the watcher itself will not re-offer it: the stop suppresses the id for the rest of
+   * the session) and must still get its seed. Each strand's list is capped at
+   * `MAX_STRAND_ADDRS`, but the
    * number of KEYS is bounded only by the strands this node has ever formed as an
    * initiator (not by time); if a node ever forms strands at scale, evict on
    * `unpublishStrand` or cap the map.
@@ -561,8 +569,10 @@ export class CadreNode implements SAppIdLookup {
    * (`strand-membership-reconciler.ts`, wired via `StartStrandConfig.pendingMembershipInvite`
    * in {@link launchStrand}): it deletes the entry once the invitation is redeemed, burned
    * against an already-seated member, or found dead (expired / cancelled / consumed
-   * elsewhere / the strand sealed). Until the strand is actually launched here the entry
-   * just waits.
+   * elsewhere / the strand sealed) — naming the invitation it settled, so a re-formation
+   * that replaced the entry meanwhile keeps its fresh one
+   * ({@link unstageMembershipInvite}). Until the strand is actually launched here the entry
+   * just waits; once launched, staging notifies the manager, which re-arms a finished loop.
    *
    * NOTE: entries live for the node's lifetime (one small pair per formed closed
    * strand), the same unbounded-keys tripwire {@link crossPartyStrandAddrs} documents —
@@ -949,6 +959,11 @@ export class CadreNode implements SAppIdLookup {
       // throws on a malformed `relayAddrs` entry, and that failure belongs on the same
       // logged-and-cleaned-up path as every other one in start().
       this.warnIfAnnounceAddrsDiscardRelay();
+      // Refuse a bad `linkRoundTripMs` HERE rather than wherever a budget is first derived
+      // from it: every consumer of it is conditional (no control storage, no relays, no dial
+      // yet), so a node with a zero or NaN declaration would otherwise boot and fail later
+      // inside a best-effort path that logs and carries on. `link-budget.ts`.
+      resolveLinkRoundTripMs(this.config.network?.linkRoundTripMs);
 
       // Install the WebRTC TURN-relay tracker BEFORE any libp2p bring-up, so it
       // wraps globalThis.RTCPeerConnection before the control node can create one.
@@ -1436,6 +1451,12 @@ export class CadreNode implements SAppIdLookup {
    * derivation from it (`db-p2p` namespaces all of the node's protocol ids as
    * `/optimystic/<networkName>/...`), so the node options and the block-transfer
    * protocol prefix the control backfill dials can never drift apart.
+   *
+   * NOTE: the party id goes in UNENCODED here, unlike in `controlStorageScope`. Safe
+   * today because a party id is locally configured rather than replicated in, and both
+   * ends of a connection derive this string identically — an odd party id yields an odd
+   * but consistent protocol id, not a mismatch or an escaped name. If a party id ever
+   * arrives from the network, encode it here as the storage scope key already does.
    */
   private controlNetworkName(): string {
     return `control-${this.config.controlNetwork.partyId}`;
@@ -1513,6 +1534,11 @@ export class CadreNode implements SAppIdLookup {
       // before looking anywhere else; if catch-up pushes start showing up as
       // connection-churn noise, raise it.
       debounceMs: 250,
+      // Dial and response deadlines counted in link round trips, not fixed milliseconds — a
+      // relayed dial that cannot finish inside the budget fails identically on every retry.
+      // See `link-budget.ts`. Spread BEFORE the host's own config so an explicit
+      // `controlBackfill.dialTimeoutMs` still wins.
+      ...peerJoinPushBudget(this.config.network?.linkRoundTripMs),
       ...this.config.controlBackfill
     });
     this.controlBackfill.start();
@@ -1548,6 +1574,11 @@ export class CadreNode implements SAppIdLookup {
     // party's records, so two parties on one device must not land in one store.
     // Same key as the cache label, which also makes the shared pool's `stats()` readable.
     const scope = controlStorageScope(this.config.controlNetwork.partyId);
+    // The second seam that hands a scope key to an embedder's provider; the first
+    // (`StrandInstanceManager.startStrand`) asserts the stricter strand rule. Holds by
+    // construction today — base64url is inside the charset — so this guards a future
+    // edit to `controlStorageScope`, not a reachable input.
+    assertScopeKeyCharset(scope);
     const resolved = typeof provider === 'function' ? provider(scope) : provider;
     this.controlStorage = wrapStorageWithCache(resolved, scope);
     return this.controlStorage;
@@ -1645,10 +1676,22 @@ export class CadreNode implements SAppIdLookup {
       // itself, so the unknown case is provably byte-for-byte the old behaviour.
       // The yardstick moves ALONE: `assumedClusterSize` stays pinned at 2, because a
       // party of phones cannot promise three quarters of its machines are awake.
-      clusterPolicy: controlClusterPolicy(this.declaredEnrolledMachines),
+      // With neither declared this is still the frozen constant by identity, which is the
+      // production path. A degenerate deadline is Optimystic's to refuse, in
+      // createControlNode below.
+      clusterPolicy: controlClusterPolicy({
+        enrolledMachines: this.declaredEnrolledMachines,
+        cohortQueryTimeoutMs: network?.cohortQueryTimeoutMs
+      }),
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
+      ...(network?.noiseCrypto && { noiseCrypto: network.noiseCrypto }),
+      // Always present, unlike the conditional spreads around it: an absent
+      // `connectionMonitor` would leave libp2p's 5s ping deadline, which drops a peer
+      // whose event loop is saturated by pure-JS Noise crypto. A configured value
+      // replaces the default whole (see DEFAULT_CONNECTION_MONITOR).
+      connectionMonitor: network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.
@@ -3071,15 +3114,22 @@ export class CadreNode implements SAppIdLookup {
    * {@link SeedBootstrapService} this node builds — `applySeed`'s owner dials and
    * `dialInvite`.
    *
-   * See {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} for why a peer's dial is
-   * bounded as a whole, and {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}
-   * for why each address is bounded as well.
+   * See `peer-dial.ts`'s `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` for why a peer's dial is
+   * bounded as a whole, and `DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS` for why each
+   * address is bounded as well.
+   *
+   * Both are DERIVED from `network.linkRoundTripMs` rather than fixed, because the slowest
+   * address either has to cover is a relayed dial and that costs a fixed number of exchanges —
+   * `link-budget.ts` has the counts. A host's explicit `controlCohort` values still win, so a
+   * test that drives dead addresses on purpose keeps the duration it chose.
    */
   private controlDialBudget(): PeerDialBudget {
     const cohort = this.config.network?.controlCohort;
+    const perAddressMs = cohort?.perAddressDialTimeoutMs
+      ?? relayedDialBudgetMs(this.config.network?.linkRoundTripMs);
     return {
-      perAddressMs: cohort?.perAddressDialTimeoutMs ?? DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
-      totalMs: cohort?.dialTimeoutMs ?? DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
+      perAddressMs,
+      totalMs: cohort?.dialTimeoutMs ?? CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS * perAddressMs,
     };
   }
 
@@ -4068,6 +4118,24 @@ export class CadreNode implements SAppIdLookup {
   private async handleStrandAdded(strand: StrandRow): Promise<void> {
     log('Handling strand added from control network: %s', strand.Id);
 
+    // A replicated row carries whatever id the founding node wrote, and the id becomes a
+    // storage scope key and a libp2p protocol prefix. Checked FIRST — above the
+    // discovery branch below — so a malformed id is never offered to the hosting app as
+    // a strand it could join; that app's `addStrand` could only fail on it.
+    //
+    // Suppressed rather than retried: the id is a property of the row, so every later
+    // attempt fails identically, and without this the watcher's ladder would re-emit
+    // `strand:error` every five minutes for the life of the process. The throw still
+    // matters — the watcher's catch runs `forgetStrand`, dropping the id from
+    // `knownStrands`, so its removed-strand loop never detaches a strand that never ran.
+    if (!isValidStrandScopeKey(strand.Id)) {
+      const error = new InvalidStrandIdError(strand.Id);
+      log('Refusing strand %s: %s', strand.Id, error.message);
+      this.emit('strand:error', { strandId: strand.Id, error });
+      this.strandWatcher?.suppressStrand(strand.Id);
+      throw error;
+    }
+
     // Check if we have sApp config for this strand
     const sAppConfig = this.sAppConfigs.get(strand.Id);
     if (!sAppConfig) {
@@ -4079,10 +4147,12 @@ export class CadreNode implements SAppIdLookup {
       // already present) keeps auto-starting below, unchanged.
       //
       // Recorded BEFORE the emit so a handler that synchronously drains
-      // `getDiscoveredStrands()` sees this strand too. The watcher never offers
-      // the same strand twice (its `knownStrands` retains the id for the life of
-      // the process), so this map — not the event — is what a late subscriber
-      // reads. See the `strand:discovered` doc in types.ts.
+      // `getDiscoveredStrands()` sees this strand too. The watcher does not offer the
+      // same strand twice — its `knownStrands` retains the id, and the one thing that
+      // un-retains it (a failed `addStrand`, via `StrandWatcher.forgetStrand`) leaves the
+      // sApp config registered, so the retry takes the auto-launch branch below rather
+      // than this one. So this map — not the event — is what a late subscriber reads.
+      // See the `strand:discovered` doc in types.ts.
       this.discoveredStrands.set(strand.Id, strand);
       this.emit('strand:discovered', { strandId: strand.Id, strand });
       return;
@@ -4522,17 +4592,17 @@ export class CadreNode implements SAppIdLookup {
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
-   * automatic relaunch need it. That background relaunch covers only a strand the
-   * WATCHER launched: it forgets a row whose `onStrandAdded` threw and re-attempts it
-   * on a later poll (each failure re-emitting `strand:error`) until it succeeds. A
-   * strand claimed here after it was DISCOVERED gets no such retry — the watcher
-   * already recorded it in its `knownStrands` when it offered it as
-   * `strand:discovered`, and no later poll re-offers a strand it knows. This call has
-   * also already dropped it from {@link getDiscoveredStrands}, so a failed claim
-   * leaves the strand dormant until the caller retries or the node restarts (see
-   * `backlog/bug-discovered-strand-lost-when-claim-fails`).
-   * {@link detachStrand} (reached via {@link stopStrand}) is what abandons a strand
-   * for good.
+   * automatic relaunch need it. A failed launch here hands the strand back to that
+   * relaunch — `StrandWatcher.forgetStrand` drops the id from the watcher's
+   * `knownStrands` and records the backoff, so a later poll re-attempts it on the same
+   * `pollInterval * 2^(failures-1)` ladder a watcher-driven failure gets. Because the
+   * config stays registered, the retry takes `handleStrandAdded`'s auto-launch branch:
+   * what the app sees is `strand:error` per failed retry and `strand:started` when one
+   * succeeds, never a second `strand:discovered`. {@link detachStrand} (reached via
+   * {@link stopStrand}) is what abandons a strand for good, and its stop suppresses the
+   * strand in the watcher so this retry cannot resurrect it — a call to THIS method lifts
+   * that suppression again, since an explicit claim is a deliberate reversal of the
+   * deliberate stop.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
@@ -4540,6 +4610,9 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const { strandRow, sAppConfig, founder, partyMemberPrivateKey } = config;
+    // Before anything is recorded: an unusable id must not leave a registered sApp
+    // config behind, and must not lift a suppression this node set deliberately.
+    assertStrandScopeKey(strandRow.Id);
     if (partyMemberPrivateKey !== undefined && strandRow.Type !== 'c') {
       // Only a closed strand seats a Member/Manager, so an open launch would drop this
       // key silently. Refuse instead: the caller has confused the party identity key
@@ -4555,6 +4628,9 @@ export class CadreNode implements SAppIdLookup {
     // unclaimed backlog — a later `getDiscoveredStrands()` drain must not re-offer it.
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
     this.discoveredStrands.delete(strandRow.Id);
+    // A claim also overrides any earlier `stopStrand` of this id: the watcher must track
+    // the strand again, or a party-wide removal would never stop it here.
+    this.strandWatcher?.unsuppressStrand(strandRow.Id);
     log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
       strandRow.Id, sAppConfig.id, founder ?? 'derived');
 
@@ -4563,7 +4639,31 @@ export class CadreNode implements SAppIdLookup {
     // formation/responder flows pass one deliberately, since their consent-seated rows
     // carry a null column. See StrandConfig.founder. Same rule for the explicit
     // partyMemberPrivateKey: it wins over the StrandPartyKey control-row read.
-    const instance = await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+    // Only the launch is wrapped, NOT the first-sync wait below: a wait that times out
+    // rejects with the retryable StrandAwaitingFirstSyncError and deliberately leaves the
+    // instance running, so there is nothing to re-offer and forgetting it would only have
+    // the watcher re-enter a launch for a strand that is already up.
+    let instance: StrandInstance;
+    try {
+      instance = await this.launchStrand(strandRow, sAppConfig, founder, partyMemberPrivateKey);
+    } catch (error) {
+      // Hand the strand back to the watcher's retry ladder. Harmless on the founder path
+      // (`foundStrand` → `publishStrand` + this call), where the watcher may never have
+      // offered the strand: the `knownStrands` delete is a no-op and the recorded backoff
+      // only delays the watcher's own first attempt by one poll interval, which is what
+      // should happen right after an attempt that just failed.
+      //
+      // NOTE: the retry relaunches from the CONTROL row plus the registered config, not
+      // from the row and arguments passed here — so a caller that enriched either (a
+      // synthetic `MemberPrivateKey`, an explicit `founder` or `partyMemberPrivateKey`)
+      // is retried with less than it asked for. Inert today: founder-ness re-derives from
+      // `FounderOwnerKey`, the party key re-reads from `StrandPartyKey`, and the row's
+      // shared `MemberPrivateKey` is read only by the founder bootstrap. If a joiner
+      // launch ever starts depending on that key, gate this hand-back on the passed row
+      // matching the control one.
+      this.strandWatcher?.forgetStrand(strandRow.Id);
+      throw error;
+    }
 
     // The first-sync write gate: a JOINING machine's database is withheld until it has
     // received the strand's Header from another member, because a write before that
@@ -4655,7 +4755,8 @@ export class CadreNode implements SAppIdLookup {
    * @returns The live `Strand` row — the one just inserted, or the matching one already
    *   there. A closed strand's caller should carry THIS row's `MemberPrivateKey` forward:
    *   on a repeat it is the stored key, not the argument.
-   * @throws if the node is not started, exposes no owner signing key, the id is blank, a
+   * @throws if the node is not started, exposes no owner signing key, the id is blank or
+   *   unusable as a storage scope key (`InvalidStrandIdError` — see `storage-scope.ts`), a
    *   row with the same id holds different content, or the control DB rejects the
    *   (unauthorized) insert.
    */
@@ -4664,6 +4765,11 @@ export class CadreNode implements SAppIdLookup {
     // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
     // trims too, and an untrimmed row would be unreachable by the same string.
     const trimmed = requireNonBlank(strandId, 'strand id');
+    // Refuse an unusable id HERE, not only at launch. `addStrand` already asserts, but it
+    // runs after this row is written, and this row replicates: an id no node can turn into
+    // a storage scope key would otherwise reach the whole party's control database and be
+    // declined once per member. Asserted after the trim so the id checked is the id stored.
+    assertStrandScopeKey(trimmed);
     // FounderOwnerKey records THIS machine as the row's publisher (the schema pins it to
     // the signing owner), which is what later lets a relaunch derive founder-ness.
     const desired: StrandRow = {
@@ -4924,13 +5030,20 @@ export class CadreNode implements SAppIdLookup {
     // one never cleared).
     await this.strandManager.clearOwnMemberPeerBinding(trimmed);
     // Converge locally now rather than waiting up to a poll interval. The watcher fires
-    // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose
-    // strandFilter never admitted this strand (the watcher never knew it, so it will never
-    // fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two paths
-    // cannot double-stop into an error.
+    // onStrandRemoved for a strand it tracked; the explicit teardown below covers a node
+    // whose strandFilter never admitted this strand (the watcher never knew it, so it will
+    // never fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two
+    // paths cannot double-stop into an error.
+    //
+    // detachStrand, NOT stopStrand: this is a party-wide removal, not a local abandonment
+    // of a strand that still exists, so it must not SUPPRESS the id in the watcher. The
+    // row is already gone — there is nothing to suppress — and an id re-published before
+    // the next poll's suppression cleanup would then never be offered again this session.
+    // (Same reasoning as handleStrandRemoved, which also avoids stopStrand's `_running`
+    // guard; here the guard is already satisfied by requireOwnerSigningKey above.)
     await this.strandWatcher?.forcePoll();
     if (this.strandManager.getInstance(trimmed)) {
-      await this.stopStrand(trimmed);
+      await this.detachStrand(trimmed);
     }
     log('Unpublished strand %s from control DB under owner %s', trimmed, signingKey.publicKeyB64);
   }
@@ -5339,6 +5452,7 @@ export class CadreNode implements SAppIdLookup {
       revocationEnforcement: this.config.strandRevocationEnforcement,
       membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => this.emit('strand:revoked', { strandId: revokedStrandId }),
+      onRejoinBlocked: (blockedStrandId) => this.emit('strand:rejoin-blocked', { strandId: blockedStrandId }),
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
       firstSync: this.config.strandFirstSync,
@@ -5353,7 +5467,7 @@ export class CadreNode implements SAppIdLookup {
       // cleared once spent, burned, or dead — see pendingMembershipInvites.
       pendingMembershipInvite: {
         get: () => this.pendingMembershipInvites.get(strand.Id),
-        clear: () => { this.pendingMembershipInvites.delete(strand.Id); }
+        clear: (settled) => this.unstageMembershipInvite(strand.Id, settled)
       },
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
@@ -5592,8 +5706,10 @@ export class CadreNode implements SAppIdLookup {
    * caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
-   * timeouts (10 s each: dial by peer id, then by addr) before the 10 s drive even
-   * starts, so one failed re-drive can hold the supervisor `driving` for ~30 s.
+   * timeouts (10 s each: dial by peer id, then by addr) before the reservation drive even
+   * starts, so one failed re-drive holds the supervisor `driving` for those 20 s plus the
+   * drive's own deadline — 28 s at the default declared link round trip, and longer on a host
+   * that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the
    * control node holds no connection to the relay (the drive's own dial fails
@@ -5861,17 +5977,21 @@ export class CadreNode implements SAppIdLookup {
    * Stop a strand on THIS node only: untrack it from hibernation, drop its sApp config,
    * stop the local instance, and emit `strand:stopped`. The shared `Strand` row is left
    * intact, so on the next node RESTART the strand is rediscovered and surfaces as
-   * `strand:discovered` again — not on the next watcher poll, which never re-offers a
-   * strand it has already seen (`StrandWatcher.knownStrands` retains the id for the life
-   * of the process). The stop also drops the strand from {@link getDiscoveredStrands},
-   * so a drain cannot undo a deliberate stop. Party-wide removal is
-   * {@link unpublishStrand}.
+   * `strand:discovered` again — but never again in THIS session: the stop suppresses the
+   * id in the watcher (`StrandWatcher.suppressStrand`) and drops it from
+   * {@link getDiscoveredStrands}, so neither a later poll nor a drain can undo a
+   * deliberate stop. Only an explicit {@link addStrand} does, which is the caller
+   * reversing its own decision. Party-wide removal is {@link unpublishStrand}.
    */
   async stopStrand(strandId: string): Promise<void> {
     if (!this._running) {
       throw new Error('CadreNode not running');
     }
 
+    // Suppressed HERE and not in detachStrand: the other caller of that method is
+    // `handleStrandRemoved`, which arrives precisely because the control row is gone, and
+    // a row that later reappears is a fresh strand that should be offered again.
+    this.strandWatcher?.suppressStrand(strandId);
     await this.detachStrand(strandId);
   }
 
@@ -5893,6 +6013,10 @@ export class CadreNode implements SAppIdLookup {
    * readings are the intended one: `handleStrandRemoved` arrives because the control row
    * is gone, and an explicit {@link stopStrand} is a deliberate abandonment — neither
    * strand may be re-offered to a later `getDiscoveredStrands()` drain.
+   *
+   * The watcher-level suppression that makes a stop permanent is deliberately NOT here,
+   * only in {@link stopStrand}: the two callers diverge on it. A vanished control row
+   * that reappears is a fresh strand and must be offered again.
    */
   private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);
@@ -6117,13 +6241,15 @@ export class CadreNode implements SAppIdLookup {
    * local), and only then does it reach out. Everything above in {@link start}
    * has completed by the time this runs.
    *
-   * BUDGET: the supervisor's first attempt — `relay-reservation.ts`'s
-   * `DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s — is what `start()` waits on — deliberately the module default rather
-   * than a boot-specific one. A healthy dial-plus-reserve is sub-second even over
-   * a WAN, so 10 s is slack for a slow link; going much longer would make a dead
-   * relay indistinguishable from a hung start, and much shorter would fail nodes
-   * on links that were merely slow. The retries carry on in the background after
-   * this resolves, exactly as they do for a {@link reserveRelays} caller.
+   * BUDGET: the supervisor's first attempt is what `start()` waits on — deliberately the drive's
+   * ordinary deadline rather than a boot-specific one. That deadline is now COUNTED, four link
+   * round trips at the declared `network.linkRoundTripMs` (8 s at its default, where it was a
+   * fixed 10 s): a healthy dial-plus-reserve is sub-second even over a WAN, so this is slack for
+   * a slow link, while going much longer would make a dead relay indistinguishable from a hung
+   * start and much shorter would fail nodes on links that were merely slow. A host that declares
+   * a slower link lengthens it without touching this path — `link-budget.ts`. The retries carry
+   * on in the background after this resolves, exactly as they do for a {@link reserveRelays}
+   * caller.
    *
    * `network.requireRelay === false` softens only the outcome below: a first
    * attempt that lands no `/p2p-circuit` address is logged instead of thrown, and
@@ -6189,7 +6315,13 @@ export class CadreNode implements SAppIdLookup {
       this.relayReserveError = 'control node unavailable';
       return this.getRelayReservationState();
     }
-    const supervisor = superviseRelayReservation(this.controlNode, addrs, opts);
+    // The drive's deadline is counted in link round trips (`link-budget.ts`), so a host that
+    // declared a slower link gets a longer drive without naming a number here. A caller's own
+    // `timeoutMs` still wins.
+    const supervisor = superviseRelayReservation(this.controlNode, addrs, {
+      timeoutMs: relayReservationBudgetMs(this.config.network?.linkRoundTripMs),
+      ...opts
+    });
     this.relayReserveSupervisor = supervisor;
     await supervisor.firstAttempt;
     // Read through `this`, not `supervisor`: an overlapping call may have replaced
@@ -7113,7 +7245,11 @@ export class CadreNode implements SAppIdLookup {
    *    an intact control DB) and mints + persists a fresh one otherwise. The invitation
    *    will admit THIS key's public half as the `Strand.Member`.
    * 2. Stage the invitation in {@link pendingMembershipInvites} for the strand
-   *    bring-up flow (`strand-node-binds-member-peer`) to redeem via `consumeInvite`.
+   *    bring-up flow (`strand-node-binds-member-peer`) to redeem via `consumeInvite`,
+   *    and tell the instance manager, which re-arms an already-finished membership
+   *    reconciler so a RE-formation against a launched strand is attempted at once — the
+   *    removed-party case, where the loop finished long before the removal. A strand not
+   *    launched here yet has no loop to re-arm, and its bring-up finds the entry.
    *
    * Throws — failing the whole {@link formStrand} — when the identity cannot be
    * persisted: a joiner "joined" without a persistable identity could never become a
@@ -7134,16 +7270,24 @@ export class CadreNode implements SAppIdLookup {
         { cause: error }
       );
     }
-    // NOTE: staging alone is not enough on a node whose reconciler for this strand has
-    // already finished. `StrandMembershipReconciler` latches a terminal stopped state on
-    // its `done` path and is rebuilt only by a strand relaunch, so a RE-formation against
-    // an already-launched strand stages an invitation no loop will ever look at. Harmless
-    // for a party that is still a member (the invitation would only be burned), and the
-    // live defect for one that has been REMOVED — which is exactly when an app re-forms.
-    // Tracked as `backlog/bug-removed-party-cannot-redeem-its-way-back`; pinned by
-    // `strand-party-removal-via-formation-e2e.integration.ts` (test 2).
     this.pendingMembershipInvites.set(strandId, invite);
     log('formStrand: staged membership invitation for strand %s (party key persisted)', strandId);
+    this.strandManager.notifyMembershipInviteStaged(strandId);
+  }
+
+  /**
+   * The reconciler's half of the {@link pendingMembershipInvites} seam: drop `settled`
+   * (spent, burned, or dead) only while it is still the staged entry. A re-formation
+   * replaces the entry between a pass's read and its settle, and the fresh invitation it
+   * staged is the one the re-armed loop is about to redeem — deleting it here would lose
+   * it silently, the very outcome the re-arm exists to prevent.
+   */
+  private unstageMembershipInvite(strandId: string, settled: StrandMembershipInvite): void {
+    if (this.pendingMembershipInvites.get(strandId)?.inviteKey !== settled.inviteKey) {
+      log('strand %s: a fresh membership invitation replaced the one just settled — keeping it staged', strandId);
+      return;
+    }
+    this.pendingMembershipInvites.delete(strandId);
   }
 
   /**

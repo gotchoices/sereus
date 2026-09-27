@@ -15,17 +15,14 @@ import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
 import { ping } from '@libp2p/ping'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
-import { kadDHT } from '@libp2p/kad-dht'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
 import { isWebSocketAddr, parseAnnounceAddrs, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv } from './env.js'
 
-type Role = 'relay' | 'bootstrap' | 'bootstrap-relay'
-
-const ROLE = (process.env.SEREUS_ROLE ?? '').trim() as Role
-if (!ROLE || !['relay', 'bootstrap', 'bootstrap-relay'].includes(ROLE)) {
-  throw new Error(`Missing/invalid SEREUS_ROLE. Expected one of: relay|bootstrap|bootstrap-relay (got ${JSON.stringify(process.env.SEREUS_ROLE)})`)
-}
+// This image runs a single role: a libp2p Circuit Relay v2 hop. Sereus has no global DHT to
+// bootstrap — each strand is its own FRET ring, and nodes are reached by dialing a known
+// participating node directly or through a relay like this one. (The former kad-DHT
+// `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET.)
 
 // `/data` is the container volume; override when running the process directly on a
 // workstation. The identity key is stored here, so a stable DATA_DIR means a stable peer
@@ -94,20 +91,13 @@ const RELAY_MAX_RESERVATIONS = parsePositiveIntEnv('RELAY_MAX_RESERVATIONS', 500
 
 const services: Record<string, any> = {
   identify: identify(),
-  ping: ping()
-}
-
-if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
-  services.relay = circuitRelayServer({
+  ping: ping(),
+  relay: circuitRelayServer({
     reservations: {
       applyDefaultLimit: RELAY_APPLY_DEFAULT_LIMIT,
       maxReservations: RELAY_MAX_RESERVATIONS
     }
   })
-}
-
-if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
-  services.dht = kadDHT({ clientMode: false })
 }
 
 const node = await createLibp2p({
@@ -119,15 +109,57 @@ const node = await createLibp2p({
   transports: [tcp(), webSockets()],
   connectionEncrypters: [noise()],
   streamMuxers: [yamux()],
+  // Tolerate peers whose event loop is saturated, without giving up on dead ones.
+  //
+  // libp2p pings every connection every 10 s and ABORTS it on the first ping that
+  // times out. A React Native client runs Noise's crypto in pure JavaScript on an
+  // engine with no JIT, so during bring-up its event loop is busy for long
+  // stretches and misses a 5 s ping. The relay drops it, it redials, the redial
+  // costs another handshake, and it never catches up (gotchoices/sereus#13).
+  //
+  // Measured on a two-party relayed bring-up at full measured device crypto cost:
+  // stock 0 of 3 runs completed; pinging every 60 s 0 of 2; raising only the
+  // ceiling 0 of 2; raising the floor to 30 s 2 of 3; with the clients also at
+  // 30 s, 4 of 4, in about 90 s (slow but correct).
+  //
+  // `pingInterval` has to move WITH the deadline, and that is why the run above was
+  // 2 of 3 rather than 3 of 3. The monitor opens a ping stream per connection per
+  // interval whether or not the previous ping has answered, and `@libp2p/ping`
+  // registers `/ipfs/ping/1.0.0` with `maxOutboundStreams: 1`; the second concurrent
+  // ping therefore fails in `Connection.newStream` with
+  // `TooManyOutboundProtocolStreamsError`, which the monitor catches and treats
+  // exactly like a timeout. At the stock 10 s interval a 30 s deadline is really a
+  // 10 s one. Verified against two local libp2p 3.1.3 nodes whose ping handler
+  // answered 600 ms late: a 300 ms interval with a 900 ms deadline aborted the
+  // connection, a 900 ms interval with the same deadline kept it. Keep the interval
+  // strictly above the deadline. Same numbers in `@serfab/cadre-core`'s
+  // DEFAULT_CONNECTION_MONITOR, which is the other end of these connections.
+  //
+  // The deadline is PINNED (equal floor and ceiling), so it is one value on every
+  // libp2p version. On 2.10 it already is: the monitor never feeds its
+  // AdaptiveTimeout (no `cleanUp()` call), so `maxTimeout` has no effect and only the
+  // floor mattered above. libp2p 3.3.11 does report ping durations back, and a
+  // ceiling above `pingInterval` would let the deadline climb past the interval and
+  // bring the overlapping-ping abort straight back — so the ceiling stays at the
+  // floor rather than at the 600 s this once carried.
+  //
+  // A dead peer is still reclaimed, now 30 to 65 s after it stops answering (the
+  // deadline, plus up to one interval of waiting for the ping that will fail) rather
+  // than the 30-40 s measured at the stock interval.
+  connectionMonitor: {
+    pingInterval: 35_000,
+    pingTimeout: {
+      minTimeout: 30_000,
+      maxTimeout: 30_000
+    }
+  },
   services
 })
 
 await node.start()
 
-console.log(`${ROLE} peerId=${node.peerId.toString()}`)
-if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
-  console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
-}
+console.log(`relay peerId=${node.peerId.toString()}`)
+console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
 console.log('listening/advertising on:')
 const addrs = node.getMultiaddrs().map(ma => ma.toString())
 addrs.forEach(ma => console.log(`  ${ma}`))
@@ -150,5 +182,3 @@ if (wsAddrs.length > 0) {
     'behind a TLS front that is /dns4/<host>/tcp/443/tls/ws.'
   ].join('\n'))
 }
-
-

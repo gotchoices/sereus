@@ -296,7 +296,7 @@ describe('E2E relay-only control node circuit address', () => {
 		// hop protocol only — the fail-closed per-stream gate still refuses the
 		// control-DB surface (extending what control-stream-authz.integration.ts
 		// proves for enrollment-window and delegate admissions) — and a connection
-		// that takes no reservation is aborted at the not-reserving deadline
+		// that takes no reservation is closed at the not-reserving deadline
 		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5 s).
 		const partyId = `relay-stranger-${Date.now()}`;
 		let A: CadreNode | undefined;
@@ -345,12 +345,14 @@ describe('E2E relay-only control node circuit address', () => {
 			).rejects.toThrow();
 
 			// No reservation was ever admitted for S, so the not-reserving deadline
-			// aborts the connection on both sides.
+			// closes the connection, which both ends then let go of. The wait is
+			// generous against the 5 s deadline — the close itself lands within a
+			// few hundred milliseconds of it.
 			await waitUntil(
 				() => !sNode.getConnections().some(
 					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
 				),
-				{ timeoutMs: 20_000, intervalMs: 250, description: 'not-reserving stranger connection dropped' }
+				{ timeoutMs: 10_000, intervalMs: 250, description: 'not-reserving stranger connection dropped' }
 			);
 			expect(
 				A.getControlNode()!.getConnections().some(

@@ -2,6 +2,7 @@ import debug from 'debug';
 import type { Connection, Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionId, IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
+import { peerJoinPushBudget } from './link-budget.js';
 
 // Peer-join whole-store block catch-up, shared by the STRAND networks and the CONTROL
 // network. On `connection:open` (debounced) it pushes every committed, materialized block
@@ -43,19 +44,74 @@ import { BlockTransferClient, type BlockCommitProof, type IRawStorage } from '@o
 //   `scheduleConnectedPeers()` on a membership change (the production join order is
 //   connect-then-authorize, so the denial at dial time is the expected first pass).
 //
-// NOTE: a failing dial to a non-speaking peer costs one dial timeout per connection:open
-// from such a peer, and is never memoized (only clean runs are). Bounded today by the
-// debounce plus the unreachable-peer bail in `runCatchUp` — one dial per event, not one
-// per chunk. If a node ever holds many such connections, or the enumeration ahead of the
-// first chunk gets expensive, pre-check `libp2p.peerStore` for this network's
-// block-transfer protocol before enumerating.
+// Both per-push deadlines are DERIVED from the declared link round trip
+// (`link-budget.ts`), not fixed milliseconds. That is not tuning — it is what makes this
+// module work at all over a relay. Opening a relayed connection costs a fixed number of
+// exchanges, so the 3000 ms this catch-up used to allow its dial could never finish one
+// above 375 ms of one-way link delay: the catch-up existed so that a machine which joined
+// after blocks were committed physically ends up holding them, and through a relay on any
+// link slow enough to matter it had never once managed to. The reproduction is
+// `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`.
 //
-// NOTE: a run that fails is retried only when that peer next opens a connection (or, with
-// an `authorizePeer` gate wired, when `scheduleConnectedPeers()` is driven). Over a stable
-// connection a transient push failure therefore leaves the peer partially copied until the
-// next reconnect (read repair still covers reads meanwhile). If these meshes ever hold
-// long-lived connections where that matters, re-arm the debounce timer with a backoff on a
-// non-clean run instead of waiting for connection:open.
+// It does NOT work at every speed. Above roughly 1250 ms one-way, two libp2p budgets that
+// sereus cannot reach abandon the connection before any deadline here is consulted, and the
+// listener's one makes that failure look like an absent peer rather than a timeout — see
+// `link-budget.ts` ("The ceiling this does NOT lift") and
+// `tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`.
+//
+// RETRY, and why it backs off. A run whose PUSH FAILED — the transport threw, which is what
+// a dial or response deadline expiring looks like here — re-arms on a doubling backoff
+// (`retryBackoffMs` to `maxRetryBackoffMs`), and a `connection:open` arriving while that wait
+// is outstanding is DROPPED rather than collapsing it back to the debounce. Both halves are
+// load-bearing:
+//
+// - Without the re-arm, a transient push failure over a stable connection left the peer
+//   partially copied until its next reconnect (read repair still covered reads meanwhile).
+// - Without dropping churn inside the wait, a peer that cannot be reached at all is
+//   re-dialled on every `connection:open` forever. That is not hypothetical: the 2026-09-26
+//   relayed reproduction shows one peer re-opening a connection about every 14.5 s for a
+//   200-second run, each event starting a catch-up whose dial could not possibly finish.
+//   The connection kept re-appearing because Optimystic's own block-transfer push path
+//   budgets its dial at `transferTimeoutMs ?? 30000` — the one dial budget in the stack
+//   above the measured relayed setup cost — so it succeeded where this one could not.
+//
+// A NON-CLEAN run is NOT on its own enough to re-arm, and the distinction is what keeps the
+// backoff from becoming a worse problem than the one it fixes. `clean` also goes false for
+// outcomes no amount of retrying can change: the membership gate DENIED the peer; this
+// network's raw storage implements no `listBlockIds`, so the catch-up is inert; or the
+// receiver reported blocks in `missing`, which it does per block for a payload it cannot
+// parse and for a revision whose retained commit proof this node does not hold (a push
+// carrying no proof is refused outright by a receiver running the default
+// `requirePushCertificate: true`, and an unretained proof is the ordinary case — see
+// {@link Chunk.proofs}). Re-arming on those would re-push the WHOLE store to that peer every
+// `maxRetryBackoffMs` for as long as the node runs, and report the failure below as a link
+// budget problem when nothing about the link is wrong. All three still leave the peer
+// un-memoized, so its next `connection:open` retries — the behaviour that predates the
+// backoff, and the right one for a verdict rather than a timeout. Denial in particular is
+// re-driven on purpose by `scheduleConnectedPeers()` the moment the membership commit lands,
+// because the control network's join order is connect-then-authorize.
+//
+// A re-arm is also skipped when the peer is no longer CONNECTED. This module's trigger is
+// `connection:open`, so a peer that went away already has one: re-arming instead would leave
+// a machine dialing a peer it cannot see once a minute for the rest of its uptime.
+//
+// After `PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES` consecutive failures one `console.warn`
+// names the peer and the budget, because otherwise a machine on a too-slow link says
+// nothing at all: the connection simply never appears and only a DEBUG log mentions a dial
+// timeout.
+//
+// NOTE: a failing dial to a non-speaking peer costs one dial timeout per attempt, and is
+// never memoized (only clean runs are). Bounded by the backoff above plus the
+// unreachable-peer bail in `runCatchUp` — one dial per attempt, not one per chunk. If a node
+// ever holds many such connections, or the enumeration ahead of the first chunk gets
+// expensive, pre-check `libp2p.peerStore` for this network's block-transfer protocol before
+// enumerating.
+//
+// NOTE: a peer that disconnects INSIDE a backoff wait still costs the one attempt that wait
+// was already armed for — the connectivity check is made when the re-arm is decided, not when
+// the timer fires, and this module subscribes to `connection:open` only. One dial, not a
+// recurring one; if a node ever holds many transient peers, subscribe to `connection:close`
+// and clear the pending timer there.
 
 const log = debug('sereus:cadre:peer-join-backfill');
 
@@ -66,6 +122,14 @@ const log = debug('sereus:cadre:peer-join-backfill');
  * changes it or starts exporting it.
  */
 export const MAX_BLOCK_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Consecutive failed catch-up runs against ONE peer before the module says so on
+ * `console.warn` rather than only in its DEBUG log. At the default backoff that is reached
+ * about 35 seconds in (5 s + 10 s + 20 s), which is late enough to have ruled out a blip and
+ * early enough to be the first thing an operator sees about a machine that is not catching up.
+ */
+export const PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES = 3;
 
 /** Tuning for the per-peer catch-up. Every field optional; defaults in {@link DEFAULT_PEER_JOIN_BACKFILL}. */
 export interface PeerJoinBackfillConfig {
@@ -79,10 +143,28 @@ export interface PeerJoinBackfillConfig {
   maxChunkBytes?: number;
   /** Max blocks per push message. Default 64. */
   maxChunkBlocks?: number;
-  /** Per-push dial deadline, ms. Default 3000 (matches SpreadOnChurnMonitor). */
+  /**
+   * Per-push dial deadline, ms. Default {@link peerJoinPushBudget}'s `dialTimeoutMs` — four link
+   * round trips at the declared link, 8000 ms as shipped. NOT a fixed number: a relayed dial
+   * costs a fixed number of exchanges, so a host on a slower link moves this (and every other
+   * cadre dial budget) by declaring `NetworkConfig.linkRoundTripMs`. Naming it here still wins
+   * over the derived value — `link-budget.ts` has the counts and the measurement.
+   */
   dialTimeoutMs?: number;
-  /** Per-push response deadline, ms. Default 10_000 (matches SpreadOnChurnMonitor). */
+  /**
+   * Per-push response deadline, ms. Default {@link peerJoinPushBudget}'s `responseTimeoutMs` —
+   * two link round trips at the declared link plus a transfer allowance for the chunk's own
+   * bytes, 10_000 ms as shipped. Derived differently from {@link dialTimeoutMs} because it
+   * bounds a data transfer over a connection that is already open, not a dial.
+   */
   responseTimeoutMs?: number;
+  /**
+   * First wait before re-running a catch-up whose last run did not complete cleanly, ms.
+   * Default 5000. Doubles per consecutive failure up to {@link maxRetryBackoffMs}.
+   */
+  retryBackoffMs?: number;
+  /** Ceiling on that doubling wait, ms. Default 60_000. */
+  maxRetryBackoffMs?: number;
 }
 
 /** The resolved defaults every {@link PeerJoinBackfill} starts from. */
@@ -92,8 +174,13 @@ export const DEFAULT_PEER_JOIN_BACKFILL: Required<PeerJoinBackfillConfig> = {
   maxBlocks: 10_000,
   maxChunkBytes: 1024 * 1024,
   maxChunkBlocks: 64,
-  dialTimeoutMs: 3000,
-  responseTimeoutMs: 10_000
+  // Derived at the DEFAULT declared link, for a `PeerJoinBackfill` built without a host's
+  // declaration (this module's own tests, an embedder driving it directly). The two production
+  // construction sites pass `peerJoinPushBudget(network?.linkRoundTripMs)` so a host that
+  // declares a slower link moves both — see `link-budget.ts`.
+  ...peerJoinPushBudget(),
+  retryBackoffMs: 5000,
+  maxRetryBackoffMs: 60_000
 };
 
 /**
@@ -209,8 +296,18 @@ export class PeerJoinBackfill {
    * reconnect, which is exactly what the re-arm exists to avoid.
    */
   private readonly rearmAfterFlight = new Set<string>();
-  /** Pending per-peer debounce timers, cleared on stop. */
+  /** Pending per-peer timers — the debounce, or a backoff re-arm. Cleared on stop. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Consecutive non-clean runs per peer, cleared when one finishes cleanly. */
+  private readonly failures = new Map<string, number>();
+  /**
+   * Epoch ms before which a peer's catch-up must not be re-run, set alongside a backoff timer
+   * that will run it. Its presence is what makes `connection:open` churn free: a schedule
+   * arriving inside the wait is dropped, rather than collapsing the backoff to the debounce.
+   */
+  private readonly retryAfter = new Map<string, number>();
+  /** Peers already reported on `console.warn`; reset when a run finally lands cleanly. */
+  private readonly warned = new Set<string>();
   private readonly onConnectionOpen: (evt: CustomEvent<Connection>) => void;
   private loggedNoListBlockIds = false;
 
@@ -244,6 +341,7 @@ export class PeerJoinBackfill {
     }
     this.timers.clear();
     this.rearmAfterFlight.clear();
+    this.retryAfter.clear();
     log('[%s] stopped', this.deps.label);
   }
 
@@ -279,6 +377,12 @@ export class PeerJoinBackfill {
       this.rearmAfterFlight.add(key);
       return;
     }
+    // A peer whose last run failed is already re-armed on a backoff timer that will run it, so
+    // DROP this schedule instead of shortening the wait — otherwise a peer that cannot be
+    // reached is re-dialled on every connection:open forever (see the module comment's retry
+    // paragraph). A denied run never gets here: it does not set a backoff.
+    const retryAt = this.retryAfter.get(key);
+    if (retryAt !== undefined && Date.now() < retryAt) return;
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
     this.timers.set(key, setTimeout(() => {
@@ -299,7 +403,7 @@ export class PeerJoinBackfill {
     }
     this.inFlight.add(key);
     try {
-      const { result, clean } = await this.runCatchUp(peerId);
+      const { result, clean, pushFailed } = await this.runCatchUp(peerId);
       // NOTE: a run that hit `maxBlocks` is still "clean" and still memoizes the peer, so
       // the tail past the ceiling never reaches it. Deliberate: enumeration is not
       // resumable, so not memoizing would re-push the same prefix on every reconnect
@@ -307,6 +411,18 @@ export class PeerJoinBackfill {
       // realistically exceed maxBlocks, the fix is a resumable cursor, not either policy.
       if (clean && !this.stopped) {
         this.done.add(key);
+        this.failures.delete(key);
+        this.retryAfter.delete(key);
+        this.warned.delete(key);
+      } else if (pushFailed && !this.stopped && this.started && this.isConnected(peerId)) {
+        // `pushFailed`, not `!clean`: a denial, an inert store and a receiver's per-block
+        // rejection are all verdicts a retry cannot change, and re-arming on them would
+        // re-push the whole store to that peer forever. See the module comment.
+        //
+        // Gated on `started` too: the re-arm exists to REPLACE a connection:open-driven retry,
+        // so a caller driving `catchUpPeer` by hand against a backfill that was never started
+        // owns its own retry policy and must not be left holding a background timer.
+        this.scheduleRetryWithBackoff(peerId);
       }
       log('[%s] catch-up peer=%s offered=%d accepted=%d rejected=%d uncommitted=%d unmaterialized=%d capped=%d oversized=%d denied=%s done=%s',
         this.deps.label, key, result.offered, result.accepted, result.rejected.length,
@@ -327,8 +443,61 @@ export class PeerJoinBackfill {
     }
   }
 
-  /** The actual copy. `clean` = every chunk pushed and the remote persisted every block. */
-  private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean }> {
+  /** Whether this network's libp2p node still holds a connection to that peer. */
+  private isConnected(peerId: PeerId): boolean {
+    return this.deps.libp2p.getConnections(peerId).length > 0;
+  }
+
+  /**
+   * Re-arm one peer's catch-up after a run whose push failed, on a wait that doubles
+   * per consecutive failure up to `maxRetryBackoffMs`. Sets {@link retryAfter} alongside the
+   * timer, which is what makes `connection:open` churn inside the wait free.
+   */
+  private scheduleRetryWithBackoff(peerId: PeerId): void {
+    const key = peerId.toString();
+    const failures = (this.failures.get(key) ?? 0) + 1;
+    this.failures.set(key, failures);
+    const delayMs = Math.min(
+      this.config.retryBackoffMs * 2 ** (failures - 1),
+      this.config.maxRetryBackoffMs
+    );
+    this.retryAfter.set(key, Date.now() + delayMs);
+    const existing = this.timers.get(key);
+    if (existing) clearTimeout(existing);
+    this.timers.set(key, setTimeout(() => {
+      this.timers.delete(key);
+      this.retryAfter.delete(key);
+      void this.catchUpPeer(peerId);
+    }, delayMs));
+    log('[%s] catch-up peer=%s failed %d time(s) in a row; retrying in %dms',
+      this.deps.label, key, failures, delayMs);
+    this.warnPersistentFailure(key, failures);
+  }
+
+  /**
+   * Say ONCE per peer, outside the DEBUG log, that its catch-up is not landing. Without this a
+   * machine on a link too slow for a relayed dial produces no statement that anything is wrong:
+   * the peer never appears to hold the blocks, and the only trace is a DEBUG line naming a dial
+   * timeout. Reset when a run finally lands cleanly, so a peer that recovers can report again.
+   */
+  private warnPersistentFailure(key: string, failures: number): void {
+    if (failures < PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES || this.warned.has(key)) return;
+    this.warned.add(key);
+    console.warn(
+      `[cadre:${this.deps.label}] peer-join block catch-up to peer ${key} has failed ${failures} times in a row `
+      + `(dial budget ${this.config.dialTimeoutMs}ms, response budget ${this.config.responseTimeoutMs}ms). `
+      + 'That peer may not be holding blocks committed before it joined. If it is reachable only through a relay, '
+      + 'these budgets are derived from network.linkRoundTripMs (see link-budget.ts); above about a 2.5-second '
+      + 'round trip no relayed connection can be established at all, whatever they are set to.'
+    );
+  }
+
+  /**
+   * The actual copy. `clean` = every chunk pushed and the remote persisted every block.
+   * `pushFailed` = at least one push THREW, which is the only non-clean outcome a retry can
+   * change; the others are verdicts (denied, inert store, blocks the receiver refused).
+   */
+  private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean; pushFailed: boolean }> {
     const result = emptyResult();
     const { storage } = this.deps;
 
@@ -345,7 +514,7 @@ export class PeerJoinBackfill {
       }
       if (!authorized) {
         result.denied = true;
-        return { result, clean: false };
+        return { result, clean: false, pushFailed: false };
       }
     }
 
@@ -354,7 +523,7 @@ export class PeerJoinBackfill {
         this.loggedNoListBlockIds = true;
         log('[%s] raw storage does not implement listBlockIds(); backfill is inert', this.deps.label);
       }
-      return { result, clean: false };
+      return { result, clean: false, pushFailed: false };
     }
 
     const client = this.createPushClient(peerId);
@@ -473,6 +642,6 @@ export class PeerJoinBackfill {
     }
 
     const clean = !chunkFailed && result.rejected.length === 0;
-    return { result, clean };
+    return { result, clean, pushFailed: chunkFailed };
   }
 }

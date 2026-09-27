@@ -41,9 +41,16 @@ function fakePeerId(id: string): PeerId {
 
 const MA_CONN = {} as MultiaddrConnection;
 
-/** A MultiaddrConnection whose abort is observable — the not-reserving deadline's target. */
-function abortableConn(): MultiaddrConnection & { abort: ReturnType<typeof vi.fn> } {
-  return { abort: vi.fn() } as unknown as MultiaddrConnection & { abort: ReturnType<typeof vi.fn> };
+/** A MultiaddrConnection whose close and abort are both observable — the not-reserving deadline's target. */
+type DroppableConn = MultiaddrConnection & { close: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> };
+
+/**
+ * The deadline ends a connection with `close()`, falling back to `abort()`; the
+ * double carries BOTH so a test can tell which one fired. `close` rejecting is
+ * the only way to reach the fallback, so it is a parameter.
+ */
+function droppableConn(closeResult: () => Promise<void> = () => Promise.resolve()): DroppableConn {
+  return { close: vi.fn(closeResult), abort: vi.fn() } as unknown as DroppableConn;
 }
 
 /** Assemble a policy from its two decisions; the reservation half admits by default. */
@@ -210,42 +217,57 @@ describe('createMembershipConnectionGater (bring-up quiet period)', () => {
 // ── the relay-reservation seam (admit-for-relay + denyInboundRelayReservation) ─
 
 describe('createMembershipConnectionGater (relay-reservation seam)', () => {
-  it('admits an admit-for-relay connection, then aborts it when no reservation is admitted in time', async () => {
-    const maConn = abortableConn();
+  it('admits an admit-for-relay connection, then CLOSES it when no reservation is admitted in time', async () => {
+    const maConn = droppableConn();
     const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay'), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
-    expect(maConn.abort).not.toHaveBeenCalled();
+    expect(maConn.close).not.toHaveBeenCalled();
     await delay(90);
+    // Close, not abort: on a WebSocket transport `abort()` never reaches the
+    // wire, so an aborting deadline leaves the stranger's socket open.
+    expect(maConn.close).toHaveBeenCalledTimes(1);
+    expect(maConn.abort).not.toHaveBeenCalled();
+  });
+
+  it('aborts the expired connection only when the close itself fails', async () => {
+    const maConn = droppableConn(() => Promise.reject(new Error('close timed out draining')));
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay'), undefined, 2_000, 30);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
+    await delay(90);
+    expect(maConn.close).toHaveBeenCalledTimes(1);
     expect(maConn.abort).toHaveBeenCalledTimes(1);
   });
 
   it('an admitted reservation disarms the not-reserving deadline', async () => {
-    const maConn = abortableConn();
+    const maConn = droppableConn();
     const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay', () => true), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     expect(await gater.denyInboundRelayReservation!(fakePeerId('unplaced'))).toBe(false);
     await delay(90);
+    expect(maConn.close).not.toHaveBeenCalled();
     expect(maConn.abort).not.toHaveBeenCalled();
   });
 
   it('a REFUSED reservation leaves the deadline armed — the connection still gets dropped', async () => {
-    const maConn = abortableConn();
+    const maConn = droppableConn();
     const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay', () => false), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     expect(await gater.denyInboundRelayReservation!(fakePeerId('unplaced'))).toBe(true);
     await delay(90);
-    expect(maConn.abort).toHaveBeenCalledTimes(1);
+    expect(maConn.close).toHaveBeenCalledTimes(1);
   });
 
   it('a plain admit arms no deadline', async () => {
-    const maConn = abortableConn();
+    const maConn = droppableConn();
     const gater = createMembershipConnectionGater(policyOf(() => 'admit'), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('member'), maConn)).toBe(false);
     await delay(90);
+    expect(maConn.close).not.toHaveBeenCalled();
     expect(maConn.abort).not.toHaveBeenCalled();
   });
 

@@ -71,11 +71,16 @@ const YEAR_MS = 365 * 24 * 3600_000;
 const CONVERGE_MS = 30_000;
 /**
  * Per-case budget, sized so a case can spend EVERY {@link CONVERGE_MS} wait it may issue
- * (case 1: publish + both nodes' views = 3) plus two 30 s formation sessions and still
- * fail on the wait rather than on vitest's clock — a bare per-test timeout loses the
- * both-nodes diagnostic those waits raise, which is the whole point of this scenario.
+ * plus two 30 s formation sessions and still fail on the wait rather than on vitest's
+ * clock — a bare per-test timeout loses the both-nodes diagnostic those waits raise, which
+ * is the whole point of this scenario.
+ *
+ * The worst case is five waits: publishing the invite (1), then each node's row scan and its
+ * separately-converging {@link waitForUsageCount} (4) — 150 s of waits plus 60 s of sessions.
+ * Raise this WITH the wait count: every wait added to a case has to fit under it, or the case
+ * dies holding the evidence.
  */
-const CASE_TIMEOUT_MS = 180_000;
+const CASE_TIMEOUT_MS = 240_000;
 
 /** One redemption attempt: which joiner, dialed through which responder node. */
 interface Attempt {
@@ -271,6 +276,69 @@ describe('Concurrent invitation redemption across two machines', () => {
 	}
 
 	/**
+	 * BOTH nodes' committed views of `token` — each node's full row scan and its
+	 * index-backed count — as one line for a failure message.
+	 *
+	 * Every convergence failure in this file reports both machines, never only the view that
+	 * failed: whether the sibling holds what the failing view is missing is what tells a lost
+	 * write apart from one-way convergence lag, and a both-views report is the evidence this
+	 * file's header and `countFormationUsage`'s own comment ask a reader to produce before
+	 * concluding that index convergence has regressed.
+	 */
+	async function describeBothViews(token: string): Promise<string> {
+		const describeView = async (viewDb: ControlDatabase, viewLabel: string): Promise<string> => {
+			const rows = await readUsageRows(viewDb, token);
+			return `${viewLabel} holds ${rows.length} row(s) [${rows.map((r) => r.peerKey).join(', ') || 'none'}], count=${await viewDb.countFormationUsage(token)}`;
+		};
+		return `${await describeView(dbA(), 'node A')}; ${await describeView(dbB(), 'node B')}`;
+	}
+
+	/**
+	 * Wait for ONE node's index-backed `countFormationUsage` to satisfy `predicate`.
+	 *
+	 * The table and the `FormationUsageByToken` index are separate collections in the storage
+	 * engine, with separate logs and independent cross-machine catch-up, so a row scan that
+	 * has converged says nothing about when this count will. The FIRST assertion on a node's
+	 * count is therefore a bounded wait, matching the row scan's — an immediate read there
+	 * compares a value that was waited for against one that was not. A LATER read of the same
+	 * node's count within one case is already behind that wait and needs no second one; the two
+	 * such reads in this file say so at their site.
+	 *
+	 * A pass that had to wait logs how long the catch-up took, so a convergence that slows
+	 * from milliseconds to tens of seconds stays visible in the run output instead of being
+	 * absorbed by a green run. Deliberately NOT asserted on: there is no measured baseline to
+	 * set a threshold against.
+	 */
+	async function waitForUsageCount(
+		db: ControlDatabase, label: string, token: string,
+		predicate: (count: number) => boolean, expectation: string,
+	): Promise<void> {
+		const startedAtMs = Date.now();
+		let observed = await db.countFormationUsage(token);
+		if (predicate(observed)) return;
+		try {
+			await waitUntil(async () => {
+				observed = await db.countFormationUsage(token);
+				return predicate(observed);
+			}, {
+				timeoutMs: CONVERGE_MS,
+				intervalMs: 250,
+				description: `${label} count of ${token} is ${expectation}`,
+			});
+		} catch (error) {
+			// The elapsed figure is MEASURED, not the CONVERGE_MS budget restated: the first
+			// read happens before the wait's own clock starts, and the views below are read
+			// after it stops, so how long the count actually stayed short is its own number.
+			throw new Error(
+				`${label}: countFormationUsage(${token}) stayed at ${observed}, not ${expectation}, `
+				+ `for ${Date.now() - startedAtMs}ms (budget ${CONVERGE_MS}ms). `
+				+ `${await describeBothViews(token)}`,
+				{ cause: error });
+		}
+		console.log(`[concurrent-redemption] ${label} count of ${token} reached ${expectation} after ${Date.now() - startedAtMs}ms of index catch-up`);
+	}
+
+	/**
 	 * Assert ONE node's committed view of `token`: exactly the approved joiners' rows,
 	 * each attributable (distinct joiner-minted `UsageStampId`, the joiner's own
 	 * `PeerKey`) and re-verifiable from the stored bytes alone.
@@ -292,15 +360,9 @@ describe('Concurrent invitation redemption across two machines', () => {
 				description: `${label} view of ${token} contains every approved joiner's row`,
 			});
 		} catch (error) {
-			// Snapshot BOTH nodes: whether the sibling holds the missing row is what tells a
-			// lost write apart from one-way convergence failure.
-			const describeView = async (viewDb: ControlDatabase, viewLabel: string): Promise<string> => {
-				const rows = await readUsageRows(viewDb, token);
-				return `${viewLabel} holds ${rows.length} row(s) [${rows.map((r) => r.peerKey).join(', ') || 'none'}], count=${await viewDb.countFormationUsage(token)}`;
-			};
 			throw new Error(
 				`${label}: after ${CONVERGE_MS}ms its view of ${token} is missing approved joiners' rows. `
-				+ `${await describeView(dbA(), 'node A')}; ${await describeView(dbB(), 'node B')}; `
+				+ `${await describeBothViews(token)}; `
 				+ `approved joiners: ${approvedKeys.join(', ')}`,
 				{ cause: error });
 		}
@@ -321,8 +383,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// The index-backed count the seat cap rests on agrees with the table read that does
 		// NOT go through the index — the exact comparison that was wrong from 2026-08-04 to
 		// 2026-08-25, when the count descended a stale index sub-collection while the table
-		// itself had converged.
-		expect(await db.countFormationUsage(token), `${label}: countFormationUsage agrees with the row scan`).toBe(rows.length);
+		// itself had converged. Waited rather than read once: the scan above converged on its
+		// own schedule and nothing makes the index ready at that same instant.
+		await waitForUsageCount(db, label, token, (count) => count === rows.length,
+			`${rows.length} (the row scan's count)`);
 		return rows;
 	}
 
@@ -417,8 +481,15 @@ describe('Concurrent invitation redemption across two machines', () => {
 			// observable — the audit story the design traded strict enforcement for.
 			const invite = await dbA().queryFormationInvite(token);
 			expect(invite?.totalUses).toBe(1);
-			expect(await dbA().countFormationUsage(token)).toBeGreaterThan(invite!.totalUses!);
-			expect(await dbB().countFormationUsage(token)).toBeGreaterThan(invite!.totalUses!);
+			// Read immediately, deliberately: `assertRowsMatchApprovals` above already WAITED
+			// for each node's count to equal the two approved rows, and the table is
+			// append-only, so `> 1` is established on both nodes before this line. A wait here
+			// could only ever return on its first read, while still reserving two CONVERGE_MS
+			// slots of the per-case budget.
+			for (const [db, label] of [[dbA(), 'node A'], [dbB(), 'node B']] as const) {
+				expect(await db.countFormationUsage(token), `${label}: the overage must be observable`)
+					.toBeGreaterThan(invite!.totalUses!);
+			}
 			console.log('[concurrent-redemption] case 2 outcome: BOTH landed (accepted over-admission, 2 rows against a 1-use invite)');
 		} else {
 			console.log('[concurrent-redemption] case 2 outcome: one landed, one refused terminally');
@@ -437,11 +508,8 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// "Once the cohort agrees": both nodes' committed views hold exactly the case-2
 		// rows before the third redemption is issued.
 		for (const [db, label] of [[dbA(), 'node A'], [dbB(), 'node B']] as const) {
-			await waitUntil(async () => (await db.countFormationUsage(token)) === case2ApprovedKeys.length, {
-				timeoutMs: CONVERGE_MS,
-				intervalMs: 250,
-				description: `${label} agrees on the committed case-2 rows`,
-			});
+			await waitForUsageCount(db, label, token, (count) => count === case2ApprovedKeys.length,
+				`${case2ApprovedKeys.length} (the committed case-2 rows)`);
 		}
 
 		// A reader who watched case 2 pass with two rows will assume the cap is dead —
@@ -455,6 +523,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 			J2!.formStrand(invitationVia(token, pair!.B), { purpose: 'case3-via-B' }),
 		).rejects.toThrow(/Formation rejected: Invalid token/);
 
+		// Read immediately: each node's count is already behind the wait at the top of this
+		// case, and the row a refusal must NOT have written would have been written by the node
+		// that SERVED that refusal — locally, on the view read here — so nothing new has to
+		// cross machines for these reads to be able to fail.
 		expect(await dbA().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
 		expect(await dbB().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
 	}, CASE_TIMEOUT_MS);

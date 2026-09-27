@@ -206,15 +206,16 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			// A runs the relay server, so the un-announced stranger is admitted FOR
 			// RELAY ONLY (membership-connection-gater.ts → "The relay-reservation
 			// seam") — and since it never asks for a reservation, the not-reserving
-			// deadline (5 s) aborts the connection. Either way D ends up with no
+			// deadline (5 s) closes the connection. Either way D ends up with no
 			// open connection to A. (On a relay-less node the same dial is denied
-			// outright at the upgrade.)
+			// outright at the upgrade.) The wait is generous against that 5 s: the
+			// close lands within a few hundred milliseconds of it.
 			await dNode.dial(aAddr).catch(() => undefined);
 			await waitUntil(
 				() => !dNode.getConnections().some(
 					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
 				),
-				{ timeoutMs: 20_000, intervalMs: 250, description: 'un-announced stranger connection torn down' }
+				{ timeoutMs: 10_000, intervalMs: 250, description: 'un-announced stranger connection torn down' }
 			);
 			expect(
 				A.getControlNode()!.getConnections().some(

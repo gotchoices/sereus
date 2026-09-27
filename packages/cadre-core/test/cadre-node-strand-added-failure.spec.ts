@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
+import { InvalidStrandIdError } from '../src/storage-scope.js';
 import type { CadreNodeConfig, SAppConfig, StrandRow } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -63,6 +64,33 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.strandId).toBe(STRAND_ROW.Id);
     expect(errors[0]!.error).toBe(failure);
+  });
+
+  it('suppresses a strand whose id is unusable, instead of retrying it forever', async () => {
+    // An invalid id is a property of the control row, so the watcher's backoff ladder
+    // can never clear it: unsuppressed, it would re-attempt and re-emit `strand:error`
+    // every five minutes (MAX_RETRY_BACKOFF_MS) for the life of the process. Checked
+    // ABOVE the no-sAppConfig branch too — hence no config registered here — so a
+    // hostile id is never offered to the hosting app as a strand it could join.
+    const node = new CadreNode(createConfig());
+    injectFailingStrandManager(node, new Error('should never be reached'));
+    const suppressed: string[] = [];
+    (node as unknown as { strandWatcher: unknown }).strandWatcher = {
+      suppressStrand: (id: string) => { suppressed.push(id); }
+    };
+
+    const errors: { strandId: string; error: Error }[] = [];
+    const discovered: unknown[] = [];
+    node.on('strand:error', (event) => { errors.push(event); });
+    node.on('strand:discovered', (event) => { discovered.push(event); });
+
+    const hostileRow: StrandRow = { ...STRAND_ROW, Id: '../../etc/passwd' };
+    await expect(handleStrandAdded(node, hostileRow)).rejects.toThrow(InvalidStrandIdError);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toBeInstanceOf(InvalidStrandIdError);
+    expect(suppressed).toEqual(['../../etc/passwd']);
+    expect(discovered).toHaveLength(0);
   });
 
   it('resolves without emitting strand:error when no sAppConfig is registered', async () => {

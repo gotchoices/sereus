@@ -48,6 +48,7 @@ the fallback, with the usual cost: it can drift from the real one.
   because of the `ObservableArray` blocker above; the RN equivalent is
   `packages/reference-app-rn/test/react/use-chat.spec.ts`.
 - Participant registration (`register()`): while an insert is still running, later polls start no second insert for that strand; a failed insert is retried on a later poll.
+- The send rule (`send()`), which landed with `bug-chat-resend-after-uncertain-failure-can-store-message-twice` with no test for the same `ObservableArray` reason: a send that fails after storing the row, followed by a second Send on unchanged text, leaves exactly one row; editing the text before the second Send produces two; a second Send while the first is still in flight does nothing. The reference test to port is `packages/reference-app-rn/test/chat-send.spec.ts`, which drives the same rule through `ChatSender` against a fake `Database` that stores the row and then throws.
 - Whatever unblocks `ObservableArray` is written down where the next person
   meets it, not only in this ticket.
 

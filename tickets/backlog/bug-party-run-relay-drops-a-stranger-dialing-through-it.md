@@ -19,7 +19,7 @@ A relay run by one of a party's own machines (any storage-profile `CadreNode`; `
 
 ## The defect
 
-`admitInboundControlConnection` (`cadre-node.ts`) classifies an inbound peer it cannot recognise as a member, and cannot cover by any stranger carve-out, as `'admit-for-relay'` when the node runs a relay server. `createMembershipConnectionGater` then arms a `RELAY_ADMISSION_RESERVE_DEADLINE_MS` timer (5 s) against that connection and aborts it unless a **reservation** for that peer is admitted at `denyInboundRelayReservation`, which is the only thing that disarms it.
+`admitInboundControlConnection` (`cadre-node.ts`) classifies an inbound peer it cannot recognise as a member, and cannot cover by any stranger carve-out, as `'admit-for-relay'` when the node runs a relay server. `createMembershipConnectionGater` then arms a `RELAY_ADMISSION_RESERVE_DEADLINE_MS` timer (5 s) against that connection and closes it unless a **reservation** for that peer is admitted at `denyInboundRelayReservation`, which is the only thing that disarms it.
 
 A hop connect never touches that hook. So an outsider dialling *through* a party-run relay to reach a member gets its connection torn down five seconds later, taking the relayed connection with it.
 
@@ -47,3 +47,9 @@ The deadline exists so an outsider cannot park a connection on a party's machine
 - `backlog/feat-phone-relays-through-its-own-always-on-node` — the capability this blocks.
 - `backlog/bug-party-run-relay-caps-every-relayed-connection` — the other half of the same blockage, at a different code site.
 - `backlog/debt-relay-reservation-decision-repeatable-cost` — the cost of the decision already made on this path. A new hop-admission decision would sit on the same hot path, so the two should be weighed together.
+
+## The drop has not actually been happening (measured 2026-09-23)
+
+The five-second drop this ticket describes has been a no-op over WebSockets, which is every control node's listening transport. `PendingReserveDeadlines.expire` aborts the connection, and `abort()` on a WebSocket never reaches the wire: `@libp2p/websockets` sends the reserved close code 1006, `ws` rejects it, and the failure is swallowed. The relay marked the connection gone and the socket stayed open on both ends.
+
+So a hop-connecting outsider has in practice been surviving — until its own liveness ping failed, or forever if it kept pinging. That is not a reason to close this ticket: the behaviour was never intended, was invisible, and leaked a socket on the relay for each such peer. `fix/bug-relay-only-deadline-abort-leaves-the-stranger-half-open` makes the drop real, which is when the defect described above starts biting for the first time. Re-read this ticket's `severity` and `likelihood` once that lands.

@@ -119,8 +119,16 @@ export {
 
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
-// so two parties on one device never share a control store.
-export { controlStorageScope, isControlStorageScope } from './storage-scope.js';
+// so two parties on one device never share a control store. Every key stays within
+// `[A-Za-z0-9._-]`: the control key by base64url encoding, a strand's by
+// `assertStrandScopeKey`, which every strand launch runs.
+export {
+  controlStorageScope,
+  isControlStorageScope,
+  isValidStrandScopeKey,
+  assertStrandScopeKey,
+  InvalidStrandIdError
+} from './storage-scope.js';
 
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
@@ -162,6 +170,7 @@ export {
   PeerJoinBackfill,
   DEFAULT_PEER_JOIN_BACKFILL,
   MAX_BLOCK_MESSAGE_BYTES,
+  PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES,
   type PeerJoinBackfillConfig,
   type PeerJoinBackfillDeps,
   type PeerJoinBackfillResult,
@@ -432,10 +441,27 @@ export {
   directBeforeRelayed,
   DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS,
+  CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   DEFAULT_PEER_DIAL_BUDGET,
   type PeerDialBudget,
   type AddrDialer
 } from './peer-dial.js';
+
+// Dial and reservation budgets counted in link round trips rather than fixed milliseconds, so
+// one declared assumption about the link moves them all — see `NetworkConfig.linkRoundTripMs`.
+export {
+  DECLARED_LINK_ROUND_TRIP_MS,
+  RELAYED_DIAL_ROUND_TRIPS,
+  RELAY_RESERVATION_ROUND_TRIPS,
+  CIRCUIT_REQUEST_ROUND_TRIPS,
+  PUSH_TRANSFER_ALLOWANCE_MS,
+  resolveLinkRoundTripMs,
+  relayedDialBudgetMs,
+  relayReservationBudgetMs,
+  circuitRequestBudgetMs,
+  peerJoinPushBudget,
+  type PeerJoinPushBudget
+} from './link-budget.js';
 
 // Seed trust policy (trust anchor for incoming seeds)
 export {
@@ -493,6 +519,7 @@ export {
   DEFAULT_ENROLLMENT_WINDOW_MS,
   ADMISSION_DECISION_TIMEOUT_MS,
   RELAY_ADMISSION_RESERVE_DEADLINE_MS,
+  RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
   MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
   UNAUTHORIZED_RESERVATION_TTL_MS,
   UnauthorizedReservationBudget,

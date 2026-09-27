@@ -86,10 +86,11 @@ export interface HostNodeRequestBudgets {
 	seedRetryMs: number;
 	/**
 	 * Wait for the control connection to the lent node to come up, counted from
-	 * before the first dial. 60 s is two full dials of the lent node at cadre-core's
-	 * per-peer limit (30 s, `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`): room for a
-	 * first dial that finds nothing answering yet and a second one after it. See
-	 * {@link connectToNode}.
+	 * before the first dial. 60 s covers most of two full dials of the lent node at
+	 * cadre-core's per-peer limit (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`, 32 s at the
+	 * default declared link round trip — it is derived now, not fixed, so a host that
+	 * declares a slower link moves it: see `link-budget.ts`): room for a first dial that
+	 * finds nothing answering yet and a second one after it. See {@link connectToNode}.
 	 */
 	connectMs: number;
 	/** Gap between polls in each of the waits above. */

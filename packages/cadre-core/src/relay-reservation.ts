@@ -81,7 +81,11 @@
  * And because discovery is out of reach, nothing would ever ASK again either —
  * so {@link driveRelayReservation} stays a single-shot primitive and
  * {@link superviseRelayReservation} owns the retry cadence on top of it. That
- * loop is what makes a lost reservation recover without a page reload.
+ * loop is what makes a lost reservation recover without a page reload. Single-shot
+ * but not unstoppable: the primitive takes an `AbortSignal` and the loop trips it
+ * from `stop()`, because a drive left running against a node being torn down both
+ * logs failures that read as real and — through the timers it still holds — keeps
+ * the process alive for the rest of its `timeoutMs`.
  *
  * One measured refinement to "out of reach": libp2p 3.1.3's `connection.newStream`
  * records every protocol OUR OWN outbound stream negotiated into the peer store, so
@@ -102,6 +106,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import { trailingPeerId } from './peer-record.js';
+import { relayReservationBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:relay-reservation');
 
@@ -135,13 +140,47 @@ export interface RelayReservationState {
   retryAtMs: number | null;
 }
 
-/** How long {@link driveRelayReservation} waits for a reservation to appear. */
-export const DEFAULT_RELAY_RESERVE_TIMEOUT_MS = 10_000;
+/**
+ * How long {@link driveRelayReservation} waits for a reservation to appear, at the DEFAULT
+ * declared link round trip: `RELAY_RESERVATION_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS`
+ * (2000 ms) = 8000 ms, where it was a fixed 10_000 before.
+ *
+ * Counted rather than chosen because this one deadline bounds the whole drive — dial the relay,
+ * request the reservation, wait — and each of those costs a fixed number of exchanges, not a
+ * fixed number of milliseconds. `link-budget.ts` carries the counts, the measurement behind
+ * them, and the ceiling above which no relayed connection can be established whatever this says.
+ *
+ * A host on a slower link moves it by declaring `NetworkConfig.linkRoundTripMs`, which both
+ * call sites thread in (`CadreNode.reserveRelays` for the control node,
+ * `StrandInstanceManager`'s per-relay supervisors for a strand). This constant is the fallback
+ * for a caller that declares nothing.
+ */
+export const DEFAULT_RELAY_RESERVE_TIMEOUT_MS = relayReservationBudgetMs();
 export const DEFAULT_RELAY_RESERVE_POLL_MS = 250;
 
 export interface RelayReserveOptions {
   timeoutMs?: number;
   pollMs?: number;
+  /**
+   * Ends an in-flight drive early. Aborting is not a failure: the drive returns
+   * `{ error: null, cancelled: true }` and clears every timer it holds, so the
+   * process is free to exit immediately instead of trailing the teardown that
+   * cancelled it.
+   */
+  signal?: AbortSignal;
+}
+
+/** What one {@link driveRelayReservation} came back with. */
+export interface RelayReserveResult {
+  /** Why no reservation landed; `null` when one did — or when the drive was cancelled. */
+  error: string | null;
+  /**
+   * The drive ended because its caller's `signal` tripped, not because of anything
+   * the relay did. Separate from `error` because `error: null` means "a reservation
+   * landed" and a cancelled drive landed nothing: folded together, a caller would
+   * read cancellation as success. `cancelled: true` always implies `error: null`.
+   */
+  cancelled: boolean;
 }
 
 /**
@@ -282,13 +321,79 @@ function isReservationStore(value: unknown): value is RelayReservationStoreLike 
   return typeof store.addRelay === 'function' && typeof store.hasReservation === 'function';
 }
 
-/** Sentinel resolved by the deadline race in {@link requestOneReservation}. */
-const DEADLINE_PASSED = Symbol('relay-reservation-deadline-passed');
+/** Sentinel resolved by the wait arm of {@link requestOneReservation}'s race. */
+const WAIT_OVER = Symbol('relay-reservation-wait-over');
 
 /** A relay that answered its dial, paired with the address it was dialed at. */
 interface ConnectedRelay {
   addr: string;
   peerId: PeerId;
+}
+
+/**
+ * Whether `signal` has been aborted.
+ *
+ * A function rather than an inline `signal?.aborted` because a signal's `aborted` flag
+ * is a readonly boolean: one `if (signal?.aborted)` narrows every LATER read of it
+ * to `false`, and TypeScript then rejects the re-check as a comparison that can
+ * never hold. Re-checking after each await is exactly what cancellation is, so the
+ * narrowing is the thing that is wrong, not the check.
+ */
+function aborted(signal: AbortSignal | undefined): boolean {
+  return signal !== undefined && signal.aborted;
+}
+
+/**
+ * `setTimeout` as a promise, cut short by `signal`.
+ *
+ * EVERY wait inside a drive routes through here, because a wait that merely LOSES
+ * a `Promise.race` leaves its timer pending — and a pending timer keeps a Node
+ * process alive for the rest of its duration, which is exactly the delay a
+ * cancelled drive exists to shed. So the timer is cleared on both endings, not
+ * only on its own.
+ *
+ * NOTE: no spec catches a wait that skips this helper. The cancellation specs
+ * assert prompt RETURN, which a `Promise.race` gives with its losing timer still
+ * pending — only the process actually exiting proves the clearing, and that was
+ * measured by hand rather than pinned. If a wait is ever added outside this
+ * helper, pin it with a spawned-child process-exit test instead.
+ */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (aborted(signal)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
+}
+
+/**
+ * Relay `from`'s abort into `to`, and hand back the detach that must run on every
+ * exit path.
+ *
+ * By hand rather than through `AbortSignal.any`, for the same reason this module
+ * builds its deadline from an explicit `AbortController` rather than
+ * `AbortSignal.timeout`: React Native/Hermes runs this same code, and `any` is
+ * newer still — its polyfill also leaks listeners onto inputs that never abort,
+ * which is what the returned detach avoids here.
+ */
+function linkAbort(from: AbortSignal | undefined, to: AbortController): () => void {
+  if (from === undefined) {
+    return () => { /* nothing was attached */ };
+  }
+  if (from.aborted) {
+    to.abort();
+    return () => { /* nothing was attached */ };
+  }
+  const forward = (): void => to.abort();
+  from.addEventListener('abort', forward, { once: true });
+  return () => from.removeEventListener('abort', forward);
 }
 
 /**
@@ -303,33 +408,47 @@ interface ConnectedRelay {
  * (`error: null`).
  *
  * `timeoutMs` bounds the WHOLE drive — dials, reservation requests and the wait
- * share one deadline.
+ * share one deadline. `opts.signal` bounds it from the other side: every phase
+ * below returns as soon as it trips, and the drive reports `cancelled` rather than
+ * inventing a failure for a relay that was never given a chance to answer.
  */
 export async function driveRelayReservation(
   node: Libp2p,
   addrs: readonly string[],
   opts?: RelayReserveOptions
-): Promise<{ error: string | null }> {
+): Promise<RelayReserveResult> {
   if (addrs.length === 0) {
-    return { error: null };
+    return { error: null, cancelled: false };
+  }
+  const signal = opts?.signal;
+  if (aborted(signal)) {
+    return { error: null, cancelled: true };
   }
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_RELAY_RESERVE_TIMEOUT_MS;
   // Clamped: a caller-supplied 0 would spin the poll loop hot until the deadline.
   const pollMs = Math.max(1, opts?.pollMs ?? DEFAULT_RELAY_RESERVE_POLL_MS);
   const deadline = Date.now() + timeoutMs;
 
-  const { connected, error: dialError } = await dialRelays(node, addrs, deadline);
-  const attempt = await requestReservation(node, connected, deadline);
+  const { connected, error: dialError } = await dialRelays(node, addrs, deadline, signal);
+  const attempt = await requestReservation(node, connected, deadline, signal);
   // NOTE: a REJECTED reservation still spends the rest of the deadline polling,
   // because discovery may independently land one (only the no-transport case is
   // `fatal`). So a misconfigured node reports its now-legible reason a full
   // `timeoutMs` late. If startup latency on that path ever matters, shorten the
   // wait once every connected relay has rejected — do not skip it outright.
-  if (!attempt.fatal && (await waitForCircuitReservation(node, addrs, deadline, pollMs))) {
-    return { error: null };
+  if (!attempt.fatal && (await waitForCircuitReservation(node, addrs, deadline, pollMs, signal))) {
+    return { error: null, cancelled: false };
+  }
+  // Checked AFTER the success above, so a reservation that landed in the same turn
+  // the signal tripped is still reported as landed. Below it, the reasons the
+  // phases assembled describe the cancellation rather than the relay, so they are
+  // dropped: a cancelled drive has nothing to say about the relay's health.
+  if (aborted(signal)) {
+    return { error: null, cancelled: true };
   }
   return {
-    error: attempt.error ?? dialError ?? `no circuit reservation within ${timeoutMs}ms`
+    error: attempt.error ?? dialError ?? `no circuit reservation within ${timeoutMs}ms`,
+    cancelled: false
   };
 }
 
@@ -345,16 +464,21 @@ export async function driveRelayReservation(
  *
  * Aborting a dial at the deadline is not a lost reservation — the steps that
  * follow have no time left either, so the drive would report `error` regardless.
+ *
+ * The caller's `signal` aborts the same dials, through the same controller: a
+ * hanging dial is the longest thing a cancelled drive can be sitting in.
  */
 async function dialRelays(
   node: Libp2p,
   addrs: readonly string[],
-  deadline: number
+  deadline: number,
+  signal?: AbortSignal
 ): Promise<{ connected: ConnectedRelay[]; error: string | null }> {
   // An explicit controller, not `AbortSignal.timeout` — the latter is not
   // reliably present on React Native/Hermes, which runs this same module.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
+  const unlink = linkAbort(signal, controller);
   try {
     const results = await Promise.allSettled(
       addrs.map((addr) => dialOne(node, addr, controller.signal))
@@ -362,6 +486,7 @@ async function dialRelays(
     return { connected: connectedRelays(addrs, results), error: firstDialError(addrs, results) };
   } finally {
     clearTimeout(timer);
+    unlink();
   }
 }
 
@@ -443,7 +568,8 @@ interface ReservationAttempt {
 async function requestReservation(
   node: Libp2p,
   connected: readonly ConnectedRelay[],
-  deadline: number
+  deadline: number,
+  signal?: AbortSignal
 ): Promise<ReservationAttempt> {
   if (connected.length === 0) {
     // Nothing answered — the dial error is the whole story.
@@ -461,10 +587,17 @@ async function requestReservation(
     if (transport.reservationStore.hasReservation(relay.peerId)) {
       return { error: null, fatal: false };
     }
-    if (Date.now() >= deadline) {
+    // A cancelled drive stops here rather than asking the next relay: the caller is
+    // tearing this node down, so another hop request against it can only fail.
+    if (Date.now() >= deadline || aborted(signal)) {
       break;
     }
-    const failure = await requestOneReservation(transport.reservationStore, relay, deadline);
+    const failure = await requestOneReservation(
+      transport.reservationStore,
+      relay,
+      deadline,
+      signal
+    );
     if (failure === null) {
       return { error: null, fatal: false };
     }
@@ -474,36 +607,49 @@ async function requestReservation(
 }
 
 /**
- * One `addRelay` call, bounded by the drive's deadline. Returns `null` on
- * success, or the reason it failed.
+ * One `addRelay` call, bounded by the drive's deadline and by the caller's signal.
+ * Returns `null` on success, or the reason it stopped waiting.
  *
- * Deadline-raced because `addRelay` runs on libp2p's own (much longer) reservation
- * timeout and takes no signal: without the race a drive given 1.5 s would sit on a
- * silent relay for libp2p's timeout instead. The abandoned promise stays handled —
- * `Promise.race` attaches its own handlers — so a later rejection is not unhandled.
+ * Raced rather than passed a signal because `addRelay` accepts none and runs on
+ * libp2p's own (much longer) reservation timeout: without the race a drive given
+ * 1.5 s would sit on a silent relay for libp2p's timeout instead. The abandoned
+ * promise stays handled — `Promise.race` attaches its own handlers — so a later
+ * rejection is not unhandled, and is not logged either: a request abandoned at a
+ * cancellation must not print a relay failure the caller would read as real.
+ *
+ * `waitOver` ends the wait on BOTH routes — the caller's abort, relayed in, and the
+ * race settling some other way, aborted in the `finally`. Out-racing the deadline
+ * timer is not enough: the loser stays pending, and a pending timer is what holds
+ * a Node process open past the stop that asked for it.
  */
 async function requestOneReservation(
   store: RelayReservationStoreLike,
   relay: ConnectedRelay,
-  deadline: number
+  deadline: number,
+  signal?: AbortSignal
 ): Promise<string | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expired = new Promise<typeof DEADLINE_PASSED>((resolve) => {
-    timer = setTimeout(() => resolve(DEADLINE_PASSED), Math.max(0, deadline - Date.now()));
-  });
+  const waitOver = new AbortController();
+  const unlink = linkAbort(signal, waitOver);
   try {
-    const outcome = await Promise.race([store.addRelay(relay.peerId, 'discovered'), expired]);
-    if (outcome === DEADLINE_PASSED) {
-      log('Relay reservation request (%s) still pending at the deadline', relay.addr);
-      return `relay reservation request to ${relay.addr} did not complete before the deadline`;
+    const outcome = await Promise.race([
+      store.addRelay(relay.peerId, 'discovered'),
+      delay(Math.max(0, deadline - Date.now()), waitOver.signal).then(() => WAIT_OVER)
+    ]);
+    if (outcome !== WAIT_OVER) {
+      return null;
     }
-    return null;
+    if (aborted(signal)) {
+      return `relay reservation request to ${relay.addr} was cancelled`;
+    }
+    log('Relay reservation request (%s) still pending at the deadline', relay.addr);
+    return `relay reservation request to ${relay.addr} did not complete before the deadline`;
   } catch (err) {
     const message = describeReservationFailure(err, relay.addr);
     log('Relay reservation failed (%s): %s', relay.addr, message);
     return message;
   } finally {
-    clearTimeout(timer);
+    unlink();
+    waitOver.abort();
   }
 }
 
@@ -539,7 +685,10 @@ function describeReservationFailure(err: unknown, addr: string): string {
 
 /**
  * Poll until the node advertises a `/p2p-circuit` address through one of `addrs`'
- * relays ({@link circuitMultiaddrsVia}), or the deadline passes.
+ * relays ({@link circuitMultiaddrsVia}), the deadline passes, or the drive is
+ * cancelled. This is the phase a cancellation has to reach: whatever the dial and
+ * the reservation request shed, an abandoned drive used to spend here instead,
+ * polling a node whose transports were already being torn down.
  *
  * Still a poll even though the reservation is now requested explicitly: `addRelay`
  * resolving means the RELAY accepted, while the listen address is published a tick
@@ -554,21 +703,18 @@ async function waitForCircuitReservation(
   node: Libp2p,
   addrs: readonly string[],
   deadline: number,
-  pollMs: number
+  pollMs: number,
+  signal?: AbortSignal
 ): Promise<boolean> {
   for (;;) {
     if (circuitMultiaddrsVia(node, addrs).length > 0) {
       return true;
     }
-    if (Date.now() >= deadline) {
+    if (Date.now() >= deadline || aborted(signal)) {
       return false;
     }
-    await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+    await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())), signal);
   }
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Gap between liveness checks while a reservation is held. */
@@ -578,7 +724,16 @@ export const DEFAULT_RELAY_MIN_BACKOFF_MS = 2_000;
 /** Ceiling the backoff doubles up to. */
 export const DEFAULT_RELAY_MAX_BACKOFF_MS = 60_000;
 
-export interface RelayReservationSupervisorOptions extends RelayReserveOptions {
+/**
+ * Everything one drive takes, minus its `signal`, plus the loop's own cadence.
+ *
+ * `signal` is omitted rather than inherited because these options are handed
+ * straight to every drive: a caller-supplied one would cancel each attempt without
+ * the loop knowing, leaving it to reschedule drives that return immediately and
+ * forever. The way to cancel a supervisor is
+ * {@link RelayReservationSupervisor.stop}, which owns the signal it passes down.
+ */
+export interface RelayReservationSupervisorOptions extends Omit<RelayReserveOptions, 'signal'> {
   /** Gap between liveness checks while a reservation is held. Default 5_000. */
   checkMs?: number;
   /** Backoff before the first re-drive after a failure. Default 2_000. */
@@ -619,9 +774,11 @@ export interface RelayReservationSupervisor {
   /** Reason the last drive produced no reservation; `null` once one is held. */
   readonly lastError: string | null;
   /**
-   * Idempotent. Clears the timer so no further drive is scheduled. A drive that
-   * is ALREADY in flight is not aborted — {@link driveRelayReservation} takes no
-   * signal — but its result is discarded and nothing follows it.
+   * Idempotent. Clears the timer so no further drive is scheduled, and CANCELS the
+   * drive already in flight: it stops dialing or polling, clears every timer it
+   * holds and reports `cancelled`, so a teardown does not trail an attempt against
+   * the node it is dismantling. That result is discarded — a cancelled drive is
+   * not a failure — and nothing follows it.
    */
   stop(): void;
 }
@@ -711,6 +868,8 @@ class RelayReservationLoop implements RelayReservationSupervisor {
   private readonly maxBackoffMs: number;
   private backoffMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** Tripped by {@link stop}; the only thing that cancels a drive of this loop's. */
+  private readonly cancel = new AbortController();
   private stopped = false;
   private inFlight = false;
   /** Drives started so far — the `beforeRedrive` hook runs from the second one on. */
@@ -756,6 +915,9 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       return;
     }
     this.stopped = true;
+    // The scheduled attempt and the running one are two different things to end:
+    // the timer covers the first, the signal the second.
+    this.cancel.abort();
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -815,8 +977,14 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       }
       this.drives += 1;
       this.unpoisonRelayFilter();
-      const { error } = await driveRelayReservation(this.node, this.addrs, this.opts);
-      if (!this.stopped) {
+      const { error, cancelled } = await driveRelayReservation(this.node, this.addrs, {
+        ...this.opts,
+        signal: this.cancel.signal
+      });
+      // A cancelled drive landed nothing AND failed at nothing, so it has no status
+      // to report: recording it would surface a teardown artifact through
+      // `getRelayReservationState()` as if the relay had refused.
+      if (!this.stopped && !cancelled) {
         this.failure = error;
       }
     } catch (err) {

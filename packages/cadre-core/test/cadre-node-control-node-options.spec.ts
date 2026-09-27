@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
-import { CachedRawStorage, MemoryRawStorage, defaultCachePool } from '@optimystic/db-p2p';
+import { CachedRawStorage, MemoryRawStorage, defaultCachePool, noisePureJsCrypto } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -9,7 +9,7 @@ import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { controlStorageScope } from '../src/storage-scope.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CONNECTION_MONITOR, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
 import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
@@ -140,6 +140,23 @@ describe('CadreNode control-network node options', () => {
       // control writes on fewer peers than this one. See CONTROL_CLUSTER_POLICY.
       expect(options.clusterPolicy?.superMajorityThreshold).toBeUndefined();
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+    });
+
+    it('routes network.cohortQueryTimeoutMs into the control node\'s read deadline', () => {
+      // What this file owns is the WIRING: that the host's field reaches `clusterPolicy` at all.
+      // The builder's own contract — the frozen base by identity when nothing is declared, a
+      // count and a deadline not shadowing each other, and that 5000 exceeds Optimystic's
+      // 1000 ms LAN default — is pinned on the builder itself, in
+      // `quereus-plugin-sereus/test/plugin.spec.ts`.
+      //
+      // 12000, not 5000: an override equal to the declared default would also pass against a
+      // node that dropped `network` on the floor.
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { cohortQueryTimeoutMs: 12_000 }
+      })));
+
+      expect(options.clusterPolicy?.cohortQueryTimeoutMs).toBe(12_000);
+      expect(options.clusterPolicy).not.toBe(CONTROL_CLUSTER_POLICY);
     });
   });
 
@@ -468,10 +485,35 @@ describe('CadreNode control-network node options', () => {
       expect(options.transports).toBe(transports);
     });
 
-    it('omits transports and listenAddrs (and still resolves relay) when network is entirely absent', () => {
+    it('forwards a configured noiseCrypto', () => {
+      const noiseCrypto = { ...noisePureJsCrypto };
+      const options = controlOptions(new CadreNode(createConfig({ network: { noiseCrypto } })));
+
+      expect(options.noiseCrypto).toBe(noiseCrypto);
+    });
+
+    /**
+     * `connectionMonitor` is the one `NetworkConfig` field that is DEFAULTED rather
+     * than passed through: libp2p's own 5s ping deadline aborts the connection to a
+     * peer whose event loop is saturated by pure-JS Noise crypto, and the monitor runs
+     * on both ends, so the default has to apply to every node rather than only the slow
+     * one (see `DEFAULT_CONNECTION_MONITOR`). Its strand-node half is pinned in
+     * `strand-instance-manager-network-addrs.spec.ts`.
+     */
+    it('defaults connectionMonitor when unset, and lets a configured value replace it', () => {
+      expect(controlOptions(new CadreNode(createConfig())).connectionMonitor).toBe(DEFAULT_CONNECTION_MONITOR);
+
+      const connectionMonitor = { abortConnectionOnPingFailure: false };
+      const options = controlOptions(new CadreNode(createConfig({ network: { connectionMonitor } })));
+
+      expect(options.connectionMonitor).toBe(connectionMonitor);
+    });
+
+    it('omits transports, noiseCrypto and listenAddrs (and still resolves relay) when network is entirely absent', () => {
       const options = controlOptions(new CadreNode(createConfig()));
 
       expect('transports' in options).toBe(false);
+      expect('noiseCrypto' in options).toBe(false);
       expect('listenAddrs' in options).toBe(false);
       expect(options.relay).toBe(false);
       expect(options.connectionGater).toBeDefined();

@@ -1,5 +1,5 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
@@ -121,13 +121,13 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
  * Factory functions are useful for creating per-scope storage instances.
  *
  * **The argument is an opaque scope key.** Use it directly as a file name, directory
- * name or database name: every key cadre-core mints stays within `[A-Za-z0-9._-]`, so
- * no escaping is needed and none should be assumed. Do not parse it;
- * `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the
- * supported way to mint and recognize the control key. The strand arm of that charset
- * rule is intended but not yet checked — a strand id replicated in from another node
- * in the party reaches this callback verbatim; see
- * `tickets/backlog/bug-strand-scope-key-charset-unenforced`.
+ * name or database name: every key stays within `[A-Za-z0-9._-]`, so no escaping is
+ * needed and none should be assumed. Do not parse it; `controlStorageScope` /
+ * `isControlStorageScope` (`storage-scope.ts`) are the supported way to mint and
+ * recognize the control key. The control key holds the charset by base64url encoding;
+ * a strand's key — its strand id, which may have replicated in from another node in
+ * the party — holds it because `StrandInstanceManager.startStrand` runs
+ * `assertStrandScopeKey` on every launch and refuses a strand that fails it.
  *
  * **Called once per scope per runtime lifetime.** The scopes are the control database
  * (once per `CadreNode.start()`) and each strand id (once per `startStrand`).
@@ -316,7 +316,8 @@ export interface NetworkConfig {
    *
    * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
    * out that first attempt, which costs the drive's whole timeout
-   * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s) against a relay that is unreachable
+   * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, four link round trips at
+   * {@link linkRoundTripMs} — 8 s at its default) against a relay that is unreachable
    * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
    * case libp2p's own discovery lands a reservation independently).
    *
@@ -366,6 +367,96 @@ export interface NetworkConfig {
    * ```
    */
   transports?: Libp2pTransports;
+  /**
+   * Crypto primitives for the Noise handshake and the encrypted connection that
+   * follows, threaded to both the control node and every strand's cohort node — every
+   * node pays the handshake, so one setting covers them all. When omitted, libp2p-noise
+   * picks its own default.
+   *
+   * React Native is the reason this exists: Metro resolves `@chainsafe/libp2p-noise`'s
+   * browser build, whose default is pure-JS crypto, and on Hermes (no JIT) that
+   * dominates connection setup on a slow phone. An app with native crypto supplies it
+   * here. It must implement every member of the interface; the usual shape spreads
+   * `noisePureJsCrypto` and overrides the hashing and ChaCha20-Poly1305 functions:
+   * ```typescript
+   * import { noisePureJsCrypto } from '@optimystic/db-p2p';
+   *
+   * network: {
+   *   noiseCrypto: { ...noisePureJsCrypto, hashSHA256: nativeSha256, chaCha20Poly1305Encrypt: …, chaCha20Poly1305Decrypt: … }
+   * }
+   * ```
+   *
+   * Only local primitives change — the wire protocol does not, so a node with native
+   * crypto interoperates with one without. See `@optimystic/db-p2p`'s
+   * `NodeOptions.noiseCrypto`.
+   */
+  noiseCrypto?: NoiseCryptoInterface;
+  /**
+   * libp2p's connection monitor — the liveness ping it runs on every connection — for
+   * the control node and every strand node, as {@link noiseCrypto} is. When omitted,
+   * cadre-core applies {@link DEFAULT_CONNECTION_MONITOR} rather than leaving libp2p's
+   * own defaults in place; an explicit value REPLACES that default wholesale, so `{}`
+   * is how an app asks for libp2p's stock behaviour back.
+   *
+   * Typed from `@optimystic/db-p2p`'s re-export of libp2p's `ConnectionMonitorInit`, so
+   * an app does not need a direct `libp2p` dependency, and handed to db-p2p's
+   * `NodeOptions.connectionMonitor` unchanged.
+   *
+   * An app that widens the ping deadline itself must raise `pingInterval` above it in
+   * the same object, or libp2p aborts the connection on the second overlapping ping —
+   * see {@link DEFAULT_CONNECTION_MONITOR} for why.
+   */
+  connectionMonitor?: Libp2pConnectionMonitorInit;
+  /**
+   * How long ONE cohort peer gets to answer ONE read-path request, in milliseconds, for the
+   * control node and every strand node — as {@link connectionMonitor} is, and for the same
+   * reason: the setting describes the LINK, and a phone's control node and its strand nodes
+   * ride the same one. Omitted takes {@link COHORT_READ_DEADLINE_MS} (5000 ms), chosen for two
+   * parties reaching each other only through a relay; Optimystic's own default is 1000 ms.
+   *
+   * Raise it for a link slower still, lower it for a deployment that is all LAN and wants a
+   * departed peer to stop holding up a read sooner. The cost of a larger value is that a peer
+   * which is truly gone holds a read of a block missing locally for that long before the read
+   * is declined and retried, and a joining machine's first sync runs several such consults —
+   * so a change here should be weighed against
+   * {@link CadreNodeConfig.strandFirstSync}'s budget. The measurement behind the default, and
+   * what it costs, are on {@link COHORT_READ_DEADLINE_MS}.
+   *
+   * Handed to db-p2p's `clusterPolicy.cohortQueryTimeoutMs` unchanged and NOT re-validated
+   * here. Optimystic refuses a value that is not a finite number above zero, or is above its
+   * `MAX_COHORT_QUERY_TIMEOUT_MS` (about 4.97 days — the ceiling exists because a unit mix-up
+   * is the one way to exceed it), by throwing where the libp2p node is built: inside
+   * `CadreNode.start()` for the control network, and inside `CadreNode.addStrand` for a strand.
+   * Fractional values are accepted — this is a duration, not a count of peers.
+   */
+  cohortQueryTimeoutMs?: number;
+  /**
+   * The round trip this node assumes between itself and another machine, in milliseconds, for
+   * the control node and every strand node — as {@link cohortQueryTimeoutMs} is, and for the
+   * same reason: the setting describes the LINK, and a phone's control node and its strand
+   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (2000 ms).
+   *
+   * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
+   * reservation deadlines are DERIVED from, each by the number of round trips that operation
+   * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
+   * reservation drive, and the control-cohort dial budgets. Reaching another machine through a
+   * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
+   * speed above which it can never open a connection — which is the defect this declaration
+   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement
+   * behind them, and the ceiling that no declaration here can lift are in `link-budget.ts`.
+   *
+   * Raise it for a link slower than the relayed phone-to-phone band sereus assumes; the cost is
+   * the ordinary cost of longer deadlines, a peer that is genuinely gone holding each operation
+   * that much longer before it is abandoned and retried. Above about 2500 it buys nothing: two
+   * libp2p budgets that sereus cannot reach abandon the connection first
+   * (`tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`).
+   *
+   * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
+   * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
+   * zero, because every consumer multiplies it into a deadline where a zero means "give up at
+   * once" and a `NaN` means "never".
+   */
+  linkRoundTripMs?: number;
   /**
    * Optional async resolver returning the multiaddrs to embed in invites
    * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
@@ -448,6 +539,66 @@ export interface NetworkConfig {
 }
 
 /**
+ * The connection-monitor settings every cadre node runs with when
+ * {@link NetworkConfig.connectionMonitor} is unset: a 30 second ping deadline in place
+ * of libp2p's 5 second one, and a 35 second gap between pings so a ping is never
+ * outstanding when the next one starts.
+ *
+ * WHY this is a default and not opt-in. libp2p's monitor pings every connection and,
+ * with its own `abortConnectionOnPingFailure: true`, aborts the connection on the FIRST
+ * timeout. A peer whose event loop is saturated by pure-JS Noise crypto — a slow phone
+ * under React Native, see {@link NetworkConfig.noiseCrypto} — misses that deadline while
+ * perfectly healthy; the other end aborts, the peer redials, and the new handshake
+ * saturates it further. Measured on gotchoices/sereus#13 at a Galaxy S7's crypto cost, a
+ * two-party bring-up failed 3 of 3 runs on stock settings, with 30 `aborting connection
+ * due to ping failure` entries in the relay's log for one run, and passed 4 of 4 in about
+ * 90 seconds once the deadline was widened on every node. The monitor runs on BOTH ends
+ * of a connection and either end's abort closes it for both, so a setting the phone alone
+ * applies does not cover the peer dropping it. That is what rules out scoping this to
+ * React Native.
+ *
+ * WHY `pingInterval` MOVES WITH THE DEADLINE, and is not left at libp2p's 10 seconds.
+ * The monitor opens a ping stream per connection per interval whether or not the previous
+ * ping has answered, and `/ipfs/ping/1.0.0` is registered by `@libp2p/ping` with
+ * `maxOutboundStreams: 1`. A second concurrent ping stream on one connection therefore
+ * fails in `Connection.newStream` with `TooManyOutboundProtocolStreamsError`, which
+ * reaches the monitor's own catch and aborts the connection exactly as a timeout does. A
+ * widened deadline alone is thus capped by the ping interval: measured against two local
+ * libp2p 3.1.3 nodes whose ping handler answered 600ms late, an interval of 300ms with a
+ * 900ms deadline aborted the connection, while a 900ms interval with the same deadline
+ * kept it (the same pair aborted at a 200ms stall only when the deadline was 300ms). An
+ * interval strictly above the deadline is what makes the 30 seconds real.
+ *
+ * WHAT IT COSTS. A dead peer is reclaimed 30 to 65 seconds after it stops answering — the
+ * deadline, plus up to one interval of waiting for the ping that will fail — where
+ * libp2p's defaults took about 5 to 15 seconds. `db-p2p` caps a node at 16 connections,
+ * so the worst case is those slots held about a minute longer than before; at that scale
+ * it is not a starvation risk.
+ *
+ * WHY THE DEADLINE IS PINNED rather than given room to adapt. `pingTimeout` is an
+ * adaptive-timeout init, and equal `minTimeout`/`maxTimeout` clamp it to one value on
+ * every libp2p version. Under libp2p 3.1.3, which sereus resolves today, it is already
+ * flat at `minTimeout`: `ConnectionMonitor` asks its `AdaptiveTimeout` for a deadline but
+ * never calls `cleanUp` to report how long the ping took, so the moving average the
+ * deadline derives from stays at zero. libp2p 3.3 does report ping durations back, and a
+ * ceiling above `pingInterval` would then let the deadline grow past the interval and put
+ * the overlapping-ping abort above straight back. Pinning both ends keeps the interval's
+ * margin true on the version bump instead of making it something to remember. It also
+ * sidesteps 3.3's other surprise: the monitor keeps one `AdaptiveTimeout` for all of a
+ * node's connections, so one slow peer would otherwise lengthen the deadline for every
+ * connection on that node.
+ */
+export const DEFAULT_CONNECTION_MONITOR = Object.freeze({
+  // Strictly greater than the deadline below, so the previous ping is always resolved or
+  // aborted before the next one opens a stream. `types.spec.ts` holds the two apart.
+  pingInterval: 35_000,
+  // Frozen at both levels, as `CONTROL_CLUSTER_POLICY` is: one object reaches every
+  // libp2p node this process builds, so a mutation anywhere would move the deadline
+  // for all of them.
+  pingTimeout: Object.freeze({ minTimeout: 30_000, maxTimeout: 30_000 })
+} satisfies Libp2pConnectionMonitorInit);
+
+/**
  * Hibernation configuration
  */
 export interface HibernationConfig {
@@ -494,12 +645,16 @@ export interface ControlNetworkConfig {
  *
  * The two `*ClusterPolicy` BUILDERS are the same objects with the block-repair
  * corroboration yardstick declared from the machines enrolled in this party
- * ({@link resolveRepairYardstick}); handed no count, each returns its frozen base
- * constant unchanged. A network picks the derived number up when its libp2p node is
- * built, which for a strand is every wake from hibernation.
+ * ({@link resolveRepairYardstick}) and, if the host set one, its own per-peer read
+ * deadline in place of {@link COHORT_READ_DEADLINE_MS}. Both arrive in one named
+ * declarations object, because both are plain numbers meaning unrelated things;
+ * declaring neither returns the frozen base constant unchanged. A network picks the
+ * derived numbers up when its libp2p node is built, which for a strand is every wake
+ * from hibernation.
  */
 export {
   MIN_CLUSTER_SIZE,
+  COHORT_READ_DEADLINE_MS,
   CONTROL_REPLICATION_BREADTH,
   CONTROL_CLUSTER_POLICY,
   DEFAULT_STRAND_CLUSTER_SIZE,
@@ -509,6 +664,14 @@ export {
   controlClusterPolicy,
   strandClusterPolicy
 } from '@serfab/quereus-plugin-sereus';
+
+/**
+ * The declared link round trip every cadre-owned dial and reservation deadline is derived from,
+ * re-exported beside {@link NetworkConfig.linkRoundTripMs} so a host reading the setting finds
+ * the default it replaces. The counts, the measurement and the derivation live in
+ * `link-budget.ts`.
+ */
+export { DECLARED_LINK_ROUND_TRIP_MS } from './link-budget.js';
 
 /**
  * Main configuration for a CadreNode
@@ -643,10 +806,12 @@ export interface CadreNodeConfig {
    * to a table it has never fetched creates a private copy of it that never merges.
    * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
    * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing);
-   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 30 s;
-   * `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is deliberately no way to disable
-   * the gate: a machine that already holds the Header is never gated, so nothing that works
-   * today is blocked by it.
+   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
+   * 120 s — sized for a machine joining through a relay on a slow link; that constant's doc
+   * comment carries the measurement behind the number and what the budget costs, and is the
+   * only copy of it; `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is
+   * deliberately no way to disable the gate: a machine that already holds the Header is never
+   * gated, so nothing that works today is blocked by it.
    */
   strandFirstSync?: StrandFirstSyncConfig;
 
@@ -1223,6 +1388,28 @@ export interface CadreNodeEvents {
    */
   'strand:revoked': { strandId: string };
   /**
+   * Emitted when this node holds a staged membership invitation for a CLOSED strand
+   * that its own writes cannot redeem — the shape a REMOVED party hits when a manager
+   * hands it a fresh invitation. Redeeming means writing this party's `Strand.Member`
+   * row into the strand, and the machines that would carry that write are the ones the
+   * remaining members refuse, so the attempt is made and fails. Two triggers, reported
+   * at most once per re-arm of the membership loop (a further invitation staged while the
+   * loop is still running does not reset the report):
+   *
+   * - CONFIRMED: the revoked-peer gate already flags this node as removed (the
+   *   `strand:revoked` case) and an invitation is staged.
+   * - PROBABLE: `UNFINISHED_PASSES_BEFORE_ESCALATION` consecutive attempts left the
+   *   invitation staged. This one is a SUSPICION, not a verdict — the invitation's row
+   *   may simply not have replicated here yet on a slow strand — and the accompanying
+   *   warning names both causes.
+   *
+   * Nothing is stopped or torn down. A fresh invitation cannot re-admit a removed
+   * party by itself: the remedy is a remaining manager admitting this party's member
+   * key directly (`addMemberByManager`), after which the membership loop, which keeps
+   * retrying, finishes the join on its own.
+   */
+  'strand:rejoin-blocked': { strandId: string };
+  /**
    * Emitted when the control network advertises a strand this node has no
    * registered `sAppConfig` for — i.e. a strand created by another member, or
    * one this node ran in a previous session (sApp configs are in-memory only and
@@ -1231,13 +1418,19 @@ export interface CadreNodeEvents {
    * Carries the full {@link StrandRow} so the app can join without re-querying
    * the control DB.
    *
-   * **Fired exactly ONCE per strand per session, and it can fire before your
-   * listener is attached.** The strand watcher's first poll runs inside
-   * `CadreNode.start()` (100 ms after the watcher starts), so every strand
-   * already stored for this party is normally offered while the embedding app is
-   * still inside its own `start()` await. The watcher then records the strand as
-   * seen and no later poll re-offers it, so a listener attached a moment late
-   * misses those strands for the life of the process.
+   * **Fired once per strand per session, and it can fire before your listener is
+   * attached.** The strand watcher's first poll runs inside `CadreNode.start()`
+   * (100 ms after the watcher starts), so every strand already stored for this
+   * party is normally offered while the embedding app is still inside its own
+   * `start()` await. The watcher then records the strand as seen and no later poll
+   * re-offers it, so a listener attached a moment late misses those strands for the
+   * life of the process.
+   *
+   * One exception, and it does NOT produce a second event: when an `addStrand` that
+   * claims a discovered strand FAILS, the watcher is told to forget the strand so a
+   * later poll retries it. That claim left the sApp config registered, so the retry
+   * takes the auto-launch branch — what the app sees is `strand:error` per failed
+   * retry and `strand:started` when one succeeds.
    *
    * So an app that auto-joins discovered strands must **subscribe first, then
    * drain `CadreNode.getDiscoveredStrands()`** — the map of strands no local

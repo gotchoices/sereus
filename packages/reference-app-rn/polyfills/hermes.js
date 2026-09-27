@@ -325,15 +325,19 @@ if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'functi
 
 // The listeners this attaches come back off the inputs when the combined signal aborts.
 // `{ once: true }` only removes the listener that actually fired, and callers combine a
-// long-lived signal with a short-lived one — `p-wait-for` (pulled in by libp2p,
-// @libp2p/websockets, @libp2p/circuit-relay-v2, @libp2p/webrtc and @libp2p/tcp) pairs
-// the caller's signal with an `AbortSignal.timeout`, which always fires.
+// long-lived signal with a short-lived one — `p-wait-for` (shipped code reaches it only
+// through @libp2p/webrtc's private-to-public listener; libp2p, @libp2p/websockets,
+// @libp2p/circuit-relay-v2 and @libp2p/tcp list it as a devDependency, so it is absent from
+// their dist) pairs the caller's signal with an `AbortSignal.timeout`, which always fires.
 //
-// A combination whose inputs NEVER abort keeps its listeners for as long as the inputs
-// live: the DOM holds dependent signals weakly, and Hermes gives this no hook to do the
-// same. Optimystic's repo client (../optimystic/packages/db-p2p/src/repo/client.ts)
-// hits this on every RPC that succeeds — its deadline controller is cleared, not
-// aborted — see backlog ticket bug-abortsignal-any-leaks-listeners-on-hermes.
+// NOTE: a combination whose inputs ALL fail to abort keeps its listeners for as long as
+// the inputs live: the DOM holds dependent signals weakly, and Hermes gives this no hook
+// to do the same. No caller does that today — `p-wait-for` is the only dependency that
+// calls `AbortSignal.any`, and it always pairs with an `AbortSignal.timeout`. If one ever
+// does, fix it at that call site — an explicit combination it can release, as optimystic's
+// repo client and quereus's `combineAbortSignals` do — not here: this has no way to learn
+// a combination is finished. First-party source is kept off `AbortSignal.any` by
+// `PHONE_RUNTIME_GUARD` in eslint.config.mjs.
 
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any !== 'function') {
 	AbortSignal.any = function any(signals) {

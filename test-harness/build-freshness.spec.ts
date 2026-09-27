@@ -21,7 +21,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, findWorkspaceRoot, resolveLinkedPackage, resolveLinkedPackageFrom, type BuildTarget } from './build-freshness.js';
+import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, findWorkspaceRoot, resolveLinkedPackage, resolveLinkedPackageFrom, type BuildTarget, type LinkedPackage } from './build-freshness.js';
+import { linkedResolutions } from './build-targets.js';
 
 const DIST_ENTRY = 'dist/index.js';
 /** Seconds since epoch; `dist` sits between OLD and NEW so either side can win. */
@@ -504,30 +505,50 @@ describe('node_modules chain', () => {
  * `reference-app-web` sets `installConfig.hoistingLimits: "workspaces"`, so it
  * has a `node_modules` of its own, and both directions have to work from there:
  * a sibling it carries locally, and one it does not.
+ *
+ * Both cases are written for either install shape, because `yarn check:published`
+ * runs this suite in a worktree with the root `resolutions` block deleted, where
+ * every sibling comes from the registry instead. What the registry branch cannot
+ * observe is which `node_modules` answered: `not-linked` says a real directory
+ * was found first and nothing more, so the walk itself is pinned only by the
+ * temp-directory fixture above. That is the intended division — the fixture pins
+ * the algorithm, and these two cases pin that a real `yarn install` produces the
+ * layout the algorithm was written for. When nothing is linked there is no such
+ * layout to pin, and the most they can still say is that the dependency is
+ * installed and the walk reaches it.
  */
 describe('node_modules chain, on this checkout', () => {
 	const repoRoot = findWorkspaceRoot(dirname(fileURLToPath(import.meta.url)));
 	if (repoRoot === undefined) throw new Error('build-freshness.spec.ts is not inside the monorepo');
 
 	const webSuite = join(repoRoot, 'packages', 'reference-app-web', 'test');
+	const linked = linkedResolutions(repoRoot);
 	const linkedAt = (...segments: string[]): string => realpathSync(join(...segments));
+
+	/**
+	 * Asserts what the walk finds for `name`, given where a linked install puts its
+	 * junction (`segments`, below the repo root). `linkedAt` resolves that path only
+	 * on the linked branch — on the other one there is no junction there to resolve.
+	 */
+	const expectResolves = (name: string, ...segments: string[]): void => {
+		const expected: LinkedPackage = linked.has(name)
+			? { status: 'linked', root: linkedAt(repoRoot, ...segments) }
+			: { status: 'not-linked' };
+
+		expect(resolveLinkedPackageFrom(webSuite, name)).toEqual(expected);
+	};
 
 	it('resolves a sibling the app keeps in its own node_modules', () => {
 		// Both this and the repo root link to the same working copy, so the root
 		// alone does not say which directory won — what it does exercise is the
 		// real junction yarn wrote, from the real suite directory.
-		const local = linkedAt(repoRoot, 'packages', 'reference-app-web', 'node_modules', '@optimystic', 'db-core');
-
-		expect(resolveLinkedPackageFrom(webSuite, '@optimystic/db-core')).toEqual({ status: 'linked', root: local });
+		expectResolves('@optimystic/db-core', 'packages', 'reference-app-web', 'node_modules', '@optimystic', 'db-core');
 	});
 
 	it('carries on to the repo root for a sibling the app does not keep locally', () => {
 		// `@optimystic/quereus-plugin-crypto` is linked at the root and absent from
 		// the app's own `node_modules` today. If that stops being true this fails;
 		// the fix is another root-only sibling — the case is about the walk.
-		const hoisted = linkedAt(repoRoot, 'node_modules', '@optimystic', 'quereus-plugin-crypto');
-
-		expect(resolveLinkedPackageFrom(webSuite, '@optimystic/quereus-plugin-crypto'))
-			.toEqual({ status: 'linked', root: hoisted });
+		expectResolves('@optimystic/quereus-plugin-crypto', 'node_modules', '@optimystic', 'quereus-plugin-crypto');
 	});
 });

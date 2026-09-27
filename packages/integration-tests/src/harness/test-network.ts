@@ -238,6 +238,14 @@ export class TestCadreNetwork {
    * drone has converged. That is sufficient for the current scenarios; proving
    * drone-side convergence would require standing up a `ControlDatabase` on a
    * drone node and polling it here as well.
+   *
+   * NOTE: this counts the WHOLE table, so callers that follow it with a per-key
+   * assertion (`countFormationUsage(token)` in multi-party-sync and
+   * strand-creation) are relying on every row in that party's table belonging to
+   * the one key under test. True today — each scenario gives its party one invite
+   * — but the moment a scenario records usages for two tokens in one party, this
+   * wait is satisfiable by the wrong rows and stops gating the assertion behind
+   * it. Give this a per-key variant then, rather than raising the expected count.
    */
   async waitForControlSync(
     party: TestParty,
