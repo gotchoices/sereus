@@ -165,6 +165,7 @@ vi.mock('../../src/cadre-phone', () => ({
     h.ctl.node = null;
   }),
   getOwnerPublicKey: () => (h.ctl.node ? `authpub-${h.ctl.node.id}` : null),
+  getNoiseCryptoMode: () => (h.ctl.node ? 'symmetric' : null),
   // Live read in production; here, whatever the test set. `vi.fn` so a test can also
   // assert the guard read it at the moment of the tap rather than off cached state.
   getRelayState: vi.fn(() => h.ctl.relay),

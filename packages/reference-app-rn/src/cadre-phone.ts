@@ -53,6 +53,8 @@ import {
 } from './node-local-slots';
 import { loadIceConfig } from './ice-config';
 import { buildPhoneNodeConfig, runOwnerGenesis, type PhoneNodeOptions } from './phone-node-config';
+import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
+import { defaultNoiseCryptoMode } from './noise-crypto-config';
 
 export type { PhoneNodeOptions };
 
@@ -136,6 +138,13 @@ const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, SECURE_STORE_OPT
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let node: CadreNode | null = null;
+
+/**
+ * The Noise crypto mode {@link node} was built with, recorded here rather than read
+ * back out of cadre-core, which keeps only the implementation. Null while no node is
+ * running.
+ */
+let nodeNoiseCryptoMode: NoiseCryptoMode | null = null;
 
 /**
  * The {@link NODE_LOCAL_DB_NAME} LevelDB handle backing the bootstrap-peer
@@ -241,8 +250,11 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // of re-fetching per resume.
   const iceServers = await loadIceConfig({ signer: peerKeySigner(identityKey) });
 
+  const noiseCryptoMode = opts.noiseCryptoMode ?? defaultNoiseCryptoMode();
   node = new CadreNode(buildPhoneNodeConfig({
     ...opts,
+    // `undefined` for 'off', which leaves libp2p-noise's stock pure-JS crypto.
+    noiseCrypto: buildNoiseCrypto(noiseCryptoMode),
     // Identity comes from the secure enclave (see `keyStore` above).
     keyStore,
     storageProvider: createStorage,
@@ -263,6 +275,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     bootstrapPeerStore,
     enrolledMachineStore,
   }));
+  nodeNoiseCryptoMode = noiseCryptoMode;
   await node.start();
   // NOTE: this await is unbounded — runOwnerGenesis is fail-SOFT (it catches
   // errors) but a control call that never settles would wedge startPhoneNode
@@ -312,6 +325,14 @@ function initializeFormationResponder(cadre: CadreNode): void {
 }
 
 /**
+ * The Noise crypto mode the running node was built with, for the Settings Node card
+ * to show what a device run is measuring. Null before start and after stop.
+ */
+export function getNoiseCryptoMode(): NoiseCryptoMode | null {
+  return nodeNoiseCryptoMode;
+}
+
+/**
  * The node's owner **public** key (base64url) for out-of-band pairing /
  * enrollment. Derived from the secure-stored identity (single-key model), so it
  * is the same value an enrolling cadre pins as a trust anchor. Returns null
@@ -340,6 +361,7 @@ export async function stopPhoneNode(): Promise<void> {
   // and its next bootstrap-peer write would fail on a closed handle.
   const stopping = node;
   node = null;
+  nodeNoiseCryptoMode = null;
   try {
     if (stopping) await stopping.stop();
   } finally {

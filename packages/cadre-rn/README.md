@@ -100,6 +100,8 @@ Every mode starts from `noisePureJsCrypto` and overrides only its own functions,
 
 cadre-core reads `network.noiseCrypto` only when it builds the node. Changing the mode means stopping the node and starting a new one.
 
+The reference app (`packages/reference-app-rn`) is the worked example: it takes the mode as a start option, defaults it from a build-time `EXPO_PUBLIC_NOISE_CRYPTO`, offers the three modes in its Settings screen, and shows the running node's mode on the Node card. [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#phone-rn-app-configuration) walks through it.
+
 ### What the app must install
 
 React Native links native modules only for the app's own direct dependencies, so the app lists these in its `package.json`:

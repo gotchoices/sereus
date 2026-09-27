@@ -18,7 +18,10 @@ import type {
 	KeyStore,
 	TrustedOwnerStore,
 } from '@serfab/cadre-core';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+// Type-only: the module itself loads react-native-quick-crypto, which this file's
+// Node tests cannot. `cadre-phone.ts` does the runtime import.
+import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 
 export interface PhoneNodeOptions {
 	/** Party ID — identifies this cadre. Generated on first run. */
@@ -35,10 +38,21 @@ export interface PhoneNodeOptions {
 	 * nothing persists start options yet (backlog `feat-rn-persist-node-start-options`).
 	 */
 	relayAddrs: string[];
+	/**
+	 * How much of Noise's crypto runs natively. Absent means the build's default
+	 * (`noise-crypto-config.ts`). Like `relayAddrs`, read only when the node is built,
+	 * so changing it means stopping the node and starting a new one.
+	 */
+	noiseCryptoMode?: NoiseCryptoMode;
 }
 
 /** What {@link buildPhoneNodeConfig} takes from the platform wiring. */
 export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
+	/**
+	 * The Noise crypto implementation `cadre-phone.ts` resolved from `noiseCryptoMode`.
+	 * `undefined` keeps libp2p-noise's pure-JavaScript default.
+	 */
+	noiseCrypto?: NoiseCryptoInterface;
 	/** Holds the node identity; the node loads it on start, generating it on first run. */
 	keyStore: KeyStore;
 	/**
@@ -112,6 +126,12 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// node goes to `status: 'error'` with the message under the Node card) so the
 			// field can be corrected and Connect retried.
 			requireRelay: false,
+			// Native SHA-256 / ChaCha20-Poly1305 (and X25519 in `full` mode) for Noise, in
+			// place of the pure-JavaScript crypto Metro's browser build of libp2p-noise
+			// carries. cadre-core hands it to the control node and every strand node. Only
+			// local primitives change, not the wire protocol, so the phone still talks to
+			// nodes without it.
+			noiseCrypto: inputs.noiseCrypto,
 			// Permissive dial gater, for the same reason the web reference app sets one
 			// (`reference-app-web/src/lib/cadre-web.ts`). libp2p's `connection-gater`
 			// package points its `react-native` field at the BROWSER build, which refuses

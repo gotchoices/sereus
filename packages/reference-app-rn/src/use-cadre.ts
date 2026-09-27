@@ -20,6 +20,7 @@ import {
   stopPhoneNode,
   getPhoneNode,
   getOwnerPublicKey,
+  getNoiseCryptoMode,
   getRelayState,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
@@ -27,6 +28,7 @@ import {
   formStrand,
   type PhoneNodeOptions,
 } from './cadre-phone';
+import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import {
   createChatStrand,
   joinChatStrand,
@@ -130,6 +132,11 @@ export interface UseCadreResult {
    * pairing / enrollment. Null until connected. Never carries private material.
    */
   ownerPublicKey: string | null;
+  /**
+   * The Noise crypto mode the running node was built with (the `noiseCryptoMode`
+   * start option, or the build default when that was absent). Null until connected.
+   */
+  noiseCryptoMode: NoiseCryptoMode | null;
   /** Active strand instances */
   strands: Map<string, StrandInstance>;
   /** Explicitly selected strand id (null = use the deterministic default). */
@@ -209,6 +216,9 @@ export function useCadreInternal(): UseCadreResult {
   );
   const [ownerPublicKey, setOwnerPublicKey] = useState<string | null>(
     () => getOwnerPublicKey(),
+  );
+  const [noiseCryptoMode, setNoiseCryptoMode] = useState<NoiseCryptoMode | null>(
+    () => getNoiseCryptoMode(),
   );
   const [strands, setStrands] = useState<Map<string, StrandInstance>>(
     () => getPhoneNode()?.getStrands() ?? new Map(),
@@ -363,6 +373,7 @@ export function useCadreInternal(): UseCadreResult {
     nodeRef.current = started;
     setPeerId(started.peerId?.toString() ?? null);
     setOwnerPublicKey(getOwnerPublicKey());
+    setNoiseCryptoMode(getNoiseCryptoMode());
     setStrands(new Map(started.getStrands()));
   }, []);
 
@@ -425,6 +436,7 @@ export function useCadreInternal(): UseCadreResult {
       nodeRef.current = started;
       setPeerId(started.peerId?.toString() ?? null);
       setOwnerPublicKey(getOwnerPublicKey());
+      setNoiseCryptoMode(getNoiseCryptoMode());
       setStrands(new Map(started.getStrands()));
       setStatus('connected');
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
@@ -458,6 +470,7 @@ export function useCadreInternal(): UseCadreResult {
     nodeRef.current = null;
     setPeerId(null);
     setOwnerPublicKey(null);
+    setNoiseCryptoMode(null);
     setStrands(new Map());
     setSelectedStrandId(null);
     setStatus('idle');
@@ -600,7 +613,7 @@ export function useCadreInternal(): UseCadreResult {
   }, []);
 
   return {
-    status, node, peerId, ownerPublicKey, strands,
+    status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded, relayStatus,
     start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,

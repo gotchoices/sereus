@@ -5345,6 +5345,9 @@ __metadata:
     react: "npm:19.0.0"
     react-native: "npm:0.79.6"
     react-native-get-random-values: "npm:^1.11.0"
+    react-native-nitro-modules: "npm:^0.37.1"
+    react-native-quick-base64: "npm:^3.0.1"
+    react-native-quick-crypto: "npm:^1.1.7"
     react-native-safe-area-context: "npm:5.4.0"
     react-native-screens: "npm:~4.11.0"
     react-native-webrtc: "npm:^124.0.6"
@@ -14023,7 +14026,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-native-quick-base64@npm:^3.0.0":
+"react-native-nitro-modules@npm:^0.37.1":
+  version: 0.37.1
+  resolution: "react-native-nitro-modules@npm:0.37.1"
+  peerDependencies:
+    react: "*"
+    react-native: "*"
+  checksum: 10c0/5178f2ee891cb746b084fdf382b6020e366d8e4a81922a3f1d60a453d34fca6ebb1b00c4c28785c36385bc182ab76a30cba70441c39abbc25d3ad54db612e46e
+  languageName: node
+  linkType: hard
+
+"react-native-quick-base64@npm:^3.0.0, react-native-quick-base64@npm:^3.0.1":
   version: 3.0.1
   resolution: "react-native-quick-base64@npm:3.0.1"
   peerDependencies:

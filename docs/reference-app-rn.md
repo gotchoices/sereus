@@ -112,6 +112,7 @@ network: {
   listenAddrs: [],              // Cannot listen in RN
   relayAddrs: [...],            // Resolved by src/relay-config.ts; may be empty
   requireRelay: false,          // Must still start when the relay is down
+  noiseCrypto: buildNoiseCrypto(mode), // Native Noise crypto; undefined in 'off' mode
   connectionGater: { denyDialMultiaddr: () => false },
 }
 ```
@@ -120,9 +121,24 @@ network: {
 
 `denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
 
-**Native crypto for Noise (not wired yet).** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so every handshake and every encrypted frame runs pure-JS SHA-256 and ChaCha20-Poly1305 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). `CadreNodeConfig.network.noiseCrypto` takes a replacement, and cadre-core hands it to the control node and every strand node. It must implement the whole interface; spread `noisePureJsCrypto` (exported by `@optimystic/db-p2p`) and override `hashSHA256`, `chaCha20Poly1305Encrypt` and `chaCha20Poly1305Decrypt` with native functions. The wire protocol is unchanged, so a phone with native crypto still talks to nodes without it. `buildNoiseCrypto` in `@serfab/cadre-rn/noise-crypto` builds that replacement from `react-native-quick-crypto` (see [its README](../packages/cadre-rn/README.md) for the modes and the native modules an app must list). This app does not set it yet.
+**Native crypto for Noise.** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so on its own every handshake and every encrypted frame runs pure-JS SHA-256, ChaCha20-Poly1305 and X25519 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). SHA-256 over 512 bytes was measured at about 15 ms on a Galaxy S7, and at that cost the phone's event loop stays busy for long enough that libp2p's connection monitor drops connections (gotchoices/sereus#13). `cadre-phone.ts` therefore passes `buildNoiseCrypto(mode)` from `@serfab/cadre-rn/noise-crypto` as `CadreNodeConfig.network.noiseCrypto`, and cadre-core hands it to the control node and every strand node. The implementation is backed by `react-native-quick-crypto`; [the kit's README](../packages/cadre-rn/README.md) has the measurements and the native modules an app must list. Only local primitives change, not the wire protocol, so a phone with native crypto still talks to nodes without it.
 
-**The ping deadline is already widened, for every node.** While the phone runs pure-JS crypto its event loop can stay busy for longer than libp2p's 5 second liveness-ping deadline, and libp2p aborts a connection on the first missed ping. Each redial costs another handshake, which keeps the phone busy — measured on a Galaxy S7's crypto cost, a two-party bring-up never finished. cadre-core therefore defaults `network.connectionMonitor` to a 30 second deadline, pinged every 35 seconds, on every node it builds (`DEFAULT_CONNECTION_MONITOR`), not only under React Native: the peer at the other end of the connection runs the monitor too, and its abort closes the connection just as effectively. The gap between pings has to exceed the deadline, or libp2p starts a second ping over the same connection while the first is still waiting and drops the connection for that instead. This app sets nothing for it.
+| Mode | What runs natively | Settings label |
+| --- | --- | --- |
+| `symmetric` (default) | SHA-256 and ChaCha20-Poly1305, the costs paid on every frame. X25519 stays pure JavaScript | Native, symmetric only |
+| `full` | Also X25519 key generation and Diffie-Hellman, the handshake's key agreement. It has had less device time than `symmetric` | Native, including key exchange |
+| `off` | Nothing: `noiseCrypto` is `undefined`, which is stock libp2p-noise. Kept to reproduce the connection-monitor timeouts | Pure JavaScript |
+
+Every mode but `off` starts from optimystic's `noisePureJsCrypto` and overrides only its own functions, so anything it does not replace keeps working. The mode is a start option (`PhoneNodeOptions.noiseCryptoMode`), read when the node is built, as `relayAddrs` is. Two places set it:
+
+| source | how | when to use it |
+| --- | --- | --- |
+| `EXPO_PUBLIC_NOISE_CRYPTO` | build-time env var: `off`, `symmetric` or `full`, read by [`src/noise-crypto-config.ts`](../packages/reference-app-rn/src/noise-crypto-config.ts). Unset or blank means `symmetric`, the kit's `DEFAULT_NOISE_CRYPTO_MODE`. Any other value throws an error naming the three, because silently running a different mode would corrupt the measurement the switch exists for | a build that should start in another mode |
+| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, beside **Relay**, prefilled from the env var | switching one device between modes |
+
+Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or host-node request in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
+
+**The ping deadline is already widened, for every node.** While the phone runs pure-JS crypto (`off` mode, or any build before the native crypto above) its event loop can stay busy for longer than libp2p's 5 second liveness-ping deadline, and libp2p aborts a connection on the first missed ping. Each redial costs another handshake, which keeps the phone busy — measured on a Galaxy S7's crypto cost, a two-party bring-up never finished. cadre-core therefore defaults `network.connectionMonitor` to a 30 second deadline, pinged every 35 seconds, on every node it builds (`DEFAULT_CONNECTION_MONITOR`), not only under React Native: the peer at the other end of the connection runs the monitor too, and its abort closes the connection just as effectively. The gap between pings has to exceed the deadline, or libp2p starts a second ping over the same connection while the first is still waiting and drops the connection for that instead. This app sets nothing for it.
 
 **The first-sync wait is widened for the same reason, also for every node.** A phone that has just redeemed an invitation holds none of the strand's data, so cadre-core withholds the strand database until that data arrives from another member and rejects `addStrand` with the retryable `StrandAwaitingFirstSyncError` if it has not arrived within `strandFirstSync.timeoutMs` (see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync)). Through a relay on a slow link that first sync is not quick: on a measured path with a round trip of a couple of seconds it takes tens of seconds, not the second or two a direct connection takes. cadre-core therefore defaults the wait to **120 seconds** (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, whose doc comment carries the measurement and what the budget costs). This app sets nothing for it. The chat screens re-render on `strand:writable` ([`use-cadre.ts`](../packages/reference-app-rn/src/use-cadre.ts)), so a sync that lands after any budget still opens the screen — but [`joinClosedChatStrand`](../packages/reference-app-rn/src/chat-strand.ts) writes the joiner's app-level role right after `addStrand` resolves, so a join that times out has to be retried before that role exists.
 
@@ -387,6 +403,8 @@ packages/reference-app-rn/
     push-wake-native.ts       # Expo notifications wiring for push-wake
     connection-status.ts      # Derives UI connection state from node events
     ice-config.ts             # STUN/TURN servers from the runtime manifest
+    relay-config.ts           # Relay multiaddr(s): Settings field, else EXPO_PUBLIC_RELAY_ADDR
+    noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
@@ -420,13 +438,16 @@ packages/cadre-rn/metro/
 | Package | Source | Purpose |
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
-| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration) |
+| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration); native Noise crypto (§ Phone (RN app) Configuration) |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
 | `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |
 | `@libp2p/websockets` | npm | WebSocket transport |
 | `@libp2p/circuit-relay-v2` | npm | Circuit relay transport |
 | `rn-leveldb` | npm | Native KV store (requires native compilation) |
+| `react-native-quick-crypto` | npm | Native SHA-256, ChaCha20-Poly1305 and X25519 behind `@serfab/cadre-rn/noise-crypto`. 1.x needs the new architecture (`newArchEnabled` in `app.json`) and React Native 0.75 or newer; listed under `app.json` `plugins` as its Expo instructions produce (the plugin raises the iOS deployment target) |
+| `react-native-nitro-modules` | npm | quick-crypto's native bridge; must be a direct dependency for autolinking. Its podspec and C++ carry explicit branches for React Native below 0.80, so 0.79 is handled |
+| `react-native-quick-base64` | npm | quick-crypto peer; 3.x is a new-architecture TurboModule, supported on Expo 53 with the new architecture enabled |
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
 | `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
@@ -783,7 +804,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency version changes. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 
