@@ -317,7 +317,7 @@ reference-app-rn/
 │   ├── use-chat.ts         #   React hook: message polling & send
 │   ├── chat-strand.ts      #   Strand creation with embedded chat schema
 │   └── chat-operations.ts  #   SQL helpers (insert/query participants & messages)
-├── polyfills/              # Hermes runtime polyfills (see "Hermes Polyfills" section below)
+├── polyfills/              # Node built-in shims for Metro (see "Hermes Polyfills" section below)
 ├── drone.cadre.yaml        # Drone server config for local development
 ├── metro.config.js         # Bundler config (workspace symlinks + Node.js polyfills)
 └── app.json                # Expo app manifest
@@ -335,14 +335,16 @@ reference-app-rn/
 
 ## Hermes Polyfills
 
-React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fast but missing many Web/Node.js APIs that libp2p, Optimystic, and their dependencies expect. This app ships a set of polyfills in `polyfills/` that **must be imported before any library code** — see `index.js`.
+React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fast but missing many Web/Node.js APIs that libp2p, Optimystic, and their dependencies expect. The global polyfills ship in the kit [`@serfab/cadre-rn`](../cadre-rn/README.md), and `@serfab/cadre-rn/polyfills` **must be imported before any library code** — see `index.js`. This app's own `polyfills/` holds only the Node built-in shims Metro maps.
 
 ### How it works
 
-1. **`index.js`** imports polyfills in order, then hands off to Expo Router
+1. **`index.js`** imports `@serfab/cadre-rn/polyfills`, then `@serfab/cadre-rn/polyfills/webrtc`, then `@serfab/cadre-rn/boot-check` (the development-build audit table and reload logger), then hands off to Expo Router
 2. **`metro.config.js`** maps Node.js built-in modules (`node:crypto`, `node:os`) to local shim files via `extraNodeModules`, and rewrites `@libp2p/crypto`'s Node files to their `.browser.js` variants (see *libp2p/crypto Node → browser rewrite* below)
 
 ### Polyfill inventory
+
+Files without a path are in `packages/cadre-rn/polyfills/`; the last three are in this app's `polyfills/`.
 
 | File | What it polyfills | Required by |
 |------|-------------------|-------------|
@@ -357,6 +359,7 @@ React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fa
 | `hermes.js` | Timer `.ref()` / `.unref()` wrappers | @optimystic/db-p2p, undici, libp2p internals |
 | `event.js` | `EventTarget`, `Event` (via `event-target-polyfill` npm), `CustomEvent` (inline) | libp2p, @libp2p/interface |
 | `intl-pluralrules.js` | `Intl.PluralRules` (English-only) | moat-maker (error messages) |
+| `webrtc.js` | `RTCPeerConnection` and the rest of `react-native-webrtc`'s globals | @libp2p/webrtc (private-to-public `browser` variants) |
 | `node-crypto.js` | `createHash()` (sha256, sha512) | multiformats/hashes/sha2 (Node variant), @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
 | `node-os.js` | `networkInterfaces()`, `platform()`, etc. | @libp2p/utils (network detection) |
 | `empty.js` | `net`, `tls` empty stubs | libp2p transitive imports — never reached at RN runtime, but must resolve so the bundle builds |
@@ -365,9 +368,9 @@ React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fa
 
 When adding a new dependency, watch for runtime errors like `Property 'X' doesn't exist` or `TypeError: X is not a function` — these typically mean Hermes is missing an API. The fix is:
 
-1. **Global API** (e.g., `structuredClone`, `Promise.withResolvers`): add to `polyfills/hermes.js`
+1. **Global API** (e.g., `structuredClone`, `Promise.withResolvers`): add to `@serfab/cadre-rn`'s `polyfills/hermes.js`
 2. **Node.js built-in module** (e.g., `crypto`, `os`): create a shim file in `polyfills/` and map it in `metro.config.js` under `extraNodeModules`
-3. **Web API class** (e.g., `EventTarget`): add to `polyfills/event.js` or a new file, import from `index.js`
+3. **Web API class** (e.g., `EventTarget`): add to `@serfab/cadre-rn`'s `polyfills/event.js`, or a new file there imported from its `polyfills/index.js`
 
 Always guard with `typeof` checks so the polyfill is skipped on platforms that have native support.
 
@@ -386,7 +389,7 @@ These APIs are natively available in the target Hermes/Expo versions used by thi
 | API | Available since | Notes |
 |-----|----------------|-------|
 | `TextEncoder` | Hermes (all versions used by Expo SDK 49+) | No polyfill needed; `fast-text-encoding` is unnecessary |
-| `TextDecoder` | Expo SDK 52+ (UTF-8 only) | If you need non-UTF-8 encodings, use `text-encoding` package. **Bare RN** (non-Expo) Hermes through at least 0.85 does NOT ship `TextDecoder`; `polyfills/hermes.js` includes a UTF-8-only fallback (guarded by `typeof` so it's a no-op under Expo) |
+| `TextDecoder` | Expo SDK 52+ (UTF-8 only) | If you need non-UTF-8 encodings, use `text-encoding` package. **Bare RN** (non-Expo) Hermes through at least 0.85 does NOT ship `TextDecoder`; `@serfab/cadre-rn`'s `polyfills/hermes.js` includes a UTF-8-only fallback (guarded by `typeof` so it's a no-op under Expo) |
 | `BigInt` | Hermes since RN 0.70 | |
 | `crypto.getRandomValues` | RN 0.76+ with New Architecture | `react-native-get-random-values` still recommended as safety net |
 
@@ -430,6 +433,6 @@ See the [cadre-cli README](../cadre-cli/README.md) for production deployment opt
 
 **Metro bundler errors** — Run `yarn install` from the monorepo root to ensure workspace symlinks are intact. The Metro config watches `sereus/`, `optimystic/`, and `quereus/` workspaces.
 
-**"Property 'structuredClone' doesn't exist"** — Hermes doesn't ship `structuredClone`, which Optimystic uses for defensive deep cloning. The `polyfills/hermes.js` shim provides a spec-compliant polyfill via `@ungap/structured-clone` (handles Date, Map, Set, circular refs). If you see this error, make sure `index.js` imports `./polyfills/hermes` before any library code, then restart Metro with `--reset-cache`.
+**"Property 'structuredClone' doesn't exist"** — Hermes doesn't ship `structuredClone`, which Optimystic uses for defensive deep cloning. `@serfab/cadre-rn`'s `polyfills/hermes.js` provides a spec-compliant polyfill via `@ungap/structured-clone` (handles Date, Map, Set, circular refs). If you see this error, make sure `index.js` imports `@serfab/cadre-rn/polyfills` before any library code, then restart Metro with `--reset-cache`.
 
-**"stabilize tick failed: TypeError: Cannot read properties of undefined (reading 'digest')"** — The `multiformats` package ships a browser variant of its SHA-2 hasher that calls `crypto.subtle.digest()`, which Hermes doesn't support. The `polyfills/hermes.js` shim provides a `crypto.subtle.digest` backed by `@noble/hashes`. If you see this error, restart Metro with `--reset-cache`.
+**"stabilize tick failed: TypeError: Cannot read properties of undefined (reading 'digest')"** — The `multiformats` package ships a browser variant of its SHA-2 hasher that calls `crypto.subtle.digest()`, which Hermes doesn't support. `@serfab/cadre-rn`'s `polyfills/hermes.js` provides a `crypto.subtle.digest` backed by `@noble/hashes`. If you see this error, restart Metro with `--reset-cache`.

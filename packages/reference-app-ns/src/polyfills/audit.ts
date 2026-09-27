@@ -34,7 +34,7 @@ const PROBES: readonly Probe[] = [
 	{ path: 'structuredClone', key: 'structuredClone' },
 	{ path: 'WebSocket' },
 	// NOTE: read off the prototype; if the plugin ever ships a real accessor that throws
-	// without an instance, catch it in resolve() as reference-app-rn/polyfills/audit.js does.
+	// without an instance, catch it in resolve() as cadre-rn/polyfills/audit.js does.
 	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
 	{ path: 'ReadableStream', key: 'ReadableStream' },
 	{ path: 'WritableStream', key: 'ReadableStream' },

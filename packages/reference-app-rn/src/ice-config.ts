@@ -28,7 +28,7 @@
  * `AbortController` is present in Hermes/RN 0.79; no polyfill is needed.
  * Do NOT use `AbortSignal.timeout` — use explicit `setTimeout` + `clearTimeout`.
  * `crypto.getRandomValues` comes from the `react-native-get-random-values` polyfill
- * loaded in `polyfills/hermes.js` (only `getRandomValues`, NOT `randomUUID` — see
+ * loaded by `@serfab/cadre-rn/polyfills` (only `getRandomValues`, NOT `randomUUID` — see
  * `uuid.ts`).
  *
  * Policy: STUN-first, TURN off by default. Any failure (no URL, network error,

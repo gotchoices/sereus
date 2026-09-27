@@ -29,7 +29,8 @@
  *
  * `AbortController` / `AbortSignal` are the real ones the phone gets: React Native's
  * `Libraries/Core/setUpXHR.js` installs `abort-controller@3.0.0` over whatever the
- * engine had, so this requires that same module and injects it. Evaluating the polyfill
+ * engine had, so this requires that same release (a devDependency of this package,
+ * pinned to 3.0.0) and injects it. Evaluating the polyfill
  * patches those classes — which is the point — and that mutation is visible to anything
  * else in this Vitest worker that requires `abort-controller`. Nothing else does.
  *
@@ -46,12 +47,38 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appDir, resolvePackageDir } from './metro-resolution';
+
+/** This package's root — two levels up from test/polyfills. */
+const kitDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * Where Yarn installs this package's dependencies: its own `node_modules`, or the repo
+ * root's when hoisted.
+ */
+const NODE_MODULES_ROOTS = [join(kitDir, 'node_modules'), join(kitDir, '..', '..', 'node_modules')];
+
+/**
+ * The directory of an installed dependency, for reading a file its `exports` map does not
+ * list (so neither `require.resolve` nor a bare import can reach it).
+ *
+ * @throws if neither root holds it — a spec that silently stopped checking anything is
+ * worse than one that fails.
+ */
+function resolvePackageDir(packageName: string): string {
+	for (const root of NODE_MODULES_ROOTS) {
+		const dir = join(root, packageName);
+		if (existsSync(join(dir, 'package.json'))) return dir;
+	}
+	throw new Error(
+		`${packageName} is not installed under ${NODE_MODULES_ROOTS.join(' or ')}. It is a devDependency of `
+		+ 'this package; run `yarn install`.',
+	);
+}
 
 // ── Shapes of the injected and imported values ──────────────────────────────
 
@@ -158,33 +185,43 @@ function makeHermesPromiseClass(): PromiseConstructor {
 	return HermesPromise as unknown as PromiseConstructor;
 }
 
+/** `Promise` once the polyfill has run. This package's ES2022 lib does not declare the ES2024 static. */
+interface PolyfilledPromiseCtor extends PromiseConstructor {
+	withResolvers<T>(): {
+		promise: Promise<T>;
+		resolve: (value: T | PromiseLike<T>) => void;
+		reject: (reason?: unknown) => void;
+	};
+}
+
 /** What one evaluation of the polyfill produced, for the assertions to read. */
 interface PolyfillRun {
 	globals: Record<string, unknown>;
 	WebSocket: WebSocketCtor;
 	AbortController: AbortControllerCtor;
 	AbortSignal: AbortSignalCtor;
-	Promise: PromiseConstructor;
+	Promise: PolyfilledPromiseCtor;
 	env: Record<string, string | undefined>;
 	/** registry keys the polyfill reported through `markPolyfilled`. */
 	marked: string[];
 }
 
-const appRequire = createRequire(join(appDir, 'package.json'));
+const kitRequire = createRequire(join(kitDir, 'package.json'));
 
 /**
  * Evaluates `polyfills/hermes.js` against a fresh fake runtime and returns it.
  *
- * `require` is the app's own, so the polyfill loads the same `@ungap/structured-clone`,
- * `web-streams-polyfill` and `@noble/hashes` a bundle would — with two substitutions:
+ * `require` is this package's own, so the polyfill loads the `@ungap/structured-clone`,
+ * `web-streams-polyfill` and `@noble/hashes` this package declares, as a bundle would —
+ * with two substitutions:
  * `react-native-get-random-values` (a native module, absent in Node) becomes an empty
  * object, and `./registry` records what was marked instead of accumulating into the
  * real module.
  */
 function evaluatePolyfill(): PolyfillRun {
-	const source = readFileSync(join(appDir, 'polyfills', 'hermes.js'), 'utf8');
+	const source = readFileSync(join(kitDir, 'polyfills', 'hermes.js'), 'utf8');
 	const marked: string[] = [];
-	const abortControllerModule = appRequire('abort-controller/dist/abort-controller') as {
+	const abortControllerModule = kitRequire('abort-controller/dist/abort-controller') as {
 		AbortController: AbortControllerCtor;
 		AbortSignal: AbortSignalCtor;
 	};
@@ -217,7 +254,7 @@ function evaluatePolyfill(): PolyfillRun {
 				wasPolyfilled: (name: string) => marked.includes(name),
 			};
 		}
-		return appRequire(id);
+		return kitRequire(id);
 	};
 
 	const polyfillModule: { exports: Record<string, unknown> } = { exports: {} };
@@ -248,13 +285,16 @@ function evaluatePolyfill(): PolyfillRun {
 		WebSocket,
 		AbortController: abortControllerModule.AbortController,
 		AbortSignal: abortControllerModule.AbortSignal,
-		Promise: HermesPromise,
+		Promise: HermesPromise as PolyfilledPromiseCtor,
 		env,
 		marked,
 	};
 }
 
-/** `@libp2p/websockets` does not export this module, so it is read by path. */
+/**
+ * `@libp2p/websockets` does not export this module, so it is read by path, from this
+ * package's devDependency copy (the range the reference app declares).
+ */
 async function loadWebSocketToMaConn(): Promise<WebSocketToMaConn> {
 	const dir = resolvePackageDir('@libp2p/websockets');
 	const file = join(dir, 'dist', 'src', 'websocket-to-conn.js');

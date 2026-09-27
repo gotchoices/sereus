@@ -1,5 +1,6 @@
 // Hermes runtime polyfills for APIs that libp2p and its dependencies expect.
-// Must be imported before any library code.
+// The first module `@serfab/cadre-rn/polyfills` loads (see index.js), which the app
+// imports before any library code.
 //
 // React Native 0.76+ with New Architecture should provide crypto.getRandomValues
 // natively. These polyfills are fallbacks for environments where it is still missing.
@@ -22,16 +23,17 @@ if (__DEV__ && !process.env.DEBUG) {
 	process.env.DEBUG = 'sereus:cadre:timing';
 }
 
-// Which patches below actually fired, for the at-boot audit in polyfills/audit.js.
+// Which patches below actually fired, for the at-boot audit in audit.js.
 // Reading `typeof X === 'undefined'` at audit time cannot tell a native API from one
 // of ours; this can.
 const { markPolyfilled } = require('./registry');
 
 // Native CSPRNG — must be the very first import so globalThis.crypto.getRandomValues
 // is available before any library code. No-op if the native API already exists.
-// NOTE: requires native rebuild (EAS Build or local native build).  This is a
-// hard dependency; without it any libp2p key generation or @noble/hashes call
-// is unsafe, so we deliberately do NOT provide a Math.random fallback.
+// NOTE: requires native rebuild (EAS Build or local native build), and the app must
+// list it as its own dependency: React Native autolinks only an app's direct
+// dependencies. This is a hard dependency; without it any libp2p key generation or
+// @noble/hashes call is unsafe, so we deliberately do NOT provide a Math.random fallback.
 require('react-native-get-random-values');
 
 // ── crypto.getRandomValues ──────────────────────────────────────────────────
@@ -223,7 +225,8 @@ if (typeof globalThis.DOMException === 'undefined') {
 	// adopts a global DOMException whose constructor `name` says so.
 	// NOTE: Metro's Babel lowers this through `_wrapNativeSuper`; that form was checked in Node
 	// only, and the spec evaluates the unlowered source. If the device audit ever shows a
-	// wrong `instanceof` or `name`, compile hermes.js in the metro-babel test project.
+	// wrong `instanceof` or `name`, compile hermes.js in the reference app's metro-babel
+	// test project.
 	class DOMException extends Error {
 		constructor(message = '', name = 'Error') {
 			super(message);

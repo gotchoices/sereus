@@ -16,8 +16,9 @@
  * without this the only trace in logcat is the next `Running "main"`.
  *
  * This wraps `reload` on the shared `DevSettings` object. Callers look the method up on
- * that object at call time, so installing the wrap while index.js evaluates covers every
- * reload that can happen after boot. With a reason it prints `[reload] <reason>`; without
+ * that object at call time, so installing the wrap while the app's entry module evaluates
+ * (through `@serfab/cadre-rn/boot-check`) covers every reload that can happen after boot.
+ * With a reason it prints `[reload] <reason>`; without
  * one it also prints the calling stack, which names the caller (`performFullRefresh` for
  * a Fast Refresh full reload). Reloads started natively (the dev menu's Reload, `r` in
  * the Metro terminal) do not pass through JS and print nothing.

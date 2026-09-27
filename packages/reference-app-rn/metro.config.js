@@ -95,7 +95,7 @@ config.resolver.extraNodeModules = {
 //     get-rtcpeerconnection. The Node variants pull `node-datachannel` (a native
 //     addon absent on RN); the browser variants read the WebRTC engine off the
 //     globals react-native-webrtc's registerGlobals() installs (see
-//     polyfills/webrtc.js). The `browser` field also lists `node:net`/`node:os`
+//     @serfab/cadre-rn/polyfills/webrtc). The `browser` field also lists `node:net`/`node:os`
 //     → false, but those `node:*` specifiers are already neutralised by the
 //     extraNodeModules empty shims above, so we skip the non-string targets here.
 //     We force the `browser` (not `react-native`) variant deliberately: the
@@ -137,8 +137,30 @@ const libp2pBrowserMap = Object.assign(
   loadLibp2pBrowserMap('@libp2p', 'webrtc') ?? {},
 );
 
+// @serfab/cadre-rn's files live outside this app (packages/cadre-rn), and Metro looks in
+// the node_modules directories above the importing file before nodeModulesPaths. For
+// the kit's polyfills that finds the repo root's react-native-webrtc (hoisted there for
+// @libp2p/webrtc) ahead of this app's copy, and the bundle then carries both: the globals
+// from one, @libp2p/webrtc's index.react-native.js classes from the other, each numbering
+// peer connections from its own counter. So the kit's peer dependencies resolve as if
+// this app imported them. Interim: @serfab/cadre-rn/metro (rn-kit-metro-helper) takes
+// this over for every peer.
+const kitManifestPath = require.resolve('@serfab/cadre-rn/package.json');
+const kitDir = path.dirname(kitManifestPath);
+const kitPeers = Object.keys(require(kitManifestPath).peerDependencies ?? {});
+const appOrigin = path.join(__dirname, 'index.js');
+
+function isKitPeerImport(originModulePath, moduleName) {
+  const fromKit = path.relative(kitDir, originModulePath);
+  return !fromKit.startsWith('..') && !path.isAbsolute(fromKit)
+    && kitPeers.some((peer) => moduleName === peer || moduleName.startsWith(`${peer}/`));
+}
+
 const upstreamResolveRequest = config.resolver.resolveRequest;
-config.resolver.resolveRequest = (context, moduleName, platform) => {
+config.resolver.resolveRequest = (originalContext, moduleName, platform) => {
+  const context = isKitPeerImport(originalContext.originModulePath, moduleName)
+    ? { ...originalContext, originModulePath: appOrigin }
+    : originalContext;
   const resolved = upstreamResolveRequest
     ? upstreamResolveRequest(context, moduleName, platform)
     : context.resolveRequest(

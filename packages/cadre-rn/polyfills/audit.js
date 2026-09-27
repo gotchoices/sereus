@@ -2,18 +2,18 @@
  * At-boot polyfill audit (development builds only).
  *
  * Lists the globals the libp2p / Optimystic stack reads and reports each as
- * `native`, `polyfilled` (one of polyfills/* patched it — see registry.js), `gap`
- * (known absent, documented, nothing on the phone's paths reaches it), or `MISSING`
- * (absent and unexplained). Anything MISSING gets a loud warning, because that is
- * the shape of every runtime defect this directory exists to prevent: an API the
- * bundle assumes, silently undefined, surfacing minutes later as an unrelated
- * timeout.
+ * `native`, `polyfilled` (one of this directory's modules patched it — see
+ * registry.js), `gap` (known absent, documented, nothing on the phone's paths reaches
+ * it), or `MISSING` (absent and unexplained). Anything MISSING gets a loud warning,
+ * because that is the shape of every runtime defect this directory exists to prevent:
+ * an API the bundle assumes, silently undefined, surfacing minutes later as an
+ * unrelated timeout.
  *
- * index.js imports this module between the polyfills and `expo-router/entry`, so
- * the table prints before the router evaluates the app tree (cadre-phone.ts →
- * @libp2p/*). A call placed in index.js's own module body would run after those
- * imports had already evaluated — and an import-time crash from a missing global
- * would beat it to the log.
+ * `@serfab/cadre-rn/boot-check` (boot-check.js) imports this module, and the app
+ * imports that between the polyfills and its own entry, so the table prints before the
+ * app tree evaluates (in the reference app, cadre-phone.ts → @libp2p/*). A call placed
+ * in the entry module's own body would run after those imports had already evaluated —
+ * and an import-time crash from a missing global would beat it to the log.
  *
  * The probe list is deliberately NOT shared with
  * packages/reference-app-ns/src/polyfills/audit.ts. The two runtimes have genuinely
@@ -43,7 +43,7 @@ const PROBES = [
 	{ path: 'process.env' },
 	{ path: 'queueMicrotask' },
 	{ path: 'performance.now' },
-	// polyfills/event.js imports event-target-polyfill, which installs EventTarget when
+	// event.js imports event-target-polyfill, which installs EventTarget when
 	// absent without marking the registry, so `native` here cannot rule that out.
 	{ path: 'EventTarget' },
 	{ path: 'WebSocket' },
@@ -70,7 +70,13 @@ const PROBES = [
 	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
 	{ path: 'CustomEvent', key: 'CustomEvent' },
 	{ path: 'Intl.PluralRules', key: 'Intl.PluralRules' },
-	{ path: 'RTCPeerConnection', key: 'RTCPeerConnection' },
+	// Present means webrtc.js ran, so the reference app reads `polyfilled`; an app without
+	// WebRTC reads `gap` rather than a MISSING warning.
+	{
+		path: 'RTCPeerConnection',
+		key: 'RTCPeerConnection',
+		gap: 'only apps that import @serfab/cadre-rn/polyfills/webrtc install it',
+	},
 	{ path: 'DOMException', key: 'DOMException' },
 
 	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
@@ -130,14 +136,16 @@ export function runPolyfillAudit() {
 		return `  ${MARKS[status]} ${p.path.padEnd(38)} ${status}${why}`;
 	});
 	console.log(
-		`[reference-app-rn] polyfill audit (✓ native · ∙ polyfilled · · known gap · ✗ missing):\n${rows.join('\n')}`,
+		`[cadre-rn] polyfill audit (✓ native · ∙ polyfilled · · known gap · ✗ missing):\n${rows.join('\n')}`,
 	);
 	const missing = PROBES.filter((p) => statusOf(p) === 'MISSING').map((p) => p.path);
 	if (missing.length > 0) {
 		console.warn(
-			`[reference-app-rn] MISSING globals before libp2p load: ${missing.join(', ')} — `
-			+ 'something in the stack will read one of these and get undefined. Add it to polyfills/hermes.js, '
-			+ 'or record it as a known gap in polyfills/audit.js and docs/reference-app-rn.md.',
+			`[cadre-rn] MISSING globals before libp2p load: ${missing.join(', ')} — `
+			+ 'something in the stack will read one of these and get undefined. Check the entry file imports '
+			+ '@serfab/cadre-rn/polyfills first (see the @serfab/cadre-rn README). If it does, add the global to '
+			+ '@serfab/cadre-rn\'s polyfills/hermes.js, or record it as a known gap in its polyfills/audit.js '
+			+ 'and in docs/reference-app-rn.md.',
 		);
 	}
 }

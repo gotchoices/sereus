@@ -56,7 +56,22 @@ const config: KnipConfig = {
 		},
 
 		'packages/cadre-provider': {},
-		'packages/cadre-rn': {},
+
+		'packages/cadre-rn': {
+			ignoreDependencies: [
+				// Optional peers by design: each is needed only by the subpath that imports it,
+				// and the README says which app installs what. `react-native` cannot also be a
+				// devDependency (as the noise-crypto peers are): a copy at the repo root would
+				// be bundled beside the app's.
+				'react-native',
+				'react-native-get-random-values',
+				'react-native-webrtc',
+				// test/polyfills/hermes-polyfills.spec.ts loads these through `createRequire`
+				// and a node_modules path lookup, which knip cannot follow.
+				'abort-controller',
+				'@libp2p/websockets',
+			],
+		},
 
 		'packages/integration-tests': {
 			ignoreDependencies: [
@@ -114,6 +129,10 @@ const config: KnipConfig = {
 		},
 
 		'packages/reference-app-rn': {
+			// The Node built-in shims are reached only through `extraNodeModules` in
+			// metro.config.js, so knip sees no importer (and would call their dependencies
+			// unused).
+			entry: ['polyfills/*.js'],
 			// Expo / React Native framework-implicit deps: the Metro bundler and
 			// Babel toolchain consume these without an explicit import, and the
 			// Expo runtime resolves `expo-updates` / `@expo/vector-icons` from

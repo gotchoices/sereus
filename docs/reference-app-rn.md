@@ -233,44 +233,44 @@ Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-bi
 
 **cadre-core** now declares a `react-native` export condition in its `package.json`. Source audit confirmed two Node-only dynamic imports — `require('path')` in `getStrandStoragePath` and `require('fs/promises')` in `ControlDatabase.loadSchema` — both runtime-guarded behind `process.versions?.node` checks and restricted to Node-only code paths.
 
-**Quereus** has no Node-only imports. BigInt is supported in Hermes since RN 0.70. Only `TextEncoder` is used (built-in to Hermes); `TextDecoder` is not required by Quereus. However, `@optimystic/db-p2p` (and `uint8arrays`, which it pulls in transitively via libp2p/yamux/multiformats) uses `TextDecoder` at module scope — this is covered by Expo SDK 52+'s built-in `TextDecoder` global (UTF-8 only). On **bare RN** Hermes (non-Expo) `TextDecoder` is NOT present as of RN 0.85, so `polyfills/hermes.js` ships a UTF-8-only fallback that becomes a no-op once the runtime provides it.
+**Quereus** has no Node-only imports. BigInt is supported in Hermes since RN 0.70. Only `TextEncoder` is used (built-in to Hermes); `TextDecoder` is not required by Quereus. However, `@optimystic/db-p2p` (and `uint8arrays`, which it pulls in transitively via libp2p/yamux/multiformats) uses `TextDecoder` at module scope — this is covered by Expo SDK 52+'s built-in `TextDecoder` global (UTF-8 only). On **bare RN** Hermes (non-Expo) `TextDecoder` is NOT present as of RN 0.85, so `@serfab/cadre-rn`'s `polyfills/hermes.js` ships a UTF-8-only fallback that becomes a no-op once the runtime provides it.
 
 **Metro bundle** succeeds with 2790 modules (cadre-core, Quereus, db-p2p, libp2p, and all transitive deps). The only warnings are cosmetic: `multiformats` subpath export fallbacks that resolve correctly via file-based resolution.
 
 ### Polyfills
 
-The app uses a custom entry point (`index.js`) that imports global polyfills before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time. The import order matters:
+The global polyfills live in the React Native kit, [`@serfab/cadre-rn`](../packages/cadre-rn/README.md), under `packages/cadre-rn/polyfills/`. A Sereus React Native app depends on the kit rather than copying the files. In this section, `polyfills/<file>.js` means the kit's file unless it says otherwise; the Node built-in shims (`node-os.js`, `node-crypto.js`, `empty.js`, below) are still in the app's own `polyfills/` directory.
+
+The app's job is three imports at the top of its entry file (`index.js`), before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time, so `@serfab/cadre-rn/polyfills` must come first:
 
 ```js
-import './polyfills/hermes';           // Runtime globals (crypto, AbortSignal, WebSocket, structuredClone, …)
-import './polyfills/webrtc';           // react-native-webrtc registerGlobals() — after hermes, before app code
-import './polyfills/intl-pluralrules'; // Intl.PluralRules for moat-maker
-import './polyfills/event';            // Event, CustomEvent, EventTarget for libp2p
-import './polyfills/audit';            // Prints the boot audit table under __DEV__ (below)
-import 'expo-router/entry';            // App code starts here
+import '@serfab/cadre-rn/polyfills';          // hermes.js, intl-pluralrules.js, event.js, in that order
+import '@serfab/cadre-rn/polyfills/webrtc';   // react-native-webrtc registerGlobals(), for @libp2p/webrtc
+import '@serfab/cadre-rn/boot-check';         // audit.js and reload-reason.js, under __DEV__ only (below)
+import 'expo-router/entry';                   // App code starts here
 ```
 
-`polyfills/audit.js` is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
+The boot check is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
+
+The WebRTC globals load after `Intl.PluralRules` and EventTarget. They need only `crypto.getRandomValues` from `hermes.js`. One side effect of the order: `react-native-webrtc`'s own copy of `event-target-shim` checks for a global `Event` and `EventTarget` when it loads and, if they exist, chains its classes onto them. Neither React Native 0.79 nor Expo 53 installs those globals, so before the kit it found none; now it finds `event-target-polyfill`'s.
 
 #### Required polyfill dependencies
 
-The following dependencies **must** be listed as direct dependencies in your app's `package.json` — relying on transitive resolution is fragile and will break when upstream packages change their dependency trees:
+The pure-JavaScript libraries the polyfills use (`@ungap/structured-clone`, `web-streams-polyfill`, `event-target-polyfill`, `@noble/hashes`) are dependencies of `@serfab/cadre-rn`, so the app does not list them. The app **must** list the native modules as its own direct dependencies, because React Native autolinks only those, even though only the kit imports them:
 
 ```json
 {
-  "@noble/hashes": "^2.0.0",
-  "@ungap/structured-clone": "^1.3.0",
-  "buffer": "^6.0.3",
-  "event-target-polyfill": "^0.0.4",
+  "@serfab/cadre-rn": "workspace:^",
   "react-native-get-random-values": "^1.11.0",
-  "readable-stream": "^4.7.0",
-  "web-streams-polyfill": "^4.1.0"
+  "react-native-webrtc": "^124.0.6"
 }
 ```
 
-Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
+The app also lists what its Metro aliases point at (`buffer`, `readable-stream`, and `@noble/hashes` for `polyfills/node-crypto.js`; see § Metro module aliases). Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
 
-`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It currently resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously — the polyfills use the v2 import path, so the direct dep must be pinned `^2.0.0`.
+`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both the kit's `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and the app's `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It also resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously. The polyfills use the v2 import path, so both the kit and the app declare it `^2.0.0`.
+
+**One copy of each native module.** The kit's files sit at `packages/cadre-rn/polyfills/`, outside the app, and Metro looks in the `node_modules` directories above the importing file before its `nodeModulesPaths`. The repo root holds a second `react-native-webrtc` (hoisted there for `@libp2p/webrtc`), so without help the kit's `webrtc.js` would bundle that copy beside the app's. `metro.config.js` therefore resolves the kit's peer dependencies as if the app imported them.
 
 #### Global polyfills (`polyfills/hermes.js`)
 
@@ -298,10 +298,11 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 
 | File | Target | Required by | Notes |
 |------|--------|-------------|-------|
-| `packages/reference-app-rn/polyfills/intl-pluralrules.js` | `Intl.PluralRules` | moat-maker (error messages) | English-only ordinal/cardinal shim |
-| `packages/reference-app-rn/polyfills/event.js` | `EventTarget`, `Event`, `CustomEvent` | libp2p, @libp2p/interface | Imports the [`event-target-polyfill`](https://www.npmjs.com/package/event-target-polyfill) npm package (spec-complete: handles `capture`, `once`, and `signal` options on `addEventListener`), then adds a minimal `CustomEvent` shim on top — `event-target-polyfill` does not include `CustomEvent`, which libp2p's `safeDispatchEvent` uses internally |
+| `packages/cadre-rn/polyfills/intl-pluralrules.js` | `Intl.PluralRules` | moat-maker (error messages) | English-only ordinal/cardinal shim |
+| `packages/cadre-rn/polyfills/event.js` | `EventTarget`, `Event`, `CustomEvent` | libp2p, @libp2p/interface |
+| `packages/cadre-rn/polyfills/webrtc.js` | `RTCPeerConnection`, `RTCSessionDescription`, `RTCIceCandidate`, … | @libp2p/webrtc's private-to-public `browser` variants, which read the engine off the globals | `react-native-webrtc`'s `registerGlobals()`. Exported separately as `@serfab/cadre-rn/polyfills/webrtc`, so an app without WebRTC need not install the native module | Imports the [`event-target-polyfill`](https://www.npmjs.com/package/event-target-polyfill) npm package (spec-complete: handles `capture`, `once`, and `signal` options on `addEventListener`), then adds a minimal `CustomEvent` shim on top — `event-target-polyfill` does not include `CustomEvent`, which libp2p's `safeDispatchEvent` uses internally |
 
-> A hand-rolled inline `EventTarget` class is technically sufficient for libp2p's current usage but quietly drops `once`, `signal`, and capture semantics. We prefer the npm package so future libp2p versions (or other consumers) that rely on those options keep working without surprises. The dependency must be listed in `package.json` — omitting it produces `Unable to resolve module event-target-polyfill` Metro failures.
+> A hand-rolled inline `EventTarget` class is technically sufficient for libp2p's current usage but quietly drops `once`, `signal`, and capture semantics. We prefer the npm package so future libp2p versions (or other consumers) that rely on those options keep working without surprises. It is a dependency of `@serfab/cadre-rn`; dropping it there produces `Unable to resolve module event-target-polyfill` Metro failures.
 
 #### Built-in APIs (no polyfill needed)
 
@@ -324,7 +325,8 @@ These APIs are natively available in the target Hermes/Expo versions used by thi
 - Prefer battle-tested npm packages over hand-rolled shims (e.g., `@ungap/structured-clone` over `JSON.parse(JSON.stringify(...))`)
 - Prefer spec-compliant implementations — shortcuts like JSON round-trips silently drop data types
 - Always guard with `typeof` checks so polyfills are skipped on platforms with native support
-- Native modules (like `react-native-get-random-values`) require a dev client rebuild — document this when adding them
+- Native modules (like `react-native-get-random-values`) require a dev client rebuild, and every app must list them itself for autolinking — document both when adding them
+- A new global polyfill goes in `@serfab/cadre-rn`, not in an app, so every Sereus app gets it; add its probe to the kit's `polyfills/audit.js` and its name to the app's drift guard (§ Guards)
 
 #### Metro module aliases (Node.js built-in shims)
 
@@ -357,7 +359,7 @@ The app lives at `packages/reference-app-rn` as a workspace member. Yarn's works
 
 ```
 packages/reference-app-rn/
-  index.js                    # Custom entry: loads polyfills before expo-router/entry
+  index.js                    # Custom entry: @serfab/cadre-rn polyfills + boot check, then expo-router/entry
   app.json                    # Expo config (SDK 53, custom dev client)
   package.json                # workspace:^ deps on cadre-core, db-p2p, etc.
   tsconfig.json
@@ -384,17 +386,27 @@ packages/reference-app-rn/
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
-  polyfills/
-    hermes.js                 # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
-    webrtc.js                 # react-native-webrtc registerGlobals() for @libp2p/webrtc
-    intl-pluralrules.js       # Intl.PluralRules for moat-maker
-    event.js                  # Event, CustomEvent, EventTarget globals for Hermes
-    registry.js               # Records which globals each polyfill actually patched
-    audit.js                  # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
+  polyfills/                  # Node built-in shims, reached through metro.config.js
     node-os.js                # Minimal os module shim for libp2p
     node-crypto.js            # createHash() shim via @noble/hashes
+    empty.js                  # net / tls stubs
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
+```
+
+The global polyfills are in the kit:
+
+```
+packages/cadre-rn/polyfills/
+  index.js                    # @serfab/cadre-rn/polyfills: hermes, intl-pluralrules, event, in that order
+  hermes.js                   # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
+  intl-pluralrules.js         # Intl.PluralRules for moat-maker
+  event.js                    # Event, CustomEvent, EventTarget globals for Hermes
+  webrtc.js                   # @serfab/cadre-rn/polyfills/webrtc: registerGlobals() for @libp2p/webrtc
+  boot-check.js               # @serfab/cadre-rn/boot-check: audit, then reload-reason
+  registry.js                 # Records which globals each polyfill actually patched
+  audit.js                    # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
+  reload-reason.js            # Logs [reload] <reason> before a JS-initiated reload (__DEV__ only)
 ```
 
 ### Key Dependencies
@@ -402,6 +414,7 @@ packages/reference-app-rn/
 | Package | Source | Purpose |
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
+| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills) |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
 | `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |
@@ -444,9 +457,9 @@ Three more modules check for a global `DOMException` and build their own class w
 
 | What | Where | What it catches |
 |------|-------|-----------------|
-| Behaviour of `polyfills/hermes.js` | `test/polyfills/hermes-polyfills.spec.ts` (Vitest project `polyfills`) | Evaluates the polyfill against a fake Hermes + React Native surface, then drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. Deleting any arm fails a test rather than a phone |
-| The next missing global | `test/polyfills/dependency-globals.spec.ts` | Reads a listed set of dependency `dist` trees and fails when a global that nothing provides starts appearing. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
-| The real runtime | `polyfills/audit.js`, imported by `index.js` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively |
+| Behaviour of `polyfills/hermes.js` | `packages/cadre-rn/test/polyfills/hermes-polyfills.spec.ts` (the kit's Vitest project `polyfills`) | Evaluates the polyfill against a fake Hermes + React Native surface, then drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. Deleting any arm fails a test rather than a phone |
+| The next missing global | `packages/reference-app-rn/test/polyfills/dependency-globals.spec.ts` (the app's Vitest project `polyfills`) | Reads a listed set of this app's installed dependency `dist` trees and fails when a global that nothing provides starts appearing; checks the kit's polyfill files for the registry keys it relies on. It stays in the app because the dependency graph is per app. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
+| The real runtime | `polyfills/audit.js`, loaded through `@serfab/cadre-rn/boot-check` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot, under `[cadre-rn] polyfill audit`, and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively |
 
 The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at. Two limits on that: `EventTarget` comes from the `event-target-polyfill` package, which does not mark the registry, so it always reads `native`; and a row the audit cannot read (a native getter that throws when read off a prototype) counts as present rather than crashing boot.
 
@@ -740,7 +753,7 @@ Confirmed on a device (2026-09-16): the dev client connected through `adb revers
 
 **First launch on a cold Metro.** This applies to `yarn start` and `start:frozen` alike. After `yarn start --clear`, the dev client's first launch from the deep link gave up after about 10 s with "There was a problem loading the project. timeout" (okhttp `readResponseHeaders`): building the Android bundle on a cold cache takes about 20 s (4825 modules). Fetching the bundle once from the PC, then launching again, worked. Build the bundle before opening the app: start `metro:observe` first, which builds it when no client has loaded it yet (see below). To fetch it by hand instead, use the URL the observer prints on its first line (`bundle <url>`), which comes from Expo's manifest. Do not shorten it to `index.bundle?platform=android&dev=true`: the query carries transform options (`transform.engine=hermes` and others), and a bundle requested with different options is a different build.
 
-**Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
+**Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js` in `@serfab/cadre-rn`, loaded through `@serfab/cadre-rn/boot-check`), as a warning that logcat shows before the next `Running "main"`:
 
 ```
 W ReactNativeJS: [reload] Bundle Splitting – Metro disconnected
@@ -791,7 +804,7 @@ I ReactNativeJS: [settings] create strand 1a2b3c4d succeeded in 1400 ms
 
 A failure is a `W` line, `failed after <n> ms:` followed by the error. No `pressed` line after a tap means the tap never reached the handler.
 
-Development builds also log cadre-core's `sereus:cadre:timing` lines as `D ReactNativeJS` (enabled in `polyfills/hermes.js`). Each awaited step of `CadreNode.foundStrand` and of the strand launch logs a line when it starts and another when it ends, so a step with a start and no end is the one that hung:
+Development builds also log cadre-core's `sereus:cadre:timing` lines as `D ReactNativeJS` (enabled in `@serfab/cadre-rn`'s `polyfills/hermes.js`). Each awaited step of `CadreNode.foundStrand` and of the strand launch logs a line when it starts and another when it ends, so a step with a start and no end is the one that hung:
 
 ```
 D ReactNativeJS: sereus:cadre:timing [foundStrand:<id>] publishStrand: start +0ms

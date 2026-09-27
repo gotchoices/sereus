@@ -55,8 +55,8 @@ const CADRE_PEER_WRITE_GUARD = [
 ];
 
 // Web APIs the phone runtimes lack. Both phone apps (Hermes under React Native, V8 under
-// NativeScript) run our first-party source, and the polyfills in reference-app-rn/polyfills/
-// hermes.js and reference-app-ns/src/polyfills/ exist for the dependencies (libp2p and friends)
+// NativeScript) run our first-party source, and the polyfills in cadre-rn/polyfills/hermes.js
+// and reference-app-ns/src/polyfills/ exist for the dependencies (libp2p and friends)
 // that call these. Our own code should not add to that dependence: a polyfill is a fallback
 // for code we do not control, and it cannot see when a caller is finished with what it made —
 // `AbortSignal.any` in particular leaves listeners on its inputs if none of them ever aborts.

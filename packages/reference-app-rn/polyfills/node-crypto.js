@@ -4,7 +4,7 @@
 //   import crypto from 'crypto';
 //   crypto.createHash('sha256').update(input).digest()
 
-// `.js` suffix: @noble/hashes 2.x exports only './sha2.js'. See polyfills/hermes.js.
+// `.js` suffix: @noble/hashes 2.x exports only './sha2.js'. See @serfab/cadre-rn's polyfills/hermes.js.
 import { sha256 } from '@noble/hashes/sha2.js';
 import { sha512 } from '@noble/hashes/sha2.js';
 

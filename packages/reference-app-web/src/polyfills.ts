@@ -1,7 +1,7 @@
 /**
  * Browser polyfills for the libp2p / Optimystic stack.
  *
- * Modern browsers already cover the bulk of what `reference-app-rn`'s
+ * Modern browsers already cover the bulk of what `@serfab/cadre-rn`'s
  * `polyfills/hermes.js` patches (crypto.subtle, EventTarget, ReadableStream,
  * structuredClone, Promise.withResolvers, AbortSignal.throwIfAborted,
  * TextEncoder/Decoder). The list below is the residue.
