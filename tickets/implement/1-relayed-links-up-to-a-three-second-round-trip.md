@@ -70,3 +70,25 @@ optimystic `92a7dc1e` (main, not yet released) adds `NodeOptions.connectionManag
   - raise the declared round trip to cover 3 s;
   - write the `docs/architecture.md` wording;
   - add the two settings to the relay container (`ops/docker/libp2p-infra`), coordinating with issue #17's Phase 1.
+
+## Unblocked (2026-09-27): optimystic 1.7.0 is on npm; floors raised to ^1.7.0
+
+1.7.0 exports `Libp2pConnectionTimeouts` and accepts `NodeOptions.connectionManager: { dialTimeout?, inboundUpgradeTimeout? }`.
+
+**Do, for the next release:**
+1. **Declare both timeouts on the control node and every strand node,** derived in `link-budget.ts` from the declared link round trip, like the other budgets there.
+   - Opening a relayed connection costs about 8 one-way delays, measured in `relayed-dial-cost-by-latency`, so size each timeout as that count times half the round trip, with the same headroom the other budgets use.
+   - State the arithmetic at the constant.
+   - A host's `network.linkRoundTripMs` must move them too.
+2. **Raise `DECLARED_LINK_ROUND_TRIP_MS` to cover a 3 s round trip,** with the headroom convention the file already states.
+   - Re-derive every budget that depends on it, and check none now exceeds a limit that contains it (for example a relay reservation drive inside the first-sync wait).
+   - Check that the connection monitor's pinned 30 s ping deadline still exceeds what a 3 s link needs.
+3. **Prove it:** run `relayed-dial-cost-by-latency` (`RELAY_DIAL_COST=1`) at 1500 ms one-way. A relayed connection must open and hold, and a stream must work on it. Before this change the called side dropped it at 10 s. Record the result in the scenario's doc comment.
+4. **Docs:**
+   - Put the wording above in `docs/architecture.md` → Relay Integration, with the stated ceiling.
+   - Add the known limit: optimystic's own request dials still use 3 s budgets, so they fail above about 375 ms one-way (upstream `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection`).
+5. **Relay container** (`ops/docker/libp2p-infra/src/main.ts`): set `connectionManager.dialTimeout` and `inboundUpgradeTimeout` there too, because the relay is every relayed client's listener.
+   - It builds libp2p directly, on libp2p 2.x, so set the libp2p options themselves, with a comment tying the numbers to cadre-core's.
+   - Don't touch its ping settings.
+   - Issue #17 plans to restructure this file after #14; keep this edit small.
+6. **Release note** in `.release-notes.pending.md`: the supported ceiling, the new timeouts, and "Requires `@optimystic/*` 1.7.0".
