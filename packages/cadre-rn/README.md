@@ -42,6 +42,6 @@ React Native links native modules only for the app's own direct dependencies, so
 - `react-native-nitro-modules` (quick-crypto's native bridge)
 - `react-native-quick-base64` (a quick-crypto peer)
 
-`react-native-quick-crypto` needs React Native's new architecture. `@craftzdog/react-native-buffer`, which this module imports, is installed by quick-crypto itself.
+`react-native-quick-crypto` needs React Native's new architecture. `@craftzdog/react-native-buffer`, which this module imports, is installed by quick-crypto itself; under a package manager that does not hoist (pnpm's default layout), list it in the app too.
 
 Both native imports are optional peer dependencies of this package: an app that never imports `/noise-crypto` does not need them.

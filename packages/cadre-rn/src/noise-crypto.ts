@@ -143,10 +143,13 @@ const symmetric = {
 	},
 };
 
-/** The handshake's asymmetric half: fewer calls, but ~231 ms each on an S7. */
+/**
+ * The handshake's asymmetric half: a few calls per handshake rather than one per frame,
+ * but ~58 ms per shared secret on an S7 (the table above).
+ */
 const asymmetric = {
 	generateX25519KeyPair(): { publicKey: Uint8Array; privateKey: Uint8Array } {
-		// DER encodings are requested above, so both halves come back as Buffers.
+		// DER encodings are requested below, so both halves come back as Buffers.
 		// quick-crypto types the return as a union over every encoding option, so the
 		// narrowing is ours to state — and it is checked at runtime below.
 		const { publicKey, privateKey } = generateKeyPairSync('x25519', {

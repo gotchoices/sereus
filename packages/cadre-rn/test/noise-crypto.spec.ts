@@ -50,8 +50,9 @@ describe('buildNoiseCrypto', () => {
 	});
 });
 
-describe.each(['symmetric', 'full'] as const)("symmetric primitives under '%s'", (mode) => {
-	const crypto = build(mode);
+// 'full' spreads the same symmetric functions, so they are exercised once, here.
+describe("symmetric primitives under 'symmetric'", () => {
+	const crypto = build('symmetric');
 	const key = random(32);
 	const nonce = random(12);
 	const ad = random(32);
