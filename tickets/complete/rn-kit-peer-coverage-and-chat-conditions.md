@@ -6,13 +6,14 @@ files:
   - packages/cadre-rn/metro/index.cjs (comments only: rule 1's peer list, rule 3's "why by hand")
   - packages/cadre-rn/test/metro/with-cadre-metro.spec.ts (sereus-chat cases, fixture change)
   - packages/cadre-rn/README.md (noise-crypto install list)
+  - packages/reference-app-rn/README.md (browser-rewrite wording, review pass)
   - docs/reference-app-rn.md (rule 1 peer list, rule 3 reasoning, spec coverage line)
   - knip.ts (cadre-rn ignoreDependencies)
   - tickets/blocked/report-rn-kit-to-app-projects.md (adoption condition, resolver-settings note, ranges)
 ----
-# Review: RN kit peer coverage and sereus-chat conditions
+# Complete: RN kit peer coverage and sereus-chat conditions
 
-From sereus-rn's review of the kit (2026-09-27). Three parts, all done.
+From sereus-rn's review of the kit (2026-09-27). The implementation summary below is from the implement stage; the review findings follow it.
 
 ## 1. quick-crypto's native helpers are kit peers
 
@@ -65,3 +66,26 @@ Two additions beyond the ticket's wording, which the reviewer may trim:
 - The spec's Metro context is hand-built. It follows Metro 0.82.5's `ModuleResolution` (closest-package lookup stopping at `node_modules`, `assetExts` as a `Set` although the published `.d.ts` says array), and the probe over real packages gave the same answers. But if real Metro builds the context differently in some detail, the spec measures the hand-built version.
 - Nothing ties the `metro-resolver` pin to the reference app's Metro version. This is recorded as a `NOTE:` in the spec header.
 - No Metro bundle was run for this ticket. The single-copy claim for nitro and quick-base64 rests on rule 1, which the existing `resolves a kit peer from the app` case covers generically.
+
+## Review findings
+
+Read the implement diff (`b249c384`) before the handoff, then checked the claims it rests on against installed packages and sereus-chat's repository (read-only).
+
+**Checked, no change needed:**
+- Peer ranges: `react-native-quick-crypto` 1.1.7 (both the root and the reference app's copy) declares exactly `react-native-nitro-modules >=0.31.2` and `react-native-quick-base64 >=3.0.0`. The reference app's nitro 0.37.1 and quick-base64 3.0.1 satisfy them, and quick-crypto's `lib/module` does import nitro directly. Rule 1 reads the peer list from the manifest, so no code change was needed; both peers are optional, so an app that skips `/noise-crypto` gets no install warning.
+- The spec's hand-built Metro context, compared with `metro/src/node-haste/DependencyGraph/ModuleResolution.js` 0.82.5. It leaves out `dev` and `isESMImport`, but metro-resolver 0.82.5's `src/*.js` never reads either, so the omission changes nothing. The deep import `metro-resolver/src/createDefaultContext` is allowed by that package's `exports` (`./src/*`). How the kit's `resolveRequest` gets back into Metro's `resolve` (Metro freezes the context with `resolveRequest: resolve`; the kit clears it before calling back) matches `resolve.js`.
+- Test value: the Metro-resolver rule-3 case checks something the canned-upstream case cannot. It shows that the path Metro returns for a file reached through `exports` (normalized, real path) matches the key in the kit's browser map. In the rule-2 case, the with-kit assertion never reaches Metro (the rule answers first). What the case adds is the without-kit check that the fixture reproduces the crash. The ticket asked for this case, and it costs one fixture, so it stays.
+- `knip.ts` groupings and comments; `metro/index.cjs` comment changes; the kit README and `docs/reference-app-rn.md` rule 1 and rule 3 text. These are accurate. `docs/reference-app-rn.md`'s Key Dependencies table (lines 449-450) already covered both modules.
+- sereus-chat facts behind the report's "resolver settings stay" paragraph: `apps/mobile/metro.config.js` does set package exports, the `import`-first condition lists, `.qsql` source and asset handling, a custom `babelTransformerPath`, and an `@babel/runtime` branch in `resolveRequest`.
+
+**Found and fixed (minor):**
+- `tickets/blocked/report-rn-kit-to-app-projects.md`: the new adoption paragraph told sereus-chat its "npm mode uses" cadre-core 0.8.x. That was false: `apps/mobile/package.json` has had `@serfab/cadre-core ^1.4.0` (locked at 1.4.0) since sereus-chat commit `1c2b7b0` (2026-09-10). The paragraph now says the `sign()` stub dates from 0.8.x, is no longer needed on the 1.4.0 the app uses, and that the app should still adopt the kit together with cadre-core at the kit's own version. That last part is the ticket's condition and was kept.
+- `packages/reference-app-rn/README.md:380` still said the browser rewrite "is not reliably applied". The implementer left that vague wording in place. It now states the measured behaviour, the same as the kit's comment and `docs/reference-app-rn.md`, so the three docs no longer disagree.
+
+**Major findings:** none. Nothing met the filing bar.
+
+**Tripwires:** none new. The implementer's `NOTE:` at the spec header (the `metro-resolver` pin is not tied to the reference app's Metro version) is the right place for that condition, and it was not filed as a ticket.
+
+**Tests:** no tests added or cut; see "Test value" above. `yarn workspace @serfab/cadre-rn test` (5 files, 44 tests), `typecheck`, `yarn eslint packages/cadre-rn knip.ts` and `yarn knip --workspace packages/cadre-rn` pass. Knip reported only the existing warn-level `runPolyfillAudit` unused export. The review's own edits were to Markdown only.
+
+**Known gaps carried over** (from the implement handoff, accepted): rule 3's `@libp2p/webrtc` half is not exercised under sereus-chat's settings; no Metro bundle was run for the single-copy claim about nitro and quick-base64.
