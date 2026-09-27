@@ -169,9 +169,12 @@ function cadreResolveRequest(upstream, projectRoot) {
  * there for @libp2p/webrtc), which put two copies of react-native-webrtc in the bundle,
  * each numbering peer connections from its own counter. The rule applies to every
  * importer, not only the kit: native code is linked only for the app's own dependencies,
- * so any other copy of one of these is JavaScript that does not match the native side. For
- * an app that installs the kit from npm nothing changes for the kit's imports, which
- * already sit inside the app's `node_modules`.
+ * so any other copy of one of these is JavaScript that does not match the native side. That
+ * is why the peers include react-native-nitro-modules and react-native-quick-base64, which
+ * the kit never imports: react-native-quick-crypto does, and without the rule their single
+ * copy would rest on how the package manager happened to hoist them. For an app that
+ * installs the kit from npm nothing changes for the kit's imports, which already sit
+ * inside the app's `node_modules`.
  *
  * A peer the app has not installed fails with Metro's usual "unable to resolve", and only
  * if something imports it. Metro's error still names the real importer: it takes the
@@ -249,9 +252,11 @@ function isModuleNotFound(error) {
  * this rewrite looks up. An Android export's source map holds that file plus the browser
  * variants of private-to-public's transport and get-rtcpeerconnection.
  *
- * Why by hand: with package exports enabled (both toolchains' default) Metro resolves these
- * packages through `exports`, and does not reliably apply the `browser` rewrite to their
- * internal relative imports.
+ * Why by hand: with package exports enabled (both toolchains' default) Metro returns a file
+ * it found through a package's `exports` as it is, without the `browser` rewrite, so
+ * `@libp2p/crypto/hmac` resolves to the Node hmac/index.js. Relative imports inside the
+ * package do get the rewrite from Metro itself. Both checked against metro-resolver 0.82.5;
+ * test/metro/with-cadre-metro.spec.ts shows the first under sereus-chat's conditions.
  */
 const BROWSER_REWRITTEN_PACKAGES = new Set(['@libp2p/crypto', '@libp2p/webrtc']);
 

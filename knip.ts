@@ -70,10 +70,17 @@ const config: KnipConfig = {
 				'react-native',
 				'react-native-get-random-values',
 				'react-native-webrtc',
-				// test/polyfills/hermes-polyfills.spec.ts loads these through `createRequire`
-				// and a node_modules path lookup, which knip cannot follow.
+				// react-native-quick-crypto's own native dependencies, which the kit never
+				// imports: peers only so that /metro resolves them from the app too. A
+				// devDependency copy would be a second one at the repo root.
+				'react-native-nitro-modules',
+				'react-native-quick-base64',
+				// test/polyfills/hermes-polyfills.spec.ts and test/metro/with-cadre-metro.spec.ts
+				// load these through `createRequire` or a node_modules path lookup, which knip
+				// cannot follow.
 				'abort-controller',
 				'@libp2p/websockets',
+				'metro-resolver',
 				// Node built-in name: knip does not read metro/index.cjs's
 				// `require.resolve('buffer/')` as the npm package.
 				'buffer',

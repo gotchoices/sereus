@@ -107,9 +107,9 @@ The reference app (`packages/reference-app-rn`) is the worked example: it takes 
 React Native links native modules only for the app's own direct dependencies, so the app lists these in its `package.json`:
 
 - `react-native-quick-crypto` (`^1.1.7`)
-- `react-native-nitro-modules` (quick-crypto's native bridge)
-- `react-native-quick-base64` (a quick-crypto peer)
+- `react-native-nitro-modules` (`>=0.31.2`), quick-crypto's native bridge
+- `react-native-quick-base64` (`>=3.0.0`), which quick-crypto imports
 
 `react-native-quick-crypto` needs React Native's new architecture. `@craftzdog/react-native-buffer`, which this module imports, is installed by quick-crypto itself; under a package manager that does not hoist (pnpm's default layout), list it in the app too.
 
-Both native imports are optional peer dependencies of this package: an app that never imports `/noise-crypto` does not need them.
+All four are optional peer dependencies of this package: an app that never imports `/noise-crypto` does not need them. This module imports only quick-crypto and the buffer; nitro and quick-base64 are peers so that `/metro` resolves them from the app as well, keeping one copy of each.

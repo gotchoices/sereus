@@ -9,7 +9,7 @@ difficulty: easy
 
 ## Before sending
 
-- The package has not been published yet: `npm view @serfab/cadre-rn` returns 404, and the root `package.json` is at 1.5.0. The message says "the next release after 1.5.0"; replace that with the real version once `yarn release` has published it (it publishes `@serfab/cadre-rn` last, after the other five packages).
+- The package has not been published yet: `npm view @serfab/cadre-rn` returns 404, and the root `package.json` is at 1.5.0. The message says "the next release after 1.5.0" in two places (the opening paragraph and the cadre-core version sereus-chat must adopt the kit on); replace both with the real version once `yarn release` has published it (it publishes `@serfab/cadre-rn` last, after the other five packages, all at one version).
 - The native crypto has not been run on a phone yet (blocked ticket `rn-native-noise-crypto-device-run`). If that run has happened, add its result to the message; if it found problems, hold the message's noise-crypto part until they are fixed.
 
 ## Proposed message
@@ -50,9 +50,13 @@ difficulty: easy
 >
 > **sereus-chat specifically.** Your `noise-crypto.ts` now ships as `@serfab/cadre-rn/noise-crypto`, with the same `buildNoiseCrypto(mode)`, `NoiseCryptoMode` and `DEFAULT_NOISE_CRYPTO_MODE` (`symmetric`). Your `http2`, `path` and `fs` stubs are no longer needed: current cadre-core keeps its Node-only push notifiers behind `@serfab/cadre-core/push-node` and its file helpers behind a subpath React Native never imports. Your `crypto.sign()` stub is no longer needed for the same reason; the kit's `crypto` shim has `createHash` only.
 >
+> **Upgrade cadre-core with the kit.** Your `sign()` stub exists because in cadre-core 0.8.x, which your npm mode uses, the FCM notifier was in cadre-core's root import graph. Push moved behind `@serfab/cadre-core/push-node` in 0.9.0, and the kit's shim drops the stub. So adopt the kit together with `@serfab/cadre-core` at the kit's own version or later: the next release after 1.5.0 (every Sereus package ships at one version, and that is the cadre-core the kit is built and tested with).
+>
+> **Your resolver settings stay.** Keep package exports on, your condition lists with `import` ahead of `require`, the `.qsql` extensions and your transformer, and pass the merged config to `withCadreMetro`. The `@babel/runtime` branch of your `resolveRequest` can go: the kit does that redirect. The kit's tests run Metro's own resolver with your condition lists and check that the `@babel/runtime` redirect and the `@libp2p/crypto` browser rewrite still apply under them.
+>
 > **sereus-health specifically.** This is the shared module your completed ticket `6-full-polyfill-alignment-with-sereus-reference-app` asked for. The kit uses the packages that ticket listed (`react-native-get-random-values`, `@ungap/structured-clone`, `web-streams-polyfill`, `@noble/hashes`) and the `event-target-polyfill` package for `EventTarget`, which settles its convergence question.
 >
-> **Native modules your app must list.** React Native links native code only for an app's direct dependencies: `react-native-get-random-values` for `/polyfills`; `react-native-webrtc` for `/polyfills/webrtc`; and `react-native-quick-crypto` (`^1.1.7`), `react-native-nitro-modules` and `react-native-quick-base64` for `/noise-crypto`, which also needs React Native's new architecture. All are optional peer dependencies of the kit, so skip the ones for subpaths you do not import.
+> **Native modules your app must list.** React Native links native code only for an app's direct dependencies: `react-native-get-random-values` for `/polyfills`; `react-native-webrtc` for `/polyfills/webrtc`; and `react-native-quick-crypto` (`^1.1.7`), `react-native-nitro-modules` (`>=0.31.2`) and `react-native-quick-base64` (`>=3.0.0`) for `/noise-crypto`, which also needs React Native's new architecture. All are optional peer dependencies of the kit, so skip the ones for subpaths you do not import.
 >
 > Sereus's own reference app (`packages/reference-app-rn`) is the worked example of all four subpaths, including a Settings switch between the three Noise crypto modes.
 

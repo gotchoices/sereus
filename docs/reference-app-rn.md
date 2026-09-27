@@ -525,11 +525,11 @@ module.exports = withCadreMetro(getDefaultConfig(__dirname), {
 - `resolver.nodeModulesPaths`: the existing ones, then `<projectRoot>/node_modules`, then each linked root's `node_modules`, in that order. The app's `test/polyfills/metro-resolution.ts` reads this list to find installed packages the way Metro does.
 - `resolver.extraNodeModules`: the Node built-in aliases (§ Metro module aliases).
 - `resolver.resolveRequest`: a wrapper that applies three rules, in this order.
-  1. **The kit's peers resolve from the app.** An import of a name in the kit's `peerDependencies` (`react-native`, `react-native-webrtc`, `react-native-get-random-values`, `react-native-quick-crypto`, `@craftzdog/react-native-buffer`), or of a subpath of one, resolves as if a file in `projectRoot` imported it, whoever the importer is. Metro looks in the `node_modules` directories above the importing file first; in this repo the kit lives outside the app, and the repo root holds its own `react-native-webrtc` and the kit's types-only dev copy of `react-native-quick-crypto`, either of which would otherwise be bundled beside the app's. Native code is linked only for the app's own dependencies, so any second copy is JavaScript that does not match the native side. A peer the app has not installed fails with Metro's usual "unable to resolve", and only if something imports it.
+  1. **The kit's peers resolve from the app.** An import of a name in the kit's `peerDependencies` (`react-native`, `react-native-webrtc`, `react-native-get-random-values`, `react-native-quick-crypto`, `@craftzdog/react-native-buffer`, and quick-crypto's own native dependencies `react-native-nitro-modules` and `react-native-quick-base64`), or of a subpath of one, resolves as if a file in `projectRoot` imported it, whoever the importer is. Metro looks in the `node_modules` directories above the importing file first; in this repo the kit lives outside the app, and the repo root holds its own `react-native-webrtc` and the kit's types-only dev copy of `react-native-quick-crypto`, either of which would otherwise be bundled beside the app's. Native code is linked only for the app's own dependencies, so any second copy is JavaScript that does not match the native side. A peer the app has not installed fails with Metro's usual "unable to resolve", and only if something imports it.
   2. **`@babel/runtime/*` resolves to the CommonJS helper in the app's copy**, through Node's `require.resolve` from `projectRoot`. An app whose condition list puts `import` ahead of `require` (sereus-chat's does) otherwise gets the ESM wrapper, and the bundle fails at startup with `_interopRequireDefault is not a function`. Expo's default conditions already pick the CommonJS file, so in this app the rule only makes every importer use the app's copy, the one § Key Dependencies requires to be 7.29.2 or newer.
   3. **`browser`-field variants for `@libp2p/crypto` and `@libp2p/webrtc`.** A resolved file inside either package that the package's `browser` field lists is swapped for its target; targets that are not paths (`"node:net": false`) are skipped. The map is read from the package directory of the file actually resolved, so every installed copy is covered: this app's Android export (2026-09-26) holds 15 copies of `@libp2p/crypto` (the app's, the repo root's, and nested ones under optimystic and Fret), all on their browser key modules. In `@libp2p/webrtc` the rewrite reaches `private-to-public`'s transport and `get-rtcpeerconnection`. Its `webrtc/index.js` entry never fires: Metro applies the package's `react-native` field first and resolves `webrtc/index.react-native.js`, which imports `react-native-webrtc` directly.
 
-It sets neither condition names nor `unstable_enablePackageExports`: both toolchains' defaults already enable package exports, and the condition order is the app's choice. The helper's comments carry the full reasoning, and `packages/cadre-rn/test/metro/with-cadre-metro.spec.ts` guards the three rules.
+It sets neither condition names nor `unstable_enablePackageExports`: both toolchains' defaults already enable package exports, and the condition order is the app's choice. The helper's comments carry the full reasoning, and `packages/cadre-rn/test/metro/with-cadre-metro.spec.ts` guards the three rules, including rules 2 and 3 under sereus-chat's condition order (`import` ahead of `require`), resolved by Metro's own resolver.
 
 > **Why the browser rewrite matters.** `@libp2p/crypto` has parallel
 > `*.browser.js` variants for every module that would otherwise call
@@ -539,9 +539,11 @@ It sets neither condition names nor `unstable_enablePackageExports`: both toolch
 > without the rewrite the first call to `generateKeyPair('Ed25519')` (phone
 > peer identity, enrollment, strand solicitation) fails with
 > `undefined cannot be used as a constructor`.  With package exports enabled,
-> Metro resolves these packages through `exports` and does not reliably apply the
-> `browser` rewrite to their internal relative imports, so rule 3 applies it by hand
-> (`sereus-health/apps/mobile/metro.config.js` carries the same pattern).
+> Metro returns a file it found through a package's `exports` without the `browser`
+> rewrite (`@libp2p/crypto/hmac` resolves to the Node `hmac/index.js`; relative imports
+> inside the package do get the rewrite, checked against metro-resolver 0.82.5), so
+> rule 3 applies it by hand (`sereus-health/apps/mobile/metro.config.js` carries the
+> same pattern).
 
 ## Two-Node Startup Sequence
 
