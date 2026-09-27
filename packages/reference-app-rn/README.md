@@ -317,9 +317,8 @@ reference-app-rn/
 │   ├── use-chat.ts         #   React hook: message polling & send
 │   ├── chat-strand.ts      #   Strand creation with embedded chat schema
 │   └── chat-operations.ts  #   SQL helpers (insert/query participants & messages)
-├── polyfills/              # Node built-in shims for Metro (see "Hermes Polyfills" section below)
 ├── drone.cadre.yaml        # Drone server config for local development
-├── metro.config.js         # Bundler config (workspace symlinks + Node.js polyfills)
+├── metro.config.js         # Bundler config: @serfab/cadre-rn/metro plus this repo's linked roots
 └── app.json                # Expo app manifest
 ```
 
@@ -335,16 +334,16 @@ reference-app-rn/
 
 ## Hermes Polyfills
 
-React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fast but missing many Web/Node.js APIs that libp2p, Optimystic, and their dependencies expect. The global polyfills ship in the kit [`@serfab/cadre-rn`](../cadre-rn/README.md), and `@serfab/cadre-rn/polyfills` **must be imported before any library code** — see `index.js`. This app's own `polyfills/` holds only the Node built-in shims Metro maps.
+React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fast but missing many Web/Node.js APIs that libp2p, Optimystic, and their dependencies expect. The global polyfills ship in the kit [`@serfab/cadre-rn`](../cadre-rn/README.md), and `@serfab/cadre-rn/polyfills` **must be imported before any library code** — see `index.js`. The kit also holds the Node built-in shims Metro maps (`shims/`) and the Metro helper that maps them (`@serfab/cadre-rn/metro`).
 
 ### How it works
 
 1. **`index.js`** imports `@serfab/cadre-rn/polyfills`, then `@serfab/cadre-rn/polyfills/webrtc`, then `@serfab/cadre-rn/boot-check` (the development-build audit table and reload logger), then hands off to Expo Router
-2. **`metro.config.js`** maps Node.js built-in modules (`node:crypto`, `node:os`) to local shim files via `extraNodeModules`, and rewrites `@libp2p/crypto`'s Node files to their `.browser.js` variants (see *libp2p/crypto Node → browser rewrite* below)
+2. **`metro.config.js`** calls `withCadreMetro` from `@serfab/cadre-rn/metro`, which maps Node.js built-in modules (`node:crypto`, `node:os`, …) to the kit's shim files via `extraNodeModules`, resolves the kit's native peers from this app, and rewrites `@libp2p/crypto`'s Node files to their `.browser.js` variants (see *libp2p/crypto Node → browser rewrite* below, and [docs/reference-app-rn.md § Metro Configuration](../../docs/reference-app-rn.md#metro-configuration))
 
 ### Polyfill inventory
 
-Files without a path are in `packages/cadre-rn/polyfills/`; the last three are in this app's `polyfills/`.
+Files without a path are in `packages/cadre-rn/polyfills/`; the last three are in `packages/cadre-rn/shims/`.
 
 | File | What it polyfills | Required by |
 |------|-------------------|-------------|
@@ -369,18 +368,18 @@ Files without a path are in `packages/cadre-rn/polyfills/`; the last three are i
 When adding a new dependency, watch for runtime errors like `Property 'X' doesn't exist` or `TypeError: X is not a function` — these typically mean Hermes is missing an API. The fix is:
 
 1. **Global API** (e.g., `structuredClone`, `Promise.withResolvers`): add to `@serfab/cadre-rn`'s `polyfills/hermes.js`
-2. **Node.js built-in module** (e.g., `crypto`, `os`): create a shim file in `polyfills/` and map it in `metro.config.js` under `extraNodeModules`
+2. **Node.js built-in module** (e.g., `crypto`, `os`): create a shim file in `@serfab/cadre-rn`'s `shims/` and add it to the alias table in its `metro/index.cjs`
 3. **Web API class** (e.g., `EventTarget`): add to `@serfab/cadre-rn`'s `polyfills/event.js`, or a new file there imported from its `polyfills/index.js`
 
 Always guard with `typeof` checks so the polyfill is skipped on platforms that have native support.
 
 ### libp2p/crypto Node → browser rewrite
 
-`@libp2p/crypto` ships parallel `.browser.js` variants for the modules that use Node's `crypto` at key generation / signing time (`keys/ed25519`, `keys/secp256k1`, `keys/rsa`, `keys/ecdh`, `webcrypto/webcrypto`, `hmac`, `ciphers/aes-gcm`). The browser variants use `@noble/curves` + WebCrypto and work under Hermes; the Node variants call `crypto.generateKeyPairSync`, `createPrivateKey`, `sign`, `verify` — none of which our `polyfills/node-crypto.js` implements.
+`@libp2p/crypto` ships parallel `.browser.js` variants for the modules that use Node's `crypto` at key generation / signing time (`keys/ed25519`, `keys/secp256k1`, `keys/rsa`, `keys/ecdh`, `webcrypto/webcrypto`, `hmac`, `ciphers/aes-gcm`). The browser variants use `@noble/curves` + WebCrypto and work under Hermes; the Node variants call `crypto.generateKeyPairSync`, `createPrivateKey`, `sign`, `verify` — none of which the kit's `shims/node-crypto.js` implements.
 
 The package declares the mapping in its `browser` field, but with `unstable_enablePackageExports: true` (Expo SDK 52+ default, and @libp2p/crypto ships an `exports` map) Metro resolves via `exports` and the `browser` rewrite is not reliably applied. Without the rewrite, the first call to `generateKeyPair('Ed25519')` throws `undefined cannot be used as a constructor` (the Node variant's `crypto.generateKeyPairSync` is undefined in the shim).
 
-`metro.config.js` reads the package's own `browser` map at config load time and applies it via `resolver.resolveRequest` — so any future upstream additions to that map are picked up automatically. The same pattern is mirrored in `sereus-health/apps/mobile/metro.config.js`.
+`@serfab/cadre-rn/metro` reads the package's own `browser` map from each installed copy it resolves into and applies it via `resolver.resolveRequest` — so any future upstream additions to that map are picked up automatically. The same pattern is mirrored in `sereus-health/apps/mobile/metro.config.js`.
 
 ### Built-in APIs (no polyfill needed)
 

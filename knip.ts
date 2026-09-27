@@ -58,6 +58,10 @@ const config: KnipConfig = {
 		'packages/cadre-provider': {},
 
 		'packages/cadre-rn': {
+			// The Node built-in shims are reached only through the `extraNodeModules` paths
+			// metro/index.cjs builds, so knip sees no importer (and would call their
+			// dependencies unused).
+			entry: ['shims/*.js'],
 			ignoreDependencies: [
 				// Optional peers by design: each is needed only by the subpath that imports it,
 				// and the README says which app installs what. `react-native` cannot also be a
@@ -70,6 +74,9 @@ const config: KnipConfig = {
 				// and a node_modules path lookup, which knip cannot follow.
 				'abort-controller',
 				'@libp2p/websockets',
+				// Node built-in name: knip does not read metro/index.cjs's
+				// `require.resolve('buffer/')` as the npm package.
+				'buffer',
 			],
 		},
 
@@ -122,24 +129,19 @@ const config: KnipConfig = {
 				'esbuild-loader',
 				'util',
 				// Node built-in name, so knip won't treat the bare `buffer` import in
-				// src/polyfills/buffer-global.ts as a package — same ignore as the rn and
-				// web apps carry.
+				// src/polyfills/buffer-global.ts as a package — same ignore as
+				// @serfab/cadre-rn and the web app carry.
 				'buffer',
 			],
 		},
 
 		'packages/reference-app-rn': {
-			// The Node built-in shims are reached only through `extraNodeModules` in
-			// metro.config.js, so knip sees no importer (and would call their dependencies
-			// unused).
-			entry: ['polyfills/*.js'],
 			// Expo / React Native framework-implicit deps: the Metro bundler and
 			// Babel toolchain consume these without an explicit import, and the
 			// Expo runtime resolves `expo-updates` / `@expo/vector-icons` from
 			// app.json + native config rather than from a static import knip sees.
 			ignoreDependencies: [
 				'@babel/runtime',
-				'buffer',
 				'@expo/vector-icons',
 				'expo-updates',
 			],

@@ -10,6 +10,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs libp2p and Optimystic read that Hermes and React Native lack (`AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `structuredClone`, `DOMException`, `crypto.subtle.digest`, EventTarget / `CustomEvent`, `Intl.PluralRules`, timer `ref()` / `unref()`, and more) |
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
+| `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
 
 ## Polyfills and boot check
 
@@ -35,6 +36,43 @@ React Native links native modules only for the app's own direct dependencies, so
 - `react-native-webrtc` (`^124.0.6`), for `/polyfills/webrtc` only.
 
 Both are optional peer dependencies of this package, as is `react-native` itself (`boot-check` imports its `DevSettings`). The pure-JavaScript polyfill libraries (`@ungap/structured-clone`, `web-streams-polyfill`, `event-target-polyfill`, `@noble/hashes`) are ordinary dependencies of this package; the app does not list them.
+
+## `@serfab/cadre-rn/metro`
+
+`withCadreMetro` takes the config the app's own toolchain produced, adds the Sereus settings to it and returns it, so an app's `metro.config.js` is one call. With Expo:
+
+```js
+// metro.config.js
+const { getDefaultConfig } = require('expo/metro-config');
+const { withCadreMetro } = require('@serfab/cadre-rn/metro');
+
+module.exports = withCadreMetro(getDefaultConfig(__dirname), { projectRoot: __dirname });
+```
+
+With bare React Native:
+
+```js
+// metro.config.js
+const { getDefaultConfig } = require('@react-native/metro-config');
+const { withCadreMetro } = require('@serfab/cadre-rn/metro');
+
+module.exports = withCadreMetro(getDefaultConfig(__dirname), { projectRoot: __dirname });
+```
+
+| Option | Meaning |
+|---|---|
+| `projectRoot` | The app's directory (`__dirname`). |
+| `linkedRoots` | Optional. Local checkouts whose packages are linked into the app (a monorepo root, sibling repositories). Each is watched, and its `node_modules` is searched after the app's own. Omit it when every package comes from npm. |
+
+What it adds, keeping whatever the incoming config already set (lists are appended to, an alias the app already has wins, an existing `resolveRequest` is called by the new one):
+
+- Symlink support, and the `linkedRoots` as watch folders and module search paths.
+- Aliases for the Node built-ins libp2p imports: `os` and `crypto` to small shims in this package, `net` and `tls` to an empty module, `stream` and `buffer` to the `readable-stream` and `buffer` packages. Both the bare and the `node:` names are mapped.
+- A `resolveRequest` that resolves this package's peer dependencies (`react-native` and the native modules) from the app, whoever imports them, so the bundle holds one copy of each; resolves `@babel/runtime` helpers to their CommonJS files from the app's copy; and swaps `@libp2p/crypto` and `@libp2p/webrtc` files for the `browser` variants their package lists, which run under Hermes.
+
+It relies on the toolchain's defaults for package exports (both Expo's and React Native's enable them) and leaves condition names to the app. The reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#metro-configuration) explains each setting; the comments in `metro/index.cjs` have the full reasoning.
+
+The app installs nothing extra for `/metro`. The peers it resolves are the ones the other subpaths already need, and only if something imports them.
 
 ## `@serfab/cadre-rn/noise-crypto`
 

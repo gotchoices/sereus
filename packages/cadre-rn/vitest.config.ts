@@ -7,9 +7,9 @@ import { defineConfig } from 'vitest/config';
  *  - **node** — the Noise crypto adapter, which runs `@optimystic/db-p2p`'s compiled
  *    output and so carries the guard.
  *
- *  - **polyfills** — the runtime polyfills under `polyfills/`. They read no sibling
- *    `dist`, so this project has no guard and `vitest run --project polyfills` stays
- *    runnable while a sibling is unbuilt.
+ *  - **polyfills** — the runtime polyfills under `polyfills/`, and the Metro helper under
+ *    `metro/`. They read no sibling `dist`, so this project has no guard and
+ *    `vitest run --project polyfills` stays runnable while a sibling is unbuilt.
  */
 export default defineConfig({
 	test: {
@@ -30,7 +30,7 @@ export default defineConfig({
 					globals: true,
 					environment: 'node',
 					include: ['test/**/*.spec.ts'],
-					exclude: ['test/polyfills/**'],
+					exclude: ['test/polyfills/**', 'test/metro/**'],
 					// Fails the run immediately when a dependency's dist predates its src, instead
 					// of testing a stale build — see test/global-setup.ts.
 					globalSetup: ['./test/global-setup.ts'],
@@ -40,7 +40,7 @@ export default defineConfig({
 				test: {
 					name: 'polyfills',
 					environment: 'node',
-					include: ['test/polyfills/**/*.spec.ts'],
+					include: ['test/polyfills/**/*.spec.ts', 'test/metro/**/*.spec.ts'],
 				},
 			},
 		],

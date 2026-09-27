@@ -239,7 +239,7 @@ Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-bi
 
 ### Polyfills
 
-The global polyfills live in the React Native kit, [`@serfab/cadre-rn`](../packages/cadre-rn/README.md), under `packages/cadre-rn/polyfills/`. A Sereus React Native app depends on the kit rather than copying the files. In this section, `polyfills/<file>.js` means the kit's file unless it says otherwise; the Node built-in shims (`node-os.js`, `node-crypto.js`, `empty.js`, below) are still in the app's own `polyfills/` directory.
+The global polyfills live in the React Native kit, [`@serfab/cadre-rn`](../packages/cadre-rn/README.md), under `packages/cadre-rn/polyfills/`. A Sereus React Native app depends on the kit rather than copying the files. In this section, `polyfills/<file>.js` means the kit's file. The Node built-in shims Metro maps (`node-os.js`, `node-crypto.js`, `empty.js`, below) are in the kit's `shims/` directory, wired in by `@serfab/cadre-rn/metro` (§ Metro Configuration).
 
 The app's job is three imports at the top of its entry file (`index.js`), before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time, so `@serfab/cadre-rn/polyfills` must come first:
 
@@ -266,11 +266,11 @@ The pure-JavaScript libraries the polyfills use (`@ungap/structured-clone`, `web
 }
 ```
 
-The app also lists what its Metro aliases point at (`buffer`, `readable-stream`, and `@noble/hashes` for `polyfills/node-crypto.js`; see § Metro module aliases). Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
+The packages the Metro aliases point at (`buffer`, `readable-stream`, and `@noble/hashes` for `shims/node-crypto.js`; see § Metro module aliases) are kit dependencies too, so the app lists none of them. Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
 
-`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both the kit's `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and the app's `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It also resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously. The polyfills use the v2 import path, so both the kit and the app declare it `^2.0.0`.
+`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both of the kit's `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and `shims/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It also resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously. The kit uses the v2 import path and declares it `^2.0.0`.
 
-**One copy of each native module.** The kit's files sit at `packages/cadre-rn/polyfills/`, outside the app, and Metro looks in the `node_modules` directories above the importing file before its `nodeModulesPaths`. The repo root holds a second `react-native-webrtc` (hoisted there for `@libp2p/webrtc`), so without help the kit's `webrtc.js` would bundle that copy beside the app's. `metro.config.js` therefore resolves the kit's peer dependencies as if the app imported them.
+**One copy of each native module.** The kit's files sit at `packages/cadre-rn/polyfills/`, outside the app, and Metro looks in the `node_modules` directories above the importing file before its `nodeModulesPaths`. The repo root holds a second `react-native-webrtc` (hoisted there for `@libp2p/webrtc`), so without help the kit's `webrtc.js` would bundle that copy beside the app's. `@serfab/cadre-rn/metro` therefore resolves the kit's peer dependencies as if the app imported them (§ Metro Configuration).
 
 #### Global polyfills (`polyfills/hermes.js`)
 
@@ -330,16 +330,20 @@ These APIs are natively available in the target Hermes/Expo versions used by thi
 
 #### Metro module aliases (Node.js built-in shims)
 
-These are configured in `metro.config.js` via `extraNodeModules` and map both `node:X` and bare `X` imports:
+`withCadreMetro` (§ Metro Configuration) sets these as `extraNodeModules`, under both the `node:X` and the bare `X` name. Metro consults them only after every `node_modules` lookup fails. An alias the app's config already has wins over the kit's.
 
 | Module | Target | Source | Required by |
 |--------|--------|--------|-------------|
-| `os` / `node:os` | `packages/reference-app-rn/polyfills/node-os.js` | Custom shim (networkInterfaces, platform, type, hostname) | @libp2p/utils |
-| `crypto` / `node:crypto` | `packages/reference-app-rn/polyfills/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | multiformats/hashes/sha2, @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
-| `stream` / `node:stream` | `readable-stream` (npm) | Metro `extraNodeModules` | libp2p stream handling |
-| `buffer` / `node:buffer` | `buffer` (npm) | Metro `extraNodeModules` | libp2p, multiformats |
-| `net` / `node:net` | `packages/reference-app-rn/polyfills/empty.js` | Empty stub | libp2p transitive imports — never reached at RN runtime, but needs to resolve so the bundle builds |
-| `tls` / `node:tls` | `packages/reference-app-rn/polyfills/empty.js` | Empty stub | libp2p transitive imports — never reached at RN runtime, but needs to resolve so the bundle builds |
+| `os` / `node:os` | `packages/cadre-rn/shims/node-os.js` | Custom shim (networkInterfaces, platform, type, hostname) | @libp2p/utils |
+| `crypto` / `node:crypto` | `packages/cadre-rn/shims/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | The Node variants of multiformats/hashes/sha2, @chainsafe/libp2p-noise crypto/index and @libp2p/crypto's key modules. *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
+| `stream` / `node:stream` | `readable-stream` (npm, a kit dependency) | Metro `extraNodeModules` | libp2p stream handling |
+| `buffer` / `node:buffer` | `buffer` (npm, a kit dependency) | Metro `extraNodeModules` | libp2p, multiformats |
+| `net` / `node:net` | `packages/cadre-rn/shims/empty.js` | Empty stub | The Node variant of @libp2p/websockets' listener — never reached at RN runtime, but needs to resolve so the bundle builds |
+| `tls` / `node:tls` | `packages/cadre-rn/shims/empty.js` | Empty stub | As `net` |
+
+In the reference app's Android export (2026-09-26) only `node-os.js` is bundled: Metro picks the `browser` variants of the modules listed for `crypto`, `net` and `tls`, and nothing bundled imports `stream` or `buffer` by those names. The other entries are there for an app whose resolver settings land on a Node variant, where an unmapped built-in fails the whole bundle with an error naming the importer rather than the cause.
+
+sereus-chat's config also carries a `sign()` stub on the crypto shim and `http2`, `path` and `fs` stubs. The kit does not: they served cadre-core's push notifiers and file-based helpers, which now sit behind Node-only subpaths (`@serfab/cadre-core/push-node`, `/key-store-file`, …) that a React Native app never imports, and stubbing `path` or `fs` to `{}` would break any dependency that really uses them.
 
 #### Commonly needed beyond core
 
@@ -363,7 +367,7 @@ packages/reference-app-rn/
   app.json                    # Expo config (SDK 53, custom dev client)
   package.json                # workspace:^ deps on cadre-core, db-p2p, etc.
   tsconfig.json
-  metro.config.js             # Workspace symlink resolution for Metro
+  metro.config.js             # withCadreMetro(...) with this repo's linked roots
   eas.json                    # EAS Build profiles (development, preview)
   app/
     _layout.tsx               # Expo Router root layout
@@ -386,15 +390,11 @@ packages/reference-app-rn/
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
-  polyfills/                  # Node built-in shims, reached through metro.config.js
-    node-os.js                # Minimal os module shim for libp2p
-    node-crypto.js            # createHash() shim via @noble/hashes
-    empty.js                  # net / tls stubs
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
 ```
 
-The global polyfills are in the kit:
+The global polyfills, the Node built-in shims and the Metro helper are in the kit:
 
 ```
 packages/cadre-rn/polyfills/
@@ -407,6 +407,12 @@ packages/cadre-rn/polyfills/
   registry.js                 # Records which globals each polyfill actually patched
   audit.js                    # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
   reload-reason.js            # Logs [reload] <reason> before a JS-initiated reload (__DEV__ only)
+packages/cadre-rn/shims/        # Node built-in shims, reached through @serfab/cadre-rn/metro
+  node-os.js                  # Minimal os module shim for libp2p
+  node-crypto.js              # createHash() shim via @noble/hashes
+  empty.js                    # net / tls stubs
+packages/cadre-rn/metro/
+  index.cjs                   # @serfab/cadre-rn/metro: withCadreMetro(config, options)
 ```
 
 ### Key Dependencies
@@ -414,7 +420,7 @@ packages/cadre-rn/polyfills/
 | Package | Source | Purpose |
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
-| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills) |
+| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration) |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
 | `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |
@@ -445,7 +451,7 @@ packages/cadre-rn/polyfills/
 | `WebAssembly` | `@chainsafe/as-sha256` and `@chainsafe/as-chacha20poly1305` reach the graph only through `@chainsafe/libp2p-noise`, whose package.json `browser` field maps `crypto/index.js` to `crypto/index.browser.js` — noble ciphers and hashes, no WebAssembly. The exported bundle contains `pureJsCrypto` and neither `as-sha256` nor `as-chacha20poly1305` |
 | `navigator.userAgent` | `libp2p`'s `user-agent.browser.js` reads it with no guard, but libp2p's package.json `react-native` field points at `user-agent.react-native.js` instead, which uses `Platform.OS`. The exported bundle contains `react-native/` and no `browser/`, so identify announces `js-libp2p/<version> react-native/android-<version>` — on the 2026-09-16 device run, `js-libp2p/3.1.3 react-native/android-29` |
 
-Those last three all depend on Metro applying a package's `browser`/`react-native` subpath map to that package's own internal relative imports. `metro.config.js` hand-rewrites that map for `@libp2p/crypto` and `@libp2p/webrtc` because package `exports` resolution made it unreliable for them — so if a future bundle ever fails to resolve `@chainsafe/as-*`, or announces `browser/undefined` in identify, this is the mechanism that slipped.
+Those last three all depend on Metro applying a package's `browser`/`react-native` subpath map to that package's own internal relative imports. `@serfab/cadre-rn/metro` hand-rewrites that map for `@libp2p/crypto` and `@libp2p/webrtc` because package `exports` resolution made it unreliable for them — so if a future bundle ever fails to resolve `@chainsafe/as-*`, or announces `browser/undefined` in identify, this is the mechanism that slipped.
 
 **`AggregateError` is native.** `libp2p/dist/src/connection-manager/dial-queue.js` throws `new AggregateError(errors, 'All multiaddr dials failed')` when every address for a peer fails. The repo holds the `hermesc` compiler but no Hermes VM, so only a device could say whether Hermes (`hermes-2025-06-04-RNv0.79.3`) provides it. The boot audit on 2026-09-16 (Galaxy Note 9, Android 10, Expo SDK 53 dev client) found it native, with `errors` and `message` intact and `instanceof Error` true, so a fully failed dial carries its per-address causes.
 
@@ -465,68 +471,56 @@ The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each
 
 ### Metro Configuration
 
-Metro needs to resolve workspace symlinks, sibling repo packages, and Node.js built-in modules:
+The app's `metro.config.js` is one call to the kit's `withCadreMetro` (`@serfab/cadre-rn/metro`), which adds what a Sereus React Native app needs to the config the app's own toolchain produced:
 
 ```js
 // metro.config.js
 const { getDefaultConfig } = require('expo/metro-config');
+const { withCadreMetro } = require('@serfab/cadre-rn/metro');
 const path = require('path');
 
-const config = getDefaultConfig(__dirname);
-
-// Resolve workspace roots for symlinked packages. `fretRoot` is required because
-// @optimystic/db-p2p portals `p2p-fret` from the sibling ../Fret monorepo; Metro
-// must be allowed to follow that symlink out of the tree or a local release
-// bundle fails with "Unable to resolve module p2p-fret". On EAS the portal
-// resolutions are stripped and p2p-fret resolves from npm, so — like the
-// optimystic/quereus roots — this only matters for local bundling.
-const workspaceRoot = path.resolve(__dirname, '../..');
-const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
-const quereusRoot = path.resolve(__dirname, '../../../quereus');
-const fretRoot = path.resolve(__dirname, '../../../Fret');
-
-config.watchFolders = [workspaceRoot, optimysticRoot, quereusRoot, fretRoot];
-config.resolver.unstable_enableSymlinks = true;
-config.resolver.nodeModulesPaths = [
-  path.resolve(__dirname, 'node_modules'),
-  path.resolve(workspaceRoot, 'node_modules'),
-  path.resolve(optimysticRoot, 'node_modules'),
-  path.resolve(quereusRoot, 'node_modules'),
-  path.resolve(fretRoot, 'node_modules'),
-];
-
-// Map Node.js built-ins to polyfills/npm packages
-config.resolver.extraNodeModules = {
-  'node:os': path.resolve(__dirname, 'polyfills/node-os.js'),
-  'node:stream': require.resolve('readable-stream'),
-  'node:buffer': require.resolve('buffer'),
-  'node:crypto': path.resolve(__dirname, 'polyfills/node-crypto.js'),
-  os: path.resolve(__dirname, 'polyfills/node-os.js'),
-  stream: require.resolve('readable-stream'),
-  buffer: require.resolve('buffer'),
-  crypto: path.resolve(__dirname, 'polyfills/node-crypto.js'),
-};
-
-// Apply @libp2p/crypto's own `browser` map via resolveRequest — the package
-// ships `.browser.js` variants (Ed25519/secp256k1/RSA/ECDH keys, webcrypto,
-// hmac, aes-gcm) that use @noble/curves + WebCrypto instead of Node's crypto.
-// With `unstable_enablePackageExports: true` Metro resolves via `exports` and
-// does not reliably apply the `browser` rewrite on its own.  See
-// `packages/reference-app-rn/metro.config.js` for the implementation.
-
-module.exports = config;
+module.exports = withCadreMetro(getDefaultConfig(__dirname), {
+  projectRoot: __dirname,
+  linkedRoots: [
+    path.resolve(__dirname, '../..'),               // this monorepo
+    path.resolve(__dirname, '../../../optimystic'), // portaled sibling checkouts
+    path.resolve(__dirname, '../../../quereus'),
+    path.resolve(__dirname, '../../../Fret'),
+  ],
+});
 ```
+
+| Option | Meaning |
+|--------|---------|
+| `projectRoot` | The app's directory (`__dirname`). The kit's peers and `@babel/runtime` resolve from here. |
+| `linkedRoots` | Local checkouts whose packages are linked into the app. Each is added to `watchFolders`, and its `node_modules` to `resolver.nodeModulesPaths`. Omit it when every package comes from npm. |
+
+`Fret` is a linked root because `@optimystic/db-p2p` portals `p2p-fret` from the sibling `../Fret` monorepo: Metro must be allowed to follow that symlink or a local release bundle fails with "Unable to resolve module p2p-fret". On EAS the portal resolutions are stripped and `p2p-fret` comes from npm, so, like the optimystic and quereus roots, it only matters for local bundling. The app's `metro.config.js` keeps two notes beside `linkedRoots`: what happens when a fourth portaled sibling appears, and the accepted tradeoff of watching whole repository roots.
+
+`withCadreMetro` mutates and returns the config, keeping what it already had: lists are appended to, an alias the app already set wins over the kit's, and an existing `resolveRequest` is called by the new one. It sets:
+
+- `resolver.unstable_enableSymlinks = true`.
+- `watchFolders`: the existing ones, then `linkedRoots`.
+- `resolver.nodeModulesPaths`: the existing ones, then `<projectRoot>/node_modules`, then each linked root's `node_modules`, in that order. The app's `test/polyfills/metro-resolution.ts` reads this list to find installed packages the way Metro does.
+- `resolver.extraNodeModules`: the Node built-in aliases (§ Metro module aliases).
+- `resolver.resolveRequest`: a wrapper that applies three rules, in this order.
+  1. **The kit's peers resolve from the app.** An import of a name in the kit's `peerDependencies` (`react-native`, `react-native-webrtc`, `react-native-get-random-values`, `react-native-quick-crypto`, `@craftzdog/react-native-buffer`), or of a subpath of one, resolves as if a file in `projectRoot` imported it, whoever the importer is. Metro looks in the `node_modules` directories above the importing file first; in this repo the kit lives outside the app, and the repo root holds its own `react-native-webrtc` and the kit's types-only dev copy of `react-native-quick-crypto`, either of which would otherwise be bundled beside the app's. Native code is linked only for the app's own dependencies, so any second copy is JavaScript that does not match the native side. A peer the app has not installed fails with Metro's usual "unable to resolve", and only if something imports it.
+  2. **`@babel/runtime/*` resolves to the CommonJS helper in the app's copy**, through Node's `require.resolve` from `projectRoot`. An app whose condition list puts `import` ahead of `require` (sereus-chat's does) otherwise gets the ESM wrapper, and the bundle fails at startup with `_interopRequireDefault is not a function`. Expo's default conditions already pick the CommonJS file, so in this app the rule only makes every importer use the app's copy, the one § Key Dependencies requires to be 7.29.2 or newer.
+  3. **`browser`-field variants for `@libp2p/crypto` and `@libp2p/webrtc`.** A resolved file inside either package that the package's `browser` field lists is swapped for its target; targets that are not paths (`"node:net": false`) are skipped. The map is read from the package directory of the file actually resolved, so every installed copy is covered: this app's Android export (2026-09-26) holds 15 copies of `@libp2p/crypto` (the app's, the repo root's, and nested ones under optimystic and Fret), all on their browser key modules. In `@libp2p/webrtc` the rewrite reaches `private-to-public`'s transport and `get-rtcpeerconnection`. Its `webrtc/index.js` entry never fires: Metro applies the package's `react-native` field first and resolves `webrtc/index.react-native.js`, which imports `react-native-webrtc` directly.
+
+It sets neither condition names nor `unstable_enablePackageExports`: both toolchains' defaults already enable package exports, and the condition order is the app's choice. The helper's comments carry the full reasoning, and `packages/cadre-rn/test/metro/with-cadre-metro.spec.ts` guards the three rules.
 
 > **Why the browser rewrite matters.** `@libp2p/crypto` has parallel
 > `*.browser.js` variants for every module that would otherwise call
 > `crypto.generateKeyPairSync`, `createPrivateKey`, `sign`, or `verify` from
-> Node.js's built-in `crypto`.  Our `polyfills/node-crypto.js` intentionally
+> Node.js's built-in `crypto`.  The kit's `shims/node-crypto.js` intentionally
 > only implements `createHash` (SHA-256/SHA-512 via `@noble/hashes`), so
 > without the rewrite the first call to `generateKeyPair('Ed25519')` (phone
 > peer identity, enrollment, strand solicitation) fails with
-> `undefined cannot be used as a constructor`.  The rewrite is applied in
-> Metro's `resolveRequest` hook — see `packages/reference-app-rn/metro.config.js`
-> and `sereus-health/apps/mobile/metro.config.js` (same pattern).
+> `undefined cannot be used as a constructor`.  With package exports enabled,
+> Metro resolves these packages through `exports` and does not reliably apply the
+> `browser` rewrite to their internal relative imports, so rule 3 applies it by hand
+> (`sereus-health/apps/mobile/metro.config.js` carries the same pattern).
 
 ## Two-Node Startup Sequence
 
@@ -738,7 +732,7 @@ When Metro sends a development build a changed module, Fast Refresh applies it i
 | A build that rewrites `dist` files with identical bytes | An empty update |
 | A content change to a module the app bundles: this app's `src/`, a sereus workspace package it imports, or a linked `dist` file in optimystic, quereus or Fret | The module is sent, and the app reloads unless Fast Refresh can apply it |
 
-Ticket, doc and commit writes never need to pause. On `yarn start`, the writes that must wait until the run ends are edits to bundled source and builds that change linked `dist` output. The optional watch narrowing (a Metro `blockList` for `tickets/`, `docs/` and similar) was measured to change none of this and is not configured; the note at `watchFolders` in `metro.config.js` says when to revisit it.
+Ticket, doc and commit writes never need to pause. On `yarn start`, the writes that must wait until the run ends are edits to bundled source and builds that change linked `dist` output. The optional watch narrowing (a Metro `blockList` for `tickets/`, `docs/` and similar) was measured to change none of this and is not configured; the accepted-tradeoff note beside `linkedRoots` in `metro.config.js` says when to revisit it.
 
 One reload does not come from a write. If the app's connection to Metro drops (Wi-Fi, a lost `adb reverse`, Metro restarted), the next time the app loads a module bundled lazily (a dynamic `import()` fetched from Metro, such as optimystic's `import('p2p-fret')`), it reloads with `Bundle Splitting – Metro disconnected`.
 

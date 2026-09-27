@@ -235,7 +235,7 @@ natively than Hermes does**, so several Hermes polyfills become no-ops here.
 ## Webpack Resolver Config
 
 `webpack.config.js` reproduces the RN Metro resolver behaviour
-(`reference-app-rn/metro.config.js`) so the same import graph bundles under
+(`@serfab/cadre-rn/metro`, which `reference-app-rn/metro.config.js` calls) so the same import graph bundles under
 NativeScript. The NS build is webpack 5 via `@nativescript/webpack`, configured
 through `webpack.chainWebpack`.
 

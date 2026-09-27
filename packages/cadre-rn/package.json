@@ -2,11 +2,13 @@
   "name": "@serfab/cadre-rn",
   "version": "1.5.0",
   "type": "module",
-  "description": "React Native kit for Sereus apps - native crypto for libp2p-noise and the runtime polyfills a cadre node needs under Hermes, with Metro configuration to follow",
+  "description": "React Native kit for Sereus apps - native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
   "files": [
     "src",
     "dist",
     "polyfills",
+    "shims",
+    "metro",
     "!dist/test",
     "!**/*.tsbuildinfo",
     "README.md"
@@ -19,6 +21,10 @@
     "./polyfills": "./polyfills/index.js",
     "./polyfills/webrtc": "./polyfills/webrtc.js",
     "./boot-check": "./polyfills/boot-check.js",
+    "./metro": {
+      "require": "./metro/index.cjs",
+      "default": "./metro/index.cjs"
+    },
     "./package.json": "./package.json"
   },
   "repository": {
@@ -36,7 +42,8 @@
     "noise",
     "crypto",
     "polyfills",
-    "hermes"
+    "hermes",
+    "metro"
   ],
   "scripts": {
     "clean": "rimraf dist",
@@ -49,7 +56,9 @@
     "@noble/hashes": "^2.0.0",
     "@optimystic/db-p2p": "^1.6.0",
     "@ungap/structured-clone": "^1.3.0",
+    "buffer": "^6.0.3",
     "event-target-polyfill": "^0.0.4",
+    "readable-stream": "^4.7.0",
     "web-streams-polyfill": "^4.1.0"
   },
   "peerDependencies": {
