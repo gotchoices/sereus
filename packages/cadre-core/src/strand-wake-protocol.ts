@@ -302,6 +302,11 @@ export interface DialWakeOptions {
  * exactly the signaling address this ordering puts first — silently inverting
  * it, with no per-dial sorter override to opt out of. For the same reason this
  * does not use `dialPeerAddrs`, which puts relayed addresses last.
+ *
+ * NOTE: unlike `dialPeerAddrs`, this does not drop addresses that relay through this node, so a
+ * relay waking a peer that holds a reservation on it tries that address and gets `Can not dial
+ * self` (fast, then the next candidate). If wakes are ever sent from a relay to its own
+ * reservation holders routinely, share `dialPeerAddrs`'s filter here.
  */
 export async function dialWake(
   node: Libp2p,
