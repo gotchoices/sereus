@@ -80,7 +80,13 @@ same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
 (one party's two machines over the same fixture) additionally pins reservation-loss
 recovery on every node (control and strand alike re-reserve after the relay restarts) —
-see [architecture.md → Relay Integration](architecture.md#relay-integration).
+see [architecture.md → Relay Integration](architecture.md#relay-integration). The
+peer-join whole-store block catch-up (`peer-join-backfill.ts`) that makes a late joiner's
+node physically hold blocks committed before it joined never targets the relay itself: it
+schedules a peer only once its libp2p identify names the strand's own block-transfer
+protocol, which a relay never does (gotchoices/sereus#18 — before this, the relay was
+scheduled anyway, every push to it failed, and it was eventually named in a misleading
+`console.warn`).
 Still open, and NOT covered by that scenario: TWO relays (the parties reserved on
 different relays, so the path between them crosses relay boundaries — the ordinary case
 once each phone picks its own relay) is untested

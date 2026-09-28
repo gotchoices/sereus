@@ -1,16 +1,27 @@
 import debug from 'debug';
-import type { Connection, Libp2p, PeerId } from '@libp2p/interface';
+import type { IdentifyResult, Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionId, IPeerNetwork } from '@optimystic/db-core';
-import { BlockTransferClient, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
+import { BlockTransferClient, buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import { peerJoinPushBudget } from './link-budget.js';
 
 // Peer-join whole-store block catch-up, shared by the STRAND networks and the CONTROL
-// network. On `connection:open` (debounced) it pushes every committed, materialized block
-// in the local raw store to the new peer, so a machine that joined after blocks were
+// network. On a new peer's `peer:identify` result — libp2p's identify protocol runs once per
+// connection and reports the protocols the remote supports — naming this network's own
+// block-transfer protocol, it schedules a debounced push of every committed, materialized
+// block in the local raw store to that peer, so a machine that joined after blocks were
 // committed still ends up physically holding them. Optimystic has no cohort-join catch-up
 // of its own; a block committed while its writer was alone has exactly one holder forever
 // without this (named collection-header blocks are written once, at collection creation,
 // and their revision never moves again — so no later commit ever carries them anywhere).
+//
+// A peer whose identify does not name the protocol — a bare circuit relay, a bootstrap node,
+// or (on the control network) a stranger the inbound gate admits without membership — is
+// never scheduled at all: it cannot receive anything, since the protocol id is namespaced per
+// network and the dial would simply fail. Before this filter existed, such a peer WAS
+// scheduled, failed every dial, and after `PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES` produced a
+// `console.warn` naming it — gotchoices/sereus#18 is two relay-only parties restarting and
+// printing exactly that warning about their own relay, forever, on every reconnect. See
+// {@link speaksBlockTransfer}.
 //
 // NOTE: this copies the WHOLE local store to every newly connected peer, which is right
 // while a network is one party's handful of machines (see docs/architecture.md →
@@ -26,12 +37,10 @@ import { peerJoinPushBudget } from './link-budget.js';
 // Membership — the one place the two networks differ, expressed as the optional
 // `authorizePeer` dep:
 //
-// - STRAND networks pass none. Anything connected on a strand's own libp2p network already
-//   receives cohort replicas of new commits, so pushing older blocks to it exposes nothing
-//   new; adding a gate would diverge from what ordinary replication already does there. A
-//   peer that does NOT speak the strand's block-transfer protocol (a bare circuit relay or
-//   bootstrap node the strand node also connects to) cannot receive anything: the protocol
-//   id is namespaced per strand, so the dial fails and the push is dropped.
+// - STRAND networks pass none. Anything that speaks the strand's own block-transfer protocol
+//   already receives cohort replicas of new commits, so pushing older blocks to it exposes
+//   nothing new; adding a gate would diverge from what ordinary replication already does
+//   there.
 // - The CONTROL network MUST pass one, because that argument does not carry over: its
 //   inbound connection gate deliberately admits non-members in several states (an
 //   un-enrolled node taking its seed, an open enrollment window, an outstanding
@@ -40,8 +49,8 @@ import { peerJoinPushBudget } from './link-budget.js';
 //   peer would hand a stranger the party's entire membership, addresses and strand list.
 //   `CadreNode` passes `isAuthorizedMember`; the gate is consulted at PUSH time, not at
 //   schedule time, and fails closed on a thrown check. A denied run is not memoized, so
-//   the peer is retried on its next `connection:open` — or sooner, via
-//   `scheduleConnectedPeers()` on a membership change (the production join order is
+//   the peer is retried on its next `peer:identify` (a reconnect re-runs identify) — or
+//   sooner, via `scheduleConnectedPeers()` on a membership change (the production join order is
 //   connect-then-authorize, so the denial at dial time is the expected first pass).
 //
 // Both per-push deadlines are DERIVED from the declared link round trip
@@ -62,14 +71,14 @@ import { peerJoinPushBudget } from './link-budget.js';
 //
 // RETRY, and why it backs off. A run whose PUSH FAILED — the transport threw, which is what
 // a dial or response deadline expiring looks like here — re-arms on a doubling backoff
-// (`retryBackoffMs` to `maxRetryBackoffMs`), and a `connection:open` arriving while that wait
+// (`retryBackoffMs` to `maxRetryBackoffMs`), and a `peer:identify` arriving while that wait
 // is outstanding is DROPPED rather than collapsing it back to the debounce. Both halves are
 // load-bearing:
 //
 // - Without the re-arm, a transient push failure over a stable connection left the peer
 //   partially copied until its next reconnect (read repair still covered reads meanwhile).
 // - Without dropping churn inside the wait, a peer that cannot be reached at all is
-//   re-dialled on every `connection:open` forever. That is not hypothetical: the 2026-09-26
+//   re-dialled on every `peer:identify` forever. That is not hypothetical: the 2026-09-26
 //   relayed reproduction shows one peer re-opening a connection about every 14.5 s for a
 //   200-second run, each event starting a catch-up whose dial could not possibly finish.
 //   The connection kept re-appearing because Optimystic's own block-transfer push path
@@ -87,13 +96,13 @@ import { peerJoinPushBudget } from './link-budget.js';
 // {@link Chunk.proofs}). Re-arming on those would re-push the WHOLE store to that peer every
 // `maxRetryBackoffMs` for as long as the node runs, and report the failure below as a link
 // budget problem when nothing about the link is wrong. All three still leave the peer
-// un-memoized, so its next `connection:open` retries — the behaviour that predates the
+// un-memoized, so its next `peer:identify` retries — the behaviour that predates the
 // backoff, and the right one for a verdict rather than a timeout. Denial in particular is
 // re-driven on purpose by `scheduleConnectedPeers()` the moment the membership commit lands,
 // because the control network's join order is connect-then-authorize.
 //
 // A re-arm is also skipped when the peer is no longer CONNECTED. This module's trigger is
-// `connection:open`, so a peer that went away already has one: re-arming instead would leave
+// `peer:identify`, so a peer that went away already has one: re-arming instead would leave
 // a machine dialing a peer it cannot see once a minute for the rest of its uptime.
 //
 // After `PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES` consecutive failures one `console.warn`
@@ -101,16 +110,16 @@ import { peerJoinPushBudget } from './link-budget.js';
 // nothing at all: the connection simply never appears and only a DEBUG log mentions a dial
 // timeout.
 //
-// NOTE: a failing dial to a non-speaking peer costs one dial timeout per attempt, and is
-// never memoized (only clean runs are). Bounded by the backoff above plus the
-// unreachable-peer bail in `runCatchUp` — one dial per attempt, not one per chunk. If a node
-// ever holds many such connections, or the enumeration ahead of the first chunk gets
-// expensive, pre-check `libp2p.peerStore` for this network's block-transfer protocol before
-// enumerating.
+// NOTE: the protocol check happens once — either when a connection's `peer:identify` fires,
+// or, for a peer already connected when this instance starts, when `scheduleConnectedPeers()`
+// reads its protocols back from the peer store — and is never repeated once a peer is
+// scheduled. A peer that stops speaking the protocol after being scheduled (should that ever
+// happen) is not de-scheduled; `runCatchUp`'s own unreachable-peer bail is what would catch
+// that case instead.
 //
 // NOTE: a peer that disconnects INSIDE a backoff wait still costs the one attempt that wait
 // was already armed for — the connectivity check is made when the re-arm is decided, not when
-// the timer fires, and this module subscribes to `connection:open` only. One dial, not a
+// the timer fires, and this module subscribes to `peer:identify` only. One dial, not a
 // recurring one; if a node ever holds many transient peers, subscribe to `connection:close`
 // and clear the pending timer there.
 
@@ -123,6 +132,18 @@ const log = debug('sereus:cadre:peer-join-backfill');
  * changes it or starts exporting it.
  */
 export const MAX_BLOCK_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Whether an identified peer's protocol list names this network's own block-transfer
+ * protocol — the one gate that decides whether {@link PeerJoinBackfill} schedules a peer at
+ * all. A peer that lacks it (a bare circuit relay, a bootstrap node, a stranger the control
+ * network's inbound gate admitted without membership) cannot receive a push no matter how
+ * long it is dialed, since the protocol id is namespaced per network. Exported because a
+ * later strand peer-address ticket's identify-driven observation needs the identical test.
+ */
+export function speaksBlockTransfer(protocols: readonly string[], protocolPrefix: string): boolean {
+  return protocols.includes(buildBlockTransferProtocol(protocolPrefix));
+}
 
 /**
  * Consecutive failed catch-up runs against ONE peer before the module says so on
@@ -277,7 +298,7 @@ function base64WireBytes(rawBytes: number): number {
  * Best-effort throughout: nothing here throws into a libp2p event handler or into a
  * runtime bring-up; a failed chunk is logged and the run continues. A peer is marked
  * fully caught up ONLY after a run with no thrown chunk and an empty `missing` list, so
- * the next `connection:open` from a peer whose catch-up failed retries it.
+ * the next `peer:identify` from a peer whose catch-up failed retries it.
  */
 export class PeerJoinBackfill {
   private readonly config: Required<PeerJoinBackfillConfig>;
@@ -303,31 +324,43 @@ export class PeerJoinBackfill {
   private readonly failures = new Map<string, number>();
   /**
    * Epoch ms before which a peer's catch-up must not be re-run, set alongside a backoff timer
-   * that will run it. Its presence is what makes `connection:open` churn free: a schedule
+   * that will run it. Its presence is what makes `peer:identify` churn free: a schedule
    * arriving inside the wait is dropped, rather than collapsing the backoff to the debounce.
    */
   private readonly retryAfter = new Map<string, number>();
   /** Peers already reported on `console.warn`; reset when a run finally lands cleanly. */
   private readonly warned = new Set<string>();
-  private readonly onConnectionOpen: (evt: CustomEvent<Connection>) => void;
+  private readonly onPeerIdentify: (evt: CustomEvent<IdentifyResult>) => void;
   private loggedNoListBlockIds = false;
 
   constructor(private readonly deps: PeerJoinBackfillDeps, config?: PeerJoinBackfillConfig) {
     this.config = { ...DEFAULT_PEER_JOIN_BACKFILL, ...config };
     this.createPushClient = deps.createPushClient
       ?? ((peerId) => new BlockTransferClient(peerId, deps.peerNetwork, deps.protocolPrefix));
-    this.onConnectionOpen = (evt) => this.schedulePeer(evt.detail.remotePeer);
+    this.onPeerIdentify = (evt) => {
+      const { peerId, protocols } = evt.detail;
+      if (speaksBlockTransfer(protocols, this.deps.protocolPrefix)) {
+        this.schedulePeer(peerId);
+      }
+    };
   }
 
-  /** Subscribe to connection:open AND schedule a catch-up for peers already connected. */
+  /**
+   * Subscribe to `peer:identify` AND schedule a catch-up for already-connected peers whose
+   * stored protocols already name this network's block-transfer protocol — a peer that does
+   * not speak it (a bare circuit relay, a bootstrap node) is never scheduled at all. See
+   * {@link speaksBlockTransfer} and the module comment.
+   */
   start(): void {
     if (this.started || this.stopped || !this.config.enabled) return;
     this.started = true;
-    this.deps.libp2p.addEventListener('connection:open', this.onConnectionOpen);
-    // A runtime rebuilt over live connections (resumeStrand) never sees their
-    // connection:open, so walk what is already connected once.
-    const scheduled = this.scheduleConnectedPeers();
-    log('[%s] started (%d peer(s) already connected)', this.deps.label, scheduled);
+    this.deps.libp2p.addEventListener('peer:identify', this.onPeerIdentify);
+    // A runtime rebuilt over live connections (resumeStrand) never sees their peer:identify —
+    // it already fired before this instance existed, but its result is persisted in the peer
+    // store — so walk what is already connected once.
+    void this.scheduleConnectedPeers().then((scheduled) => {
+      log('[%s] started (%d peer(s) already connected)', this.deps.label, scheduled);
+    });
   }
 
   /** Unsubscribe, clear timers; in-flight runs observe the stopped flag and bail. */
@@ -335,7 +368,7 @@ export class PeerJoinBackfill {
     if (this.stopped) return;
     this.stopped = true;
     if (this.started) {
-      this.deps.libp2p.removeEventListener('connection:open', this.onConnectionOpen);
+      this.deps.libp2p.removeEventListener('peer:identify', this.onPeerIdentify);
     }
     for (const timer of this.timers.values()) {
       clearTimeout(timer);
@@ -347,25 +380,41 @@ export class PeerJoinBackfill {
   }
 
   /**
-   * (Re-)schedule a debounced catch-up for every currently-connected peer not yet caught
-   * up. Idempotent and cheap (caught-up peers are skipped before any timer is set, and a
-   * peer whose run is in flight is deferred to the end of that run rather than dropped).
-   * Driven by {@link start}, and — on a gated network — by the embedder whenever
-   * membership changes, so a peer whose first pass was denied (connected before it was
-   * authorized: the production join order) is retried without waiting for a reconnect.
-   * Returns how many distinct peers were considered (for the start() log) — a peer holding
-   * several connections is one peer, and is scheduled once.
+   * (Re-)schedule a debounced catch-up for every currently-connected peer whose protocols, as
+   * already stored in the libp2p peer store, name this network's block-transfer protocol. A
+   * peer not yet in the peer store — its identify has not finished — is left to the
+   * `peer:identify` handler rather than dialed blind; one whose stored protocols are known
+   * and lack ours is skipped outright. Idempotent and cheap otherwise (caught-up peers are
+   * skipped before any timer is set, and a peer whose run is in flight is deferred to the end
+   * of that run rather than dropped). Driven by {@link start}, and — on a gated network — by
+   * the embedder whenever membership changes, so a peer whose first pass was denied (connected
+   * before it was authorized: the production join order) is retried without waiting for a
+   * reconnect. Returns how many distinct peers were considered (for the start() log) — a peer
+   * holding several connections is one peer, and is scheduled once.
    */
-  scheduleConnectedPeers(): number {
+  async scheduleConnectedPeers(): Promise<number> {
     if (this.stopped) return 0;
-    const peers = new Set<string>();
+    const peers = new Map<string, PeerId>();
     for (const connection of this.deps.libp2p.getConnections()) {
-      const key = connection.remotePeer.toString();
-      if (peers.has(key)) continue;
-      peers.add(key);
-      this.schedulePeer(connection.remotePeer);
+      peers.set(connection.remotePeer.toString(), connection.remotePeer);
     }
+    await Promise.all([...peers.values()].map((peerId) => this.scheduleIfKnownToSpeak(peerId)));
     return peers.size;
+  }
+
+  /** Schedules `peerId` only if the peer store already knows it speaks this network's protocol. */
+  private async scheduleIfKnownToSpeak(peerId: PeerId): Promise<void> {
+    let protocols: string[];
+    try {
+      ({ protocols } = await this.deps.libp2p.peerStore.get(peerId));
+    } catch {
+      // Not yet in the peer store — identify has not finished. Leave it to the
+      // `peer:identify` handler rather than dialing blind.
+      return;
+    }
+    if (speaksBlockTransfer(protocols, this.deps.protocolPrefix)) {
+      this.schedulePeer(peerId);
+    }
   }
 
   /** Debounced entry point for connection churn: one run per peer per settle window. */
@@ -380,7 +429,7 @@ export class PeerJoinBackfill {
     }
     // A peer whose last run failed is already re-armed on a backoff timer that will run it, so
     // DROP this schedule instead of shortening the wait — otherwise a peer that cannot be
-    // reached is re-dialled on every connection:open forever (see the module comment's retry
+    // reached is re-dialled on every peer:identify forever (see the module comment's retry
     // paragraph). A denied run never gets here: it does not set a backoff.
     const retryAt = this.retryAfter.get(key);
     if (retryAt !== undefined && Date.now() < retryAt) return;
@@ -420,7 +469,7 @@ export class PeerJoinBackfill {
         // rejection are all verdicts a retry cannot change, and re-arming on them would
         // re-push the whole store to that peer forever. See the module comment.
         //
-        // Gated on `started` too: the re-arm exists to REPLACE a connection:open-driven retry,
+        // Gated on `started` too: the re-arm exists to REPLACE a peer:identify-driven retry,
         // so a caller driving `catchUpPeer` by hand against a backfill that was never started
         // owns its own retry policy and must not be left holding a background timer.
         this.scheduleRetryWithBackoff(peerId);
@@ -452,7 +501,7 @@ export class PeerJoinBackfill {
   /**
    * Re-arm one peer's catch-up after a run whose push failed, on a wait that doubles
    * per consecutive failure up to `maxRetryBackoffMs`. Sets {@link retryAfter} alongside the
-   * timer, which is what makes `connection:open` churn inside the wait free.
+   * timer, which is what makes `peer:identify` churn inside the wait free.
    */
   private scheduleRetryWithBackoff(peerId: PeerId): void {
     const key = peerId.toString();

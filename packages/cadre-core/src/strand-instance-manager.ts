@@ -850,7 +850,7 @@ export class StrandInstanceManager {
       // peer-join-backfill.ts for the strand-side argument (and why the control
       // network, which DOES gate, is different).
       //
-      // NOTE: cost is one PeerJoinBackfill object + one `connection:open` listener
+      // NOTE: cost is one PeerJoinBackfill object + one `peer:identify` listener
       // per running strand — linear in strand count, negligible at the handful a
       // device or host runs today. If a node ever hosts strands by the hundred,
       // move to one shared listener that dispatches by strand id.

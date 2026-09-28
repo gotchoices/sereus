@@ -1537,10 +1537,10 @@ export class CadreNode implements SAppIdLookup {
    * needs no work of its own: `createLibp2pNode` registers the block-transfer
    * handler on every node it builds, control node included, and this node's
    * per-stream gate (`authorizeInboundControlStream`) covers the inbound
-   * direction. A denied peer is retried on its next `connection:open`, and —
-   * because the production join order is connect-then-authorize — on every
-   * committed membership change via {@link refreshAuthorizedControlPeers}'s
-   * `scheduleConnectedPeers()` call.
+   * direction. A denied peer is retried on its next `peer:identify` (a
+   * reconnect re-runs identify), and — because the production join order is
+   * connect-then-authorize — on every committed membership change via
+   * {@link refreshAuthorizedControlPeers}'s `scheduleConnectedPeers()` call.
    *
    * No-ops (logged) when the embedder configured no control storage or the
    * node exposes no key network — the backfill would have nothing to read or
@@ -2160,7 +2160,7 @@ export class CadreNode implements SAppIdLookup {
       // ever holds many such connections, or refreshes get frequent, skip
       // re-arming peers whose last pass was denied under the SAME membership
       // snapshot instead of re-arming unconditionally.
-      this.controlBackfill?.scheduleConnectedPeers();
+      void this.controlBackfill?.scheduleConnectedPeers();
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
     }
