@@ -124,6 +124,13 @@ export class StrandPeerObserver {
 	 * protocol, with its stored addresses. A peer not yet in the store (identify has
 	 * not finished) is left to the `peer:identify` handler. Returns the number of
 	 * distinct peers considered.
+	 *
+	 * NOTE: the stored addresses include what `CadreNode.mergeStrandPeerAddrs` merged
+	 * INTO the peer store from the book, so this walk can re-vouch a dead address the
+	 * book already held, until the peer's next `peer:identify` replaces the set with
+	 * what it announces now. Bounded by the address cap; if a dead address ever shows
+	 * up surviving across resumes, read only the peer store's identify-sourced
+	 * addresses here rather than shortening the age.
 	 */
 	private async observeConnectedPeers(): Promise<number> {
 		const connectionsByPeer = new Map<string, { peerId: PeerId; connections: Connection[] }>();

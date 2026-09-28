@@ -6186,7 +6186,9 @@ export class CadreNode implements SAppIdLookup {
    * Self-revocation arm of the joined-strand record: a party removed from a strand must
    * not re-attach it on every launch. The strand keeps running this session — the
    * `strand:revoked` contract is that nothing is torn down for the app — and is gone
-   * after the next start. A no-op for this party's own strands, which have no record.
+   * after the next start. The join record is a no-op for this party's own strands, which
+   * have none; the strand peer book is forgotten either way, since a removed party must
+   * not keep dialing the strand's peers.
    *
    * NOTE: a manager can re-admit a removed party directly (`addMemberByManager`), and the
    * membership loop then finishes the join on its own — but the record is gone by then, so

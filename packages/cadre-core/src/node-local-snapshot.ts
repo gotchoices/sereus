@@ -15,7 +15,7 @@
  * map, and it must cold-start rather than throw on an unreadable slot. Its
  * module comment carries the reasoning; do not fold it in here.
  *
- * Both records here are the same mechanism with a different payload: a
+ * Every record here is the same mechanism with a different payload: a
  * `{ version, partyId, <entries> }` envelope, snapshot-written whole on every
  * change, loaded under one fail-safe-but-not-fail-silent policy. The only part
  * that differs per platform is WHERE the bytes are kept — Node writes a file,
@@ -66,15 +66,16 @@ const ENVELOPE_VERSION = 1;
 
 /**
  * What one unusable entry means for its siblings — the single intentional
- * difference between the two records:
+ * difference between the records:
  *
  *  - `'discard-all'` (the trusted-owner anchor): a record that cannot be read
  *    in full is not an anchor. Trusting a *subset* of the keys a file claims is
  *    a silent, security-relevant downgrade, so the whole record is discarded
  *    and the node trusts no one until re-seeded out of band.
- *  - `'drop-entry'` (the bootstrap-peer store): the record is a best-effort
- *    retry list and nothing in it is trust-bearing, so one junk entry must not
- *    discard a stranded node's only remaining way back into its party.
+ *  - `'drop-entry'` (the bootstrap-peer store and the strand peer book): the
+ *    record is a best-effort dial list and nothing in it is trust-bearing, so one
+ *    junk entry must not discard a stranded node's only remaining way back to
+ *    its party or its strand's peers.
  */
 export type UnusableEntryPolicy = 'discard-all' | 'drop-entry';
 

@@ -100,8 +100,9 @@ export interface StrandPeerEntry {
 	 */
 	sig?: string;
 	/**
-	 * This node's clock, ms: when it last held a connection to the peer, or 0 for
-	 * an entry it has never connected to. Local, never on the wire.
+	 * This node's clock, ms: when it last held a connection to the peer — or, for a
+	 * formation-carried entry, when the responder disclosed the addresses live — and 0
+	 * for an entry it has never connected to. Local, never on the wire.
 	 */
 	lastSeenAt: number;
 }
@@ -169,9 +170,9 @@ export function strandPeerFreshness(entry: StrandPeerEntry): number {
 
 /**
  * The merge rule, in one place. Returns the entry to hold for `incoming.peerId`
- * given what is already held — a NEW object either way (callers may compare by
- * identity to learn whether anything changed, and entries are never mutated in
- * place). `incoming` is assumed sanitized ({@link sanitizeStrandPeerEntry}).
+ * given what is already held — always a NEW object, so a held entry is never mutated
+ * in place (the persistent backend's snapshot `put` replaces rather than patches).
+ * `incoming` is assumed sanitized ({@link sanitizeStrandPeerEntry}).
  *
  * - A signed entry never yields to an unsigned one for the same peer: the peer's own
  *   statement outranks this node's observation of it.
