@@ -7,6 +7,7 @@ tmp/
 *.tsbuildinfo
 .in-progress
 .stop
+.release-notes.pending.md
 
 # Streamed build/lint/test output from ticket agents (`… | tee .tess-*.log`) — scratch, never source.
 .tess-*.log
