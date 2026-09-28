@@ -32,6 +32,12 @@ export const DEFAULT_IDENTITY_KEY_ID: KeyId = 'cadre/identity';
  * Key material is raw bytes (e.g. libp2p protobuf-serialized private keys).
  * Text-only backends encode/decode (base64) internally; byte-native backends
  * (LevelDB) store as-is.
+ *
+ * Not only keys: `KeyStoreJoinedStrandStore` keeps one small UTF-8 JSON record
+ * (about 200 bytes, a closed strand's read secret among its fields) per strand
+ * this node joined from another party, under ids beginning
+ * `cadre/joined-strand/`. {@link list} therefore returns those ids too, and a
+ * backend must accept `/` in an id and values of that size.
  */
 export interface KeyStore {
 	/** Resolves to the stored material, or undefined if the slot is empty. */

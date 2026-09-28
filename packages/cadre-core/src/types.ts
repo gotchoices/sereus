@@ -11,6 +11,7 @@ import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
+import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { RevocableTable } from './control-authorization.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
@@ -948,6 +949,25 @@ export interface CadreNodeConfig {
   };
 
   /**
+   * Node-local record of the strands this node joined from ANOTHER party (see
+   * `joined-strand-store.ts`): id, type and the closed strand's read secret, recorded
+   * by `formStrand` and by an `addStrand` whose row is not in this party's control
+   * database, and re-offered on every start as `strand:discovered` — so an embedding
+   * app keeps no list of its own.
+   *
+   * Absent ⇒ a `KeyStoreJoinedStrandStore` over {@link keyStore} when one is
+   * configured (the record carries a secret, and the KeyStore is where every platform
+   * already keeps secrets), else an in-memory store that warns once and forgets every
+   * join on restart. An embedder that passes {@link privateKey} rather than a
+   * `keyStore` injects a durable store here, e.g.
+   * `new KeyStoreJoinedStrandStore(new FileKeyStore(dir), partyId)`.
+   */
+  joinedStrands?: {
+    /** Its `partyId` must match `controlNetwork.partyId`; start() fails closed on a mismatch. */
+    store?: JoinedStrandStore;
+  };
+
+  /**
    * Platform push-delivery for suspended mobile peers. When present, the node's
    * server fan-out can deliver strand-wake data messages over the platform push
    * channel (FCM/APNs). Absent ⇒ no platform push (control-network push-wake only).
@@ -1394,6 +1414,10 @@ export interface CadreNodeEvents {
    * re-admits this party, so a second removal is reported again — and a
    * hibernation wake rebuilds the gate, which may re-emit for a strand still
    * revoked.
+   *
+   * For a strand joined from another party, the node also forgets its remembered
+   * join (see {@link CadreNodeConfig.joinedStrands}): it keeps running this session
+   * and is not re-offered after the next start.
    */
   'strand:revoked': { strandId: string };
   /**
@@ -1426,6 +1450,12 @@ export interface CadreNodeEvents {
    * (register a config + `addStrand`, e.g. via a chat `joinChatStrand` helper).
    * Carries the full {@link StrandRow} so the app can join without re-querying
    * the control DB.
+   *
+   * Also emitted for a strand this node joined from ANOTHER party, which no control
+   * row names: the node remembers every such join (see
+   * {@link CadreNodeConfig.joinedStrands}) and offers it here on each start, as a row
+   * with `FounderOwnerKey: null` carrying the closed strand's `MemberPrivateKey`. That
+   * row is the product of the formation's consent, so claiming it needs no second one.
    *
    * **Fired once per strand per session, and it can fire before your listener is
    * attached.** The strand watcher's first poll runs inside `CadreNode.start()`

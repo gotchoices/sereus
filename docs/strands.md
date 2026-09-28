@@ -246,8 +246,10 @@ database, which Optimystic replicates to **every node the party owns**:
 - **The strand-wide read secret** — the control-layer `Strand.MemberPrivateKey`.
   Formation delivers it to *every* joining party
   (`FormationProvisionResult.memberPrivateKey`, disclosed only after token +
-  disclosure validation), and the initiator records it into its own control DB. It
-  gates reads; it deliberately derives **nobody's identity**.
+  disclosure validation), and the joiner's node remembers it in its `KeyStore` (see
+  [What a joiner's node remembers](#what-a-joiners-node-remembers)) — the `Strand` row
+  itself lives only in the founding party's control DB. It gates reads; it
+  deliberately derives **nobody's identity**.
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
   `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it at
@@ -331,6 +333,46 @@ Android reinstall), mixed-platform cadres (Node `FileKeyStore` + RN secure store
 and migrating existing plaintext rows.
 
 Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Seam](architecture.md#node-key-material--the-keystore-seam).
+
+### What a joiner's node remembers
+
+A strand joined from another party has no row in the joiner's control database — its
+`Strand` row lives in the founding party's — so the control database cannot bring it back
+after a restart the way it brings back the party's own strands. cadre-core records every
+such join itself: `CadreNode.formStrand` records the strand it just joined (id, `Type`,
+and for a closed strand the read secret the formation delivered), and so does an
+`addStrand` whose row this party's control database does not hold. The record lives in the
+node's `KeyStore`, one slot per strand under
+`cadre/joined-strand/<base64url party id>/<strand id>`: the read secret is secret-grade,
+and the KeyStore is where every platform already keeps secrets (the platform enclave on
+React Native). The party segment keeps two parties sharing one KeyStore apart. A node
+configured with `privateKey` and no `keyStore` falls back to memory and warns once; such
+an embedder injects `joinedStrands: { store: new KeyStoreJoinedStrandStore(new
+FileKeyStore(dir), partyId) }` or its own `JoinedStrandStore`.
+
+On every start the strand watcher polls the remembered joins beside the control rows, so
+a join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the
+read secret — or relaunched on its own when the app registered its sApp config first, with
+the same retry ladder and `stopStrand` suppression the party's own strands get. That row is
+the product of the formation's consent, so an app may claim it without a second handshake;
+the React Native reference app claims a closed row that carries its key. **Apps keep no
+list of their own.**
+
+A join is forgotten:
+
+- when the app calls `forgetJoinedStrand` — the joiner's "leave": forget, then `stopStrand`;
+- when this party is removed from the strand (`strand:revoked`) — the strand keeps running
+  for the rest of the session, as that event promises, but the next start does not
+  re-attach it;
+- when this party's own control database gains a row with the same id — the strand is the
+  party's own now, and the control database remembers it.
+
+`stopStrand` alone keeps the record, as an own-party strand is rediscovered on restart too.
+
+**This does not by itself restore replication after a restart** (gotchoices/sereus#18). The
+other party's strand addresses that `formStrand` received (`strandAddrs`) are still held in
+memory only, so a remembered join re-attached after a restart starts with an empty
+cross-party seed until those addresses are remembered as well.
 
 ## Who May Administer a Closed Strand
 

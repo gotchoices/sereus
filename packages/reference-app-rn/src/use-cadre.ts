@@ -279,14 +279,22 @@ export function useCadreInternal(): UseCadreResult {
       refreshStrands();
     };
 
-    // A strand this node holds no config for arrived over the control network —
-    // created by another member, or created by US in a previous session (sApp
-    // configs are in-memory only, so every stored strand is "unclaimed" again
-    // after a restart). Only OPEN strands (`Type:'o'`) are auto-joined — "anyone
-    // can participate". A CLOSED strand (`Type:'c'`) is invitation-only by design
-    // and must go through the explicit consent handshake (`joinViaInvite` →
-    // `formStrand`); blindly attaching it here would bypass that flow. A closed
-    // strand simply stays unclaimed in the node's discovered map.
+    // A strand this node holds no config for was offered — created by another member,
+    // created by US in a previous session (sApp configs are in-memory only, so every
+    // stored strand is "unclaimed" again after a restart), or joined from another party
+    // in a previous session (the node remembers those joins and re-offers them). OPEN
+    // strands (`Type:'o'`) are auto-joined — "anyone can participate". A CLOSED strand
+    // (`Type:'c'`) is auto-joined only when its row carries the read secret: a remembered
+    // join is the product of an earlier `joinViaInvite`'s consent, and our own party's
+    // closed strand carries its key in the control row. A closed row without the key
+    // stays unclaimed in the node's discovered map; the way in is the explicit consent
+    // handshake (`joinViaInvite` → `formStrand`).
+    //
+    // A closed strand is re-attached through `joinChatStrand` with the offered row
+    // unchanged, NOT `joinClosedChatStrand`: that helper rebuilds the row with a null
+    // `FounderOwnerKey`, which would join our own orphaned closed strand rather than found
+    // it (see the NOTE below), and it writes the `member` role the first attach already
+    // wrote.
     //
     // NOTE: this passes no `founder` flag, and needs none — the `Strand` row records the
     // machine that published it (`FounderOwnerKey`), and `CadreNode` derives founder-ness
@@ -310,7 +318,7 @@ export function useCadreInternal(): UseCadreResult {
     // a fresh set would let a second launch through: hoist it to a `useRef` then.
     const joining = new Set<string>();
     const claimDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
-      if (strand.Type !== 'o') return;
+      if (strand.Type !== 'o' && !strand.MemberPrivateKey) return;
       if (node.getStrands().has(strandId)) return;
       if (joining.has(strandId)) return;
       joining.add(strandId);

@@ -361,7 +361,8 @@ describe('useCadreInternal — discovered-strand backlog', () => {
   beforeEach(resetHarness);
 
   /** An unclaimed row as the control network advertises it. */
-  const strandRow = (id: string, type: 'o' | 'c') => ({ Id: id, Type: type, MemberPrivateKey: null, FounderOwnerKey: null });
+  const strandRow = (id: string, type: 'o' | 'c', memberPrivateKey: string | null = null) =>
+    ({ Id: id, Type: type, MemberPrivateKey: memberPrivateKey, FounderOwnerKey: null });
 
   /**
    * A node that is ALREADY up with `backlog` unclaimed — the restart shape. The real
@@ -388,12 +389,16 @@ describe('useCadreInternal — discovered-strand backlog', () => {
     expect(joinChatStrand).toHaveBeenCalledWith(node, row);
   });
 
-  it('leaves a CLOSED strand unclaimed — it still requires the explicit invite handshake', async () => {
-    nodeWithBacklog(strandRow('closed-stored', 'c'));
+  it('joins a CLOSED strand only when its row carries the read secret', async () => {
+    // With the key: a join the node remembered from an earlier invite, or our own party's
+    // closed strand. Without it, the explicit invite handshake is still the only way in.
+    const keyed = strandRow('closed-remembered', 'c', 'read-secret');
+    const node = nodeWithBacklog(strandRow('closed-keyless', 'c'), keyed);
 
     await mountStarted();
 
-    expect(joinChatStrand).not.toHaveBeenCalled();
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+    expect(joinChatStrand).toHaveBeenCalledWith(node, keyed);
   });
 
   it('joins once when the event re-offers a strand the drain is still claiming', async () => {

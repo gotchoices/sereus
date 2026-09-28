@@ -117,6 +117,17 @@ export {
   type EnrolledMachineStore
 } from './enrolled-machine-store.js';
 
+// Node-local record of the strands this node joined from ANOTHER party, re-offered on
+// every start as `strand:discovered`. Cross-platform: its durable form rides the
+// KeyStore seam above (the record carries a closed strand's read secret), so there is
+// no file-backed subpath.
+export {
+  MemoryJoinedStrandStore,
+  KeyStoreJoinedStrandStore,
+  type JoinedStrandStore,
+  type JoinedStrandRecord
+} from './joined-strand-store.js';
+
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
 // so two parties on one device never share a control store. Every key stays within

@@ -99,10 +99,13 @@ export async function createChatStrand(
 }
 
 /**
- * Join an existing chat strand that was advertised via the control network.
+ * Attach a chat strand the node offered as `strand:discovered` — a row from this party's
+ * control database, or a join the node remembered from another party — passing the row
+ * through unchanged, so founder-ness still derives from its `FounderOwnerKey`. Serves a
+ * closed row too when it carries its `MemberPrivateKey`; writes no chat role.
  *
  * @param cadreNode  Running CadreNode
- * @param strandRow  Strand row obtained from the control database
+ * @param strandRow  The offered strand row
  * @returns          The active StrandInstance
  */
 export async function joinChatStrand(
