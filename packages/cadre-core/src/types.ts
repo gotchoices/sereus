@@ -360,10 +360,12 @@ export interface NetworkConfig {
    * keeps the limit off; `reservations: { applyDefaultLimit: true }` is how to turn libp2p's
    * cap back on.
    *
-   * The accepted tradeoff of the unlimited default: a peer this node cannot place as a party
-   * member is bounded by COUNT ({@link unauthorizedRelayReservationCap}) and by the
-   * reservation lifetime, but once its slot is granted, what it forwards through that slot
-   * is not capped.
+   * The accepted tradeoff of the unlimited default: once a slot is granted, nothing caps what
+   * is forwarded through it, and a holder that keeps refreshing keeps it indefinitely — the
+   * 2 h lifetime only reclaims a slot whose holder went away. On the control node a peer it
+   * cannot place as a party member is bounded by COUNT ({@link unauthorizedRelayReservationCap}).
+   * A strand node's relay server has no such budget (its peers are cross-party by design), so
+   * any peer that reaches it is bounded only by `maxReservations`.
    */
   relayServerInit?: CircuitRelayServerInit;
   /**

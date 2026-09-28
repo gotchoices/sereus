@@ -193,10 +193,10 @@ describe('StrandInstanceManager cluster size wiring', () => {
   });
 
   it('runs a strand node\'s relay server uncapped too, with the caller\'s init merged in', async () => {
-    // A NAT'd member's strand traffic crosses a party-run relay just as its control traffic
-    // does, so libp2p's 128 KiB / 2 min per-connection cap must be lifted on this build site
-    // as well (#19). `maxReservations: 20` shows the configured init reaches the strand node
-    // merged over the defaults rather than dropped.
+    // A strand node runs its own relay server, and a strand peer that reserves on it forwards
+    // strand traffic through it, so libp2p's 128 KiB / 2 min per-connection cap must be lifted
+    // on this build site as well (#19). `maxReservations: 20` shows the configured init reaches
+    // the strand node merged over the defaults rather than dropped.
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-relay-init', {
       network: { enableRelay: true, relayServerInit: { reservations: { maxReservations: 20 } } }

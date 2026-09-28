@@ -15,7 +15,7 @@ A **circuit relay** forwards traffic for a node that cannot accept incoming conn
 - the **forwarded-for** node **reserves** a slot, so that it has an address at all;
 - anyone **dialling** that node **hop-connects** through the relay to reach it.
 
-A relay run by one of a party's own machines (any storage-profile `CadreNode`; `relayServerEnabled`) sees both as ordinary inbound connections.
+A relay run by one of a party's own machines (any storage-profile `CadreNode`; `resolveRelayServer` in `relay-server.ts`) sees both as ordinary inbound connections.
 
 ## The defect
 

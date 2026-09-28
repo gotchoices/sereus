@@ -48,3 +48,25 @@ Field report: gotchoices/sereus#19. Phones that reached their cohort through a p
 - **Strand nodes' relay servers also get the 128-slot store.** Strand nodes reserve on the control node's relay addresses (`strand-network-config.ts`), so a strand node's own server rarely holds reservations. A larger limit on an idle store costs nothing, and the ticket asked for one init for both.
 - **The start log line is not tested** (logging only).
 - **Human step after release:** reply on gotchoices/sereus#19. The maintainer approves the post; the implementer does not post it. Carry this forward into the complete/ ticket.
+
+## Review findings
+
+Reviewed the diff of `ticket(implement): bug-party-run-relay-caps-every-relayed-connection` before reading the handoff, then checked it against libp2p 4.1.3's server reservation store (`node_modules/@libp2p/circuit-relay-v2/dist/src/server/reservation-store.js`) and the fix-stage policy.
+
+- **Correctness of the fix:** confirmed. `resolveRelayServer` merges `reservations` key by key and drops `undefined` keys. Both build sites pass `relayServerInit` only when the server is on. The unauthorized budget takes its TTL from the resolved init, so the hand-kept mirror is gone. The wire check in `relay-only-control-addr` fails against a capped relay (the implementer ran that check), so it tests the mechanism behind #19.
+- **Deviations from the design:** both accepted. Pinning `reservationTtl` to 2 h in cadre's defaults is better than mirroring a libp2p constant that cadre cannot import. Resolving the server once in the constructor is safe because nothing mutates `config.network` or `config.profile` after construction.
+- **Docs overstated the bounds on an unplaced peer (minor, fixed).** `types.ts` and `docs/architecture.md` said an unplaced peer was bounded by count *and* the 2 h reservation lifetime. libp2p's `reserve()` resets the timer on every refresh, so a holder that keeps refreshing keeps its slot indefinitely. The lifetime only reclaims abandoned slots. Both texts were reworded to say this.
+- **Strand nodes' relay servers have no count budget (tripwire).** Only the control node runs the membership gater's unauthorized-reservation budget. An open strand node's relay server admits any peer that can reach it, up to `maxReservations` (128), and now forwards uncapped. This follows the maintainer's "one init for both" policy, and a strand peer's `/p2p-circuit` search listener can reserve there, so the cap has to be lifted there too. The `types.ts` tradeoff text now says so. A `NOTE:` at the strand build site in `strand-instance-manager.ts` gives the revisit condition (bandwidth abuse through strand relays). No ticket, because this is conditional.
+- **Test comment fixed (minor).** The strand spec claimed a NAT'd member's strand traffic crosses a party-run relay "just as its control traffic does". That traffic actually lands on the relay machine's *control* node (strand nodes are given the control node's `relayAddrs`). The comment now names the real reason: strand peers reserve on the strand node's own server.
+- **Stale reference (minor, fixed).** `backlog/bug-party-run-relay-drops-a-stranger-dialing-through-it` named the removed `relayServerEnabled`. It now points at `resolveRelayServer` in `relay-server.ts`. No other open ticket, doc or source file refers to the removed symbols.
+- **Unauthorized cap vs. store size:** left as the implementer's existing `NOTE:` on `MAX_UNAUTHORIZED_RELAY_RESERVATIONS`. The concern only applies if an embedder shrinks the store to about 8, and no embedder does that today. No start-time warning added.
+- **Tests:** kept all four. The control-node and strand cases both fail before the fix. The resolver table pins a merge with real branching. The wire check is the only proof that libp2p honours the init. Nothing cut: none of them restates a constant or verifies a mock. The `reservationTtl` row is close to the `maxReservations` row, but it costs one table row.
+- **Type safety / hygiene:** no `any`. `definedEntries` does one checked cast. The new `relay-server.ts` is 98 lines, with comments that give reasons rather than restating code. The start log is a single debug line and is untested, which is fine for logging.
+- **Resource cleanup / error handling:** no new resources or error paths. The resolver is pure.
+- **Not covered:** the reporter's field setup (two Android emulators + two Node peers) was not rerun. The integration scenarios were not rerun in this pass either: every change in this pass is a comment or doc edit, and the implementer ran `relay-only-control-addr` (5/5) and `blind-relay-phone-to-phone-e2e` (2/2) against the same code.
+
+Validation in this pass: `yarn workspace @serfab/cadre-core build` and `typecheck` both clean. `yarn workspace @serfab/cadre-core test`: 144 files, 2335 passed, 1 skipped. `eslint` on every touched source and test file: clean. The full `yarn lint` was not rerun because it takes about 9 minutes and the only new edits are comments.
+
+## Human follow-up
+
+- After release, reply on gotchoices/sereus#19. The maintainer approves the post; agents do not post it.

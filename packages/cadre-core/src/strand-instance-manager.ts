@@ -727,6 +727,10 @@ export class StrandInstanceManager {
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: relayServer.enabled,
+        // NOTE: unlike the control node, a strand node has no unauthorized-reservation budget,
+        // so with the per-connection cap off any peer that reaches this node can hold one of
+        // `maxReservations` slots and forward uncapped through it. If strand relays are ever
+        // abused for bandwidth, give strand nodes a budget or a capped init of their own.
         ...(relayServer.enabled && { relayServerInit: relayServer.init }),
         clusterSize: strandClusterSize,
         // Deliberately NOT CONTROL_CLUSTER_POLICY: a strand is application data with its own
