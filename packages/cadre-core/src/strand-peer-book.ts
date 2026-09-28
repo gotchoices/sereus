@@ -14,6 +14,13 @@
  * cohort each held only self, the strand reported `active`, local writes
  * succeeded, nothing replicated.
  *
+ * NOTE: interim, to be replaced (maintainer decision, 2026-09-28). FRET's
+ * `plan/10-feat-address-hints-in-neighbor-exchange` carries signed peer records in
+ * its neighbour exchange and its saved routing table. Once a FRET release with it
+ * reaches `@optimystic/db-p2p`, remove this book and the swap and pass db-p2p
+ * `persistence` for strand nodes instead; `blocked/retire-strand-peer-book-for-fret-address-hints`
+ * tracks that.
+ *
  * NOTE: accepted design boundary (maintainer decision, 2026-09-27) — this is a
  * per-machine record in the machine's own storage, NOT a registry inside the
  * strand database. An in-strand registry (`Strand.MemberPeer` rows carrying
