@@ -71,3 +71,7 @@ admin route does).
 the Nodes page or have the grantee release them. Both instructions were wrong;
 the README now states the gap and links this slug. Correct the README when this
 lands.
+
+## Maintainer decision (2026-09-28)
+
+**Revoke cascades.** `cadre-host grant revoke <token>` (and the `/grants-admin` revoke) terminates every live donation under that grant through `DonationService.terminate`, so the supervisor stops respawning them. Add a `--keep-nodes` option (and the matching admin-route flag) for the rarer case of blocking new requests while leaving existing nodes up. The separate admin "terminate this donation" route is still added, and `POST /api/nodes/:id/stop` refuses donated ids as `start` and `restart` already do. Update the `grant-service.ts` `revoke()` docstring and `docs/cadre-host.md` to match.
