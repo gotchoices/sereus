@@ -951,8 +951,8 @@ export interface CadreNodeConfig {
   /**
    * Node-local record of the strands this node joined from ANOTHER party (see
    * `joined-strand-store.ts`): id, type and the closed strand's read secret, recorded
-   * by `formStrand` and by an `addStrand` whose row is not in this party's control
-   * database, and re-offered on every start as `strand:discovered` — so an embedding
+   * by `formStrand` and by a joining (not `founder: true`) `addStrand` whose row is
+   * not in this party's control database, and re-offered on every start as `strand:discovered` — so an embedding
    * app keeps no list of its own.
    *
    * Absent ⇒ a `KeyStoreJoinedStrandStore` over {@link keyStore} when one is

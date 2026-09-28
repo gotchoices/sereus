@@ -341,7 +341,7 @@ A strand joined from another party has no row in the joiner's control database â
 after a restart the way it brings back the party's own strands. cadre-core records every
 such join itself: `CadreNode.formStrand` records the strand it just joined (id, `Type`,
 and for a closed strand the read secret the formation delivered), and so does an
-`addStrand` whose row this party's control database does not hold. The record lives in the
+`addStrand` that joins (no `founder: true`) a row this party's control database does not hold. The record lives in the
 node's `KeyStore`, one slot per strand under
 `cadre/joined-strand/<base64url party id>/<strand id>`: the read secret is secret-grade,
 and the KeyStore is where every platform already keeps secrets (the platform enclave on

@@ -4654,8 +4654,8 @@ export class CadreNode implements SAppIdLookup {
    * published (e.g. re-attaching its own orphan after a restart) founds it, and attaching
    * anyone else's row joins, without the caller needing to know which it is.
    *
-   * A row this party's control database does not hold — a strand joined from another
-   * party — is remembered in the node's joined-strand store, so it is re-offered as
+   * A joined row (no `founder: true`) this party's control database does not hold — a
+   * strand joined from another party — is remembered in the node's joined-strand store, so it is re-offered as
    * `strand:discovered` after a restart (see {@link forgetJoinedStrand}).
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
@@ -4693,9 +4693,11 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // A row this node offered itself came from the control table or is already a
-    // remembered join, so only a row from elsewhere can be a new join to remember.
+    // remembered join, and a row this node founds is not a join, so only a joined row
+    // from elsewhere can be a new join to remember. A founded row recorded here would
+    // come back after a restart with `FounderOwnerKey: null` and relaunch as a joiner.
     // Captured before the backlog delete below.
-    const offered = this.discoveredStrands.has(strandRow.Id);
+    const rememberable = founder !== true && !this.discoveredStrands.has(strandRow.Id);
 
     // Store sApp config for this strand. The strand is claimed now, so it leaves the
     // unclaimed backlog — a later `getDiscoveredStrands()` drain must not re-offer it.
@@ -4709,7 +4711,7 @@ export class CadreNode implements SAppIdLookup {
 
     // Before the launch, so a foreign strand whose launch fails, or whose app is killed
     // mid-launch, is still offered again: by the watcher's retry and by the next start.
-    if (!offered) {
+    if (rememberable) {
       await this.rememberForeignStrand(strandRow);
     }
 

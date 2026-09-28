@@ -107,3 +107,7 @@ Worth noting alongside it: `control-database.ts` is now the package's second-lar
 ## Re-measured 2026-09-15 (review of `owner-keeps-dialing-node-it-added`)
 
 `wc -l packages/cadre-core/src/cadre-node.ts` → **7024** lines at the implement commit (6895 at its parent), 7034 after the review's fixes. The dial-target work added ~130 lines: `refreshDialHint`, `retainedDialAddrs`, `retainDialTarget`, a third fallback in `resolveControlDialAddrs`, and their docs, again control-mesh maintenance riding `runReconcileControlCohort`. Evidence for this ticket, not a new one.
+
+## Later measurement (2026-09-27)
+
+`wc -l packages/cadre-core/src/cadre-node.ts` → 7639 lines. The review of cadre-core-remembers-joined-strands added another job to the list above: remembering strands joined from another party (`initializeJoinedStrandStore`, `rememberForeignStrand`, `rememberFormedStrand`, `forgetRevokedJoin`, `forgetJoinedStrand`, about 120 lines). Its storage and per-session view already live in `joined-strand-store.ts`; the record/forget policy is a candidate to move beside them if this split goes ahead.
