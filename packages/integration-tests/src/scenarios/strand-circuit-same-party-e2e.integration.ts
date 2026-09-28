@@ -205,7 +205,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			// ordering must put a `/p2p-circuit` entry first — for a relay-only
 			// responder it is the only kind of entry there is, and the asker (also
 			// relay-only) can dial it through the shared relay.
-			const seed = await collectStrandAddrs(B.getControlNode()!, [{ peerId: aPeerId }], strandId);
+			const { addrs: seed } = await collectStrandAddrs(B.getControlNode()!, [{ peerId: aPeerId }], strandId);
 			expect(seed.length).toBeGreaterThan(0);
 			expect(seed[0]!).toContain('/p2p-circuit');
 			// Compared against A's LIVE strand addrs, sampled now — a snapshot taken

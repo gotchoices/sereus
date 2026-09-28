@@ -64,8 +64,8 @@
  * Delegate admission is a NON-PARTICIPANT here: the dedicated relay speaks no
  * `/sereus/strand-addr/1.0.0` (asserted against its live protocol list), so the
  * delegate-announce half of `resolveCohortSeed` folds to a no-op — the RPC
- * fan-out swallows the unsupported-protocol failure into `[]`
- * (`collectStrandAddrs` → `dialOneSibling`) — and both `foundStrand`/`addStrand`
+ * fan-out folds the unsupported-protocol failure into an `unreachable` outcome
+ * with no addrs (`collectStrandAddrs` → `dialOneSibling`) — and both `foundStrand`/`addStrand`
  * resolving is the proof nothing in the flow blocks on it.
  *
  * ── Out of scope, deliberately ──

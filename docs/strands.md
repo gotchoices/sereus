@@ -164,9 +164,12 @@ relays, and is never locked out of its first address by replication ordering.
 
 That resolution is not one-shot. The launch/resume seed is also merged straight into the
 new strand node's libp2p **address book** (its peerStore), and every running strand
-re-resolves its siblings' strand addresses over the control mesh on a ~10-minute cadence,
-re-merging each answer under the sibling's *strand* transport peerId
-(`CadreNode.refreshStrandPeerAddrs`, riding the control-cohort reconcile pass). Both matter
+re-resolves its siblings' strand addresses over the control mesh, re-merging each answer
+under the sibling's *strand* transport peerId (`CadreNode.refreshStrandPeerAddrs`, riding
+the control-cohort reconcile pass). Each connected sibling is asked on its own schedule: at
+once when it first connects, again ~10 minutes after it answers, or one minute after it
+fails to answer or refuses (the phone-joins-late case: its membership row may not have
+replicated to the sibling yet). Both matter
 because everything below cadre-core dials a strand peer by **bare peer id** — Optimystic's
 cluster and repo clients, FRET ping/announce — and a bootstrap address list alone does not
 put anything in the address book that outlives the initial discovery. Without the refresh, a

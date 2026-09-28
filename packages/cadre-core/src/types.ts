@@ -560,10 +560,12 @@ export interface NetworkConfig {
      */
     perAddressDialTimeoutMs?: number;
     /**
-     * How often each running strand re-resolves its siblings' strand-network
-     * addresses into its own libp2p address book — a step of the reconcile pass,
-     * on its own much longer throttle. Defaults to `STRAND_PEER_ADDR_REFRESH_MS`
-     * (10 min); must stay well under the peerStore's one-hour address expiry.
+     * How long a running strand waits, after a sibling answers its strand-addr
+     * RPC, before asking that sibling again for its strand-network addresses — a
+     * step of the reconcile pass, scheduled per (sibling, strand). A sibling that
+     * did not answer is retried sooner, on `STRAND_PEER_ADDR_RETRY_MS`. Defaults to
+     * `STRAND_PEER_ADDR_REFRESH_MS` (10 min); must stay well under the peerStore's
+     * one-hour address expiry.
      */
     strandAddrRefreshMs?: number;
   };
@@ -1942,16 +1944,31 @@ export interface StrandAddrRequest {
 }
 
 /**
+ * How a strand-addr responder handled a {@link StrandAddrRequest}. Carried so the
+ * asker can tell "I have nothing" from "I could not answer" — the two need
+ * different retry timing, and an empty address list alone cannot say which.
+ *
+ * - `ok` — looked up; `multiaddrs` is the truth, possibly empty (strand not running here).
+ * - `unavailable` — the responder could not answer: over its concurrency cap, the
+ *   request was unreadable, or its own lookup threw (e.g. a control-database read failed).
+ * - `refused` — the requester is not an authorized member in the responder's
+ *   current view (possibly because its `CadrePeer` row has not replicated there yet);
+ *   any `delegatePeerId` it carried was NOT recorded.
+ */
+export type StrandAddrStatus = 'ok' | 'unavailable' | 'refused';
+
+/**
  * Response to a {@link StrandAddrRequest}, carrying the responder's strand-node
  * multiaddrs, returned on the same stream.
  */
 export interface StrandAddrResponse {
-  /** Echoes the requested strand id (empty on a reject/error reply). */
+  /** How the responder handled the request; a reply without one is malformed. */
+  status: StrandAddrStatus;
+  /** Echoes the requested strand id (empty when the request was never read). */
   strandId: string;
   /**
    * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
-   * empty when the responder is a non-member, or does not currently run that
-   * strand, or the exchange failed.
+   * empty unless `status` is `ok` and the responder runs that strand.
    */
   multiaddrs: string[];
 }

@@ -119,12 +119,12 @@ import {
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
-import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer } from './strand-addr-protocol.js';
+import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer, type StrandAddrOutcome } from './strand-addr-protocol.js';
 import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
   dueRelayAnnounces,
-  pruneStoppedStrandAnnounces,
+  prunePeerStrandKeys,
   peerStrandKey,
   type CircuitRelayTarget
 } from './delegate-admission.js';
@@ -160,10 +160,10 @@ const timing = debug('sereus:cadre:timing');
 const TURN_CONSUME_WINDOW_MS = 1000;
 
 /**
- * How often a running strand re-resolves its siblings' strand-network addresses
- * and re-merges them into its own libp2p address book
- * ({@link CadreNode.refreshStrandPeerAddrs}). Overridable per node via
- * `network.controlCohort.strandAddrRefreshMs`.
+ * How often a running strand re-asks each connected sibling that last ANSWERED
+ * (even with nothing) for its strand-network addresses, and re-merges them into
+ * its own libp2p address book ({@link CadreNode.refreshStrandPeerAddrs}).
+ * Overridable per node via `network.controlCohort.strandAddrRefreshMs`.
  *
  * Ten minutes sits comfortably inside the peerStore's one-hour address expiry
  * (`MAX_ADDRESS_AGE`, see `peer-addr-book.ts`) with headroom for several missed
@@ -171,6 +171,17 @@ const TURN_CONSUME_WINDOW_MS = 1000;
  * strand-addr RPC fan-out stays cheap.
  */
 export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
+
+/**
+ * How soon {@link CadreNode.refreshStrandPeerAddrs} re-asks a sibling that did NOT
+ * answer — unreachable, `unavailable`, or `refused`. A refusal matters most: a
+ * phone asking before its `CadrePeer` row has replicated to the sibling is refused
+ * and its delegate grant goes unrecorded, and waiting the full
+ * {@link STRAND_PEER_ADDR_REFRESH_MS} for the next try is the delay this bounds.
+ * Four reconcile ticks, so a sibling that keeps failing costs one timed-out RPC a
+ * minute rather than one a tick.
+ */
+export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
 
 type EventHandler<T> = (data: T) => void;
 
@@ -180,6 +191,15 @@ type EventHandler<T> = (data: T) => void;
  */
 function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
   return { peerId: relay.relayPeerId, addrs: [multiaddr(relay.relayAddr)] };
+}
+
+/**
+ * Whether a sibling actually answered a strand-addr RPC — with addresses or
+ * without — as opposed to being unreachable, unavailable, or refusing us. Decides
+ * which of the refresh and retry intervals it waits before the next ask.
+ */
+function siblingAnswered(outcome: StrandAddrOutcome): boolean {
+  return outcome === 'answered' || outcome === 'empty';
 }
 
 /**
@@ -527,15 +547,18 @@ export class CadreNode implements SAppIdLookup {
   private readonly delegateAnnounceAt = new Map<string, number>();
 
   /**
-   * When each running strand last had its siblings' strand addresses re-resolved
-   * into its own address book, keyed by strandId. Throttles
-   * {@link refreshStrandPeerAddrs} to once per {@link STRAND_PEER_ADDR_REFRESH_MS}
-   * per strand so the 15 s reconcile tick never becomes per-tick RPC chatter.
-   * Entries for strands that are no longer running are pruned on each pass, so a
-   * hibernated-then-resumed strand refreshes immediately rather than inheriting a
-   * stale stamp.
+   * When each connected sibling is next due a strand-addr RPC for each running
+   * strand, keyed `peerStrandKey(siblingControlPeerId, strandId)` → epoch ms; a
+   * missing key is due. Bounds {@link refreshStrandPeerAddrs}'s fan-out per
+   * (sibling, strand) rather than per strand, so a sibling that connects after a
+   * pass is asked on the next 15 s tick instead of waiting out a stamp another
+   * sibling's answer set. An answer (even an empty one) makes the sibling due again
+   * in {@link STRAND_PEER_ADDR_REFRESH_MS}; no answer, in
+   * {@link STRAND_PEER_ADDR_RETRY_MS}. Keys whose strand stopped running or whose
+   * sibling is no longer connected are pruned every pass, so a resumed strand and a
+   * reconnected sibling are both asked at once.
    */
-  private readonly strandPeerAddrRefreshAt = new Map<string, number>();
+  private readonly strandAddrAskDueAt = new Map<string, number>();
 
   /**
    * Node-local strand peer book (see `strand-peer-book.ts`): per strand, the strand
@@ -2939,11 +2962,13 @@ export class CadreNode implements SAppIdLookup {
     // to the reconcile interval.
     // NOTE: this refresh and the sibling enumeration below each run their own
     // CadrePeer query (two reads per pass), plus a third from
-    // `refreshStrandPeerAddrs` on the passes where a strand is due AND this node
-    // holds a control connection (one read for the whole pass, not one per
-    // strand). Each also reads Revocation first. Before the Revocation ledger
-    // marker exists (filed below, once connected) that block is missing, so every
-    // one of those reads consults the cohort about it; once the marker exists every
+    // `refreshStrandPeerAddrs` on every pass where a strand is running AND this
+    // node holds a control connection (one read for the whole pass, not one per
+    // strand; it runs even when no sibling is due, because pruning departed
+    // siblings needs the current target set). Each also reads Revocation first.
+    // Before the Revocation ledger marker exists (filed below, once connected)
+    // that block is missing, so every one of those reads consults the cohort
+    // about it; once the marker exists every
     // block they touch is held and none of them does (both states pinned in
     // control-founding-consult-budget.spec.ts). If those reads ever get costly,
     // share one row-set across all three.
@@ -2959,8 +2984,8 @@ export class CadreNode implements SAppIdLookup {
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return { dialed: [] };
     }
-    // Then re-warm each running strand's own address book from its siblings, on
-    // its own (much longer) throttle. Same reasoning as warmSiblingAddrBook
+    // Then re-warm each running strand's own address book from its peer book and
+    // from whichever siblings are due an ask. Same reasoning as warmSiblingAddrBook
     // below, one layer down: replication runs on the STRAND network, and every
     // layer under cadre-core dials strand peers by bare peer id.
     await this.refreshStrandPeerAddrs();
@@ -5727,10 +5752,13 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     const bootstrapNodes = targets.length
-      ? await collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })
+      ? (await collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })).addrs
       : [];
     // Throttle state for the RELAY targets only — refreshDelegateGrants never
-    // looks up a sibling key, so recording one would only be dead weight.
+    // looks up a sibling key, so recording one would only be dead weight. The
+    // siblings' refresh due times are deliberately left alone too: stamping here
+    // would race the refresh pass's pruning while the strand node is still coming
+    // up, and all it would save is one extra RPC per sibling on the first tick.
     this.recordDelegateAnnounces(relays.map((r) => r.relayPeerId), strandId);
     return bootstrapNodes;
   }
@@ -5815,9 +5843,10 @@ export class CadreNode implements SAppIdLookup {
    * Record the announce timestamps {@link refreshDelegateGrants} throttles on,
    * for every relay a delegate-carrying announce pass dialed.
    *
-   * Recorded OPTIMISTICALLY at announce time: `collectStrandAddrs` folds
-   * per-peer failure to `[]` and reports no per-peer success, and threading
-   * success out would change its API for little gain. A failed INITIAL announce
+   * Recorded OPTIMISTICALLY at announce time, whatever `collectStrandAddrs`
+   * reports per peer: a dedicated `ops/` relay never speaks the strand-addr
+   * protocol, so recording only on success would re-announce to it on every
+   * reconcile tick, one wasted protocol negotiation each. A failed INITIAL announce
    * costs the strand supervisor its first attempt only (the relay denies the
    * reservation; every re-drive re-announces first through
    * {@link announceDelegateToRelay}); a failed REFRESH retries within
@@ -5854,7 +5883,7 @@ export class CadreNode implements SAppIdLookup {
         running.set(strandId, instance.libp2pNode.peerId.toString());
       }
     }
-    pruneStoppedStrandAnnounces(this.delegateAnnounceAt, new Set(running.keys()));
+    prunePeerStrandKeys(this.delegateAnnounceAt, new Set(running.keys()));
     if (running.size === 0) {
       return;
     }
@@ -5884,7 +5913,7 @@ export class CadreNode implements SAppIdLookup {
    * again right away.
    *
    * Against a dedicated ops relay (no strand-addr RPC) the request fails per-peer
-   * and `collectStrandAddrs` folds it to `[]`: one wasted protocol negotiation per
+   * and `collectStrandAddrs` reports it `unreachable`: one wasted protocol negotiation per
    * re-drive attempt, bounded by the supervisor's backoff. Never throws on that
    * path; a relay addr that names no peer id is logged and skipped (the hook's
    * caller runs the drive regardless).
@@ -5938,9 +5967,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Re-resolve each running strand's SIBLING addresses over the control mesh and
-   * merge them into that strand's own libp2p address book, throttled to once per
-   * {@link STRAND_PEER_ADDR_REFRESH_MS} per strand.
+   * Keep each running strand's own libp2p address book warm: re-merge its strand
+   * peer book on every pass, and re-ask each connected SIBLING for its strand
+   * addresses over the control mesh when that (sibling, strand) is due
+   * ({@link strandAddrAskDueAt}).
    *
    * Without this, a strand's address book is written exactly once — the
    * launch/resume seed — and everything below cadre-core that dials a strand peer
@@ -5949,6 +5979,12 @@ export class CadreNode implements SAppIdLookup {
    * that restarted its strand node or rotated its relay reservation is never
    * re-resolved, and even the original seed addresses fall off at the peerStore's
    * one-hour expiry (see `peer-addr-book.ts`).
+   *
+   * Due times are per (sibling, strand) and set from each sibling's own outcome, so
+   * a sibling that connects late — a phone joining after the party's always-on
+   * machines — is asked on the next tick, and one that could not answer or refused
+   * (its view of the membership may not include us yet) is retried within
+   * {@link STRAND_PEER_ADDR_RETRY_MS} rather than {@link STRAND_PEER_ADDR_REFRESH_MS}.
    *
    * Distinct from {@link refreshDelegateGrants}, deliberately: that pass covers
    * RELAYS on a `DELEGATE_GRANT_TTL_MS / 2` throttle to keep circuit-relay
@@ -5973,57 +6009,67 @@ export class CadreNode implements SAppIdLookup {
         running.add(strandId);
       }
     }
-    // Drop stamps for strands no longer running: the map must not grow for the
-    // node's lifetime, and a resumed strand should refresh immediately rather
-    // than inherit the stamp its previous incarnation left.
-    for (const strandId of this.strandPeerAddrRefreshAt.keys()) {
-      if (!running.has(strandId)) {
-        this.strandPeerAddrRefreshAt.delete(strandId);
-      }
-    }
-    const refreshMs = this.config.network?.controlCohort?.strandAddrRefreshMs ?? STRAND_PEER_ADDR_REFRESH_MS;
-    const due = [...running].filter(
-      (strandId) => now - (this.strandPeerAddrRefreshAt.get(strandId) ?? 0) >= refreshMs
-    );
-    if (due.length === 0) {
+    if (running.size === 0) {
+      this.strandAddrAskDueAt.clear();
       return;
     }
-    // `connectedSiblingTargets`' membership read is unbounded, and with zero
-    // connections its answer is empty whatever the table holds, so decide it from the
-    // connection list instead of paying for the read once a tick. Note this only skips
-    // the RPC: a strand with peer-book entries still refreshes below, because those
-    // never came from a sibling in the first place.
-    //
-    // NOTE: one strand-addr RPC per (due strand × connected sibling) per refresh
-    // interval — each a tiny request/response on an already-open control
-    // connection. If a node ever runs MANY strands at once, batch the RPC to
-    // carry several strand ids per request rather than one fan-out per strand.
-    const targets = this.controlNode.getConnections().length === 0
-      ? []
-      : await this.connectedSiblingTargets().catch((error): StrandAddrPeer[] => {
-        log('refreshStrandPeerAddrs: sibling enumeration failed (skipping pass): %o', error);
-        return [];
-      });
+    const targets = await this.strandAddrRefreshTargets();
     // A shutdown landed mid-enumeration.
     if (!this._running || !this.controlNode) {
       return;
     }
-    await Promise.all(due.map((strandId) => this.refreshOneStrandPeerAddrs(strandId, targets, now)));
+    // Drop due times for strands no longer running and siblings no longer connected:
+    // the map must not grow for the node's lifetime, a resumed strand must not
+    // inherit its previous incarnation's due times, and a sibling that reconnects (a
+    // phone restart, a new relay reservation) must be asked on its next connected
+    // tick. An enumeration failure prunes everything, which costs one extra round of
+    // asks, never a missed one.
+    prunePeerStrandKeys(this.strandAddrAskDueAt, running, new Set(targets.map((t) => t.peerId)));
+    await Promise.all([...running].map((strandId) => this.refreshOneStrandPeerAddrs(strandId, targets, now)));
   }
 
   /**
-   * One strand's share of {@link refreshStrandPeerAddrs}: RPC the siblings, union their
-   * answers with this strand's peer-book addresses, and merge the lot into the strand's
-   * address book. Errors are logged and swallowed so one strand's failure never costs
-   * the others their refresh.
+   * The siblings {@link refreshStrandPeerAddrs} may ask this pass: the connected
+   * cohort, or none when enumeration fails (logged, never thrown).
    *
-   * `targets` may be EMPTY — a solo node, or one whose only control peers are strangers.
-   * The peer-book addresses still have to be re-merged in that case: nothing re-resolves
-   * another party's addresses, so this periodic re-merge is the ONLY thing standing
-   * between them and the peerStore's one-hour expiry. A strand with neither a sibling to
-   * ask nor a book entry does nothing and leaves its throttle unstamped, so the next
-   * reconcile tick retries rather than sitting out the whole refresh interval having
-   * done nothing.
+   * `connectedSiblingTargets`' membership read is unbounded, and with zero
+   * connections its answer is empty whatever the table holds, so decide it from the
+   * connection list instead of paying for the read once a tick.
+   *
+   * NOTE: otherwise the read runs on EVERY tick with a running strand, not only when
+   * some (sibling, strand) is due: pruning a departed sibling needs the current
+   * target set, and whether anyone is due cannot be told without it (a connected
+   * non-member never gets a due time to compare). One more `CadrePeer` read per 15 s
+   * tick, on top of the two `runReconcileControlCohort` already makes; if those reads
+   * get costly, share one row-set across the pass (see the NOTE there) rather than
+   * skipping ticks here.
+   *
+   * NOTE: one strand-addr RPC per (running strand × due sibling) — each a tiny
+   * request/response on an already-open control connection. If a node ever runs
+   * MANY strands at once, batch the RPC to carry several strand ids per request
+   * rather than one fan-out per strand.
+   */
+  private async strandAddrRefreshTargets(): Promise<StrandAddrPeer[]> {
+    if (this.controlNode?.getConnections().length === 0) {
+      return [];
+    }
+    return this.connectedSiblingTargets().catch((error): StrandAddrPeer[] => {
+      log('refreshStrandPeerAddrs: sibling enumeration failed (asking nobody this pass): %o', error);
+      return [];
+    });
+  }
+
+  /**
+   * One strand's share of {@link refreshStrandPeerAddrs}: RPC the siblings that are
+   * due, union their answers with this strand's peer-book addresses, and merge the
+   * lot into the strand's address book. Errors are logged and swallowed so one
+   * strand's failure never costs the others their refresh.
+   *
+   * The peer book merges on EVERY pass, whether or not any sibling is due or
+   * connected: nothing re-resolves another party's addresses, so this re-merge is the
+   * ONLY thing standing between them and the peerStore's one-hour expiry — and it is
+   * also how a re-formation's freshly carried addresses reach a running strand on the
+   * next tick. A strand with nobody due and no book entry does nothing.
    */
   private async refreshOneStrandPeerAddrs(
     strandId: string,
@@ -6038,30 +6084,57 @@ export class CadreNode implements SAppIdLookup {
     try {
       // Inside the try: a strand node torn down mid-pass may throw on any read, and one
       // strand's failure must never cost the others their refresh.
-      const contactAddrs = this.strandPeerBookAddrs(strandId, strandNode.peerId.toString());
-      if (targets.length === 0 && contactAddrs.length === 0) {
-        return;
-      }
+      const strandPeerId = strandNode.peerId.toString();
+      const contactAddrs = this.strandPeerBookAddrs(strandId, strandPeerId);
+      const due = targets.filter(
+        (target) => now >= (this.strandAddrAskDueAt.get(peerStrandKey(target.peerId, strandId)) ?? 0)
+      );
       // The running strand node's own peerId is the delegate to announce — see
       // the relationship note on refreshStrandPeerAddrs.
-      const siblingAddrs = targets.length === 0
+      const siblingAddrs = due.length === 0
         ? []
-        : await collectStrandAddrs(controlNode, [...targets], strandId, {
-          delegatePeerId: strandNode.peerId.toString()
-        });
-      // Stamped on the pass having happened, not on its answer: the fan-out is
-      // what the throttle exists to bound, and an all-empty round is a normal
-      // steady state for a strand no connected sibling currently runs.
-      this.strandPeerAddrRefreshAt.set(strandId, now);
+        : await this.askSiblingsForStrandAddrs(controlNode, due, strandId, strandPeerId, now);
       // Re-read the instance after the await — a strand stopped mid-pass (or one
       // already restarted onto a new node) must never have its store written to.
       if (!this._running || this.strandManager.getInstance(strandId)?.libp2pNode !== strandNode) {
         return;
       }
-      await this.mergeStrandPeerAddrs(strandNode, unionAddrs(siblingAddrs, contactAddrs), strandId);
+      const addrs = unionAddrs(siblingAddrs, contactAddrs);
+      if (addrs.length === 0) {
+        return;
+      }
+      // NOTE: with no sibling due this still merges the whole book — up to 16 peers ×
+      // 16 addrs, so 16 `peerStore.merge` calls per running strand per 15 s tick. An
+      // unchanged address set writes nothing in libp2p's persistent peer store, so it
+      // is cheap today; if many strands run at once, merge only book entries changed
+      // since the last tick plus those nearing the one-hour expiry.
+      await this.mergeStrandPeerAddrs(strandNode, addrs, strandId);
     } catch (error) {
       log('refreshStrandPeerAddrs: strand %s refresh failed (continuing): %o', strandId, error);
     }
+  }
+
+  /**
+   * RPC `due` siblings for `strandId` and set each one's next due time from its own
+   * outcome: an answer, even an empty one, waits the full refresh interval; anything
+   * else retries in {@link STRAND_PEER_ADDR_RETRY_MS}. Stamped before the caller
+   * re-checks that the strand is still running, so a strand torn down mid-pass still
+   * records who was asked.
+   */
+  private async askSiblingsForStrandAddrs(
+    controlNode: Libp2p,
+    due: readonly StrandAddrPeer[],
+    strandId: string,
+    delegatePeerId: string,
+    now: number
+  ): Promise<string[]> {
+    const { addrs, outcomes } = await collectStrandAddrs(controlNode, [...due], strandId, { delegatePeerId });
+    const refreshMs = this.config.network?.controlCohort?.strandAddrRefreshMs ?? STRAND_PEER_ADDR_REFRESH_MS;
+    for (const [peerId, outcome] of outcomes) {
+      const waitMs = siblingAnswered(outcome) ? refreshMs : STRAND_PEER_ADDR_RETRY_MS;
+      this.strandAddrAskDueAt.set(peerStrandKey(peerId, strandId), now + waitMs);
+    }
+    return addrs;
   }
 
   /**
@@ -7761,11 +7834,10 @@ export class CadreNode implements SAppIdLookup {
       }, 'formStrand');
       peers++;
     }
-    // A strand already running when this lands (a re-formation) would otherwise wait out
-    // the rest of its ~10-minute refresh throttle before the new addresses reached its
-    // address book. Clearing the stamp makes the next 15 s reconcile tick merge them,
-    // which matters precisely because re-forming is the recovery path for a dead entry.
-    this.strandPeerAddrRefreshAt.delete(strandId);
+    // A strand already running when this lands (a re-formation) needs nothing more: the
+    // refresh pass merges the book into its address book on every reconcile tick, so the
+    // new addresses land within 15 s — which matters because re-forming is the recovery
+    // path for a dead entry.
     log('formStrand: recorded %d cross-party strand addr(s) for %s under %d peer(s)', strandAddrs.length, strandId, peers);
   }
 

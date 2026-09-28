@@ -20,7 +20,7 @@
  *
  * **Authorization (v1):** like wake, the receiver defers entirely to the injected
  * `isMember` predicate and requires no further signature; a peer it rejects gets
- * an empty address list. `CadreNode` injects its AUTHORIZED-membership predicate
+ * a `refused` reply with no addresses. `CadreNode` injects its AUTHORIZED-membership predicate
  * (`isAuthorizedMember`: voucher on the requester's `CadrePeer` row verified
  * against the node-local trusted-owner anchor), so an outsider that published its
  * own rows into the replicated control DB cannot harvest live strand addresses.
@@ -32,7 +32,7 @@ import debug from 'debug';
 import type { Libp2p, Connection, PeerId } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
-import type { StrandAddrRequest, StrandAddrResponse } from './types.js';
+import type { StrandAddrRequest, StrandAddrResponse, StrandAddrStatus } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { orderSignalingFirst } from './peer-record.js';
 import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
@@ -70,9 +70,9 @@ async function readFrame<T>(stream: ControlStream, timeoutMs: number): Promise<T
   return JSON.parse(new TextDecoder().decode(body)) as T;
 }
 
-/** Empty response used on every reject/error path (cap, malformed frame, non-member). */
-function emptyResponse(strandId: string): StrandAddrResponse {
-  return { strandId, multiaddrs: [] };
+/** An address-free reply, for every path but a member's lookup: cap, unreadable request, lookup failure, non-member. */
+function addrlessResponse(status: StrandAddrStatus, strandId: string): StrandAddrResponse {
+  return { status, strandId, multiaddrs: [] };
 }
 
 /**
@@ -107,7 +107,7 @@ export interface StrandAddrServiceOptions {
   readTimeoutMs?: number;
   /**
    * Cap on concurrent inbound strand-addr streams (defaults to
-   * {@link DEFAULT_MAX_CONCURRENT_ADDRS}). Over the cap, an empty response is
+   * {@link DEFAULT_MAX_CONCURRENT_ADDRS}). Over the cap, an `unavailable` reply is
    * returned without looking up any strand address.
    */
   maxConcurrent?: number;
@@ -117,7 +117,8 @@ export interface StrandAddrServiceOptions {
  * Receiver side of the strand-address RPC. Registers a `STRAND_ADDR_PROTOCOL`
  * handler on the control node and, for each inbound {@link StrandAddrRequest},
  * gates on cadre membership, then replies with the local strand instance's live
- * multiaddrs (or an empty list when not a member / not running).
+ * multiaddrs — `ok` with an empty list when the strand is not running, `refused`
+ * for a non-member, `unavailable` when it could not answer at all.
  */
 export class StrandAddrService {
   private readonly options: StrandAddrServiceOptions;
@@ -166,11 +167,13 @@ export class StrandAddrService {
   /**
    * Read the inbound request, decide the response, and write it back.
    *
-   * Three hardening layers, all reported as an empty {@link StrandAddrResponse}
-   * rather than a dropped/hung stream: a concurrency cap (over
-   * {@link maxConcurrent}, reply without looking up any address), a read timeout
-   * (a peer that never half-closes is aborted inside {@link readFrame}/
-   * `readStreamToEnd`), and the existing malformed/oversized-frame guard.
+   * Three hardening layers, all reported as an `unavailable`
+   * {@link StrandAddrResponse} rather than a dropped/hung stream: a concurrency cap
+   * (over {@link maxConcurrent}, reply without looking up any address), a read
+   * timeout (a peer that never half-closes is aborted inside {@link readFrame}/
+   * `readStreamToEnd`), and the existing malformed/oversized-frame guard. A
+   * lookup that throws — the membership read failing, say — is `unavailable` too,
+   * never a `refused` or an empty `ok` the asker would wait ten minutes on.
    */
   private async handleStream(stream: ControlStream, remotePeerId: string): Promise<void> {
     log('Incoming strand-addr request from: %s', remotePeerId);
@@ -178,10 +181,9 @@ export class StrandAddrService {
     if (this.activeStreams >= this.maxConcurrent) {
       log('Rejecting strand-addr from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrent);
       // The request frame is unread here, so the strand id is unknown — reply
-      // with an empty list under an empty strand id; the client treats any empty
-      // response as "no addrs" and skips this sibling.
+      // under an empty strand id; the asker retries an `unavailable` sibling soon.
       try {
-        writeFrame(stream, emptyResponse(''));
+        writeFrame(stream, addrlessResponse('unavailable', ''));
       } catch {
         // Ignore send errors on the reject path.
       }
@@ -200,10 +202,10 @@ export class StrandAddrService {
       writeFrame(stream, response);
     } catch (err) {
       log('Error handling strand-addr request from %s: %o', remotePeerId, err);
-      // Malformed/oversized/timed-out request: strand id is unknown, so reply
-      // with an empty list under an empty strand id rather than hanging.
+      // Malformed/oversized/timed-out request, or a lookup that threw: reply
+      // under an empty strand id rather than hanging.
       try {
-        writeFrame(stream, emptyResponse(''));
+        writeFrame(stream, addrlessResponse('unavailable', ''));
       } catch {
         // Ignore send errors on the error path.
       }
@@ -222,25 +224,27 @@ export class StrandAddrService {
    * decision matrix can be unit-tested directly (mirrors wake's
    * `processWakeRequest`).
    *
-   * - Non-member sender → empty `multiaddrs` (refused), no delegate grant.
+   * - Non-member sender → `refused`, no delegate grant.
    * - Member request carrying a `delegatePeerId` → recorded via
    *   {@link StrandAddrServiceOptions.onDelegateAnnounce} before the lookup.
-   * - Strand not running locally → empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
-   * - Member + running strand → the strand's live, signaling-first multiaddrs.
+   * - Strand not running locally → `ok` with empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
+   * - Member + running strand → `ok` with the strand's live, signaling-first multiaddrs.
+   *
+   * A throwing `isMember` propagates; {@link handleStream} answers it `unavailable`.
    */
   async processAddrRequest(request: StrandAddrRequest, remotePeerId: string): Promise<StrandAddrResponse> {
     // Control-network membership is the v1 authorization: only this party's
     // cadre peers may ask us for a strand address (or announce a delegate).
     if (!(await this.options.isMember(remotePeerId))) {
       log('Refusing strand-addr from non-member %s', remotePeerId);
-      return emptyResponse(request.strandId);
+      return addrlessResponse('refused', request.strandId);
     }
 
     this.recordDelegateAnnounce(request, remotePeerId);
 
     const multiaddrs = this.options.getStrandMultiaddrs(request.strandId);
     log('Strand-addr for %s → %d addr(s)', request.strandId, multiaddrs.length);
-    return { strandId: request.strandId, multiaddrs };
+    return { status: 'ok', strandId: request.strandId, multiaddrs };
   }
 
   /**
@@ -296,15 +300,43 @@ export interface CollectStrandAddrsOptions {
 }
 
 /**
+ * What asking one sibling produced, as {@link collectStrandAddrs} reports it.
+ *
+ * - `answered` — status `ok` with at least one address.
+ * - `empty` — status `ok` with no address: the sibling does not run the strand
+ *   right now, a normal steady state.
+ * - `unavailable` — the sibling replied that it could not answer.
+ * - `refused` — the sibling does not (yet) count the asker as an authorized member.
+ * - `unreachable` — no reply at all: every dial target failed or timed out, or
+ *   the reply was malformed.
+ */
+export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'refused' | 'unreachable';
+
+/** Result of {@link collectStrandAddrs}. */
+export interface StrandAddrCollection {
+  /** Deduplicated union of every answer, signaling-first. */
+  addrs: string[];
+  /** One entry per candidate (self excluded), keyed by the sibling's control peerId. */
+  outcomes: Map<string, StrandAddrOutcome>;
+}
+
+/** One sibling's share of a {@link StrandAddrCollection}. */
+interface SiblingAnswer {
+  outcome: StrandAddrOutcome;
+  multiaddrs: string[];
+}
+
+/**
  * Client side: ask each candidate sibling for its live strand-`strandId`
  * multiaddrs and return the **deduplicated union** of every answer, ordered
- * signaling-first.
+ * signaling-first, alongside each sibling's {@link StrandAddrOutcome}.
  *
- * Best-effort per peer: a failed/timed-out/empty sibling is logged and skipped,
- * never fatal — an empty union (no sibling online or running the strand) returns
- * `[]`, which the caller treats as an acceptable seed that self-heals on the next
- * resume/reconcile pass. The local node (`node.peerId`) is excluded so we never
- * RPC ourselves or seed with our own strand address.
+ * Best-effort per peer: a failed/timed-out/empty sibling contributes no address
+ * and never fails the collection — an empty union (no sibling online or running
+ * the strand) is an acceptable seed that self-heals on the next resume/reconcile
+ * pass. `outcomes` is what lets a caller retry the siblings that could not answer
+ * sooner than the ones that answered with nothing. The local node (`node.peerId`)
+ * is excluded so we never RPC ourselves or seed with our own strand address.
  *
  * Dials run concurrently but the union preserves candidate order, so the result
  * is deterministic regardless of which sibling answers first.
@@ -314,45 +346,49 @@ export async function collectStrandAddrs(
   peers: StrandAddrPeer[],
   strandId: string,
   options: CollectStrandAddrsOptions = {}
-): Promise<string[]> {
+): Promise<StrandAddrCollection> {
   const selfId = node.peerId.toString();
   const request: StrandAddrRequest = options.delegatePeerId !== undefined
     ? { strandId, delegatePeerId: options.delegatePeerId }
     : { strandId };
   const candidates = peers.filter(p => p.peerId !== selfId);
 
-  // Concurrent dials; `dialOneSibling` swallows per-peer failure into `[]`, so
+  // Concurrent dials; `dialOneSibling` folds per-peer failure into an outcome, so
   // `Promise.all` never rejects and the result array stays in candidate order.
-  const perPeer = await Promise.all(
-    candidates.map(peer => dialOneSibling(node, peer, request, options))
+  const answers = await Promise.all(
+    candidates.map(async (peer) => ({ peerId: peer.peerId, ...await dialOneSibling(node, peer, request, options) }))
   );
 
+  const outcomes = new Map<string, StrandAddrOutcome>();
   // Deduplicated union in candidate order, then signaling-first for a usable
   // dial sequence (relay/`p2p-circuit` ahead of direct addrs).
   const seen = new Set<string>();
   const union: string[] = [];
-  for (const addrs of perPeer) {
-    for (const addr of addrs) {
+  for (const { peerId, outcome, multiaddrs } of answers) {
+    outcomes.set(peerId, outcome);
+    for (const addr of multiaddrs) {
       if (!seen.has(addr)) {
         seen.add(addr);
         union.push(addr);
       }
     }
   }
-  return orderSignalingFirst(union);
+  return { addrs: orderSignalingFirst(union), outcomes };
 }
 
 /**
- * Ask one sibling for its strand address, returning its multiaddrs or `[]` on any
- * failure. Tries each dial target in order (peerId first to reuse an open control
- * connection, then explicit addrs) until one answers; a total failure is logged
- * and folded to `[]` so a single dead sibling never aborts the collection.
+ * Ask one sibling for its strand address. Tries each dial target in order (peerId
+ * first to reuse an open control connection, then explicit addrs) until one
+ * produces a well-formed reply, and reports that reply's outcome; a total failure
+ * is `unreachable`, so a single dead sibling never aborts the collection. Never
+ * throws.
  *
- * A total failure logs ONE line naming every target and its cause. `[]` alone
- * cannot tell the caller "this sibling was unreachable" apart from "this sibling
- * answered and has no strand address" — and per-target lines scattered through a
- * concurrent fan-out do not reassemble into that answer either. The return
- * contract is unchanged: best-effort `[]`, never a throw.
+ * A reply of any status ends the loop: every target reaches the same responder,
+ * so asking it again by another address would get the same answer.
+ *
+ * A total failure logs ONE line naming every target and its cause, because
+ * per-target lines scattered through a concurrent fan-out do not reassemble into
+ * "this sibling was unreachable".
  *
  * NOTE: cost is (targets × `timeoutMs`) with no whole-sibling budget, the same
  * shape `dialWake` bounds with `DEFAULT_WAKE_DIAL_BUDGET_MS`. Fine today —
@@ -365,14 +401,14 @@ async function dialOneSibling(
   peer: StrandAddrPeer,
   request: StrandAddrRequest,
   options: CollectStrandAddrsOptions
-): Promise<string[]> {
+): Promise<SiblingAnswer> {
   const protocolId = options.protocolId ?? STRAND_ADDR_PROTOCOL;
   const timeoutMs = options.timeoutMs ?? DEFAULT_ADDR_TIMEOUT_MS;
   const targets = dialTargets(peer);
 
   if (targets.length === 0) {
     log('No dial target for sibling %s', peer.peerId);
-    return [];
+    return { outcome: 'unreachable', multiaddrs: [] };
   }
 
   const failures: string[] = [];
@@ -385,7 +421,7 @@ async function dialOneSibling(
         `Strand-addr dial ${peer.peerId}`,
         (signal) => sendStrandAddr(node, target, protocolId, request, timeoutMs, signal),
       );
-      return response.multiaddrs;
+      return siblingAnswer(response);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       failures.push(`${describeTarget(target)} — ${error.message}`);
@@ -394,7 +430,18 @@ async function dialOneSibling(
   }
   log('Strand-addr dial to %s failed on all %d target(s), contributing no addrs: %s',
     peer.peerId, failures.length, failures.join('; '));
-  return [];
+  return { outcome: 'unreachable', multiaddrs: [] };
+}
+
+/** Map a validated reply to its outcome; only an `ok` reply contributes addresses. */
+function siblingAnswer(response: StrandAddrResponse): SiblingAnswer {
+  if (response.status !== 'ok') {
+    return { outcome: response.status, multiaddrs: [] };
+  }
+  return {
+    outcome: response.multiaddrs.length > 0 ? 'answered' : 'empty',
+    multiaddrs: response.multiaddrs
+  };
 }
 
 /**
@@ -449,10 +496,34 @@ async function sendStrandAddr(
     rawStream as unknown as ControlStream,
     signal,
     request,
-    (stream) => readFrame<StrandAddrResponse>(stream, timeoutMs),
+    (stream) => readFrame<unknown>(stream, timeoutMs),
     'Strand-addr dial aborted by timeout',
   );
+  if (!isStrandAddrResponse(response)) {
+    throw new Error('Malformed strand-addr response');
+  }
 
-  log('Strand-addr response: %d addr(s) for %s', response.multiaddrs.length, response.strandId);
+  log('Strand-addr response: %s, %d addr(s) for %s', response.status, response.multiaddrs.length, response.strandId);
   return response;
+}
+
+const STRAND_ADDR_STATUSES: ReadonlySet<string> = new Set<StrandAddrStatus>(['ok', 'unavailable', 'refused']);
+
+/**
+ * Shape check on a decoded reply: the responder is another machine, so a reply
+ * missing its status (an older responder, or a buggy one) or carrying anything but
+ * strings in `multiaddrs` is a failed exchange, not an answer.
+ *
+ * Deliberately not `sanitizeStrandAddrs` (strand-formation-protocol.ts): that drops
+ * bad entries and caps the list at 16, which suits a cross-party formation result
+ * but would silently truncate a sibling's full address list here.
+ */
+function isStrandAddrResponse(value: unknown): value is StrandAddrResponse {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const { status, strandId, multiaddrs } = value as Record<string, unknown>;
+  return typeof status === 'string' && STRAND_ADDR_STATUSES.has(status)
+    && typeof strandId === 'string'
+    && Array.isArray(multiaddrs) && multiaddrs.every((addr) => typeof addr === 'string');
 }

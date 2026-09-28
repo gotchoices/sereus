@@ -430,14 +430,16 @@ export {
 } from './strand-wake-protocol.js';
 
 // Strand Address (control-network strand-address RPC) — wire types come via
-// `export * from './types.js'` (StrandAddrRequest / StrandAddrResponse).
+// `export * from './types.js'` (StrandAddrRequest / StrandAddrResponse / StrandAddrStatus).
 export {
   StrandAddrService,
   collectStrandAddrs,
   STRAND_ADDR_PROTOCOL,
   type StrandAddrServiceOptions,
   type StrandAddrPeer,
-  type CollectStrandAddrsOptions
+  type CollectStrandAddrsOptions,
+  type StrandAddrOutcome,
+  type StrandAddrCollection
 } from './strand-addr-protocol.js';
 
 // Peer-address record (self-published, signed, freshness-stamped CadrePeer row)

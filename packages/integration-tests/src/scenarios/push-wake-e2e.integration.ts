@@ -493,7 +493,8 @@ describe('E2E push-wake over the control network', () => {
 			expect(Rx.getStrand(strandId)?.status).toBe('active');
 			const rxDialTargets = [{ peerId: rxPeerId, addrs: rxAddrs.map((a) => multiaddr(a)) }];
 			const refused = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
-			expect(refused).toEqual([]);
+			expect(refused.addrs).toEqual([]);
+			expect(refused.outcomes.get(rxPeerId)).toBe('refused');
 
 			// POSITIVE CONTROL — same replicated state, one anchor pin: once Rx's
 			// operator pins O's owner key, the identical rows flip to authorized and the
@@ -503,7 +504,7 @@ describe('E2E push-wake over the control network', () => {
 			await Rx.trustOwnerKeys([oOwnerPub], 'operator');
 			expect(await Rx.isAuthorizedMember(oPeerId)).toBe(true);
 			const granted = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
-			expect(granted.length).toBeGreaterThan(0);
+			expect(granted.addrs.length).toBeGreaterThan(0);
 		} finally {
 			await O?.stop();
 			await Rx?.stop();

@@ -161,7 +161,7 @@ describe('E2E strand-addr seed convergence', () => {
 			// discovery. Every returned addr must be a strand-NETWORK addr of A's live
 			// instance, never a control addr (the regression this file guards: the old
 			// bug seeded strand meshes with `CadrePeer.Multiaddr` control addrs).
-			const seed = await collectStrandAddrs(B.getControlNode()!, [{ peerId: aPeerId }], strandId);
+			const { addrs: seed } = await collectStrandAddrs(B.getControlNode()!, [{ peerId: aPeerId }], strandId);
 			expect(seed.length).toBeGreaterThan(0);
 			const aControlAddrsNow = controlAddrs(A);
 			for (const addr of seed) {
