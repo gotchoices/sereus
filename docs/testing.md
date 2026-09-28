@@ -292,6 +292,9 @@ section).
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
   plus the same `req.resolve`d cadre-cli bin (integration-tests — its harness spawns real CLI children).
   Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
+- integration-tests' child-process scripts (`src/harness/fixtures/*.mjs`) are spawned by path, so
+  `knip.ts` declares them as entries; without that their imports go unseen and the dependencies only
+  they use (`@optimystic/db-p2p-storage-fs`) read as unused.
 - **Zero configuration hints is part of the gate's value**: a hint means `knip.ts` is carrying an exemption
   reality no longer needs. Two were retired that way (`test-harness/**` from the root `ignore`,
   `@tsconfig/svelte` from `cadre-host`'s `ignoreDependencies` — knip resolves the tsconfig `extends` on its
@@ -592,6 +595,20 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   parties are equally slow — the asymmetric shape (a slow phone talking to a fast desktop) is
   uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. One SHARED relay only; the
   two-relay shape (each party reserved on a different relay) is not covered.
+- Relayed strand plane across parties, RESTARTED over persisted storage (the line above's
+  shape; after a write has crossed, both machines stop and are rebuilt over the identity key,
+  raw stores, strand peer book and joined-strand record they kept, each re-claims its strand
+  from `strand:discovered`, a write made after the restart must cross both ways, each book
+  must hold the other side's entry re-signed after the restart, and every strand connection
+  classifies `relayed`) — `strand-relay-only-restart-reconverges.integration.ts`, the
+  reproduction of gotchoices/sereus#18. Two opt-in arms: `RESTART_NEGATIVE_CONTROL=1` runs it
+  with in-memory peer books and passes only if the post-restart write never crosses within its
+  180 s budget (the behaviour before the book), and `RESTART_TWO_PROCESS=1` runs each party in
+  its own `node` process over on-disk stores in a temp directory
+  (`harness/strand-restart-party.ts`, `harness/fixtures/strand-restart-party.mjs`), because a
+  restart inside one process reopens the same live in-memory stores and keeps module state.
+  The two-process arm takes about 25 s and could run by default; it is opt-in only because the
+  in-process arm already gates the behaviour. Loopback-instant link, one shared relay.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the

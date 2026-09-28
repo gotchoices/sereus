@@ -208,7 +208,13 @@ from a strand forgets its entries. The store is injected like the other node-loc
 (`CadreNodeConfig.strandPeers.store`; in-memory by default, which is the pre-#18 behaviour,
 and every reference embedder injects a durable one). The maintainer ruled an in-strand
 registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out
-for now; nothing needs it, and it stays a possible later step only if a case does.
+for now; nothing needs it, and it stays a possible later step only if a case does. The proof
+is `integration-tests` scenario `strand-relay-only-restart-reconverges`, the reporter's
+reproduction: two relay-only parties sharing a closed strand both restart over the storage they
+kept, each re-claims the strand from `strand:discovered` (the joiner's from its remembered
+join, below), and a write made after the restart crosses both ways. Its opt-in negative
+control runs the same journey with in-memory books and the strand never re-meshes; its opt-in
+two-process arm repeats the restart across real process exits over on-disk stores.
 
 **How a member's new address reaches the others, and how a late joiner learns the rest.**
 Two things the book's own writers cannot do: refresh an entry while the two machines are
@@ -407,10 +413,11 @@ A join is forgotten:
 
 `stopStrand` alone keeps the record, as an own-party strand is rediscovered on restart too.
 
-**This does not by itself restore replication after a restart** (gotchoices/sereus#18). The
-other party's strand addresses that `formStrand` received (`strandAddrs`) are still held in
-memory only, so a remembered join re-attached after a restart starts with an empty
-cross-party seed until those addresses are remembered as well.
+**The record brings the strand back, not the other party's addresses** (gotchoices/sereus#18).
+Those live in the node's strand peer book (see "How a restarted machine re-finds its strand's
+peers" above), so a restarted joiner re-meshes only when that book is durable too: an embedder
+injects both `strandPeers.store` and a `keyStore` (or `joinedStrands.store`). With either one
+in memory, the join either is not re-offered or comes back with nothing to dial.
 
 ## Who May Administer a Closed Strand
 

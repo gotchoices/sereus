@@ -5234,6 +5234,7 @@ __metadata:
     "@noble/curves": "npm:^2.0.1"
     "@optimystic/db-core": "npm:^1.7.0"
     "@optimystic/db-p2p": "npm:^1.7.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^1.7.0"
     "@optimystic/quereus-plugin-crypto": "npm:^1.7.0"
     "@optimystic/quereus-plugin-optimystic": "npm:^1.7.0"
     "@quereus/quereus": "npm:^4.20.0"

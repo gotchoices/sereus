@@ -88,6 +88,9 @@ const config: KnipConfig = {
 		},
 
 		'packages/integration-tests': {
+			// Child-process scripts the harness spawns by path (`fork` / `spawn`), so no
+			// import reaches them; as entries their own imports count as dependency uses.
+			entry: ['src/harness/fixtures/*.mjs'],
 			ignoreDependencies: [
 				// Quereus plugins are registered by name at runtime; cadre-core pulls
 				// this in transitively, but it's listed here for explicit test setup.

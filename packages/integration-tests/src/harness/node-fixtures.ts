@@ -16,7 +16,15 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
-import type { BootstrapPeerStore, CadreNodeConfig, EnrolledMachineStore, RawStorageProvider, SAppConfig } from '@serfab/cadre-core';
+import type {
+  BootstrapPeerStore,
+  CadreNodeConfig,
+  EnrolledMachineStore,
+  JoinedStrandStore,
+  RawStorageProvider,
+  SAppConfig,
+  StrandPeerBookStore,
+} from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
@@ -141,6 +149,20 @@ export interface ControlNodeOpts {
    */
   bootstrapPeerStore?: BootstrapPeerStore;
   /**
+   * Becomes `strandPeers.store` verbatim — the node-local strand peer book (per strand,
+   * the strand peers this node has met and their last-known addresses). Left unset the
+   * node gets an in-memory book that dies with it. Same restart rule as
+   * {@link bootstrapPeerStore}: a store that must outlive a rebuilt node is opened over
+   * backing state the scenario keeps outside the node.
+   */
+  strandPeerBook?: StrandPeerBookStore;
+  /**
+   * Becomes `joinedStrands.store` verbatim — the record of strands this node joined from
+   * ANOTHER party, re-offered as `strand:discovered` on every start. Left unset a node
+   * built with `privateKey` (no `keyStore`) remembers joins in memory only.
+   */
+  joinedStrandStore?: JoinedStrandStore;
+  /**
    * Node-local enrolled-machine record this node declares its block-repair
    * yardstick from at bring-up. Build one with {@link enrolledMachineStoreWith}.
    *
@@ -217,6 +239,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     },
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
+    ...(opts.strandPeerBook ? { strandPeers: { store: opts.strandPeerBook } } : {}),
+    ...(opts.joinedStrandStore ? { joinedStrands: { store: opts.joinedStrandStore } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },
   };
 }

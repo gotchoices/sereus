@@ -970,6 +970,18 @@ path is a non-participant against a dedicated relay (it speaks no strand-addr
 RPC, so the announce folds to a no-op). Untested: the two-relay shape, where
 each party reserved on a different relay.
 
+**And the same pair restarting:**
+`packages/integration-tests/src/scenarios/strand-relay-only-restart-reconverges.integration.ts`
+takes the blind-relay pair past a working write, stops both machines, and
+rebuilds them over the identity keys, raw stores, strand peer books and
+joined-strand records they kept (gotchoices/sereus#18). The rebuilt strand
+nodes keep their peer ids (derived from the identity key and the strand id), so
+each book's remembered `/p2p-circuit` entry for the other side is dialable
+through the relay again; they reconnect in about a second, a post-restart write
+crosses both ways, and every strand connection still classifies `relayed`. Its
+opt-in negative control, with in-memory books, never reconnects; its opt-in
+two-process arm repeats the restart across real process exits.
+
 **Strand launch while the relay is down** is fail-SOFT: the strand's libp2p
 node binds its search listener without dialing anything, its database comes up,
 the per-relay supervisor's first attempt lands nothing, and the strand goes
