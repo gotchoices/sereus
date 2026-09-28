@@ -5700,7 +5700,7 @@ export class CadreNode implements SAppIdLookup {
    * relay reservation — the gate denial there is fatal, not degraded. A
    * party-member relay answers the RPC (its control node admits us as a
    * member); a dedicated ops/ relay does not speak the protocol and the
-   * per-peer failure folds to `[]` — harmless, it has no membership gate and
+   * per-peer failure comes back `unreachable` — harmless, it has no membership gate and
    * needs no grant. The relay's direct addr rides along as the dial fallback
    * for a relay we are not yet connected to.
    */
@@ -6117,7 +6117,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * RPC `due` siblings for `strandId` and set each one's next due time from its own
    * outcome: an answer, even an empty one, waits the full refresh interval; anything
-   * else retries in {@link STRAND_PEER_ADDR_RETRY_MS}. Stamped before the caller
+   * else retries in {@link STRAND_PEER_ADDR_RETRY_MS} (or the refresh interval, if
+   * configured shorter). Stamped before the caller
    * re-checks that the strand is still running, so a strand torn down mid-pass still
    * records who was asked.
    */
@@ -6130,8 +6131,11 @@ export class CadreNode implements SAppIdLookup {
   ): Promise<string[]> {
     const { addrs, outcomes } = await collectStrandAddrs(controlNode, [...due], strandId, { delegatePeerId });
     const refreshMs = this.config.network?.controlCohort?.strandAddrRefreshMs ?? STRAND_PEER_ADDR_REFRESH_MS;
+    // A configured refresh shorter than the retry must not leave a failing sibling
+    // waiting longer than a healthy one.
+    const retryMs = Math.min(refreshMs, STRAND_PEER_ADDR_RETRY_MS);
     for (const [peerId, outcome] of outcomes) {
-      const waitMs = siblingAnswered(outcome) ? refreshMs : STRAND_PEER_ADDR_RETRY_MS;
+      const waitMs = siblingAnswered(outcome) ? refreshMs : retryMs;
       this.strandAddrAskDueAt.set(peerStrandKey(peerId, strandId), now + waitMs);
     }
     return addrs;

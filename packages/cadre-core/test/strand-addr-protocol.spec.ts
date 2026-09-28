@@ -10,6 +10,7 @@ import {
   type StrandAddrServiceOptions
 } from '../src/strand-addr-protocol.js';
 import type { StrandAddrRequest, StrandAddrResponse } from '../src/types.js';
+import { writeFrame } from '../src/control-stream.js';
 import {
   frameMessage,
   decodeFrames,
@@ -353,6 +354,37 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     expect(result.addrs).toEqual([]);
     expect(result.outcomes).toEqual(new Map([[sib1, 'unreachable'], [sib2, 'unreachable']]));
+  });
+
+  it('reports each reply status as its outcome, and takes addresses only from an ok reply', async () => {
+    // The refresh pass schedules each sibling's next ask from this outcome, so a reply
+    // that is not `ok` must not pass as an answer, and one without a valid status —
+    // a responder that predates the field, or a broken one — must count as no reply.
+    const [self, empty, busy, refusing, statusless] = await Promise.all(
+      Array.from({ length: 5 }, () => freshPeerId())
+    );
+    const canned = new Map<string, unknown>([
+      [empty, { status: 'ok', strandId: 'strand-x', multiaddrs: [] }],
+      [busy, { status: 'unavailable', strandId: '', multiaddrs: [] }],
+      [refusing, { status: 'refused', strandId: 'strand-x', multiaddrs: ['/ip4/3.3.3.3/tcp/3'] }],
+      [statusless, { strandId: 'strand-x', multiaddrs: ['/ip4/4.4.4.4/tcp/4'] }]
+    ]);
+    const node = {
+      peerId: { toString: () => self },
+      dialProtocol: async (target: unknown) => {
+        const { clientStream, serverStream } = duplexPair();
+        writeFrame(serverStream, canned.get((target as { toString(): string }).toString()));
+        await serverStream.close();
+        return clientStream;
+      }
+    } as unknown as Libp2p;
+
+    const result = await collectStrandAddrs(node, [...canned.keys()].map((peerId) => ({ peerId })), 'strand-x');
+
+    expect(result.addrs).toEqual([]);
+    expect(result.outcomes).toEqual(new Map([
+      [empty, 'empty'], [busy, 'unavailable'], [refusing, 'refused'], [statusless, 'unreachable']
+    ]));
   });
 
   it('returns [] when given no candidate peers', async () => {

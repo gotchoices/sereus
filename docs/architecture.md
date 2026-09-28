@@ -1018,7 +1018,7 @@ strand node on an in-memory delegate grant (`delegate-admission.ts`) which a
 relay restart drops, so each strand supervisor's `beforeRedrive` hook is
 `CadreNode.announceDelegateToRelay` — an unthrottled announce of this strand's
 delegate peer id to exactly the relay about to be re-dialed. Against a dedicated
-ops relay (no strand-addr RPC) the announce folds to `[]` at the cost of one
+ops relay (no strand-addr RPC) the announce comes back `unreachable` at the cost of one
 protocol negotiation per re-drive attempt, bounded by the backoff.
 
 **What a strand node does NOT inherit: the host's one endpoint.** A machine runs

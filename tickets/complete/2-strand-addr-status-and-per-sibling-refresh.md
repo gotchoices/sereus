@@ -4,7 +4,7 @@ files: packages/cadre-core/src/types.ts (StrandAddrStatus, StrandAddrResponse), 
 repro: verified
 ----
 
-# Review: strand-addr status field and per-sibling refresh scheduling
+# Complete: strand-addr status field and per-sibling refresh scheduling
 
 ## What changed
 
@@ -61,3 +61,33 @@ repro: verified
 - Is the prune-then-ask ordering in `refreshStrandPeerAddrs` race-free against a strand that starts during the enumeration await? Such a strand is not in `running`, so its keys (none yet) are pruned and it is asked on the next tick.
 - Does the outcome → interval mapping match intent? In particular, `empty` waits the full interval. The ticket settled this: an empty `ok` is a normal steady state.
 - The docs changes are in the Strand-Address Resolution section of `docs/architecture.md` (the request/response, client-union, kept-warm and cross-party bullets, plus one line in the Strand Networks paragraph) and in the within-party answer in `docs/strands.md`.
+
+
+## Review findings
+
+I read the diff for `ticket(implement): strand-addr-status-and-per-sibling-refresh` before the handoff, then ran build, lint, the full cadre-core suite and the integration typecheck.
+
+**Checked, no problem found**
+- **Reviewer focus, the race.** A strand that starts during the sibling enumeration is not in `running`, so it has no keys to prune and is asked on the next tick. A strand that stops mid-pass leaves keys that the next pass prunes. `reconcileControlCohort`'s single-flight guard means two refresh passes never overlap, so two passes cannot double-ask one due sibling.
+- **Reviewer focus, the interval mapping.** `answered` and `empty` wait the full interval. `unavailable`, `refused` and `unreachable` wait the retry. This matches the ticket's settled intent.
+- **Responder mapping.** A throw from `getStrandMultiaddrs` (after the delegate grant was recorded) and a throw from `isMember` both end at the `handleStream` catch as `unavailable`. That is correct: the grant stands, and the asker simply retries sooner.
+- **Asker validation.** The `readFrame<unknown>` result is narrowed through `isStrandAddrResponse` before use. There is no unchecked cast.
+- **Enumeration failure.** A failed enumeration prunes every key, which costs at most one extra round of asks.
+- **Per-tick book merge.** `mergePeerAddrs` is a `peerStore.merge` plus a restamp only when an address has expired. The implementer's `NOTE:` at that site is the right place for the conditional cost.
+- **Implementer's deviation.** The implementer folded a disconnect/reconnect arm into an existing test. I kept it: it is the only coverage of the `livePeerIds` half of `prunePeerStrandKeys`.
+
+**Found and fixed in this pass**
+- **Retry slower than refresh (minor defect).** With `network.controlCohort.strandAddrRefreshMs` set below 60 s, a sibling that failed waited the fixed 60 s retry, while a healthy one was re-asked sooner. `askSiblingsForStrandAddrs` now uses `min(refreshMs, STRAND_PEER_ADDR_RETRY_MS)` for the retry. I extended the existing override test with an `unavailable` sibling, and that test fails without the fix. The `strandAddrRefreshMs` doc in `types.ts` now says so.
+- **Asker-side status mapping had no unit coverage.** Only integration scenarios asserted `refused`, and nothing covered a reply with no status. I added one test to `strand-addr-protocol.spec.ts`. It sends canned `ok`-empty, `unavailable`, `refused`-with-addresses and status-less replies, and checks that each maps to its outcome and that only an `ok` reply contributes addresses. This pins the documented rule that a reply without a valid status is a failed exchange.
+- **Stale comment.** `StrandAddrResponse.strandId` said it is empty "when the request was never read". It is actually always empty on an `unavailable` reply, including the case where the lookup threw. Reworded.
+- **Stale wording.** Two places still said the ops-relay announce failure "folds to `[]`": `docs/architecture.md` (the relay re-drive paragraph) and the `resolveCohortSeed` doc in `cadre-node.ts`. Both now say it comes back `unreachable`.
+
+**Tripwires.** No new ones. The implementer's two `NOTE:`s (the per-tick `CadrePeer` read on `strandAddrRefreshTargets`, and the per-tick book merge in `refreshOneStrandPeerAddrs`) are correctly placed, and I left them as written. A sibling that permanently refuses (for example, its voucher check never passes) now costs one RPC a minute rather than one every ten minutes. That is bounded and documented in `docs/architecture.md`, so I parked nothing further.
+
+**Tickets filed.** None. `cadre-node.ts` is now 7,872 lines (`wc -l`), and this change added about 70. That size is already tracked by `backlog/debt-cadre-node-single-file-size`.
+
+**Docs.** I read `docs/architecture.md` (the Strand Networks and Strand-Address Resolution sections, and the relay re-drive paragraph) and `docs/strands.md`. They now reflect the per-sibling schedule and the status field. I found no other doc that describes the old per-strand throttle.
+
+**Validation (review pass).** `yarn workspace @serfab/cadre-core build` and `yarn lint` are clean. `yarn workspace @serfab/cadre-core test`: 144 files, 2,337 passed, 1 skipped (the skip was already there). `yarn workspace @serfab/integration-tests typecheck` is clean. I did not re-run the integration scenarios: my source change touches only the retry clamp, which they do not exercise.
+
+**Still open (not work for this repo's pipeline).** After release, reply on gotchoices/sereus#21 and #22 (the maintainer approves the posts). For #22, wait until `await-protocol-handler-registration` has also shipped.

@@ -648,14 +648,15 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(s2.merges).toEqual([]);
   });
 
-  it('honours a configured strandAddrRefreshMs override', async () => {
-    const [self, sib, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+  it('honours a configured strandAddrRefreshMs override, never retrying a failed sibling later than it', async () => {
+    const [self, sib, sick, ownStrand] = await Promise.all(Array.from({ length: 4 }, () => freshPeerId()));
     const strand = fakeStrandNode(ownStrand);
     const harness = injectRefresh({
       selfPeerId: self,
-      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
-      connections: [sib],
-      replies: new Map([[sib, { 's1': [] }]]),
+      members: [self, sib, sick].map((peerId) => ({ peerId, multiaddr: null })),
+      connections: [sib, sick],
+      replies: new Map([[sib, { 's1': [] }], [sick, { 's1': [] }]]),
+      unavailable: new Set([sick]),
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
     (harness.node as unknown as { config: CadreNodeConfig }).config.network = {
@@ -664,10 +665,10 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
 
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + 999);
-    expect(harness.asked).toHaveLength(1);
+    expect(harness.asked).toHaveLength(2);
 
     await refresh(harness.node, T0 + 1000);
-    expect(harness.asked).toHaveLength(2);
+    expect(harness.asked.map((a) => a.peerId).sort()).toEqual([sib, sib, sick, sick].sort());
   });
 });
 

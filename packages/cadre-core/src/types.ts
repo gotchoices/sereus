@@ -563,7 +563,8 @@ export interface NetworkConfig {
      * How long a running strand waits, after a sibling answers its strand-addr
      * RPC, before asking that sibling again for its strand-network addresses — a
      * step of the reconcile pass, scheduled per (sibling, strand). A sibling that
-     * did not answer is retried sooner, on `STRAND_PEER_ADDR_RETRY_MS`. Defaults to
+     * did not answer is retried sooner, on `STRAND_PEER_ADDR_RETRY_MS` (or this
+     * interval, when it is set shorter). Defaults to
      * `STRAND_PEER_ADDR_REFRESH_MS` (10 min); must stay well under the peerStore's
      * one-hour address expiry.
      */
@@ -1964,7 +1965,7 @@ export type StrandAddrStatus = 'ok' | 'unavailable' | 'refused';
 export interface StrandAddrResponse {
   /** How the responder handled the request; a reply without one is malformed. */
   status: StrandAddrStatus;
-  /** Echoes the requested strand id (empty when the request was never read). */
+  /** Echoes the requested strand id; always empty on an `unavailable` reply. */
   strandId: string;
   /**
    * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
