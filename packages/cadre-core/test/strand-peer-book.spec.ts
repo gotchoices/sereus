@@ -94,6 +94,18 @@ describe('mergeStrandPeerEntry', () => {
 			wins: 'existing', lastSeenAt: 3
 		},
 		{
+			name: 'two signed: a fresher statement with NO addresses displaces a stale reachable list',
+			existing: { peerId: P, addrs: a, issuedAt: 10, sig: 's10', lastSeenAt: 3 },
+			incoming: { peerId: P, addrs: [], issuedAt: 12, sig: 's12', lastSeenAt: 0 },
+			wins: 'incoming', lastSeenAt: 3
+		},
+		{
+			name: 'two signed with the same issuedAt: the same statement, the incoming copy is taken',
+			existing: { peerId: P, addrs: a, issuedAt: 10, sig: 's10', lastSeenAt: 0 },
+			incoming: { peerId: P, addrs: a, issuedAt: 10, sig: 's10', lastSeenAt: 4 },
+			wins: 'incoming', lastSeenAt: 4
+		},
+		{
 			name: 'two unsigned: the greater lastSeenAt wins',
 			existing: { peerId: P, addrs: a, issuedAt: 0, lastSeenAt: 1 },
 			incoming: { peerId: P, addrs: b, issuedAt: 0, lastSeenAt: 2 },

@@ -75,8 +75,48 @@ interface LastReport {
  * back its nested `@multiformats/multiaddr` copy, a structurally different type from
  * this package's, so addresses are taken by their string form and re-parsed here.
  */
-interface AddrLike {
+export interface AddrLike {
 	toString(): string;
+}
+
+/** One connected peer as the peer store knows it: what identify recorded, plus its open connections. */
+export interface ConnectedIdentifiedPeer {
+	peerId: PeerId;
+	protocols: string[];
+	/** The stored addresses: identify-announced, plus whatever else was merged in. */
+	addrs: AddrLike[];
+	connections: Connection[];
+}
+
+/**
+ * Every peer `libp2p` holds a connection to AND has already identified (it is in the
+ * peer store), grouped per peer. A connected peer whose identify has not finished is
+ * left out: its `peer:identify` event is still to come, and every listener that walks
+ * this list at start subscribes to that event too. Shared by the peer-book observer
+ * and the book swap (`strand-peer-book-swap.ts`), which both arm right after the
+ * node exists and may already have missed an early peer's identify.
+ */
+export async function connectedIdentifiedPeers(libp2p: Libp2p, label: string): Promise<ConnectedIdentifiedPeer[]> {
+	const byPeer = new Map<string, { peerId: PeerId; connections: Connection[] }>();
+	for (const connection of libp2p.getConnections()) {
+		const key = connection.remotePeer.toString();
+		const group = byPeer.get(key) ?? { peerId: connection.remotePeer, connections: [] };
+		group.connections.push(connection);
+		byPeer.set(key, group);
+	}
+	const identified = await Promise.all([...byPeer.values()].map(async ({ peerId, connections }): Promise<ConnectedIdentifiedPeer | undefined> => {
+		try {
+			const peer = await libp2p.peerStore.get(peerId);
+			return { peerId, protocols: peer.protocols, addrs: peer.addresses.map((a) => a.multiaddr), connections };
+		} catch (error) {
+			// NotFoundError: identify has not finished; the event handler will see it.
+			if ((error as Error).name !== 'NotFoundError') {
+				log('[%s] peer store read for %s failed — skipping it: %o', label, peerId.toString(), error);
+			}
+			return undefined;
+		}
+	}));
+	return identified.filter((peer): peer is ConnectedIdentifiedPeer => peer !== undefined);
 }
 
 export class StrandPeerObserver {
@@ -123,7 +163,7 @@ export class StrandPeerObserver {
 	 * Report every connected peer the peer store already knows speaks this strand's
 	 * protocol, with its stored addresses. A peer not yet in the store (identify has
 	 * not finished) is left to the `peer:identify` handler. Returns the number of
-	 * distinct peers considered.
+	 * identified peers considered.
 	 *
 	 * NOTE: the stored addresses include what `CadreNode.mergeStrandPeerAddrs` merged
 	 * INTO the peer store from the book, so this walk can re-vouch a dead address the
@@ -133,36 +173,13 @@ export class StrandPeerObserver {
 	 * addresses here rather than shortening the age.
 	 */
 	private async observeConnectedPeers(): Promise<number> {
-		const connectionsByPeer = new Map<string, { peerId: PeerId; connections: Connection[] }>();
-		for (const connection of this.deps.libp2p.getConnections()) {
-			const key = connection.remotePeer.toString();
-			const group = connectionsByPeer.get(key) ?? { peerId: connection.remotePeer, connections: [] };
-			group.connections.push(connection);
-			connectionsByPeer.set(key, group);
-		}
-		await Promise.all([...connectionsByPeer.values()].map(({ peerId, connections }) =>
-			this.observeIfKnownToSpeak(peerId, connections)));
-		return connectionsByPeer.size;
-	}
-
-	private async observeIfKnownToSpeak(peerId: PeerId, connections: Connection[]): Promise<void> {
-		if (this.stopped) return;
-		let protocols: string[];
-		let stored: AddrLike[];
-		try {
-			const peer = await this.deps.libp2p.peerStore.get(peerId);
-			protocols = peer.protocols;
-			stored = peer.addresses.map((address) => address.multiaddr);
-		} catch (error) {
-			// NotFoundError: identify has not finished; the event handler will see it.
-			if ((error as Error).name !== 'NotFoundError') {
-				log('[%s] peer store read for %s failed — not observing: %o', this.deps.label, peerId.toString(), error);
+		const peers = await connectedIdentifiedPeers(this.deps.libp2p, this.deps.label);
+		for (const { peerId, protocols, addrs, connections } of peers) {
+			if (!this.stopped && speaksBlockTransfer(protocols, this.deps.protocolPrefix)) {
+				this.observe(peerId, addrs, connections);
 			}
-			return;
 		}
-		if (speaksBlockTransfer(protocols, this.deps.protocolPrefix)) {
-			this.observe(peerId, stored, connections);
-		}
+		return peers.length;
 	}
 
 	/** Shape, throttle and report one peer. Never throws. */

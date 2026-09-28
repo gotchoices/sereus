@@ -75,9 +75,10 @@ export const MAX_STRAND_PEERS = 16;
 export const STRAND_PEER_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
- * One strand peer this node knows an address for. `sig` is set only on an entry
- * the peer signed itself (the book-swap protocol, `strand-peer-book-swap`); every
- * entry this ticket writes is unsigned and local-only.
+ * One strand peer this node knows an address for. `sig` is set only on an entry the
+ * peer signed itself and the book swap carried here (`strand-peer-book-protocol.ts`),
+ * or on this node's own entry, which the swap files under the node's own strand
+ * transport id; a formation-carried or observed entry is unsigned and local-only.
  */
 export interface StrandPeerEntry {
 	/** The peer's STRAND transport peer id (never a control peer id). */
@@ -95,7 +96,8 @@ export interface StrandPeerEntry {
 	 */
 	issuedAt: number;
 	/**
-	 * Base64 Ed25519 signature by the peer's strand transport key (swap ticket);
+	 * base64url Ed25519 signature by the peer's strand transport key over the canonical
+	 * JSON of `{ v, strandId, peerId, addrs, issuedAt }` (`signedStrandPeerEntryPayload`);
 	 * absent = local-only, never forwarded.
 	 */
 	sig?: string;
@@ -261,11 +263,11 @@ function mergeIntoStrand(
  * The strand's map without the entries older than `maxAgeMs` (a new object only when
  * something dropped).
  *
- * NOTE: nothing is exempt yet. The book-swap ticket files this node's OWN signed
- * entry under its strand transport id, and that entry must not age out (an unchanged
- * address set is deliberately not re-signed on a timer) — the store cannot tell self
- * from a peer, so that ticket has to name it: a per-strand own-peer-id the node hands
- * the store, or a re-stamp of `lastSeenAt` on every swap, not a longer age.
+ * Nothing is exempt, the node's OWN entry included: the book swap
+ * (`strand-peer-book-swap.ts`) keeps the entry it SENDS in memory and re-signs it on
+ * every address change and every launch, so the stored copy is a record for
+ * diagnostics and the seed's self-skip, and losing it to age costs nothing. That is
+ * why the store need not tell self from a peer.
  */
 function pruneAged(strand: StrandPeers, options: ResolvedOptions): StrandPeers {
 	const cutoff = options.now() - options.maxAgeMs;

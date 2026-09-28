@@ -148,11 +148,40 @@ export {
 export {
   StrandPeerObserver,
   dialableAddrs,
+  connectedIdentifiedPeers,
   STRAND_PEER_OBSERVE_THROTTLE_MS,
   type StrandPeerObservation,
   type StrandPeerObserverDeps,
-  type StrandPeerObserverOptions
+  type StrandPeerObserverOptions,
+  type ConnectedIdentifiedPeer
 } from './strand-peer-observer.js';
+// The signed book SWAP between strand peers (`/sereus/strand-peers/1.0.0`): the wire
+// protocol, signing and verification, and the per-strand driver that arms it.
+export {
+  STRAND_PEER_BOOK_PROTOCOL,
+  SIGNED_STRAND_PEER_ENTRY_VERSION,
+  STRAND_PEER_ISSUED_AT_SKEW_MS,
+  MAX_BOOK_FRAME_SIZE,
+  StrandPeerBookService,
+  exchangeStrandPeerBook,
+  signStrandPeerEntry,
+  signedStrandPeerEntryPayload,
+  verifySignedStrandPeerEntry,
+  verifyStrandPeerBookFrame,
+  assertBookFrameFits,
+  type SignedStrandPeerEntry,
+  type StrandPeerBookFrame,
+  type StrandPeerEntryVerdict,
+  type StrandPeerBookServiceDeps,
+  type ExchangeStrandPeerBookOptions
+} from './strand-peer-book-protocol.js';
+export {
+  StrandPeerBookSwap,
+  STRAND_PEER_BOOK_SWAP_THROTTLE_MS,
+  OWN_ENTRY_RESIGN_DEBOUNCE_MS,
+  type StrandPeerBookSwapDeps,
+  type StrandPeerBookSwapOptions
+} from './strand-peer-book-swap.js';
 
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,

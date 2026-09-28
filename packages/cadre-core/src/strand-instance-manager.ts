@@ -5,6 +5,8 @@ import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugi
 import { StrandDatabase } from './strand-database.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import { StrandPeerObserver, type StrandPeerObservation } from './strand-peer-observer.js';
+import { StrandPeerBookSwap } from './strand-peer-book-swap.js';
+import type { StrandPeerBookStore } from './strand-peer-book.js';
 import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
@@ -274,6 +276,16 @@ export interface StartStrandConfig {
    * rebuilt node.
    */
   onStrandPeerIdentified?: (strandId: string, observation: StrandPeerObservation) => void;
+
+  /**
+   * The node-local strand peer book the book SWAP reads and writes
+   * (`strand-peer-book-swap.ts`): the strand node signs its own addresses with
+   * {@link privateKey}, exchanges signed entries with every strand peer it identifies,
+   * and files what verifies. Absent ⇒ no swap runs — a peer that dials this node's
+   * swap handler gets no answer. `CadreNode` passes its book store. Retained with the
+   * launch config, so a hibernation wake re-arms the swap on the rebuilt node.
+   */
+  strandPeerBook?: StrandPeerBookStore;
 }
 
 /**
@@ -391,6 +403,16 @@ export class StrandInstanceManager {
    * present when the launch config supplied `onStrandPeerIdentified`.
    */
   private peerObservers: Map<string, StrandPeerObserver> = new Map();
+
+  /**
+   * Per-strand strand peer book SWAP driver ({@link StrandPeerBookSwap}) — the signed
+   * exchange of book entries between strand peers. Same lifetime as the peer-book
+   * observer above: armed in `buildStrandRuntime` right after the libp2p node exists
+   * (its protocol handler must be registered before an early peer dials it), stopped
+   * and dropped in `releaseRuntime`. Only present when the launch config supplied
+   * `strandPeerBook`.
+   */
+  private peerBookSwaps: Map<string, StrandPeerBookSwap> = new Map();
   /**
    * The per-strand revoked-peer enforcer (closed strands only), keyed by strand
    * id. Same lifecycle rationale as {@link backfills}: created in
@@ -773,6 +795,30 @@ export class StrandInstanceManager {
         observer.start();
       }
 
+      // The strand peer book SWAP, armed at the same moment and for the same reason as
+      // the observer: a peer that dials this node's swap handler before it is registered
+      // fails its exchange and sits out a ten-minute throttle. The own entry is signed
+      // now and re-signed on every address change, which covers the relay reservation
+      // landing below (`self:peer:update` fires when the circuit addr is added), so no
+      // separate post-relay step is needed. Registered in the map immediately so the
+      // failure rollback (releaseRuntime) stops it like every other runtime component.
+      //
+      // NOTE: this is a third `peer:identify` listener per running strand, beside the
+      // observer's and the backfill's — see the backfill's NOTE below for when to fold
+      // them into one dispatcher.
+      if (config.strandPeerBook) {
+        const swap = new StrandPeerBookSwap({
+          strandId,
+          libp2p: node,
+          protocolPrefix,
+          store: config.strandPeerBook,
+          privateKey: config.privateKey,
+          linkRoundTripMs: config.network?.linkRoundTripMs
+        });
+        this.peerBookSwaps.set(strandId, swap);
+        swap.start();
+      }
+
       // One reservation supervisor PER RELAY, started now so the first attempts
       // overlap the database bring-up below (the relay is never in a strand's
       // Optimystic cohort — its protocol ids are namespaced `/optimystic/strand-<id>/…`
@@ -991,6 +1037,13 @@ export class StrandInstanceManager {
     if (peerObserver) {
       peerObserver.stop();
       this.peerObservers.delete(instance.strandId);
+    }
+    // The book swap likewise: unsubscribed and its handler unregistered while the node is
+    // still up; a resume re-arms one, which re-signs the own entry over the new addresses.
+    const peerBookSwap = this.peerBookSwaps.get(instance.strandId);
+    if (peerBookSwap) {
+      this.peerBookSwaps.delete(instance.strandId);
+      await peerBookSwap.stop();
     }
     // The revoked-peer enforcer goes with the runtime it gated: a resume
     // rebuilds it with a fresh (initially empty, fail-open) snapshot.

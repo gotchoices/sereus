@@ -192,11 +192,12 @@ membership secret delivered over the circuit (see the SN–SN use case above).
 the formation result: the joiner files them in its **strand peer book**
 (`packages/cadre-core/src/strand-peer-book.ts`), a per-machine record in the machine's own
 storage — never in the strand database — of the strand peers it knows, with their last-known
-addresses and when it last held a connection to each. The book fills from both sides: a
-formation writes the responder's peer into the joiner's book, and every running strand node
+addresses and when it last held a connection to each. The book fills from three sides: a
+formation writes the responder's peer into the joiner's book; every running strand node
 writes each strand peer it identifies (the peer's announced addresses plus the relayed address
 it was reached on) into its own book, so the host learns the joiner the moment the joiner
-connects. On every launch, hibernation resume and periodic address refresh the book's entries
+connects; and on every connection between two strand peers the signed book swap below
+exchanges each side's own statement and everything signed it holds. On every launch, hibernation resume and periodic address refresh the book's entries
 go into the strand's seed and address book, freshest peer first, behind any live sibling
 answer — so a restarted machine dials the people it was talking to before it does anything
 else, and two relay-only parties that both restart re-mesh with no fresh invitation
@@ -209,18 +210,30 @@ and every reference embedder injects a durable one). The maintainer ruled an in-
 registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out
 for now; nothing needs it, and it stays a possible later step only if a case does.
 
-One limit remains and is **not** solved by that work:
+**How a member's new address reaches the others, and how a late joiner learns the rest.**
+Two things the book's own writers cannot do: refresh an entry while the two machines are
+apart (a peer whose relay reservation rotates before the other side dials is known by a dead
+address until they happen to reconnect), and name a party neither has met (in a strand of
+three or more, a late joiner holds an address only for the party that invited it). The signed
+**book swap** (`packages/cadre-core/src/strand-peer-book-protocol.ts`, driven per strand by
+`strand-peer-book-swap.ts`; `/sereus/strand-peers/1.0.0` on the strand node) closes both:
+when two strand peers connect, each sends the other its own current addresses, signed with its
+own strand transport key, plus the freshest signed entry it holds for every other member, and
+keeps whichever entry is fresher by the signer's own clock. A machine re-signs its entry
+whenever its addresses change and pushes it to every peer it is connected to, so a rotation
+propagates while connections are up; a member nobody has met is learned from whoever did meet
+it. Only self-signed entries travel and every receiver verifies the signature against the
+peer id, so the book proves "this peer's own claim about where it is" and nothing about
+membership — that is judged at the connection, by the revocation gate on a closed strand.
+The full rules (what is signed and why not with the member key, the throttle, what a receiver
+rejects) are in [`docs/architecture.md`](architecture.md) → "Strand-Address Resolution".
 
-- **Never refreshed while apart.** An entry is the peer's addresses as of the last time the
-  two were connected. If a peer's relay reservation rotates before the other side dials, the
-  entry is dead and nothing re-resolves it until they next meet; and in a strand of three or
-  more parties a late joiner holds addresses only for the party that invited it. Closing both
-  is the signed book-swap protocol of `strand-peer-book-swap`.
-
-So the remaining open question is narrower than it was: not "how does one party find another
-party's strand at all", but "how does a party that has already joined **re-find** the other
-side after it moves" — still expected to want a strand-overlay DHT and/or the strand's own
-`MemberPeer` records rather than the control network.
+What remains is the design boundary stated above, now the only gap: the book is per machine,
+so a member whose address changed while it was connected to nobody — and that nobody else
+holds a fresher signed entry for — is unreachable until it dials someone. An in-strand
+registry (`Strand.MemberPeer` rows carrying addresses, readable by members that are offline)
+would close that; it is deliberately not built, and is revisited only if a case needs
+addresses to reach members that are offline.
 
 ## Strand Creation
 

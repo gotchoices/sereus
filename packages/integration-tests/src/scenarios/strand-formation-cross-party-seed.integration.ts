@@ -43,13 +43,16 @@
  *   4. Both nodes end up with the other's strand peer in their node-local strand peer
  *      book: the joiner's from the formation result, the host's from observing the
  *      joiner's connection — the two writers a restart would later dial from.
+ *   5. The first connection also runs the signed book swap (`/sereus/strand-peers/1.0.0`),
+ *      so each book ends up holding the other side's SELF-SIGNED entry — the only kind
+ *      the book will forward to a third party, and the kind a later rotation refreshes.
  *
  * ── Known limit, deliberately not covered here ──
  *
  * The book is in-memory here (no `strandPeers.store` injected), so a restart is not
  * proven by this scenario; `strand-relay-only-restart-reconverges` is that proof. A host
- * relay reservation that rotates before the joiner dials still leaves a dead entry until
- * the peer's next connection replaces it (see `docs/strands.md`).
+ * relay reservation that rotates while the two are NOT connected still leaves a dead entry
+ * until they next meet or a third member forwards a fresher one (see `docs/strands.md`).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -204,24 +207,46 @@ describe('Cross-party strand seed carried by formation', () => {
 			// The joiner's entry came from the formation result; the host's can only have
 			// come from observing the joiner's inbound connection (identify), since no
 			// formation result reaches the host and the joiner has no sibling to answer for
-			// it. Each entry's addresses are bound to that peer's strand transport id.
-			const joinerBook = joiner.getStrandPeerBookStore()!.entries(strandId);
+			// it. Each entry's addresses are bound to that peer's strand transport id. Each
+			// book also holds the node's OWN self-signed entry (the swap files it under the
+			// node's strand transport id), so the assertions read the entries for OTHERS.
+			const othersIn = (node: CadreNode, selfStrandPeerId: string) =>
+				node.getStrandPeerBookStore()!.entries(strandId).filter((e) => e.peerId !== selfStrandPeerId);
+			const joinerBook = othersIn(joiner, joinerStrandPeerId);
 			expect(joinerBook.map((e) => e.peerId)).toEqual([hostStrandPeerId]);
 			expect(joinerBook[0].addrs.length).toBeGreaterThan(0);
 			await waitUntil(
-				() => host!.getStrandPeerBookStore()!.entries(strandId).some((e) => e.peerId === joinerStrandPeerId),
+				() => othersIn(host!, hostStrandPeerId).some((e) => e.peerId === joinerStrandPeerId),
 				{
 					timeoutMs: CONVERGE_MS,
 					intervalMs: 250,
 					description: "host's strand peer book records the joiner's strand peer from its identify",
 				},
 			);
-			for (const entry of host.getStrandPeerBookStore()!.entries(strandId)) {
+			for (const entry of othersIn(host, hostStrandPeerId)) {
 				expect(entry.peerId).toBe(joinerStrandPeerId);
 				for (const addr of entry.addrs) {
 					expect(addr.endsWith(`/p2p/${joinerStrandPeerId}`)).toBe(true);
 				}
 			}
+
+			// ── Subject 5: the swap upgrades both entries to the other side's SIGNED statement ──
+			// On the first connection each strand node sends the other its self-signed entry,
+			// which displaces the unsigned formation and identify entries above (a signed
+			// entry never yields to an unsigned one). Only a signed entry is ever forwarded
+			// to a third party, so this is what a late joiner would learn the host from.
+			await waitUntil(
+				() => othersIn(joiner!, joinerStrandPeerId).some((e) => e.peerId === hostStrandPeerId && e.sig !== undefined)
+					&& othersIn(host!, hostStrandPeerId).some((e) => e.peerId === joinerStrandPeerId && e.sig !== undefined),
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 250,
+					description: "both strand peer books hold the other side's self-signed entry after the swap",
+				},
+			);
+			const hostSelfEntry = host.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === hostStrandPeerId);
+			expect(hostSelfEntry?.sig).toBeDefined();
+			expect(othersIn(joiner, joinerStrandPeerId).find((e) => e.peerId === hostStrandPeerId)?.sig).toBe(hostSelfEntry!.sig);
 
 			// ── Subject 3: the mesh actually carries data ──
 			const hostDb = founded.instance.database!.getDatabase();

@@ -407,6 +407,26 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand');
 		expectAllPathsRelayed(aStrandNode, bStrandPeerId, 'A strand');
 
+		// ── The signed book swap ran over the circuit ────────────────────────
+		// The only path between the two strand nodes is relayed, so the swap protocol
+		// (`/sereus/strand-peers/1.0.0`) opened its stream on a limited connection —
+		// which is what `runOnLimitedConnection` on its handler and dial is for. Each
+		// peer book holds the other side's self-signed entry, every address in it
+		// circuit-routed and bound to that peer's strand transport id.
+		const signedEntryFor = (node: CadreNode, peerId: string) =>
+			node.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === peerId && e.sig !== undefined);
+		await waitUntil(
+			() => signedEntryFor(A!, bStrandPeerId) !== undefined && signedEntryFor(B!, aStrandPeerId) !== undefined,
+			{ ...GATE, description: "both strand peer books hold the other side's self-signed entry after the swap over the circuit" },
+		);
+		for (const [entry, peerId] of [[signedEntryFor(A, bStrandPeerId)!, bStrandPeerId], [signedEntryFor(B, aStrandPeerId)!, aStrandPeerId]] as const) {
+			expect(entry.addrs.length).toBeGreaterThan(0);
+			for (const addr of entry.addrs) {
+				expect(isCircuit(addr)).toBe(true);
+				expect(addr.endsWith(`/p2p/${peerId}`)).toBe(true);
+			}
+		}
+
 		// ── Per-strand relay-slot cost, cross-party: 2 control + 2 strand ────
 		// Same number as the same-party measurement: one reservation per node
 		// per network — every strand a NAT'd node joins costs one extra relay

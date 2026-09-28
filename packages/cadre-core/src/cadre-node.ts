@@ -2,6 +2,7 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
@@ -525,11 +526,15 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Node-local strand peer book (see `strand-peer-book.ts`): per strand, the strand
-   * peers this node has met and their last-known strand-network addresses. Two
+   * peers this node has met and their last-known strand-network addresses. Three
    * writers: {@link recordFormationStrandPeers} files the responder's live strand
-   * addrs a formation result carried back (`FormationResultMessage.strandAddrs`), and
+   * addrs a formation result carried back (`FormationResultMessage.strandAddrs`),
    * {@link observeStrandPeer} files every strand peer a running strand node
-   * identifies. Read by {@link resolveCohortSeed} (launch + hibernation resume) and
+   * identifies, and the per-strand book swap (`strand-peer-book-swap.ts`, handed the
+   * store as `StartStrandConfig.strandPeerBook`) files the node's own signed entry
+   * plus every signed entry a strand peer sends it — the only writer whose entries
+   * carry a signature, and the only one that can refresh a peer's addresses without
+   * meeting that peer. Read by {@link resolveCohortSeed} (launch + hibernation resume) and
    * re-merged by every {@link refreshStrandPeerAddrs} pass, which is what keeps the
    * entries alive past the peerStore's one-hour address expiry.
    *
@@ -5528,18 +5533,25 @@ export class CadreNode implements SAppIdLookup {
     // retained launch config carries this derived key, so hibernate → wake
     // (resumeStrand) reuses the same peerId.
     //
+    // Without an identity key (a node configured with neither `keyStore` nor
+    // `privateKey` — tests, and an embedder that opted out of a stable identity) the
+    // strand node still runs under a key CADRE-CORE HOLDS: a fresh random Ed25519 key,
+    // exactly what libp2p would generate internally if handed none, except that the
+    // book swap can sign this node's own entry with it (`strand-peer-book-swap.ts`) and
+    // the retained launch config keeps the same strand peer id across a hibernation
+    // resume. Stability across RESTARTS still needs an identity key.
+    //
     // NOTE: derivation requires an Ed25519 identity key, so a node configured
     // with some other key type now fails strand launch outright (surfaced as
     // `strand:error` / a rejected addStrand) where it previously started the
     // strand on that key. Ed25519 is already required for every control-DB
     // signing path, so nothing reachable today hits this; if a non-Ed25519
-    // identity is ever supported, fall back to `undefined` here — libp2p then
-    // generates a random per-strand key, which still avoids the collision but
-    // gives up peerId stability across restarts.
+    // identity is ever supported, take the random-key branch below for it — it
+    // still avoids the collision, and gives up only peerId stability across restarts.
     const identityKey = this.identityKey;
     const transportKey = identityKey
       ? await timed('strandTransportKey', () => strandTransportKey(identityKey, strand.Id))
-      : undefined;
+      : await generateKeyPair('Ed25519');
 
     // Derived BEFORE seed resolution so the seed pass doubles as the delegate
     // announcement and every grant is recorded before `startStrand` runs
@@ -5578,6 +5590,11 @@ export class CadreNode implements SAppIdLookup {
       // it. Retained with the launch config, so a hibernation wake re-arms it.
       onStrandPeerIdentified: (observedStrandId, observation) =>
         this.observeStrandPeer(observedStrandId, observation),
+      // The book's third writer, the signed swap between strand peers: the strand node
+      // reads and writes the store directly (`strand-peer-book-swap.ts`). Retained with
+      // the launch config too. `?? undefined`: the field is `null` before start(), and a
+      // strand cannot launch before start(), so this is belt and braces.
+      strandPeerBook: this.strandPeerBookStore ?? undefined,
       onRejoinBlocked: (blockedStrandId) => this.emit('strand:rejoin-blocked', { strandId: blockedStrandId }),
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
@@ -5654,8 +5671,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The strand peer book's contribution to a strand's seed: every live entry's
    * addresses, freshest peer first, minus this node's own entry when `selfPeerId` is
-   * known (the book-swap ticket writes one; a node must never dial itself). Empty
-   * before {@link start} builds the store.
+   * known (the book swap files one under the strand transport id; a node must never
+   * dial itself). Empty before {@link start} builds the store.
    */
   private strandPeerBookAddrs(strandId: string, selfPeerId?: string): string[] {
     const store = this.strandPeerBookStore;
