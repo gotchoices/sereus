@@ -113,17 +113,17 @@ function ownerSigner(party: TestParty): (message: Uint8Array) => string {
  * another, move the unregister into a `finally` — Phase 6 already does, because it has
  * assertions that can throw while an approval hook is still held.
  */
-function responderService(
+async function responderService(
 	party: TestParty,
 	overrides: { formationConfig?: StrandFormationManagerConfig; formationUsageRecorder?: FormationUsageRecorder } = {},
-): StrandSolicitationService {
+): Promise<StrandSolicitationService> {
 	const service = new StrandSolicitationService({
 		partyId: party.partyId,
 		cadrePeerAddrs: party.ownerNode.multiaddrs,
 		formationUsageRecorder: overrides.formationUsageRecorder ?? new ControlFormationUsageRecorder(party.controlDatabase),
 		...(overrides.formationConfig ? { formationConfig: overrides.formationConfig } : {}),
 	});
-	service.registerResponder(party.ownerNode.libp2p);
+	await service.registerResponder(party.ownerNode.libp2p);
 	return service;
 }
 
@@ -216,7 +216,7 @@ describe('E2E Strand Formation', () => {
 				cadrePeerAddrs: alice.ownerNode.multiaddrs,
 				strandProvisioner: mockProvisioner,
 			});
-			aliceService.registerResponder(alice.ownerNode.libp2p);
+			await aliceService.registerResponder(alice.ownerNode.libp2p);
 
 			const invitation = await aliceService.createOpenInvitation(
 				'test-sapp',
@@ -243,7 +243,7 @@ describe('E2E Strand Formation', () => {
 			expect(result.strandId).toBeDefined();
 			expect(result.strandId.startsWith('strand-')).toBe(true);
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 15_000);
 
 		// ── 2. Token validation + rejection ──────────────────────────────
@@ -262,7 +262,7 @@ describe('E2E Strand Formation', () => {
 				strandProvisioner: mockProvisioner,
 				formationUsageRecorder: mockRecorder,
 			});
-			aliceService.registerResponder(alice.ownerNode.libp2p);
+			await aliceService.registerResponder(alice.ownerNode.libp2p);
 
 			// Create invitation and register its token as known
 			const invitation = await aliceService.createOpenInvitation(
@@ -306,7 +306,7 @@ describe('E2E Strand Formation', () => {
 				),
 			).rejects.toThrow();
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 20_000);
 
 		// ── 3. Disclosure validation (real disclosed identity) ──────────
@@ -337,7 +337,7 @@ describe('E2E Strand Formation', () => {
 				strandProvisioner: mockProvisioner,
 				disclosureValidator: allowlistValidator,
 			});
-			aliceService.registerResponder(alice.ownerNode.libp2p);
+			await aliceService.registerResponder(alice.ownerNode.libp2p);
 
 			const invitation = await aliceService.createOpenInvitation(
 				'test-sapp',
@@ -379,7 +379,7 @@ describe('E2E Strand Formation', () => {
 				),
 			).rejects.toThrow();
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 20_000);
 	});
 
@@ -409,7 +409,7 @@ describe('E2E Strand Formation', () => {
 
 				// Initialize strand solicitation on Alice (responder)
 				const mockProvisioner = createMockProvisioner('lifecycle');
-				aliceNode.initializeStrandSolicitation({
+				await aliceNode.initializeStrandSolicitation({
 					strandProvisioner: mockProvisioner,
 				});
 
@@ -530,7 +530,7 @@ describe('E2E Strand Formation', () => {
 
 				// Alice initializes solicitation with a provisioner
 				const mockProvisioner = createMockProvisioner('multi');
-				aliceNode.initializeStrandSolicitation({
+				await aliceNode.initializeStrandSolicitation({
 					strandProvisioner: mockProvisioner,
 				});
 
@@ -653,7 +653,7 @@ describe('E2E Strand Formation', () => {
 
 				// Alice initializes solicitation
 				const mockProvisioner = createMockProvisioner('three');
-				aliceNode.initializeStrandSolicitation({
+				await aliceNode.initializeStrandSolicitation({
 					strandProvisioner: mockProvisioner,
 				});
 
@@ -850,7 +850,7 @@ describe('E2E Strand Formation', () => {
 			const alice = await network.createParty({ name: 'alice-consent' });
 			const bob = await network.createParty({ name: 'bob-consent' });
 
-			const aliceService = responderService(alice);
+			const aliceService = await responderService(alice);
 			const sign = ownerSigner(alice);
 
 			// Owner-signed UNBOUND single-use invite (no strandId → responder-provisions).
@@ -883,14 +883,14 @@ describe('E2E Strand Formation', () => {
 			// Still exactly one usage row — the rejected attempt wrote nothing.
 			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 30_000);
 
 		it('(ii) a bound-but-unconverged host strand yields a clean rejection (no read-error/timeout)', async () => {
 			const alice = await network.createParty({ name: 'alice-missing' });
 			const bob = await network.createParty({ name: 'bob-missing' });
 
-			const aliceService = responderService(alice);
+			const aliceService = await responderService(alice);
 			const sign = ownerSigner(alice);
 
 			// Invite binds a strand id that is NEVER inserted as a Strand row (unconverged host).
@@ -918,14 +918,14 @@ describe('E2E Strand Formation', () => {
 			// No usage row was written, so a retry after convergence is not pre-blocked.
 			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 30_000);
 
 		it("(iii) stores a joiner consent signature that re-verifies against the joiner's own key", async () => {
 			const alice = await network.createParty({ name: 'alice-consent-sig' });
 			const bob = await network.createParty({ name: 'bob-consent-sig' });
 
-			const aliceService = responderService(alice);
+			const aliceService = await responderService(alice);
 			const sign = ownerSigner(alice);
 
 			const token = `invite-consent-sig-${Date.now()}`;
@@ -964,7 +964,7 @@ describe('E2E Strand Formation', () => {
 			// bytes, so a tampered Disclosure column fails the very same check.
 			expect(verifyFormationConsent({ ...row!, disclosure: `${row!.disclosure} ` })).toBe(false);
 
-			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 30_000);
 	});
 
@@ -1045,7 +1045,7 @@ describe('E2E Strand Formation', () => {
 			const bob = await network.createParty({ name: 'bob-hook-ok' });
 			const hook = await startApprovalHook();
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 
 				const token = `invite-hook-ok-${Date.now()}`;
@@ -1100,7 +1100,7 @@ describe('E2E Strand Formation', () => {
 				expect(verifyFormationConsent(row!)).toBe(true);
 				expect(ed25519PublicKeyB64FromPeerId(result.memberKey)).toBe(row!.peerKey);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1114,7 +1114,7 @@ describe('E2E Strand Formation', () => {
 			let verdict: 'approve' | 'refuse' = 'refuse';
 			const hook = await startApprovalHook({ decide: () => verdict });
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 
 				const token = `invite-hook-no-${Date.now()}`;
@@ -1139,7 +1139,7 @@ describe('E2E Strand Formation', () => {
 				expect(hook.requestCount).toBe(2);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1151,7 +1151,7 @@ describe('E2E Strand Formation', () => {
 			// Hook signs a perfectly valid approval — with a key alice never wrote to ValidationKey.
 			const hook = await startApprovalHook();
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 
 				const token = `invite-hook-unenrolled-${Date.now()}`;
 				await publishGatedInvite(alice, token, 'sapp-hook-unenrolled', hook.validationUrl);
@@ -1169,7 +1169,7 @@ describe('E2E Strand Formation', () => {
 				expect(hook.requestCount).toBe(1);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1180,7 +1180,7 @@ describe('E2E Strand Formation', () => {
 			const bob = await network.createParty({ name: 'bob-hook-removed' });
 			const hook = await startApprovalHook();
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 
 				const token = `invite-hook-removed-${Date.now()}`;
@@ -1207,7 +1207,7 @@ describe('E2E Strand Formation', () => {
 				expect(hook.requestCount).toBe(1);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1236,7 +1236,7 @@ describe('E2E Strand Formation', () => {
 				},
 			});
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 
 				const firstToken = `invite-hook-replay-1-${Date.now()}`;
@@ -1280,7 +1280,7 @@ describe('E2E Strand Formation', () => {
 				// not because the second attempt short-circuited before asking.
 				expect(hook.requestCount).toBe(2);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1295,7 +1295,7 @@ describe('E2E Strand Formation', () => {
 			let verdict: 'approve' | 'unavailable' = 'unavailable';
 			const hook = await startApprovalHook({ decide: () => verdict });
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				// Enrolled even though neither arm gets far enough to consult enrollment: if a future
 				// reordering of the recorder's pre-checks moves that check earlier, these cases fail on
 				// a changed reason string instead of quietly having failed for the wrong reason all along.
@@ -1351,7 +1351,7 @@ describe('E2E Strand Formation', () => {
 				expect(hook.requestCount).toBe(2);
 				expect(await alice.controlDatabase.countFormationUsage(brokenToken)).toBe(1);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1364,7 +1364,7 @@ describe('E2E Strand Formation', () => {
 			// BEFORE any HTTP, so a hook that was asked at all means the check never fired.
 			const hook = await startApprovalHook();
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 				const recorder = new ControlFormationUsageRecorder(alice.controlDatabase);
 
@@ -1387,7 +1387,7 @@ describe('E2E Strand Formation', () => {
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
 				expect(await recorder.isTokenUsed(token)).toBe(false);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1398,7 +1398,7 @@ describe('E2E Strand Formation', () => {
 			const bob = await network.createParty({ name: 'bob-hook-bound' });
 			const hook = await startApprovalHook();
 			try {
-				const aliceService = responderService(alice);
+				const aliceService = await responderService(alice);
 				await enrollApprover(alice, hook.validationKey);
 
 				// CLOSED (`'c'`) and inserted BEFORE the redemption: the `FormationUsage` insert carries
@@ -1446,7 +1446,7 @@ describe('E2E Strand Formation', () => {
 				expect(verifyFormationConsent(row!)).toBe(true);
 				expect(ed25519PublicKeyB64FromPeerId(result.memberKey)).toBe(row!.peerKey);
 
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
 				await hook.close();
 			}
@@ -1581,7 +1581,7 @@ describe('E2E Strand Formation', () => {
 			const hook = await startApprovalHook({
 				beforeAnswer: (_fields, requestIndex) => (requestIndex === 1 ? held : Promise.resolve()),
 			});
-			const aliceService = responderService(alice, {
+			const aliceService = await responderService(alice, {
 				formationConfig: { provisionTimeoutMs: RESPONDER_PROVISION_MS },
 			});
 			try {
@@ -1633,7 +1633,7 @@ describe('E2E Strand Formation', () => {
 				// Released here too: the assertions above can throw while the hook is still held, and a
 				// forgotten hold would leave the handler parked forever.
 				releaseHold();
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 				await hook.close();
 			}
 		}, 30_000);
@@ -1668,7 +1668,7 @@ describe('E2E Strand Formation', () => {
 				hasOutstandingInvitation: () => inner.hasOutstandingInvitation(),
 			};
 
-			const aliceService = responderService(alice, {
+			const aliceService = await responderService(alice, {
 				formationConfig: { provisionTimeoutMs: RESPONDER_PROVISION_MS },
 				formationUsageRecorder: gracefullyLateRecorder,
 			});
@@ -1707,7 +1707,7 @@ describe('E2E Strand Formation', () => {
 				).rejects.toThrow(/Invalid token/);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
 			} finally {
-				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			}
 		}, 30_000);
 	});

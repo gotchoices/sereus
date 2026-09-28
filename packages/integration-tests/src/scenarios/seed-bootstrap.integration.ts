@@ -53,7 +53,7 @@ describe('Seed Bootstrap', () => {
     });
 
     // Initialize with the party's libp2p and control database
-    seedService.initialize(
+    await seedService.initialize(
       alice.ownerNode.libp2p,
       alice.controlDatabase
     );
@@ -93,7 +93,7 @@ describe('Seed Bootstrap', () => {
       ownerPublicKey: alice.ownerPublicKey
     });
     
-    seedService.initialize(
+    await seedService.initialize(
       alice.ownerNode.libp2p,
       alice.controlDatabase
     );
@@ -124,7 +124,7 @@ describe('Seed Bootstrap', () => {
       ownerPublicKey: alice.ownerPublicKey
     });
     
-    seedService.initialize(
+    await seedService.initialize(
       alice.ownerNode.libp2p,
       alice.controlDatabase
     );
@@ -152,7 +152,7 @@ describe('Seed Bootstrap', () => {
       ownerPublicKey: alice.ownerPublicKey
     });
     
-    seedService.initialize(
+    await seedService.initialize(
       alice.ownerNode.libp2p,
       alice.controlDatabase
     );

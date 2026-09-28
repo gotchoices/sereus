@@ -271,7 +271,7 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 		// ── First incarnation: found, invite, form, attach (the blind-relay flow) ──
 		A = await startPartyNode(aHome, relay);
 		await makeOwnOwner(A, aHome.key);
-		A.initializeStrandSolicitation({
+		await A.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
 		});
 		const memberPrivateKey = await generateStrandMemberKey();

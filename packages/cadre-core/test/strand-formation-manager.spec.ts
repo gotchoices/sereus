@@ -62,7 +62,7 @@ async function formBothRoles(
     config
   });
   const { node: respNode, invoke } = captureHandler();
-  manager.registerResponder(respNode);
+  await manager.registerResponder(respNode);
 
   const { invitation, disclosure, consent } = await formationArgs(`invite-${purpose}`, purpose);
   return manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));

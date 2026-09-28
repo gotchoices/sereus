@@ -305,20 +305,23 @@ export class SeedBootstrapService {
    * `controlDatabase` for dialing and known-key lookup, and must NOT bind a
    * discarded closure to the shared node (a handler leak, and a second
    * `handle()` of the same protocol throws `DuplicateProtocolHandlerError`).
+   *
+   * Rejects when libp2p refuses the registration; the node and database are
+   * kept only once the handler is in place, so a failed service holds nothing
+   * for {@link shutdown} to unhandle.
    */
-  initialize(
+  async initialize(
     libp2pNode: Libp2p,
     controlDatabase: ControlDatabase,
     options?: { registerHandler?: boolean }
-  ): void {
-    this.libp2pNode = libp2pNode;
-    this.controlDatabase = controlDatabase;
-
+  ): Promise<void> {
     // Register the seed protocol handler unless the caller opted out (temp services).
     if (options?.registerHandler ?? true) {
-      this.registerProtocolHandler();
+      await this.registerProtocolHandler(libp2pNode);
     }
 
+    this.libp2pNode = libp2pNode;
+    this.controlDatabase = controlDatabase;
     log('SeedBootstrapService initialized');
   }
 
@@ -1069,10 +1072,8 @@ export class SeedBootstrapService {
    * {@link handleSeedStream} — extracted as a method so it has a unit-test seam
    * (mirroring wake's `handleStream`) the inline closure never had.
    */
-  private registerProtocolHandler(): void {
-    if (!this.libp2pNode) return;
-
-    void this.libp2pNode.handle(SEED_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
+  private async registerProtocolHandler(libp2pNode: Libp2p): Promise<void> {
+    await libp2pNode.handle(SEED_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
       await this.handleSeedStream(rawStream as ControlStream, remotePeerId);
     });

@@ -38,7 +38,7 @@ describe('CadreNode invite-address push model', () => {
   it('embeds libp2p getMultiaddrs() when nothing has been pushed', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(ownerPrivateKey);
+    await node.initializeSeedBootstrap(ownerPrivateKey);
 
     const { invite } = await node.createInvite();
     expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
@@ -47,7 +47,7 @@ describe('CadreNode invite-address push model', () => {
   it('embeds pushed addresses after setInviteAddresses', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(ownerPrivateKey);
+    await node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000/p2p/12D3KooWHost']);
 
@@ -58,7 +58,7 @@ describe('CadreNode invite-address push model', () => {
   it('reverts to libp2p getMultiaddrs() when pushed addresses are cleared', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(ownerPrivateKey);
+    await node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000']);
     node.setInviteAddresses(null);
@@ -76,7 +76,7 @@ describe('CadreNode invite-address push model', () => {
     // `resolvePeerAddrs` drops it on the read side.
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(ownerPrivateKey);
+    await node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000', 'not-a-multiaddr']);
 
@@ -90,7 +90,7 @@ describe('CadreNode invite-address push model', () => {
   it('treats an empty pushed array as an explicit override (not a fallback)', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(ownerPrivateKey);
+    await node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses([]);
 

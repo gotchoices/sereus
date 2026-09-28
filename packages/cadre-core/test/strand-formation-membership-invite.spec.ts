@@ -107,7 +107,7 @@ async function formBothRoles(
     ...(hook ? { issueMembershipInvite: hook(hookCalls) } : {})
   });
   const { node, invoke } = captureHandler();
-  manager.registerResponder(node);
+  await manager.registerResponder(node);
   const { invitation, disclosure, consent } = await formationArgs(`invite-${purpose}`, purpose);
   const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
   return { setup: { recorder, hookCalls }, result };
@@ -138,7 +138,7 @@ async function respondOnce(
   token: string
 ): Promise<FormationResultMessage> {
   const { node, invoke } = captureHandler();
-  manager.registerResponder(node);
+  await manager.registerResponder(node);
   const joiner = await mintContactJoiner();
   const disclosure: StrandFormationDisclosure = { partyId: joiner.partyId, purpose: 'frame-check' };
   const contact = {
@@ -258,7 +258,7 @@ describe('formation membership invitation (paths that never issue one)', () => {
       issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-unbound', 'unbound');
 
     const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
@@ -302,7 +302,7 @@ describe('formation membership invitation (initiator floor)', () => {
       issueMembershipInvite: async () => malformed as unknown as StrandMembershipInvite
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-malformed', 'malformed');
 
     await expect(
@@ -324,7 +324,7 @@ describe('formation membership invitation (initiator floor)', () => {
       issueMembershipInvite: async () => malformed as unknown as StrandMembershipInvite
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-permissive', 'permissive');
 
     const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));

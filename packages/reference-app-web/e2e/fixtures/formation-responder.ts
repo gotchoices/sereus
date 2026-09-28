@@ -162,7 +162,7 @@ async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNod
 		throw new Error('control database unavailable after start; cannot run responder owner genesis');
 	}
 	await controlDb.ensureOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
+	await node.initializeSeedBootstrap(privateKeyB64);
 }
 
 /**
@@ -202,7 +202,7 @@ export async function startFormationResponder(opts?: {
 		if (!controlDb) {
 			throw new Error('control database unavailable after start; cannot wire formation responder');
 		}
-		node.initializeStrandSolicitation({
+		await node.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
 		});
 

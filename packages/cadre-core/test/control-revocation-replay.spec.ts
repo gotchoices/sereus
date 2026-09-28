@@ -1336,7 +1336,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   // raw canonical bytes, `removePeer` hands one that signs the base64url digest string.
 
   it('removePeer retires the stamp end to end (raw-bytes and digest-string signers agree)', async () => {
-    node.initializeSeedBootstrap(founder.privateKey);
+    await node.initializeSeedBootstrap(founder.privateKey);
     const droneKey = await generateKeyPair('Ed25519');
     const peerId = peerIdFromPrivateKey(droneKey).toString();
 

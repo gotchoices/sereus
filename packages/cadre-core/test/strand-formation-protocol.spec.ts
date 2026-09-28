@@ -112,7 +112,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -136,7 +136,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -156,7 +156,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed } = baseOptions({});
     const listener = new FormationListener({ ...options, maxConcurrentSessions: 0 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -174,7 +174,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed, strandAddrsRead } = baseOptions({});
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -198,7 +198,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false }) });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -216,7 +216,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -241,7 +241,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 200 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -262,7 +262,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 20 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -295,7 +295,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
       provisionTimeoutMs: 5000
     });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -321,7 +321,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
       provisionTimeoutMs: 800
     });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -338,7 +338,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 0 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -369,7 +369,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const first = new MockStream([encodeFrame(contact)]);
     await invoke(first);
@@ -401,7 +401,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -428,7 +428,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -470,7 +470,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 100 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const first = new MockStream([encodeFrame(contact)]);
     await invoke(first);
@@ -496,7 +496,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 500 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const started = Date.now();
     const stream = new MockStream([encodeFrame(contact)]);
@@ -515,7 +515,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -541,7 +541,7 @@ describe('FormationListener strandAddrs disclosure', () => {
     const { options } = baseOptions(overrides);
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
     return decodeFirstFrame<FormationResultMessage>(stream.sent);
@@ -637,7 +637,7 @@ describe('FormationListener joiner-consent pre-check', () => {
       });
       const listener = new FormationListener(options);
       const { node, invoke } = captureHandler();
-      listener.register(node);
+      await listener.register(node);
 
       const stream = new MockStream([encodeFrame(bad)]);
       await invoke(stream);
@@ -674,7 +674,7 @@ describe('FormationListener joiner-consent pre-check', () => {
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(reordered)]);
     await invoke(stream);

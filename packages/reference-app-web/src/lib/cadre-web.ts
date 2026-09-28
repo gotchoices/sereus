@@ -189,7 +189,7 @@ let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
 let strandPeerBookStore: StrandPeerBookStore | null = null;
-let solicitationReady = false;
+let solicitationReady: Promise<void> | null = null;
 // NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
 
@@ -491,7 +491,7 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
 			throw new Error('control database unavailable after start; cannot run owner genesis');
 		}
 		const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
-		cadre.initializeSeedBootstrap(privateKeyB64);
+		await cadre.initializeSeedBootstrap(privateKeyB64);
 		ownerState = inserted ? 'genesis' : 'existing';
 		ownerError = null;
 	} catch (err) {
@@ -517,20 +517,30 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
  * real and threads the bound host strand back (provision-then-record). The
  * control database must exist post-start, so its absence throws rather than
  * silently degrading to the no-recorder path.
+ *
+ * Memoized as a promise so concurrent callers share one registration (a second
+ * would collide with the first's protocol handler); a failure clears it so the
+ * next call retries.
  */
-function ensureSolicitation(): CadreNode {
+async function ensureSolicitation(): Promise<CadreNode> {
 	if (!node) throw new Error('CadreNode not started');
-	if (!solicitationReady) {
-		const controlDb = node.getControlDatabase();
-		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot wire formation responder');
-		}
-		node.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-		});
-		solicitationReady = true;
+	const cadre = node;
+	solicitationReady ??= wireSolicitation(cadre).catch((err: unknown) => {
+		solicitationReady = null;
+		throw err;
+	});
+	await solicitationReady;
+	return cadre;
+}
+
+async function wireSolicitation(cadre: CadreNode): Promise<void> {
+	const controlDb = cadre.getControlDatabase();
+	if (!controlDb) {
+		throw new Error('control database unavailable after start; cannot wire formation responder');
 	}
-	return node;
+	await cadre.initializeStrandSolicitation({
+		formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
+	});
 }
 
 /** What {@link createInvitation} returns to the responder UI. */
@@ -613,7 +623,7 @@ async function createClosedChatStrand(
 export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
 ): Promise<CreatedInvitation> {
-	const cadre = ensureSolicitation();
+	const cadre = await ensureSolicitation();
 	// Live read: a reservation lost since start now fails this guard, so the
 	// invitation is refused with a clear message instead of embedding circuit
 	// addresses that no longer route.
@@ -657,7 +667,7 @@ export async function joinViaInvitation(
 	encoded: string,
 	disclosure: StrandFormationDisclosure = {},
 ): Promise<FormedStrand> {
-	const cadre = ensureSolicitation();
+	const cadre = await ensureSolicitation();
 	const invitation: OpenInvitation = cadre.decodeInvitation(encoded.trim());
 	const result: FormStrandResult = await cadre.formStrand(invitation, {
 		partyId: partyId ?? undefined,
@@ -835,7 +845,7 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	ownerState = 'pending';
 	ownerError = null;
-	solicitationReady = false;
+	solicitationReady = null;
 	formedStrands.clear();
 	// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 	// above — drop the references so nothing can write through a closed handle.

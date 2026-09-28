@@ -149,7 +149,7 @@ async function genesisOwner(owner: OwnerNode): Promise<void> {
 	const db = owner.node.getControlDatabase()!;
 	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
 		.toBe(true);
-	owner.node.initializeSeedBootstrap(privateKeyB64);
+	await owner.node.initializeSeedBootstrap(privateKeyB64);
 	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => owner.node.registerSelf()))
 		.toBe('inserted');
 }
@@ -165,7 +165,7 @@ async function rejoinOwner(owner: OwnerNode): Promise<void> {
 	expect(await within('hasOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(true);
 	expect(await within('ensureOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
 		.toBe(false);
-	owner.node.initializeSeedBootstrap(privateKeyB64);
+	await owner.node.initializeSeedBootstrap(privateKeyB64);
 }
 
 /**

@@ -298,7 +298,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // ever hangs again, bound it in cadre-core (so every embedder benefits), not
   // with a per-app deadline here.
   await runOwnerGenesis(node);
-  initializeFormationResponder(node);
+  await initializeFormationResponder(node);
   return node;
 }
 
@@ -322,13 +322,13 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
  * the `FormStrandResult` — so the invite is a single `OpenInvitation` with no
  * side-channel envelope. See the README "Trust model" section.
  */
-function initializeFormationResponder(cadre: CadreNode): void {
+async function initializeFormationResponder(cadre: CadreNode): Promise<void> {
   try {
     const controlDb = cadre.getControlDatabase();
     if (!controlDb) {
       throw new Error('control database unavailable after start; cannot wire formation responder');
     }
-    cadre.initializeStrandSolicitation({
+    await cadre.initializeStrandSolicitation({
       formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
     });
   } catch (err) {

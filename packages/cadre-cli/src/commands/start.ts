@@ -341,7 +341,7 @@ export const startCommand = new Command('start')
           ? '✓ Genesis: inserted founding owner key'
           : '• Owner key already present; skipping genesis');
 
-        node.initializeSeedBootstrap(privateKeyB64);
+        await node.initializeSeedBootstrap(privateKeyB64);
         console.log('✓ Owner seed-bootstrap initialized');
 
         // Write the owner's own signed CadrePeer row up-front, before any
@@ -379,7 +379,7 @@ export const startCommand = new Command('start')
 
       // Enable seed listener if requested
       if (options.listenForSeeds) {
-        node.enableSeedListener();
+        await node.enableSeedListener();
         console.log('✓ Seed protocol listener enabled');
       }
 

@@ -93,7 +93,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 					// --- A normal solo write (not the genesis branch) --------------------
 					// registerSelf needs seed-bootstrap wired, exactly as the reference
 					// apps do immediately after genesis.
-					node.initializeSeedBootstrap(privateKeyB64);
+					await node.initializeSeedBootstrap(privateKeyB64);
 					expect(await within('queryCadrePeers() (pre-write)', OP_TIMEOUT_MS, () => db!.queryCadrePeers()))
 						.toEqual([]);
 					expect(await within('registerSelf()', OP_TIMEOUT_MS, () => node.registerSelf()))
@@ -148,7 +148,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 			expect(db).not.toBeNull();
 			expect(await within('first ensureOwnerKey()', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey)))
 				.toBe(true);
-			first.initializeSeedBootstrap(owner.privateKeyB64);
+			await first.initializeSeedBootstrap(owner.privateKeyB64);
 			expect(await within('first registerSelf()', OP_TIMEOUT_MS, () => first.registerSelf()))
 				.toBe('inserted');
 		} finally {
@@ -177,7 +177,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 			expect(peers.map((p) => p.peerId)).toEqual([peerId]);
 
 			// And a write still works after the warm start (refresh, not insert).
-			second.initializeSeedBootstrap(ownerPrivateKey);
+			await second.initializeSeedBootstrap(ownerPrivateKey);
 			expect(await within('second registerSelf()', OP_TIMEOUT_MS, () => second.registerSelf()))
 				.toBe('refreshed');
 		} finally {

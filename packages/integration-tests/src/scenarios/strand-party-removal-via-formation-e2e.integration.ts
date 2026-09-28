@@ -392,8 +392,8 @@ const MACHINE_SPEC = {
  * stranger's dial, and records the consent; `initializeStrandSolicitation` force-wires the
  * strand-addr disclosure and the membership-invitation issuer behind it.
  */
-function armResponder(host: CadreNode): void {
-	host.initializeStrandSolicitation({
+async function armResponder(host: CadreNode): Promise<void> {
+	await host.initializeStrandSolicitation({
 		formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
 	});
 }
@@ -570,7 +570,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// `foundStrand` publishes the row cadre-wide AND attaches as founder: the
 			// publish mints this party's own membership identity (StrandPartyKey), and
 			// the founder bootstrap seats it as the strand's first Member and Manager.
-			armResponder(hostOwner.node);
+			await armResponder(hostOwner.node);
 			const founded = await hostOwner.node.foundStrand({
 				strandId,
 				type: 'c',
@@ -814,7 +814,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			const strandId = `strand-removal-rejoin-${Date.now()}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 
-			armResponder(hostOwner.node);
+			await armResponder(hostOwner.node);
 			const founded = await hostOwner.node.foundStrand({
 				strandId,
 				type: 'c',

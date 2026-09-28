@@ -223,7 +223,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		// the connection gate's stranger carve-out open for B's dial. Must be
 		// wired BEFORE createOpenInvitation, or the lazy init builds a
 		// recorder-less service.
-		A.initializeStrandSolicitation({
+		await A.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
 		});
 

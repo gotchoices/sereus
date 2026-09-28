@@ -1105,7 +1105,7 @@ describe('SeedBootstrapService Helper Methods', () => {
         expect(db).not.toBeNull();
         await db!.insertOwnerKey(ownerPublicKey);
 
-        node.initializeSeedBootstrap(ownerPrivateKey);
+        await node.initializeSeedBootstrap(ownerPrivateKey);
 
         // Use a real Ed25519-derived peerId so the value is shape-valid,
         // though the constraint actually only cares about the owner voucher
@@ -1187,7 +1187,7 @@ describe('SeedBootstrapService Helper Methods', () => {
         expect(db).not.toBeNull();
 
         // Owner path: initializeSeedBootstrap genesis-anchors this node's own key.
-        node.initializeSeedBootstrap(ownerPrivateKey);
+        await node.initializeSeedBootstrap(ownerPrivateKey);
         expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
 
         // The attacker's key reaches the REPLICATED table (a genesis insert that
@@ -1358,7 +1358,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
       cadreNodeInternals(node).selfRegistrationTimer = null;
 
-      node.initializeSeedBootstrap(privateKeyB64);
+      await node.initializeSeedBootstrap(privateKeyB64);
 
       // Before self-registration the owner is not a CadrePeer, so the seed
       // it mints omits its own peer.
@@ -1426,7 +1426,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
       cadreNodeInternals(node).selfRegistrationTimer = null;
 
-      node.initializeSeedBootstrap(privateKeyB64);
+      await node.initializeSeedBootstrap(privateKeyB64);
       const db = node.getControlDatabase();
       await db!.insertOwnerKey(publicKeyB64);
 

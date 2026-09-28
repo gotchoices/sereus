@@ -167,7 +167,7 @@ describe('createInvite hands out the anchored owner keys', () => {
   it('carries the key initializeSeedBootstrap genesis-anchored, with an empty replicated table', async () => {
     const node = makeNode(new Set<string>(), new MemoryTrustedOwnerStore(partyId));
     const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(privateKeyB64);
+    await node.initializeSeedBootstrap(privateKeyB64);
 
     const { invite } = await node.createInvite();
     expect(invite.ownerKeys).toEqual([ed25519PublicKeyFromPrivate(privateKeyB64)]);
@@ -178,7 +178,7 @@ describe('createInvite hands out the anchored owner keys', () => {
     const replicated = new Set<string>(['attacker-genesis-key']);
     const node = makeNode(replicated, new MemoryTrustedOwnerStore(partyId));
     const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(privateKeyB64);
+    await node.initializeSeedBootstrap(privateKeyB64);
     await node.getControlDatabase()!.ensureOwnerKey(ed25519PublicKeyFromPrivate(privateKeyB64));
 
     const { invite } = await node.createInvite();
@@ -189,7 +189,7 @@ describe('createInvite hands out the anchored owner keys', () => {
     // A receive-only node: enableSeedListener builds a service without the
     // genesis self-anchor initializeSeedBootstrap performs.
     const node = makeNode(new Set<string>(['some-replicated-key']), new MemoryTrustedOwnerStore(partyId));
-    node.enableSeedListener();
+    await node.enableSeedListener();
 
     const { invite } = await node.createInvite();
     expect(invite.ownerKeys).toBeUndefined();

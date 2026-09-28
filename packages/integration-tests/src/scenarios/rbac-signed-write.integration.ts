@@ -88,7 +88,7 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
 			await bobNode.start();
 
-			aliceNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner('rbac') });
+			await aliceNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner('rbac') });
 			const invitation = await aliceNode.createOpenInvitation('rbac-sapp');
 			const formResult = await bobNode.formStrand(invitation, {
 				partyId: `bob-${partyId}`,

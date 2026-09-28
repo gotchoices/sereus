@@ -176,7 +176,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 		})));
 		await A.start();
 		await makeOwnOwner(A, aKey);
-		A.initializeStrandSolicitation({
+		await A.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
 		});
 		const memberPrivateKey = await generateStrandMemberKey();

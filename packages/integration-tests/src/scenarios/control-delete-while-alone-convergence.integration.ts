@@ -104,7 +104,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	try {
 		await A.start();
 		await A.getControlDatabase()!.insertOwnerKey(publicKeyB64);
-		A.initializeSeedBootstrap(privateKeyB64);
+		await A.initializeSeedBootstrap(privateKeyB64);
 
 		B = nodeOn(partyId, bKey, storeB, 'transaction');
 		await B.start();
@@ -154,7 +154,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		await A.start();
 		// OwnerKey row survived on storeA — only the seed-bootstrap wiring is
 		// per-process. No re-insert.
-		A.initializeSeedBootstrap(privateKeyB64);
+		await A.initializeSeedBootstrap(privateKeyB64);
 		expect(await A.isMember(xPeerId)).toBe(true);
 		expect(A.getControlNode()!.getConnections().length).toBe(0);
 
@@ -230,7 +230,7 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			await ctx.A.stop();
 			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.storeA, 'storage');
 			await ctx.A.start();
-			ctx.A.initializeSeedBootstrap(ctx.privateKeyB64);
+			await ctx.A.initializeSeedBootstrap(ctx.privateKeyB64);
 			expect(await ctx.A.isMember(ctx.xPeerId)).toBe(false);
 			expect(ctx.A.getControlNode()!.getConnections().length).toBe(0);
 

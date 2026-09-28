@@ -142,14 +142,14 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   const rand = (): string => Math.random().toString(36).slice(2);
 
   /** Fresh manager wired to a real DB-backed recorder, registered on a captured handler. */
-  function responder(approver?: FormationApprover): { invoke: (s: MockStream) => Promise<void> } {
+  async function responder(approver?: FormationApprover): Promise<{ invoke: (s: MockStream) => Promise<void> }> {
     const manager = new StrandFormationManager({
       formationUsageRecorder: new ControlFormationUsageRecorder(db, approver ? { approver } : undefined),
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
     });
     const { node: mock, invoke } = captureHandler();
-    manager.registerResponder(mock);
+    await manager.registerResponder(mock);
     return { invoke };
   }
 
@@ -182,7 +182,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   });
 
   it('(a) rejects an unknown token without disclosing identity or membership key', async () => {
-    const { invoke } = responder();
+    const { invoke } = await responder();
 
     const stream = new MockStream([encodeFrame(await contactFor('no-such-' + rand()))]);
     await invoke(stream);
@@ -205,7 +205,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
     });
 
-    const { invoke } = responder();
+    const { invoke } = await responder();
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
@@ -228,7 +228,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
 
-    const { invoke } = responder();
+    const { invoke } = await responder();
 
     // First use: approves, returns the REAL strand + key, records exactly one usage row.
     const first = new MockStream([encodeFrame(await contactFor(token))]);
@@ -272,7 +272,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
 
-    const { invoke } = responder();
+    const { invoke } = await responder();
 
     // First use: approves, mints a fresh responder-provisioned strand, records one usage row.
     const first = new MockStream([encodeFrame(await contactFor(token))]);
@@ -312,7 +312,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
 
-    const { invoke } = responder();
+    const { invoke } = await responder();
 
     const first = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(first);
@@ -360,7 +360,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
 
-    const { invoke } = responder();
+    const { invoke } = await responder();
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
 
@@ -392,7 +392,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     const approver = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
-    const { invoke } = responder(approver);
+    const { invoke } = await responder(approver);
 
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
@@ -429,7 +429,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     const approver = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
-    const { invoke } = responder(approver);
+    const { invoke } = await responder(approver);
 
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
@@ -499,7 +499,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     ];
 
     for (const { label, approver, reason } of scenarios) {
-      const { invoke } = responder(approver);
+      const { invoke } = await responder(approver);
       const stream = new MockStream([encodeFrame(await contactFor(token))]);
       await invoke(stream);
       const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
@@ -516,7 +516,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // The five failures burned nothing: the SAME single-use invite still redeems cleanly.
     const good = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
-    const { invoke } = responder(good);
+    const { invoke } = await responder(good);
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
@@ -537,7 +537,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     const approver = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
-    const { invoke } = responder(approver);
+    const { invoke } = await responder(approver);
 
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
@@ -568,7 +568,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     const approver = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
-    const { invoke } = responder(approver);
+    const { invoke } = await responder(approver);
 
     // Over the 8 KiB serialized cap.
     const oversized: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'x'.repeat(9000) };
@@ -601,7 +601,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       await new Promise((resolve) => setTimeout(resolve, 6_000));
       return signFormationApproval(req, validationPublicKey, validationPrivateKey);
     });
-    const { invoke } = responder(approver);
+    const { invoke } = await responder(approver);
 
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
@@ -619,7 +619,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     await db.insertFormationInvite(token, 'sapp-badconsent', ownerPublicKey, signMessage, {
       totalUses: 1, strandId: hostStrandId, expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
-    const { invoke } = responder();
+    const { invoke } = await responder();
 
     const good = await contactFor(token);
     for (const [label, bad] of await invalidConsentContacts(good)) {
@@ -647,7 +647,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     await db.insertFormationInvite(token, 'sapp-noncereuse', ownerPublicKey, signMessage, {
       totalUses: 2, strandId: hostStrandId, expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
-    const { invoke } = responder();
+    const { invoke } = await responder();
     const contact = await contactFor(token);
 
     const first = new MockStream([encodeFrame(contact)]);
@@ -690,7 +690,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       cadrePeerAddrs: HOST_CADRE,
     });
     const { node: mock, invoke } = captureHandler();
-    manager.registerResponder(mock);
+    await manager.registerResponder(mock);
 
     const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);

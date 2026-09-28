@@ -372,7 +372,7 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 		}));
 		await A.start();
 		await makeOwnOwner(A, aKey);
-		A.initializeStrandSolicitation({
+		await A.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
 		});
 

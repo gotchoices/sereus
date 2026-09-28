@@ -44,7 +44,7 @@ async function bootOwnerNode(): Promise<BootedNode> {
   const db = node.getControlDatabase();
   expect(db).not.toBeNull();
   await db!.insertOwnerKey(publicKeyB64);
-  node.initializeSeedBootstrap(privateKeyB64);
+  await node.initializeSeedBootstrap(privateKeyB64);
   return { node, privateKeyB64, publicKeyB64, peerId: node.peerId!.toString() };
 }
 

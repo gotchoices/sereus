@@ -87,7 +87,7 @@ describe('Control-network peer-join block catch-up', () => {
 		try {
 			await A.start();
 			await A.getControlDatabase()!.insertOwnerKey(publicKeyB64);
-			A.initializeSeedBootstrap(privateKeyB64);
+			await A.initializeSeedBootstrap(privateKeyB64);
 
 			// ── Phase 2: B joins; a third peer X is authorized and converges onto B ──
 			B = nodeOn(partyId, bKey, captureB, 'transaction');

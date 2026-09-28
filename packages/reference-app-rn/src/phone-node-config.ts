@@ -198,7 +198,7 @@ export async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 			throw new Error('control database unavailable after start; cannot run owner genesis');
 		}
 		await controlDb.ensureOwnerKey(publicKeyB64);
-		cadre.initializeSeedBootstrap(privateKeyB64);
+		await cadre.initializeSeedBootstrap(privateKeyB64);
 	} catch (err) {
 		console.warn('[phone-node-config] owner self-genesis failed:', err);
 	}

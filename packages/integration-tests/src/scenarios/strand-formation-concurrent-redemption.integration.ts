@@ -189,8 +189,8 @@ describe('Concurrent invitation redemption across two machines', () => {
 			// their OWN database instance — the production responder wiring, and what makes
 			// the connection gate's outstanding-invitation carve-out consult the shared
 			// control DB on each node.
-			A.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!) });
-			B.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(B.getControlDatabase()!) });
+			await A.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!) });
+			await B.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(B.getControlDatabase()!) });
 
 			// One open host strand every invite here binds to (provision-then-record): both
 			// redemptions of a token then write ONLY a FormationUsage row, keeping the race

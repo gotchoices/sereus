@@ -167,7 +167,7 @@ describe('Multi-Party Strand Workflows', () => {
 				// Initialize solicitation on Party A
 				const provisioner = createMockProvisioner('closed');
 				const recorder = createMockUsageRecorder();
-				partyA.initializeStrandSolicitation({
+				await partyA.initializeStrandSolicitation({
 					strandProvisioner: provisioner,
 					formationUsageRecorder: recorder,
 				});
@@ -271,7 +271,7 @@ describe('Multi-Party Strand Workflows', () => {
 				// Party A: responder with usage recorder for single-use tokens
 				const provisioner = createMockProvisioner('excl');
 				const recorder = createMockUsageRecorder();
-				partyA.initializeStrandSolicitation({
+				await partyA.initializeStrandSolicitation({
 					strandProvisioner: provisioner,
 					formationUsageRecorder: recorder,
 				});

@@ -288,16 +288,16 @@ export class StrandSolicitationService {
    * Register as a responder on a libp2p node.
    * This enables the node to handle incoming strand formation requests.
    */
-  registerResponder(node: Libp2p): void {
-    this.getFormationManager().registerResponder(node);
+  async registerResponder(node: Libp2p): Promise<void> {
+    await this.getFormationManager().registerResponder(node);
     log('Registered as responder');
   }
 
   /**
    * Unregister as a responder from a libp2p node.
    */
-  unregisterResponder(node: Libp2p): void {
-    this.getFormationManager().unregisterResponder(node);
+  async unregisterResponder(node: Libp2p): Promise<void> {
+    await this.getFormationManager().unregisterResponder(node);
     log('Unregistered as responder');
   }
 

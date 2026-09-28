@@ -106,7 +106,7 @@ async function makeOwnOwner(node: CadreNode, key: Awaited<ReturnType<typeof gene
 	const db = node.getControlDatabase();
 	expect(db).not.toBeNull();
 	await db!.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
+	await node.initializeSeedBootstrap(privateKeyB64);
 }
 
 function connectionsTo(node: CadreNode, peerId: string): ReturnType<Libp2p['getConnections']> {

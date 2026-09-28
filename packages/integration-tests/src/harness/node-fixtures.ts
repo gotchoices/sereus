@@ -259,7 +259,7 @@ export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<st
   const db = node.getControlDatabase();
   if (!db) throw new Error('control database missing after start');
   await db.insertOwnerKey(publicKeyB64);
-  node.initializeSeedBootstrap(privateKeyB64);
+  await node.initializeSeedBootstrap(privateKeyB64);
   return publicKeyB64;
 }
 

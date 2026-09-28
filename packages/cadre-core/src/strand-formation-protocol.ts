@@ -520,21 +520,22 @@ export class FormationListener {
     return this.activeSessions;
   }
 
-  register(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): void {
+  /** Register the formation handler on `node`. Rejects when libp2p refuses the registration. */
+  async register(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): Promise<void> {
     if (this.registered.has(node)) {
       log('node already registered');
       return;
     }
-    void node.handle(protocolId, async (rawStream: unknown, _connection: unknown) => {
+    await node.handle(protocolId, async (rawStream: unknown, _connection: unknown) => {
       await this.handleStream(rawStream as ControlStream);
     });
     this.registered.add(node);
     log('formation listener registered (%s)', protocolId);
   }
 
-  unregister(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): void {
+  async unregister(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): Promise<void> {
     if (!this.registered.has(node)) return;
-    void node.unhandle(protocolId);
+    await node.unhandle(protocolId);
     this.registered.delete(node);
     log('formation listener unregistered (%s)', protocolId);
   }

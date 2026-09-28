@@ -1171,7 +1171,7 @@ export class CadreNode implements SAppIdLookup {
         getStrand: (strandId) => this.strandManager.getInstance(strandId),
         wake: (strandId) => this.wakeStrand(strandId),
       });
-      this.strandWakeService.initialize(this.controlNode);
+      await this.strandWakeService.initialize(this.controlNode);
 
       // Register the control-network strand-address responder: a same-cadre peer
       // resolving a strand's bootstrap seed asks us for our live strand-network
@@ -1187,7 +1187,7 @@ export class CadreNode implements SAppIdLookup {
         onDelegateAnnounce: (announcer, strandId, delegate) =>
           this.grantDelegateAdmission(announcer, strandId, delegate),
       });
-      this.strandAddrService.initialize(this.controlNode);
+      await this.strandAddrService.initialize(this.controlNode);
 
       // Server-side push-wake fan-out: only when push is configured.
       if (this.config.push) {
@@ -4408,7 +4408,7 @@ export class CadreNode implements SAppIdLookup {
 
     // Unregister strand solicitation service
     if (this.strandSolicitationService && this.controlNode) {
-      this.strandSolicitationService.unregisterResponder(this.controlNode);
+      await this.strandSolicitationService.unregisterResponder(this.controlNode);
       this.strandSolicitationService = null;
     }
 
@@ -6793,7 +6793,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * @param ownerPrivateKey - The owner's private key (base64url encoded)
    */
-  initializeSeedBootstrap(ownerPrivateKey: string): void {
+  async initializeSeedBootstrap(ownerPrivateKey: string): Promise<void> {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before initializing seed bootstrap');
     }
@@ -6819,7 +6819,7 @@ export class CadreNode implements SAppIdLookup {
         .catch((error) => log('Trusted-owner genesis anchor persist failed: %o', error));
     }
 
-    this.seedBootstrapService = new SeedBootstrapService({
+    await this.installSeedBootstrapService(new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       ownerPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
@@ -6828,11 +6828,7 @@ export class CadreNode implements SAppIdLookup {
       // Seed trust anchors on the node-local store (seeded just above with this
       // node's own genesis key), never on the replicated OwnerKey table.
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
-    });
-
-    this.seedBootstrapService.setEventCallbacks(this.seedEventCallbacks());
-
-    this.seedBootstrapService.initialize(this.controlNode, this.controlDatabase);
+    }), this.controlNode, this.controlDatabase);
     log('Seed bootstrap service initialized');
   }
 
@@ -7061,7 +7057,7 @@ export class CadreNode implements SAppIdLookup {
    * This is for drone nodes that need to receive seeds without being an owner.
    * Does not require an owner key.
    */
-  enableSeedListener(): void {
+  async enableSeedListener(): Promise<void> {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before enabling seed listener');
     }
@@ -7072,7 +7068,7 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
-    this.seedBootstrapService = new SeedBootstrapService({
+    await this.installSeedBootstrapService(new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       // No owner key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
@@ -7082,11 +7078,7 @@ export class CadreNode implements SAppIdLookup {
       // anchor (there is no per-call override on the inbound handler): with no
       // genesis/invite/operator pin it authorizes nobody, which is the point.
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
-    });
-
-    this.seedBootstrapService.setEventCallbacks(this.seedEventCallbacks());
-
-    this.seedBootstrapService.initialize(this.controlNode, this.controlDatabase);
+    }), this.controlNode, this.controlDatabase);
     log('Seed listener enabled');
   }
 
@@ -7095,6 +7087,28 @@ export class CadreNode implements SAppIdLookup {
    */
   getSeedBootstrapService(): SeedBootstrapService | null {
     return this.seedBootstrapService;
+  }
+
+  /**
+   * Make `service` this node's seed service and register its inbound seed handler.
+   * The field is set before the registration is awaited, so a concurrent
+   * {@link enableSeedListener} finds it and does not register a second handler; a
+   * failed registration puts the previous service back and rethrows.
+   */
+  private async installSeedBootstrapService(
+    service: SeedBootstrapService,
+    controlNode: Libp2p,
+    controlDatabase: ControlDatabase
+  ): Promise<void> {
+    service.setEventCallbacks(this.seedEventCallbacks());
+    const previous = this.seedBootstrapService;
+    this.seedBootstrapService = service;
+    try {
+      await service.initialize(controlNode, controlDatabase);
+    } catch (error) {
+      if (this.seedBootstrapService === service) this.seedBootstrapService = previous;
+      throw error;
+    }
   }
 
   /**
@@ -7327,7 +7341,7 @@ export class CadreNode implements SAppIdLookup {
         ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
       });
       if (this.controlNode && this.controlDatabase) {
-        tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
+        await tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
       const tempResult = await tempService.applySeed(seed, options);
       this.noteAppliedSeed(tempResult, seed);
@@ -7517,7 +7531,7 @@ export class CadreNode implements SAppIdLookup {
         dialBudget: this.controlDialBudget(),
       });
       if (this.controlNode && this.controlDatabase) {
-        tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
+        await tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
       await tempService.dialInvite(invite);
       return;
@@ -7535,12 +7549,12 @@ export class CadreNode implements SAppIdLookup {
    *
    * @param options - Configuration for the solicitation service
    */
-  initializeStrandSolicitation(options?: StrandSolicitationServiceOptions): void {
+  async initializeStrandSolicitation(options?: StrandSolicitationServiceOptions): Promise<void> {
     if (!this.controlNode) {
       throw new Error('CadreNode must be started before initializing strand solicitation');
     }
 
-    this.strandSolicitationService = new StrandSolicitationService({
+    const service = new StrandSolicitationService({
       ...options,
       partyId: this.config.controlNetwork.partyId,
       cadrePeerAddrs: this.getMultiaddrs(),
@@ -7554,8 +7568,17 @@ export class CadreNode implements SAppIdLookup {
       issueMembershipInvite: (strandId: string) => this.issueStrandMembershipInvite(strandId)
     });
 
-    // Register as responder on the control node
-    this.strandSolicitationService.registerResponder(this.controlNode);
+    // Set before the registration is awaited, so a concurrent createOpenInvitation /
+    // formStrand uses this service instead of building a second one whose handler
+    // would collide; a failed registration puts the previous service back.
+    const previous = this.strandSolicitationService;
+    this.strandSolicitationService = service;
+    try {
+      await service.registerResponder(this.controlNode);
+    } catch (error) {
+      if (this.strandSolicitationService === service) this.strandSolicitationService = previous;
+      throw error;
+    }
     log('Strand solicitation service initialized');
   }
 
@@ -7579,7 +7602,7 @@ export class CadreNode implements SAppIdLookup {
   ): Promise<OpenInvitation> {
     if (!this.strandSolicitationService) {
       // Create a temporary service for creating invitations
-      this.initializeStrandSolicitation();
+      await this.initializeStrandSolicitation();
     }
 
     const bootstrap = this.getMultiaddrs();
@@ -7610,7 +7633,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     if (!this.strandSolicitationService) {
-      this.initializeStrandSolicitation();
+      await this.initializeStrandSolicitation();
     }
 
     const result = await this.strandSolicitationService!.formStrand(

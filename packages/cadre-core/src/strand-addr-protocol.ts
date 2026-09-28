@@ -139,19 +139,23 @@ export class StrandAddrService {
     return this.activeStreams;
   }
 
-  /** Register the strand-addr protocol handler on the control node. */
-  initialize(node: Libp2p): void {
-    this.node = node;
+  /**
+   * Register the strand-addr protocol handler on the control node. Rejects when
+   * libp2p refuses the registration (a duplicate handler, a peer-store write
+   * failure); the node reference is kept only once the handler is in place.
+   */
+  async initialize(node: Libp2p): Promise<void> {
     // `runOnLimitedConnection: true` is REQUIRED for the relay path: a NAT'd
     // sibling is reached over a circuit-relay connection, which libp2p marks
     // "limited" (the relay caps its data/duration). Without this the receiver
     // would refuse the inbound stream on exactly the connection the protocol is
     // designed to use (same reasoning as wake; see the relay note on
     // `collectStrandAddrs`).
-    void node.handle(STRAND_ADDR_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
+    await node.handle(STRAND_ADDR_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
       await this.handleStream(rawStream as ControlStream, remotePeerId);
     }, { runOnLimitedConnection: true });
+    this.node = node;
     log('StrandAddrService registered handler: %s', STRAND_ADDR_PROTOCOL);
   }
 

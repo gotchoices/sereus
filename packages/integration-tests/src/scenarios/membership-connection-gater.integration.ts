@@ -134,7 +134,7 @@ describe('E2E control-network membership connection gater', () => {
 
 			// Responder registered, nothing minted — the old carve-out would have
 			// admitted everyone from here on.
-			Rx.initializeStrandSolicitation();
+			await Rx.initializeStrandSolicitation();
 
 			const rxAddr = Rx.getControlNode()!.getMultiaddrs()[0]!;
 			const rxPeerId = Rx.peerId!.toString();

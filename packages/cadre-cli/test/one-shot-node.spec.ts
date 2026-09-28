@@ -212,7 +212,7 @@ async function seedStrands(
     const db = node.getControlDatabase();
     expect(db).not.toBeNull();
     expect(await db!.ensureOwnerKey(owner.publicKeyB64)).toBe(true);
-    node.initializeSeedBootstrap(owner.privateKeyB64);
+    await node.initializeSeedBootstrap(owner.privateKeyB64);
 
     for (const strand of strands) {
       await node.publishStrand(strand.id, strand.type, strand.type === 'c' ? MEMBER_PRIVATE_KEY : undefined);

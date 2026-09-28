@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -48,6 +48,27 @@ function runHandleStream(service: StrandAddrService, stream: unknown, remotePeer
 describe('STRAND_ADDR_PROTOCOL', () => {
   it('exports the expected protocol id', () => {
     expect(STRAND_ADDR_PROTOCOL).toBe('/sereus/strand-addr/1.0.0');
+  });
+});
+
+describe('StrandAddrService.initialize', () => {
+  it('rejects when libp2p refuses the registration, leaving nothing to unhandle and no unhandled rejection', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => { rejections.push(reason); };
+    const unhandle = vi.fn(async () => {});
+    const node = { handle: async () => { throw new Error('dup handler'); }, unhandle } as unknown as Libp2p;
+    const service = makeService([]);
+    process.on('unhandledRejection', onRejection);
+    try {
+      await expect(service.initialize(node)).rejects.toThrow('dup handler');
+      await service.shutdown();
+      expect(unhandle).not.toHaveBeenCalled();
+      // Node reports an unhandled rejection on a later macrotask.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 });
 

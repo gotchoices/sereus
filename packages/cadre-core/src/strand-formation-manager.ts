@@ -229,12 +229,12 @@ export class StrandFormationManager {
    * Register this manager as a protocol handler on a libp2p node.
    * Call this on the control network node to handle incoming formation requests.
    */
-  registerResponder(node: Libp2p, protocolId?: string): void {
+  async registerResponder(node: Libp2p, protocolId?: string): Promise<void> {
     if (this.registeredNodes.has(node)) {
       log('Node already registered');
       return;
     }
-    this.listener.register(node, protocolId ?? this.config.protocolId);
+    await this.listener.register(node, protocolId ?? this.config.protocolId);
     this.registeredNodes.add(node);
     log('Registered as responder on node');
   }
@@ -242,11 +242,11 @@ export class StrandFormationManager {
   /**
    * Unregister the protocol handler from a libp2p node.
    */
-  unregisterResponder(node: Libp2p, protocolId?: string): void {
+  async unregisterResponder(node: Libp2p, protocolId?: string): Promise<void> {
     if (!this.registeredNodes.has(node)) {
       return;
     }
-    this.listener.unregister(node, protocolId ?? this.config.protocolId);
+    await this.listener.unregister(node, protocolId ?? this.config.protocolId);
     this.registeredNodes.delete(node);
     log('Unregistered from node');
   }

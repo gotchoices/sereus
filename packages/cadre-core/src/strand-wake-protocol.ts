@@ -148,18 +148,22 @@ export class StrandWakeService {
     return this.activeStreams;
   }
 
-  /** Register the wake protocol handler on the control node. */
-  initialize(node: Libp2p): void {
-    this.node = node;
+  /**
+   * Register the wake protocol handler on the control node. Rejects when libp2p
+   * refuses the registration; the node reference is kept only once the handler
+   * is in place.
+   */
+  async initialize(node: Libp2p): Promise<void> {
     // `runOnLimitedConnection: true` is REQUIRED for the relay path: a NAT'd
     // receiver is reached over a circuit-relay connection, which libp2p marks
     // "limited" (the relay caps its data/duration). Without this the receiver
     // would refuse the inbound wake stream on exactly the connection the
     // protocol is designed to use (see the relay note on `dialWake`).
-    void node.handle(WAKE_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
+    await node.handle(WAKE_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
       await this.handleStream(rawStream as ControlStream, remotePeerId);
     }, { runOnLimitedConnection: true });
+    this.node = node;
     log('StrandWakeService registered handler: %s', WAKE_PROTOCOL);
   }
 

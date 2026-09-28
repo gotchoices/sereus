@@ -110,7 +110,7 @@ describe('Cross-party strand seed carried by formation', () => {
 			// Real DB-backed responder wiring (the production shape): it is what resolves a
 			// bound invite to its host strand and what holds the connection gate's
 			// outstanding-invitation carve-out open for a stranger's dial.
-			host.initializeStrandSolicitation({
+			await host.initializeStrandSolicitation({
 				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
 			});
 
@@ -295,7 +295,7 @@ describe('Cross-party strand seed carried by formation', () => {
 			}));
 			await host.start();
 			await makeOwnOwner(host, hostKey);
-			host.initializeStrandSolicitation({
+			await host.initializeStrandSolicitation({
 				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
 			});
 

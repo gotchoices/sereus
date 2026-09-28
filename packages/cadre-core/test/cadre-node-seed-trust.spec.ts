@@ -130,7 +130,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     // A service-less cold node routes every applySeed through a throwaway temp service.
     // Before the registerHandler:false fix, the second call re-ran libp2p.handle() for
     // SEED_PROTOCOL and the resulting DuplicateProtocolHandlerError surfaced as an
-    // unhandled promise rejection (the caller fire-and-forgets the handle() promise).
+    // unhandled promise rejection (the caller then fire-and-forgot the handle() promise).
     // Pin the real signer so both calls succeed and the only thing under test is safety.
     const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     const rejections: unknown[] = [];
@@ -182,7 +182,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       expect(node.getControlNode()!.getProtocols()).not.toContain(SEED_PROTOCOL);
 
       // The persistent listener now claims the handler for the first time.
-      node.enableSeedListener();
+      await node.enableSeedListener();
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(node.getControlNode()!.getProtocols()).toContain(SEED_PROTOCOL);
       expect(rejections).toEqual([]);
@@ -197,7 +197,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const withPolicy = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {
       await startClean(withPolicy);
-      withPolicy.enableSeedListener();
+      await withPolicy.enableSeedListener();
       const svc = withPolicy.getSeedBootstrapService();
       expect(svc).not.toBeNull();
       // getSeedBootstrapService().applySeed is the same entry the protocol handler uses.
@@ -211,7 +211,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const noPolicy = makeColdNode();
     try {
       await startClean(noPolicy);
-      noPolicy.enableSeedListener();
+      await noPolicy.enableSeedListener();
       const svc = noPolicy.getSeedBootstrapService();
       const result = await svc!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(false);
@@ -229,7 +229,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const node = makeColdNode(); // secure default, no configured pins
     try {
       await startClean(node);
-      node.enableSeedListener();
+      await node.enableSeedListener();
       const svc = node.getSeedBootstrapService();
       expect(svc).not.toBeNull();
 
@@ -251,9 +251,9 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {
       await startClean(node);
-      node.enableSeedListener();
+      await node.enableSeedListener();
       const first = node.getSeedBootstrapService();
-      node.enableSeedListener(); // early-returns; must not drop/replace the service
+      await node.enableSeedListener(); // early-returns; must not drop/replace the service
       const second = node.getSeedBootstrapService();
       expect(second).toBe(first);
       // Policy captured on first construction still applies after the no-op call.
@@ -275,7 +275,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
 
       // initializeSeedBootstrap is the owner construction site — exercise that it
       // forwards the configured policy AND genesis-anchors this node's own key.
-      node.initializeSeedBootstrap(ownerPrivateKey);
+      await node.initializeSeedBootstrap(ownerPrivateKey);
       expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
 
       const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
@@ -292,7 +292,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const node = makeColdNode(); // secure default, no pins
     try {
       await startClean(node);
-      node.initializeSeedBootstrap(ownerPrivateKey); // anchors the real owner
+      await node.initializeSeedBootstrap(ownerPrivateKey); // anchors the real owner
 
       const db = node.getControlDatabase();
       expect(db).not.toBeNull();
@@ -387,7 +387,7 @@ describe('seed protocol handler — configured-default rejection surfaces in the
       partyId: seedParty,
       trustPolicy: pinnedKeyTrustPolicy([attackerPublicKey]),
     });
-    service.initialize(
+    await service.initialize(
       libp2p as never,
       { getOwnerKeys: async () => new Set<string>() } as never
     );

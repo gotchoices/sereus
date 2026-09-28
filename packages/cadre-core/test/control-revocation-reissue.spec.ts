@@ -347,7 +347,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
   // ── The read paths a revoked stamp must fall out of ────────────────────────
 
   it('a production removal drops the peer from every membership read, and re-admission mints a FRESH stamp', async () => {
-    node.initializeSeedBootstrap(founder.privateKey);
+    await node.initializeSeedBootstrap(founder.privateKey);
     const droneKey = await generateKeyPair('Ed25519');
     const peerId = peerIdFromPrivateKey(droneKey).toString();
 
@@ -379,7 +379,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     // and inserting over an existing tombstone trips NotRevoked, in either order. So the
     // retired-set reader is wrapped instead (the seam queryCadrePeers/queryPeerRecord
     // deliberately read through — same pattern as device-token-registry.spec.ts).
-    node.initializeSeedBootstrap(founder.privateKey);
+    await node.initializeSeedBootstrap(founder.privateKey);
     const droneKey = await generateKeyPair('Ed25519');
     const peerId = peerIdFromPrivateKey(droneKey).toString();
     await node.authorizePeer(peerId, ['/ip4/192.168.1.100/tcp/4001']);

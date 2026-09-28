@@ -469,7 +469,7 @@ describe('E2E push-wake over the control network', () => {
 			// replicated-schema constraint. Nothing here touches Rx's node-local anchor.
 			await Rx.getControlDatabase()!.insertOwnerKey(oOwnerPub);
 			const pollution = new SeedBootstrapService({ partyId, ownerPrivateKey: oOwnerPriv, ownerPublicKey: oOwnerPub });
-			pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
+			await pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
 			await pollution.authorizePeer({ peerId: oPeerId, multiaddrs: controlAddrs(O) });
 
 			// The hole, made visible: O IS addressable on Rx (row present) — and still

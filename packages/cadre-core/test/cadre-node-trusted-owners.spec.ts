@@ -65,7 +65,7 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 
 			// Genesis self-trust: wiring seed-bootstrap with an owner private key
 			// anchors the derived public key.
-			node.initializeSeedBootstrap(ownerPrivateKey);
+			await node.initializeSeedBootstrap(ownerPrivateKey);
 			expect(injected.has(ownerPublicKey)).toBe(true);
 
 			// Restart cycle: the anchor survives (same store, nothing dropped).

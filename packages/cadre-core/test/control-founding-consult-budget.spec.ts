@@ -660,7 +660,7 @@ async function measureMarker(counter: ConsultCounter): Promise<MarkerRun> {
 		expect(db).not.toBeNull();
 		const owner = node.getIdentityOwnerKey();
 		expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKeyB64))).toBe(true);
-		node.initializeSeedBootstrap(owner.privateKeyB64);
+		await node.initializeSeedBootstrap(owner.privateKeyB64);
 		const first = await freshPeerId();
 		await within('authorizePeer() (first member)', OP_TIMEOUT_MS, () => node.authorizePeer(first));
 

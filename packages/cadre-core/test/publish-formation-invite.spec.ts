@@ -57,7 +57,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     // readable, so the service is wired with no recorder here: a `true` answer
     // can only have come from the in-memory mint registry.
     ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
-    node.initializeStrandSolicitation();
+    await node.initializeStrandSolicitation();
     const service = node.getStrandSolicitationService()!;
     expect(await service.hasOutstandingInvitation()).toBe(false);
 
@@ -70,7 +70,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
 
   it('does not open the gate for an invite published already expired', async () => {
     ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
-    node.initializeStrandSolicitation();
+    await node.initializeStrandSolicitation();
     const service = node.getStrandSolicitationService()!;
 
     await node.publishFormationInvite('invite-' + rand(), 'sapp-publish-stale', {

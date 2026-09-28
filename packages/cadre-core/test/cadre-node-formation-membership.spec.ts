@@ -45,9 +45,9 @@ function invitePair(tag: string): StrandMembershipInvite {
  * node — a repeat `initializeStrandSolicitation` would re-register the formation
  * protocol handler on the same libp2p node and throw.
  */
-function stubFormation(node: CadreNode, result: FormStrandResult): StrandSolicitationService {
+async function stubFormation(node: CadreNode, result: FormStrandResult): Promise<StrandSolicitationService> {
   if (!node.getStrandSolicitationService()) {
-    node.initializeStrandSolicitation();
+    await node.initializeStrandSolicitation();
   }
   const service = node.getStrandSolicitationService()!;
   service.formStrand = async () => result;
@@ -79,7 +79,7 @@ describe('CadreNode.formStrand: joiner membership adoption', () => {
   it('persists the party key and stages the invitation when the result carries one', async () => {
     const strandId = 'strand-adopt-' + rand();
     const invite = invitePair('first');
-    stubFormation(node, formedResult(strandId, invite));
+    await stubFormation(node, formedResult(strandId, invite));
 
     const result = await node.formStrand(invitationFor('token-' + rand()));
 
@@ -95,13 +95,13 @@ describe('CadreNode.formStrand: joiner membership adoption', () => {
 
   it('re-formation reuses the stored party key and replaces the staged invitation', async () => {
     const strandId = 'strand-rejoin-' + rand();
-    stubFormation(node, formedResult(strandId, invitePair('original')));
+    await stubFormation(node, formedResult(strandId, invitePair('original')));
     await node.formStrand(invitationFor('token-' + rand()));
     const firstKey = await node.getControlDatabase()!.queryStrandPartyKey(strandId);
     expect(firstKey).not.toBeNull();
 
     const freshInvite = invitePair('fresh');
-    stubFormation(node, formedResult(strandId, freshInvite));
+    await stubFormation(node, formedResult(strandId, freshInvite));
     await node.formStrand(invitationFor('token-' + rand()));
 
     // Identity is stable across re-formations — a per-join key would never match the
@@ -113,7 +113,7 @@ describe('CadreNode.formStrand: joiner membership adoption', () => {
 
   it('no invitation on the result → no party key minted, nothing staged', async () => {
     const strandId = 'strand-open-' + rand();
-    stubFormation(node, formedResult(strandId));
+    await stubFormation(node, formedResult(strandId));
 
     const result = await node.formStrand(invitationFor('token-' + rand()));
 
@@ -128,7 +128,7 @@ describe('CadreNode.formStrand: joiner membership adoption', () => {
     const { node: unenrolled } = await startSelfOwnerNode('formation-membership-unenrolled-', { enrollOwner: false });
     try {
       const strandId = 'strand-fail-' + rand();
-      stubFormation(unenrolled, formedResult(strandId, invitePair('doomed')));
+      await stubFormation(unenrolled, formedResult(strandId, invitePair('doomed')));
 
       await expect(unenrolled.formStrand(invitationFor('token-' + rand())))
         .rejects.toThrow(/membership identity \(StrandPartyKey\) failed/);

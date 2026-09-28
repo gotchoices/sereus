@@ -112,8 +112,8 @@ describe('CadreNode remembers strands joined from another party', () => {
 	const OP_TIMEOUT_MS = 15_000;
 
 	/** Stub the formation dial: the wire round-trip is not what this arm is about. */
-	function stubFormation(node: CadreNode, result: FormStrandResult): void {
-		node.initializeStrandSolicitation();
+	async function stubFormation(node: CadreNode, result: FormStrandResult): Promise<void> {
+		await node.initializeStrandSolicitation();
 		node.getStrandSolicitationService()!.formStrand = async () => result;
 	}
 
@@ -131,7 +131,7 @@ describe('CadreNode remembers strands joined from another party', () => {
 		const first = new CadreNode(config());
 		try {
 			await within('first.start()', LIFECYCLE_TIMEOUT_MS, () => first.start());
-			stubFormation(first, {
+			await stubFormation(first, {
 				memberKey: 'joiner-member-key',
 				invitePrivateKey: '',
 				strandId,

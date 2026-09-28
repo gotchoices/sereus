@@ -260,7 +260,7 @@ describe('StrandFormationManager Integration', () => {
       strandProvisioner: mockProvisioner,
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     // Create an invitation
     const invitation = await responderService.createOpenInvitation(
@@ -288,7 +288,7 @@ describe('StrandFormationManager Integration', () => {
     expect(result.strandId.startsWith('strand-')).toBe(true);
 
     // Cleanup
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 15000);
 
   it('should handle multiple concurrent formations', async () => {
@@ -310,7 +310,7 @@ describe('StrandFormationManager Integration', () => {
       strandProvisioner: mockProvisioner,
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     const invitation = await responderService.createOpenInvitation(
       'test-sapp',
@@ -336,7 +336,7 @@ describe('StrandFormationManager Integration', () => {
     const uniqueIds = new Set(strandIds);
     expect(uniqueIds.size).toBe(3); // Each formation should get a unique strand
 
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 20000);
 
   it('should reject invalid tokens', async () => {
@@ -350,7 +350,7 @@ describe('StrandFormationManager Integration', () => {
       partyId: 'responder-party',
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     // Create invitation with invalid token
     const invitation: OpenInvitation = {
@@ -368,7 +368,7 @@ describe('StrandFormationManager Integration', () => {
       initiatorService.formStrand(invitation, {}, nodeB)
     ).rejects.toThrow();
 
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 10000);
 });
 
@@ -407,7 +407,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-real-1' }) },
       disclosureValidator: capturingValidator
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -432,7 +432,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     expect(captured!.disclosure.purpose).toBe('real-purpose');
     expect(captured!.disclosure.partyId).toBe(result.memberKey);
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('delivers the responder real cadre addresses to the initiator (no placeholders)', async () => {
@@ -450,7 +450,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       cadrePeerAddrs: responderAddrs,
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-addr-1' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation('test-sapp', 60000, responderAddrs);
 
@@ -466,7 +466,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     expect(receivedAddrs?.length).toBeGreaterThan(0);
     expect(receivedAddrs?.some(a => a.includes('.local'))).toBe(false);
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('rejects a responder that returns an empty strandId', async () => {
@@ -476,7 +476,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       // Malicious/stub responder: provisions an empty strand id.
       strandProvisioner: { provisionStrand: async () => ({ strandId: '' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -493,7 +493,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       initiator.formStrand(invitation, { purpose: 'reject-empty-strand' }, nodeB)
     ).rejects.toThrow();
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('rejects a responder that discloses no cadre addresses', async () => {
@@ -503,7 +503,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       cadrePeerAddrs: [],
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-nocadre-1' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -520,6 +520,6 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       initiator.formStrand(invitation, { purpose: 'reject-no-cadre' }, nodeB)
     ).rejects.toThrow();
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 });

@@ -500,7 +500,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 
 		// Form a strand over the wire to get a real negotiated strandId (the closed
 		// MemberPrivateKey delivery itself is out of scope — see header).
-		founderNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner(label) });
+		await founderNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner(label) });
 		const invitation = await founderNode.createOpenInvitation('closed-sapp');
 		const formResult = await joinerNode.formStrand(invitation, {
 			partyId: `joiner-${partyId}`,

@@ -182,7 +182,7 @@ async function bringUpHost(runTag: number): Promise<HostSide> {
 	await host.start();
 	try {
 		await makeOwnOwner(host, hostKey);
-		host.initializeStrandSolicitation({
+		await host.initializeStrandSolicitation({
 			formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
 		});
 
