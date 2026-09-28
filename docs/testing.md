@@ -607,7 +607,7 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   its own `node` process over on-disk stores in a temp directory
   (`harness/strand-restart-party.ts`, `harness/fixtures/strand-restart-party.mjs`), because a
   restart inside one process reopens the same live in-memory stores and keeps module state.
-  The two-process arm takes about 25 s and could run by default; it is opt-in only because the
+  The two-process arm takes about 12 s and could run by default; it is opt-in only because the
   in-process arm already gates the behaviour. Loopback-instant link, one shared relay.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,

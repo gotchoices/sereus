@@ -190,6 +190,7 @@ let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
 let strandPeerBookStore: StrandPeerBookStore | null = null;
 let solicitationReady = false;
+// NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
 
 // ── Getters (read by the store + diagnostics) ─────────────────────────────────
