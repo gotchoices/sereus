@@ -129,6 +129,7 @@ import {
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
+import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -499,9 +500,21 @@ export class CadreNode implements SAppIdLookup {
    * `denyInboundRelayReservation` policy); authorized members and announced
    * delegates are admitted before it and never counted. Cap from
    * `network.unauthorizedRelayReservationCap` (default
-   * `MAX_UNAUTHORIZED_RELAY_RESERVATIONS`).
+   * `MAX_UNAUTHORIZED_RELAY_RESERVATIONS`); entries expire on the relay
+   * server's own resolved `reservationTtl` ({@link relayServer}).
    */
   private readonly unauthorizedRelayReservations: UnauthorizedReservationBudget;
+
+  /**
+   * Does this node's CONTROL libp2p run the circuit-relay server, and with which
+   * init? Resolved once from `network` and `profile` by the same function every
+   * strand node's build uses (`relay-server.ts`). Read by
+   * {@link buildControlNodeOptions} (which configures the server from it),
+   * {@link admitInboundControlConnection} (whose deny/admit-for-relay branch must
+   * agree with whether a reservation is even servable here), and the
+   * unauthorized budget above (whose TTL is the server's).
+   */
+  private readonly relayServer: ResolvedRelayServer;
 
   /**
    * When this node last ANNOUNCED a delegate, keyed `<targetPeerId>\n<strandId>`
@@ -826,8 +839,10 @@ export class CadreNode implements SAppIdLookup {
     this.config = config;
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
+    this.relayServer = resolveRelayServer(config.network, config.profile);
     this.unauthorizedRelayReservations = new UnauthorizedReservationBudget(
-      config.network?.unauthorizedRelayReservationCap
+      config.network?.unauthorizedRelayReservationCap,
+      this.relayServer.init.reservations.reservationTtl
     );
 
     // Create hibernation manager with callbacks
@@ -977,6 +992,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     log('Starting CadreNode for party: %s', this.config.controlNetwork.partyId);
+    this.logRelayServerSettings();
 
     try {
       const tTotal = performance.now();
@@ -1740,8 +1756,6 @@ export class CadreNode implements SAppIdLookup {
     // being silently dropped at bring-up. See `relay-addrs.ts`.
     const transportOptions = resolveTransportOptions(network, listenAddrs);
 
-    const enableRelay = this.relayServerEnabled();
-
     // The control node's own storage, resolved once per runtime (see
     // {@link resolveControlStorage}) rather than per call.
     const controlStorageProvider = this.resolveControlStorage();
@@ -1752,7 +1766,10 @@ export class CadreNode implements SAppIdLookup {
       networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
       fretProfile: profile === 'storage' ? 'core' : 'edge',
-      relay: enableRelay,
+      relay: this.relayServer.enabled,
+      // Merged party-run defaults: no per-connection data/duration cap, a store sized for
+      // one party's NAT'd machines. Strand nodes get the same init (`relay-server.ts`).
+      ...(this.relayServer.enabled && { relayServerInit: this.relayServer.init }),
       // Fixed, and deliberately above any party's node count: every member reads the
       // whole control database, so a cohort that excludes a member leaves it dependent
       // on read repair — which cannot converge at a two-member cohort. Not a knob;
@@ -1826,15 +1843,18 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Does this node's CONTROL libp2p run the circuit-relay server? An explicit
-   * `network.enableRelay` wins; otherwise storage-profile nodes default to on
-   * (better connectivity/uptime). Shared by {@link buildControlNodeOptions}
-   * (which configures the server from it) and
-   * {@link admitInboundControlConnection} (whose deny/admit-for-relay branch
-   * must agree with whether a reservation is even servable here).
+   * One debug line naming what this machine's relay server forwards and holds —
+   * the same fields the dedicated relay container prints at boot
+   * (`ops/docker/libp2p-infra/src/main.ts`). Once per start, not per strand:
+   * strand nodes resolve the same settings from the same config.
    */
-  private relayServerEnabled(): boolean {
-    return this.config.network?.enableRelay ?? (this.config.profile === 'storage');
+  private logRelayServerSettings(): void {
+    if (!this.relayServer.enabled) {
+      return;
+    }
+    const { applyDefaultLimit, maxReservations, reservationTtl } = this.relayServer.init.reservations;
+    log('Relay server on: applyDefaultLimit=%s maxReservations=%d reservationTtl=%dms unauthorizedCap=%d',
+      applyDefaultLimit, maxReservations, reservationTtl, this.unauthorizedRelayReservations.cap);
   }
 
   /**
@@ -1884,7 +1904,7 @@ export class CadreNode implements SAppIdLookup {
    *    accepted it, exactly like the unreplicated-membership-row case below.
    *
    * When every check falls through, the verdict depends on whether this node
-   * runs the circuit-relay server ({@link relayServerEnabled}): without one,
+   * runs the circuit-relay server ({@link relayServer}): without one,
    * `'deny'`; with one, `'admit-for-relay'` — a circuit-relay reservation is
    * established by the reserving peer DIALING the relay, so a connection deny
    * here kills the reservation, and that deny is NOT self-healing: an outbound
@@ -1933,7 +1953,7 @@ export class CadreNode implements SAppIdLookup {
       log('admitInboundControlConnection: outstanding-invitation check threw for %s — admitting (fail-open): %o', remotePeerId, error);
       return 'admit';
     }
-    if (this.relayServerEnabled()) {
+    if (this.relayServer.enabled) {
       log('admitInboundControlConnection: admitting %s FOR RELAY ONLY — not an authorized member and no enrollment path open; the gater drops the connection unless a reservation is admitted', remotePeerId);
       return 'admit-for-relay';
     }

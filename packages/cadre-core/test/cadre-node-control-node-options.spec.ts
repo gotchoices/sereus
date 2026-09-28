@@ -442,6 +442,16 @@ describe('CadreNode control-network node options', () => {
 
       expect(options.relay).toBe(true);
     });
+
+    it('runs the server without libp2p\'s per-connection data/duration cap, and hands a disabled one no init', () => {
+      // libp2p's default init caps every relayed connection at 128 KiB or 2 min, which
+      // cut off every sync forwarded through a party's own always-on machine (#19).
+      const on = controlOptions(new CadreNode(createConfig({ profile: 'storage' })));
+      const off = controlOptions(new CadreNode(createConfig({ profile: 'transaction' })));
+
+      expect(on.relayServerInit?.reservations?.applyDefaultLimit).toBe(false);
+      expect(off).not.toHaveProperty('relayServerInit');
+    });
   });
 
   describe('network passthrough', () => {

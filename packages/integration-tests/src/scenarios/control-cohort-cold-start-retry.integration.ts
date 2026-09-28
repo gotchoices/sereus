@@ -27,7 +27,7 @@
  *
  * A third detail is what makes the FORCED refusal reachable at all: A passes
  * `enableRelay: false`, and must keep passing it. Relay is NOT off by default
- * here — `CadreNode.relayServerEnabled` defaults it to `profile === 'storage'`,
+ * here — `resolveRelayServer` (`relay-server.ts`) defaults it to `profile === 'storage'`,
  * and A is a storage node — so omitting the flag leaves the relay server ON. On
  * a node running it the gater answers an unplaceable peer with
  * `'admit-for-relay'` rather than a deny (see `membership-connection-gater.ts` →

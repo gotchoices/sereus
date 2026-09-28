@@ -85,7 +85,10 @@
  *    infra outright, and admits peers it cannot place only within a bounded
  *    budget ({@link UnauthorizedReservationBudget}) — a member whose row is in
  *    flight always finds a slot under any sane cap, while outsiders cannot
- *    annex the party's relay capacity.
+ *    annex the party's relay capacity. COUNT and lifetime are the only bounds
+ *    on such a peer: a party-run relay forwards without libp2p's per-connection
+ *    data and duration limit by default (`relay-server.ts`), so what a granted
+ *    slot carries is not capped.
  *  - An `'admit-for-relay'` connection that is NOT reserving is dropped: it has
  *    {@link RELAY_ADMISSION_RESERVE_DEADLINE_MS} to get a reservation ADMITTED
  *    at that hook, after which the gate CLOSES the underlying connection so
@@ -160,6 +163,7 @@ import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/inter
 import { SEED_PROTOCOL } from './seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
 import { withDeadline } from './control-stream.js';
+import { PARTY_RELAY_RESERVATION_TTL_MS } from './relay-server.js';
 
 const log = debug('sereus:cadre:connection-gater');
 
@@ -228,30 +232,16 @@ export const RELAY_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
  * `network.unauthorizedRelayReservationCap` (0 refuses every unauthorized
  * reservation — the strict pre-seam posture).
  *
- * NOTE: this cap shares the relay server's own reservation store, whose default
- * size is 15 (`@libp2p/circuit-relay-v2`'s `DEFAULT_MAX_RESERVATION_STORE_SIZE`);
- * unplaced peers may therefore occupy up to this many of those slots, and the
- * rest are what members and delegates compete for. This module cannot read the
- * server's size, so the two are kept apart by hand — if either is raised, keep
- * this one well under the store's, or a fleet of unplaceable peers can crowd
- * genuine members out of the server's own store (which the gate cannot override).
+ * NOTE: this cap shares the relay server's own reservation store, whose
+ * party-run default size is `PARTY_RELAY_MAX_RESERVATIONS` (128,
+ * `relay-server.ts`); unplaced peers may therefore occupy up to this many of
+ * those slots, and the rest are what members and delegates compete for. The two
+ * are kept apart by hand — if this is raised, or an embedder shrinks the store
+ * through `network.relayServerInit.reservations.maxReservations`, keep this one
+ * well under the store's, or a fleet of unplaceable peers can crowd genuine
+ * members out of the server's own store (which the gate cannot override).
  */
 export const MAX_UNAUTHORIZED_RELAY_RESERVATIONS = 8;
-
-/**
- * How long one {@link UnauthorizedReservationBudget} entry occupies a slot
- * without a refresh. Mirrors the relay server's own default reservation TTL
- * (`@libp2p/circuit-relay-v2`'s `DEFAULT_MAX_RESERVATION_TTL`, 2 h): the server
- * holds an unrefreshed reservation exactly that long, and a live reserver
- * re-requests (re-hitting the admission hook, refreshing its entry) well before
- * expiry — so the live entry count tracks the server's own occupancy without
- * this module reaching into the server's reservation store.
- *
- * NOTE: a mirror, not a live coupling — if the relay server is ever configured
- * with a non-default `reservationTtl` (db-p2p's `relayServerInit`), update this
- * constant alongside it or the budget's occupancy drifts from the server's.
- */
-export const UNAUTHORIZED_RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
 
 /**
  * The connection-level outcome of the admission policy:
@@ -295,9 +285,13 @@ export interface InboundAdmissionPolicy {
  * Bounded budget of concurrent relay reservations for peers the membership
  * check could not place. `tryAdmit` is the whole surface: an already-admitted
  * peer refreshes its entry (a reservation refresh never double-counts), a new
- * peer takes a free slot or is refused. Entries expire after `ttlMs` (see
- * {@link UNAUTHORIZED_RESERVATION_TTL_MS} for why that mirrors the relay
- * server's own hold). Injectable `now` keeps expiry testable without fake
+ * peer takes a free slot or is refused. Entries expire after `ttlMs`, which
+ * `CadreNode` passes as the relay server's own resolved `reservationTtl`
+ * (`relay-server.ts`): the server holds an unrefreshed reservation exactly that
+ * long, and a live reserver re-requests (re-hitting the admission hook,
+ * refreshing its entry) well before expiry — so the live entry count tracks the
+ * server's own occupancy without this module reaching into the server's
+ * reservation store. Injectable `now` keeps expiry testable without fake
  * timers. Authorized members and delegates are never run through this — the
  * policy admits them before consulting the budget, and `release`s the slot such
  * a peer took while it was still unplaceable, so the boot-ordering window a
@@ -307,8 +301,9 @@ export class UnauthorizedReservationBudget {
   private readonly admitted = new Map<string, number>();
 
   constructor(
-    private readonly cap: number = MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
-    private readonly ttlMs: number = UNAUTHORIZED_RESERVATION_TTL_MS
+    /** Most peers admitted at once — `network.unauthorizedRelayReservationCap`, resolved. */
+    readonly cap: number = MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
+    private readonly ttlMs: number = PARTY_RELAY_RESERVATION_TTL_MS
   ) {}
 
   /** Number of live (unexpired at last prune) entries — test/diagnostic surface. */

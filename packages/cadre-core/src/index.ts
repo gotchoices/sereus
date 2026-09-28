@@ -589,7 +589,6 @@ export {
   RELAY_ADMISSION_RESERVE_DEADLINE_MS,
   RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
   MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
-  UNAUTHORIZED_RESERVATION_TTL_MS,
   UnauthorizedReservationBudget,
   type InboundAdmissionPolicy,
   type InboundConnectionVerdict
@@ -615,6 +614,16 @@ export {
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';
+// The circuit-relay SERVER a node runs, and with which init — one resolution shared by the
+// control node and every strand node. Exported alongside the listen derivations above for the
+// same reason: an embedder can assert on what its `network` block resolves to.
+export {
+  resolveRelayServer,
+  PARTY_RELAY_MAX_RESERVATIONS,
+  PARTY_RELAY_RESERVATION_TTL_MS,
+  type ResolvedRelayServer,
+  type ResolvedRelayReservations
+} from './relay-server.js';
 
 // Relay reservation via the bare `/p2p-circuit` search listener — the one route
 // every control node takes; `network.relayAddrs` is its fail-fast posture

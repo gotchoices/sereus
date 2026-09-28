@@ -64,6 +64,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p } from 'libp2p';
 import { RepoClient } from '@optimystic/db-p2p';
@@ -165,6 +166,18 @@ describe('E2E relay-only control node circuit address', () => {
 				intervalMs: 500,
 				description: 'third-party member learns the relay-only node\'s circuit address',
 			});
+
+			// ── Wire: A forwards B→C without libp2p's per-connection cap ────────────
+			// A is a party-run relay. With libp2p's default server init every circuit
+			// through it is "limited" (128 KiB / 2 min, then reset), and db-p2p's database
+			// protocols refuse a limited connection outright (gotchoices/sereus#19).
+			// `force` opens a fresh circuit rather than handing back whatever B already
+			// holds to C — C dials B directly once it reads B's row, and libp2p skips a
+			// limited connection when it returns an existing one, so without `force` a
+			// capped relay would pass by returning that direct connection instead.
+			const cCircuitAddr = controlAddrs(C).find(isCircuit)!;
+			const relayed = await B.getControlNode()!.dial(multiaddr(cCircuitAddr), { force: true });
+			expect(relayed.limits, 'relayed connection B→C through party-run relay A is flagged limited').toBeUndefined();
 		} finally {
 			await Promise.allSettled([C?.stop(), B?.stop(), A?.stop()]);
 		}

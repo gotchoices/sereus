@@ -43,6 +43,7 @@ import type {
 } from './types.js';
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
+import { resolveRelayServer } from './relay-server.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 import { connectionManagerTimeouts, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
@@ -649,9 +650,9 @@ export class StrandInstanceManager {
     const networkName = `strand-${strandId}`;
     const protocolPrefix = `/optimystic/${networkName}`;
 
-    // Determine relay mode: if explicitly set in config, use that;
-    // otherwise default to true for storage profile nodes.
-    const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
+    // Whether this node runs the circuit-relay server, and its init — the same
+    // resolution the control node takes from the same config (`relay-server.ts`).
+    const relayServer = resolveRelayServer(config.network, config.profile);
     // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
     // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
     // bind one port), the announce config is dropped (it names the control node's
@@ -725,7 +726,8 @@ export class StrandInstanceManager {
         networkName,
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
-        relay: enableRelay,
+        relay: relayServer.enabled,
+        ...(relayServer.enabled && { relayServerInit: relayServer.init }),
         clusterSize: strandClusterSize,
         // Deliberately NOT CONTROL_CLUSTER_POLICY: a strand is application data with its own
         // breadth reasoning, and the shape match with the control policy is a coincidence.

@@ -1,4 +1,5 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
 import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
@@ -342,6 +343,29 @@ export interface NetworkConfig {
    * better connectivity and uptime), false for transaction profile nodes.
    */
   enableRelay?: boolean;
+  /**
+   * Settings for this machine's circuit-relay SERVER, handed to `@libp2p/circuit-relay-v2`'s
+   * `circuitRelayServer(...)` (through db-p2p's `NodeOptions.relayServerInit`) on the control
+   * node and on every strand node. Only meaningful while {@link enableRelay} is on.
+   *
+   * Omitted, a party-run relay FORWARDS WITHOUT LIMIT: `reservations.applyDefaultLimit` is
+   * `false`, where libp2p's own default caps every relayed connection at 128 KiB or two
+   * minutes and resets it — which cut off any database sync or chat history forwarded
+   * through a party's own always-on machine. The store also holds
+   * `PARTY_RELAY_MAX_RESERVATIONS` (128) reservations instead of libp2p's 15, and each lives
+   * `PARTY_RELAY_RESERVATION_TTL_MS` (2 h) unrefreshed. See `relay-server.ts`.
+   *
+   * A value is MERGED over those defaults, not substituted for them: `reservations` key by
+   * key, every other top-level key as given. Setting only `reservations.maxReservations`
+   * keeps the limit off; `reservations: { applyDefaultLimit: true }` is how to turn libp2p's
+   * cap back on.
+   *
+   * The accepted tradeoff of the unlimited default: a peer this node cannot place as a party
+   * member is bounded by COUNT ({@link unauthorizedRelayReservationCap}) and by the
+   * reservation lifetime, but once its slot is granted, what it forwards through that slot
+   * is not capped.
+   */
+  relayServerInit?: CircuitRelayServerInit;
   /**
    * Cap on concurrent circuit-relay reservations this node's relay server grants to
    * peers it cannot (yet) recognize as authorized members — the boot-ordering window
