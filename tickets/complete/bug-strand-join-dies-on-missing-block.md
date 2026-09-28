@@ -86,3 +86,7 @@ believing it.
 Either a landed fix with the suite green across several consecutive runs, or a re-attribution to a
 named live ticket — with the `.pre-existing-known.md` entry updated to match. Leaving it pointing at
 a closed ticket is what this ticket is fixing.
+
+## Closed at triage (2026-09-28, after 1.7.0)
+
+Its own retirement criterion is met: no recurrence recorded since 2026-09-08 across all runs since. The mechanism was never identified; if the `missing block` failure on join reappears, reopen this ticket from complete/ rather than filing anew.

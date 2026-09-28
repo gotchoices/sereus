@@ -97,3 +97,7 @@ thing people append to without thinking. Against that: the check is small and
 entirely static, the repo already carries four gates of exactly this shape, and the
 defect it catches is one that hides for months and then surfaces as a confusing
 module-resolution error rather than a wiring error.
+
+## Closed at triage (2026-09-28, after 1.7.0)
+
+The only case it guarded (`ops/test`) is fixed, and no other manifest without an install path exists. Not worth a standing check.

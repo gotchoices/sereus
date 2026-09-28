@@ -26,3 +26,7 @@ A FRET-backed liveness layer would let a peer **push** its signed `PeerAddressRe
 
 - FRET: `Fret/packages/fret/src/ring/hash.ts`, `src/service/fret-service.ts` (`getNeighbors`, `iterativeLookup`), `src/index.ts` (`RouteAndMaybeActV1` activity payloads), `src/store/digitree-store.ts` (`PeerEntry` — no multiaddrs).
 - `tickets/implement/peer-record-resolution-layer.md` (the `PeerAddressRecord` shape + CadrePeer-backed resolver this extends).
+
+## Closed at triage (2026-09-28, after 1.7.0)
+
+Superseded by FRET `plan/10-feat-address-hints-in-neighbor-exchange` (signed peer records in the neighbour exchange and the saved table), decided 2026-09-28 as the one layer for this. Sereus's side is `blocked/retire-strand-peer-book-for-fret-address-hints`. The ring-coordinate lookup described here is the only part not covered, and nothing needs it.

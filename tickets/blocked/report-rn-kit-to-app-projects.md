@@ -61,3 +61,7 @@ difficulty: easy
 > Sereus's own reference app (`packages/reference-app-rn`) is the worked example of all four subpaths, including a Settings switch between the three Noise crypto modes.
 
 Offering the Noise crypto adapter to optimystic itself (as `@optimystic/db-p2p/rn`, which sereus-chat's `design/specs/mobile/STATUS.md` proposes) is a separate, later step, not part of this message.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+`@serfab/cadre-rn` 1.7.0 is on npm; fill that version into the draft. kjeib has already adopted the kit in the chat app (sereus#13 comment, 2026-09-28), so the sereus-chat half may only need a short note.

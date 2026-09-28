@@ -43,3 +43,7 @@ hardening for supply-chain reproducibility, not a build break.
 
 This stays in `backlog/` until the upstream `optimystic-db-p2p-libp2p-dep-skew` fix lands (cross-repo,
 so there is no enforceable `prereq:` here — its prior prereq header was removed for that reason).
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Its blocker, optimystic's db-p2p libp2p dependency skew, has been fixed upstream (optimystic e632b546). Workable now; needs the lockfile approach chosen (a Docker-only lockfile, or decoupling `resolutions` from `yarn.lock`).

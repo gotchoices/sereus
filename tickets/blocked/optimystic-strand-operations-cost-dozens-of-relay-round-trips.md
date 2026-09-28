@@ -236,3 +236,7 @@ relay. So a write does not cost 9 round trips' worth of packets — it costs 9 �
 setups plus 9 × C request/response pairs, all multiplexed through a single circuit, which
 is both the source of the frame counts in the section above and the reason a per-frame
 cost (a slow device's crypto, a real link's per-packet overhead) multiplies so violently.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Unblock condition met: optimystic 1.7.0 contains cadcb919 and 9e5c1e85, and sereus 1.7.0 requires ^1.7.0. Remaining: post the drafted #13 follow-up (needs maintainer approval), then close. Further cuts are upstream (`feat-a-live-read-can-skip-a-refresh…` in optimystic).

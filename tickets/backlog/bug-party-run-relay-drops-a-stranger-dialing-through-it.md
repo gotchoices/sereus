@@ -53,3 +53,7 @@ The deadline exists so an outsider cannot park a connection on a party's machine
 The five-second drop this ticket describes has been a no-op over WebSockets, which is every control node's listening transport. `PendingReserveDeadlines.expire` aborts the connection, and `abort()` on a WebSocket never reaches the wire: `@libp2p/websockets` sends the reserved close code 1006, `ws` rejects it, and the failure is swallowed. The relay marked the connection gone and the socket stayed open on both ends.
 
 So a hop-connecting outsider has in practice been surviving — until its own liveness ping failed, or forever if it kept pinging. That is not a reason to close this ticket: the behaviour was never intended, was invisible, and leaked a socket on the relay for each such peer. `fix/bug-relay-only-deadline-abort-leaves-the-stranger-half-open` makes the drop real, which is when the defect described above starts biting for the first time. Re-read this ticket's `severity` and `likelihood` once that lands.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+The half-open abort fix (8c1acc44) landed, so the 5 s drop now really happens. Re-grade severity when `feat-phone-relays-through-its-own-always-on-node` is scheduled.

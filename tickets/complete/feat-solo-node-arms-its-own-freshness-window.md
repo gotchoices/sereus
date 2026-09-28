@@ -43,3 +43,7 @@ A solo cadre node stops consulting a nonexistent cohort on reads of its own writ
 ambiguous cases above ever reaches that state. Worth confirming first that the consults are
 measurably costing something — nobody has profiled a solo node — since the change buys latency, not
 correctness.
+
+## Closed at triage (2026-09-28, after 1.7.0)
+
+Overtaken upstream: a solo node's read repair no longer consults the network and arms at most once per window (optimystic `complete/1-solo-node-read-repair-never-settles`). This ticket asked for proof of cost before acting, and there is none now.

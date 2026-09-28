@@ -26,3 +26,7 @@ Follow `docs/reference-app-rn.md` § Device test runs. Rebuild the native app fi
 `symmetric` and `full` attach without ping-failure aborts. `off` reproduces the old behaviour on a slow enough device (on a fast emulator it may not). sereus-chat measured five of seven attaches with native crypto on; its two failures were `StrandAwaitingFirstSyncError`, a separate intermittent problem, and should not be charged to this change.
 
 If `full` misbehaves where `symmetric` does not, the default stays `symmetric`. File what you saw against the adapter (`packages/cadre-rn/src/noise-crypto.ts`).
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Partial evidence (sereus#13, kjeib, 2026-09-28): `@serfab/cadre-rn` 1.6.0 with `buildNoiseCrypto('symmetric')` started and reserved on a relay on a physical Samsung S7 (Android 8) and an API 37 emulator, bare RN 0.82.1 with Hermes. Still unrun: the `off` and `full` modes.

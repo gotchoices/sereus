@@ -2,9 +2,24 @@ description: When one of a party's own machines forwards traffic for another mac
 files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/types.ts, packages/integration-tests/src/harness/dedicated-relay.ts, ops/docker/libp2p-infra/src/main.ts
 repro: static
 severity: wrong-result
-likelihood: unusual
-tradeoffs: Nothing in the product routes real traffic through a party-run relay today — every shipped and tested relay path uses the dedicated relay container, which already sets the limit off — so a maintainer may reasonably wait until a party-run relay is actually on a data path.
+likelihood: common
+tradeoffs: Lifting the cap for unplaceable peers gives them an uncapped slot; they are still bounded by count (`network.unauthorizedRelayReservationCap`) and reservation TTL.
 ----
+
+## Reported in the field: gotchoices/sereus#19 (2026-09-28)
+
+The "nothing routes real data over a party-run relay" premise below is wrong in practice. risavian's run (2 Android emulator phones plus 2 Node cohort peers, cadre-core 1.6.0, db-p2p 1.7.0) had phones reaching their cohort through a party-run relay; 320 `TransferLimitError`s in one run, surfacing as missing blocks and stalled catch-up. Still present in 1.7.0: `cadre-node.ts` (`buildControlNodeOptions`) and `strand-instance-manager.ts` (`buildStrandRuntime`) pass only `relay: enableRelay`.
+
+**Policy (proposed at triage; the maintainer may override before this is worked):**
+- Add a typed `network.relayServerInit` (db-p2p's `CircuitRelayServerInit`), forwarded to both the control node and every strand node.
+- Default a party-run relay to `reservations: { applyDefaultLimit: false }`, matching the dedicated relay. Unplaceable peers are already bounded by reservation count and TTL.
+- Derive `UNAUTHORIZED_RESERVATION_TTL_MS` in `membership-connection-gater.ts` from the resolved `reservationTtl` instead of the hand-kept copy.
+- Log the resolved relay limit posture once at start, so an operator can see it.
+- Adopt the reporter's regression idea as vitest cases that pass once fixed, in `cadre-node-control-node-options.spec.ts` and the `strand-instance-manager` option specs (their `node:test` file loads `dist/` and asserts the defect exists, so it can't be taken as-is).
+- Reply on #19 after release (maintainer approves the post).
+
+Fix together with, or before, `fix/2-strand-addr-refresh-and-responder-hide-failures` (#21/#22): a relay reset is one way the responder's read fails.
+
 
 # A cadre node's relay server applies libp2p's default forwarding limit
 

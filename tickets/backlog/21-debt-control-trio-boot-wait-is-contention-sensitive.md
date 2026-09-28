@@ -86,3 +86,7 @@ Traced while working `control-peer-row-refresh-invisible-to-third-node` (which h
 ## Update 2026-09-17 — the upstream fix landed; the third outcome is closed, the second is not yet measured
 
 `control-peer-row-refresh-invisible-to-third-node` closed: optimystic `03ffadc4` stops B from caching a too-old block answer, so the third outcome above (B never recovers, the harness times out at 45 s) no longer occurs — verified over thirteen isolated runs, zero reproductions. Whether the second outcome (a healthy run still legitimately spending roughly 10 s of the 45 s budget in Optimystic's read-repair window) still occurs was not measured by that verification pass. Any redesign of this wait should still be measured against the post-fix distribution before being judged.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+The boot-gate timeout was fixed upstream (see `.pre-existing-known.md`, 09-17), and heavy files already run serially (`fileParallelism: false`). Remaining: a suite that dies in setup must report red, not skipped.

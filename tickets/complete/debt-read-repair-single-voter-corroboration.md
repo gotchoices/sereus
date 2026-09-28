@@ -89,3 +89,7 @@ to one peer.
 What is still exposed: a strand explicitly configured at `clusterSize: 2`, an honest two-machine
 party, and any other Optimystic embedder that has not declared a size. The underlying behaviour is
 unchanged upstream, so this ticket stays open.
+
+## Closed at triage (2026-09-28, after 1.7.0)
+
+Upstream deliberately rejected the remedy (optimystic `coordinator-repo.ts` small-cohort arming rule, `complete/1-small-cohort-arming-rule` there). Strands now declare no yardstick, so the remaining strand exposure is tracked by `backlog/feat-strand-yardstick-from-serving-machines`.

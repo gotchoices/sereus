@@ -89,3 +89,7 @@ Two arms found reviewing that fix, both resolving at the same site this ticket a
   can legitimately fail (a strand whose member rows became unreadable), because the node would
   then keep declaring a stale count over a serving set it can no longer see. A `NOTE:` marks
   the merge site.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+"MemberPeer is never written" is no longer true: `strand-membership-reconciler.ts` writes it. The upstream fix this waited on won't come. The always-on-nodes decision (`blocked/always-on-nodes-host-strands-of-apps-they-do-not-run`) changes which machines serve a strand, so settle that first.

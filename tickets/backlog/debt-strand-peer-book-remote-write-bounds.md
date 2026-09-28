@@ -34,3 +34,7 @@ The eviction ordering in `entries()` (freshest first, which is the seed's dial o
 ## Notes at the sites
 
 `evictPastCap` in `strand-peer-book.ts` and `StrandPeerBookService.handleStream` in `strand-peer-book-protocol.ts` each carry a `NOTE:` pointing here.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+The peer book is interim (`blocked/retire-strand-peer-book-for-fret-address-hints`), and FRET's address-hints ticket requires these protections. Do rule 1 (forwarded entries never evict peers this node has met) only if the FRET work slips past the next release or two.

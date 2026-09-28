@@ -70,3 +70,7 @@ This requires wiring a TURN-relay tracker into the web app's libp2p lifecycle:
 - TURN is off by default today, so this is not urgent — but the feature is only
   half-delivered without it, and the gap is silent (the web classifier *looks*
   TURN-aware but is inert).
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Partly done: the web app now runs `CadreNode`, which installs the path tracker itself (`cadre-node.ts`). What remains: `diagnostics.svelte.ts` summarises raw connections instead of calling `getCadreNode().getConnectionPaths()`, and the web app's duplicate `connection-path.ts` can go.

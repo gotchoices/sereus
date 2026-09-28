@@ -97,3 +97,7 @@ The copies come from `../optimystic/packages/*/node_modules/` and `../Fret/packa
 **What this adds to the ticket above:** aligning the versions so a single copy hoists is worth roughly 1.6 MiB of unminified browser payload on top of clearing the two `svelte-check` errors. If the alignment is only partial, the bundle benefits proportionally — this is not all-or-nothing.
 
 **Not a substitute for this ticket:** turning on minification (ticket `browser-bundle-minify-published-payload`) shrinks each copy but does not merge them; the duplication survives minification at roughly 41% of its unminified weight.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Typecheck no longer fails: 3c3ce8dc silenced it with `as unknown as PrivateKey` casts, which this ticket calls the wrong fix. What remains is about 1.6 MiB of duplicate packages in the bundle and removing the casts; a skewed `@libp2p/interface` copy is still in optimystic db-core.

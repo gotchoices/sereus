@@ -56,3 +56,7 @@ little cost, and the third makes the problem stop recurring.
 `backlog/cadre-docker-build-reproducibility` also touches the Docker directory, but it is about the
 `Dockerfile`'s non-immutable `yarn install` regenerating the lockfile per build. Different file,
 different problem.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Premise partly wrong: `packages/cadre-cli/test/entrypoint.spec.ts` (70cb776d) runs the real script. Remaining: nothing checks the config generated from the provider's actual `CADRE_*` env, or drift between the script and the TypeScript copy in `provider-process-orchestrator.ts`.
