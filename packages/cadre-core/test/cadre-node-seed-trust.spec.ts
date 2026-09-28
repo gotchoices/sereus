@@ -126,22 +126,16 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     }
   }, 60_000);
 
-  it('two consecutive temp-service applySeed calls are idempotent: both apply, no unhandled rejection', async () => {
-    // A service-less cold node routes every applySeed through a throwaway temp service.
-    // Before the registerHandler:false fix, the second call re-ran libp2p.handle() for
-    // SEED_PROTOCOL and the resulting DuplicateProtocolHandlerError surfaced as an
-    // unhandled promise rejection (the caller then fire-and-forgot the handle() promise).
-    // Pin the real signer so both calls succeed and the only thing under test is safety.
+  it('two consecutive temp-service applySeed calls are idempotent: both apply, no handler leaked', async () => {
+    // A service-less cold node routes every applySeed through a throwaway temp service,
+    // which must not register SEED_PROTOCOL: a second registration is a
+    // DuplicateProtocolHandlerError, and registration is awaited, so it would reject
+    // the second applySeed. Pin the real signer so both calls succeed and the only
+    // thing under test is the handler.
     const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
-    const rejections: unknown[] = [];
-    const onRejection = (reason: unknown): void => { rejections.push(reason); };
     try {
       await startClean(node);
       const seed = signSeed(ownerPrivateKey, ownerPublicKey);
-
-      // Scope the listener to the applySeed window — the only place the duplicate
-      // handle() rejection would originate.
-      process.on('unhandledRejection', onRejection);
       const first = await node.applySeed(seed);
       const second = await node.applySeed(seed);
       expect(first.success).toBe(true);
@@ -151,30 +145,18 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       const controlNode = node.getControlNode();
       expect(controlNode).not.toBeNull();
       expect(controlNode!.getProtocols()).not.toContain(SEED_PROTOCOL);
-
-      // Let any deferred unhandledRejection (a duplicate handle() rejection) surface.
-      await new Promise(resolve => setTimeout(resolve, 50));
-      const duplicateHandlerRejections = rejections.filter(
-        r => r instanceof Error && /already registered for protocol/i.test(r.message)
-      );
-      expect(duplicateHandlerRejections).toEqual([]);
-      expect(rejections).toEqual([]);
     } finally {
-      process.off('unhandledRejection', onRejection);
       await node.stop();
     }
   }, 60_000);
 
   it('a temp-service applySeed leaves the handler free for a later persistent listener', async () => {
     // After a temp-service applySeed, no discarded service owns SEED_PROTOCOL, so a
-    // subsequently-enabled persistent listener can register the handler cleanly —
-    // no DuplicateProtocolHandlerError, no unhandled rejection.
+    // subsequently-enabled persistent listener registers the handler without a
+    // DuplicateProtocolHandlerError (which enableSeedListener would reject with).
     const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
-    const rejections: unknown[] = [];
-    const onRejection = (reason: unknown): void => { rejections.push(reason); };
     try {
       await startClean(node);
-      process.on('unhandledRejection', onRejection);
       const applied = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(applied.success).toBe(true);
 
@@ -183,11 +165,8 @@ describe('CadreNode seedTrustPolicy wiring', () => {
 
       // The persistent listener now claims the handler for the first time.
       await node.enableSeedListener();
-      await new Promise(resolve => setTimeout(resolve, 50));
       expect(node.getControlNode()!.getProtocols()).toContain(SEED_PROTOCOL);
-      expect(rejections).toEqual([]);
     } finally {
-      process.off('unhandledRejection', onRejection);
       await node.stop();
     }
   }, 60_000);

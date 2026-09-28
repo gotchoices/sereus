@@ -7094,6 +7094,11 @@ export class CadreNode implements SAppIdLookup {
    * The field is set before the registration is awaited, so a concurrent
    * {@link enableSeedListener} finds it and does not register a second handler; a
    * failed registration puts the previous service back and rethrows.
+   *
+   * NOTE: libp2p's registrar stores the handler before its peer-store merge, so a
+   * failed merge leaves SEED_PROTOCOL registered with no service owning it and a retry
+   * here rejects as a duplicate; if peer-store writes can fail in practice, unhandle on
+   * a non-duplicate failure (never on a duplicate — that handler belongs to someone else).
    */
   private async installSeedBootstrapService(
     service: SeedBootstrapService,
@@ -7571,6 +7576,8 @@ export class CadreNode implements SAppIdLookup {
     // Set before the registration is awaited, so a concurrent createOpenInvitation /
     // formStrand uses this service instead of building a second one whose handler
     // would collide; a failed registration puts the previous service back.
+    // NOTE: same stray-handler caveat as installSeedBootstrapService — a failed
+    // peer-store merge leaves the formation handler registered, so a retry is a duplicate.
     const previous = this.strandSolicitationService;
     this.strandSolicitationService = service;
     try {

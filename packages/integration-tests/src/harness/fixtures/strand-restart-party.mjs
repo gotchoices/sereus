@@ -63,7 +63,7 @@ const node = new CadreNode({
 async function makeOwnOwner() {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(await loadOrCreateIdentityKey(keyStore));
 	await node.getControlDatabase().insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
+	await node.initializeSeedBootstrap(privateKeyB64);
 }
 
 function strandOf(strandId) {
@@ -116,7 +116,7 @@ function discovered(strandId) {
 const handlers = {
 	async found({ strandId, sApp, sAppId }) {
 		await makeOwnOwner();
-		node.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(node.getControlDatabase()) });
+		await node.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(node.getControlDatabase()) });
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await node.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const invitation = await node.createOpenInvitation(sAppId, YEAR_MS);
