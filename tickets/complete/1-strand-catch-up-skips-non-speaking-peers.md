@@ -1,0 +1,25 @@
+description: After a strand peer connects, the node pushes its stored blocks to it, but it also tried this against the relay, which cannot receive strand data, and after three failures printed a warning naming the relay. The catch-up now only targets peers that speak the strand's block-transfer protocol.
+architecture: docs/architecture.md#strand-networks
+files: packages/cadre-core/src/peer-join-backfill.ts, packages/cadre-core/test/peer-join-backfill.spec.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/cadre-node.ts, docs/strands.md, docs/architecture.md, .release-notes.pending.md
+difficulty: easy
+----
+
+## Summary
+
+`PeerJoinBackfill` (`packages/cadre-core/src/peer-join-backfill.ts`) now schedules its whole-store push on libp2p's `peer:identify` event instead of `connection:open`, and only for peers whose identified protocols include this network's namespaced block-transfer protocol (exported helper `speaksBlockTransfer(protocols, protocolPrefix)`). Peers already connected when the backfill starts (and the control network's membership-change re-drive) go through the now-async `scheduleConnectedPeers()`, which reads protocols from `libp2p.peerStore` and skips peers not yet identified. A circuit relay or bootstrap node — which runs stock (un-namespaced) identify and never names the protocol — is never dialed and never produces the misleading `console.warn` from gotchoices/sereus#18. New unit test pins that regression; release note and `docs/strands.md` updated.
+
+## Review findings
+
+Checked: the implement diff (source, tests, docs, release notes); libp2p `@libp2p/identify` 4.0.10 behavior against the new trigger; optimystic's node builder (identify and identify-push are both configured with the per-network prefix); remaining `connection:open` mentions across `docs/` and `cadre-core/src`.
+
+- **Swallowed exception (minor, fixed).** `scheduleIfKnownToSpeak` caught every peer-store error silently, treating any failure as "not yet identified" — contrary to the project's no-silent-catch rule. Now only `NotFoundError` is silent; anything else is logged via the module's debug log and the peer skipped.
+- **Stale architecture doc (minor, fixed).** `docs/architecture.md` (control-replication bullet) still said the catch-up pushes "to each peer its libp2p node connects to" and that a denied peer retries on "its next `connection:open`". Updated to the identify-gated behavior and `peer:identify`.
+- **Undocumented trigger frequency (minor, fixed).** Identify-push also dispatches `peer:identify` (verified in `@libp2p/identify/dist/src/utils.js` `consumeIdentifyMessage`, used by both identify and identify-push), so the handler fires on every address/protocol change of a connected peer, not only once per connection. Harmless — it only re-enters the debounce and is dropped for caught-up and backing-off peers — but the module comment claimed "once"; a sentence now says so.
+- **Accepted cost the handoff claimed was documented but wasn't (minor, fixed).** The implement handoff said the "identify never completes for a connected same-network peer" case was noted in the module comment; it was not. Added a `NOTE:` in the module comment: such a peer waits for a later identify (reconnect, identify-push, or control membership re-drive); read repair covers reads meanwhile; revisit condition — if relayed links routinely outlast identify's timeout (libp2p default 5 s), raise that timeout in the node builder rather than scheduling unidentified peers. Tripwire, not a ticket.
+- **Dropping `connection:open` entirely (reviewed, agreed).** Every db-p2p node runs namespaced identify with `runOnLimitedConnection` defaulting to true, so relayed same-network peers are identified; `peer:identify` fires after `peerStore.patch`, so the peer-store path and the event path agree. No second listener needed.
+- **`scheduleConnectedPeers()` becoming async (reviewed, fine).** The only production caller (`CadreNode.refreshAuthorizedControlPeers`) was already fire-and-forget; `void` prefix is correct. `schedulePeer` re-checks `stopped`, so a stop during the peer-store await is safe.
+- **Tests.** The fake libp2p extension (peer store that throws `NotFoundError` for unknown peers, `peer:identify` dispatch) is minimal and mirrors real libp2p. The one new test pins the #18 regression directly; no tests cut, none added (the logged-error path is a debug log, not a contract worth a test).
+- **Security/membership.** Control-network gating is unchanged (still consulted at push time); the new filter only narrows who is scheduled. No new exposure.
+- **Performance/resource cleanup.** One `peerStore.get` per connected peer on start/re-drive; listener removed in `stop()`. Nothing found.
+
+Validation: `vitest run test/peer-join-backfill.spec.ts` — 31/31 pass; `cadre-core` typecheck clean; eslint clean on the changed source. The implement stage ran the full `cadre-core` suite (2288 pass) and the `strand-late-cadre-join`, `strand-membership-closed-strand-e2e`, and `blind-relay-phone-to-phone-e2e` integration scenarios green; review changes are a debug log line and comments/docs, so those were not re-run.

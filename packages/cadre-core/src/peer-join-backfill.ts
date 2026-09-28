@@ -115,7 +115,16 @@ import { peerJoinPushBudget } from './link-budget.js';
 // reads its protocols back from the peer store — and is never repeated once a peer is
 // scheduled. A peer that stops speaking the protocol after being scheduled (should that ever
 // happen) is not de-scheduled; `runCatchUp`'s own unreachable-peer bail is what would catch
-// that case instead.
+// that case instead. `peer:identify` also fires on every identify-push from a connected peer
+// (address or protocol changes), which only re-enters the debounce — cheap, and dropped
+// outright for caught-up peers and peers inside a backoff wait.
+//
+// NOTE: a same-network peer whose identify never completes on a connection (the identify
+// stream times out over a slow relayed link, say) is not caught up until a later identify
+// succeeds — a reconnect, an identify-push, or on the control network a membership-change
+// re-drive. Accepted: every db-p2p node runs identify, and read repair still covers reads
+// meanwhile; if relayed links ever routinely outlast identify's timeout, raise that timeout
+// in the node builder rather than scheduling unidentified peers here.
 //
 // NOTE: a peer that disconnects INSIDE a backoff wait still costs the one attempt that wait
 // was already armed for — the connectivity check is made when the re-arm is decided, not when
@@ -407,9 +416,12 @@ export class PeerJoinBackfill {
     let protocols: string[];
     try {
       ({ protocols } = await this.deps.libp2p.peerStore.get(peerId));
-    } catch {
-      // Not yet in the peer store — identify has not finished. Leave it to the
-      // `peer:identify` handler rather than dialing blind.
+    } catch (error) {
+      // NotFoundError: identify has not finished. Leave it to the `peer:identify` handler
+      // rather than dialing blind. Anything else is unexpected — log it and skip the peer.
+      if ((error as Error).name !== 'NotFoundError') {
+        log('[%s] peer store read for %s failed — not scheduling: %o', this.deps.label, peerId.toString(), error);
+      }
       return;
     }
     if (speaksBlockTransfer(protocols, this.deps.protocolPrefix)) {
