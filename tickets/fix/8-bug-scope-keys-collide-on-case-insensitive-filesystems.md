@@ -43,3 +43,7 @@ The character check that landed in `bug-strand-scope-key-charset-unenforced` ask
 Either way the published guarantee in `docs/architecture.md`, `packages/cadre-core/README.md` and the `RawStorageProvider` documentation should say which property it actually promises.
 
 Note that this is a storage-layout change however it is decided: existing stores are named with the current spelling. The repository does not yet carry a backwards-compatibility obligation, so the layout may simply change — but somebody should say so deliberately rather than discover it.
+
+## Maintainer decision (2026-09-28)
+
+**Layout changes are fine now**, as long as the release notes warn about them. Change the scope-key encoding to one that is case-safe, and add an entry to `.release-notes.pending.md` saying existing on-disk storage under the old layout will not be found, and what an upgrader must do (start fresh, or move the folders if a mapping is simple enough to state).

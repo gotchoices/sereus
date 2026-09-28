@@ -32,3 +32,7 @@ Anyone who read the issue and chose a design around "a duplicate key is silently
 ## Before posting
 
 Re-read the "Ordering Events (There Is No Commit-Order Column)" section of `docs/schema-guide.md` as it stands, so the comment and the guide agree.
+
+## Done (2026-09-28)
+
+Posted on gotchoices/sereus#5 (issuecomment-5878777984), after checking the guide still agrees.

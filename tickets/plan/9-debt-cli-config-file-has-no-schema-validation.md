@@ -79,3 +79,7 @@ a retired or misspelled `CADRE_*` variable is silently ignored by exactly the sa
   Docker entrypoint's generated `cadre.yaml`, the host orchestrator's per-node `cadre.json`, and the
   provider's per-tenant config. A change that makes the CLI reject its own generated configs is
   worse than the problem.
+
+## Maintainer decision (2026-09-28)
+
+**Strict.** The maintainer dislikes silent failure: an unknown key or an ill-typed value in the config file fails start with an error naming the key and the file. No warn-only mode.

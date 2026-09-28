@@ -31,3 +31,7 @@ Recommendation at triage: (b) now, documented, with (c) replacing it when FRET s
 ## Related
 
 `backlog/feat-open-strand-witness-policy`, `backlog/feat-scenario-public-open-strand-network`, `blocked/retire-strand-peer-book-for-fret-address-hints`.
+
+## Status (2026-09-28)
+
+Not decided yet. Triage facts and the lighter route were posted on #23 (issuecomment-5878780666) without committing to a route.

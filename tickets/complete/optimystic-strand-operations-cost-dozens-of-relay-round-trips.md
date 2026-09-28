@@ -240,3 +240,7 @@ cost (a slow device's crypto, a real link's per-packet overhead) multiplies so v
 ## Status at triage (2026-09-28, after 1.7.0)
 
 Unblock condition met: optimystic 1.7.0 contains cadcb919 and 9e5c1e85, and sereus 1.7.0 requires ^1.7.0. Remaining: post the drafted #13 follow-up (needs maintainer approval), then close. Further cuts are upstream (`feat-a-live-read-can-skip-a-refresh…` in optimystic).
+
+## Done (2026-09-28)
+
+Follow-up posted on gotchoices/sereus#13 (issuecomment-5878777508) with the 1.7.0 numbers; #13 stays open for the reporter's per-frame latency re-run. Further cuts are upstream in optimystic.
