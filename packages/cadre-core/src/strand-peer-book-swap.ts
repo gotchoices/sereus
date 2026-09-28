@@ -40,12 +40,13 @@ import debug from 'debug';
 import type { Connection, IdentifyResult, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import { circuitRequestBudgetMs } from './link-budget.js';
 import { speaksBlockTransfer } from './peer-join-backfill.js';
-import { MAX_STRAND_PEERS, type StrandPeerBookStore } from './strand-peer-book.js';
+import type { StrandPeerBookStore } from './strand-peer-book.js';
 import {
 	STRAND_PEER_BOOK_PROTOCOL,
 	StrandPeerBookService,
 	exchangeStrandPeerBook,
 	signStrandPeerEntry,
+	trimBookFrameToFit,
 	type SignedStrandPeerEntry,
 	type StrandPeerBookFrame
 } from './strand-peer-book-protocol.js';
@@ -105,6 +106,14 @@ export class StrandPeerBookSwap {
 	private readonly exchangedAt = new Map<string, number>();
 	/** Peers with an exchange in flight, so identify and a walk cannot double up. */
 	private readonly inFlight = new Set<string>();
+	/**
+	 * Peers whose in-flight exchange carries a since-replaced own entry: one more
+	 * exchange follows the moment it settles. Without this a re-sign that lands while
+	 * the identify exchange is still on the wire — the relay reservation arriving a
+	 * second after the bootstrap dials do, which is routine — would never reach that
+	 * peer until the next connection.
+	 */
+	private readonly resendAfter = new Set<string>();
 	private own: SignedStrandPeerEntry | undefined;
 	/** The address set the own entry was signed over, canonicalised for comparison. */
 	private ownAddrKey: string | undefined;
@@ -219,9 +228,12 @@ export class StrandPeerBookSwap {
 		const addrs = dialableAddrs(this.selfPeerId, this.deps.libp2p.getMultiaddrs(), []);
 		const addrKey = [...addrs].sort().join('\n');
 		if (addrKey === this.ownAddrKey) return false;
-		// Strictly increasing even when two changes land in one clock tick, so the
-		// receiver's "greater issuedAt wins" always prefers the later statement.
-		const issuedAt = Math.max(this.now(), (this.own?.issuedAt ?? 0) + 1);
+		// Strictly increasing past every statement this node is known to have made — the
+		// one in memory, and on a fresh driver the copy the store kept from the previous
+		// run — so the receiver's "greater issuedAt wins" always prefers the later one.
+		// The stored floor is what survives a restart on a clock that went backwards:
+		// without it every peer would keep the old statement until the clock passed it.
+		const issuedAt = Math.max(this.now(), this.lastOwnIssuedAt() + 1);
 		const entry = await signStrandPeerEntry(this.signingKey, this.deps.strandId, addrs, issuedAt);
 		if (this.stopped) return false;
 		this.own = entry;
@@ -229,6 +241,12 @@ export class StrandPeerBookSwap {
 		this.remember(entry, this.now());
 		log('[%s] own entry signed (%s): %d addr(s), issuedAt=%d', this.deps.strandId, reason, addrs.length, issuedAt);
 		return true;
+	}
+
+	/** The greatest `issuedAt` this node has signed: in memory, else the stored own entry's, else 0. */
+	private lastOwnIssuedAt(): number {
+		if (this.own) return this.own.issuedAt;
+		return this.deps.store.entries(this.deps.strandId).find((held) => held.peerId === this.selfPeerId)?.issuedAt ?? 0;
 	}
 
 	/** Exchange with every connected, identified strand peer that speaks the swap. */
@@ -239,11 +257,18 @@ export class StrandPeerBookSwap {
 			.map(({ peerId, connections }) => this.exchangeWith(peerId, connections[0], bypassThrottle, reason)));
 	}
 
-	/** One exchange with one peer over `connection`, throttled unless told otherwise. Never throws. */
+	/**
+	 * One exchange with one peer over `connection`, throttled unless told otherwise (a
+	 * re-sign) — in which case an exchange already in flight, which carries the old
+	 * entry, is followed by one more once it settles. Never throws.
+	 */
 	private async exchangeWith(peerId: PeerId, connection: Connection, bypassThrottle: boolean, reason: string): Promise<void> {
 		if (this.stopped) return;
 		const id = peerId.toString();
-		if (this.inFlight.has(id)) return;
+		if (this.inFlight.has(id)) {
+			if (bypassThrottle) this.resendAfter.add(id);
+			return;
+		}
 		const now = this.now();
 		const last = this.exchangedAt.get(id);
 		if (!bypassThrottle && last !== undefined && now - last < this.throttleMs) return;
@@ -263,21 +288,24 @@ export class StrandPeerBookSwap {
 		} finally {
 			this.inFlight.delete(id);
 		}
+		if (this.resendAfter.delete(id)) {
+			await this.exchangeWith(peerId, connection, true, `${reason}, re-signed meanwhile`);
+		}
 	}
 
 	/**
 	 * What this node sends `remotePeerId`: its own entry first, then every signed entry
-	 * held for anyone else, freshest first, minus the recipient's own — capped at the
-	 * frame's entry limit (the own entry can push the store's cap over by one).
+	 * held for anyone else, freshest first, minus the recipient's own — trimmed from the
+	 * stale end to the frame's entry and byte caps (the own entry can push the store's
+	 * cap over by one, and long addresses can push the bytes over).
 	 */
 	private frameFor(remotePeerId: string): StrandPeerBookFrame {
 		const entries: SignedStrandPeerEntry[] = this.own ? [this.own] : [];
 		for (const held of this.deps.store.entries(this.deps.strandId)) {
-			if (entries.length >= MAX_STRAND_PEERS) break;
 			if (held.sig === undefined || held.peerId === this.selfPeerId || held.peerId === remotePeerId) continue;
 			entries.push({ peerId: held.peerId, addrs: held.addrs, issuedAt: held.issuedAt, sig: held.sig });
 		}
-		return { strandId: this.deps.strandId, entries };
+		return trimBookFrameToFit({ strandId: this.deps.strandId, entries });
 	}
 
 	/** File verified entries: the sender's own as seen now, a forwarded third party's as never seen. */

@@ -79,10 +79,12 @@ export const SIGNED_STRAND_PEER_ENTRY_VERSION = 1;
 export const STRAND_PEER_ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * Cap on one frame's bytes. The worst honest frame is {@link MAX_STRAND_PEERS} entries
- * of {@link MAX_STRAND_ADDRS} addresses at roughly 150 bytes each, about 38 KiB, plus
- * a peer id and signature per entry; comfortably under. If either cap grows, tighten
- * the entry cap rather than raising this — {@link assertBookFrameFits} is the guard.
+ * Cap on one frame's bytes. A typical full frame — {@link MAX_STRAND_PEERS} entries of
+ * {@link MAX_STRAND_ADDRS} addresses at roughly 150 bytes each, plus a peer id and
+ * signature per entry — is about 40 KiB, but nothing bounds a multiaddr's length (a
+ * long DNS name can take one past 300 bytes), so a sender trims its forwarded
+ * entries to fit ({@link trimBookFrameToFit}) rather than trusting the arithmetic;
+ * {@link assertBookFrameFits} is then the invariant check.
  */
 export const MAX_BOOK_FRAME_SIZE = 64 * 1024;
 
@@ -259,16 +261,40 @@ export async function verifyStrandPeerBookFrame(
 	return [...verified.values()];
 }
 
+/** The encoded size of a frame, as {@link writeFrame} would send it (the 4-byte prefix aside). */
+function encodedFrameBytes(frame: StrandPeerBookFrame): number {
+	return new TextEncoder().encode(JSON.stringify(frame)).length;
+}
+
+/**
+ * The frame with its LAST entries dropped until it encodes within
+ * {@link MAX_BOOK_FRAME_SIZE} and {@link MAX_STRAND_PEERS}. Callers list the entries
+ * in the order they would rather keep them (the own entry first, then freshest
+ * first), so what goes is the stalest forwarded statement, and a frame that fits is
+ * returned as is. Dropping an entry is logged: a forwarded peer the recipient never
+ * learns of is worth seeing in a trace.
+ */
+export function trimBookFrameToFit(frame: StrandPeerBookFrame): StrandPeerBookFrame {
+	let entries = frame.entries.slice(0, MAX_STRAND_PEERS);
+	while (entries.length > 0 && encodedFrameBytes({ strandId: frame.strandId, entries }) > MAX_BOOK_FRAME_SIZE) {
+		entries = entries.slice(0, -1);
+	}
+	if (entries.length === frame.entries.length) return frame;
+	log('strand %s: frame trimmed from %d to %d entr(ies) to fit the caps', frame.strandId, frame.entries.length, entries.length);
+	return { strandId: frame.strandId, entries };
+}
+
 /**
  * Refuse to send a frame the receiver would reject: over the entry cap, or over
- * {@link MAX_BOOK_FRAME_SIZE} once encoded. Both are invariants of the caps above, so
- * a throw here is a bug in the arithmetic, not a runtime condition to handle.
+ * {@link MAX_BOOK_FRAME_SIZE} once encoded. A caller that built its frame through
+ * {@link trimBookFrameToFit} cannot trip this; it is the invariant check, not a
+ * runtime condition to handle.
  */
 export function assertBookFrameFits(frame: StrandPeerBookFrame): void {
 	if (frame.entries.length > MAX_STRAND_PEERS) {
 		throw new Error(`strand peer book frame carries ${frame.entries.length} entries, over the cap of ${MAX_STRAND_PEERS}`);
 	}
-	const bytes = new TextEncoder().encode(JSON.stringify(frame)).length;
+	const bytes = encodedFrameBytes(frame);
 	if (bytes > MAX_BOOK_FRAME_SIZE) {
 		throw new Error(`strand peer book frame is ${bytes} bytes, over the cap of ${MAX_BOOK_FRAME_SIZE}`);
 	}
@@ -349,6 +375,11 @@ export class StrandPeerBookService {
 	 * Read the request, merge what verifies, answer with the local book. Every failure
 	 * (cap, malformed or oversized frame, wrong strand, read timeout) answers an empty
 	 * frame rather than hanging or dropping the stream, so the asker's exchange settles.
+	 *
+	 * NOTE: the concurrency cap bounds streams in flight, not frames per peer per unit
+	 * time — the ten-minute throttle is the CLIENT's, so a connected peer can push a
+	 * verified frame, and the persist it costs, as fast as it likes; see
+	 * `backlog/debt-strand-peer-book-remote-write-bounds`.
 	 */
 	private async handleStream(stream: ControlStream, remotePeerId: string): Promise<void> {
 		if (this.activeStreams >= this.maxConcurrent) {

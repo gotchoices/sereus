@@ -44,6 +44,8 @@ interface MockNode {
 	events: TypedEventEmitter<Libp2pEvents>;
 	/** Streams this node opened, by remote peer id — the throttle's observable. */
 	dialed: string[];
+	/** When set, every stream this node opens waits on it before reaching the handler: an exchange held in flight. */
+	stallDial?: Promise<void>;
 }
 
 async function mockNode(port: number): Promise<MockNode> {
@@ -87,6 +89,7 @@ function connection(from: MockNode, to: MockNode): Connection {
 		remoteAddr: multiaddr(to.addrs[0]),
 		newStream: async (protocol: string) => {
 			from.dialed.push(to.id);
+			await from.stallDial;
 			const handler = to.handlers.get(protocol);
 			if (!handler) throw new Error(`${to.id} does not handle ${protocol}`);
 			const { clientStream, serverStream } = duplexPair();
@@ -148,16 +151,24 @@ describe('StrandPeerBookSwap round trip', () => {
 		let clock = Date.now();
 		const now = (): number => clock;
 		const [a, b] = await Promise.all([party(1, now), party(2, now)]);
-		// C: a third party A once met and holds a signed entry for; B has never met C.
+		// C: a third party A once met and holds a signed entry for; B has never met C. C
+		// signed its addresses direct-first — NOT the store's signaling-first order — so
+		// the forward proves the store keeps a signed entry's order intact.
 		const c = await mockNode(3);
-		const cEntry = await signStrandPeerEntry(c.key, STRAND, c.addrs, clock - 60_000);
+		const cAddrs = [c.addrs[0], `/ip4/203.0.113.9/tcp/4009/ws/p2p/${b.node.id}/p2p-circuit/p2p/${c.id}`];
+		const cEntry = await signStrandPeerEntry(c.key, STRAND, cAddrs, clock - 60_000);
 		await a.store.merge(STRAND, { ...cEntry, lastSeenAt: clock - 60_000 });
 		// An unsigned observation of A that B's observer made: the swap must upgrade it.
 		await b.store.merge(STRAND, { peerId: a.node.id, addrs: [], issuedAt: 0, lastSeenAt: clock - 1 });
+		// A's own entry from a previous run, stamped by a clock that has since gone
+		// backwards: the new statement must still be issued later than it.
+		const previousRun = await signStrandPeerEntry(a.node.key, STRAND, [], clock + 50_000);
+		await a.store.merge(STRAND, { ...previousRun, lastSeenAt: clock - 1 });
 
 		a.swap.start();
 		b.swap.start();
 		await until(() => a.swap.ownEntry !== undefined && b.swap.ownEntry !== undefined, 'both own entries signed');
+		expect(a.swap.ownEntry!.issuedAt).toBeGreaterThan(previousRun.issuedAt);
 		expect(held(a.store, a.node.id)?.sig).toBe(a.swap.ownEntry!.sig);
 
 		clock += 10;
@@ -169,8 +180,9 @@ describe('StrandPeerBookSwap round trip', () => {
 		const aInB = held(b.store, a.node.id)!;
 		expect(aInB).toEqual({ ...a.swap.ownEntry!, lastSeenAt: clock });
 		expect(aInB.addrs).toEqual(a.node.addrs);
-		// B holds C's statement exactly as A forwarded it, never having met C.
+		// B holds C's statement exactly as A forwarded it, never having met C, in C's order.
 		expect(held(b.store, c.id)).toEqual({ ...cEntry, lastSeenAt: 0 });
+		expect(held(b.store, c.id)!.addrs).toEqual(cAddrs);
 		// A holds B's own statement from the response.
 		expect(held(a.store, b.node.id)).toEqual({ ...b.swap.ownEntry!, lastSeenAt: clock });
 		// One stream: B dialed A; nothing dialed B (A never identified B in this test).
@@ -191,6 +203,7 @@ describe('StrandPeerBookSwap round trip', () => {
 		const [a, b] = await Promise.all([party(1, now), party(2, now)]);
 		a.swap.start();
 		b.swap.start();
+		await until(() => a.swap.ownEntry !== undefined && b.swap.ownEntry !== undefined, 'both own entries signed');
 		connect(a.node, b.node);
 		identify(a.node, b.node);
 		await until(() => held(b.store, a.node.id)?.sig !== undefined, 'the first exchange lands');
@@ -209,6 +222,38 @@ describe('StrandPeerBookSwap round trip', () => {
 		expect(rotated.sig).not.toBe(first.sig);
 		// Two streams from A in total: the identify exchange and the re-sign broadcast —
 		// the debounced double event signed once.
+		expect(a.node.dialed).toEqual([b.node.id, b.node.id]);
+
+		await Promise.all([a.swap.stop(), b.swap.stop()]);
+	});
+
+	it('a re-sign while an exchange with that peer is in flight is followed by one more exchange', async () => {
+		let clock = Date.now();
+		const now = (): number => clock;
+		const [a, b] = await Promise.all([party(1, now), party(2, now)]);
+		a.swap.start();
+		b.swap.start();
+		await until(() => a.swap.ownEntry !== undefined && b.swap.ownEntry !== undefined, 'both own entries signed');
+		const first = a.swap.ownEntry!;
+		connect(a.node, b.node);
+
+		// A's identify exchange opens its stream and is held there, carrying the old entry.
+		let release!: () => void;
+		a.node.stallDial = new Promise<void>((resolve) => { release = resolve; });
+		identify(a.node, b.node);
+		await until(() => a.node.dialed.length === 1, 'the identify exchange is in flight');
+
+		// The relay reservation lands meanwhile: A re-signs, but must not open a second stream yet.
+		clock += 1_000;
+		a.node.addrs = [`/ip4/198.51.100.9/tcp/4001/ws/p2p/${a.node.id}`];
+		a.node.events.safeDispatchEvent('self:peer:update', { detail: { peer: {}, previous: {} } } as never);
+		await until(() => a.swap.ownEntry!.issuedAt > first.issuedAt, 'the own entry is re-signed');
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(a.node.dialed).toEqual([b.node.id]);
+
+		release();
+		await until(() => held(b.store, a.node.id)?.issuedAt === a.swap.ownEntry!.issuedAt, 'the re-signed entry reaches B');
+		expect(held(b.store, a.node.id)!.addrs).toEqual(a.node.addrs);
 		expect(a.node.dialed).toEqual([b.node.id, b.node.id]);
 
 		await Promise.all([a.swap.stop(), b.swap.stop()]);

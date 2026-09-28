@@ -168,6 +168,7 @@ export {
   signedStrandPeerEntryPayload,
   verifySignedStrandPeerEntry,
   verifyStrandPeerBookFrame,
+  trimBookFrameToFit,
   assertBookFrameFits,
   type SignedStrandPeerEntry,
   type StrandPeerBookFrame,

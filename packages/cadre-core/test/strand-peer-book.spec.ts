@@ -211,6 +211,15 @@ describe.each(backends)('StrandPeerBookStore contract: $name', ({ make, cleanup 
 		expect(entry.addrs.slice(1)).toEqual(direct.slice(0, MAX_STRAND_ADDRS - 1));
 	});
 
+	it('keeps a signed entry\'s addrs in the signer\'s order, since the signature covers that order', async () => {
+		const store = await make();
+		const [peer, relay] = await Promise.all([realPeerId(), realPeerId()]);
+		const direct = addrFor(peer);
+		const circuit = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit/p2p/${peer}`;
+		await store.merge('s1', signed(peer, T0, 0, [direct, circuit]));
+		expect(store.entries('s1')[0].addrs).toEqual([direct, circuit]);
+	});
+
 	it('evicts the stalest peer once a strand holds more than MAX_STRAND_PEERS', async () => {
 		const store = await make();
 		const peers = await Promise.all(Array.from({ length: MAX_STRAND_PEERS + 1 }, () => realPeerId()));

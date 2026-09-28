@@ -206,10 +206,14 @@ function incomingWins(existing: StrandPeerEntry, incoming: StrandPeerEntry): boo
 /**
  * Shape an entry for storage: the peer id must parse (else `undefined` — not a dial
  * target at all), and `addrs` is reduced to the entries that attribute to `peerId`
- * under `groupAddrsByPeerId`'s rule, signaling-first, de-duplicated, capped at
- * `MAX_STRAND_ADDRS`. An entry may legitimately end up with NO addresses — a signed
- * "not reachable right now" from the swap protocol is truthful and displaces a
- * stale reachable list — so an empty list is kept, not rejected.
+ * under `groupAddrsByPeerId`'s rule, de-duplicated, capped at `MAX_STRAND_ADDRS`, and
+ * — for an UNSIGNED entry only — reordered signaling-first. A signed entry keeps the
+ * signer's order: its signature covers the address list as signed, and the swap
+ * forwards the stored copy, so any reordering here would make every forwarded entry
+ * fail verification at the next peer (every signer already orders signaling-first). An
+ * entry may legitimately end up with NO addresses — a signed "not reachable right
+ * now" from the swap protocol is truthful and displaces a stale reachable list — so
+ * an empty list is kept, not rejected.
  */
 export function sanitizeStrandPeerEntry(entry: StrandPeerEntry): StrandPeerEntry | undefined {
 	try {
@@ -218,8 +222,8 @@ export function sanitizeStrandPeerEntry(entry: StrandPeerEntry): StrandPeerEntry
 		log('dropping entry for unparsable peer id %s: %o', entry.peerId, error);
 		return undefined;
 	}
-	const attributed = groupAddrsByPeerId([...entry.addrs]).get(entry.peerId) ?? [];
-	const addrs = orderSignalingFirst(attributed.map((ma) => ma.toString())).slice(0, MAX_STRAND_ADDRS);
+	const attributed = (groupAddrsByPeerId([...entry.addrs]).get(entry.peerId) ?? []).map((ma) => ma.toString());
+	const addrs = (entry.sig === undefined ? orderSignalingFirst(attributed) : attributed).slice(0, MAX_STRAND_ADDRS);
 	if (addrs.length < entry.addrs.length) {
 		log('peer %s: kept %d of %d addr(s) — the rest do not attribute to it or exceed the cap',
 			entry.peerId, addrs.length, entry.addrs.length);
@@ -275,7 +279,14 @@ function pruneAged(strand: StrandPeers, options: ResolvedOptions): StrandPeers {
 	return live.length === Object.keys(strand).length ? strand : Object.fromEntries(live.map((e) => [e.peerId, e]));
 }
 
-/** Drop the stalest entries until the strand holds at most {@link MAX_STRAND_PEERS}. */
+/**
+ * Drop the stalest entries until the strand holds at most {@link MAX_STRAND_PEERS}.
+ *
+ * NOTE: freshness ranks a forwarded statement (signer's `issuedAt`, up to five minutes
+ * ahead of this clock) above a peer this node has itself connected to, so one swap
+ * frame of sixteen fresh self-signed entries evicts every met peer — see
+ * `backlog/debt-strand-peer-book-remote-write-bounds`.
+ */
 function evictPastCap(strand: StrandPeers): StrandPeers {
 	const entries = Object.values(strand);
 	if (entries.length <= MAX_STRAND_PEERS) return strand;
