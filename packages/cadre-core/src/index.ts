@@ -506,6 +506,7 @@ export {
 // limit, so an address that never answers cannot starve the rest.
 export {
   dialPeerAddrs,
+  SelfRelayOnlyError,
   tryAddrsInTurn,
   directBeforeRelayed,
   DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,

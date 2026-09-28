@@ -98,6 +98,7 @@ import {
 } from './control-cohort.js';
 import {
   dialPeerAddrs,
+  SelfRelayOnlyError,
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
@@ -3288,7 +3289,9 @@ export class CadreNode implements SAppIdLookup {
    * the {@link controlDialBudget} expiring) is logged and swallowed so one
    * unreachable sibling never aborts the pass — exactly like
    * {@link SeedBootstrapService.applySeed}'s owner-dial loop. A failed dial is
-   * simply retried on the next pass.
+   * simply retried on the next pass. A sibling whose every address relays
+   * through this node ({@link SelfRelayOnlyError}) is not dialed at all and gets
+   * a one-line log instead: only the sibling can reconnect.
    */
   private async dialControlSibling(sibling: CohortPeerRow, resolved: Multiaddr[]): Promise<boolean> {
     const controlNode = this.controlNode;
@@ -3310,7 +3313,11 @@ export class CadreNode implements SAppIdLookup {
       );
       return true;
     } catch (error) {
-      log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
+      if (error instanceof SelfRelayOnlyError) {
+        log('reconcileControlCohort: sibling %s is reachable only by relaying through this node; waiting for it to reconnect', sibling.peerId);
+      } else {
+        log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
+      }
       return false;
     }
   }
@@ -3569,7 +3576,11 @@ export class CadreNode implements SAppIdLookup {
       );
       return true;
     } catch (error) {
-      log('reconcileControlCohort(cold-start): dial of bootstrap peer %s failed (continuing): %o', peerId, error);
+      if (error instanceof SelfRelayOnlyError) {
+        log('reconcileControlCohort(cold-start): bootstrap peer %s is reachable only by relaying through this node; waiting for it to reconnect', peerId);
+      } else {
+        log('reconcileControlCohort(cold-start): dial of bootstrap peer %s failed (continuing): %o', peerId, error);
+      }
       return false;
     }
   }

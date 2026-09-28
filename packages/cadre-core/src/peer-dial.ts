@@ -24,8 +24,9 @@
  */
 
 import debug from 'debug';
-import type { Connection } from '@libp2p/interface';
-import type { Multiaddr } from '@multiformats/multiaddr';
+import type { Connection, PeerId } from '@libp2p/interface';
+import { peerIdFromString } from '@libp2p/peer-id';
+import type { Component, Multiaddr } from '@multiformats/multiaddr';
 import { withDeadline } from './control-stream.js';
 import { relayedDialBudgetMs } from './link-budget.js';
 
@@ -117,7 +118,26 @@ export const DEFAULT_PEER_DIAL_BUDGET: Readonly<PeerDialBudget> = {
 
 /** The slice of a libp2p node {@link dialPeerAddrs} uses. */
 export interface AddrDialer {
+	/** This node's id, to recognise an address that relays through this node ({@link relaysThrough}). */
+	readonly peerId: PeerId;
 	dial(addr: Multiaddr, options: { signal: AbortSignal }): Promise<Connection>;
+}
+
+/**
+ * Thrown by {@link dialPeerAddrs} when it was given addresses but every one reaches the peer by
+ * relaying through this node, so none was dialed.
+ *
+ * This is where a relay lands for a peer that holds a reservation on it (a phone, or any node that
+ * cannot listen): the address that peer publishes is `/<relay transport>/p2p/<relay>/p2p-circuit/p2p/<peer>`,
+ * and dialing it from the relay itself fails with libp2p's `Can not dial self`. Nothing this node
+ * does can repair it; once the peer's connection drops, only the peer can reconnect. Callers log it
+ * as that rather than as a dial failure.
+ */
+export class SelfRelayOnlyError extends Error {
+	constructor(label: string) {
+		super(`${label}: every candidate address relays through this node; only the peer can reconnect`);
+		this.name = 'SelfRelayOnlyError';
+	}
 }
 
 /** One candidate's outcome, kept so the thrown error can name every attempt. */
@@ -131,23 +151,31 @@ interface AddrAttemptFailure {
  * first connection that forms. Direct addresses are tried before relayed ones
  * ({@link directBeforeRelayed}); otherwise the given order is kept.
  *
+ * Addresses that relay through this node are dropped first ({@link relaysThrough}):
+ * dialing one could only fail with `Can not dial self`. When that leaves nothing
+ * of a non-empty list, this throws {@link SelfRelayOnlyError} without dialing.
+ *
  * Addresses naming a transport this node lacks are not filtered out first: a
  * one-address `dial()` rejects those at once (`NoValidAddressesError`), so they
  * cost a log line, not time.
  *
- * Throws when no address connects — see {@link tryAddrsInTurn} for the error.
+ * Otherwise throws when no address connects — see {@link tryAddrsInTurn} for the error.
  *
  * @param label Names the dial in timeout messages and logs, e.g.
  *   `reconcileControlCohort dial of sibling <peerId>`; each attempt reads
  *   `<label> via <addr>`.
  */
-export function dialPeerAddrs(
+export async function dialPeerAddrs(
 	dialer: AddrDialer,
 	addrs: readonly Multiaddr[],
 	budget: PeerDialBudget,
 	label: string,
 ): Promise<Connection> {
-	return tryAddrsInTurn(directBeforeRelayed(addrs), budget, label, (addr, signal) => dialer.dial(addr, { signal }));
+	const dialable = withoutSelfRelayed(dialer, addrs, label);
+	if (addrs.length > 0 && dialable.length === 0) {
+		throw new SelfRelayOnlyError(label);
+	}
+	return tryAddrsInTurn(directBeforeRelayed(dialable), budget, label, (addr, signal) => dialer.dial(addr, { signal }));
 }
 
 /**
@@ -219,6 +247,51 @@ export async function tryAddrsInTurn<T>(
 export function directBeforeRelayed(addrs: readonly Multiaddr[]): Multiaddr[] {
 	const relayed = (addr: Multiaddr): boolean => addr.getComponents().some((c) => c.name === 'p2p-circuit');
 	return [...addrs.filter((addr) => !relayed(addr)), ...addrs.filter(relayed)];
+}
+
+/** `addrs` without those that relay through `dialer` itself, each dropped one logged. */
+function withoutSelfRelayed(dialer: AddrDialer, addrs: readonly Multiaddr[], label: string): Multiaddr[] {
+	return addrs.filter((addr) => {
+		if (!relaysThrough(addr, dialer.peerId)) {
+			return true;
+		}
+		log('%s: skipping %s — it relays through this node', label, addr.toString());
+		return false;
+	});
+}
+
+/**
+ * Whether `addr` reaches its target by relaying through `relay` at any hop.
+ *
+ * A circuit address names its relay in the `p2p` component immediately before
+ * the `p2p-circuit` marker (`/<transport>/p2p/<relay>/p2p-circuit/p2p/<target>`),
+ * so the components are walked rather than the text searched: the target's id
+ * after the marker, a bare `/p2p-circuit` naming no relay, and a multi-hop chain
+ * each read correctly that way. Same rule as db-p2p's `routesThroughRelay`, which
+ * its package does not export.
+ */
+function relaysThrough(addr: Multiaddr, relay: PeerId): boolean {
+	const components = addr.getComponents();
+	return components.some((component, i) => component.name === 'p2p-circuit' && namesPeer(components[i - 1], relay));
+}
+
+/**
+ * Whether `component` is a `p2p` component naming `peer`. Compared as canonical
+ * strings because a multiaddr keeps a peer id in whichever form it was written
+ * (base58 or CIDv1). `PeerId.equals` is avoided because test doubles supply the
+ * dialer's `peerId` with `toString` only.
+ */
+function namesPeer(component: Component | undefined, peer: PeerId): boolean {
+	if (component?.name !== 'p2p' || component.value === undefined) {
+		return false;
+	}
+	const expected = peer.toString();
+	try {
+		return peerIdFromString(component.value).toString() === expected;
+	} catch (err) {
+		log('cannot read %s as a peer id; treating it as not this node: %o', component.value, err);
+		return false;
+	}
 }
 
 function allAttemptsFailed(label: string, failures: AddrAttemptFailure[]): Error {

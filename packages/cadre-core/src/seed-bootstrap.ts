@@ -5,7 +5,7 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
-import { dialPeerAddrs, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
+import { dialPeerAddrs, SelfRelayOnlyError, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -832,8 +832,14 @@ export class SeedBootstrapService {
         log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
         await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
       } catch (error) {
+        // Counted even when the owner reaches us only through our own relay: this node is still
+        // not connected to it, and `ownerDialsFailed` is how the caller learns that.
         ownerDialsFailed++;
-        log('Failed to dial peer %s: %o', peer.peerId, error);
+        if (error instanceof SelfRelayOnlyError) {
+          log('Owner peer %s is reachable only by relaying through this node; waiting for it to reconnect', peer.peerId);
+        } else {
+          log('Failed to dial peer %s: %o', peer.peerId, error);
+        }
         // Continue - not all peers need to be reachable
       }
     }
