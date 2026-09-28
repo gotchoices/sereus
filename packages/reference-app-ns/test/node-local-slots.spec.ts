@@ -30,6 +30,7 @@ import {
 	anchorSlotKey,
 	bootstrapPeersSlotKey,
 	enrolledMachinesSlotKey,
+	strandPeersSlotKey,
 	type KvStoreApi,
 } from '../src/node-local-slots';
 
@@ -100,10 +101,11 @@ describe('kvSlot', () => {
 // phone's anchor / dial targets rather than failing.
 
 describe('key-shape helpers', () => {
-	it('pins the three key strings exactly', () => {
+	it('pins the key strings exactly', () => {
 		expect(anchorSlotKey('p')).toBe('trusted-owners.p');
 		expect(bootstrapPeersSlotKey('p')).toBe('bootstrap-peers.p');
 		expect(enrolledMachinesSlotKey('p')).toBe('enrolled-machines.p');
+		expect(strandPeersSlotKey('p')).toBe('strand-peers.p');
 	});
 
 	it('gives distinct parties distinct keys', () => {
@@ -112,17 +114,18 @@ describe('key-shape helpers', () => {
 		expect(enrolledMachinesSlotKey('party-1')).not.toBe(enrolledMachinesSlotKey('party-2'));
 	});
 
-	it('never lets the three families collide, for any pair of parties', () => {
-		// All three records share one `SqliteKVStore` with an EMPTY prefix (see
+	it('never lets the key families collide, for any pair of parties', () => {
+		// All the records share one `SqliteKVStore` with an EMPTY prefix (see
 		// `cadre-phone.ts`), so a collision would have one record silently overwrite
 		// another rather than land in a separate namespace.
 		const parties = [
-			'p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', 'enrolled-machines.p', '',
+			'p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', 'enrolled-machines.p', 'strand-peers.p', '',
 		];
 		const keys = [
 			...parties.map(anchorSlotKey),
 			...parties.map(bootstrapPeersSlotKey),
 			...parties.map(enrolledMachinesSlotKey),
+			...parties.map(strandPeersSlotKey),
 		];
 
 		expect(new Set(keys).size).toBe(keys.length);

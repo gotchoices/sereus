@@ -31,6 +31,13 @@ export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
 export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
 
 /**
+ * `kv` key for the persisted strand peer book — per strand, the strand peers this
+ * tab has met and their last-known addresses, dialed first after a reload. Dial
+ * hints only, like the bootstrap peers.
+ */
+export const STRAND_PEERS_KV_KEY = 'strand-peers';
+
+/**
  * `kv` key for the tab's last-known enrolled-machine count — the control
  * network's block-repair yardstick, read back at the next launch because the
  * control node is built before the database holding the membership rows exists.

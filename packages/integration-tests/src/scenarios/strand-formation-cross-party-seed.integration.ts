@@ -40,11 +40,16 @@
  *   3. Rows written on the host reach the joiner over that mesh — the mesh is real, not
  *      merely a socket.
  *
+ *   4. Both nodes end up with the other's strand peer in their node-local strand peer
+ *      book: the joiner's from the formation result, the host's from observing the
+ *      joiner's connection — the two writers a restart would later dial from.
+ *
  * ── Known limit, deliberately not covered here ──
  *
- * The carried addresses are held IN MEMORY and never re-resolved (see `docs/strands.md`).
- * A joiner restart loses them; a host relay reservation that rotates before the joiner
- * dials leaves a dead entry. Durability is `backlog/feat-cross-party-strand-addr-durability`.
+ * The book is in-memory here (no `strandPeers.store` injected), so a restart is not
+ * proven by this scenario; `strand-relay-only-restart-reconverges` is that proof. A host
+ * relay reservation that rotates before the joiner dials still leaves a dead entry until
+ * the peer's next connection replaces it (see `docs/strands.md`).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -193,6 +198,29 @@ describe('Cross-party strand seed carried by formation', () => {
 			expect(joinerRemotes.length).toBeGreaterThan(0);
 			for (const remote of joinerRemotes) {
 				expect(remote).toBe(hostStrandPeerId);
+			}
+
+			// ── Subject 4: both strand peer books name the other side ──
+			// The joiner's entry came from the formation result; the host's can only have
+			// come from observing the joiner's inbound connection (identify), since no
+			// formation result reaches the host and the joiner has no sibling to answer for
+			// it. Each entry's addresses are bound to that peer's strand transport id.
+			const joinerBook = joiner.getStrandPeerBookStore()!.entries(strandId);
+			expect(joinerBook.map((e) => e.peerId)).toEqual([hostStrandPeerId]);
+			expect(joinerBook[0].addrs.length).toBeGreaterThan(0);
+			await waitUntil(
+				() => host!.getStrandPeerBookStore()!.entries(strandId).some((e) => e.peerId === joinerStrandPeerId),
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 250,
+					description: "host's strand peer book records the joiner's strand peer from its identify",
+				},
+			);
+			for (const entry of host.getStrandPeerBookStore()!.entries(strandId)) {
+				expect(entry.peerId).toBe(joinerStrandPeerId);
+				for (const addr of entry.addrs) {
+					expect(addr.endsWith(`/p2p/${joinerStrandPeerId}`)).toBe(true);
+				}
 			}
 
 			// ── Subject 3: the mesh actually carries data ──

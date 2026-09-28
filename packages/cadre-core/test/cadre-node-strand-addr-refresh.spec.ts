@@ -190,6 +190,8 @@ function injectRefresh(opts: {
     getInstances: () => instances,
     getInstance: (strandId: string) => instances.get(strandId)
   };
+  // The in-memory strand peer book `start()` would build — the refresh pass re-merges it.
+  (privates as { initializeStrandPeerBookStore(): void }).initializeStrandPeerBookStore();
   return { node, connections, instances, asked };
 }
 
@@ -202,11 +204,11 @@ function throttleMap(node: CadreNode): Map<string, number> {
   return (node as unknown as { strandPeerAddrRefreshAt: Map<string, number> }).strandPeerAddrRefreshAt;
 }
 
-/** Record a formation's cross-party strand addrs, exactly as a successful `formStrand` does. */
-function recordCrossParty(node: CadreNode, strandId: string, addrs: string[]): void {
+/** Record a formation's carried strand addrs into the book, exactly as a successful `formStrand` does. */
+function recordFormation(node: CadreNode, strandId: string, addrs: string[]): void {
   (node as unknown as {
-    recordCrossPartyStrandAddrs(id: string, addrs: readonly string[]): void;
-  }).recordCrossPartyStrandAddrs(strandId, addrs);
+    recordFormationStrandPeers(id: string, addrs: readonly string[]): void;
+  }).recordFormationStrandPeers(strandId, addrs);
 }
 
 const T0 = 1_700_000_000_000;
@@ -498,9 +500,9 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(harness.asked).toEqual([]);
   });
 
-  // ── Cross-party addrs: re-merged on every pass, with or without a sibling ──
+  // ── The strand peer book: re-merged on every pass, with or without a sibling ──
 
-  it("keeps a formation's cross-party addrs alive when there is no sibling to ask", async () => {
+  it("keeps the book's cross-party addrs alive when there is no sibling to ask", async () => {
     // Nothing can RE-RESOLVE a cross-party address — the strand-addr RPC is
     // membership-gated and answers own-party callers only — so this periodic re-merge is
     // the only thing standing between the joiner's seed and the peerStore's one-hour
@@ -515,7 +517,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       connections: [],
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
+    recordFormation(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
@@ -531,7 +533,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(strand.merges).toHaveLength(2);
   });
 
-  it('unions cross-party addrs with the sibling answers rather than replacing them', async () => {
+  it('unions the book\'s addrs with the sibling answers rather than replacing them', async () => {
     const [self, sib, sibStrand, crossStrand, ownStrand] = await Promise.all(
       Array.from({ length: 5 }, () => freshPeerId())
     );
@@ -545,7 +547,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       replies: new Map([[sib, { 's1': [sibAddr] }]]),
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
+    recordFormation(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
@@ -558,7 +560,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     ]);
   });
 
-  it("never merges one strand's cross-party addrs into another strand's address book", async () => {
+  it("never merges one strand's book entries into another strand's address book", async () => {
     const [self, crossStrand, ownStrand1, ownStrand2] = await Promise.all(
       Array.from({ length: 4 }, () => freshPeerId())
     );
@@ -574,7 +576,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
         ['s2', strandInstance('s2', s2.node)]
       ])
     });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
+    recordFormation(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
@@ -600,20 +602,20 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       connections: [],
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [stale]);
+    recordFormation(harness.node, 's1', [stale]);
     await refresh(harness.node, T0);
     expect(throttleMap(harness.node).get('s1')).toBe(T0);
+    expect(strand.merges).toEqual([{ peerId: crossStrand, addrs: [stale] }]);
 
     // A second redemption lands one tick later — well inside the throttle window.
-    recordCrossParty(harness.node, 's1', [fresh]);
+    recordFormation(harness.node, 's1', [fresh]);
     expect(throttleMap(harness.node).has('s1')).toBe(false);
 
     await refresh(harness.node, T0 + 15_000);
-    expect(strand.merges).toEqual([
-      { peerId: crossStrand, addrs: [stale] },
-      { peerId: crossStrand2, addrs: [fresh] },
-      { peerId: crossStrand, addrs: [stale] }
-    ]);
+    // The second pass merges both peers the book now holds; their relative order is the
+    // book's freshness order, which two same-millisecond formations leave undefined.
+    expect(strand.merges.slice(1).map((m) => m.peerId).sort()).toEqual([crossStrand, crossStrand2].sort());
+    expect(strand.merges.slice(1).map((m) => m.addrs).sort()).toEqual([[fresh], [stale]].sort());
   });
 
   it('honours a configured strandAddrRefreshMs override', async () => {

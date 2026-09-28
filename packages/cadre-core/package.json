@@ -36,6 +36,10 @@
       "types": "./dist/enrolled-machine-store-file.d.ts",
       "import": "./dist/enrolled-machine-store-file.js"
     },
+    "./strand-peer-book-file": {
+      "types": "./dist/strand-peer-book-file.d.ts",
+      "import": "./dist/strand-peer-book-file.js"
+    },
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"

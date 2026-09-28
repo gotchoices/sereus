@@ -28,6 +28,7 @@ import {
 	TRUSTED_OWNERS_KV_KEY,
 	BOOTSTRAP_PEERS_KV_KEY,
 	ENROLLED_MACHINES_KV_KEY,
+	STRAND_PEERS_KV_KEY,
 } from '../src/lib/node-local-slots';
 
 /**
@@ -124,10 +125,11 @@ describe('node-local stores over kvSlot', () => {
 		expect(TRUSTED_OWNERS_KV_KEY).toBe('trusted-owners');
 		expect(BOOTSTRAP_PEERS_KV_KEY).toBe('bootstrap-peers');
 		expect(ENROLLED_MACHINES_KV_KEY).toBe('enrolled-machines');
+		expect(STRAND_PEERS_KV_KEY).toBe('strand-peers');
 	});
 
 	it('gives every record a key of its own, so no snapshot write clobbers another', () => {
-		const keys = [TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY];
+		const keys = [TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY, STRAND_PEERS_KV_KEY];
 		expect(new Set(keys).size).toBe(keys.length);
 	});
 

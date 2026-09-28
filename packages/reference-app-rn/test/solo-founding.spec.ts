@@ -8,6 +8,7 @@ import {
 	InMemoryKeyStore,
 	MemoryBootstrapPeerStore,
 	MemoryEnrolledMachineStore,
+	MemoryStrandPeerBookStore,
 	MemoryTrustedOwnerStore,
 } from '@serfab/cadre-core';
 import { createChatStrand, createClosedChatStrand } from '../src/chat-strand.js';
@@ -91,6 +92,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 			enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
+			strandPeerBookStore: new MemoryStrandPeerBookStore(partyId),
 		}));
 		node = cadre;
 		await within('node.start()', LIFECYCLE_DEADLINE_MS, () => cadre.start());
@@ -184,6 +186,7 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 			enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
+			strandPeerBookStore: new MemoryStrandPeerBookStore(partyId),
 		}));
 		node = cadre;
 		await within('node.start() with a dead relay', RELAY_LIFECYCLE_DEADLINE_MS, () => cadre.start());

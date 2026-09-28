@@ -174,7 +174,7 @@ sibling that restarts its strand node or rotates its relay reservation stays unr
 until this node restarts or resumes the strand, and even the original seed addresses expire
 out of the peerStore after an hour.
 
-**Cross-party answer (implemented, one-shot).** The RPC above is membership-gated, so it can
+**Cross-party answer (implemented).** The RPC above is membership-gated, so it can
 never answer for another party's strand nodes. The address instead travels on the **formation
 handshake** — the one moment the two parties are authenticated to each other and agreeing on a
 strand id. An approving formation result now carries the responder's live strand-network
@@ -188,15 +188,34 @@ loopback addresses; `blind-relay-phone-to-phone-e2e` proves the same handshake c
 RELAY-ROUTED strand address between two relay-only parties, with the closed strand's
 membership secret delivered over the circuit (see the SN–SN use case above).
 
-Two limits are real and are **not** solved by that work:
+**How a restarted machine re-finds its strand's peers.** The carried addresses do not stay in
+the formation result: the joiner files them in its **strand peer book**
+(`packages/cadre-core/src/strand-peer-book.ts`), a per-machine record in the machine's own
+storage — never in the strand database — of the strand peers it knows, with their last-known
+addresses and when it last held a connection to each. The book fills from both sides: a
+formation writes the responder's peer into the joiner's book, and every running strand node
+writes each strand peer it identifies (the peer's announced addresses plus the relayed address
+it was reached on) into its own book, so the host learns the joiner the moment the joiner
+connects. On every launch, hibernation resume and periodic address refresh the book's entries
+go into the strand's seed and address book, freshest peer first, behind any live sibling
+answer — so a restarted machine dials the people it was talking to before it does anything
+else, and two relay-only parties that both restart re-mesh with no fresh invitation
+(gotchoices/sereus#18). Entries are bounded (16 peers per strand, 16 addresses per peer, each
+address bound to its peer id) and age out 14 days after they were last vouched for; a peer
+that stays in touch keeps refreshing its own entry. Unpublishing, leaving or being removed
+from a strand forgets its entries. The store is injected like the other node-local records
+(`CadreNodeConfig.strandPeers.store`; in-memory by default, which is the pre-#18 behaviour,
+and every reference embedder injects a durable one). The maintainer ruled an in-strand
+registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out
+for now; nothing needs it, and it stays a possible later step only if a case does.
 
-- **In-memory, so one-shot.** The carried addresses die with the joiner's process. A restarted
-  joiner with no sibling of its own running the strand is back to an empty seed, and the
-  cross-party mesh does not re-form until it redeems a fresh invitation. Durability —
-  persisting the contact, or re-resolving it — is `backlog/feat-cross-party-strand-addr-durability`.
-- **Never refreshed.** They are the responder's addresses at the instant of formation. If its
-  relay reservation rotates before the joiner dials, the entry is dead and nothing re-resolves
-  it; recovery today is a fresh invitation.
+One limit remains and is **not** solved by that work:
+
+- **Never refreshed while apart.** An entry is the peer's addresses as of the last time the
+  two were connected. If a peer's relay reservation rotates before the other side dials, the
+  entry is dead and nothing re-resolves it until they next meet; and in a strand of three or
+  more parties a late joiner holds addresses only for the party that invited it. Closing both
+  is the signed book-swap protocol of `strand-peer-book-swap`.
 
 So the remaining open question is narrower than it was: not "how does one party find another
 party's strand at all", but "how does a party that has already joined **re-find** the other

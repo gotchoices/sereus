@@ -19,6 +19,7 @@ import {
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
+	PersistentStrandPeerBookStore,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -39,7 +40,13 @@ import {
 	type OptimysticNSDBHandle,
 } from '@optimystic/db-p2p-storage-ns';
 import { makeLazyNsStorage } from './ns-storage';
-import { anchorSlotKey, bootstrapPeersSlotKey, enrolledMachinesSlotKey, kvSlot } from './node-local-slots';
+import {
+	anchorSlotKey,
+	bootstrapPeersSlotKey,
+	enrolledMachinesSlotKey,
+	strandPeersSlotKey,
+	kvSlot,
+} from './node-local-slots';
 
 // ── Peer identity ─────────────────────────────────────────────────────────────
 // Persist a single Ed25519 keypair so the node keeps the same PeerId across
@@ -154,6 +161,13 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		kvSlot(nodeLocalKv, enrolledMachinesSlotKey(opts.partyId)),
 		opts.partyId,
 	);
+	// The strand peers this phone has met, with their last-known addresses — what it
+	// dials first for each strand after a relaunch. Same store, its own key, dial
+	// hints only.
+	const strandPeerBookStore = await PersistentStrandPeerBookStore.open(
+		kvSlot(nodeLocalKv, strandPeersSlotKey(opts.partyId)),
+		opts.partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -174,6 +188,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
+		strandPeers: { store: strandPeerBookStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.

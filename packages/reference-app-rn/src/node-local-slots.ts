@@ -102,6 +102,17 @@ export function enrolledMachinesKvKey(partyId: string): string {
 }
 
 /**
+ * `LevelDBKVStore` key for a party's strand peer book — per strand, the strand
+ * peers this phone has met and their last-known addresses, dialed first after a
+ * relaunch. Same database and shape as {@link bootstrapPeersKvKey}, its own key;
+ * dial hints only, with the same non-trust-bearing argument, and multiaddr
+ * snapshots that would not fit secure store either.
+ */
+export function strandPeersKvKey(partyId: string): string {
+	return `strand-peers.${partyId}`;
+}
+
+/**
  * The subset of `LevelDBKVStore` (`@optimystic/db-p2p-storage-rn`) a slot needs.
  * Declared locally — mirroring {@link SecureStoreApi} — so tests can pass an
  * in-memory fake and no native module lands in a Node test graph. The real

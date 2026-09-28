@@ -7,6 +7,7 @@ import type { CadreNodeConfig } from '../src/types.js';
 import { multiaddr } from '@multiformats/multiaddr';
 import { groupAddrsByPeerId } from '../src/peer-addr-book.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
+import type { StrandPeerBookStore } from '../src/strand-peer-book.js';
 import { duplexPair } from './wake-stream-helpers.js';
 
 /**
@@ -57,6 +58,8 @@ function fakeControlNode(opts: ControlFakeOpts): Libp2p {
   return {
     peerId: { toString: () => opts.selfPeerId },
     getConnections: () => opts.connections.map((id) => ({ remotePeer: { toString: () => id } })),
+    // Read by `circuitRelayTargets` when a delegate peer id is announced (no relays here).
+    getMultiaddrs: () => [],
     dialProtocol: async (target: unknown) => {
       const id = (target as { toString(): string }).toString();
       opts.dialed.push(id);
@@ -97,24 +100,36 @@ function injectSeed(
   return { dialed };
 }
 
-function resolveSeed(node: CadreNode, strandId: string): Promise<string[]> {
-  return (node as unknown as { resolveCohortSeed(id: string): Promise<string[]> }).resolveCohortSeed(strandId);
+function resolveSeed(node: CadreNode, strandId: string, delegatePeerId?: string): Promise<string[]> {
+  return (node as unknown as {
+    resolveCohortSeed(id: string, delegatePeerId?: string): Promise<string[]>;
+  }).resolveCohortSeed(strandId, delegatePeerId);
 }
 
 /**
- * Record a formation's cross-party strand addrs on `node`, exactly as a successful
- * `formStrand` does. Driving the real private recorder (rather than writing the map
- * directly) keeps these tests honest about the empty-list and merge rules it enforces.
+ * Give an unstarted node its strand peer book — the in-memory default `start()` would
+ * build — and return it, so a test can pre-populate it (the restart shape) or assert
+ * what a formation recorded.
  */
-function recordCrossParty(node: CadreNode, strandId: string, addrs: string[]): void {
-  (node as unknown as {
-    recordCrossPartyStrandAddrs(id: string, addrs: readonly string[]): void;
-  }).recordCrossPartyStrandAddrs(strandId, addrs);
+function bookOf(node: CadreNode): StrandPeerBookStore {
+  const privates = node as unknown as {
+    initializeStrandPeerBookStore(): void;
+    strandPeerBookStore: StrandPeerBookStore;
+  };
+  privates.initializeStrandPeerBookStore();
+  return privates.strandPeerBookStore;
 }
 
-/** The private cross-party contact map, for asserting what a formation recorded. */
-function contactMap(node: CadreNode): Map<string, string[]> {
-  return (node as unknown as { crossPartyStrandAddrs: Map<string, string[]> }).crossPartyStrandAddrs;
+/**
+ * Record a formation's carried strand addrs on `node`, exactly as a successful
+ * `formStrand` does. Driving the real private recorder (rather than writing the book
+ * directly) keeps these tests honest about the empty-list and attribution rules it
+ * enforces.
+ */
+function recordFormation(node: CadreNode, strandId: string, addrs: string[]): void {
+  (node as unknown as {
+    recordFormationStrandPeers(id: string, addrs: readonly string[]): void;
+  }).recordFormationStrandPeers(strandId, addrs);
 }
 
 describe('CadreNode.resolveCohortSeed', () => {
@@ -237,100 +252,135 @@ describe('CadreNode.resolveCohortSeed', () => {
   });
 });
 
-// ── Cross-party seed: the addrs a formation carried back ──────────────────────
+// ── Cross-party seed: the strand peer book ────────────────────────────────────
 
-describe('CadreNode cross-party strand addrs in the cohort seed', () => {
-  const CROSS_A = '/ip4/203.0.113.7/tcp/4001/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
-  const CROSS_B = '/ip4/203.0.113.8/tcp/4002/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
-
-  it('seeds a strand from the formation addrs alone when no sibling can answer', async () => {
-    // The two-party case the whole feature exists for: the joiner has no cohort sibling
-    // running this strand, so the strand-addr RPC yields nothing and the formation addrs
-    // are the ONLY seed there is.
-    const self = await freshPeerId();
+describe('CadreNode strand peer book in the cohort seed', () => {
+  it('seeds a strand from a pre-populated book alone when no connected sibling can answer', async () => {
+    // The restart shape of gotchoices/sereus#18: the joiner has no cohort sibling running
+    // this strand, so the strand-addr RPC yields nothing, and the book it persisted
+    // before the restart is the ONLY seed there is. Freshest peer first.
+    const [self, older, newer] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
+    const olderAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${older}`;
+    const newerAddr = `/ip4/203.0.113.8/tcp/4002/ws/p2p/${newer}`;
     const node = new CadreNode(createConfig());
     injectSeed(node, {
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }],
       connections: []
     });
-    recordCrossParty(node, 'strand-x', [CROSS_A]);
+    const book = bookOf(node);
+    const now = Date.now();
+    await book.merge('strand-x', { peerId: older, addrs: [olderAddr], issuedAt: 0, lastSeenAt: now - 2_000 });
+    await book.merge('strand-x', { peerId: newer, addrs: [newerAddr], issuedAt: 0, lastSeenAt: now - 1_000 });
 
-    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([CROSS_A]);
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([newerAddr, olderAddr]);
   });
 
-  it('seeds from the formation addrs even before the control DB and node exist', async () => {
-    // `addStrand` can run before the control plane is up; the sibling half returns []
-    // there, and the cross-party half must not be lost with it.
+  it('a formation result populates the book, one entry per strand peer it named', async () => {
+    const [peerA, peerB] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const a1 = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${peerA}`;
+    const a2 = `/ip4/203.0.113.7/tcp/4002/ws/p2p/${peerA}`;
+    const b1 = `/ip4/203.0.113.8/tcp/4001/ws/p2p/${peerB}`;
     const node = new CadreNode(createConfig());
-    recordCrossParty(node, 'strand-x', [CROSS_A]);
+    const book = bookOf(node);
+    recordFormation(node, 'strand-x', [a1, b1, a2, '/ip4/203.0.113.9/tcp/1/ws']);
 
-    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([CROSS_A]);
+    const entries = book.entries('strand-x');
+    expect(entries.map((e) => e.peerId).sort()).toEqual([peerA, peerB].sort());
+    expect(entries.find((e) => e.peerId === peerA)?.addrs).toEqual([a1, a2]);
+    expect(entries.find((e) => e.peerId === peerB)?.addrs).toEqual([b1]);
+    // Unsigned, seen just now: the responder disclosed the addresses live.
+    for (const entry of entries) {
+      expect(entry.issuedAt).toBe(0);
+      expect(entry.lastSeenAt).toBeGreaterThan(0);
+      expect(entry.sig).toBeUndefined();
+    }
+    // ...and the seed is exactly that, before the control DB and node exist (`addStrand`
+    // can run before the control plane is up).
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([a1, a2, b1]);
   });
 
-  it('appends formation addrs AFTER sibling answers and de-dupes against them', async () => {
-    const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
+  it('appends book addrs AFTER sibling answers and de-dupes against them', async () => {
+    const [self, sib, cross] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
     const siblingAddr = '/ip4/10.0.0.1/tcp/5/p2p/strand';
+    const crossA = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${cross}`;
+    const crossB = `/ip4/203.0.113.8/tcp/4002/ws/p2p/${cross}`;
     const node = new CadreNode(createConfig());
     injectSeed(node, {
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
       connections: [sib],
-      replies: new Map([[sib, [siblingAddr, CROSS_A]]])
+      replies: new Map([[sib, [siblingAddr, crossA]]])
     });
-    recordCrossParty(node, 'strand-x', [CROSS_A, CROSS_B]);
+    bookOf(node);
+    recordFormation(node, 'strand-x', [crossA, crossB]);
 
-    // Sibling answers lead (they were resolved just now); the formation addr the
-    // sibling already named is not repeated.
-    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([siblingAddr, CROSS_A, CROSS_B]);
+    // Sibling answers lead (they were resolved just now); the book addr the sibling
+    // already named is not repeated.
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([siblingAddr, crossA, crossB]);
   });
 
-  it('scopes formation addrs to their own strand', async () => {
-    const self = await freshPeerId();
+  it('scopes book entries to their own strand', async () => {
+    const [self, cross] = await Promise.all([freshPeerId(), freshPeerId()]);
     const node = new CadreNode(createConfig());
     injectSeed(node, {
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }],
       connections: []
     });
-    recordCrossParty(node, 'strand-x', [CROSS_A]);
+    bookOf(node);
+    recordFormation(node, 'strand-x', [`/ip4/203.0.113.7/tcp/4001/ws/p2p/${cross}`]);
 
     await expect(resolveSeed(node, 'strand-other')).resolves.toEqual([]);
   });
 
   it('records nothing for an empty disclosure, so a later one is not shadowed', async () => {
+    const cross = await freshPeerId();
+    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${cross}`;
     const node = new CadreNode(createConfig());
-    recordCrossParty(node, 'strand-x', []);
-    expect(contactMap(node).has('strand-x')).toBe(false);
+    const book = bookOf(node);
+    recordFormation(node, 'strand-x', []);
+    expect(book.entries('strand-x')).toEqual([]);
 
-    recordCrossParty(node, 'strand-x', [CROSS_A]);
-    recordCrossParty(node, 'strand-x', []);
-    expect(contactMap(node).get('strand-x')).toEqual([CROSS_A]);
+    recordFormation(node, 'strand-x', [crossAddr]);
+    recordFormation(node, 'strand-x', []);
+    expect(book.entries('strand-x').map((e) => e.addrs)).toEqual([[crossAddr]]);
   });
 
-  it('caps the accumulated list, so repeat formations cannot grow it without bound', async () => {
-    // The map accumulates across redemptions and nothing here can tell a dead entry from a
-    // live one, so without a cap a re-invited strand would gain up to 16 addrs per
-    // redemption for the node's lifetime — every one of them re-merged into the strand's
-    // peerStore on every refresh pass.
-    const node = new CadreNode(createConfig());
-    const addr = (i: number): string => `/ip4/203.0.113.7/tcp/${4000 + i}/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN`;
-    recordCrossParty(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(i)));
-    recordCrossParty(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
-
-    const stored = contactMap(node).get('strand-x')!;
-    expect(stored).toHaveLength(16);
-    // The freshest disclosure survives whole; the older entries are what fall off the end.
-    expect(stored).toEqual(Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
-  });
-
-  it('merges a second formation against the same strand, newest first', async () => {
+  it('a re-formation replaces the same peer\'s addresses rather than accumulating them', async () => {
     // Two redemptions of the same host strand (a re-invite after a relay rotation): the
-    // fresher disclosure leads, the older entry stays as a fallback.
+    // responder disclosed its CURRENT addresses, so the older list is stale by
+    // definition and is replaced, not kept as a fallback that would be re-dialed on
+    // every refresh for the node's lifetime.
+    const cross = await freshPeerId();
+    const addr = (i: number): string => `/ip4/203.0.113.7/tcp/${4000 + i}/ws/p2p/${cross}`;
     const node = new CadreNode(createConfig());
-    recordCrossParty(node, 'strand-x', [CROSS_A]);
-    recordCrossParty(node, 'strand-x', [CROSS_B, CROSS_A]);
-    expect(contactMap(node).get('strand-x')).toEqual([CROSS_B, CROSS_A]);
+    const book = bookOf(node);
+    recordFormation(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(i)));
+    recordFormation(node, 'strand-x', Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
+
+    const entries = book.entries('strand-x');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].addrs).toEqual(Array.from({ length: 16 }, (_v, i) => addr(100 + i)));
+  });
+
+  it('leaves this strand node\'s own entry out of the seed', async () => {
+    // The book-swap protocol files the node's own signed entry under its own strand
+    // transport id; the seed must never make a node dial itself.
+    const [self, ownStrand, cross] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
+    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${cross}`;
+    const node = new CadreNode(createConfig());
+    injectSeed(node, {
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: []
+    });
+    const book = bookOf(node);
+    const now = Date.now();
+    await book.merge('strand-x', { peerId: ownStrand, addrs: [`/ip4/10.0.0.1/tcp/1/p2p/${ownStrand}`], issuedAt: now, lastSeenAt: 0 });
+    await book.merge('strand-x', { peerId: cross, addrs: [crossAddr], issuedAt: 0, lastSeenAt: now - 1 });
+
+    await expect(resolveSeed(node, 'strand-x', ownStrand)).resolves.toEqual([crossAddr]);
   });
 });
 

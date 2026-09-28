@@ -18,6 +18,7 @@ import {
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
   PersistentEnrolledMachineStore,
+  PersistentStrandPeerBookStore,
   loadOrCreateIdentityKey,
   peerKeySigner,
 } from '@serfab/cadre-core';
@@ -46,6 +47,7 @@ import {
   anchorSlotKey,
   bootstrapPeersKvKey,
   enrolledMachinesKvKey,
+  strandPeersKvKey,
   kvStoreSlot,
   secureStoreSlot,
   NODE_LOCAL_DB_NAME,
@@ -212,6 +214,14 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), enrolledMachinesKvKey(opts.partyId)),
     opts.partyId,
   );
+  // The strand peers this phone has met, with their last-known addresses — what it
+  // dials first for each strand after a relaunch, so a chat with another party
+  // re-meshes without a fresh invitation. Same LevelDB as the dial hints, its own
+  // key, and the same non-trust-bearing argument (see `node-local-slots.ts`).
+  const strandPeerBookStore = await PersistentStrandPeerBookStore.open(
+    kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), strandPeersKvKey(opts.partyId)),
+    opts.partyId,
+  );
 
   // Resolve the identity key HERE, before the manifest fetch, so the request can
   // be signed with the very key the CadreNode below then loads from the same slot
@@ -275,6 +285,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     trustedOwnerStore,
     bootstrapPeerStore,
     enrolledMachineStore,
+    strandPeerBookStore,
   }));
   nodeNoiseCryptoMode = noiseCryptoMode;
   await node.start();

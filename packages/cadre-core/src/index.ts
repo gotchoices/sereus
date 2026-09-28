@@ -128,6 +128,32 @@ export {
   type JoinedStrandRecord
 } from './joined-strand-store.js';
 
+// Node-local strand peer book: per strand, the strand peers this node has met and
+// their last-known addresses, dialed first on every launch so a restarted machine
+// re-finds the other parties. Same cross-platform split as the bootstrap-peer store
+// above — interface + in-memory + slot-backed stores here, Node-only file backend
+// behind the subpath '@serfab/cadre-core/strand-peer-book-file'.
+export {
+  MemoryStrandPeerBookStore,
+  PersistentStrandPeerBookStore,
+  mergeStrandPeerEntry,
+  sanitizeStrandPeerEntry,
+  strandPeerFreshness,
+  MAX_STRAND_PEERS,
+  STRAND_PEER_MAX_AGE_MS,
+  type StrandPeerBookStore,
+  type StrandPeerBookOptions,
+  type StrandPeerEntry
+} from './strand-peer-book.js';
+export {
+  StrandPeerObserver,
+  dialableAddrs,
+  STRAND_PEER_OBSERVE_THROTTLE_MS,
+  type StrandPeerObservation,
+  type StrandPeerObserverDeps,
+  type StrandPeerObserverOptions
+} from './strand-peer-observer.js';
+
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
 // so two parties on one device never share a control store. Every key stays within

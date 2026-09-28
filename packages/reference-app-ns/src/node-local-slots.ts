@@ -41,6 +41,15 @@ export function enrolledMachinesSlotKey(partyId: string): string {
 }
 
 /**
+ * `SqliteKVStore` key for a party's strand peer book — per strand, the strand
+ * peers this phone has met and their last-known addresses, dialed first after a
+ * relaunch. Its own key, dial hints only.
+ */
+export function strandPeersSlotKey(partyId: string): string {
+	return `strand-peers.${partyId}`;
+}
+
+/**
  * The subset of `SqliteKVStore` (`@optimystic/db-p2p-storage-ns`) a slot
  * needs. Declared locally — mirroring `KvStoreApi` in
  * reference-app-rn/src/node-local-slots.ts — so tests can pass an in-memory

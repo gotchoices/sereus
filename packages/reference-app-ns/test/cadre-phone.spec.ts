@@ -266,7 +266,7 @@ describe('startPhoneNode identity database', () => {
 		expect(H.state.kvConstructions[0]!.prefix).toBe('');
 	});
 
-	it('reads exactly the three node-local keys during start', async () => {
+	it('reads exactly the four node-local keys during start', async () => {
 		const { startPhoneNode } = await loadModule();
 		await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
 
@@ -274,6 +274,7 @@ describe('startPhoneNode identity database', () => {
 			`trusted-owners.${PARTY}`,
 			`bootstrap-peers.${PARTY}`,
 			`enrolled-machines.${PARTY}`,
+			`strand-peers.${PARTY}`,
 		]);
 		// Cold start reads; it does not write. A write here would mean an empty
 		// snapshot overwriting a record some other code path had just put there.

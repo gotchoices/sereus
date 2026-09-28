@@ -266,10 +266,11 @@ export class HostProcessOrchestrator implements Orchestrator {
    * identity key inside its workdir (`ensureNodeIdentity`, reused across
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
-   * start` opens the file-backed bootstrap-peer and trusted-owner stores only
-   * when a protobuf identity key file is configured, and puts them beside it.
+   * start` opens the file-backed bootstrap-peer, trusted-owner and strand
+   * peer-book stores in the node's state directory, which defaults to the
+   * directory holding the `cadre.json` written here — the same workdir.
    * Terminating the loan (`removeContainer`) deletes the workdir, so the key and
-   * both stores go with it.
+   * every store go with it.
    */
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     const workdir = this.workdirFor(request.containerId);

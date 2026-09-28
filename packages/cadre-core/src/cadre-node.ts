@@ -55,6 +55,8 @@ import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
+import { MemoryStrandPeerBookStore, type StrandPeerBookStore, type StrandPeerEntry } from './strand-peer-book.js';
+import type { StrandPeerObservation } from './strand-peer-observer.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
 import {
   JoinedStrandRows,
@@ -109,7 +111,6 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
-import { MAX_STRAND_ADDRS } from './strand-formation-protocol.js';
 import {
   createMembershipConnectionGater,
   DEFAULT_ENROLLMENT_WINDOW_MS,
@@ -184,7 +185,7 @@ function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
  * and order-preserving.
  *
  * Used wherever a strand's discovery seed unions two sources of address strings — the
- * freshly-RPC'd sibling answers and the cross-party addresses learned at formation. The
+ * freshly-RPC'd sibling answers and the strand peer book's last-known addresses. The
  * caller passes the FRESHER source as `primary`, so a stale entry can only ever be
  * appended, never promoted ahead of a current one, and each source keeps whatever
  * signaling-first ordering it arrived with.
@@ -523,37 +524,32 @@ export class CadreNode implements SAppIdLookup {
   private readonly strandPeerAddrRefreshAt = new Map<string, number>();
 
   /**
-   * CROSS-PARTY strand-network addresses learned at formation, keyed by strandId — the
-   * responder's live strand addrs, carried back on the formation result
-   * (`FormationResultMessage.strandAddrs`) and recorded by {@link formStrand}.
+   * Node-local strand peer book (see `strand-peer-book.ts`): per strand, the strand
+   * peers this node has met and their last-known strand-network addresses. Two
+   * writers: {@link recordFormationStrandPeers} files the responder's live strand
+   * addrs a formation result carried back (`FormationResultMessage.strandAddrs`), and
+   * {@link observeStrandPeer} files every strand peer a running strand node
+   * identifies. Read by {@link resolveCohortSeed} (launch + hibernation resume) and
+   * re-merged by every {@link refreshStrandPeerAddrs} pass, which is what keeps the
+   * entries alive past the peerStore's one-hour address expiry.
    *
    * This is the ONLY cross-party discovery input there is. The strand-addr RPC that
    * resolves a strand's addresses is membership-gated and answers own-party siblings
-   * only, so without this map a joiner's cohort seed for a two-party strand is empty and
-   * the mesh never forms.
+   * only, so without the book a joiner's cohort seed for a two-party strand is empty
+   * and the mesh never forms — and, with an in-memory book, never RE-forms after a
+   * restart (gotchoices/sereus#18). A STORE rather than a map so an embedder can make
+   * it outlive the process; constructed (or adopted from `config.strandPeers.store`)
+   * by {@link initializeStrandPeerBookStore} during {@link start}, deliberately NOT
+   * cleared by {@link cleanup}, so it survives a stop()→start() cycle of the same node
+   * instance — same lifecycle as {@link bootstrapPeerStore}.
    *
-   * Read by {@link resolveCohortSeed} (launch + hibernation resume) and re-merged by
-   * every {@link refreshStrandPeerAddrs} pass — the re-merge is what keeps the entries
-   * alive past the peerStore's one-hour address expiry, since nothing can re-resolve
-   * them.
-   *
-   * IN-MEMORY and ONE-SHOT, deliberately (see `docs/strands.md`): the addresses die with
-   * the process, and a restarted initiator with no sibling running the strand is back to
-   * an empty seed until the durability work lands
-   * (`backlog/feat-cross-party-strand-addr-durability`). They are also never refreshed,
-   * so a responder whose relay reservation rotates before the initiator dials leaves a
-   * dead entry behind; recovery today is a fresh invitation.
-   *
-   * NOTE: entries are kept for the node's lifetime, including across a
-   * {@link stopStrand} — a stopped strand may be claimed again with {@link addStrand}
-   * (the watcher itself will not re-offer it: the stop suppresses the id for the rest of
-   * the session) and must still get its seed. Each strand's list is capped at
-   * `MAX_STRAND_ADDRS`, but the
-   * number of KEYS is bounded only by the strands this node has ever formed as an
-   * initiator (not by time); if a node ever forms strands at scale, evict on
-   * `unpublishStrand` or cap the map.
+   * Entries survive a {@link stopStrand} (a stopped strand may be claimed again with
+   * {@link addStrand}, and is rediscovered on restart) and are forgotten by
+   * {@link unpublishStrand}, {@link forgetJoinedStrand} and self-revocation; the store
+   * ages the rest out after 14 days and caps each strand at 16 peers, so the book is
+   * bounded by time and by the strands this node runs rather than by its history.
    */
-  private readonly crossPartyStrandAddrs = new Map<string, string[]>();
+  private strandPeerBookStore: StrandPeerBookStore | null = null;
 
   /**
    * PENDING strand membership invitations learned at formation, keyed by strandId — the
@@ -562,10 +558,9 @@ export class CadreNode implements SAppIdLookup {
    * to redeem (`consumeInvite` seats the `Strand.Member` row under this party's own key
    * — the `strand-node-binds-member-peer` half of the party-identity chain).
    *
-   * IN-MEMORY, deliberately, like {@link crossPartyStrandAddrs}: a restarted joiner
-   * re-forms from scratch anyway (durability is
-   * `backlog/feat-cross-party-strand-addr-durability`'s problem), and re-forming issues
-   * a fresh invitation. A re-formation against the same strand REPLACES the entry — the
+   * IN-MEMORY, deliberately: an invitation is single-use and short-lived, a restarted
+   * joiner that never redeemed it re-forms from scratch, and re-forming issues a fresh
+   * one. A re-formation against the same strand REPLACES the entry — the
    * fresh invitation supersedes one that may have expired. The party key the invitation
    * admits, by contrast, IS persisted (`StrandPartyKey`, seated by
    * {@link adoptFormationMembershipInvite} before the entry lands here), so a lost
@@ -581,8 +576,9 @@ export class CadreNode implements SAppIdLookup {
    * just waits; once launched, staging notifies the manager, which re-arms a finished loop.
    *
    * NOTE: entries live for the node's lifetime (one small pair per formed closed
-   * strand), the same unbounded-keys tripwire {@link crossPartyStrandAddrs} documents —
-   * if a node ever forms strands at scale, evict alongside that map.
+   * strand); the number of keys is bounded only by the strands this node has ever
+   * formed, not by time — if a node ever forms strands at scale, evict on
+   * `unpublishStrand` / `forgetJoinedStrand` as the strand peer book does.
    */
   private readonly pendingMembershipInvites = new Map<string, StrandMembershipInvite>();
 
@@ -1017,6 +1013,9 @@ export class CadreNode implements SAppIdLookup {
       // fails closed like the two above.
       this.initializeJoinedStrandStore();
 
+      // The strand peer book those joins are dialed from. Same placement, same reason.
+      this.initializeStrandPeerBookStore();
+
       // Read the party's enrolled-machine count out of its node-local record and
       // capture it for buildControlNodeOptions below. This MUST precede
       // createControlNode: Optimystic freezes the cluster policy when the node is
@@ -1442,6 +1441,30 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Construct (or adopt) the node-local strand peer book (see
+   * {@link strandPeerBookStore}). Synchronous for the reason
+   * {@link initializeBootstrapPeerStore} is: an injected store has already loaded its
+   * persisted entries by the time it is handed in, and the in-memory fallback has
+   * nothing to load. The instance is kept across stop()→start(). A store scoped to a
+   * different party is a configuration error, fail closed: another party's strand
+   * peers must never enter this node's dial loop.
+   */
+  private initializeStrandPeerBookStore(): void {
+    const partyId = this.config.controlNetwork.partyId;
+    if (this.strandPeerBookStore) {
+      return;
+    }
+    const store = this.config.strandPeers?.store ?? new MemoryStrandPeerBookStore(partyId);
+    if (store.partyId !== partyId) {
+      throw new Error(
+        `CadreNodeConfig: strandPeers.store is scoped to party ${store.partyId}, ` +
+        `but this node serves party ${partyId} — refusing to mix strand peer books`
+      );
+    }
+    this.strandPeerBookStore = store;
+  }
+
+  /**
    * The node-local enrolled-machine store (null before {@link start}) — what this
    * node last knew about its party's size. Exposed for diagnostics and for a host
    * that wants to show which repair yardstick the next launch will declare.
@@ -1458,6 +1481,16 @@ export class CadreNode implements SAppIdLookup {
    */
   getBootstrapPeerStore(): BootstrapPeerStore | null {
     return this.bootstrapPeerStore;
+  }
+
+  /**
+   * The node-local strand peer book (null before {@link start}) — per strand, the
+   * strand peers this node dials first on launch, resume and refresh. Exposed for
+   * diagnostics and for a host that wants to show "whom would this strand re-find
+   * after a restart?".
+   */
+  getStrandPeerBookStore(): StrandPeerBookStore | null {
+    return this.strandPeerBookStore;
   }
 
   /**
@@ -5094,6 +5127,9 @@ export class CadreNode implements SAppIdLookup {
     // A refused pre-split launch left no tracked instance, so the stop below never
     // reaches detachStrand for it — clear the refusal here so a re-founded id starts clean.
     this.strandLaunchRefusals.delete(trimmed);
+    // A party-wide removal: the strand's peers must not stay dial targets for a strand
+    // that no longer exists (a re-published id is a fresh strand with fresh peers).
+    this.forgetStrandPeers(trimmed, 'unpublishStrand');
     // Clear THIS machine's own MemberPeer binding while the strand runtime — and the
     // retained party key — is still live: the delete above already destroyed the
     // party's StrandPartyKey row, so once this process forgets the key nothing can
@@ -5537,6 +5573,11 @@ export class CadreNode implements SAppIdLookup {
         this.forgetRevokedJoin(revokedStrandId);
         this.emit('strand:revoked', { strandId: revokedStrandId });
       },
+      // The strand peer book's observation writer: every strand peer the node
+      // identifies is remembered with its dialable addresses, so a restart re-finds
+      // it. Retained with the launch config, so a hibernation wake re-arms it.
+      onStrandPeerIdentified: (observedStrandId, observation) =>
+        this.observeStrandPeer(observedStrandId, observation),
       onRejoinBlocked: (blockedStrandId) => this.emit('strand:rejoin-blocked', { strandId: blockedStrandId }),
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
@@ -5603,11 +5644,32 @@ export class CadreNode implements SAppIdLookup {
    */
   private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<string[]> {
     const siblings = await this.resolveSiblingSeed(strandId, delegatePeerId);
-    // Sibling answers FIRST: they were resolved just now, while a contact-map entry is as
-    // old as the formation that produced it. `unionAddrs` appends only what the siblings
+    // Sibling answers FIRST: they were resolved just now, while a book entry is as old
+    // as the last connection to that peer. `unionAddrs` appends only what the siblings
     // did not already name, so a fresher answer is never displaced and each source keeps
-    // its own signaling-first ordering.
-    return unionAddrs(siblings, this.crossPartyStrandAddrs.get(strandId) ?? []);
+    // its own signaling-first ordering. `delegatePeerId` IS this strand node's own id.
+    return unionAddrs(siblings, this.strandPeerBookAddrs(strandId, delegatePeerId));
+  }
+
+  /**
+   * The strand peer book's contribution to a strand's seed: every live entry's
+   * addresses, freshest peer first, minus this node's own entry when `selfPeerId` is
+   * known (the book-swap ticket writes one; a node must never dial itself). Empty
+   * before {@link start} builds the store.
+   */
+  private strandPeerBookAddrs(strandId: string, selfPeerId?: string): string[] {
+    const store = this.strandPeerBookStore;
+    if (!store) {
+      return [];
+    }
+    const addrs: string[] = [];
+    for (const entry of store.entries(strandId)) {
+      if (entry.peerId === selfPeerId) {
+        continue;
+      }
+      addrs.push(...entry.addrs);
+    }
+    return addrs;
   }
 
   /**
@@ -5892,8 +5954,8 @@ export class CadreNode implements SAppIdLookup {
     // `connectedSiblingTargets`' membership read is unbounded, and with zero
     // connections its answer is empty whatever the table holds, so decide it from the
     // connection list instead of paying for the read once a tick. Note this only skips
-    // the RPC: a strand carrying cross-party contact addresses still refreshes below,
-    // because those never came from a sibling in the first place.
+    // the RPC: a strand with peer-book entries still refreshes below, because those
+    // never came from a sibling in the first place.
     //
     // NOTE: one strand-addr RPC per (due strand × connected sibling) per refresh
     // interval — each a tiny request/response on an already-open control
@@ -5914,17 +5976,17 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * One strand's share of {@link refreshStrandPeerAddrs}: RPC the siblings, union their
-   * answers with this strand's cross-party contact addresses, and merge the lot into the
-   * strand's address book. Errors are logged and swallowed so one strand's failure never
-   * costs the others their refresh.
+   * answers with this strand's peer-book addresses, and merge the lot into the strand's
+   * address book. Errors are logged and swallowed so one strand's failure never costs
+   * the others their refresh.
    *
    * `targets` may be EMPTY — a solo node, or one whose only control peers are strangers.
-   * The cross-party addresses still have to be re-merged in that case: they were learned
-   * at formation and can never be re-resolved, so this periodic re-merge is the ONLY
-   * thing standing between them and the peerStore's one-hour expiry. A strand with
-   * neither a sibling to ask nor a contact entry does nothing and leaves its throttle
-   * unstamped, so the next reconcile tick retries rather than sitting out the whole
-   * refresh interval having done nothing.
+   * The peer-book addresses still have to be re-merged in that case: nothing re-resolves
+   * another party's addresses, so this periodic re-merge is the ONLY thing standing
+   * between them and the peerStore's one-hour expiry. A strand with neither a sibling to
+   * ask nor a book entry does nothing and leaves its throttle unstamped, so the next
+   * reconcile tick retries rather than sitting out the whole refresh interval having
+   * done nothing.
    */
   private async refreshOneStrandPeerAddrs(
     strandId: string,
@@ -5936,11 +5998,13 @@ export class CadreNode implements SAppIdLookup {
     if (!controlNode || !strandNode) {
       return;
     }
-    const contactAddrs = this.crossPartyStrandAddrs.get(strandId) ?? [];
-    if (targets.length === 0 && contactAddrs.length === 0) {
-      return;
-    }
     try {
+      // Inside the try: a strand node torn down mid-pass may throw on any read, and one
+      // strand's failure must never cost the others their refresh.
+      const contactAddrs = this.strandPeerBookAddrs(strandId, strandNode.peerId.toString());
+      if (targets.length === 0 && contactAddrs.length === 0) {
+        return;
+      }
       // The running strand node's own peerId is the delegate to announce — see
       // the relationship note on refreshStrandPeerAddrs.
       const siblingAddrs = targets.length === 0
@@ -5982,14 +6046,14 @@ export class CadreNode implements SAppIdLookup {
    * peerStore's one-hour expiry. No new gating here — cross-party strand trust is
    * `backlog/strand-network-nat-relay-reachability`.
    *
-   * NOTE: one input does NOT age out — the cross-party addresses a formation
-   * carried back ({@link crossPartyStrandAddrs}). Nothing can re-resolve them, so
-   * {@link refreshStrandPeerAddrs} re-merges the same stored list every pass, which
-   * also means a junk entry from a responder survives for the node's lifetime rather
-   * than an hour. Bounded to {@link MAX_STRAND_ADDRS} per strand, from a party this
-   * node deliberately formed a strand with, and still authority-free — so the
-   * exposure is a handful of failed dials, not a trust hole. Evict on
-   * `unpublishStrand` if that ever stops being an acceptable price.
+   * NOTE: one input ages out on a slower clock — the strand peer book's entries
+   * ({@link strandPeerBookStore}). Nothing can re-resolve another party's addresses,
+   * so {@link refreshStrandPeerAddrs} re-merges the book every pass, which means a
+   * junk entry from a responder or a peer's identify survives until the book drops it
+   * (14 days unrefreshed, or the peer's next connection replacing the entry) rather
+   * than an hour. Bounded to 16 peers × 16 addrs per strand, forgotten on
+   * `unpublishStrand` / `forgetJoinedStrand`, and still authority-free — so the
+   * exposure is a handful of failed dials, not a trust hole.
    */
   private async mergeStrandPeerAddrs(strandNode: Libp2p, addrs: string[], strandId: string): Promise<void> {
     const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
@@ -6072,6 +6136,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode not running');
     }
     await this.joinedStrandRows!.forget(strandId);
+    this.forgetStrandPeers(strandId, 'forgetJoinedStrand');
     await this.stopStrand(strandId);
   }
 
@@ -6133,6 +6198,53 @@ export class CadreNode implements SAppIdLookup {
     void this.joinedStrandRows?.forgetAfterThisSession(strandId).catch((error: unknown) => {
       log('forgetting revoked joined strand %s failed; it will be re-offered on the next start: %o',
         strandId, error);
+    });
+    // The strand's peers go with the join: a removed party must not keep dialing them.
+    this.forgetStrandPeers(strandId, 'self-revocation');
+  }
+
+  /**
+   * Forget a strand's entries in the peer book (see {@link strandPeerBookStore}):
+   * fire-and-log, like every book write — the removal is visible synchronously by the
+   * store's contract, and a failed persist costs restart survival only.
+   */
+  private forgetStrandPeers(strandId: string, caller: string): void {
+    void this.strandPeerBookStore?.forget(strandId).catch((error: unknown) => {
+      log('%s: forgetting strand %s peers failed (continuing): %o', caller, strandId, error);
+    });
+  }
+
+  /**
+   * The strand peer book's observation writer (`StartStrandConfig.onStrandPeerIdentified`):
+   * a strand node identified a strand peer at `observation.addrs`, so remember it as an
+   * unsigned entry seen just now. The observer never reports self, and the store binds
+   * every address to the peer id before filing it.
+   */
+  private observeStrandPeer(strandId: string, observation: StrandPeerObservation): void {
+    this.rememberStrandPeer(strandId, {
+      peerId: observation.peerId,
+      addrs: observation.addrs,
+      issuedAt: 0,
+      lastSeenAt: Date.now()
+    }, 'observeStrandPeer');
+  }
+
+  /**
+   * Merge one entry into the peer book. Fire-and-log: the entry is visible
+   * synchronously by the store's contract, and the promise tracks durability only. A
+   * persist failure costs restart survival, never this session's seed — the same trade
+   * {@link retainDialTarget} makes.
+   */
+  private rememberStrandPeer(strandId: string, entry: StrandPeerEntry, caller: string): void {
+    const store = this.strandPeerBookStore;
+    if (!store) {
+      // Unreachable in production: start() builds the store before any strand can
+      // launch or form. Logged rather than thrown, for the same reason as retainDialTarget.
+      log('%s: no strand peer book yet — not remembering %s for strand %s', caller, entry.peerId, strandId);
+      return;
+    }
+    void store.merge(strandId, entry).catch((error: unknown) => {
+      log('%s: persisting strand %s peer %s failed (continuing): %o', caller, strandId, entry.peerId, error);
     });
   }
 
@@ -7390,7 +7502,7 @@ export class CadreNode implements SAppIdLookup {
       disclosure,
       this.controlNode
     );
-    this.recordCrossPartyStrandAddrs(result.strandId, result.strandAddrs);
+    this.recordFormationStrandPeers(result.strandId, result.strandAddrs);
     // A closed host strand's approval carries the joiner's own membership invitation —
     // persist this party's identity key and stage the invitation for bring-up to redeem.
     // Runs AFTER the addr recording so a persistence failure (which throws — see the
@@ -7581,35 +7693,41 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Remember the responder's strand-network addresses for a strand this node just
-   * formed, so the strand's discovery seed has something to work with when the app
-   * launches it (see {@link crossPartyStrandAddrs}).
+   * formed in the strand peer book (see {@link strandPeerBookStore}), so the strand's
+   * discovery seed has something to work with when the app launches it — and again
+   * after every restart.
    *
-   * Scoped strictly to `strandId`: these addresses reach ONE strand node of ONE other
-   * party and must never seed another strand's mesh or the control peerStore. An empty
-   * list is recorded as no entry at all rather than an empty one, so a later formation
-   * against the same strand that DOES disclose addresses is not shadowed.
+   * The carried list is peer-agnostic (`sanitizeStrandAddrs` bounds and parses it,
+   * nothing more), so it is attributed per peer here (`groupAddrsByPeerId`, the same
+   * rule the address-book merge applies) and each peer becomes one unsigned entry seen
+   * just now: the responder disclosed the addresses live a moment ago. An entry naming
+   * no destination peer is dropped there. Scoped strictly to `strandId`: these
+   * addresses reach ONE strand node of ONE other party and must never seed another
+   * strand's mesh or the control peerStore. An empty list records nothing, so a later
+   * formation against the same strand that DOES disclose addresses is not shadowed.
    */
-  private recordCrossPartyStrandAddrs(strandId: string, strandAddrs: readonly string[]): void {
+  private recordFormationStrandPeers(strandId: string, strandAddrs: readonly string[]): void {
     if (strandAddrs.length === 0) {
       log('formStrand: responder disclosed no strand addrs for %s — cross-party seed stays empty', strandId);
       return;
     }
-    // Capped at the same `MAX_STRAND_ADDRS` one arriving list is, because this
-    // ACCUMULATES: re-forming against the same strand (the documented recovery for a
-    // responder whose relay reservation rotated) unions a fresh list onto the old one,
-    // and nothing here can tell a dead entry from a live one. Without the cap, the seed
-    // — and the peerStore rows every refresh pass re-merges from it — would grow by up
-    // to 16 entries per redemption for the node's lifetime. Oldest entries fall off the
-    // end, which is the right end to lose: `unionAddrs` keeps the freshest list first.
-    const merged = unionAddrs(strandAddrs, this.crossPartyStrandAddrs.get(strandId) ?? [])
-      .slice(0, MAX_STRAND_ADDRS);
-    this.crossPartyStrandAddrs.set(strandId, merged);
+    const now = Date.now();
+    let peers = 0;
+    for (const [peerId, addrs] of groupAddrsByPeerId([...strandAddrs])) {
+      this.rememberStrandPeer(strandId, {
+        peerId,
+        addrs: addrs.map((ma) => ma.toString()),
+        issuedAt: 0,
+        lastSeenAt: now
+      }, 'formStrand');
+      peers++;
+    }
     // A strand already running when this lands (a re-formation) would otherwise wait out
     // the rest of its ~10-minute refresh throttle before the new addresses reached its
     // address book. Clearing the stamp makes the next 15 s reconcile tick merge them,
     // which matters precisely because re-forming is the recovery path for a dead entry.
     this.strandPeerAddrRefreshAt.delete(strandId);
-    log('formStrand: recorded %d cross-party strand addr(s) for %s', merged.length, strandId);
+    log('formStrand: recorded %d cross-party strand addr(s) for %s under %d peer(s)', strandAddrs.length, strandId, peers);
   }
 
   /**

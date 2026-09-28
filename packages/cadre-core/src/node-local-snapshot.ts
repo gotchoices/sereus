@@ -4,9 +4,12 @@
  * from shared group state:
  *
  *  - the trusted-owner anchor (`trusted-owner-store.ts`),
- *  - the cold-start bootstrap-peer store (`bootstrap-peer-store.ts`).
+ *  - the cold-start bootstrap-peer store (`bootstrap-peer-store.ts`),
+ *  - the strand peer book (`strand-peer-book.ts`), whose entries are one map per
+ *    strand rather than one value per key — the validation hook below is what
+ *    lets it drop a single junk peer without dropping the strand.
  *
- * A THIRD node-local record — the enrolled-machine count
+ * ANOTHER node-local record — the enrolled-machine count
  * (`enrolled-machine-store.ts`) — reuses {@link DurableSlot} but deliberately
  * NOT this module's snapshot machinery: it is one scalar rather than an entry
  * map, and it must cold-start rather than throw on an unreadable slot. Its

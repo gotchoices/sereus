@@ -4,6 +4,7 @@ import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import { StrandPeerObserver, type StrandPeerObservation } from './strand-peer-observer.js';
 import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
@@ -261,6 +262,18 @@ export interface StartStrandConfig {
    * hibernation wake's rebuilt supervisors carry it too.
    */
   announceDelegateToRelay?: (strandId: string, relayAddr: string, delegatePeerId: string) => Promise<void>;
+
+  /**
+   * Called when the strand's libp2p node identifies a STRAND peer — one whose
+   * identify result names this strand's block-transfer protocol, so never the
+   * circuit relay or a bootstrap node — with the addresses it is dialable at
+   * (`strand-peer-observer.ts`). Throttled per peer; must not throw. `CadreNode`
+   * wires it to the node-local strand peer book, which is what lets a restarted
+   * machine dial the peers it was talking to. Absent ⇒ nothing is observed.
+   * Retained with the launch config, so a hibernation wake re-arms it on the
+   * rebuilt node.
+   */
+  onStrandPeerIdentified?: (strandId: string, observation: StrandPeerObservation) => void;
 }
 
 /**
@@ -370,6 +383,14 @@ export class StrandInstanceManager {
    * missed writes).
    */
   private backfills: Map<string, PeerJoinBackfill> = new Map();
+  /**
+   * The per-strand peer-book observation writer (`strand-peer-observer.ts`), keyed
+   * by strand id. Same lifecycle rationale as {@link backfills}: started in
+   * `buildStrandRuntime` right after the libp2p node exists, stopped and dropped in
+   * `releaseRuntime`, so quiesce → resume re-arms it on the rebuilt node. Only
+   * present when the launch config supplied `onStrandPeerIdentified`.
+   */
+  private peerObservers: Map<string, StrandPeerObserver> = new Map();
   /**
    * The per-strand revoked-peer enforcer (closed strands only), keyed by strand
    * id. Same lifecycle rationale as {@link backfills}: created in
@@ -734,6 +755,24 @@ export class StrandInstanceManager {
 
       instance.libp2pNode = node;
 
+      // The peer-book observation writer, armed BEFORE the database bring-up below
+      // (unlike the backfill) because the bootstrap dials that follow `libp2p.start()`
+      // land during that bring-up, and they are exactly the peers worth remembering:
+      // identify for an early peer may already have fired by the time anything after
+      // the database initializes runs. Registered in the map immediately so the
+      // failure rollback (releaseRuntime) stops it like every other runtime component.
+      const onStrandPeerIdentified = config.onStrandPeerIdentified;
+      if (onStrandPeerIdentified) {
+        const observer = new StrandPeerObserver({
+          label: strandId,
+          libp2p: node,
+          protocolPrefix,
+          onObserved: (observation) => onStrandPeerIdentified(strandId, observation)
+        });
+        this.peerObservers.set(strandId, observer);
+        observer.start();
+      }
+
       // One reservation supervisor PER RELAY, started now so the first attempts
       // overlap the database bring-up below (the relay is never in a strand's
       // Optimystic cohort — its protocol ids are namespaced `/optimystic/strand-<id>/…`
@@ -945,6 +984,13 @@ export class StrandInstanceManager {
     if (backfill) {
       backfill.stop();
       this.backfills.delete(instance.strandId);
+    }
+    // The peer-book observer goes with the node it listened on; a resume re-arms
+    // one on the rebuilt node.
+    const peerObserver = this.peerObservers.get(instance.strandId);
+    if (peerObserver) {
+      peerObserver.stop();
+      this.peerObservers.delete(instance.strandId);
     }
     // The revoked-peer enforcer goes with the runtime it gated: a resume
     // rebuilds it with a fresh (initially empty, fail-open) snapshot.

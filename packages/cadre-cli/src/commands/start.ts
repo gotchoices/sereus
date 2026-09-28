@@ -14,6 +14,7 @@ import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
+import { FileStrandPeerBookStore } from '@serfab/cadre-core/strand-peer-book-file';
 import { fromString } from 'uint8arrays';
 import { resolveConfig } from '../config/index.js';
 import { resolveStorageConfig } from './node-session.js';
@@ -176,6 +177,15 @@ export const startCommand = new Command('start')
         config.controlNetwork.partyId,
       );
 
+      // The strand peers this node has met, with their last-known addresses, kept in
+      // the same directory: what a restarted node dials first for each strand, so a
+      // cross-party strand re-meshes without a fresh invitation. Dial hints only, like
+      // the bootstrap peers — nothing here grants authority.
+      const strandPeerBookStore = await FileStrandPeerBookStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
@@ -185,6 +195,7 @@ export const startCommand = new Command('start')
         },
         bootstrapPeers: { store: bootstrapPeerStore },
         enrolledMachines: { store: enrolledMachineStore },
+        strandPeers: { store: strandPeerBookStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         strandFilter: config.strandFilter,

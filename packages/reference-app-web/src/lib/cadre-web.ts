@@ -36,6 +36,7 @@ import {
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
+	PersistentStrandPeerBookStore,
 	peerKeySigner,
 	controlStorageScope,
 } from '@serfab/cadre-core';
@@ -48,6 +49,7 @@ import type {
 	TrustedOwnerStore,
 	BootstrapPeerStore,
 	EnrolledMachineStore,
+	StrandPeerBookStore,
 	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
@@ -72,7 +74,13 @@ import {
 	getStoreStorage,
 	NODE_LOCAL_STORE_KEY,
 } from './strand-storage.js';
-import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY } from './node-local-slots.js';
+import {
+	kvSlot,
+	TRUSTED_OWNERS_KV_KEY,
+	BOOTSTRAP_PEERS_KV_KEY,
+	ENROLLED_MACHINES_KV_KEY,
+	STRAND_PEERS_KV_KEY,
+} from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 
@@ -180,6 +188,7 @@ let ownerError: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
+let strandPeerBookStore: StrandPeerBookStore | null = null;
 let solicitationReady = false;
 const formedStrands = new Map<string, FormedStrand>();
 
@@ -258,6 +267,11 @@ export function getTrustedOwnerStore(): TrustedOwnerStore | null {
 /** Node-local bootstrap-peer store — durable across reload once `startCadre` resolves. */
 export function getBootstrapPeerStore(): BootstrapPeerStore | null {
 	return bootstrapPeerStore;
+}
+
+/** Node-local strand peer book — durable across reload once `startCadre` resolves. */
+export function getStrandPeerBookStore(): StrandPeerBookStore | null {
+	return strandPeerBookStore;
 }
 
 /** Strands joined this session via the consent/invitation formation flow. */
@@ -366,6 +380,13 @@ export async function startCadre(): Promise<CadreNode> {
 		kvSlot(nodeLocalHandle, ENROLLED_MACHINES_KV_KEY),
 		partyId,
 	);
+	// The strand peers this tab has met, with their last-known addresses — what it
+	// dials first for each strand after a reload, so a formed strand re-meshes
+	// without a fresh invitation. Same database, its own key, dial hints only.
+	strandPeerBookStore = await PersistentStrandPeerBookStore.open(
+		kvSlot(nodeLocalHandle, STRAND_PEERS_KV_KEY),
+		partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -425,6 +446,7 @@ export async function startCadre(): Promise<CadreNode> {
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
+		strandPeers: { store: strandPeerBookStore },
 	};
 
 	node = new CadreNode(config);
