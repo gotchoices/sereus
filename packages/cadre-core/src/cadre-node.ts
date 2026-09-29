@@ -103,7 +103,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { connectionManagerTimeouts, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { connectionManagerTimeouts, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -1864,12 +1864,14 @@ export class CadreNode implements SAppIdLookup {
       // itself, so the unknown case is provably byte-for-byte the old behaviour.
       // The yardstick moves ALONE: `assumedClusterSize` stays pinned at 2, because a
       // party of phones cannot promise three quarters of its machines are awake.
-      // With neither declared this is still the frozen constant by identity, which is the
-      // production path. A degenerate deadline is Optimystic's to refuse, in
-      // createControlNode below.
+      // The read deadline is the host's own, else two link round trips at the declared
+      // `linkRoundTripMs`, else nothing — the frozen constant already carries the same
+      // derivation at the default declaration (`link-budget.ts`). With neither declared this
+      // is still the frozen constant by identity, which is the production path. A degenerate
+      // deadline is Optimystic's to refuse, in createControlNode below.
       clusterPolicy: controlClusterPolicy({
         enrolledMachines: this.declaredEnrolledMachines,
-        cohortQueryTimeoutMs: network?.cohortQueryTimeoutMs
+        cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(network)
       }),
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),

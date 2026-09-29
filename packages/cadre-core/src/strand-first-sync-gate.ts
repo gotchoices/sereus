@@ -84,24 +84,45 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  *
  * Every harness figure below was taken on one shape: one Windows developer machine, two
  * relay-only `CadreNode`s (`listenAddrs: []`) on a shared loopback dedicated relay, with a
- * 900 ms one-way per-frame outbound delay applied to every websocket by
+ * one-way per-frame outbound delay applied to every websocket by
  * `integration-tests/src/harness/ws-latency.ts` in `pipelined` mode — frames stay overlapped
  * in flight, so the figure is latency and bandwidth stays unlimited; the harness's other mode
  * (`serial`) is a per-socket frame-rate cap and its delays are NOT comparable
- * (`docs/testing.md` → "Link latency"). A round trip therefore costs about 1.8 s. Times run
- * from the `addStrand` call to writable.
+ * (`docs/testing.md` → "Link latency"). Two delays were used: 900 ms one-way, a round trip
+ * near 1.8 s, the band sereus supported first; and 1 500 ms one-way, the supported 3-second
+ * round trip. Times run from the `addStrand` call to writable.
  *
- * FRESH JOIN (2026-09-26), a machine holding nothing of the strand yet: 23, 27, 31 and 41 s
- * over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42 and 46 s over three
- * runs at a 5000 ms one; the re-attach scenario below later took 38.7, 38.7 and 56.9 s for
- * the same fresh join. **The 5000 ms band, 35-57 s, is the one in force**: sereus declares
- * 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`), because
- * 1000 ms is shorter than one round trip on that link and leaves every cohort read with no
- * answer to corroborate against. Widening that deadline makes a consult against a peer that
- * cannot answer cost longer, and this phase runs several of those — which is why both bands
- * are recorded here, and why a change to either number has to be weighed against the other.
+ * FRESH JOIN at 900 ms (2026-09-26), a machine holding nothing of the strand yet: 23, 27, 31
+ * and 41 s over four runs at optimystic's 1000 ms cohort read deadline, and 35, 42 and 46 s
+ * over three runs at a 5000 ms one; the re-attach scenario below later took 38.7, 38.7 and
+ * 56.9 s for the same fresh join. At that delay the 5000 ms band, 35-57 s, was the one in
+ * force: sereus then declared 5000 ms, because 1000 ms is shorter than one round trip on
+ * that link and leaves every cohort read with no answer to corroborate against. Widening that
+ * deadline makes a consult against a peer that cannot answer cost longer, and this phase runs
+ * several of those — which is why both bands are recorded here, and why a change to either
+ * number has to be weighed against the other.
  *
- * RE-ATTACH (2026-09-26, the opt-in
+ * AT THE SUPPORTED LINK (2026-09-29), 1 500 ms one-way, with the read deadline now derived
+ * from the declared link at 7 000 ms (`cohortReadDeadlineMs` in `link-budget.ts`; the
+ * plugin's `COHORT_READ_DEADLINE_MS` is the same number), the same scenario:
+ *  - Fresh join: writable at 52.1 and 82.1 s over two runs, and 63.6 s in a third run under
+ *    the coordinator debug channel; a fourth run with the deadline set back to 5 000 ms took
+ *    70.2 s. B's strand node connected to A's at 18.2-18.3 s in every run at this delay. The
+ *    row A wrote before the join was readable at 67-124 s.
+ *  - Re-attach over the store B kept: bimodal again. 1 of 3 runs held everything and came up
+ *    writable at launch (9.1 s; the row at 33.4 s). The other 2 were gated and writable at
+ *    75.7 and 78.7 s (the row at 120.8 and 175.0 s). The empty-store arm was not re-run; at
+ *    900 ms it matched a fresh join.
+ *  - What this band is NOT: a measure of the 7 000 ms deadline. Every cohort consult in those
+ *    runs ended 3.00-3.02 s after the one before it, at 5 000 and 7 000 alike, because
+ *    Optimystic's fixed 3 000 ms request dial deadline also bounds the protocol negotiation on
+ *    an already-open connection, and one negotiation is one link round trip — 3 s here
+ *    (`tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`).
+ *    So at the supported link this is the band of a join whose every consult fails and whose
+ *    blocks arrive by peer-join backfill. Widening the read deadline further would not move
+ *    it until that upstream deadline moves; when it does, re-measure here.
+ *
+ * RE-ATTACH at 900 ms (2026-09-26, the opt-in
  * `integration-tests/src/scenarios/strand-reattach-first-sync-measure.integration.ts` — re-run
  * it before changing this number): B attached once on an undelayed link, left with
  * `stopStrand`, A wrote while it was away, the delay was raised, and B called `addStrand`
@@ -118,18 +139,22 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  *    connected to A's at 11 s in every arm, fresh join included, and a run with 20 missed
  *    writes fell inside the run-to-run spread of those with 1.
  * This budget covers WRITABLE, not caught up: in the gated kept-store runs the row A wrote
- * while B was away became readable only at 140-162 s.
+ * while B was away became readable only at 140-162 s (121-175 s at the supported link).
  *
  * Two samples from outside this harness, neither reproduced here and neither discarded: a
  * reporter's re-attach of the same shape (optimystic #22; their harness, storage and delay
  * injector are unknown to us) opened the gate at about 150 s, after the previous 120 s budget
  * had already rejected; and a real Galaxy S7 joining fresh through relay.sereus.org took 178 s.
  *
- * 300 s clears the worst harness sample (79 s) by about 3.8x, the reporter's re-attach by 2x
- * and the device join by about 1.7x. 240 s was rejected: it clears the device join by only
- * 1.35x, and that sample was not a re-attach. History: the original 30 s sat INSIDE the 1000 ms
- * fresh band and refused about half of those joins while their sync was progressing normally;
- * 120 s was sized from fresh joins only and refused the reporter's re-attach.
+ * 300 s clears the worst harness sample (82 s, a fresh join at the supported link) by about
+ * 3.6x, the reporter's re-attach by 2x and the device join by about 1.7x. Kept at 300 s on
+ * 2026-09-29 by the rule that re-measure applied and the next one should: keep it while the
+ * worst harness sample is at most 100 s, which holds a margin of at least 3x; otherwise raise
+ * it to 3x the worst sample, rounded up to the next whole minute. 240 s was rejected earlier:
+ * it clears the device join by only 1.35x, and that sample was not a re-attach. History: the
+ * original 30 s sat INSIDE the 1000 ms fresh band and refused about half of those joins while
+ * their sync was progressing normally; 120 s was sized from fresh joins only and refused the
+ * reporter's re-attach.
  *
  * NOTE: accepted tradeoff — what 300 s costs. This wait is what an app's `addStrand` sits in
  * before it is told "not yet", so a strand none of whose members is reachable at all takes five
@@ -141,7 +166,7 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * "no peer at all" could then be reported at once and this budget would only ever be spent on a
  * sync that is actually in progress — worth more the longer this budget gets.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: cohort-read-deadline-derived-from-the-link
+// eslint-disable-next-line no-restricted-syntax -- measured, not derived: the bands above, from integration-tests' strand-reattach-first-sync-measure.integration.ts; a whole first sync has no round-trip count
 export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 300_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */

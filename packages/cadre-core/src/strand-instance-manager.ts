@@ -45,7 +45,7 @@ import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPoli
 import { strandNodeAddrs } from './strand-network-config.js';
 import { resolveRelayServer } from './relay-server.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
-import { connectionManagerTimeouts, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { connectionManagerTimeouts, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -796,11 +796,12 @@ export class StrandInstanceManager {
         // returns the frozen STRAND_CLUSTER_POLICY itself, declaring nothing. Resolved
         // HERE rather than at `startStrand`, so a wake from hibernation would pick up a
         // serving set that changed while the strand slept.
-        // The read deadline is the same field the control node reads, because the two
-        // networks ride one link; absent, the base policy's COHORT_READ_DEADLINE_MS stands.
+        // The read deadline is settled by the same helper the control node uses, because the
+        // two networks ride one link: the host's own, else derived from its declared
+        // `linkRoundTripMs`, else nothing, and the base policy's COHORT_READ_DEADLINE_MS stands.
         clusterPolicy: strandClusterPolicy(strandClusterSize, {
           servingMachines: config.servingMachines,
-          cohortQueryTimeoutMs: config.network?.cohortQueryTimeoutMs
+          cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(config.network)
         }),
         arachnode: {
           enableRingZulu: config.profile === 'storage'

@@ -68,11 +68,12 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * re-checking against `ADMISSION_DECISION_TIMEOUT_MS`.
  *
  * It cuts the loop off by design, so it does not grow with the link or with the number that
- * dominates a slow attempt, which is declared in another package: an attempt whose cohort
- * consult finds a silent peer costs `clusterPolicy.cohortQueryTimeoutMs`, which sereus declares
- * at 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`). That is
- * more than three times this budget, so such an attempt is never retried and the caller gets its
- * error unchanged. That is deliberate: the caller this budget is sized for, the admission gate, has
+ * dominates a slow attempt: an attempt whose cohort consult finds a silent peer costs
+ * `clusterPolicy.cohortQueryTimeoutMs`, two link round trips at the declared link
+ * (`cohortReadDeadlineMs` in `link-budget.ts`, 7 000 ms at the default declaration; the plugin's
+ * `COHORT_READ_DEADLINE_MS` is the same number). That is more than four times this budget, so
+ * such an attempt is never retried and the caller gets its error unchanged. That is deliberate:
+ * the caller this budget is sized for, the admission gate, has
  * already taken its fail-open answer by then, and a retry would only spend time after it. What
  * the budget still buys is the fast failures it was built for: the ~25 ms transactor read-phase
  * aggregate off a stream still forming, and a `cohort-unreachable` read during bring-up, which

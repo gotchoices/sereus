@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { COHORT_READ_DEADLINE_MS } from '@serfab/quereus-plugin-sereus';
 import {
 	ADMISSION_DECISION_TIMEOUT_MS,
 	CIRCUIT_REQUEST_ROUND_TRIPS,
@@ -8,6 +9,8 @@ import {
 	RELAYED_REQUEST_ROUND_TRIPS,
 	RELAY_RESERVATION_ROUND_TRIPS,
 	circuitRequestBudgetMs,
+	cohortReadDeadlineMs,
+	declaredCohortReadDeadlineMs,
 	relayReservationBudgetMs,
 	relayedDialBudgetMs,
 	relayedRequestBudgetMs,
@@ -49,6 +52,27 @@ describe('link budgets', () => {
 
 		expect(atDefault).toBe(CIRCUIT_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + PUSH_TRANSFER_ALLOWANCE_MS);
 		expect(atDouble - atDefault).toBe(CIRCUIT_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+	});
+
+	it('declares the plugin\'s cohort read deadline equal to the derivation at the default link', () => {
+		// The one fact two packages must agree on. The plugin cannot import cadre-core, so it
+		// spells the same arithmetic as a number, and nothing else would catch the two drifting
+		// apart: a host that declares no link takes the plugin's frozen policy whole, and a host
+		// that declares one takes the derivation, so a drift would give two hosts on the same
+		// link two different deadlines.
+		expect(cohortReadDeadlineMs()).toBe(CIRCUIT_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+		expect(COHORT_READ_DEADLINE_MS).toBe(cohortReadDeadlineMs());
+	});
+
+	it('settles the policy deadline as explicit, else derived from a declared link, else nothing', () => {
+		// `undefined` with nothing declared is load-bearing: it is what lets the policy builders
+		// return the frozen constant by identity, which the control-node options and plugin
+		// specs pin. An explicit deadline wins over the link, so a host that set it by hand is
+		// not overridden by declaring its link too.
+		expect(declaredCohortReadDeadlineMs(undefined)).toBeUndefined();
+		expect(declaredCohortReadDeadlineMs({})).toBeUndefined();
+		expect(declaredCohortReadDeadlineMs({ linkRoundTripMs: 1000 })).toBe(cohortReadDeadlineMs(1000));
+		expect(declaredCohortReadDeadlineMs({ cohortQueryTimeoutMs: 12_000, linkRoundTripMs: 1000 })).toBe(12_000);
 	});
 
 	it('refuses a declaration that is not a finite number above zero', () => {

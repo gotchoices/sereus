@@ -89,10 +89,11 @@ export interface CliConfigFile {
     /**
      * How long ONE peer of a block's replication group gets to answer ONE read-path request,
      * in milliseconds, for this machine's control node and every strand node it runs. Unset
-     * takes cadre's own 5000 ms, chosen for two parties that reach each other only through a
-     * relay; a deployment that is all LAN can lower it so a departed peer stops holding up a
-     * read for that long. A value that is not a finite number above zero fails startup where
-     * the node is built. See `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
+     * takes two link round trips at `linkRoundTripMs` below — 7000 ms at its default, sized
+     * for two parties that reach each other only through a relay; a deployment that is all
+     * LAN can lower it so a departed peer stops holding up a read for that long. A value that
+     * is not a finite number above zero fails startup where the node is built. See
+     * `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
      */
     cohortQueryTimeoutMs?: number;
     /**

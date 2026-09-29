@@ -85,8 +85,9 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * It cuts the loop off by design, so it does not grow with the link: its job is to end the
  * retries of slow attempts, and the caller gets the last attempt's error unchanged. An attempt
  * whose read phase consulted a silent peer ends at about one per-peer read deadline
- * (`COHORT_READ_DEADLINE_MS`, 5 s since sereus declared it, 1 s before), so it still gets one
- * retry inside this budget where it used to get two; an attempt that runs into the 10 s
+ * (`cohortReadDeadlineMs` in `link-budget.ts`: 7 s at the default declared link, 5 s before it
+ * was derived, 1 s at Optimystic's own default), so it still gets one retry inside this budget
+ * where it once got two; an attempt that runs into the 10 s
  * `ClusterClient` response deadline still gets none. See `docs/cadre-consistency.md` →
  * "Deadlines Over Optimystic's Reads and Commits".
  *

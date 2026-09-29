@@ -13,7 +13,7 @@
  * This module is the only place a new deadline over the link should be written, and in
  * cadre-core's source `yarn lint` enforces it (`LINK_DEADLINE_GUARD` in `eslint.config.mjs`): a
  * value named `…TIMEOUT_MS`, `…BUDGET_MS` or `…DEADLINE_MS` (or `…TimeoutMs` and the like) set
- * to a number rather than a derivation fails, unless the line above it gives one of three
+ * to a number rather than a derivation fails, unless the line above it gives one of four
  * reasons. `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>` keeps a
  * deadline that never waits on the link; `-- link-bound, not yet derived: <ticket slug>` marks
  * one that does and names the ticket that owns converting it. Grep for the second to list the
@@ -21,7 +21,17 @@
  * docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"` keeps a deadline
  * that does wait on the link, through an Optimystic read or commit, but whose value is what its
  * caller can tolerate: it gives up on purpose and must not grow with the link. That doc section
- * lists every such site.
+ * lists every such site. `-- measured, not derived: <where the measurement lives>` keeps a
+ * deadline that waits on the link but has no round-trip count to derive from, because it bounds
+ * a whole phase of many exchanges whose number depends on the data (a joining machine's first
+ * sync): its value is sized from a recorded measurement, which the directive names, and it is
+ * re-measured rather than recomputed when a number under it moves.
+ *
+ * Optimystic's per-peer cohort read deadline is derived here too ({@link cohortReadDeadlineMs}),
+ * but declared in another package: `COHORT_READ_DEADLINE_MS` in
+ * `quereus-plugin-sereus/src/cluster-size.ts` is the same arithmetic at the default declaration,
+ * spelled as a number because that package cannot import this one. `link-budget.spec.ts` pins
+ * the two equal.
  *
  * ── The instrument ──
  *
@@ -52,6 +62,7 @@
  * | dial the relay itself                                 | 1                | 3 500 ms                |
  * | request a reservation on an open relay connection     | 1                | 3 500 ms                |
  * | negotiate a protocol over an established circuit      | 1                | 3 500 ms                |
+ * | one request and its answer over an open circuit       | 2                | 7 000 ms                |
  * | open a relayed connection, then one request on it     | 6                | 21 000 ms               |
  *
  * **Measured** 2026-09-26, one Windows machine, loopback dedicated relay: a relayed dial took
@@ -104,14 +115,18 @@
  *   3 000 ms deadlines of their own (`DEFAULT_DIAL_TIMEOUT_MS`, the `pushDialTimeoutMs`
  *   defaults), which neither limit above reaches because a caller's signal replaces
  *   `dialTimeout`. So an Optimystic request that has to OPEN a relayed connection fails above
- *   375 ms one-way. A request over a connection that is already open does not dial, and the
+ *   375 ms one-way. A request over a connection that is already open does not dial, but its
+ *   protocol negotiation runs under the same signal (`openProtocolStream` forwards it into
+ *   `newStream`), and one negotiation is one link round trip: at the supported link every
+ *   cohort consult is therefore aborted at 3.0 s, before {@link cohortReadDeadlineMs} is
+ *   reached (measured 2026-09-29; the figures are on `COHORT_READ_DEADLINE_MS`). The
  *   connections cadre opens itself are budgeted here. Upstream:
- *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic.
- * - **Cadre deadlines still typed as milliseconds.** The cohort read deadline
- *   (`COHORT_READ_DEADLINE_MS`) bounds reads over the same link but does not derive from it:
- *   `cohort-read-deadline-derived-from-the-link`. Neither do the strand formation
- *   step deadline and the relay's reservation-admission deadline:
- *   `debt-formation-and-relay-admission-deadlines-ignore-the-declared-link`.
+ *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic, and
+ *   `tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`
+ *   here, carrying the open-connection finding to it.
+ * - **Cadre deadlines still typed as milliseconds.** The strand formation step deadline and
+ *   the relay's reservation-admission deadline bound exchanges over the same link but do not
+ *   derive from it: `debt-formation-and-relay-admission-deadlines-ignore-the-declared-link`.
  * - **A machine that declares a faster link than its peers.** Every machine is the listener
  *   for the others, so its `inboundUpgradeTimeout` — derived from ITS declaration — bounds
  *   connections other machines open to it. A peer declaring 3 500 ms dialing a machine that
@@ -136,10 +151,11 @@ import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
  * listener's admission decision"). (The previous 2 000 followed the same convention for the
  * 1.8 s band sereus supported before, with about 720 ms to spare.)
  *
- * Two budgets outside this module were sized against the 1.8 s band and do NOT move with it:
- * `COHORT_READ_DEADLINE_MS` (`quereus-plugin-sereus/src/cluster-size.ts`, 5 000 ms) and
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`strand-first-sync-gate.ts`). The module doc's
- * "What still fails" list carries the first.
+ * One budget outside this module does NOT move with it: `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`
+ * (`strand-first-sync-gate.ts`) bounds a whole first sync, which has no round-trip count, so it
+ * is sized from a measurement instead and re-measured when this declaration or the cohort read
+ * deadline moves. The per-peer cohort read deadline itself does move with it
+ * ({@link cohortReadDeadlineMs}).
  *
  * What 3 500 costs, against 2 000: a peer that is genuinely gone holds each operation longer
  * before it is abandoned and retried — the link part of a relayed dial or a reservation drive
@@ -239,7 +255,8 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  *   decision reads is held (`control-founding-consult-budget.spec.ts` pins both
  *   states). So the gate always fails open only on a node whose membership reads
  *   still consult: one consult costs about two link round trips, and asking a
- *   silent peer costs the per-peer read deadline (`COHORT_READ_DEADLINE_MS`, 5 s).
+ *   silent peer costs the per-peer read deadline ({@link cohortReadDeadlineMs}, 7 s
+ *   at the default declaration).
  * - **The decision is spent on the dialing machine's clock.** libp2p's listener
  *   runs this gate before it answers the multiplexer negotiation the dialer is
  *   waiting on (`libp2p/dist/src/upgrader.js`), and the listener's own
@@ -376,6 +393,62 @@ export function circuitRequestBudgetMs(
  */
 export function relayedRequestBudgetMs(linkRoundTripMs?: number): number {
 	return relayedDialBudgetMs(linkRoundTripMs) + CIRCUIT_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+}
+
+/**
+ * How long ONE cohort peer gets to answer ONE read-path request — Optimystic's
+ * `clusterPolicy.cohortQueryTimeoutMs`, which bounds the latest-revision query a read runs when
+ * its local copy may be stale and the archive fetch that follows it.
+ *
+ * {@link CIRCUIT_REQUEST_ROUND_TRIPS} at the declared link round trip: 2 x 3 500 = 7 000 ms at
+ * the default declaration. A read-path request opens a fresh protocol stream over a connection
+ * that is already open (`@optimystic/db-p2p`'s `openProtocolStream`), so it costs the protocol
+ * negotiation plus the request and its answer, and no dial. No admission allowance either: the
+ * called machine decided that when the connection was opened. This deadline governs only what
+ * Optimystic's own fixed 3 000 ms dial deadline lets through: a request that must first dial,
+ * and at the supported link the stream negotiation itself, is cut off by that one first (the
+ * module doc's "What still fails").
+ *
+ * Optimystic derives its whole-reconcile-pass bound from this value, `max(5 000, 5 x per-peer)`
+ * (`db-p2p/src/cluster/cluster-policy.ts`): 35 000 ms at the default declaration.
+ *
+ * What it costs, against the 5 000 ms that preceded it: a peer that is truly gone holds a read
+ * of a block missing locally 7 s instead of 5 s before the read is declined and retried, and a
+ * joining machine's first sync runs several such consults. That is why
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` is re-measured whenever this moves; the bands are on
+ * that constant.
+ *
+ * The plugin declares the same number as `COHORT_READ_DEADLINE_MS` (it cannot import this
+ * module), and `link-budget.spec.ts` pins the two equal.
+ */
+export function cohortReadDeadlineMs(linkRoundTripMs?: number): number {
+	return CIRCUIT_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+}
+
+/** The two `NetworkConfig` fields the per-peer cohort read deadline is settled from. */
+export interface DeclaredReadDeadline {
+	/** The host's own per-peer read deadline, which wins over the link derivation. */
+	cohortQueryTimeoutMs?: number;
+	/** The host's declared link round trip, from which the deadline is derived when no explicit one is set. */
+	linkRoundTripMs?: number;
+}
+
+/**
+ * The per-peer cohort read deadline to declare onto a network's cluster policy, or `undefined`
+ * for "declare nothing and take the plugin's frozen policy whole". One helper for both policy
+ * construction sites (`CadreNode`'s control policy and `StrandInstanceManager`'s strand policy),
+ * because the two networks ride one link and must get the same value.
+ *
+ * An explicit `cohortQueryTimeoutMs` wins over the derivation, so a host that set the deadline
+ * by hand keeps it whatever link it declared. With a declared link and no explicit deadline,
+ * the deadline is {@link cohortReadDeadlineMs} at that link. With neither, `undefined`: the
+ * plugin's frozen policy already carries `COHORT_READ_DEADLINE_MS`, which equals the derivation
+ * at the default declaration, and returning `undefined` lets the builders return that frozen
+ * object by identity, which existing specs pin.
+ */
+export function declaredCohortReadDeadlineMs(network?: DeclaredReadDeadline): number | undefined {
+	return network?.cohortQueryTimeoutMs
+		?? (network?.linkRoundTripMs === undefined ? undefined : cohortReadDeadlineMs(network.linkRoundTripMs));
 }
 
 /** The two deadlines one peer-join catch-up push needs, both derived from the declared link. */

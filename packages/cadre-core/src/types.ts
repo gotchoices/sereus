@@ -442,16 +442,21 @@ export interface NetworkConfig {
    * How long ONE cohort peer gets to answer ONE read-path request, in milliseconds, for the
    * control node and every strand node — as {@link connectionMonitor} is, and for the same
    * reason: the setting describes the LINK, and a phone's control node and its strand nodes
-   * ride the same one. Omitted takes {@link COHORT_READ_DEADLINE_MS} (5000 ms), chosen for two
-   * parties reaching each other only through a relay; Optimystic's own default is 1000 ms.
+   * ride the same one. Omitted, the deadline is DERIVED from {@link linkRoundTripMs}: one
+   * request and its answer over an open circuit costs two link round trips, so 7 000 ms at the
+   * default declaration (`cohortReadDeadlineMs` in `link-budget.ts`; the plugin's
+   * {@link COHORT_READ_DEADLINE_MS} is the same number). Optimystic's own default is 1000 ms.
    *
-   * Raise it for a link slower still, lower it for a deployment that is all LAN and wants a
-   * departed peer to stop holding up a read sooner. The cost of a larger value is that a peer
-   * which is truly gone holds a read of a block missing locally for that long before the read
-   * is declined and retried, and a joining machine's first sync runs several such consults —
-   * so a change here should be weighed against
-   * {@link CadreNodeConfig.strandFirstSync}'s budget. The measurement behind the default, and
-   * what it costs, are on {@link COHORT_READ_DEADLINE_MS}.
+   * Set this only to break the derivation on purpose: an explicit value wins over whatever
+   * {@link linkRoundTripMs} would derive, so a deployment that is all LAN can make a departed
+   * peer stop holding up a read sooner without declaring a faster link (which would also
+   * shorten the dial budgets). A deployment on a slower link should raise
+   * {@link linkRoundTripMs} instead, which moves this and every dial budget together. The
+   * cost of a larger value is that a peer which is truly gone holds a read of a block missing
+   * locally for that long before the read is declined and retried, and a joining machine's
+   * first sync runs several such consults — so a change here should be weighed against
+   * {@link CadreNodeConfig.strandFirstSync}'s budget. The derivation, its history and what it
+   * costs are on {@link COHORT_READ_DEADLINE_MS}.
    *
    * Handed to db-p2p's `clusterPolicy.cohortQueryTimeoutMs` unchanged and NOT re-validated
    * here. Optimystic refuses a value that is not a finite number above zero, or is above its
@@ -470,8 +475,9 @@ export interface NetworkConfig {
    * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
    * reservation deadlines are DERIVED from, each by the number of round trips that operation
    * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
-   * reservation drive, the control-cohort dial budgets, and libp2p's own `dialTimeout` and
-   * `inboundUpgradeTimeout` on every node. Reaching another machine through a relay costs a
+   * reservation drive, the control-cohort dial budgets, libp2p's own `dialTimeout` and
+   * `inboundUpgradeTimeout` on every node, and the per-peer cohort read deadline
+   * ({@link cohortQueryTimeoutMs}, unless set explicitly). Reaching another machine through a relay costs a
    * fixed number of exchanges, so a deadline written as milliseconds has a link speed above
    * which it can never open a connection — which is the defect this declaration exists to make
    * impossible to reintroduce one budget at a time. The counts, the measurement behind them,
@@ -690,9 +696,10 @@ export interface ControlNetworkConfig {
  *
  * The two `*ClusterPolicy` BUILDERS are the same objects with the block-repair
  * corroboration yardstick declared from the machines enrolled in this party
- * ({@link resolveRepairYardstick}) and, if the host set one, its own per-peer read
- * deadline in place of {@link COHORT_READ_DEADLINE_MS}. Both arrive in one named
- * declarations object, because both are plain numbers meaning unrelated things;
+ * ({@link resolveRepairYardstick}) and, if the host set one or declared its link, a
+ * per-peer read deadline in place of {@link COHORT_READ_DEADLINE_MS}
+ * (`declaredCohortReadDeadlineMs` in `link-budget.ts` settles which). Both arrive in one
+ * named declarations object, because both are plain numbers meaning unrelated things;
  * declaring neither returns the frozen base constant unchanged. A network picks the
  * derived numbers up when its libp2p node is built, which for a strand is every wake
  * from hibernation.
