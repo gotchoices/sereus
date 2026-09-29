@@ -149,7 +149,7 @@ function ownCadreDisabled(reply: FastifyReply, verb: 'start' | 'restart') {
     ok: false,
     error: {
       code: 'own_cadre_disabled',
-      message: `${verb} owner: this host's own cadre is turned off (donor-only mode). Set ownCadre.enabled in host.config.json (or start with --own-cadre) and restart cadre-host to run it again.`,
+      message: `${verb} owner: this host's own cadre is turned off (donor-only mode). Set ownCadre.enabled in host.config.json and restart cadre-host to run it again.`,
     },
   });
 }
