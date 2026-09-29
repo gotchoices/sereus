@@ -615,8 +615,8 @@ export class HostProcessOrchestrator implements Orchestrator {
       // NOTE: the scrub above drops every CADRE_* var and `extraEnv` is built only from
       // pinnedOwnerKeys, so a managed child advertises only the ports assigned to it here
       // — `CADRE_ANNOUNCE_ADDRS`/`CADRE_APPEND_ANNOUNCE_ADDRS` cannot reach it. Fine while
-      // children are reached at those ports or through a relay; if a host is ever fronted
-      // by a proxy or DNS name, plumb an announce var through from host config. The TCP
+      // children are reached at those ports; if a host is ever fronted by a proxy or DNS
+      // name, plumb an announce var through from host config. The TCP
       // and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand node the
       // child runs binds the same two entries with OS-assigned ports instead, since one
       // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). A NAT

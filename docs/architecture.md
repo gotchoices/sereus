@@ -895,7 +895,7 @@ Once multiple nodes with public IPs exist in the cadre, the control network beco
 
 #### Which nodes can be reached through a relay
 
-Relay support has two halves. A **relay server** forwards connections for other nodes (`network.enableRelay`, on by default for the storage profile); every storage-profile `CadreNode` runs one. A **relay reservation** is a slot a node behind NAT holds on a relay, which gives that node a `/p2p-circuit` address other machines can dial. Only the reservation makes a node that cannot accept connections — a phone, a browser tab, a home machine behind carrier-grade NAT — reachable. Where these docs say "relay support" without qualification, they mean the server half. Which kinds of node can hold a reservation today:
+Relay support has two halves. A **relay server** forwards connections for other nodes (`network.enableRelay`); a storage-profile `CadreNode` runs one unless that is set to `false`. A **relay reservation** is a slot a node behind NAT holds on a relay, which gives that node a `/p2p-circuit` address other machines can dial. Only the reservation makes a node that cannot accept connections — a phone, a browser tab, a home machine behind carrier-grade NAT — reachable. Where these docs say "relay support" without qualification, they mean the server half. Which kinds of node can hold a reservation today:
 
 | node kind | reachable through a relay? | how it names its relay |
 | --- | --- | --- |
