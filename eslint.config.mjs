@@ -124,7 +124,7 @@ const PHONE_RUNTIME_GUARD = [
 // Scope is cadre-core's src only (LINK_DEADLINE_SCOPE). `COHORT_READ_DEADLINE_MS` in
 // quereus-plugin-sereus is owned by `cohort-read-deadline-derived-from-the-link`;
 // widening the scope is one glob.
-const LINK_DEADLINE_MESSAGE = 'A deadline written as milliseconds. If it bounds an exchange with another machine, derive it from packages/cadre-core/src/link-budget.ts: count the round trips, as that module\'s doc describes. If it does not, keep the number and disable this line with the reason: `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>`.';
+const LINK_DEADLINE_MESSAGE = 'A deadline written as milliseconds. If it bounds an exchange with another machine, derive it from packages/cadre-core/src/link-budget.ts: count the round trips, as that module\'s doc describes. If it does not, keep the number and disable this line with the reason: `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>`. That module\'s doc lists the other two reasons: a deadline over the link not yet derived, and one that cuts off an Optimystic read or commit by design.';
 const LINK_DEADLINE_NAME = '/(timeout|budget|deadline)_?ms$/i';
 const LITERAL_ONLY_VALUE = ':matches(Literal[value=type(number)], BinaryExpression:not(:has(Identifier)))';
 // The left side is `timeoutMs`, `opts.timeoutMs`, or `opts?.timeoutMs` — the last parses as a
