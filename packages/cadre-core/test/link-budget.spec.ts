@@ -3,17 +3,21 @@ import { COHORT_READ_DEADLINE_MS } from '@serfab/quereus-plugin-sereus';
 import {
 	ADMISSION_DECISION_TIMEOUT_MS,
 	CIRCUIT_REQUEST_ROUND_TRIPS,
+	COMMIT_ROUND_TRIPS,
 	DECLARED_LINK_ROUND_TRIP_MS,
+	PROTOCOL_NEGOTIATION_ROUND_TRIPS,
 	PUSH_TRANSFER_ALLOWANCE_MS,
 	RELAYED_DIAL_ROUND_TRIPS,
 	RELAYED_REQUEST_ROUND_TRIPS,
 	RELAY_RESERVATION_ROUND_TRIPS,
 	circuitRequestBudgetMs,
 	cohortReadDeadlineMs,
+	commitBudgetMs,
 	declaredCohortReadDeadlineMs,
 	relayReservationBudgetMs,
 	relayedDialBudgetMs,
 	relayedRequestBudgetMs,
+	relayedStreamOpenBudgetMs,
 	resolveLinkRoundTripMs
 } from '../src/link-budget.js';
 
@@ -32,6 +36,8 @@ describe('link budgets', () => {
 		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 		expect(relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + 2 * ADMISSION_DECISION_TIMEOUT_MS);
 		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
+		expect(relayedStreamOpenBudgetMs()).toBe((RELAYED_DIAL_ROUND_TRIPS + PROTOCOL_NEGOTIATION_ROUND_TRIPS) * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
+		expect(commitBudgetMs()).toBe(COMMIT_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 
 		// A host that declares a slower link moves the round-trip part of every budget at once,
 		// which is the whole reason the declaration exists. The admission allowance is local

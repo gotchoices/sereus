@@ -2,9 +2,10 @@
  * `StrandFormationManager` provisioning-budget derivation: ONE config knob
  * (`StrandFormationManagerConfig.provisionTimeoutMs`) sets the RESPONDER's own
  * `provisionStrand` work+grace budget; the INITIATOR's `await-response` wait is derived
- * automatically as `host + PROVISION_RESPONSE_TRAVEL_MARGIN_MS` (`initiatorProvisionTimeoutMs`
- * in strand-formation-manager.ts) so the two can never be configured out of the ordering
- * `strand-formation-protocol.ts` documents (responder provisioning < initiator await-response).
+ * automatically as `host + responseTravelMarginMs` of the ladder derived from the declared
+ * link (`initiatorProvisionTimeoutMs` in strand-formation-manager.ts) so the two can never be
+ * configured out of the ordering `strand-formation-protocol.ts` documents (responder
+ * provisioning < initiator await-response).
  *
  * Unlike `strand-formation-protocol.spec.ts` (drives `FormationListener`/`dialFormation`
  * directly) and `strand-formation-consent.spec.ts` (drives ONE `StrandFormationManager` as a
@@ -91,10 +92,11 @@ describe('StrandFormationManager: one provisionTimeoutMs config drives both role
     // config.provisionTimeoutMs = 200 sets the RESPONDER's work+grace budget; the strand
     // provisioner never resolves, so the host cleanly times out and replies
     // 'Formation provisioning timed out' at ~200ms. The initiator's derived budget is
-    // 200 + PROVISION_RESPONSE_TRAVEL_MARGIN_MS (3000) = 3200ms, so it is still listening
-    // when that clean reply arrives — the assertion below is that specific rejection, not
-    // dialFormation's OWN generic 'Formation await-response timed out after Nms', which is
-    // what a same-budget bug (initiator sharing the host's 200ms) would produce instead.
+    // 200 + the travel margin at the default declared link (17 500 ms) = 17 700 ms, so it is
+    // still listening when that clean reply arrives — the assertion below is that specific
+    // rejection, not dialFormation's OWN generic 'Formation await-response timed out after
+    // Nms', which is what a same-budget bug (initiator sharing the host's 200ms) would
+    // produce instead.
     await expect(
       formBothRoles('budget', stuckProvisioner, { provisionTimeoutMs: 200 })
     ).rejects.toThrow(RESPONDER_TIMEOUT_REPLY);
@@ -102,15 +104,18 @@ describe('StrandFormationManager: one provisionTimeoutMs config drives both role
 
   it('keeps the responder ahead of the initiator even when BOTH budgets are clamped', async () => {
     // 9000ms is far above what a 1200ms session can hold, so both roles hit their ceiling.
-    // The ceilings are NOT the same number: the responder holds back the travel margin
-    // (capped at half its room), so it lands at (1200-200)/2 = 500ms while the initiator
-    // waits the full 1200-200 = 1000ms. Without that reserve both clamp to 1000ms and the
-    // responder's clean reply races the initiator's own timeout — the exact collapse the
-    // derived budget exists to prevent, reintroduced by the clamp.
+    // The ceilings are NOT the same number. At a 100 ms link the responder's room is
+    // 1200 - (contact 200 + validation 400) = 600, and it holds back a reserve for the
+    // initiator (capped at half its room), so it lands at 300ms; the initiator waits the
+    // full 1200 - dial 200 = 1000ms. Without that reserve the responder's clean reply
+    // races the initiator's own timeout — the exact collapse the derived budget exists to
+    // prevent, reintroduced by the clamp.
     await expect(
       formBothRoles('clamped', stuckProvisioner, {
+        linkRoundTripMs: 100,
         sessionTimeoutMs: 1200,
         stepTimeoutMs: 200,
+        dialTimeoutMs: 200,
         provisionTimeoutMs: 9000
       })
     ).rejects.toThrow(RESPONDER_TIMEOUT_REPLY);

@@ -19,16 +19,26 @@
  */
 
 import debug from 'debug';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
 import type { StrandFormationDisclosure, StrandMembershipInvite } from './types.js';
-import { type ControlStream, writeFrame, withTimeout } from './control-stream.js';
+import { type ControlStream, writeFrame, withDeadline, withTimeout } from './control-stream.js';
 import { canonicalJson } from './canonical-json.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+// formation-approval reaches only control-database and its retry helpers, none of which
+// import this protocol, so this import introduces no cycle either.
+import { DEFAULT_APPROVAL_TIMEOUT_MS } from './formation-approval.js';
+import {
+  CIRCUIT_REQUEST_ROUND_TRIPS,
+  cohortReadDeadlineMs,
+  commitBudgetMs,
+  relayedStreamOpenBudgetMs,
+  resolveLinkRoundTripMs
+} from './link-budget.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -47,69 +57,131 @@ export const INVALID_TOKEN_REASON = 'Invalid token';
 /** Maximum formation message size (1MB). */
 const MAX_FORMATION_MSG_SIZE = 1024 * 1024;
 
-/** Default whole-session timeout (ms). */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
-const DEFAULT_SESSION_TIMEOUT_MS = 30_000;
-/** Default per-step (single read/write) timeout (ms). */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
-const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 /**
- * Default provisioning budget (ms) — distinct from {@link DEFAULT_STEP_TIMEOUT_MS} because
- * `provisionStrand` is real work (DB writes, and an outbound approval-hook HTTP call when
- * the invite carries a `ValidationUrl`), not a bare wire read/write.
- *
- * Ordering is deliberate — each layer must be able to fail and report before the layer above
- * it gives up:
- *
- *   approval hook (10 s, `formation-approval.ts`)
- *     < responder provisioning (12 s)
- *     < initiator await-response (15 s)
- *     < session (30 s)
- *
- * The 3 s margin between responder provisioning and initiator await-response is the wire
- * latency budget for the result frame to travel back.
- *
- * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is a settle grace, so the default
- * WORK budget (12 s − 2 s = 10 s) EQUALS the hook's own 10 s: a dead hook races 'Formation
- * approval unavailable, retry' against 'Formation provisioning timed out'. Both are retryable
- * and both leave the invite unspent, so the race is benign.
+ * Every deadline of one formation session, derived from one declared link round trip
+ * ({@link formationDeadlines}). Each waits on work that crosses the link between the two
+ * parties' machines, so each is a round-trip count times the declaration rather than a
+ * number chosen on a fast network; the initiator's and the responder's fields are derived
+ * together so the ordering between the roles holds by construction.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
-const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
+export interface FormationDeadlines {
+  /** Initiator: open a possibly relayed connection and negotiate the formation protocol. */
+  dialMs: number;
+  /** Responder: from the handler starting to the contact frame arriving. */
+  awaitContactMs: number;
+  /**
+   * Responder: `validateToken` plus `validateDisclosure`, two control reads. Counted in the
+   * travel margin and the clamp room, not wrapped in a deadline of their own: the session
+   * bounds them.
+   */
+  validationMs: number;
+  /** Responder: the provisioning hook's work budget, after which its signal aborts. */
+  provisionWorkMs: number;
+  /** Responder: the settle grace after the abort, which must contain one control commit. */
+  provisionGraceMs: number;
+  /**
+   * What the initiator's await-response holds over the responder's provisioning: the
+   * contact frame's trip out, the result frame's trip back, and the validation reads that
+   * run before the responder's provisioning clock starts.
+   */
+  responseTravelMarginMs: number;
+  /** Initiator: the result frame read. */
+  initiatorAwaitResponseMs: number;
+  /** Both roles: the whole session. */
+  sessionMs: number;
+}
+
 /**
- * Settle grace (ms), carved OUT of `provisionTimeoutMs` — never added on top, so the budget
- * ladder above is untouched. The listener aborts the provisioning hook when the work budget
- * ({@link splitProvisionBudget}) expires, then waits up to this grace for the work to settle
- * anyway: once the `FormationUsage` insert has been issued nothing can un-spend it (the table
- * is append-only), so a provisioning that lands late is ADOPTED and reported as a real
- * approval rather than lying "timed out" over a spent invite. A hook that observes the
- * abort before writing leaves the invite unspent.
- */
-const PROVISION_SETTLE_GRACE_MS = 2_000;
-/**
- * Wire-latency margin (ms) added to the responder's provisioning budget to get the
- * initiator's await-response budget — the travel time for the result frame to come back
- * after the responder finishes (see {@link DEFAULT_PROVISION_TIMEOUT_MS}).
- * `StrandFormationManager` reuses this constant so a CONFIGURED budget preserves the same
- * margin the defaults do, instead of applying the same number to both sides and racing the
- * initiator's own timeout against the responder's clean rejection reply. The responder's
- * clamp ({@link provisionCeilingMs}) holds the same margin back, so the ordering survives a
- * budget large enough that BOTH roles get clamped.
+ * Derive every formation deadline from the declared link round trip
+ * (`NetworkConfig.linkRoundTripMs`; the default when none is declared is
+ * `DECLARED_LINK_ROUND_TRIP_MS` in `link-budget.ts`). With `L` the declaration, `R` one
+ * cohort read at that link (`cohortReadDeadlineMs`, 2L: one request and its answer over an
+ * open circuit) and `K` one commit (`commitBudgetMs`, 20L, measured):
  *
- * NOTE: 3 s is a fixed assumption about how long the result frame takes to travel back. If
- * formation ever runs over paths where that frame can take longer (a slow circuit relay, a
- * congested mobile link), the margin is too thin and the initiator's timeout races the
- * responder's reply again — raise it, or derive it from an observed round-trip.
+ *   dialMs                   = a relayed dial plus one protocol negotiation    (5L + 2 000)
+ *   awaitContactMs           = one request over the open stream               (2L)
+ *   validationMs             = 2R                                             (4L)
+ *   provisionWorkMs          = approval hook (10 000, flat) + 2R + K           (10 000 + 24L)
+ *   provisionGraceMs         = R + K                                          (22L)
+ *   responseTravelMarginMs   = L + validationMs                               (5L)
+ *   initiatorAwaitResponseMs = work + grace + margin                          (10 000 + 51L)
+ *   sessionMs                = dialMs + initiatorAwaitResponseMs              (12 000 + 56L)
+ *
+ * Why each term:
+ *
+ * - **awaitContact**: the listener's handler starts when it answers the protocol
+ *   negotiation; the answer reaches the joiner and the contact frame comes back, one round
+ *   trip, budgeted as a request over an open stream (2) for the same headroom as every other
+ *   one-exchange read in `link-budget.ts`.
+ * - **provisionWork**, the bound path of `StrandFormationManager.provisionAsResponder`: a
+ *   control read to resolve the host strand, the outside approval hook (an HTTP call, so its
+ *   own `DEFAULT_APPROVAL_TIMEOUT_MS` is link-independent and added flat) with its seat
+ *   pre-check read, then one strand-database commit to issue the joiner's membership invite.
+ *   Waking a hibernating host strand inside that issue is NOT counted:
+ *   `wakeHostStrandForFormation` cuts it off by design with a retryable rejection and leaves
+ *   the wake running, so the joiner's retry finds the strand live.
+ * - **provisionGrace**: the window it exists for opens when the `FormationUsage` insert
+ *   attempt passes its abort check. `ControlDatabase.redeemInvitation` and
+ *   `recordFormationUsage` check the signal once per attempt inside the write lock, then run
+ *   the seat read (`assertSeatRemains`) and the transaction, so the grace contains one read
+ *   plus one commit. A retry after a failed attempt re-checks the abort, so only one attempt
+ *   needs containing.
+ * - **responseTravelMargin**: half a round trip out, half back, plus the two validation
+ *   reads, which run on the initiator's await-response clock but before the responder's
+ *   provisioning clock starts.
+ * - **session**: the initiator's dial plus its await-response. The responder's whole path
+ *   (awaitContact + validation + work + grace = 10 000 + 52L) is inside it at every L.
+ *
+ * Ordering, strict at every L > 0, and pinned by `strand-formation-protocol.spec.ts`:
+ * approval hook < provisionWork < work + grace < initiatorAwaitResponse < session, and the
+ * responder's whole path < session. Each layer can therefore fail and report before the
+ * layer above it gives up, and the work budget always outlasts the hook's own timeout, so a
+ * dead hook reports 'Formation approval unavailable, retry' rather than racing a
+ * provisioning timeout.
+ *
+ * **What this costs.** At the default declaration (3 500 ms) a joiner whose responder
+ * accepts the contact and then hangs waits up to 188.5 s, about three minutes, before it is
+ * told, where the fixed ladder this replaced told it after 15 s; the whole session is
+ * bounded at 208 s. A responder that is unreachable still fails at the dial, 19.5 s. A host
+ * that knows its party is on a fast link lowers `linkRoundTripMs` and gets roughly the old
+ * numbers back (at L = 100: dial 2.5 s, provisioning 14.6 s, await-response 15.1 s, session
+ * 17.6 s). Before this derivation, the fixed 5 s dial could not open a relayed connection
+ * above a 1.25-second round trip, and the fixed 2 s grace could not contain one commit at the
+ * supported link, so a joiner could be told 'timed out' over an invite that was in fact
+ * spent.
  */
-export const PROVISION_RESPONSE_TRAVEL_MARGIN_MS = 3_000;
-/** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
-const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = DEFAULT_PROVISION_TIMEOUT_MS + PROVISION_RESPONSE_TRAVEL_MARGIN_MS;
+export function formationDeadlines(linkRoundTripMs?: number): FormationDeadlines {
+  const link = resolveLinkRoundTripMs(linkRoundTripMs);
+  const readMs = cohortReadDeadlineMs(link);
+  const commitMs = commitBudgetMs(link);
+  const dialMs = relayedStreamOpenBudgetMs(link);
+  const validationMs = 2 * readMs;
+  const provisionWorkMs = DEFAULT_APPROVAL_TIMEOUT_MS + 2 * readMs + commitMs;
+  const provisionGraceMs = readMs + commitMs;
+  const responseTravelMarginMs = link + validationMs;
+  const initiatorAwaitResponseMs = provisionWorkMs + provisionGraceMs + responseTravelMarginMs;
+  return {
+    dialMs,
+    awaitContactMs: CIRCUIT_REQUEST_ROUND_TRIPS * link,
+    validationMs,
+    provisionWorkMs,
+    provisionGraceMs,
+    responseTravelMarginMs,
+    initiatorAwaitResponseMs,
+    sessionMs: dialMs + initiatorAwaitResponseMs
+  };
+}
+
 /**
  * Default cap on concurrent inbound formation sessions.
- * NOTE: a longer provisioning budget holds a session's slot longer, so a slow hook can
- * exhaust this cap and make the listener reject fresh joiners with 'Too many concurrent
- * formation sessions'. Fine at the current default; revisit if `provisionTimeoutMs` is
- * raised well above its default or this cap is lowered.
+ *
+ * NOTE: a session holds its slot for its whole provisioning budget, 171 s at the default
+ * declared link ({@link formationDeadlines}), so a slow hook or commit holds slots for
+ * minutes. Only a caller holding a valid token AND a valid consent signature reaches
+ * provisioning — a stranger is cut at the contact wait (7 s at the default) or at the first
+ * validation read — so the exposure is one invitee opening many sessions with one token. If
+ * invitation tokens are ever published where untrusted parties can read them, cap in-flight
+ * sessions per token rather than lowering this.
  */
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
 
@@ -386,42 +458,57 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
 /**
  * Ceiling for a resolved provisioning budget.
  *
- * The session budget also has to cover the wire step that PRECEDES provisioning (the
- * responder's contact read, the initiator's dial-connect), so a whole step is held back
- * rather than triggering only on a literal overrun.
+ * The session budget also has to cover what PRECEDES provisioning in the role
+ * (`precedingMs`: the initiator's dial; the responder's contact read plus its two validation
+ * reads), so that whole span is held back rather than triggering only on a literal overrun.
  *
  * `reserveMs` is the EXTRA room only the responder holds back, so its own budget still
  * lands strictly before the initiator's larger await-response budget even when both are
- * clamped — without it, any configured budget at or above `sessionTimeoutMs -
- * stepTimeoutMs` clamps both roles onto the same number and the responder's clean
- * rejection races the initiator's timeout again. Capped at half the remaining room (like
- * {@link splitProvisionBudget}) so a small session config still spends most of it working.
+ * clamped — without it, a configured budget large enough to clamp both roles puts the
+ * responder's reply on the wire at the moment the initiator's timeout fires. Capped at half
+ * the remaining room (like {@link splitProvisionBudget}) so a small session config still
+ * spends most of it working.
  */
-function provisionCeilingMs(sessionTimeoutMs: number, stepTimeoutMs: number, reserveMs: number): number {
-  const roomMs = sessionTimeoutMs - stepTimeoutMs;
+function provisionCeilingMs(sessionTimeoutMs: number, precedingMs: number, reserveMs: number): number {
+  const roomMs = sessionTimeoutMs - precedingMs;
   return Math.max(1, roomMs - Math.min(reserveMs, Math.floor(roomMs / 2)));
+}
+
+/**
+ * The extra room the responder's clamp holds back ({@link provisionCeilingMs}'s `reserveMs`).
+ *
+ * The initiator's clamped await-response is `session - dial`, and the responder's reply
+ * reaches it `responseTravelMarginMs` after provisioning ends, so provisioning must end by
+ * `session - dial - margin`. The responder's own room is `session - awaitContact -
+ * validation`; the difference between the two is what it must hold back on top. Computed
+ * from the responder's own derivation, since it cannot see the initiator's dial budget: the
+ * module doc of `link-budget.ts` says why both parties must declare the same link.
+ */
+function responderClampReserveMs(deadlines: FormationDeadlines, awaitContactMs: number): number {
+  return Math.max(0, deadlines.dialMs + deadlines.responseTravelMarginMs - awaitContactMs - deadlines.validationMs);
 }
 
 /**
  * Resolve a caller-supplied provisioning budget: `0`/negative means "unset" (use
  * `defaultMs`). If the result would let provisioning outlive the session — no result
  * frame is ever sent, exactly the failure this budget exists to prevent — clamp it to
- * {@link provisionCeilingMs} and log a warning.
+ * {@link provisionCeilingMs} and log a warning. A budget that exactly meets the ceiling is
+ * not clamped: the derived defaults sit there by construction.
  */
 function resolveProvisionTimeoutMs(
   configured: number | undefined,
   defaultMs: number,
   sessionTimeoutMs: number,
-  stepTimeoutMs: number,
+  precedingMs: number,
   role: string,
   reserveMs = 0
 ): number {
   const requested = configured && configured > 0 ? configured : defaultMs;
-  const ceilingMs = provisionCeilingMs(sessionTimeoutMs, stepTimeoutMs, reserveMs);
-  if (requested >= ceilingMs) {
+  const ceilingMs = provisionCeilingMs(sessionTimeoutMs, precedingMs, reserveMs);
+  if (requested > ceilingMs) {
     log(
-      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (step %dms, reserve %dms); clamping to %dms',
-      role, requested, sessionTimeoutMs, stepTimeoutMs, reserveMs, ceilingMs
+      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (preceding %dms, reserve %dms); clamping to %dms',
+      role, requested, sessionTimeoutMs, precedingMs, reserveMs, ceilingMs
     );
     return ceilingMs;
   }
@@ -431,11 +518,15 @@ function resolveProvisionTimeoutMs(
 /**
  * Split a resolved provisioning budget into the WORK budget and the trailing settle grace.
  *
- * The grace is carved OUT of the budget (see {@link PROVISION_SETTLE_GRACE_MS}), and capped at
- * half of it so a small configured budget still spends at least half its time doing work.
+ * The grace is carved OUT of the budget, never added on top, so the ladder in
+ * {@link formationDeadlines} is untouched: the listener aborts the provisioning hook when the
+ * work budget expires, then waits up to the grace for the work to settle anyway (see
+ * {@link FormationListener.settleWithinGrace}). `graceCeilingMs` is the derived grace, which
+ * contains one seat read plus one commit at the declared link; it is capped at half the
+ * budget so a small configured budget still spends at least half its time doing work.
  */
-function splitProvisionBudget(provisionTimeoutMs: number): { workMs: number; graceMs: number } {
-  const graceMs = Math.min(PROVISION_SETTLE_GRACE_MS, Math.floor(provisionTimeoutMs / 2));
+function splitProvisionBudget(provisionTimeoutMs: number, graceCeilingMs: number): { workMs: number; graceMs: number } {
+  const graceMs = Math.min(graceCeilingMs, Math.floor(provisionTimeoutMs / 2));
   return { workMs: provisionTimeoutMs - graceMs, graceMs };
 }
 
@@ -474,14 +565,22 @@ export interface FormationListenerOptions {
    * per-strand address lookup.
    */
   resolveStrandAddrs?(strandId: string): string[];
+  /**
+   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * every deadline below takes its default ({@link formationDeadlines}). The default
+   * declaration when omitted.
+   */
+  linkRoundTripMs?: number;
+  /** Whole-session budget; default `sessionMs` of the derived ladder. */
   sessionTimeoutMs?: number;
+  /** Budget for the contact-frame read; default `awaitContactMs` of the derived ladder. */
   stepTimeoutMs?: number;
   /**
-   * Budget for the `provisionStrand` hook call — distinct from `stepTimeoutMs` because
-   * provisioning is real work, not a bare wire read/write. Default 12 s; `0`/unset uses
-   * the default; a value that would outlive the session is clamped ({@link
-   * provisionCeilingMs}). See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering
-   * rationale.
+   * Budget for the `provisionStrand` hook call, work plus settle grace — distinct from
+   * `stepTimeoutMs` because provisioning is real work, not a bare wire read. Default
+   * `provisionWorkMs + provisionGraceMs` of the derived ladder (171 s at the default
+   * declaration); `0`/unset uses the default; a value that would outlive the session is
+   * clamped ({@link provisionCeilingMs}). See {@link formationDeadlines} for the ordering.
    */
   provisionTimeoutMs?: number;
   maxConcurrentSessions?: number;
@@ -496,7 +595,7 @@ export interface FormationListenerOptions {
 export class FormationListener {
   private readonly options: FormationListenerOptions;
   private readonly sessionTimeoutMs: number;
-  private readonly stepTimeoutMs: number;
+  private readonly awaitContactMs: number;
   private readonly provisionWorkMs: number;
   private readonly provisionGraceMs: number;
   private readonly maxConcurrentSessions: number;
@@ -506,13 +605,14 @@ export class FormationListener {
 
   constructor(options: FormationListenerOptions) {
     this.options = options;
-    this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
-    this.stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+    const deadlines = formationDeadlines(options.linkRoundTripMs);
+    this.sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
+    this.awaitContactMs = options.stepTimeoutMs ?? deadlines.awaitContactMs;
     const split = splitProvisionBudget(resolveProvisionTimeoutMs(
-      options.provisionTimeoutMs, DEFAULT_PROVISION_TIMEOUT_MS,
-      this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener',
-      PROVISION_RESPONSE_TRAVEL_MARGIN_MS
-    ));
+      options.provisionTimeoutMs, deadlines.provisionWorkMs + deadlines.provisionGraceMs,
+      this.sessionTimeoutMs, this.awaitContactMs + deadlines.validationMs, 'FormationListener',
+      responderClampReserveMs(deadlines, this.awaitContactMs)
+    ), deadlines.provisionGraceMs);
     this.provisionWorkMs = split.workMs;
     this.provisionGraceMs = split.graceMs;
     this.maxConcurrentSessions = options.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
@@ -563,8 +663,8 @@ export class FormationListener {
   }
 
   /**
-   * Run the provisioning hook under its WORK budget — the configured provisioning budget minus
-   * the trailing settle grace ({@link splitProvisionBudget}, {@link PROVISION_SETTLE_GRACE_MS}).
+   * Run the provisioning hook under its WORK budget — the provisioning budget minus the
+   * trailing settle grace ({@link splitProvisionBudget}).
    *
    * When the work budget expires the hook's signal is aborted, then
    * {@link settleWithinGrace} waits out the grace for the aborted work to settle anyway.
@@ -604,11 +704,16 @@ export class FormationListener {
    * inside the grace its outcome is ADOPTED — the joiner is told the truth (approved, or the
    * hook's own rejection reason) rather than "timed out" over a spent invite.
    *
-   * NOTE: one window stays open — a work budget that expires after the `FormationUsage`
-   * insert was issued AND a commit that outlasts the grace. The joiner is told 'timed out'
-   * while its one-time invite is in fact spent, and since every retry mints a fresh keypair
-   * no recovery path can match it. Nothing can un-spend an append-only row, so the late-settle
-   * logging below is the observability for it; widen the grace only if it is seen in the wild.
+   * The grace is derived to contain one seat read plus one commit at the declared link
+   * ({@link formationDeadlines}), which is exactly what runs after the insert attempt passes
+   * its abort check, so at that link the late outcome lands inside it.
+   *
+   * NOTE: a commit that outlasts even the derived grace (a link slower than declared, or a
+   * configured `provisionTimeoutMs` whose half-cap shrank the grace) still tells the joiner
+   * 'timed out' while its one-time invite is in fact spent, and since every retry mints a
+   * fresh keypair no recovery path can match it. Nothing can un-spend an append-only row, so
+   * the late-settle logging below is the observability for it; if it is seen in the wild,
+   * raise the declared link rather than this grace.
    */
   private async settleWithinGrace(
     id: number,
@@ -710,7 +815,7 @@ export class FormationListener {
 
     try {
       const reader = new FrameReader(stream);
-      const contact = await withTimeout(this.stepTimeoutMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
+      const contact = await withTimeout(this.awaitContactMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
       log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
 
       if (!this.isJoinerConsentValid(id, contact)) {
@@ -781,12 +886,24 @@ export interface FormationDialOptions {
   responderAddrs: string[];
   /** Validate the responder's result; a false return aborts the formation. */
   validateResponse(response: FormationResultMessage): Promise<boolean>;
-  sessionTimeoutMs?: number;
-  stepTimeoutMs?: number;
   /**
-   * Budget for the `await-response` read only (the responder's provisioning + reply travel
-   * time) — `dial-connect` keeps using `stepTimeoutMs`. Default 15 s; `0`/unset uses the
-   * default. See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering rationale.
+   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * every deadline below takes its default ({@link formationDeadlines}). The default
+   * declaration when omitted.
+   */
+  linkRoundTripMs?: number;
+  /** Whole-session budget; default `sessionMs` of the derived ladder. */
+  sessionTimeoutMs?: number;
+  /**
+   * Budget for `dial-connect`: opening the connection, through a relay if need be, and
+   * negotiating the formation protocol. Default `dialMs` of the derived ladder.
+   */
+  dialTimeoutMs?: number;
+  /**
+   * Budget for the `await-response` read only (the responder's provisioning plus the reply's
+   * travel time). Default `initiatorAwaitResponseMs` of the derived ladder; `0`/unset uses
+   * the default; a value that would outlive the session is clamped. See
+   * {@link formationDeadlines} for the ordering.
    */
   provisionTimeoutMs?: number;
   protocolId?: string;
@@ -811,6 +928,32 @@ export interface FormationDialResult {
 }
 
 /**
+ * Open the formation stream under the dial deadline, cancelling the dial when it expires.
+ *
+ * The deadline's signal goes into `dialProtocol`, so an expired dial is abandoned by libp2p
+ * rather than left running. A dial that settles in the same tick the deadline fires loses
+ * the race to the timeout rejection and would leave its stream open with nobody to close
+ * it, so a stream that arrives after the signal aborted is reset here — the same treatment
+ * `exchangeFrame` (`control-stream.ts`) gives a stream dialed past its deadline. A late
+ * rejection is the abort itself, or reaches the caller through the awaited copy, so the
+ * handler below only stops it being reported as unhandled.
+ */
+function openFormationStream(node: Libp2p, addr: Multiaddr, protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
+  return withDeadline(dialTimeoutMs, 'Formation dial-connect', (signal) => {
+    const pending = node.dialProtocol(addr, protocolId, { signal });
+    void pending.then(
+      (stream) => {
+        if (signal.aborted) {
+          (stream as unknown as ControlStream).abort(new Error('Formation dial-connect resolved after its deadline'));
+        }
+      },
+      () => { /* surfaced through the awaited copy, or the abort itself */ }
+    );
+    return pending as unknown as Promise<ControlStream>;
+  });
+}
+
+/**
  * Initiator side of the native formation protocol. Dials the responder, sends the
  * contact (carrying the real disclosure/token/cadre), validates the responder's
  * result, and returns the strand the responder provisioned plus the responder's
@@ -821,17 +964,17 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
     throw new Error('No responder addresses available for formation');
   }
   const protocolId = options.protocolId ?? FORMATION_PROTOCOL;
-  const sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
-  const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+  const deadlines = formationDeadlines(options.linkRoundTripMs);
+  const sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
+  const dialTimeoutMs = options.dialTimeoutMs ?? deadlines.dialMs;
   const provisionTimeoutMs = resolveProvisionTimeoutMs(
-    options.provisionTimeoutMs, DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS,
-    sessionTimeoutMs, stepTimeoutMs, 'dialFormation'
+    options.provisionTimeoutMs, deadlines.initiatorAwaitResponseMs,
+    sessionTimeoutMs, dialTimeoutMs, 'dialFormation'
   );
   const addr = multiaddr(options.responderAddrs[0]);
 
   return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
-    const rawStream = await withTimeout(stepTimeoutMs, 'Formation dial-connect', async () => node.dialProtocol(addr, protocolId));
-    const stream = rawStream as unknown as ControlStream;
+    const stream = await openFormationStream(node, addr, protocolId, dialTimeoutMs);
     try {
       const reader = new FrameReader(stream);
       writeFrame(stream, options.contact);

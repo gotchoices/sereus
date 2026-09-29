@@ -1512,10 +1512,11 @@ describe('E2E Strand Formation', () => {
 		});
 
 		/**
-		 * Responder provisioning budget. Not clamped (`resolveProvisionTimeoutMs`'s ceiling here is
-		 * 22 s), and `splitProvisionBudget` halves it into a 1500 ms WORK budget — when the abort
-		 * fires — plus a 1500 ms settle grace. The joiner is left unconfigured, so it waits out the
-		 * 15 s initiator default and never times out first.
+		 * Responder provisioning budget. Not clamped (`resolveProvisionTimeoutMs`'s ceiling at the
+		 * default declared link is 171 s), and `splitProvisionBudget` halves it into a 1500 ms WORK
+		 * budget — when the abort fires — plus a 1500 ms settle grace. The joiner is left
+		 * unconfigured, so it waits out the derived initiator default (188.5 s at the default
+		 * declared link) and never times out first.
 		 */
 		const RESPONDER_PROVISION_MS = 3000;
 

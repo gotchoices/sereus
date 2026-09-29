@@ -7843,6 +7843,12 @@ export class CadreNode implements SAppIdLookup {
       ...options,
       partyId: this.config.controlNetwork.partyId,
       cadrePeerAddrs: this.getMultiaddrs(),
+      // Every formation deadline derives from this node's declared link, like every other
+      // dial budget here; a caller's own declaration on the formation config still wins.
+      formationConfig: {
+        linkRoundTripMs: this.config.network?.linkRoundTripMs,
+        ...options?.formationConfig
+      },
       // Overrides any caller-supplied hook, exactly like partyId/cadrePeerAddrs: only
       // this node can say which strand-network addresses it is actually listening on,
       // and a wrong answer here seeds a joiner's mesh with addresses that reach nobody.

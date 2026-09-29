@@ -35,11 +35,13 @@
  *
  * ── The instrument ──
  *
- * Every count and every number below comes from
+ * Every count and every number below, except the commit count, comes from
  * `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`, which
  * is committed and opt-in (`RELAY_DIAL_COST=1`). **Its doc comment is the single home of the
  * measurement**; this module holds only what the derivation needs. Re-run it before changing
- * anything here.
+ * anything here. The commit count ({@link COMMIT_ROUND_TRIPS}) is a whole-operation
+ * measurement from `relay-round-trip-measure.integration.ts` instead, and its figures live on
+ * the constant.
  *
  * ── The unit ──
  *
@@ -63,7 +65,12 @@
  * | request a reservation on an open relay connection     | 1                | 3 500 ms                |
  * | negotiate a protocol over an established circuit      | 1                | 3 500 ms                |
  * | one request and its answer over an open circuit       | 2                | 7 000 ms                |
+ * | open a relayed connection, then negotiate one protocol| 5                | 17 500 ms               |
  * | open a relayed connection, then one request on it     | 6                | 21 000 ms               |
+ * | one Optimystic commit over connections already open   | 20               | 70 000 ms               |
+ *
+ * The commit row is a measurement of a whole write, not a count of exchanges; its doc comment
+ * ({@link COMMIT_ROUND_TRIPS}) holds the figures and says when to re-measure it.
  *
  * **Measured** 2026-09-26, one Windows machine, loopback dedicated relay: a relayed dial took
  * 20-25 ms at no delay, **7 255-7 279 ms at 900 ms one-way**, and **12 066-12 094 ms at 1 500 ms
@@ -124,14 +131,17 @@
  *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic, and
  *   `tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`
  *   here, carrying the open-connection finding to it.
- * - **Cadre deadlines still typed as milliseconds.** The strand formation step deadline and
- *   the relay's reservation-admission deadline bound exchanges over the same link but do not
- *   derive from it: `debt-formation-and-relay-admission-deadlines-ignore-the-declared-link`.
+ * - **One cadre deadline still typed as milliseconds.** The relay's reservation-admission
+ *   deadline bounds an exchange over the same link but does not derive from it:
+ *   `relay-admission-reserve-deadline-derived-from-the-link`.
  * - **A machine that declares a faster link than its peers.** Every machine is the listener
  *   for the others, so its `inboundUpgradeTimeout` — derived from ITS declaration — bounds
  *   connections other machines open to it. A peer declaring 3 500 ms dialing a machine that
- *   declared 500 ms gets exactly the silent failure above. Declare the same link on every
- *   machine of a party.
+ *   declared 500 ms gets exactly the silent failure above. Strand formation has the same
+ *   shape: the joiner derives how long it waits for the host's reply from ITS declaration and
+ *   the host derives its provisioning budget from its own, so a joiner declaring a faster
+ *   link than the host gives up on a reply the host is still entitled to send. Declare the
+ *   same link on every machine of a party.
  */
 
 import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
@@ -187,13 +197,43 @@ export const RELAYED_DIAL_ROUND_TRIPS = 4;
 export const RELAY_RESERVATION_ROUND_TRIPS = 4;
 
 /**
+ * Link round trips negotiating one protocol over an ALREADY-OPEN connection costs: the
+ * multistream-select exchange that `dialProtocol` / `newStream` runs before the stream is
+ * handed back. Measured at 2 one-way delays.
+ */
+export const PROTOCOL_NEGOTIATION_ROUND_TRIPS = 1;
+
+/**
  * Link round trips one request-and-answer over an ALREADY-OPEN circuit costs: the protocol
- * negotiation (1, measured at 2 one-way delays) plus the request and its response (1). It does
- * not include a dial — a caller that may have to open the connection budgets
+ * negotiation ({@link PROTOCOL_NEGOTIATION_ROUND_TRIPS}) plus the request and its response (1).
+ * It does not include a dial — a caller that may have to open the connection budgets
  * {@link RELAYED_DIAL_ROUND_TRIPS} separately, which is exactly what the two-field shape of
  * Optimystic's `dialTimeoutMs` / `responseTimeoutMs` pair is for.
  */
-export const CIRCUIT_REQUEST_ROUND_TRIPS = 2;
+export const CIRCUIT_REQUEST_ROUND_TRIPS = PROTOCOL_NEGOTIATION_ROUND_TRIPS + 1;
+
+/**
+ * Link round trips one Optimystic commit is budgeted for, over connections that are ALREADY
+ * open. **Measured, not counted**: a commit is many sequential exchanges whose exact number
+ * the transactor decides, so this is a whole-operation figure and it depends on the Optimystic
+ * version.
+ *
+ * Measured 2026-09-23 at optimystic `9e5c1e85` with
+ * `packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts`,
+ * `delayed` configuration (`RELAY_RRT_MEASURE=1 RELAY_RRT_CONFIG=delayed`: a 150 ms one-way
+ * delay on one party's link, so a 300 ms link round trip): one strand insert took 3.8–6.1 s
+ * (the founder 4.46, 4.43, 3.84 s; the joiner 5.11, 5.09, 6.09 s), which is up to 20.3 link
+ * round trips, including about 0.1–0.2 s of local work (the same inserts on an undelayed
+ * loopback took 57–165 ms). A static count of the write path agrees on the order: three repo
+ * messages through three consensus rounds each, nine sequential requests of a negotiation plus
+ * a request, so 18.
+ *
+ * It measures a strand insert; a control-database insert runs the same network transactor
+ * against the responder's own party's machines, which the module doc already says must
+ * declare the same link. Re-measure with that scenario, rather than recompute, whenever
+ * `@optimystic/*` is bumped.
+ */
+export const COMMIT_ROUND_TRIPS = 20;
 
 /**
  * Link round trips one request-and-answer costs when the connection may first have to be OPENED,
@@ -320,6 +360,28 @@ export function resolveLinkRoundTripMs(linkRoundTripMs?: number): number {
  */
 export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
 	return RELAYED_DIAL_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + ADMISSION_DECISION_TIMEOUT_MS;
+}
+
+/**
+ * Deadline for what `dialProtocol` does end to end: OPEN a possibly relayed connection
+ * ({@link relayedDialBudgetMs}, admission allowance included) and then NEGOTIATE one protocol
+ * on it ({@link PROTOCOL_NEGOTIATION_ROUND_TRIPS} at the declared link round trip). 16 000 +
+ * 3 500 = 19 500 ms at the default declaration. The strand formation dial is bounded by this;
+ * the one-frame control exchanges bound the negotiation together with their request instead
+ * ({@link relayedRequestBudgetMs}).
+ */
+export function relayedStreamOpenBudgetMs(linkRoundTripMs?: number): number {
+	return relayedDialBudgetMs(linkRoundTripMs) + PROTOCOL_NEGOTIATION_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+}
+
+/**
+ * Deadline for one Optimystic commit over connections that are already open:
+ * {@link COMMIT_ROUND_TRIPS} at the declared link round trip, 70 000 ms at the default
+ * declaration. No admission allowance: a commit dials nothing, so no called machine decides
+ * on its clock.
+ */
+export function commitBudgetMs(linkRoundTripMs?: number): number {
+	return COMMIT_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
 }
 
 /**

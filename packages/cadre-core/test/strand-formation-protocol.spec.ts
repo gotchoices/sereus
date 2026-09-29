@@ -3,6 +3,7 @@ import type { Libp2p } from '@libp2p/interface';
 import {
   FormationListener,
   dialFormation,
+  formationDeadlines,
   isValidResponderCreatesResult,
   sanitizeStrandAddrs,
   type FormationContactMessage,
@@ -11,6 +12,7 @@ import {
   type FormationProvisionResult,
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
+import { DEFAULT_APPROVAL_TIMEOUT_MS } from '../src/formation-approval.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 import { MockStream, captureHandler } from './formation-stream-helpers.js';
@@ -281,15 +283,17 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
   it('clamps provisionTimeoutMs when it would outlive the session, so a slow hook still gets a reply', async () => {
     // provisionTimeoutMs (5000) >= sessionTimeoutMs (1000) must clamp to the responder
-    // ceiling: session - step = 900, minus the travel margin held back for the initiator
-    // (capped at half the room) = 450. A provisioning hook that takes longer than the
-    // clamped budget but would fit under the UNCLAMPED one must still see a clean rejection
-    // frame — not silence from the outer session timeout firing first.
+    // ceiling. At a 100 ms link the two validation reads are budgeted at 400, so the room is
+    // session - (step 100 + validation 400) = 500, minus the reserve held back for the
+    // initiator (capped at half the room) = 250. A provisioning hook that takes longer than
+    // the clamped budget but would fit under the UNCLAMPED one must still see a clean
+    // rejection frame — not silence from the outer session timeout firing first.
     const { options } = baseOptions({
       provisionStrand: slowProvision(950, 'strand-too-slow')
     });
     const listener = new FormationListener({
       ...options,
+      linkRoundTripMs: 100,
       sessionTimeoutMs: 1000,
       stepTimeoutMs: 100,
       provisionTimeoutMs: 5000
@@ -307,15 +311,17 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
   it('clamps a provisionTimeoutMs that leaves no room for the preceding wire step', async () => {
     // 800ms fits under the 1000ms session on its own, but the session budget also has to
-    // cover the contact read (stepTimeoutMs 400), so it clamps to session - step = 600ms,
-    // less the initiator's travel margin (half of 600) = 300ms. A 700ms hook therefore gets
-    // a rejection frame; without the headroom in the guard it would have run to 800ms and
-    // raced the session timeout instead.
+    // cover the contact read (stepTimeoutMs 400) and the two validation reads (400 at a
+    // 100 ms link), so it clamps to session - 800 = 200ms, less the reserve held back for
+    // the initiator (half of 200) = 100ms. A 700ms hook therefore gets a rejection frame;
+    // without the headroom in the guard it would have run to 800ms and raced the session
+    // timeout instead.
     const { options } = baseOptions({
       provisionStrand: slowProvision(700, 'strand-no-headroom')
     });
     const listener = new FormationListener({
       ...options,
+      linkRoundTripMs: 100,
       sessionTimeoutMs: 1000,
       stepTimeoutMs: 400,
       provisionTimeoutMs: 800
@@ -822,10 +828,10 @@ describe('dialFormation provision-result invariant', () => {
     ).rejects.toThrow(/Formation rejected: Invalid token/);
   });
 
-  it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect stepTimeoutMs', async () => {
-    // Regression for the initiator side: the result read used to share stepTimeoutMs with
+  it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect dialTimeoutMs', async () => {
+    // Regression for the initiator side: the result read used to share one step budget with
     // dial-connect, so a responder doing real provisioning work could blow a 5s budget even
-    // though the join would have succeeded. Delay the response frame past stepTimeoutMs but
+    // though the join would have succeeded. Delay the response frame past dialTimeoutMs but
     // within provisionTimeoutMs and confirm the dial still resolves.
     const provisionResult: FormationProvisionResult = {
       strand: { strandId: 'strand-delayed', createdBy: 'responder' },
@@ -850,7 +856,7 @@ describe('dialFormation provision-result invariant', () => {
       contact,
       responderAddrs,
       validateResponse: async () => true,
-      stepTimeoutMs: 10,
+      dialTimeoutMs: 10,
       provisionTimeoutMs: 200
     });
     expect(result.provision).toEqual(provisionResult);
@@ -872,9 +878,28 @@ describe('dialFormation provision-result invariant', () => {
       responderAddrs,
       validateResponse: async () => true,
       sessionTimeoutMs: 500,
-      stepTimeoutMs: 10,
+      dialTimeoutMs: 10,
       provisionTimeoutMs: 50
     })).rejects.toThrow(/Formation await-response timed out after 50ms/);
     expect(stream.closed).toBe(true);
+  });
+});
+
+describe('formationDeadlines', () => {
+  it('keeps every layer strictly inside the one above it at any declared link', () => {
+    // The ordering the listener and dialer comments call load-bearing — each layer can fail
+    // and report before the layer above it gives up — was hand-set numbers before; now it is
+    // arithmetic over one declaration, so it has to hold at a fast link, the default, and a
+    // link far slower than sereus supports. The approval hook is the flat floor: the work
+    // budget must outlast it so a dead hook is reported as such, not as a provisioning timeout.
+    for (const linkRoundTripMs of [1, 100, 3500, 10_000]) {
+      const d = formationDeadlines(linkRoundTripMs);
+      expect(DEFAULT_APPROVAL_TIMEOUT_MS).toBeLessThan(d.provisionWorkMs);
+      expect(d.provisionWorkMs).toBeLessThan(d.provisionWorkMs + d.provisionGraceMs);
+      expect(d.provisionWorkMs + d.provisionGraceMs).toBeLessThan(d.initiatorAwaitResponseMs);
+      expect(d.initiatorAwaitResponseMs).toBeLessThan(d.sessionMs);
+      // The responder's whole path, from handler start to the result frame written.
+      expect(d.awaitContactMs + d.validationMs + d.provisionWorkMs + d.provisionGraceMs).toBeLessThan(d.sessionMs);
+    }
   });
 });

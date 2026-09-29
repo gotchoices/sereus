@@ -28,8 +28,8 @@ import type {
 import {
   FormationListener,
   INVALID_TOKEN_REASON,
-  PROVISION_RESPONSE_TRAVEL_MARGIN_MS,
   dialFormation,
+  formationDeadlines,
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   type FormationContactMessage,
@@ -109,16 +109,25 @@ export type MembershipInviteIssuer = (strandId: string, signal?: AbortSignal) =>
  * Configuration for StrandFormationManager
  */
 export interface StrandFormationManagerConfig {
-  /** Session timeout in milliseconds */
+  /**
+   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * every formation deadline is derived (`formationDeadlines` in
+   * `strand-formation-protocol.ts`). `CadreNode` fills it from its network config; the
+   * fields below override single rungs of that ladder.
+   */
+  linkRoundTripMs?: number;
+  /** Whole-session budget, both roles, in milliseconds. */
   sessionTimeoutMs?: number;
-  /** Step timeout in milliseconds */
+  /** The responder's contact-frame read, in milliseconds. */
   stepTimeoutMs?: number;
+  /** The initiator's dial-connect (open the connection, negotiate the protocol), in milliseconds. */
+  dialTimeoutMs?: number;
   /**
    * Provisioning budget in milliseconds for the RESPONDER's `provisionStrand` hook call.
-   * The initiator's `await-response` wait is derived automatically from this value plus
-   * `PROVISION_RESPONSE_TRAVEL_MARGIN_MS` (`strand-formation-protocol.ts`) — never set
-   * directly — so the ordering documented there (approval hook < responder provisioning <
-   * initiator await-response < session) cannot collapse when this is configured.
+   * The initiator's `await-response` wait is derived automatically from this value plus the
+   * travel margin of the derived ladder (`responseTravelMarginMs`) — never set directly — so
+   * the ordering documented there (approval hook < responder provisioning < initiator
+   * await-response < session) cannot collapse when this is configured.
    */
   provisionTimeoutMs?: number;
   /** Maximum concurrent sessions */
@@ -232,6 +241,7 @@ export class StrandFormationManager {
       // Forwarded only when wired, so `FormationListenerOptions.resolveStrandAddrs`
       // stays genuinely absent (and the listener short-circuits) for an unwired manager.
       ...(this.resolveStrandAddrs && { resolveStrandAddrs: this.resolveStrandAddrs }),
+      linkRoundTripMs: this.config.linkRoundTripMs,
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
       provisionTimeoutMs: this.config.provisionTimeoutMs,
@@ -300,8 +310,9 @@ export class StrandFormationManager {
         contact,
         responderAddrs: invitation.bootstrap,
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
+        linkRoundTripMs: this.config.linkRoundTripMs,
         sessionTimeoutMs: this.config.sessionTimeoutMs,
-        stepTimeoutMs: this.config.stepTimeoutMs,
+        dialTimeoutMs: this.config.dialTimeoutMs,
         provisionTimeoutMs: this.initiatorProvisionTimeoutMs(),
         protocolId: this.config.protocolId
       });
@@ -355,16 +366,19 @@ export class StrandFormationManager {
 
   /**
    * Derive the initiator's await-response budget from the configured RESPONDER budget —
-   * never the same number (see `StrandFormationManagerConfig.provisionTimeoutMs`). Mirrors
-   * `resolveProvisionTimeoutMs`'s own "`0`/negative means unset" rule so an unset config
-   * still lets both sides fall back to their own independent defaults; must NOT hardcode
-   * `DEFAULT_PROVISION_TIMEOUT_MS` here, or the per-role clamping downstream is defeated.
+   * never the same number (see `StrandFormationManagerConfig.provisionTimeoutMs`): the
+   * configured value plus the travel margin the ladder derives at this machine's link.
+   * Mirrors `resolveProvisionTimeoutMs`'s own "`0`/negative means unset" rule so an unset
+   * config still lets both sides fall back to their own derived defaults; must NOT
+   * reproduce the derived default here, or the per-role clamping downstream is defeated.
    * A value too large for the session is clamped per role, and the responder's ceiling holds
-   * the same margin back, so the ordering survives there too.
+   * the margin back, so the ordering survives there too.
    */
   private initiatorProvisionTimeoutMs(): number | undefined {
     const host = this.config.provisionTimeoutMs;
-    return host && host > 0 ? host + PROVISION_RESPONSE_TRAVEL_MARGIN_MS : undefined;
+    return host && host > 0
+      ? host + formationDeadlines(this.config.linkRoundTripMs).responseTravelMarginMs
+      : undefined;
   }
 
   // ── Responder-side hooks ─────────────────────────────────────────────────────
