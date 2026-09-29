@@ -2,8 +2,8 @@
  * Shared daemon surface for the fake-dockerode harnesses.
  *
  * `DockerOrchestrator` inspects/creates/removes a named `/data` volume on every
- * create and remove, and lists its existing containers before the first of
- * either (port rehydration), so every fake docker needs those calls. Kept here
+ * create and remove, and lists its existing containers before its first create
+ * (port rehydration), so every fake docker needs those calls. Kept here
  * so the orchestrator test files agree on the semantics that matter: a missing
  * volume raises a dockerode-shaped 404 rather than a bare Error, which is what
  * the orchestrator keys "does it already exist?" off; and by default the daemon
@@ -30,7 +30,7 @@ export interface DaemonStubs {
   listContainers: ReturnType<typeof vi.fn>;
 }
 
-/** Build an in-memory `createVolume`/`getVolume` pair, pre-seeded with `existing` volumes. */
+/** Build in-memory `createVolume`/`getVolume`/`listContainers` stubs, pre-seeded with `existing` volumes. */
 export function daemonStubs(existing: string[] = []): DaemonStubs {
   const volumes = new Set(existing);
   const removed: string[] = [];

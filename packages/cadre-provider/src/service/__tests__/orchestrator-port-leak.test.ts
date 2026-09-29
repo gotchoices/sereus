@@ -149,38 +149,45 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
   });
 });
 
-describe('DockerOrchestrator port bookkeeping after a provider restart', () => {
-  it('reserves a surviving container\'s ports before allocating, and frees them when it is removed', async () => {
-    // A container an earlier provider process created; running or stopped, it holds 10000–10002.
-    const survivor = {
-      inspect: vi.fn(async () => ({
-        Id: 'old-1',
-        Config: { Labels: { 'sereus.container-id': 'ctr_old' } },
-        Mounts: [],
-        HostConfig: {
-          PortBindings: {
-            '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '10000' }],
-            '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: '10001' }],
-            '4001/tcp': [{ HostPort: '10002' }],
-          },
-        },
-      })),
-      remove: vi.fn(async () => {}),
-    };
-    const createSpy = vi.fn(async (_opts: CreateOpts) => ({
-      id: 'cid-new',
-      start: vi.fn(async () => {}),
-      remove: vi.fn(async () => {}),
-    }));
-    const listContainers = vi.fn(async () => [{ Id: 'old-1' }]);
-    const fakeDocker = {
-      createContainer: createSpy,
-      getContainer: vi.fn(() => survivor),
-      ...daemonStubs(),
-      listContainers,
-    } as unknown as Docker;
+/** A container an earlier provider process created; running or stopped, it holds 10000–10002. */
+const survivorInfo = {
+  Id: 'old-1',
+  Config: { Labels: { 'sereus.container-id': 'ctr_old' } },
+  Mounts: [],
+  HostConfig: {
+    PortBindings: {
+      '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '10000' }],
+      '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: '10001' }],
+      '4001/tcp': [{ HostPort: '10002' }],
+    },
+  },
+};
 
-    const orch = new DockerOrchestrator(config(10000, 10005), fakeDocker);
+/** A freshly started orchestrator over a daemon that still holds `survivor` as `old-1`. */
+function restartedOver(survivor: { inspect: unknown }) {
+  const createSpy = vi.fn(async (_opts: CreateOpts) => ({
+    id: 'cid-new',
+    start: vi.fn(async () => {}),
+    remove: vi.fn(async () => {}),
+  }));
+  const listContainers = vi.fn(async () => [{ Id: 'old-1' }]);
+  const fakeDocker = {
+    createContainer: createSpy,
+    getContainer: vi.fn(() => ({ ...survivor, remove: vi.fn(async () => {}) })),
+    ...daemonStubs(),
+    listContainers,
+  } as unknown as Docker;
+  const orch = new DockerOrchestrator(config(10000, 10005), fakeDocker);
+  const { portAllocator } = orch as unknown as OrchestratorInternal;
+  const survivorPortsHeld = () => [10000, 10001, 10002].map(port => portAllocator.has(port));
+  return { orch, createSpy, listContainers, survivorPortsHeld };
+}
+
+describe('DockerOrchestrator port bookkeeping after a provider restart', () => {
+  it("reserves a surviving container's ports before allocating, and frees them when it is removed", async () => {
+    const { orch, createSpy, listContainers, survivorPortsHeld } =
+      restartedOver({ inspect: vi.fn(async () => survivorInfo) });
+
     await orch.createContainer(request);
 
     const bindings = createSpy.mock.calls[0]![0].HostConfig.PortBindings;
@@ -190,7 +197,25 @@ describe('DockerOrchestrator port bookkeeping after a provider restart', () => {
     expect(listContainers).toHaveBeenCalledWith({ all: true, filters: { label: ['sereus.container-id'] } });
 
     await orch.removeContainer('old-1');
-    const { portAllocator } = orch as unknown as OrchestratorInternal;
-    expect([10000, 10001, 10002].map(port => portAllocator.has(port))).toEqual([false, false, false]);
+    expect(survivorPortsHeld()).toEqual([false, false, false]);
+  });
+
+  // The pass listed `old-1` before the removal and records its ports after it:
+  // releasing without waiting for the pass would find nothing and strand them.
+  it("frees a removed container's ports that a pass in flight records after the removal", async () => {
+    let finishPassInspect!: () => void;
+    const passInspectGate = new Promise<void>(resolve => { finishPassInspect = resolve; });
+    const inspect = vi.fn(async () => survivorInfo)
+      .mockImplementationOnce(async () => { await passInspectGate; return survivorInfo; });
+    const { orch, survivorPortsHeld } = restartedOver({ inspect });
+
+    const created = orch.createContainer(request);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    const removed = orch.removeContainer('old-1');
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    finishPassInspect();
+    await Promise.all([created, removed]);
+
+    expect(survivorPortsHeld()).toEqual([false, false, false]);
   });
 });
