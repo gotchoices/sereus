@@ -1006,6 +1006,11 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const deviceTokenPeerId = '12D3KooWLiveStampTargetDeviceToken';
     const { stamp: deviceTokenStamp } = await seatDeviceToken(deviceTokenPeerId);
     await expectConstraintFailure(tombstoneStamp('DeviceToken', deviceTokenPeerId, deviceTokenStamp), 'RowIsGone');
+
+    const joinedId = 'joined-live-stamp-' + Math.random().toString(36).slice(2);
+    await db.insertJoinedStrand({ Id: joinedId, Type: 'o', MemberPrivateKey: null }, founder.publicKey, m => signAs(founder, m));
+    const joinedStamp = await db.queryJoinedStrandStampId(joinedId);
+    await expectConstraintFailure(tombstoneStamp('JoinedStrand', joinedId, joinedStamp!), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a TableName outside the guarded set is refused (every RowIsGone branch false)', async () => {

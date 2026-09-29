@@ -5100,7 +5100,7 @@ export class CadreNode implements SAppIdLookup {
     } catch (error) {
       // Only the uniqueness collision is a candidate for the idempotent reading; every
       // other rejection (unauthorized signer, retired stamp) must keep surfacing.
-      if (!isStrandIdConflict(error)) {
+      if (!isStrandIdConflict(error, 'Strand')) {
         throw error;
       }
       const landed = await this.controlDatabase!.queryStrand(trimmed);

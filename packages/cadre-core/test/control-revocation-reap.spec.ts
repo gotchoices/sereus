@@ -23,7 +23,7 @@ import {
 /**
  * REAP authorization coverage: a COMMITTED `Revocation` tombstone authorizes deleting the
  * exact row incarnation it retires — the new branch on `CadrePeer` / `DeviceToken` /
- * `ValidationKey` `AuthorizedDelete`, and the `ControlDatabase.reapRevokedRow` method that
+ * `ValidationKey` / `JoinedStrand` `AuthorizedDelete`, and the `ControlDatabase.reapRevokedRow` method that
  * drives it. See the constraint comment on `CadrePeer.AuthorizedDelete` for the full
  * rationale (why `committed.*`, why the stamp is bound).
  *
@@ -176,6 +176,13 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       [founder.publicKey, signB64(founder, deviceTokenAddDigest(row)), row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
     );
     return { stamp: row.stampId };
+  }
+
+  /** Record a closed joined strand the legitimate (owner-signed) way. */
+  async function recordJoinedStrand(id: string): Promise<{ stamp: string }> {
+    const memberPrivateKey = 'member-key-' + Math.random().toString(36).slice(2);
+    await db.insertJoinedStrand({ Id: id, Type: 'c', MemberPrivateKey: memberPrivateKey }, founder.publicKey, m => signAs(founder, m));
+    return { stamp: (await db.queryJoinedStrandStampId(id))! };
   }
 
   /** Owner-signed tombstone append (the shape `Revocation.Authorized` verifies). */
@@ -450,18 +457,24 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
 
       it('reaps every reapable table in one pass, and counts each row it removed', async () => {
         // The sweep dispatches on the tombstone's own TableName, so CadrePeer coverage
-        // alone would not show DeviceToken / ValidationKey reaching reapRevokedRow — and
-        // the returned count is what the reconcile pass logs, so it has to aggregate.
+        // alone would not show DeviceToken / ValidationKey / JoinedStrand reaching
+        // reapRevokedRow — and the returned count is what the reconcile pass logs, so it
+        // has to aggregate. JoinedStrand is the one reapable table carrying a read secret;
+        // this is also its reap-branch coverage.
         const sibling = '12D3KooWSweepMultiTableSibling';
         const { stamp: tokenStamp } = await seatDeviceToken(sibling);
         const key = 'val-sweep-' + Math.random().toString(36).slice(2);
         const { stamp: keyStamp } = await enrollValidationKey(key);
+        const joinedId = 'joined-sweep-' + Math.random().toString(36).slice(2);
+        const { stamp: joinedStamp } = await recordJoinedStrand(joinedId);
         await tombstoneStamp('DeviceToken', sibling, tokenStamp);
         await tombstoneStamp('ValidationKey', key, keyStamp);
+        await tombstoneStamp('JoinedStrand', joinedId, joinedStamp);
 
-        expect(await db.reapRevokedRows(SELF)).toBe(2);
+        expect(await db.reapRevokedRows(SELF)).toBe(3);
         expect(await db.queryDeviceTokenStampId(sibling)).toBeNull();
         expect(await validationKeyRow(key)).toBeUndefined();
+        expect(await db.queryJoinedStrand(joinedId)).toBeNull();
       }, 60_000);
 
       it('skips this node\'s OWN CadrePeer and DeviceToken rows while reaping a sibling\'s', async () => {

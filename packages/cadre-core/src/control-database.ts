@@ -295,26 +295,33 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   ValidationKey: 'Key',
   Strand: 'Id',
   StrandPartyKey: 'Id',
+  JoinedStrand: 'Id',
   DeviceToken: 'PeerId',
 };
 
-/**
- * The rejection a second insert of an already-seated strand id produces, as the optimystic
- * vtab words it (`uniqueConstraintMessage`, qualified by table name only — no schema
- * prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
- *
- * `Strand.StampId` is unique too, but a fresh stamp is minted per insert attempt, so only
- * the primary key can collide on a repeat publish. Matching the column explicitly keeps
- * any OTHER uniqueness failure out of the idempotency branch.
- */
-const STRAND_ID_CONFLICT = /UNIQUE constraint failed: Strand\.Id\b/i;
+/** The control tables keyed by a strand id whose repeat insert a caller may treat as idempotent. */
+type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
 
 /**
- * Did this write fail because the strand id is already seated?
+ * The rejection a second insert of an already-seated strand id into `table` produces, as
+ * the optimystic vtab words it (`uniqueConstraintMessage`, qualified by table name only —
+ * no schema prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
+ *
+ * Each table's `StampId` is unique too, but a fresh stamp is minted per insert attempt, so
+ * only the primary key can collide on a repeat publish. Matching the column explicitly
+ * keeps any OTHER uniqueness failure out of the idempotency branch.
+ */
+function strandIdConflictPattern(table: StrandIdTable): RegExp {
+  return new RegExp(`UNIQUE constraint failed: ${table}\\.Id\\b`, 'i');
+}
+
+/**
+ * Did this write to `table` fail because the strand id is already seated there?
  *
  * {@link CadreNode.publishStrand} uses this to tell "my own earlier publish already
  * landed" (re-read, and no-op when the row matches) apart from every other rejection —
- * an unauthorized signer, a retired stamp — which must keep surfacing.
+ * an unauthorized signer, a retired stamp — which must keep surfacing. For `JoinedStrand`
+ * the same test tells "another machine of this party already published this join" apart.
  *
  * Matched by TEXT, not by type: the typed engine error does not survive the trip out of
  * optimystic (same constraint the retry classifiers in `control-write-retry.ts` document).
@@ -323,8 +330,8 @@ const STRAND_ID_CONFLICT = /UNIQUE constraint failed: Strand\.Id\b/i;
  * `publish-strand.spec.ts` repeat-publish cases assert against the live engine error, so a
  * reword reddens there.
  */
-export function isStrandIdConflict(error: unknown): boolean {
-  return errorChainMatches(error, STRAND_ID_CONFLICT);
+export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolean {
+  return errorChainMatches(error, strandIdConflictPattern(table));
 }
 
 /**
@@ -341,7 +348,7 @@ export const REVOCATION_LEDGER_MARKER = {
 
 /**
  * The rejection a second insert of the ledger marker produces: the optimystic vtab's
- * primary-key wording (see {@link STRAND_ID_CONFLICT}), naming both columns of
+ * primary-key wording (see {@link strandIdConflictPattern}), naming both columns of
  * `Revocation`'s composite key. Applied only to the marker's own insert, whose key
  * ('Revocation', 'opened') no row but the marker can hold (`RowIsGone`), and `Revocation`
  * has no other unique constraint.
@@ -364,10 +371,12 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  * `CadrePeer.AuthorizedDelete` in the schema). `Strand` and `StrandPartyKey` are
  * deliberately absent: their rows carry `MemberPrivateKey` / `PrivateKey` — party
  * secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any
- * future change). `OwnerKey` has no production removal path and `MinOneOwner` makes an
- * automated owner-key reap a party-bricking hazard.
+ * future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
+ * secret is the joined strand's shared read key, which its founding party and every member
+ * hold, so a reaped row is recoverable by re-forming. `OwnerKey` has no production removal
+ * path and `MinOneOwner` makes an automated owner-key reap a party-bricking hazard.
  */
-export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as const satisfies readonly RevocableTable[];
+export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 
 /**
@@ -379,6 +388,16 @@ export type ReapableTable = (typeof REAPABLE_TABLES)[number];
  */
 const REAPABLE_TABLE_SET: ReadonlySet<RevocableTable> = new Set<RevocableTable>(REAPABLE_TABLES);
 const isReapableTable = (table: RevocableTable): table is ReapableTable => REAPABLE_TABLE_SET.has(table);
+
+/** A `JoinedStrand` row as a {@link StrandRow}; the schema's `KnownType` check backs the `Type` cast. */
+function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
+  return {
+    Id: row.Id as string,
+    MemberPrivateKey: row.MemberPrivateKey as string | null,
+    Type: row.Type as 'o' | 'c',
+    FounderOwnerKey: null,
+  };
+}
 
 /**
  * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
@@ -882,6 +901,29 @@ export class ControlDatabase {
   }
 
   /**
+   * Every strand this party joined from another party (`CadreControl.JoinedStrand`), shaped
+   * as a {@link StrandRow} so a reader can treat it like one of the party's own. A joiner
+   * never founds, so `FounderOwnerKey` is always null. Read raw, like {@link queryStrands}:
+   * no retired-stamp filter.
+   */
+  async queryJoinedStrands(): Promise<StrandRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows('select Id, Type, MemberPrivateKey from CadreControl.JoinedStrand', undefined, 'joined-strands');
+    return rows.map(joinedStrandRow);
+  }
+
+  /** Single-row sibling of {@link queryJoinedStrands}: the joined strand with this id, or null. */
+  async queryJoinedStrand(strandId: string): Promise<StrandRow | null> {
+    this.ensureInitialized();
+    const rows = await this.readRows(
+      'select Id, Type, MemberPrivateKey from CadreControl.JoinedStrand where Id = ?',
+      [strandId],
+      'joined-strand'
+    );
+    return rows.length === 0 ? null : joinedStrandRow(rows[0]!);
+  }
+
+  /**
    * Count rows in a CadreControl table as seen by THIS database instance.
    *
    * `table` is validated against {@link CONTROL_TABLE_SET} before it is interpolated
@@ -1095,6 +1137,11 @@ export class ControlDatabase {
   /** `StrandPartyKey` stamp nonce — bound into {@link deleteStrandPartyKey}'s remove digest. */
   queryStrandPartyKeyStampId(strandId: string): Promise<string | null> {
     return this.queryStampId('StrandPartyKey', strandId);
+  }
+
+  /** `JoinedStrand` stamp nonce — bound into {@link deleteJoinedStrand}'s remove digest. */
+  queryJoinedStrandStampId(strandId: string): Promise<string | null> {
+    return this.queryStampId('JoinedStrand', strandId);
   }
 
   /**
@@ -1609,6 +1656,56 @@ export class ControlDatabase {
   }
 
   /**
+   * Record, party-wide, a strand this party joined from another party (`JoinedStrand` row),
+   * using an owner signature.
+   *
+   * Mirrors {@link insertStrand}: the owner signs the canonical row-bound authorization
+   * message over (Id, Type, MemberPrivateKey, StampId) — binding the read secret, so a
+   * captured approval can only reproduce the row it approved — and the StampId is persisted
+   * as a unique column for single-use anti-replay.
+   *
+   * Fails with a `JoinedStrand.Id` uniqueness violation when the id is already recorded;
+   * `isStrandIdConflict(error, 'JoinedStrand')` identifies that case.
+   */
+  async insertJoinedStrand(
+    row: Pick<StrandRow, 'Id' | 'Type' | 'MemberPrivateKey'>,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    this.ensureInitialized();
+    log('Inserting joined strand: %s (type: %s)', row.Id, row.Type);
+
+    const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
+
+    // Field order MUST match the schema's JoinedStrand `AuthorizedInsert` verify:
+    // Id, Type, MemberPrivateKey ('' when null), StampId.
+    const message = buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', [row.Id, row.Type, row.MemberPrivateKey ?? '', stampId]);
+    const signature = signMessage(message);
+
+    await this.execWrite(`
+      insert into CadreControl.JoinedStrand (Id, Type, MemberPrivateKey, StampId)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?, ?)
+    `, [ownerKey, signature, row.Id, row.Type, row.MemberPrivateKey, stampId], 'joined-strand-insert');
+
+    log('Joined strand inserted: %s', row.Id);
+  }
+
+  /**
+   * Owner-signed removal of one `JoinedStrand` row. Mirrors {@link deleteStrandPartyKey}:
+   * `'remove'`-tagged digest over (Id, StampId), `Revocation` tombstone in the same
+   * transaction. A no-op (no throw, no tombstone) when the row does not exist — `false`
+   * then, `true` when a row was actually removed.
+   */
+  deleteJoinedStrand(
+    strandId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    return this.lockedWithRetry(() => this.deleteGuardedRow('JoinedStrand', strandId, ownerKey, signMessage), {}, 'joined-strand-delete');
+  }
+
+  /**
    * Insert a validation key into the control database using an owner signature.
    *
    * Mirrors {@link insertStrand}: the owner signs the canonical row-bound
@@ -2084,7 +2181,7 @@ export class ControlDatabase {
    *   reads from this node (every other node already filters it by tombstone). A revoked
    *   node therefore keeps its own copy of its own row; "a node that learns it has been
    *   revoked should shut itself down" is a distinct behaviour and its own ticket.
-   *   `ValidationKey` has no self notion and is not special-cased.
+   *   `ValidationKey` and `JoinedStrand` have no self notion and are not special-cased.
    *
    * A per-row failure is logged and skipped rather than aborting the sweep: an abort would
    * starve every tombstone after the failing one on every subsequent pass, and each row is

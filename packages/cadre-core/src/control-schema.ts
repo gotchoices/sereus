@@ -365,6 +365,65 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text, Signature text);
 
+    -- A strand THIS party joined from ANOTHER party. The founding party's control database
+    -- holds its Strand row, so without this table only the machine that joined would know of
+    -- it. Every machine of the party reads it (the strand watcher offers each row like a
+    -- Strand row), so a replica host keeps a copy and the party's other machines can attach.
+    -- A separate table rather than a Strand row with a provenance marker: Strand means "this
+    -- party's own strand" to every reader of it (founder derivation, FormationUsage.StrandExists,
+    -- unpublish, the consent branch of Strand.AuthorizedInsert), and each would need a
+    -- provenance check. MemberPrivateKey is the closed strand's shared read secret the
+    -- formation delivered — replicated in plaintext to every machine the party owns, under the
+    -- same accepted risk as Strand.MemberPrivateKey (docs/strands.md → "Closed-Strand Member
+    -- Key Handling"). Unlike that column it is not held only here: the founding party and
+    -- every member hold it, so a removed row is recoverable by re-forming, which is why this
+    -- table (unlike Strand) carries a REAP branch.
+    table JoinedStrand (
+        Id text primary key,            -- the joined strand's id (the founder's Strand.Id)
+        Type text not null,             -- 'o' | 'c', as Strand.Type
+        MemberPrivateKey text null,     -- closed strand's shared read secret; null for open
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
+                                        -- \`unique\` holds over LIVE rows only; a removed row's stamp is
+                                        -- retired permanently into Revocation (NotRevoked below).
+        -- The approval that seated a removed row can never re-seat it. Same rationale as
+        -- OwnerKey.NotRevoked, stated in full there.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'JoinedStrand' and R.StampId = new.StampId)
+        ),
+        -- A delete must file its correctly named tombstone in the same transaction. Same
+        -- rationale as StrandPartyKey.RevocationRecorded.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'JoinedStrand' and R.StampId = old.StampId and R.RowKey = old.Id)
+        ),
+        -- Insert + delete only: neither Authorized rule below covers update, so an in-place
+        -- rewrite would swap the read secret unsigned. Mirrors StrandPartyKey.NoUpdate.
+        constraint NoUpdate check on update (false),
+        -- Readers cast Type to 'o' | 'c' (ControlDatabase.queryJoinedStrands).
+        constraint KnownType check (new.Type = 'o' or new.Type = 'c'),
+        -- An open strand has no read gate, so no read secret. Same rule as Strand.MemberKeyClosedOnly.
+        constraint MemberKeyClosedOnly check (new.MemberPrivateKey is null or new.Type = 'c'),
+        constraint AuthorizedInsert check on insert (
+            -- Owners authorize by signing over THIS row (Id, Type, MemberPrivateKey, StampId),
+            -- MemberPrivateKey signing as '' when null, so a captured approval can only reproduce
+            -- the exact secret it approved. Owner-signed, deliberately NOT self-signable by an
+            -- enrolled CadrePeer: every always-on machine of the party downloads the strands this
+            -- table names, so a non-owner machine could otherwise make them all host an arbitrary
+            -- strand. A machine that is not an owner keeps its joins machine-local.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.JoinedStrand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            -- 'remove'-tagged digest over the STORED row (Id, StampId), so the add approval can
+            -- never be replayed as a removal.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.JoinedStrand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+
+                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation.
+                -- Why committed.* and why the stamp is bound: stated in full on
+                -- CadrePeer.AuthorizedDelete. Allowed here, unlike Strand / StrandPartyKey,
+                -- because MemberPrivateKey is recoverable (see the table comment).
+                or exists (select 1 from committed.Revocation R where R.TableName = 'JoinedStrand' and R.RowKey = old.Id and R.StampId = old.StampId)
+        )
+    ) with context (OwnerKey text, Signature text);
+
     -- A peer (node) that is part of the cadre, carrying a self-published,
     -- freshness-stamped, self-signed address record (see PeerAddressRecord in cadre-core).
     -- The row IS the peer-address record: a resolver reads it, re-verifies Sig against
@@ -815,10 +874,12 @@ declare schema CadreControl {
     -- its own guarded TableName, 'Revocation' is not one, and ControlDatabase.queryRevocations
     -- skips the marker, so nothing reaps or re-issues it.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'DeviceToken',
-                                    -- or 'Revocation' for the ledger marker only (all confined by RowIsGone below)
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' |
+                                    -- 'JoinedStrand' | 'DeviceToken', or 'Revocation' for the ledger marker only
+                                    -- (all confined by RowIsGone below)
         RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
-                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id / StrandPartyKey.Id
+                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id / StrandPartyKey.Id /
+                                    -- JoinedStrand.Id
                                     -- Every guarded table's RevocationRecorded CHECK requires the
                                     -- accompanying tombstone to carry the removed row's key here, so
                                     -- a REMOVAL cannot file a misnamed tombstone. A tombstone with no
@@ -869,6 +930,7 @@ declare schema CadreControl {
                 or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
                 or (new.TableName = 'StrandPartyKey' and not exists (select 1 from StrandPartyKey K where K.StampId = new.StampId))
+                or (new.TableName = 'JoinedStrand' and not exists (select 1 from JoinedStrand J where J.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
                 or (new.TableName = 'Revocation' and new.RowKey = 'ledger' and new.StampId = 'opened')
         ),
