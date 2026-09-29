@@ -658,6 +658,11 @@ export class StrandInstanceManager {
   /**
    * Wait until no runtime build of `strandId` is in flight. Never rejects: a failed build
    * is reported by the call that started it, and the caller re-reads the instance after.
+   *
+   * NOTE: after a failed launch the re-read sees the instance gone only because
+   * `startStrand`'s catch deletes it synchronously, and its continuation is queued before
+   * this waiter's. If that cleanup ever awaits before `instances.delete`, a waiter can act
+   * on the dying record; move the cleanup inside the tracked promise then.
    */
   private async settleRuntimeBuilds(strandId: string): Promise<void> {
     for (let build = this.runtimeBuilds.get(strandId); build; build = this.runtimeBuilds.get(strandId)) {

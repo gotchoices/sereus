@@ -218,7 +218,8 @@ kept, each re-claims the strand from `strand:discovered` (the joiner's from its 
 join, below), and a write made after the restart crosses both ways. (On a node that hosts
 storage replicas — the default for `profile: 'storage'`, see
 [architecture.md → Strand Filtering](architecture.md#strand-filtering) — the node launches the
-strand as a replica, without the app's schema, right after that announcement.) Its opt-in negative
+strand as a replica, without the app's schema, right after that announcement, and the app's
+claim then upgrades that running replica in place rather than relaunching it.) Its opt-in negative
 control runs the same journey with in-memory books and the strand never re-meshes; its opt-in
 two-process arm repeats the restart across real process exits over on-disk stores.
 
