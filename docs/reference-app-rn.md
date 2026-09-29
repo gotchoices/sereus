@@ -642,7 +642,7 @@ Switch to the **Chat** tab. Type a message and send. The message is:
 
 The drone has no chat schema, so it neither reads nor writes messages itself; it keeps their blocks for the phones. The chat screen polls for new messages every 2 seconds.
 
-A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send the message can be stored at most once. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
+A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send on unchanged text the message can be stored at most once. The key is let go once the box stops holding that text (a cleared and retyped message is a new one), and when a poll shows the message did land, which also clears the notice and the box. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
 
 ### Quick Reference
 
