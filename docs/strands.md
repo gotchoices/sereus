@@ -56,7 +56,7 @@ A cadre could conceptually take on one of the following shapes (showing only the
 A user with only a phone wants to connect to another such user.
 
 - The parties will need a **relay** somewhere neither can accept inbound connections directly.
-- At a minimum, one party must reserve a slot on the relay and disclose a full relay-routed multiaddr.
+- At a minimum, one party must reserve a slot on the relay and disclose a full relay-routed multiaddr. Of the reference apps, the web and React Native apps can be that party today; the NativeScript app cannot (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
 - The other party can reach the first via the relay if it has that relay-routed multiaddr.
 - If the first party intends to roam (connect via more than one relay), it will need a discovery mechanism:
   - join a DHT overlay (via one or more bootstrap peers)

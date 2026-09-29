@@ -134,11 +134,11 @@ copy/paste:
 
 A browser tab can't open a listener, so to be **dialable** for formation it must
 hold a circuit-relay-v2 **reservation** and advertise a `/p2p-circuit` address.
-The relay is deployment infrastructure (see `ops/`), so its multiaddr is resolved
-at runtime — exactly like the ICE manifest:
+The relay is deployment infrastructure (see `ops/`); unlike the ICE servers, its
+multiaddr is not fetched from a manifest but read from, in order:
 
-- `VITE_RELAY_ADDR` (build-time, comma-separated), or
-- `localStorage["relay-addr"]` (runtime override).
+- `VITE_RELAY_ADDR` (build-time, comma-separated), then
+- `localStorage["relay-addr"]` (per-browser, read only when the build sets none).
 
 When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, and
 `CadreNode.reserveRelays()` dials the relay, asks it for a reservation slot, and

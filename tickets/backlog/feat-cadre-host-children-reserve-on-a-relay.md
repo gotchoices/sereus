@@ -14,7 +14,7 @@ cadre-host runs its owner node and every donated node as `cadre-cli` child proce
 - host configuration (`host.config.json`, `nat.json`) has no field for relay addresses;
 - the child spawn in `host-process-orchestrator.ts` removes every `CADRE_*` variable inherited from the manager (`scrubbedParentEnv`) and sets only the fixed per-child variables, none of which is `CADRE_RELAY_ADDRS`.
 
-So when UPnP fails and the operator cannot forward a port (the CGNAT case the host already detects as `cgnatDetected`), the host has no fallback, even though `docs/cadre-host.md` lists "relay fallback" as one of its three NAT layers.
+So when UPnP fails and the operator cannot forward a port (the CGNAT case the host already detects as `cgnatDetected`), the host has no fallback. `docs/cadre-host.md` lists a relay as one of its three NAT layers and marks it "not wired".
 
 ## Expected behaviour
 
@@ -27,3 +27,7 @@ So when UPnP fails and the operator cannot forward a port (the CGNAT case the ho
 ## Not this
 
 Deploying relays (regions, dnsaddr discovery, abuse limits) is `4-relay-bootstrap-infrastructure` in `backlog/later/`. This ticket only lets cadre-host use a relay someone already runs, such as the `ops/docker/libp2p-infra` container.
+
+## Docs that change when this lands
+
+The `cadre-host` row of `docs/architecture.md` → "Which nodes can be reached through a relay" (and the sentence under that table naming cadre-host), item 2 of `docs/cadre-host.md` → "NAT and DDNS" plus the other "not wired yet" mentions in that file (the comparison table, the public-surface bullet, item 1, the invite address resolver's third bullet), the matching comment in `packages/cadre-host/src/nat/address-resolver.ts`, and the `NOTE:` in the child env block of `host-process-orchestrator.ts` that says children hold no relay reservation.

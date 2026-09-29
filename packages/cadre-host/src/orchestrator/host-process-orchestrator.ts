@@ -622,8 +622,9 @@ export class HostProcessOrchestrator implements Orchestrator {
       // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). A NAT
       // forward (the owner node's, via `NatService`) covers the TCP port only, so it
       // reaches the control node over TCP alone; a phone outside the LAN, which needs the
-      // WebSocket port, and every strand node are reached through observed addresses or
-      // a relay.
+      // WebSocket port, and every strand node are reached through observed addresses only,
+      // since no `CADRE_RELAY_ADDRS` is set here and a child therefore holds no relay
+      // reservation.
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the

@@ -149,7 +149,7 @@ Switching modes is Disconnect → choose → Connect, which builds a new node. T
 
 A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a node borrowed from a cadre-host, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: an invitation embeds the inviter's own addresses as its bootstrap list, so a phone with no address cannot mint one (`CadreNode.createOpenInvitation` throws `No multiaddrs available for invitation`).
 
-The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable.
+The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable. Which other kinds of node can hold a reservation today is in [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay).
 
 Two ways to supply it, both resolved by [`src/relay-config.ts`](../packages/reference-app-rn/src/relay-config.ts):
 

@@ -55,6 +55,8 @@ This is the same topology as the RN app — see
 | **Phone** | NativeScript Core (V8/JSC) | WebSocket + circuit relay | SQLite (`db-p2p-storage-ns`) | `transaction` |
 | **Drone** | Node.js (`cadre-cli` / test-fixture) | TCP + WebSocket listener | File system / in-memory | `storage` |
 
+The circuit-relay transport is for dialing out only: unlike the RN app, the NS app never names a relay to reserve a slot on, so it holds no `/p2p-circuit` address and cannot be reached through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
+
 ### Storage
 
 The phone uses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`,

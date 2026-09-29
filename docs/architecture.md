@@ -893,6 +893,24 @@ sequenceDiagram
 
 Once multiple nodes with public IPs exist in the cadre, the control network becomes more resilient and less dependent on relays.
 
+#### Which nodes can be reached through a relay
+
+Relay support has two halves. A **relay server** forwards connections for other nodes (`network.enableRelay`, on by default for the storage profile); every storage-profile `CadreNode` runs one. A **relay reservation** is a slot a node behind NAT holds on a relay, which gives that node a `/p2p-circuit` address other machines can dial. Only the reservation makes a node that cannot accept connections — a phone, a browser tab, a home machine behind carrier-grade NAT — reachable. Where these docs say "relay support" without qualification, they mean the server half. Which kinds of node can hold a reservation today:
+
+| node kind | reachable through a relay? | how it names its relay |
+| --- | --- | --- |
+| any `CadreNode` embedding cadre-core | yes | `network.relayAddrs`, or `CadreNode.reserveRelays()` at runtime; what a down relay costs each is the table in the next section |
+| `cadre-cli` node | yes, when its relay is up | `network.relayAddrs` / `CADRE_RELAY_ADDRS` ([cadre-cli README → Environment Variables](../packages/cadre-cli/README.md#environment-variables)); a relay that grants nothing on the first attempt fails `start()`, since cadre-cli has no `requireRelay` setting |
+| `cadre-host` owner node and donated nodes | **no** | none: host settings have no relay field, and the host passes its `cadre-cli` children no `CADRE_RELAY_ADDRS` ([cadre-host.md → NAT and DDNS](cadre-host.md#nat-and-ddns)) |
+| `cadre-provider` tenant containers | not plumbed | the provider passes its containers no relay setting; a container is dialable only if the port the provider publishes for it on the Docker host is |
+| web reference app | control node only | `VITE_RELAY_ADDR` or `localStorage["relay-addr"]`, reserved through `reserveRelays()`, which reaches the tab's control node only: its strand nodes publish no circuit address of their own ([README → Dialability](../packages/reference-app-web/README.md#dialability-relay-reservation)) |
+| React Native reference app | yes, when its relay is up | `EXPO_PUBLIC_RELAY_ADDR` or Settings → Relay, as `relayAddrs` with `requireRelay: false`, so a dead relay leaves the phone running but undialable ([reference-app-rn.md → Reachability](reference-app-rn.md#reachability-configuring-a-relay)) |
+| NativeScript reference app | **no** | none: it carries the circuit-relay transport but never names a relay to reserve on, so it only dials out ([reference-app-ns.md → Architecture Overview](reference-app-ns.md#architecture-overview)) |
+
+So a phone reached through a relay works today on the web and React Native reference apps, given a configured relay. A `cadre-host` machine behind carrier-grade NAT cannot be reached through one — use UPnP, a manual port forward or IPv6 until the host passes its nodes a relay — and neither can the NativeScript app.
+
+Dialing a node needs no reservation of the dialer's own: any node dials *through* a relay it holds no slot on to a peer that holds one there (the per-party arm of the blind-relay scenario below; [strands.md → SN–SN](strands.md#snsn-both-parties-are-single-nat-nodes)).
+
 #### Reservations are requested explicitly, not discovered
 
 Every **control** node reserves the same way (`packages/cadre-core/src/relay-addrs.ts`,
@@ -1142,7 +1160,7 @@ The measurement behind all of this — and the proof that the declared limits op
 ### Minimal (Single Phone)
 
 - **Phone** as sole cadre node: transaction-only profile, connectivity via relay when behind NAT, participates in all strands (limited by battery/connectivity)
-- Limitations: no redundancy (phone offline = party unreachable), no archival storage, relay-dependent for inbound connectivity
+- Limitations: no redundancy (phone offline = party unreachable), no archival storage, relay-dependent for inbound connectivity (of the reference apps, only the web and React Native apps can reserve on a relay today — see [Which nodes can be reached through a relay](#which-nodes-can-be-reached-through-a-relay))
 
 ### Standard (Phone + Cloud Node)
 
@@ -1700,7 +1718,8 @@ and surfaces the `CadreControl` authorization gates (owner keys, formation
 invites/usage, strand membership type + member-key presence) on its Diagnostics
 page, including a live owner-gate probe that shows an unauthorized control
 write being rejected. Becoming **dialable** for formation requires a circuit-relay
-reservation (resolved from a runtime relay manifest, like the ICE manifest); a
+reservation (the relay address comes from the build-time `VITE_RELAY_ADDR`, else
+`localStorage["relay-addr"]`; see [Which nodes can be reached through a relay](#which-nodes-can-be-reached-through-a-relay)); a
 tab with no relay configured stays solo and surfaces a clear "not dialable" error
 rather than failing silently. Live two-party cross-cohort convergence (a message
 written in one tab converging to the other through a shared closed strand) needs a

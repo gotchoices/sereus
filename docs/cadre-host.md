@@ -32,7 +32,7 @@ Everything else is bespoke to cadre-host:
 | Storage | Per-customer billing-aware quotas | Shared volumes on the host filesystem |
 | Install | Operator runs Docker | One-shot installer + service-host integration |
 | UI | None (API only) | Localhost web UI |
-| NAT | Operator's problem | First-class DDNS + UPnP/PCP + relay fallback |
+| NAT | Operator's problem | First-class DDNS + UPnP/PCP; relay fallback not wired yet (see [NAT and DDNS](#nat-and-ddns)) |
 
 The shared types are too thin to warrant a third package (no `@serfab/cadre-orchestration-core`). If sibling tickets discover a real shared concern, it can be hoisted then.
 
@@ -182,7 +182,7 @@ graph TD
 Two external surfaces:
 
 - **Local UI on `http://localhost:<port>`** — admin-only, no auth beyond "you are on the host." Manage trust circle members, view node status, generate invites.
-- **Public libp2p surface** — managed by the NAT layer (DDNS, UPnP/PCP, relay fallback). Each cadre node accepts inbound connections from its corresponding member's other devices, plus connections from peers in the strands those members participate in.
+- **Public libp2p surface** — managed by the NAT layer (DDNS, UPnP/PCP; a relay fallback is not wired yet). Each cadre node accepts inbound connections from its corresponding member's other devices, plus connections from peers in the strands those members participate in.
 
 The host process itself is not addressable from the public internet. The NAT layer exposes each cadre node, not the manager.
 
@@ -285,8 +285,8 @@ The same read→decide→write and the same confirmation gate back `cadre strand
 
 Cadre-host runs on machines that are typically behind NAT. To be dialable from the open internet it composes three layers, each fail-safe and independent:
 
-1. **UPnP / NAT-PMP port mapping.** The default is to punch a forward through the upstream router via `@achingbrain/nat-port-mapper`. If the router refuses or doesn't expose UPnP, port mode flips to `failed` and the user is prompted to either set up a manual port forward or fall back to a relay (next bullet). The mapping is refreshed periodically; lease expiry surfaces as `mappingLeaseExpiresAt` in the status snapshot.
-2. **Circuit-relay client (deferred).** When the host is unreachable directly (CGNAT or stubborn router) it will eventually consume a libp2p circuit relay so phones can still dial in. The relay-server side already exists in cadre-core (`network.enableRelay`); the client side that *reserves* through a relay is parked in [`backlog/4-relay-bootstrap-infrastructure`](../tickets/backlog/) and will be wired in once that ticket lands. Until then, hosts behind CGNAT will need either IPv6 or manual port forwarding.
+1. **UPnP / NAT-PMP port mapping.** The default is to punch a forward through the upstream router via `@achingbrain/nat-port-mapper`. If the router refuses or doesn't expose UPnP, port mode flips to `failed` and the user is prompted to set up a manual port forward (a relay fallback is not wired yet — next bullet). The mapping is refreshed periodically; lease expiry surfaces as `mappingLeaseExpiresAt` in the status snapshot.
+2. **Circuit-relay reservation (not wired).** When the host is unreachable directly (CGNAT or stubborn router), a relay reservation would give its nodes a `/p2p-circuit` address phones can still dial. The pieces exist below cadre-host: cadre-core runs relay servers (`network.enableRelay`) and can reserve on a relay (`network.relayAddrs`), and cadre-cli exposes the reservation as `CADRE_RELAY_ADDRS`. What is missing is in cadre-host itself: host settings have no field for a relay address, and the spawn removes every `CADRE_*` variable from the environment its owner node and donated nodes inherit, then never sets `CADRE_RELAY_ADDRS`. So no node cadre-host runs is reachable through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)). Until then, hosts behind CGNAT will need either IPv6 or manual port forwarding.
 3. **Dynamic DNS.** When a stable hostname is desired, cadre-host pushes the current external IP to a DDNS provider. v1 ships **DuckDNS** only; additional providers (Cloudflare, No-IP, Dynu, …) are filed as backlog work and drop into `nat/ddns/` as one file each plus a registry entry.
 
 ### External IP detection
@@ -335,7 +335,7 @@ The host's NAT layer hooks into cadre-core through the `network.inviteAddressRes
 
 - `/dns4/<hostname>/tcp/<externalPort>/p2p/<peerId>` when DDNS is configured and reachability is `reachable`,
 - `/ip4/<externalIp>/tcp/<externalPort>/p2p/<peerId>` when only the raw IP is known,
-- the libp2p multiaddrs otherwise (including any `/p2p-circuit/` addresses once the relay-client work lands).
+- the libp2p multiaddrs otherwise (which would include a `/p2p-circuit/` address once cadre-host passes a relay to its owner node; it does not yet — see item 2 of [NAT and DDNS](#nat-and-ddns)).
 
 ### Credential storage
 
