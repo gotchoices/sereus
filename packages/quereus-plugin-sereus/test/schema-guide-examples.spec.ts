@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
-import { Database, Parser, createScalarFunction, quoteIdentifier, registerPlugin } from '@quereus/quereus';
+import { Database, createScalarFunction, quoteIdentifier, registerPlugin } from '@quereus/quereus';
 import type { TableSchema } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { applyAppSchema } from '../src/compose-strand.js';
@@ -20,6 +20,10 @@ import { applyAppSchema } from '../src/compose-strand.js';
  * reads an undeclared context variable or names a missing column applies cleanly. Each table
  * therefore has an insert, an update and a delete planned (not run); `check on delete` is only
  * compiled by the delete.
+ *
+ * NOTE: planning proves a check compiles, not that it accepts a sensible row — a reversed
+ * `like(author_email, '%@%')` passed here; if the guide's checks grow subtler, insert one
+ * representative row per table (hand-written per example) instead of only planning.
  */
 
 const GUIDE_PATH = fileURLToPath(new URL('../../../docs/schema-guide.md', import.meta.url));
@@ -75,19 +79,6 @@ async function guideDatabase(): Promise<Database> {
 	return db;
 }
 
-/**
- * Counts declaration items the parser skipped without meaning anything — `create unique index …`
- * parses as an ignored `create` followed by `unique index …`, and a misspelled item keyword
- * vanishes the same way. Only a count: Quereus leaves an ignored item's `text` empty. The
- * wrapper is a second copy of the one in `applyAppSchema`.
- */
-function ignoredItemCount(body: string): number {
-	return new Parser().parseAll(`declare schema App {\n${body}\n}`)
-		.flatMap(statement => statement.type === 'declareSchema' ? statement.items : [])
-		.filter(item => item.type === 'declareIgnored')
-		.length;
-}
-
 function withContextClause(table: TableSchema): string {
 	const names = (table.mutationContext ?? []).map(v => `${quoteIdentifier(v.name)} = ?`);
 	return names.length > 0 ? ` with context ${names.join(', ')}` : '';
@@ -113,7 +104,6 @@ function planOrExplain(db: Database, sql: string): void {
 }
 
 async function checkSchemaBody(db: Database, body: string): Promise<void> {
-	expect(ignoredItemCount(body), 'items the parser ignored (a `create …` prefix or a misspelled item keyword)').toBe(0);
 	await applyAppSchema(db, body);
 	// The diff is already applied, so this only inserts the seed rows — proving their literals
 	// fit their tables. Sereus itself applies without `with seed`.

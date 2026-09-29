@@ -375,14 +375,28 @@ export async function composeStrand(
  * bring-up, and cadre-core's `StrandDatabase.attachAppSchema` calls it on a live storage
  * replica when an app claims the strand. The database must already be composed (optimystic
  * set as the default vtab), or the tables land in memory instead of the strand.
+ *
+ * Refuses a schema holding an item the Quereus parser skipped: it keeps any item whose leading
+ * keyword it does not model (`create unique index …`, a misspelled `tabel`, `domain`) as an
+ * opaque placeholder that apply ignores, so the app would otherwise run without that item.
  */
 export async function applyAppSchema(db: Database, schema: string): Promise<void> {
 	await db.exec(`
 		declare schema App {
 			${schema}
 		}
-		apply schema App;
 	`);
+	assertNoIgnoredItems(db);
+	await db.exec('apply schema App;');
+}
+
+function assertNoIgnoredItems(db: Database): void {
+	const items = db.declaredSchemaManager.getDeclaredSchema('App')?.items ?? [];
+	const ignored = items.filter(item => item.type === 'declareIgnored').length;
+	if (ignored > 0) {
+		// Only a count: Quereus leaves an ignored item's source text empty.
+		throw new Error(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\`, \`seed\` and \`assertion\``);
+	}
 }
 
 /**

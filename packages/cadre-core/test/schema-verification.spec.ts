@@ -11,7 +11,7 @@ import type { SAppConfig } from '../src/types.js';
 describe('schema-verification', () => {
   let authorPrivateKey: string;
   let authorPublicKey: string;
-  const testSchema = 'create table Chat (Id text primary key, Message text);';
+  const testSchema = 'table Chat (Id text primary key, Message text);';
   const testVersion = '1.0.0';
 
   beforeEach(() => {

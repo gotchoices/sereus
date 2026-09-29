@@ -2,7 +2,7 @@
 
 Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
 
-What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
+What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
 - `sql schema` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view.
 - `sql script` — a complete statement sequence, run as-is.
 - `sql fragment` — shown for reading only (a lone constraint line, a query against tables the block does not declare). Never run.
@@ -195,7 +195,7 @@ table articles (
   created  text,
 
   -- Simple email-like check for author contact
-  author_email text null check (like(author_email, '%@%'))
+  author_email text null check (author_email like '%@%')
 );
 ```
 

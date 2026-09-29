@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { parseConfig } from '../src/plugin.js';
 import { PLUGIN_SETTING_KEYS } from '../src/parse-config.js';
 import { connectToStrand } from '../src/connect.js';
-import { composeStrand } from '../src/compose-strand.js';
+import { applyAppSchema, composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
 	COHORT_READ_DEADLINE_MS,
@@ -647,6 +647,22 @@ describe('an sApp table named like a strand table', () => {
 		} finally {
 			await second.shutdown();
 			warm.close();
+		}
+	});
+});
+
+describe('applyAppSchema', () => {
+	it('refuses an item the parser would skip, before applying any of the schema', async () => {
+		const db = new Database();
+		try {
+			// `create unique index` parses as an ignored `create` item followed by the index.
+			await expect(applyAppSchema(db, `
+				table users (id text primary key, handle text);
+				create unique index users_handle on users(handle);
+			`)).rejects.toThrow(/1 item\(s\) the parser does not recognize/);
+			expect(db.schemaManager.getSchema('App')?.getAllTables() ?? []).toEqual([]);
+		} finally {
+			await db.close();
 		}
 	});
 });
