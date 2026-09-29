@@ -105,8 +105,9 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
 
 /**
  * 404 for unknown ids; 501 not_implemented for known non-owner nodes — all of
- * them donated. A donated node's containerId is its donation id, so the id in
- * the message is exactly what the terminate command takes.
+ * them donated. A donated node's containerId is its donation id, so the
+ * message names `node.id` rather than the route param, which may be the
+ * opaque dockerId — only the donation id is what the terminate command takes.
  */
 function ownerOnlyFallback(
   reply: FastifyReply,
@@ -114,10 +115,11 @@ function ownerOnlyFallback(
   id: string,
   verb: 'start' | 'stop' | 'restart',
 ) {
-  if (!orchestrator.getNode(id)) return notFound(reply, id);
+  const node = orchestrator.getNode(id);
+  if (!node) return notFound(reply, id);
   return notImplemented(
     reply,
-    `${verb} ${id}: only the owner node can be started, stopped or restarted here; a donated node's lifecycle is owned by the donation surface — end it with 'cadre-host grant terminate ${id}' (DELETE /grants-admin/donations/${id}).`,
+    `${verb} ${id}: only the owner node can be started, stopped or restarted here; a donated node's lifecycle is owned by the donation surface — end it with 'cadre-host grant terminate ${node.id}' (DELETE /grants-admin/donations/${node.id}).`,
   );
 }
 

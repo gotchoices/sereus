@@ -181,6 +181,9 @@ export function createGrantAdminHandlers(
       // Revoke first: it throws not_found for an unknown token before any
       // teardown, and a provision racing this call is then refused as revoked.
       service.revoke(token);
+      // NOTE: the teardown runs inside the HTTP request, one stop + reclaim per
+      // node in series. Fine for a handful of nodes per grant; if grants ever
+      // carry many, answer after the revoke and tear down in the background.
       if (keepNodes || !donations) return { terminated: [] };
       return { terminated: await donations.terminateGrant(token) };
     },
