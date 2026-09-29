@@ -19,9 +19,16 @@ const { tree, provenance } = applyEnvOverrides(parsedFile, process.env, {
 	APP_VERBOSE: { path: 'verbose', parse: parseBooleanEnv },
 });
 const config = validateTree(tree, root, { configPath: '/etc/app.yaml', provenance });
-// Config /etc/app.yaml: unknown key nmae (did you mean 'name'?)
-// Environment variable APP_VERBOSE: ...
 ```
+
+For a file holding only `nmae: demo`, `validateTree` throws:
+
+```
+Config /etc/app.yaml: unknown key nmae (did you mean 'name'?)
+Config /etc/app.yaml: name is required
+```
+
+With `APP_VERBOSE=yes` set, `applyEnvOverrides` throws first, from the parser: `Invalid APP_VERBOSE "yes": expected true, false, 1 or 0`. A problem is attributed to `Environment variable X` when a variable's parser accepts text that the checker then rejects, for example a plain string written where `oneOf` expects one of a closed set.
 
 ## Public functions
 

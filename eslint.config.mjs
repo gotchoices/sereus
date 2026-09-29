@@ -313,6 +313,7 @@ export default tseslint.config(
 			'packages/cadre-cli/src/**/*.ts',
 			'packages/cadre-host/src/**/*.ts',
 			'packages/cadre-provider/src/**/*.ts',
+			'packages/config-check/src/**/*.ts',
 			'packages/quereus-plugin-sereus/src/**/*.ts',
 			'packages/integration-tests/src/**/*.ts',
 		],

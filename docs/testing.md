@@ -267,7 +267,7 @@ files are type-checked where possible (vitest itself never type-checks).
     `globalSetup` is not this repo's code to type-check. And `.svelte` is a non-issue for *this* gate:
     every Vitest `include` in the repo targets `*.ts`, so no `.svelte` file is ever collected (Svelte
     coverage remains the separate `svelte-check` gap above).
-  - The six `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
+  - The packages' `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
     `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
     `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather
     than new debt. If a compiler option ever has to change across all of them at once, that is the point to
