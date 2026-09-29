@@ -4,6 +4,8 @@
 		messagesState,
 		ensureReady,
 		sendMessage,
+		composerChanged,
+		onDraftSettled,
 		refresh,
 		startPolling,
 		stopPolling,
@@ -23,10 +25,25 @@
 		}
 	});
 
+	// Every edit, so text other than the pending draft's never reuses its key (see `composerChanged`).
+	$effect(() => {
+		composerChanged(author.trim(), content.trim());
+	});
+
 	onMount(() => {
 		startPolling();
-		return () => stopPolling();
+		const stopSettled = onDraftSettled(settleDraft);
+		return () => {
+			stopPolling();
+			stopSettled();
+		};
 	});
+
+	/** A send that reported failure did land. Leave text the user has since typed alone. */
+	function settleDraft(settledAuthor: string, settledContent: string) {
+		composeError = null;
+		if (author.trim() === settledAuthor && content.trim() === settledContent) content = '';
+	}
 
 	async function onSubmit(evt: SubmitEvent) {
 		evt.preventDefault();

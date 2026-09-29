@@ -389,10 +389,28 @@ reference chat apps implement exactly this — see `insertChatMessage` /
 `newChatMessageId` in `packages/reference-app-web/src/lib/chat-dml.ts` and the composer rule in
 `packages/reference-app-rn/src/chat-send.ts`, `packages/reference-app-ns/src/chat-vm.ts`
 (`ChatViewModel.send`) and `packages/reference-app-web/src/lib/messages.svelte.ts` (`sendMessage`).
-They also show what still needs deciding: a key held until a send resolves and nothing else can
-outlive the draft it was minted for, so the *same* text composed again later is mistaken for a
-retry — `tickets/backlog/bug-chat-retry-key-outlives-the-draft-it-belongs-to.md`. Hold the key
-while the event is still the one being composed, and let it go when it is not.
+
+The other half of the rule: hold the key exactly as long as the event is still the one being
+composed. A key released only when an attempt resolves outlives its draft — a user who sees a
+"not confirmed" message arrive anyway and clears the box would have the *same* text, typed again
+later, taken for a retry, found stored, and silently dropped. So the reference apps release the key
+at the first of:
+
+- **an attempt resolving**, stored or found already stored;
+- **the composer no longer holding the text the key was minted for** (on web, the author and the
+  text) — clearing and retyping the same words, or editing away and back, is a new event with a
+  new key;
+- **a read of the table showing the key's row**, which means an attempt that reported failure did
+  land. The apps then also drop the "not confirmed" notice, and clear the box if it still holds
+  that text.
+
+The read must never release the key while an attempt is in flight: if that attempt then failed,
+the user would be told to retry with no key left to re-present, and the retry would mint a new
+one — the duplicate this section exists to prevent. The next read after the attempt settles
+releases it instead. React Native keeps the rule in `ChatSender` (`composerChanged`, `settle`,
+`packages/reference-app-rn/src/chat-send.ts`); NativeScript in `ChatViewModel`'s `draft` setter
+and `settlePendingDraft`; web in `composerChanged` and `settlePendingDraft` in
+`messages.svelte.ts`.
 
 This is also why the writes cadre-core itself re-runs are safe: they key their rows on values they
 derive rather than mint — the membership reconciler's `MemberPeer` binding is keyed on the node's

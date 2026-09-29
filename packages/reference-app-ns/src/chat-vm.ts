@@ -70,14 +70,18 @@ export class ChatViewModel extends Observable {
 	/**
 	 * Last send failure, kept apart from the poll's {@link _error} so a poll that succeeds a
 	 * second later does not wipe the one message the user needs to read — that a resend is safe.
-	 * Cleared by the next send, not by time.
+	 * Cleared by the next send, or by a poll that shows the message did land — never by time.
 	 */
 	private _sendError = '';
 	private _participantCount = 0;
 
 	private strand: StrandInstance | null = null;
 	private participantId: string | null = null;
-	/** The draft awaiting a resolved send, so a resend reuses its id — see {@link send}. */
+	/**
+	 * The submitted draft whose send has not been confirmed, so a resend reuses its id — see
+	 * {@link send}. Held only while the box still holds its text: see the `draft` setter and
+	 * {@link settlePendingDraft}.
+	 */
 	private pendingDraft: PendingDraft | null = null;
 	/** True while a send is in flight, so a second tap cannot race it — see {@link send}. */
 	private sending = false;
@@ -109,9 +113,15 @@ export class ChatViewModel extends Observable {
 		return this._draft;
 	}
 
+	/**
+	 * Any text other than the pending draft's retires its key: editing away and back, or clearing
+	 * and retyping the same words, is a new message. Without this, text the user cleared and later
+	 * typed again would be taken for a retry, found stored, and silently dropped.
+	 */
 	set draft(value: string) {
 		if (value === this._draft) return;
 		this._draft = value;
+		if (this.pendingDraft && this.pendingDraft.text !== value.trim()) this.pendingDraft = null;
 		this.notifyPropertyChange('draft', value);
 	}
 
@@ -231,6 +241,7 @@ export class ChatViewModel extends Observable {
 				queryParticipants(strand),
 			]);
 			this.setMessages(messages);
+			this.settlePendingDraft(messages);
 			this.setParticipantCount(participants.length);
 			this.setError('');
 		} catch (err) {
@@ -246,8 +257,9 @@ export class ChatViewModel extends Observable {
 	 *
 	 * A strand write can fail without settling whether it landed, so the message id belongs to
 	 * the draft and not to the attempt: the first Send mints one and {@link pendingDraft} holds
-	 * it until a send resolves. Pressing Send again on unchanged text re-presents that same key,
-	 * so the primary key guarantees at most one row however many attempts the user makes.
+	 * it until a send resolves, the box stops holding that text, or a poll shows its row.
+	 * Pressing Send again on unchanged text re-presents that same key, so the primary key
+	 * guarantees at most one row however many attempts the user makes.
 	 *
 	 * The text match is load-bearing, not an optimisation. If the user edits the text after a
 	 * failed send and the first attempt HAD landed, reusing its id would report the edit as sent
@@ -308,6 +320,24 @@ export class ChatViewModel extends Observable {
 		} finally {
 			this.sending = false;
 		}
+	}
+
+	/**
+	 * If `messages` holds the pending draft's row, a send that reported failure did land: retire
+	 * its key, drop the "not confirmed" banner, and clear the box if it still holds that text.
+	 *
+	 * Never while a send is in flight: that send's outcome is still open, and if it then failed
+	 * the user would be told to press Send again with no key left to re-present, so the next tap
+	 * would mint a new one and could store the message twice. The first poll after the send
+	 * settles retires it instead.
+	 */
+	private settlePendingDraft(messages: readonly ChatMessage[]): void {
+		const pending = this.pendingDraft;
+		if (this.sending || !pending) return;
+		if (!messages.some((m) => m.Id === pending.id)) return;
+		this.pendingDraft = null;
+		this.setSendError('');
+		if (this._draft.trim() === pending.text) this.draft = '';
 	}
 
 	private toRow(message: ChatMessage, ownId: string | null): ChatRow {

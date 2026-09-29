@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { StrandInstance } from '@serfab/cadre-core';
+import type { ChatMessage } from '../src/chat-operations';
 import { ChatSender } from '../src/chat-send';
 
 interface StoredRow {
@@ -69,12 +70,19 @@ function contents(db: UncertainDatabase): string[] {
   return [...db.rows.values()].map((r) => r.Content).sort();
 }
 
+/** What a poll of the message list would return right now. */
+function listed(db: UncertainDatabase): ChatMessage[] {
+  return [...db.rows.values()];
+}
+
 describe('ChatSender', () => {
   it('stores one row when the same text is sent again after an uncertain failure', async () => {
     const db = new UncertainDatabase(1);
     const sender = new ChatSender();
 
     await expect(sender.send(fakeStrand(db), 'me', 'hello')).rejects.toThrow(/outcome unknown/);
+    // A change notification carrying the same text is not an edit: the draft is still the one.
+    sender.composerChanged('hello');
 
     const result = await sender.send(fakeStrand(db), 'me', 'hello');
 
@@ -95,5 +103,39 @@ describe('ChatSender', () => {
 
     expect(result.alreadyStored).toBe(false);
     expect(contents(db)).toEqual(['hello', 'hello there']);
+  });
+
+  it('stores the same text again once the composer has let go of the draft', async () => {
+    const db = new UncertainDatabase(1);
+    const sender = new ChatSender();
+
+    await expect(sender.send(fakeStrand(db), 'me', 'ok')).rejects.toThrow(/outcome unknown/);
+    // The user sees the message arrive, clears the box, and much later types "ok" again.
+    sender.composerChanged('');
+
+    const result = await sender.send(fakeStrand(db), 'me', 'ok');
+
+    expect(result.alreadyStored).toBe(false);
+    expect(contents(db)).toEqual(['ok', 'ok']);
+  });
+
+  it('lets a read that shows the earlier attempt retire its key, but not while a send is in flight', async () => {
+    const db = new UncertainDatabase(2);
+    const sender = new ChatSender();
+
+    await expect(sender.send(fakeStrand(db), 'me', 'ok')).rejects.toThrow(/outcome unknown/);
+    // The resend's outcome is not known yet; retiring its key now would leave a failure with no
+    // key to retry under.
+    const resend = sender.send(fakeStrand(db), 'me', 'ok');
+    expect(sender.settle(listed(db))).toBeNull();
+    await resend;
+
+    await expect(sender.send(fakeStrand(db), 'me', 'yes')).rejects.toThrow(/outcome unknown/);
+    expect(sender.settle(listed(db))).toBe('yes');
+
+    const again = await sender.send(fakeStrand(db), 'me', 'yes');
+
+    expect(again.alreadyStored).toBe(false);
+    expect(contents(db)).toEqual(['ok', 'yes', 'yes']);
   });
 });
