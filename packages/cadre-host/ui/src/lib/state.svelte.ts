@@ -245,6 +245,10 @@ export async function refreshStatus(): Promise<void> {
 	try {
 		const r = await apiFetch<StatusResponse>('/api/status');
 		state.service = r.service;
+		// NOTE: an open tab learns a role change (config edited, host restarted) only on
+		// the next status fetch, and a founder→donor flip leaves the founder slices in
+		// state. Fine while `ownCadre` is install-time only; if the role ever becomes
+		// switchable at runtime, re-fetch status on SSE reconnect and clear those slices.
 		state.role = r.role;
 		state.connectivity = r.connectivity ?? null;
 		// status returns a thin per-node summary; the Nodes page hydrates the
@@ -422,7 +426,3 @@ export function applyEvent(event: { type: string; data: string }): void {
 			break;
 	}
 }
-
-// --- Test-only seam ---
-
-export const __test__ = { recomputeStatus, state };

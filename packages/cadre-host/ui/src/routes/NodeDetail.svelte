@@ -23,6 +23,9 @@
 	let confirmTerminate = $state(false);
 	let busyAction: string | null = $state(null);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	// A terminate outlives the page if the user leaves mid-request; its
+	// follow-ups (restart the poll, navigate) must not act on a page that is gone.
+	let destroyed = false;
 
 	const node = $derived(app.nodes.find((n) => n.id === id) ?? null);
 	const stats = $derived(app.nodeStats[id] ?? null);
@@ -32,7 +35,10 @@
 		startPolling();
 	});
 
-	onDestroy(stopPolling);
+	onDestroy(() => {
+		destroyed = true;
+		stopPolling();
+	});
 
 	function startPolling(): void {
 		pollTimer = setInterval(() => void refreshNodeDetail(id), 5_000);
@@ -75,13 +81,13 @@
 			await apiDelete(`/grants-admin/donations/${encodeURIComponent(id)}`);
 		} catch (err) {
 			reportActionFailure('terminate', err);
-			startPolling();
+			if (!destroyed) startPolling();
 			busyAction = null;
 			return;
 		}
 		pushToast('success', `Terminated donated node ${id}`);
 		await refreshNodes();
-		navigate(hrefFor('nodes'));
+		if (!destroyed) navigate(hrefFor('nodes'));
 	}
 </script>
 
