@@ -843,6 +843,29 @@ describe('CadreNode', () => {
       expect(new Set(calls.quiesce)).toEqual(new Set(['sw-fail']));
     });
 
+    it('a wake that fails before rebuilding leaves a check-in\'s mid-build runtime alone', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      // A check-in's resume holds the strand mid-build: node attached, database not yet.
+      const instance: StrandInstance = {
+        strandId: 'mid-build', status: 'starting', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive', libp2pNode: {} as never
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['mid-build', instance]]), calls);
+      injectControl(node, []);
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => { throw new Error('control read failed'); }
+      };
+
+      await expect(node.wakeStrand('mid-build')).rejects.toThrow(/control read failed/);
+
+      expect(calls.resume).toEqual([]);
+      expect(calls.quiesce).toEqual([]);
+      expect(instance.status).toBe('starting');
+      expect(instance.libp2pNode).toBeDefined();
+    });
+
     it('coalesces concurrent serviceWake calls for the same strand into one runtime build', async () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {

@@ -50,3 +50,28 @@ Results: `yarn workspace @serfab/cadre-core test` passed 147 files and 2365 test
 - **Existing gap, not fixed:** a successful `serviceWake` cancels an armed check-in chain (through `clearTimersForWake`), and if its window re-hibernates the strand, nothing re-arms the chain. This is harmless on mobile, where force-hibernated strands have no chain. On a node that hibernates on timers, a `serviceWake` ends the check-in schedule until the next idle-driven hibernation.
 - **Existing, not fixed:** clearing timers for a wake does not clear `instance.nextCheckIn`, so `getStrand` can report a check-in time that is no longer scheduled while the wake runs.
 - `runWakeWindow`'s activity branch sets `status = liveStrandStatus(instance)` without checking; this was already the case. With `serviceWake` now skipping `'starting'` strands, I found no path that runs two windows on one strand.
+
+## Review findings
+
+Reviewed the diff of `ticket(implement): bug-strand-resume-double-build-and-stuck-error` before the handoff, then read the surrounding code: `resumeStrand`/`runResume`, `buildStrandRuntime`'s failure path (it already releases a partial runtime), `quiesceStrand`/`releaseRuntime`, every `HibernationManager` timer path, every `lastActivity` reader and writer, and every `wakeStrand` caller (push-wake receiver, formation wake, founder `needs-resume`, RN foreground push).
+
+**Fixed in this pass**
+
+- **A wake's failure cleanup could tear down a check-in's runtime (introduced by the new catch).** `handleStrandWake` re-hibernated on any failure, including one before its rebuild, in the cohort seed read (`resolveCohortSeed` → `queryCadrePeers`, which can throw). If a check-in was mid-build (`'starting'`, node attached) or holding its window, the wake quiesced that runtime and marked it `'hibernating'`; `quiesceStrand` does not wait for an in-flight build. Now the wake re-hibernates only when the instance reads `'error'` (its own or a joined rebuild failed) and rethrows every failure. Test: `cadre-node.spec.ts` → `a wake that fails before rebuilding leaves a check-in's mid-build runtime alone` (fails without the guard, passes with it). Doc: architecture.md Wake Mechanisms item 1 gained one sentence.
+- **Stale `nextCheckIn`** (implementer's gap): `HibernationManager.clearCheckInTimer` now clears the instance's advertised `nextCheckIn` when it cancels an armed check-in (wake, force-hibernate, untrack). `restoreCheckInChain` and `scheduleCheckIn` set it again.
+
+**Filed**
+
+- `backlog/bug-strand-probe-failure-quiesces-a-runtime-it-does-not-own`: the same ownership problem in the check-in and `serviceWake` catches, which predates this change and does not fit the wake's one-line guard because those callers also own a window. It has a second arm: `runWakeWindow` reads the activity mark before its quiesce, so a wake landing during that quiesce resolves "up" on a strand that then ends `'hibernating'`. Both predate this ticket.
+- `backlog/bug-strand-wake-leaves-no-hibernation-timers`: the implementer's two "existing gap" items. A successful explicit or push wake re-arms no idle countdown, and `serviceWake` ends an armed check-in chain. Both come down to one site, `beginWake`'s settle path, so they are one ticket with two arms.
+
+**Checked, no change**
+
+- Arm 1 join logic: the `resumesInFlight` read and set are synchronous, the map holds the whole operation so joiners see `'error'`, and the launch backstop (`settleRuntimeBuilds`) relies on the existing `NOTE:` about `startStrand`'s synchronous cleanup. A joiner's ignored `overrides` is documented and harmless.
+- Activity semantics: `lastActivity` is stamped by `recordActivity`, `CadreNode.wakeStrand` and a gated joiner's Header only. The CLI display is the only other reader, and its change (launch start instead of build end) is benign. A push-wake now counts as activity, so a check-in window it lands in keeps the strand up, which is what item 3 intends.
+- Double `rehibernateAfterFailedResume` on a joined failure: both quiesces are no-ops because the build already released the runtime, and whichever sets `'hibernating'` last, the result is the same. The check-in chain continues through `runCheckIn`, because a fired timer is no longer in the map for `restoreCheckInChain` to double-arm.
+- Tests: the three new or extended tests each pin a behaviour with real branching (the double-build reproduction, the failed-wake chain restore, the idle re-arm after a check-in). All kept; none cut.
+- Source hygiene: `cadre-node.ts` is 8300 lines (`wc -l`); already tracked by `backlog/debt-cadre-node-single-file-size`. No narrating comments found in the diff.
+- No tripwires added: everything found was either fixed or is a real defect filed above.
+
+**Validation:** `yarn workspace @serfab/cadre-core test` passed 147 files and 2366 tests (1 skipped, as before) before the `nextCheckIn` change. The three hibernation specs (`hibernation-manager`, `cadre-node`, `strand-instance-manager-hibernation`, 90 tests) were re-run after it and pass. `yarn lint` and `yarn typecheck` are clean.

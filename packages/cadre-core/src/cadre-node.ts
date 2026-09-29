@@ -4775,8 +4775,8 @@ export class CadreNode implements SAppIdLookup {
    * triggers are coalesced upstream by `HibernationManager`, so this runs once
    * per wake; a wake racing a check-in joins the check-in's rebuild in `resumeStrand`.
    *
-   * A failed rebuild re-hibernates the strand (see {@link rehibernateAfterFailedResume})
-   * and rethrows, so the waker still sees the error.
+   * A failed rebuild re-hibernates the strand (see {@link rehibernateAfterFailedResume});
+   * every failure rethrows, so the waker still sees the error.
    *
    * Records no activity itself: whoever asked for the wake did ({@link wakeStrand},
    * `HibernationManager.recordActivity`), and {@link serviceWake}'s own probe must not.
@@ -4805,8 +4805,13 @@ export class CadreNode implements SAppIdLookup {
     try {
       await this.resumeStrandRuntime(strandId);
     } catch (error) {
-      log('Wake of strand %s failed; re-hibernating so a later wake or check-in retries: %o', strandId, error);
-      await this.rehibernateAfterFailedResume(instance, 'Wake');
+      // Only a failed rebuild (this wake's, or the check-in's it joined) is this wake's to
+      // undo, and it reads `'error'`. A failure before the rebuild — the cohort seed — may
+      // find a check-in's runtime mid-build or held for its window; that is the check-in's.
+      if (instance.status === 'error') {
+        log('Wake of strand %s failed; re-hibernating so a later wake or check-in retries: %o', strandId, error);
+        await this.rehibernateAfterFailedResume(instance, 'Wake');
+      }
       throw error;
     }
     this.emit('strand:waking', { strandId });

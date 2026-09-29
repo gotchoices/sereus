@@ -482,6 +482,8 @@ export class HibernationManager {
     if (pending) {
       clearTimeout(pending.timer);
       this.checkInTimers.delete(strandId);
+      // `getStrand` must not advertise a check-in that is no longer scheduled.
+      pending.instance.nextCheckIn = undefined;
     }
   }
 
