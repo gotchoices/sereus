@@ -344,9 +344,9 @@ The key asymmetry:
 
 [When Is a Seed Needed?](#when-is-a-seed-needed) classifies by each machine's role; this table lists the concrete flows that add a machine to a cadre, and which machine opens the first connection in each.
 
-Every flow can arm that first connection from either end, and one working direction is enough. The adder dials the new machine when it knows the new machine's addresses: `CadreNode.addDrone` retains the addresses it is handed as a dial target, and the control-cohort reconcile pass dials from that entry every 15 s, or at once when the caller runs `reconcileControlCohort()`. An empty address list arms nothing. The new machine dials the adder when its seed, or its own bootstrap list, carries the adder's addresses. A seed minted by a phone carries none unless the phone holds a relay reservation, because a phone listens on nothing.
+In every flow either end can open that first connection, and one working direction is enough. The adder dials the new machine when it knows the new machine's addresses: `CadreNode.addDrone` retains the addresses it is handed as a dial target, and the control-cohort reconcile pass dials from that entry every 15 s, or at once when the caller runs `reconcileControlCohort()`. An empty address list gives that pass nothing to dial. The new machine dials the adder when its seed, or its own bootstrap list, carries the adder's addresses. A seed minted by a phone carries none unless the phone holds a relay reservation, because a phone listens on nothing.
 
-A node that never joins is one whose armed direction targets a machine it cannot reach, while the other direction was never armed. Nothing reports this when the machines are configured: the seed is accepted, `ApplySeedResult` counts every owner dial as failed (or none attempted, when the seed carried no owner address), the `CadrePeer` table stays empty, and each side re-dials whatever addresses it holds on every reconcile pass ("Cold-start bootstrap retries" under [Control Network Seed](#control-network-seed)). It looks like a NAT or trust fault; the cause is that neither side was given an address the other can reach.
+A node never joins when neither side holds an address at which it can reach the other, typically because only one side was given addresses and it cannot reach them. Nothing reports this when the machines are configured: the seed is accepted, `ApplySeedResult` counts every owner dial as failed (or none attempted, when the seed carried no owner address), the `CadrePeer` table stays empty, and each side re-dials whatever addresses it holds on every reconcile pass ("Cold-start bootstrap retries" under [Control Network Seed](#control-network-seed)). It looks like a NAT or trust fault; the cause is that neither side was given an address the other can reach.
 
 | # | flow | who dials | who must be reachable |
 | --- | --- | --- | --- |
@@ -1774,7 +1774,7 @@ Maestro Studio, with Appium as the documented fallback.
 
 ### Internal Documentation
 
-- [Arachnode Architecture](arachnode.md) - Storage ring system (planned)
+- [Arachnode Architecture](https://github.com/gotchoices/optimystic/blob/main/docs/arachnode.md) (in the optimystic repository) - Storage ring system (planned)
 - [Strand Management](strands.md) - Strand concepts and negotiation
 - [API Specification](api.md) - Cadre peer authorization API
 - [Cadre Consistency Model](cadre-consistency.md) - Design exploration: async Right-is-Right + transactional Sync for the control network

@@ -279,7 +279,9 @@ pin and survive restarts.
 `bootstrapNodes` is the list of control-network addresses the new container dials to
 find the tenant's cadre. It is forwarded verbatim into the container as
 `CADRE_BOOTSTRAP_NODES`, so a typo is invisible to the caller unless the create call
-rejects it. Each entry must:
+rejects it. The container opens the first connection, so the node these addresses name
+must be reachable from it; [docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared)
+compares this with the other ways to add a machine to a cadre. Each entry must:
 
 - be a string that parses as a multiaddr,
 - carry a `/p2p/<peerId>` component whose peer id decodes,
