@@ -531,7 +531,9 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `harness-party-control-cohort.integration.ts` (the `TestParty` star world).
 - One party, two machines, one strand — `websocket-chat.integration.ts`,
   `convergence-stress.integration.ts`, `strand-addr-seed-convergence.integration.ts`,
-  `strand-late-cadre-join.integration.ts` (join-after-founding ordering).
+  `strand-late-cadre-join.integration.ts` (join-after-founding ordering),
+  `strand-always-on-replica-survives-phone-loss.integration.ts` (an always-on storage replica
+  with no app, then a replacement machine after the writer is lost).
 - Cross-party strand, one machine per party (two and three parties) — `strand-formation-e2e.integration.ts`,
   `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
   `multi-party-workflows.integration.ts`. All of those reach the strand mesh by dialing one

@@ -630,17 +630,17 @@ If the nodes can't discover each other automatically (e.g., after a restart with
    - Creates a `StrandRow` with `Type: 'o'` (open)
    - Registers the simplified chat sApp schema (Participant + Message tables)
    - Starts a strand-specific libp2p network (`strand-<strandId>`)
-3. The drone (with `strandFilter: all`) automatically detects the new strand and joins
+3. The drone (`profile: storage`, `strandFilter: all`) detects the new strand and joins it as a storage replica: it stores and serves the chat's blocks without the chat schema, since no chat app runs on it. So a phone that is lost after its messages reached the drone loses none of them (see [architecture.md → Strand Filtering](architecture.md#strand-filtering))
 
 ### Step 6: Chat
 
 Switch to the **Chat** tab. Type a message and send. The message is:
 
 1. Inserted into the local strand's Quereus database via `insertMessage()`
-2. Replicated to the drone via Optimystic's P2P consensus
-3. Visible on both nodes
+2. Replicated to the drone via Optimystic's P2P consensus, where it is stored as blocks
+3. Visible on every phone that runs the chat
 
-Messages from the drone (if any are inserted programmatically) replicate back to the phone the same way. The chat screen polls for new messages every 2 seconds.
+The drone has no chat schema, so it neither reads nor writes messages itself; it keeps their blocks for the phones. The chat screen polls for new messages every 2 seconds.
 
 A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send the message can be stored at most once. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
 

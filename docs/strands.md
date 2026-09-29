@@ -215,7 +215,10 @@ for now; nothing needs it, and it stays a possible later step only if a case doe
 is `integration-tests` scenario `strand-relay-only-restart-reconverges`, the reporter's
 reproduction: two relay-only parties sharing a closed strand both restart over the storage they
 kept, each re-claims the strand from `strand:discovered` (the joiner's from its remembered
-join, below), and a write made after the restart crosses both ways. Its opt-in negative
+join, below), and a write made after the restart crosses both ways. (On a node that hosts
+storage replicas — the default for `profile: 'storage'`, see
+[architecture.md → Strand Filtering](architecture.md#strand-filtering) — the node launches the
+strand as a replica, without the app's schema, right after that announcement.) Its opt-in negative
 control runs the same journey with in-memory books and the strand never re-meshes; its opt-in
 two-process arm repeats the restart across real process exits over on-disk stores.
 
@@ -401,7 +404,9 @@ FileKeyStore(dir), partyId) }` or its own `JoinedStrandStore`.
 On every start the strand watcher polls the remembered joins beside the control rows, so
 a join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the
 read secret — or relaunched on its own when the app registered its sApp config first, with
-the same retry ladder and `stopStrand` suppression the party's own strands get. That row is
+the same retry ladder and `stopStrand` suppression the party's own strands get. A node that
+hosts storage replicas also launches an offered join as a replica, as it does the party's own
+unclaimed strands. That row is
 the product of the formation's consent, so an app may claim it without a second handshake;
 the React Native reference app claims a closed row that carries its key. **Apps keep no
 list of their own.**

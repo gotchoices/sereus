@@ -1920,6 +1920,18 @@ export async function sealStrand(
 }
 
 /**
+ * The sApp id the strand's singleton `Strand.Header` names, or `undefined` when no
+ * Header row is held yet. A storage replica reads it to learn which app the strand it
+ * hosts belongs to (`CadreNode.getSAppId`).
+ */
+export async function readStrandHeaderSAppId(db: Database): Promise<string | undefined> {
+  for await (const row of db.eval('select sAppId from Strand.Header')) {
+    return typeof row.sAppId === 'string' ? row.sAppId : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Whether the strand is `Type = 'c'` (closed). Reads the singleton `Header` via
  * the same `db.eval` scan idiom as {@link strandTableCount}; a strand with no
  * `Header` row yet reports `false`.

@@ -90,8 +90,14 @@ export function liveStrandStatus(instance: StrandInstance): 'active' | 'syncing'
  */
 export interface StartStrandConfig {
   strandRow: StrandRow;
-  /** sApp configuration provided by the hosting application */
-  sAppConfig: SAppConfig;
+  /**
+   * sApp configuration provided by the hosting application. Absent for a **storage
+   * replica** — a strand this node stores and serves without the app installed
+   * (`CadreNodeConfig.hostUnclaimedStrands`): no schema signature check, no `App`
+   * schema, no `sAppInfo` on the instance, and the default latency hint. A replica is
+   * always a joiner; `StrandDatabase` refuses to found one.
+   */
+  sAppConfig?: SAppConfig;
   storage?: StorageConfig;
   network?: NetworkConfig;
   profile: NodeProfile;
@@ -376,6 +382,26 @@ function resolveStrandStorage(
 }
 
 /**
+ * Verify an sApp's schema signature (fail-closed unless `requireSignedSchemas` is
+ * false) and project the config onto the instance's `sAppInfo`.
+ */
+function verifiedSAppInfo(strandId: string, sAppConfig: SAppConfig, requireSignedSchemas: boolean | undefined): SAppInfo {
+  assertSchemaSignature(sAppConfig, { requireSignature: requireSignedSchemas ?? true });
+  log('Strand %s sApp schema signature verified (author: %s)', strandId, sAppConfig.id);
+  return {
+    id: sAppConfig.id,
+    version: sAppConfig.version,
+    schema: sAppConfig.schema,
+    signature: sAppConfig.signature
+  };
+}
+
+/** Log wording for what a launch runs: the sApp and its version, or a storage replica. */
+function describeSApp(sAppConfig: SAppConfig | undefined): string {
+  return sAppConfig ? `sApp: ${sAppConfig.id} v${sAppConfig.version}` : 'storage replica';
+}
+
+/**
  * Manages individual strand instances - creates and destroys isolated libp2p nodes
  * for each strand the cadre participates in.
  */
@@ -544,7 +570,7 @@ export class StrandInstanceManager {
       return this.instances.get(strandId)!;
     }
 
-    log('Starting strand instance: %s (sApp: %s v%s)', strandId, sAppConfig.id, sAppConfig.version);
+    log('Starting strand instance: %s (%s)', strandId, describeSApp(sAppConfig));
     const tTotal = performance.now();
 
     // The id becomes two names below: the storage scope key the embedder's provider
@@ -556,18 +582,7 @@ export class StrandInstanceManager {
     // still reaches buildStrandRuntime and still mints the protocol prefix.
     assertStrandScopeKey(strandId);
 
-    // Verify schema signature before proceeding (fail-closed by default)
-    const requireSignature = config.requireSignedSchemas ?? true;
-    assertSchemaSignature(sAppConfig, { requireSignature });
-    log('Strand %s sApp schema signature verified (author: %s)', strandId, sAppConfig.id);
-
-    // Convert SAppConfig to SAppInfo for the instance
-    const sAppInfo: SAppInfo = {
-      id: sAppConfig.id,
-      version: sAppConfig.version,
-      schema: sAppConfig.schema,
-      signature: sAppConfig.signature
-    };
+    const sAppInfo = sAppConfig ? verifiedSAppInfo(strandId, sAppConfig, config.requireSignedSchemas) : undefined;
 
     // Resolve this strand's storage ONCE, before anything is recorded. If a factory
     // function is provided, it is called with the strandId to create strand-specific
@@ -579,7 +594,7 @@ export class StrandInstanceManager {
     }
 
     // Determine latency hint: sApp config > default
-    const latencyHint = sAppConfig.latencyHint ?? config.defaultLatencyHint;
+    const latencyHint = sAppConfig?.latencyHint ?? config.defaultLatencyHint;
 
     const instance: StrandInstance = {
       strandId,
@@ -600,7 +615,7 @@ export class StrandInstanceManager {
     try {
       await this.buildStrandRuntime(instance, config);
       timing('[startStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
-      log('Strand %s started successfully with sApp %s', strandId, sAppConfig.id);
+      log('Strand %s started successfully (%s)', strandId, describeSApp(sAppConfig));
       return instance;
     } catch (error) {
       // Status/error first — the (now discarded) record is still what `log` reports on.

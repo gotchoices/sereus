@@ -753,6 +753,22 @@ export interface CadreNodeConfig {
   /** Which strands to participate in */
   strandFilter?: StrandFilter;
 
+  /**
+   * Run every strand {@link strandFilter} admits, including ones no app on this machine
+   * has claimed with `addStrand`, as a **storage replica**: the strand's own libp2p node,
+   * storage and `Strand` membership schema, storing and serving its blocks, without the
+   * app's schema (no sApp config needed, none of the app's code or schema runs). This is
+   * how an always-on machine keeps a copy of every shared workspace its party runs, so a
+   * lost phone loses nothing that had reached it.
+   *
+   * The strand is still announced as `strand:discovered` (once) and stays in
+   * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
+   *
+   * Default: `profile === 'storage'` — always-on machines host replicas, phones
+   * (`'transaction'`) keep today's announce-only behaviour.
+   */
+  hostUnclaimedStrands?: boolean;
+
   /** Storage configuration (only for storage profile) */
   storage?: StorageConfig;
 
@@ -1539,6 +1555,12 @@ export interface CadreNodeEvents {
    * be idempotent (guard on an in-flight set, not only on
    * `getStrands().has(id)` — the strand manager tracks an instance only once
    * `addStrand` has resolved).
+   *
+   * On a node that hosts storage replicas ({@link CadreNodeConfig.hostUnclaimedStrands},
+   * the default for `profile: 'storage'`) the event still fires once, and the node launches
+   * the strand as a replica right after it — so there `getStrands().has(id)` soon turns
+   * true for a strand no app has claimed; an unclaimed instance has no `sAppInfo`. A
+   * launch that fails is retried by the watcher without a second `strand:discovered`.
    */
   'strand:discovered': { strandId: string; strand: StrandRow };
   'control:connected': void;

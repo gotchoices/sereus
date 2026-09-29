@@ -50,7 +50,7 @@ import {
   isValidStrandScopeKey
 } from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
-import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError } from './strand-membership-writer.js';
+import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError, readStrandHeaderSAppId } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
@@ -468,6 +468,30 @@ export class CadreNode implements SAppIdLookup {
    * {@link getDiscoveredStrands}.
    */
   private discoveredStrands: Map<string, StrandRow> = new Map();
+
+  /**
+   * Whether an unclaimed strand the filter admits is launched as a storage replica
+   * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config.
+   *
+   * NOTE: a replica host stores every admitted strand of its party with no quota (Arachnode
+   * quotas are unimplemented). Fine at a party's handful of strands; if always-on nodes come
+   * to host strands by the hundred, per-strand quotas or a narrower default filter is the lever.
+   */
+  private readonly hostUnclaimedStrands: boolean;
+
+  /**
+   * The sApp id each storage replica read from its own `Strand.Header` — {@link getSAppId}'s
+   * answer for a strand no local config claims, so an `sAppId` strand filter can reject a
+   * replica of some other app instead of admitting it provisionally forever.
+   *
+   * Cleared by {@link cleanup} only, deliberately NOT by {@link detachStrand}: the watcher's
+   * filter rejection stops a replica through that very method, and forgetting the id there
+   * would have the next poll find it unknown again, re-admit the strand provisionally and
+   * relaunch the replica — once every other poll, forever. A strand id's sApp never changes,
+   * and the map is bounded by the strands this party has published, like
+   * {@link discoveredStrands}.
+   */
+  private replicaSAppIds: Map<string, string> = new Map();
 
   /**
    * Most-recently pushed invite addresses (see {@link setInviteAddresses}).
@@ -889,6 +913,7 @@ export class CadreNode implements SAppIdLookup {
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
+    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.profile === 'storage';
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
     this.relayServer = resolveRelayServer(config.network, config.profile);
@@ -913,10 +938,11 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * SAppIdLookup implementation - get sAppId for a strand
+   * SAppIdLookup implementation - get sAppId for a strand: the claiming config's, else
+   * the one a storage replica read from the strand's own `Strand.Header`.
    */
   getSAppId(strandId: string): string | undefined {
-    return this.sAppConfigs.get(strandId)?.id;
+    return this.sAppConfigs.get(strandId)?.id ?? this.replicaSAppIds.get(strandId);
   }
 
   /**
@@ -2219,7 +2245,9 @@ export class CadreNode implements SAppIdLookup {
       // the count of machines serving the network — the quantity
       // `resolveRepairYardstick` asks for. It is NOT that quantity for a strand, which
       // launches only on machines whose embedder registered its sApp config (see
-      // {@link addStrand}), so this number must never be routed to a strand node:
+      // {@link addStrand}) plus storage-profile machines hosting it as a storage replica
+      // ({@link CadreNodeConfig.hostUnclaimedStrands}) whose filter admits it — phones
+      // serve only what their app claims — so this number must never be routed to a strand node:
       // over-declaring pins Optimystic's repair corroboration floor at two peers and a
       // strand that can field only one can then never repair. `launchStrand` therefore
       // declares nothing; see the NOTE there.
@@ -4325,27 +4353,21 @@ export class CadreNode implements SAppIdLookup {
     // Check if we have sApp config for this strand
     const sAppConfig = this.sAppConfigs.get(strand.Id);
     if (!sAppConfig) {
-      log('No sAppConfig registered for strand %s - emitting strand:discovered', strand.Id);
-      // Strand created by another member and not yet configured locally. Surface
-      // it as a discovery event so the hosting app can decide whether to join
-      // (register a config + addStrand); the strand-agnostic seam keeps this
-      // class free of any app's join policy. A self-configured strand (config
-      // already present) keeps auto-starting below, unchanged.
-      //
-      // Recorded BEFORE the emit so a handler that synchronously drains
-      // `getDiscoveredStrands()` sees this strand too. The watcher does not offer the
-      // same strand twice — its `knownStrands` retains the id, and the one thing that
-      // un-retains it (a failed `addStrand`, via `StrandWatcher.forgetStrand`) leaves the
-      // sApp config registered, so the retry takes the auto-launch branch below rather
-      // than this one. So this map — not the event — is what a late subscriber reads.
-      // See the `strand:discovered` doc in types.ts.
-      this.discoveredStrands.set(strand.Id, strand);
-      this.emit('strand:discovered', { strandId: strand.Id, strand });
-      return;
+      this.announceDiscoveredStrand(strand);
+      // Announce-only unless this node hosts storage replicas. Also skipped when a
+      // listener claimed the strand synchronously (an `addStrand` call registers its
+      // config before its first await): that claim is launching it with the app's schema,
+      // and a replica launch here would only race it.
+      if (!this.hostUnclaimedStrands || this.sAppConfigs.has(strand.Id)) {
+        return;
+      }
     }
 
     try {
-      await this.launchStrand(strand, sAppConfig);
+      const instance = await this.launchStrand(strand, sAppConfig);
+      if (!sAppConfig) {
+        void this.recordReplicaSAppId(instance.strandId);
+      }
     } catch (error) {
       log('Error starting strand %s: %o', strand.Id, error);
       this.emit('strand:error', {
@@ -4359,6 +4381,60 @@ export class CadreNode implements SAppIdLookup {
       // The watcher catches and logs, so this never escapes as an unhandled
       // rejection.
       throw error;
+    }
+  }
+
+  /**
+   * Offer a strand no local config claims to the hosting app as `strand:discovered`, so
+   * it can decide whether to join (register a config + addStrand); the strand-agnostic
+   * seam keeps this class free of any app's join policy.
+   *
+   * Once per strand: a storage-replica launch that fails is retried by the watcher
+   * (`StrandWatcher.forgetStrand` + backoff), and each retry comes back through
+   * {@link handleStrandAdded} with no config — the app must still see one announcement.
+   * The other thing that un-retains a strand in the watcher (a failed `addStrand`) leaves
+   * the sApp config registered, so that retry takes the claimed branch instead.
+   *
+   * Recorded BEFORE the emit so a handler that synchronously drains
+   * `getDiscoveredStrands()` sees this strand too. So this map — not the event — is what
+   * a late subscriber reads. See the `strand:discovered` doc in types.ts.
+   *
+   * NOTE: a replica launch that keeps failing leaves the watcher not tracking the strand,
+   * so if its control row is removed during the backoff no `handleStrandRemoved` arrives
+   * and this entry outlives the row. Needs a persistently failing launch AND a removal
+   * inside the backoff; if it is ever seen, have the watcher report removal of rows it
+   * forgot, since `detachStrand` is already a no-op for an untracked instance.
+   */
+  private announceDiscoveredStrand(strand: StrandRow): void {
+    if (this.discoveredStrands.has(strand.Id)) {
+      return;
+    }
+    log('No sAppConfig registered for strand %s - emitting strand:discovered', strand.Id);
+    this.discoveredStrands.set(strand.Id, strand);
+    this.emit('strand:discovered', { strandId: strand.Id, strand });
+  }
+
+  /**
+   * Record the sApp id a storage replica's `Strand.Header` names, for {@link getSAppId}.
+   * Runs whenever a replica's database may have just been published (launch, the
+   * first-sync gate opening, a wake); a no-op for a claimed strand, an unpublished
+   * database, or an id already recorded. Never throws: a failed read logs and leaves the
+   * id unknown, so an `sAppId` filter keeps the strand provisionally admitted — a
+   * syncing replica, which is harmless.
+   */
+  private async recordReplicaSAppId(strandId: string): Promise<void> {
+    const database = this.strandManager.getInstance(strandId)?.database;
+    if (!database || this.sAppConfigs.has(strandId) || this.replicaSAppIds.has(strandId)) {
+      return;
+    }
+    try {
+      const sAppId = await readStrandHeaderSAppId(database.getDatabase());
+      if (sAppId !== undefined) {
+        this.replicaSAppIds.set(strandId, sAppId);
+        log('Storage replica %s serves sApp %s', strandId, sAppId);
+      }
+    } catch (error) {
+      log('Could not read the sApp id of storage replica %s (left unknown): %o', strandId, error);
     }
   }
 
@@ -4464,6 +4540,7 @@ export class CadreNode implements SAppIdLookup {
     this.sAppConfigs.clear();
     this.strandLaunchRefusals.clear();
     this.discoveredStrands.clear();
+    this.replicaSAppIds.clear();
 
     // Drop delegate-admission state: the grants are scoped to the session that
     // recorded them, so a stop()/start() cycle on this object must not keep
@@ -4533,6 +4610,7 @@ export class CadreNode implements SAppIdLookup {
     if (instance) {
       this.hibernationManager.recordActivity(instance);
     }
+    void this.recordReplicaSAppId(strandId);
     this.emit('strand:writable', { strandId });
   }
 
@@ -4633,6 +4711,7 @@ export class CadreNode implements SAppIdLookup {
     if (instance.libp2pNode) {
       await this.mergeStrandPeerAddrs(instance.libp2pNode, bootstrapNodes, strandId);
     }
+    void this.recordReplicaSAppId(strandId);
   }
 
   /**
@@ -5530,14 +5609,21 @@ export class CadreNode implements SAppIdLookup {
    * A founder launch refused as pre-split (`PreSplitStrandIdentityError`) is recorded in
    * {@link strandLaunchRefusals} for the formation arm, then rethrown; a founder launch
    * that succeeds clears the record (it ran the bootstrap's pre-split check and passed).
+   *
+   * An absent `sAppConfig` launches a storage replica ({@link CadreNodeConfig.hostUnclaimedStrands}),
+   * which is ALWAYS a joiner whatever the row says: the founder bootstrap writes the sApp
+   * into `Strand.Header`, and a replica has none. So a self-founded row whose watcher poll
+   * wins the race against its app's `addStrand` after a restart comes up as a replica, and
+   * the claim must give that instance the app's schema before founding it in place — not
+   * built yet: `implement/claiming-a-hosted-strand-upgrades-in-place`.
    */
   private async launchStrand(
     strand: StrandRow,
-    sAppConfig: SAppConfig,
+    sAppConfig: SAppConfig | undefined,
     founder?: boolean,
     explicitPartyKey?: string
   ): Promise<StrandInstance> {
-    const resolvedFounder = founder ?? this.isSelfFoundedRow(strand);
+    const resolvedFounder = sAppConfig ? (founder ?? this.isSelfFoundedRow(strand)) : false;
     try {
       const instance = await this.startOrFoundStrand(strand, sAppConfig, resolvedFounder, explicitPartyKey);
       if (resolvedFounder) {
@@ -5558,7 +5644,7 @@ export class CadreNode implements SAppIdLookup {
    */
   private async startOrFoundStrand(
     strand: StrandRow,
-    sAppConfig: SAppConfig,
+    sAppConfig: SAppConfig | undefined,
     resolvedFounder: boolean,
     explicitPartyKey: string | undefined
   ): Promise<StrandInstance> {

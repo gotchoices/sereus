@@ -84,6 +84,13 @@ export interface ControlNodeOpts {
   /** Which strands this node participates in (default `'all'`). */
   strandFilter?: 'all' | 'none';
   /**
+   * Launch a storage replica of every unclaimed strand the filter admits
+   * (`CadreNodeConfig.hostUnclaimedStrands`). Default `false` here, unlike production's
+   * `profile === 'storage'`: a harness storage node stands for "holds control blocks", and
+   * scenarios assert which machines run a strand.
+   */
+  hostUnclaimedStrands?: boolean;
+  /**
    * Sleep this long before EVERY raw-storage operation, which multiplies the
    * duration of control-database bring-up by a known factor (`slow-raw-storage.ts`).
    * For scenarios that need bring-up to still be running when something else fires.
@@ -206,6 +213,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: opts.strandFilter ?? 'all' },
+    hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,
     storage: {
       provider: opts.storageProvider
         ?? (opts.storageOpDelayMs === undefined

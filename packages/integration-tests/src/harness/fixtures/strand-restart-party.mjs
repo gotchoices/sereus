@@ -47,6 +47,9 @@ const node = new CadreNode({
 	controlNetwork: { partyId, bootstrapNodes: [] },
 	profile,
 	strandFilter: { mode: 'all' },
+	// Not a replica host: the storage profile here stands for "holds control blocks", and
+	// the scenario asserts which strands each party runs.
+	hostUnclaimedStrands: false,
 	storage: { provider: (scope) => new FileRawStorage(join(stateDir, 'storage', scope)) },
 	keyStore,
 	strandPeers: { store: await FileStrandPeerBookStore.open(join(stateDir, 'node'), partyId) },

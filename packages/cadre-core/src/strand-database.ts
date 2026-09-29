@@ -14,8 +14,12 @@ const timing = debug('sereus:cadre:timing');
 export interface StrandDatabaseConfig {
   /** The strand ID */
   strandId: string;
-  /** sApp configuration containing the schema */
-  sAppConfig: SAppConfig;
+  /**
+   * sApp configuration containing the schema. Absent for a storage replica — a strand
+   * this node stores and serves without the app installed: only the `Strand` membership
+   * schema is applied, and such a database can never found (see {@link founderSApp}).
+   */
+  sAppConfig?: SAppConfig;
   /** Libp2p node for the strand network */
   libp2pNode: Libp2p;
   /** Coordinated repo from the libp2p node */
@@ -87,8 +91,14 @@ export class StrandDatabase {
     }
 
     const sid = this.config.strandId;
-    log('Initializing StrandDatabase for strand: %s (sApp: %s v%s)',
-      sid, this.config.sAppConfig.id, this.config.sAppConfig.version);
+    const { sAppConfig } = this.config;
+    if (this.config.founder === true) {
+      // Before composing anything: a founder that cannot write its Header must not
+      // leave a half-built connection behind.
+      this.founderSApp();
+    }
+    log('Initializing StrandDatabase for strand: %s (%s)', sid,
+      sAppConfig ? `sApp: ${sAppConfig.id} v${sAppConfig.version}` : 'storage replica');
 
     this.db = new Database();
 
@@ -102,9 +112,14 @@ export class StrandDatabase {
     //    and cadre-core always injects the node and runs the network transactor.
     //    (The plugin keeps its `storage` option for the browser entry point.)
     const t0 = performance.now();
+    //
+    // A storage replica passes no schema, so no `App` tables are declared. A warm restart's
+    // hydrate may still load `App` table definitions persisted in the replicated store into
+    // the catalog — declarative metadata, nothing the app supplied runs — and the first-sync
+    // probe then reads those tables once from blocks this node holds.
     const result = await connectToStrand(this.db, {
       strandId: sid,
-      schema: this.config.sAppConfig.schema,
+      schema: sAppConfig?.schema,
       libp2pNode: this.config.libp2pNode,
       coordinatedRepo: this.config.coordinatedRepo,
       enableCache: true,
@@ -140,17 +155,33 @@ export class StrandDatabase {
    * no keypair (Header only). Idempotent — see {@link bootstrapFounderMembership}.
    */
   private async bootstrapFounder(): Promise<void> {
-    const { strandId, strandType, memberPrivateKey, partyMemberPrivateKey, sAppConfig } = this.config;
+    const { strandId, strandType, memberPrivateKey, partyMemberPrivateKey } = this.config;
     const closed = strandType === 'c';
     await bootstrapFounderMembership(this.db!, {
       strandId,
       type: strandType,
-      sApp: sAppConfig,
+      sApp: this.founderSApp(),
       founderKeyPair: closed ? this.deriveFounderKeyPair(strandId, partyMemberPrivateKey) : undefined,
       sharedMemberPublicKey: closed && memberPrivateKey
         ? strandMemberKeyPair(memberPrivateKey).publicKeyB64
         : undefined,
     });
+  }
+
+  /**
+   * The sApp a founder bootstrap records in the `Strand.Header`. Throws for a storage
+   * replica (no sApp config): its Header's sApp columns would have nothing to say.
+   * `CadreNode` always launches a replica as a joiner, so this guards a future caller.
+   */
+  private founderSApp(): SAppConfig {
+    const { sAppConfig, strandId } = this.config;
+    if (!sAppConfig) {
+      throw new Error(
+        `Cannot found strand ${strandId} as a storage replica: the founder bootstrap writes ` +
+        'the sApp id and version into Strand.Header, and a replica has no sApp config.',
+      );
+    }
+    return sAppConfig;
   }
 
   /**
