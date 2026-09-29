@@ -178,17 +178,27 @@ export class ChatViewModel extends Observable {
 
 	// ── Internals ───────────────────────────────────────────────────────────
 
-	/** (Re)read the active strand + participant id from the cadre VM. */
+	/**
+	 * (Re)read the active strand + participant id from the cadre VM.
+	 *
+	 * The list belongs to the strand id it shows: a switch to another strand, or to none, clears
+	 * it at once rather than showing the old conversation until the new one's first read. A new
+	 * instance of the same strand (a reconnect) keeps it, so the list does not flash empty.
+	 */
 	private attach(): void {
 		const strand = this.cadre.getFirstStrand();
 		const participantId = this.cadre.getPeerId();
 		const changed = strand !== this.strand || participantId !== this.participantId;
+		const switched = strand?.strandId !== this.strand?.strandId;
 		// A new strand instance (e.g. after reconnect) needs a fresh registration.
 		if (strand !== this.strand) {
 			this.registered = false;
 		}
 		this.strand = strand;
 		this.participantId = participantId;
+		if (switched) {
+			this.clearConversation();
+		}
 
 		// Gated on `strand.database`: a joiner comes up `'syncing'` with no database until
 		// it has received the strand's data from another member, and a write before that
@@ -235,20 +245,28 @@ export class ChatViewModel extends Observable {
 		if (this.readsInFlight.has(strand)) return;
 		this.readsInFlight.add(strand);
 
+		// A read belongs to the strand instance it was made on. One that settles after this VM
+		// re-attached elsewhere is dropped: applying it would show, or settle a draft against,
+		// a conversation the screen has left.
 		try {
 			const [messages, participants] = await Promise.all([
 				queryMessages(strand),
 				queryParticipants(strand),
 			]);
+			if (this.strand !== strand) return;
 			this.setMessages(messages);
 			this.settlePendingDraft(messages);
 			this.setParticipantCount(participants.length);
 			this.setError('');
 		} catch (err) {
+			if (this.strand !== strand) {
+				console.warn('[chat-vm] read of a strand no longer attached failed:', err);
+				return;
+			}
 			this.setError(errMessage(err));
 		} finally {
 			this.readsInFlight.delete(strand);
-			this.setLoading(false);
+			if (this.strand === strand) this.setLoading(false);
 		}
 	}
 
@@ -308,6 +326,9 @@ export class ChatViewModel extends Observable {
 			const message = await insertMessage(strand, draft.id, participantId, text);
 			this.pendingDraft = null;
 			this.draft = '';
+			// The draft's outcome is settled whichever strand is attached now; the row belongs to
+			// the strand it was stored in, so it joins the list only if that is still the one shown.
+			if (this.strand !== strand) return;
 			this._messages.push(this.toRow(message, participantId));
 			this.setError('');
 		} catch (err) {
@@ -351,6 +372,14 @@ export class ChatViewModel extends Observable {
 			senderVisibility: isOwn ? 'collapse' : 'visible',
 			rowId: TEST_IDS.chat.messageRow(message.Id),
 		};
+	}
+
+	/** Forget the previous strand's list, participant count and read error; wait for the next read. */
+	private clearConversation(): void {
+		this._messages.splice(0, this._messages.length);
+		this.setParticipantCount(0);
+		this.setError('');
+		this.setLoading(true);
 	}
 
 	private setMessages(messages: ChatMessage[]): void {

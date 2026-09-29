@@ -31,7 +31,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import '@serfab/cadre-core';
 import { Database, type SqlParameters, type SqlValue } from '@quereus/quereus';
 import type { StrandInstance } from '@serfab/cadre-core';
-import type { ChatViewModel } from '../src/chat-vm';
+import type { ChatRow, ChatViewModel } from '../src/chat-vm';
 import type { FakeNode } from './stubs/fake-cadre-node';
 
 /** The shared fake node — see `test/stubs/fake-cadre-node.ts` for why it is hoisted. */
@@ -151,6 +151,15 @@ class ScriptedDatabase {
 		return contents;
 	}
 
+	/** Store a message from another participant, straight into the real table. */
+	async seedMessage(content: string): Promise<void> {
+		await this.real.exec("insert or ignore into App.Participant (Id, Name) values ('peer-seed', 'Seed')");
+		await this.real.exec(
+			'insert into App.Message (Id, ParticipantId, Content, Timestamp) values (?, ?, ?, ?)',
+			[crypto.randomUUID(), 'peer-seed', content, new Date().toISOString()],
+		);
+	}
+
 	async exec(sql: string, params?: SqlParameters): Promise<void> {
 		const script = await this.admit(sql);
 		try {
@@ -262,6 +271,13 @@ function poll(): void {
 	vi.advanceTimersByTime(POLL_MS);
 }
 
+/** The message texts the list shows, oldest first. */
+function shown(vm: ChatViewModel): string[] {
+	const rows: ChatRow[] = [];
+	vm.messages.forEach((row) => rows.push(row));
+	return rows.map((row) => row.content);
+}
+
 // ── The poll's single-flight guard ────────────────────────────────────────────
 
 describe('the poll', () => {
@@ -295,20 +311,38 @@ describe('the poll', () => {
 		expect(vm.error).toBe('');
 	});
 
-	it('reads a strand it re-attached to at once, without waiting on the old one', async () => {
+	it('reads a strand it re-attached to at once, and drops the late read of the old one', async () => {
 		const a = await chatStrand('strand-a');
 		const b = await chatStrand('strand-b');
+		await a.db.seedMessage('from a');
+		await b.db.seedMessage('from b');
 		const { vm, node } = await loadChat([a.strand]);
-		a.db.hold('message-list');
+		const readA = a.db.hold('message-list');
 		vm.start();
 		await vi.waitFor(() => expect(a.db.count('message-list')).toBe(1));
 
 		offerOnly(node, b.strand);
 		vm.start();
+		await vi.waitFor(() => expect(shown(vm)).toEqual(['from b']));
+		readA.release();
+		await a.db.idle();
 
-		// Nothing is asserted about the message list once A's held read settles: that late
-		// result overwrites B's list today (`bug-ns-chat-shows-previous-strand-messages-after-switch`).
-		await vi.waitFor(() => expect(b.db.count('message-list')).toBe(1));
+		expect(shown(vm)).toEqual(['from b']);
+	});
+
+	it('clears the list the moment it re-attaches to no strand', async () => {
+		const { strand, db } = await chatStrand();
+		await db.seedMessage('hello');
+		const { vm, node } = await loadChat([strand]);
+		vm.start();
+		await db.idle();
+		expect(vm.messages.length).toBe(1);
+
+		node.strands.clear();
+		node.emit('strand:stopped', { strandId: strand.strandId });
+		vm.start();
+
+		expect(vm.messages.length).toBe(0);
 	});
 });
 

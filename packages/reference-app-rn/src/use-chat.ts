@@ -182,6 +182,9 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     if (!pid) throw new Error('No participant ID');
 
     const { message } = await sender.send(s, pid, content);
+    // A switch may have landed while the insert ran; the row belongs to the strand it was
+    // stored in, not to the list now showing another one.
+    if (strandRef.current !== s) return;
     if (message) {
       // Optimistic update — append immediately, next poll will reconcile
       setMessages(prev => [...prev, message]);
