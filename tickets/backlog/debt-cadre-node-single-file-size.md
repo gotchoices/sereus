@@ -111,3 +111,7 @@ Worth noting alongside it: `control-database.ts` is now the package's second-lar
 ## Later measurement (2026-09-27)
 
 `wc -l packages/cadre-core/src/cadre-node.ts` → 7639 lines. The review of cadre-core-remembers-joined-strands added another job to the list above: remembering strands joined from another party (`initializeJoinedStrandStore`, `rememberForeignStrand`, `rememberFormedStrand`, `forgetRevokedJoin`, `forgetJoinedStrand`, about 120 lines). Its storage and per-session view already live in `joined-strand-store.ts`; the record/forget policy is a candidate to move beside them if this split goes ahead.
+
+## Later measurement (2026-09-28)
+
+`wc -l packages/cadre-core/src/cadre-node.ts` → 8218 lines (8131 before `party-wide-joined-strands`). That ticket added the party-wide joined-strand adapter (`createPartyJoinedStrandLedger`, `enrolledOwnerSigningKey`, about 60 lines plus doc comments); the publish/remove/leave policy itself went into `joined-strand-store.ts`.

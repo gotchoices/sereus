@@ -10,7 +10,8 @@
  *    device).
  *  - The session unions control rows over party-wide joins over local ones, forgets a local
  *    record either table names, and keeps offering the last party-wide list when a read
- *    fails; it publishes local records party-wide, keeping one whose publish failed; and a
+ *    fails without forgetting anything on its word; it publishes local records party-wide,
+ *    keeping one whose publish failed, and never lands one after a leave of it; and a
  *    self-revocation removes the party-wide row while the strand stays offered until the
  *    session ends — `strand:revoked` tears nothing down.
  *  - End to end on a real node: a join `formStrand` recorded comes back as
@@ -141,9 +142,13 @@ describe('JoinedStrandSession', () => {
 		).toEqual(['c']);
 
 		ledger.listFails = true;
+		await store.record(localJoin('b', 'rejoined-b'));
 		expect((await session.withControlRows(control)).map((row) => row.Id),
 			'a failed party-wide read dropped the join — the watcher would read that as a removal and detach the strand'
 		).toEqual(['a', 'b', 'c']);
+		expect((await store.list()).map((record) => record.Id).sort(),
+			'a local record named only by the stale last-good list was forgotten — a re-join after a leave would be lost'
+		).toEqual(['b', 'c']);
 	});
 
 	it('publishes each unpublished join, keeping a record whose publish failed for the next pass', async () => {
@@ -157,6 +162,27 @@ describe('JoinedStrandSession', () => {
 
 		expect((await store.list()).map((record) => record.Id)).toEqual(['e']);
 		expect([...ledger.rows.values()]).toEqual([joinedRow('d', 'secret-d')]);
+	});
+
+	it('does not let a publish already checking for the row land it after a leave', async () => {
+		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
+		const ledger = new MapLedger();
+		let releaseCheck!: () => void;
+		const checkHeld = new Promise<void>((resolve) => { releaseCheck = resolve; });
+		const names = ledger.names.bind(ledger);
+		ledger.names = async (strandId) => {
+			await checkHeld;
+			return names(strandId);
+		};
+		await store.record(localJoin('f', 'secret-f'));
+		const session = new JoinedStrandSession(store, ledger);
+
+		const sync = session.syncWithParty();
+		const leave = session.leave('f');
+		releaseCheck();
+		await Promise.all([sync, leave]);
+
+		expect(ledger.rows.has('f'), 'the party still holds a strand the app left').toBe(false);
 	});
 
 	it('keeps offering a party-wide join after self-revocation removes its row, until the session ends', async () => {

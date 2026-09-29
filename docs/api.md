@@ -96,7 +96,9 @@ with a tombstone), forgets this machine's record, then `stopStrand`s it here. Ev
 the party, a storage replica host included, detaches the strand (`strand:stopped`) when the removal
 reaches it. It is the joiner's counterpart of `unpublishStrand`, which only works on a row the
 party's own `Strand` table holds. On a machine that is not an owner it throws when a party-wide row
-exists, since removing it takes an owner machine; `stopStrand` is the per-machine stop. A join
+exists, since removing it takes an owner machine; `stopStrand` is the per-machine stop. It also
+throws when the party-wide table cannot be read (a machine cut off from its party), since it cannot
+tell whether a party-wide row exists; retry once connected. A join
 still local to this machine has no party-wide row and is simply forgotten and stopped. It tells no
 other member of the strand anything, and this party's membership row in the strand stays.
 `stopStrand` on its own keeps the join, and the strand comes back on the next start.

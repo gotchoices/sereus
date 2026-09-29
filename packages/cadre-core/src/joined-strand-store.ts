@@ -265,32 +265,45 @@ export class JoinedStrandSession {
 	private readonly keptForSession = new Map<string, StrandRow>();
 	/** Strands whose party-wide row {@link syncWithParty} removes, queued by a self-revocation. */
 	private readonly pendingRemovals = new Set<string>();
+	/**
+	 * Tail of the moves that must not interleave ({@link serialized}): a publish that found no
+	 * party-wide row, then a {@link leave} that removed nothing, then the publish's insert
+	 * would leave the party holding a strand the app just left.
+	 */
+	private exclusive: Promise<unknown> = Promise.resolve();
 
 	constructor(private readonly store: JoinedStrandStore, private readonly ledger: PartyJoinedStrandLedger) {}
 
 	/**
 	 * `control` plus every join, one row per id, in this precedence: the control rows (the
 	 * party's own strands), then the party-wide joins, then this machine's unpublished joins
-	 * and the joins kept for this session. A local record named by either of the first two is
-	 * stale — published, or the strand is the party's own now — so it is forgotten here; this
-	 * also cleans up after a crash between a publish and its local forget.
+	 * and the joins kept for this session. A local record named by either of the first two in
+	 * a read that succeeded this poll is stale — published, or the strand is the party's own
+	 * now — so it is forgotten here; this also cleans up after a crash between a publish and
+	 * its local forget. One named only by the last-good party-wide list is kept: that list may
+	 * predate a leave the record re-joined after.
 	 */
 	async withControlRows(control: readonly StrandRow[]): Promise<StrandRow[]> {
 		const controlIds = new Set(control.map((row) => row.Id));
+		const named = new Set(controlIds);
 		const offered = new Map<string, StrandRow>(control.map((row) => [row.Id, row]));
+		const partyWide = await this.partyWide();
 		// NOTE: a party-wide join whose id the party's own `Strand` table also holds (the party
 		// founded AND joined it — contrived) is shadowed here, not deleted: a watcher poll must
 		// not make owner-signed writes. If the party later unpublishes its own row the join row
 		// resurfaces; if that is ever seen, remove the join row inside `unpublishStrand`.
-		for (const row of await this.partyWide()) {
+		for (const row of partyWide.rows) {
 			if (!offered.has(row.Id)) {
 				offered.set(row.Id, row);
 			}
+			if (partyWide.fresh) {
+				named.add(row.Id);
+			}
 		}
 		for (const record of await this.unpublished()) {
-			if (offered.has(record.Id)) {
+			if (named.has(record.Id)) {
 				await this.forgetSuperseded(record.Id);
-			} else {
+			} else if (!offered.has(record.Id)) {
 				offered.set(record.Id, joinedStrandRow(record));
 			}
 		}
@@ -318,7 +331,7 @@ export class JoinedStrandSession {
 	 */
 	async rememberForeign(row: StrandRow): Promise<void> {
 		this.pendingRemovals.delete(row.Id);
-		if (await this.ledger.names(row.Id)) {
+		if (await this.namedByParty(row.Id)) {
 			return;
 		}
 		const existing = (await this.store.list()).find((record) => record.Id === row.Id);
@@ -337,12 +350,14 @@ export class JoinedStrandSession {
 	 * Leave a join for the whole party: remove the party-wide row, then this machine's record.
 	 * Throws, keeping both, when a party-wide row exists and this machine cannot sign.
 	 */
-	async leave(strandId: string): Promise<void> {
-		await this.ledger.remove(strandId);
-		this.pendingRemovals.delete(strandId);
-		this.keptForSession.delete(strandId);
-		this.lastPartyWide = this.lastPartyWide.filter((row) => row.Id !== strandId);
-		await this.store.forget(strandId);
+	leave(strandId: string): Promise<void> {
+		return this.serialized(async () => {
+			await this.ledger.remove(strandId);
+			this.pendingRemovals.delete(strandId);
+			this.keptForSession.delete(strandId);
+			this.lastPartyWide = this.lastPartyWide.filter((row) => row.Id !== strandId);
+			await this.store.forget(strandId);
+		});
 	}
 
 	/**
@@ -353,19 +368,21 @@ export class JoinedStrandSession {
 	 * relaunches the strand, the revoked-peer gate raises `strand:revoked` again, and this
 	 * runs again.
 	 */
-	async forgetAfterThisSession(strandId: string): Promise<void> {
-		const local = (await this.unpublished()).find((record) => record.Id === strandId);
-		const row = local ? joinedStrandRow(local) : this.lastPartyWide.find((listed) => listed.Id === strandId);
-		if (!row) {
-			return;
-		}
-		// Kept BEFORE the store forgets, so no poll can union without it. Queued even for a
-		// local-only join: a publish of it may be in flight.
-		this.keptForSession.set(strandId, row);
-		this.pendingRemovals.add(strandId);
-		if (local) {
-			await this.store.forget(strandId);
-		}
+	forgetAfterThisSession(strandId: string): Promise<void> {
+		return this.serialized(async () => {
+			const local = (await this.unpublished()).find((record) => record.Id === strandId);
+			const row = local ? joinedStrandRow(local) : this.lastPartyWide.find((listed) => listed.Id === strandId);
+			if (!row) {
+				return;
+			}
+			// Kept BEFORE the store forgets, so no poll can union without it. Queued even for a
+			// local-only join, which a sibling may have published already.
+			this.keptForSession.set(strandId, row);
+			this.pendingRemovals.add(strandId);
+			if (local) {
+				await this.store.forget(strandId);
+			}
+		});
 	}
 
 	/**
@@ -375,22 +392,24 @@ export class JoinedStrandSession {
 	 * stay machine-local. Per strand, a failure is logged and kept for the next pass; a
 	 * failure to list the store or to check the signer throws.
 	 */
-	async syncWithParty(): Promise<void> {
-		// Straight from the store, never the last-good list: a stale list could republish a
-		// join that was left since.
-		const unpublished = await this.store.list();
-		if (unpublished.length === 0 && this.pendingRemovals.size === 0) {
-			return;
-		}
-		if (!(await this.ledger.canSign())) {
-			return;
-		}
-		for (const record of unpublished) {
-			await this.publish(record);
-		}
-		for (const strandId of [...this.pendingRemovals]) {
-			await this.removeQueued(strandId);
-		}
+	syncWithParty(): Promise<void> {
+		return this.serialized(async () => {
+			// Straight from the store, never the last-good list: a stale list could republish a
+			// join that was left since.
+			const unpublished = await this.store.list();
+			if (unpublished.length === 0 && this.pendingRemovals.size === 0) {
+				return;
+			}
+			if (!(await this.ledger.canSign())) {
+				return;
+			}
+			for (const record of unpublished) {
+				await this.publish(record);
+			}
+			for (const strandId of [...this.pendingRemovals]) {
+				await this.removeQueued(strandId);
+			}
+		});
 	}
 
 	// NOTE: a sibling that joined the same strand and has not yet published publishes it after
@@ -401,6 +420,10 @@ export class JoinedStrandSession {
 		try {
 			if (!(await this.ledger.names(record.Id))) {
 				await this.ledger.publish(record);
+				// Into the last-good list too: its local record goes next, so a party-wide read that
+				// fails before one succeeds would otherwise drop the strand from the poll and hide it
+				// from a self-revocation.
+				this.lastPartyWide = [...this.lastPartyWide.filter((row) => row.Id !== record.Id), joinedStrandRow(record)];
 				log('joined strand %s published party-wide (party=%s)', record.Id, this.store.partyId);
 			}
 			await this.store.forget(record.Id);
@@ -420,14 +443,38 @@ export class JoinedStrandSession {
 		}
 	}
 
-	private async partyWide(): Promise<StrandRow[]> {
+	/** The party-wide joins; `fresh` is false when this read failed and the last list it answered stands in. */
+	private async partyWide(): Promise<{ rows: StrandRow[]; fresh: boolean }> {
 		try {
 			this.lastPartyWide = await this.ledger.list();
+			return { rows: this.lastPartyWide, fresh: true };
 		} catch (error) {
 			log('party-wide joined-strand read failed; offering the last list it answered (%d join(s)): %o',
 				this.lastPartyWide.length, error);
+			return { rows: this.lastPartyWide, fresh: false };
 		}
-		return this.lastPartyWide;
+	}
+
+	/**
+	 * {@link PartyJoinedStrandLedger.names}, answering false when the control database cannot
+	 * be read (a machine cut off from its party before it received the `JoinedStrand` block).
+	 * Recording is the safe side: a local record the party turns out to name is forgotten by
+	 * the next poll that reads it, while a join with no record is not offered after a restart.
+	 */
+	private async namedByParty(strandId: string): Promise<boolean> {
+		try {
+			return await this.ledger.names(strandId);
+		} catch (error) {
+			log('joined strand %s: could not read whether the control database names it; recording it locally: %o', strandId, error);
+			return false;
+		}
+	}
+
+	/** Run `work` after every earlier serialized move settles; see {@link exclusive}. */
+	private serialized<T>(work: () => Promise<T>): Promise<T> {
+		const result = this.exclusive.then(work);
+		this.exclusive = result.catch(() => undefined);
+		return result;
 	}
 
 	private async unpublished(): Promise<JoinedStrandRecord[]> {
