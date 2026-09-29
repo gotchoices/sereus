@@ -19,7 +19,7 @@ A relay run by one of a party's own machines (any storage-profile `CadreNode`; `
 
 ## The defect
 
-`admitInboundControlConnection` (`cadre-node.ts`) classifies an inbound peer it cannot recognise as a member, and cannot cover by any stranger carve-out, as `'admit-for-relay'` when the node runs a relay server. `createMembershipConnectionGater` then arms a `RELAY_ADMISSION_RESERVE_DEADLINE_MS` timer (5 s) against that connection and closes it unless a **reservation** for that peer is admitted at `denyInboundRelayReservation`, which is the only thing that disarms it.
+`admitInboundControlConnection` (`cadre-node.ts`) classifies an inbound peer it cannot recognise as a member, and cannot cover by any stranger carve-out, as `'admit-for-relay'` when the node runs a relay server. `createMembershipConnectionGater` then arms a `RELAY_ADMISSION_RESERVE_DEADLINE_MS` timer (5.5 s at the default declaration) against that connection and closes it unless a **reservation** for that peer is admitted at `denyInboundRelayReservation`, which is the only thing that disarms it.
 
 A hop connect never touches that hook. So an outsider dialling *through* a party-run relay to reach a member gets its connection torn down five seconds later, taking the relayed connection with it.
 
@@ -56,4 +56,4 @@ So a hop-connecting outsider has in practice been surviving — until its own li
 
 ## Status at triage (2026-09-28, after 1.7.0)
 
-The half-open abort fix (8c1acc44) landed, so the 5 s drop now really happens. Re-grade severity when `feat-phone-relays-through-its-own-always-on-node` is scheduled.
+The half-open abort fix (8c1acc44) landed, so the 5.5 s drop now really happens. Re-grade severity when `feat-phone-relays-through-its-own-always-on-node` is scheduled.

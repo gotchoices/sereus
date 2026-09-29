@@ -10,10 +10,12 @@ import {
 	RELAYED_DIAL_ROUND_TRIPS,
 	RELAYED_REQUEST_ROUND_TRIPS,
 	RELAY_RESERVATION_ROUND_TRIPS,
+	RELAY_RESERVE_REQUEST_ROUND_TRIPS,
 	circuitRequestBudgetMs,
 	cohortReadDeadlineMs,
 	commitBudgetMs,
 	declaredCohortReadDeadlineMs,
+	relayAdmissionReserveDeadlineMs,
 	relayReservationBudgetMs,
 	relayedDialBudgetMs,
 	relayedRequestBudgetMs,
@@ -38,6 +40,7 @@ describe('link budgets', () => {
 		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 		expect(relayedStreamOpenBudgetMs()).toBe((RELAYED_DIAL_ROUND_TRIPS + PROTOCOL_NEGOTIATION_ROUND_TRIPS) * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 		expect(commitBudgetMs()).toBe(COMMIT_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+		expect(relayAdmissionReserveDeadlineMs()).toBe(RELAY_RESERVE_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 
 		// A host that declares a slower link moves the round-trip part of every budget at once,
 		// which is the whole reason the declaration exists. The admission allowance is local

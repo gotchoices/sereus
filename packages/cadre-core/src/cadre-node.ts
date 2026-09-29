@@ -103,7 +103,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { connectionManagerTimeouts, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, connectionManagerTimeouts, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -1910,7 +1910,9 @@ export class CadreNode implements SAppIdLookup {
           admitRelayReservation: (remotePeerId) => this.admitControlRelayReservation(remotePeerId),
           bringUpInFlight: () => this.controlBringUpInFlight
         },
-        network?.connectionGater
+        network?.connectionGater,
+        ADMISSION_DECISION_TIMEOUT_MS,
+        relayAdmissionReserveDeadlineMs(network?.linkRoundTripMs)
       ),
       // Fail-closed per-stream authorization for the four Optimystic control-DB
       // protocols — the members-only layer the connection gater's stranger

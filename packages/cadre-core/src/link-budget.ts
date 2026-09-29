@@ -69,6 +69,8 @@
  * | open a relayed connection, then one request on it     | 6                | 21 000 ms               |
  * | one Optimystic commit over connections already open   | 20               | 70 000 ms               |
  *
+ * The reservation-request row is {@link RELAY_RESERVE_REQUEST_ROUND_TRIPS}, which also sizes how long
+ * a party-run relay waits for a stranger's reservation ({@link relayAdmissionReserveDeadlineMs}).
  * The commit row is a measurement of a whole write, not a count of exchanges; its doc comment
  * ({@link COMMIT_ROUND_TRIPS}) holds the figures and says when to re-measure it.
  *
@@ -131,9 +133,6 @@
  *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic, and
  *   `tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`
  *   here, carrying the open-connection finding to it.
- * - **One cadre deadline still typed as milliseconds.** The relay's reservation-admission
- *   deadline bounds an exchange over the same link but does not derive from it:
- *   `relay-admission-reserve-deadline-derived-from-the-link`.
  * - **A machine that declares a faster link than its peers.** Every machine is the listener
  *   for the others, so its `inboundUpgradeTimeout` — derived from ITS declaration — bounds
  *   connections other machines open to it. A peer declaring 3 500 ms dialing a machine that
@@ -142,6 +141,10 @@
  *   the host derives its provisioning budget from its own, so a joiner declaring a faster
  *   link than the host gives up on a reply the host is still entitled to send. Declare the
  *   same link on every machine of a party.
+ *   Relay admission too: a party-run relay derives how long a stranger has to ask for a
+ *   reservation from ITS declaration ({@link relayAdmissionReserveDeadlineMs}), so a relay
+ *   declaring a faster link than a client closes that client's connection before its request
+ *   arrives.
  */
 
 import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
@@ -195,6 +198,24 @@ export const RELAYED_DIAL_ROUND_TRIPS = 4;
  * (`DEFAULT_RELAY_RESERVE_POLL_MS`) rounds up on top of it.
  */
 export const RELAY_RESERVATION_ROUND_TRIPS = 4;
+
+/**
+ * Link round trips from the moment a party-run relay admits a stranger's connection for relay
+ * use to the moment that stranger's RESERVE request reaches it. libp2p's reservation store
+ * (`@libp2p/circuit-relay-v2`'s `addRelay`) opens the hop stream the instant its dial resolves,
+ * without waiting for identify, so:
+ *
+ * 1. The client's last Noise handshake message and its hop-stream open arrive at the relay
+ *    together. The relay's gate runs on the handshake message (and arms the reserve deadline),
+ *    then the relay answers the protocol negotiation.
+ * 2. The answer reaches the client and the client's RESERVE request reaches the relay: one round
+ *    trip on the client-to-relay hop, which is the whole link round trip when all of the link's
+ *    delay is on the client's own hop (a phone on a congested mobile link).
+ *
+ * The relay's decision on that request is local time, not link time;
+ * {@link relayAdmissionReserveDeadlineMs} adds it separately.
+ */
+export const RELAY_RESERVE_REQUEST_ROUND_TRIPS = 1;
 
 /**
  * Link round trips negotiating one protocol over an ALREADY-OPEN connection costs: the
@@ -429,6 +450,23 @@ export function connectionManagerTimeouts(linkRoundTripMs?: number): Libp2pConne
  */
 export function relayReservationBudgetMs(linkRoundTripMs?: number): number {
 	return RELAY_RESERVATION_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + 2 * ADMISSION_DECISION_TIMEOUT_MS;
+}
+
+/**
+ * How long a party-run relay keeps a connection it admitted only for relay use
+ * (`membership-connection-gater.ts`'s `'admit-for-relay'`) before closing it, unless a
+ * reservation is admitted on it first: {@link RELAY_RESERVE_REQUEST_ROUND_TRIPS} at the declared
+ * link round trip, plus one {@link ADMISSION_DECISION_TIMEOUT_MS} for the relay's own decision on
+ * the reservation (`denyInboundRelayReservation`), which disarms the timer only once it settles.
+ * 3 500 + 2 000 = 5 500 ms at the default declaration.
+ *
+ * The declaration is the RELAY's own, because the relay is the machine that decides.
+ *
+ * What it costs, against the fixed 5 000 ms it replaced: a stranger that connects and never
+ * reserves holds a mute connection 0.5 s longer at the default declaration.
+ */
+export function relayAdmissionReserveDeadlineMs(linkRoundTripMs?: number): number {
+	return RELAY_RESERVE_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + ADMISSION_DECISION_TIMEOUT_MS;
 }
 
 /**

@@ -310,7 +310,7 @@ describe('E2E relay-only control node circuit address', () => {
 		// control-DB surface (extending what control-stream-authz.integration.ts
 		// proves for enrollment-window and delegate admissions) — and a connection
 		// that takes no reservation is closed at the not-reserving deadline
-		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5 s).
+		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5.5 s at the default declaration).
 		const partyId = `relay-stranger-${Date.now()}`;
 		let A: CadreNode | undefined;
 		let S: CadreNode | undefined;
@@ -359,7 +359,7 @@ describe('E2E relay-only control node circuit address', () => {
 
 			// No reservation was ever admitted for S, so the not-reserving deadline
 			// closes the connection, which both ends then let go of. The wait is
-			// generous against the 5 s deadline — the close itself lands within a
+			// generous against the 5.5 s deadline — the close itself lands within a
 			// few hundred milliseconds of it.
 			await waitUntil(
 				() => !sNode.getConnections().some(

@@ -164,7 +164,7 @@ import { SEED_PROTOCOL } from './seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
 import { withDeadline } from './control-stream.js';
 import { PARTY_RELAY_RESERVATION_TTL_MS } from './relay-server.js';
-import { ADMISSION_DECISION_TIMEOUT_MS } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, relayAdmissionReserveDeadlineMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:connection-gater');
 
@@ -193,9 +193,13 @@ export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
  * dials and requests in one drive; a strand node's configured circuit listener
  * does the same from inside its own `listen()`), so a connection idle past this
  * deadline is not reserving.
+ *
+ * Derived from the link ({@link relayAdmissionReserveDeadlineMs}): one link round trip for the
+ * request to arrive plus one admission decision on it. This is the value at the default
+ * declaration; `CadreNode` passes the one derived from the relay's OWN declaration, because the
+ * relay is the machine that decides.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
-export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
+export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = relayAdmissionReserveDeadlineMs();
 
 /**
  * Bound on the graceful close of an expired relay-only connection. It exists
