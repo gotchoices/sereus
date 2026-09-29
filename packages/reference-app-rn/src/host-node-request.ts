@@ -14,7 +14,10 @@
  *
  * No native imports, on purpose: `fetch` and the node surface both arrive as
  * dependencies, so `test/host-node-request.spec.ts` drives the whole flow in
- * plain Node against fakes. `use-cadre.ts` is what passes the real ones.
+ * plain Node against fakes. `use-cadre.ts` is what passes the real ones. The
+ * integration scenario named below also imports this file by relative path from
+ * Node, so it must keep importing nothing at all: a native or Expo import would
+ * break that scenario as it loads.
  *
  * The six stages, against the routes in
  * `packages/cadre-host/src/server/routes/grants.ts`:
@@ -30,12 +33,14 @@
  * bootstrap address (`bootstrapNodes` is left off the POST body) and is always
  * the side that opens the connection. `addDrone` retains the addresses the host
  * handed over as a durable dial target, which is what lets step 5 — and every
- * reconnect after a restart — find the node at all. The proof that a real lent
- * node comes up and a listener-less requester can dial it is
- * `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`.
- * That scenario calls `DonationService` directly, not these HTTP routes; nothing
- * yet runs this module against the real `/grants` server
- * (`debt-phone-host-client-against-real-grants-server`).
+ * reconnect after a restart — find the node at all.
+ *
+ * `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`
+ * runs this module against the real `/grants` server and a real lent node: the
+ * success path through all six stages, a 401 reaching the user as the grant-token
+ * message, and the cleanup `DELETE` after a cancel. The retry loops, the other
+ * error mappings and every other cleanup branch are covered only by the unit
+ * spec's fake host.
  */
 
 /** Where the flow has got to. Reported through {@link HostNodeRequestDeps.onStage}. */

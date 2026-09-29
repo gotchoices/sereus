@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts"]
+  "compilerOptions": {
+    // Here rather than in tsconfig.json so an editor opening a scenario that imports
+    // an app module by relative path (see docs/testing.md) does not flag TS6059.
+    "rootDir": "src"
+  },
+  // Scenarios are Vitest test files like *.spec.ts; nothing imports them compiled.
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts", "**/*.integration.ts"]
 }
-

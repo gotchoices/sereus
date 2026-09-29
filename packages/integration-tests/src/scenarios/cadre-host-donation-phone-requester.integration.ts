@@ -17,23 +17,39 @@
  *   identity key, and owner genesis run on itself. That is the shape
  *   `packages/reference-app-rn/src/phone-node-config.ts` builds, minus WebRTC (which
  *   Node tests do not load).
+ * - **The phone's own client** — `requestHostNode` from
+ *   `packages/reference-app-rn/src/host-node-request.ts`, the code the app's Settings →
+ *   Host Node runs. It is imported below by relative SOURCE path: it imports nothing, so
+ *   it runs in Node unchanged, and a package dependency in either direction would pull an
+ *   Expo app or a Fastify server into the other's install (`docs/testing.md` → "App
+ *   modules in a scenario").
  *
- * What the nine steps below pin, in order, each as its own `it` so a failure names the
- * step it broke on:
+ * The borrowing goes through that client against the host's real `/grants` server
+ * (`createLocalUiServer` on loopback), so the server's routing, bearer check, origin
+ * guard, body parsing and error envelope all meet the phone's actual requests rather
+ * than a hand-picked equivalent of them. What the steps below pin, in order, each as its
+ * own `it` so a failure names the step it broke on:
  *
  *   1. the requester is up and genuinely undialable (`getMultiaddrs()` is empty)
- *   2. `provision` accepts `bootstrapNodes: []` and the record keeps it empty
- *   3. the spawned child reports a real `/ws` listen address from `GET .../peer`
- *   4. the requester vouches + seeds the node over the host's loopback channel
- *   5. the requester DIALS IN — an outbound connection on its side, a live WEBSOCKET
- *      control connection in the requester's party on the node's side
- *   6. rows cross in BOTH directions (the node self-publishes and its signed record
+ *   2. a wrong grant token is refused by the real server, reaches the phone as its
+ *      grant-token message, and provisions nothing
+ *   3. the phone's client borrows the node through all six of its stages, and on the
+ *      host side: the record is `seeded` and keeps `bootstrapNodes: []` although the
+ *      phone sent none, the node reports a real `/ws` listen address, and the requester
+ *      DIALED IN — an outbound connection on its side, a live WEBSOCKET control
+ *      connection in the requester's party on the node's side
+ *   4. rows cross in BOTH directions (the node self-publishes and its signed record
  *      reaches the requester)
- *   7. the node respawns onto the SAME `/ws` port and the requester reconnects with no
+ *   5. the node respawns onto the SAME `/ws` port and the requester reconnects with no
  *      further donation call
- *   8. the REQUESTER restarts on its retained identity, storage and dial targets, and
+ *   6. the REQUESTER restarts on its retained identity, storage and dial targets, and
  *      reconnects with no `provision` / `getPeer` / `applySeed` in between
- *   9. `terminate` releases the node
+ *   7. `terminate` releases the node
+ *   8. a request cancelled after the host provisioned ends the loan through the phone's
+ *      body-less `DELETE`, and the host's node goes away
+ *
+ * Steps 5–7 stay host-side: respawn, a stopped child and `terminate` have no phone-side
+ * call to drive them.
  *
  * Out of scope, deliberately: strand replication onto the lent node. A `cadre-cli` node
  * launches a strand only when an app has registered that strand's sApp config, and
@@ -41,20 +57,28 @@
  * `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`. Also out of
  * scope: WAN reachability — everything here is loopback, and a green run says nothing
  * about a phone reaching the host across a home NAT
- * (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`).
+ * (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`). And the origin guard's
+ * refusal: Node's `fetch` sends `Host: 127.0.0.1:<port>` and no `Origin`, which the guard
+ * accepts, so a phone addressing the host by its LAN address (`forbidden_origin`) is
+ * covered only by `reference-app-rn/test/host-node-request.spec.ts`. Nothing here runs a
+ * device or React Native's `fetch` either.
  *
  * The orchestrator resolves the real `cadre-cli` bin, so `@serfab/cadre-cli` and
- * `@serfab/cadre-host` must be built. Two real child spawns (provision + respawn) plus
- * an in-process node make this slow; budgets are generous on purpose.
+ * `@serfab/cadre-host` must be built. Three real child spawns (provision, respawn, and
+ * step 8's short-lived one) plus an in-process node make this slow; budgets are generous
+ * on purpose.
  *
  * MEASURED TEETH. The requester has no TCP transport and reserves no relay, so a `/ws`
  * address is the only thing it can dial — which means dropping the child's WebSocket
- * listener should take this file down. Verified 2026-09-15 by editing
+ * listener should take this file down. Verified 2026-09-29 by editing
  * `childListenAddrs` in `packages/cadre-host/src/orchestrator/host-process-orchestrator.ts`
- * to return the TCP entry alone, rebuilding `@serfab/cadre-host`, and re-running: RED at
- * steps 3, 5, 6, 7 and 8 (steps 1, 2, 4 and 9 do not touch the address, and correctly
- * stayed green — step 4's seed is accepted by a node nobody can reach). Restoring the
- * line and rebuilding returns 9/9. Re-run that recipe after changing either side.
+ * to return the TCP entry alone, rebuilding `@serfab/cadre-host`, and re-running: step 3
+ * went RED at the client's `connecting` stage (the seed before it is accepted by a node
+ * nobody can reach), and steps 4, 5 and 6 went red after it. Step 7 went red too, but
+ * only because a failed step 3 never hands back the donation id — the client's own
+ * cleanup has already ended that loan — so it is not a check on the address. Steps 1, 2
+ * and 8 never need a connection and correctly stayed green. Restoring the line and
+ * rebuilding returns 8/8. Re-run that recipe after changing either side.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -73,7 +97,8 @@ import {
   GrantStore,
   DonationService,
   DonationStore,
-  type DonationSeedResult,
+  createLocalUiServer,
+  type LocalUiServer,
 } from '@serfab/cadre-host';
 
 import {
@@ -83,17 +108,23 @@ import {
   hasOutboundTo,
   makeOwnOwner,
   waitUntil,
-  withPeerId,
   type RawStorageCapture,
 } from '../harness/index.js';
+// By source path, not a package: see "The phone's own client" in the header.
+import {
+  HostNodeRequestError,
+  requestHostNode,
+  type HostNodeRequestStage,
+} from '../../../reference-app-rn/src/host-node-request.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
 /**
- * The requester's control-cohort reconcile cadence. Every reconnect in steps 5, 7 and 8
- * is driven by a timed pass, so this bounds how long each of those waits can take.
+ * The requester's control-cohort reconcile cadence. The reconnects in steps 5 and 6 are
+ * driven by a timed pass, so this bounds how long each of those waits can take. (Step 3's
+ * first connection is the client's own: it starts passes itself.)
  */
 const RECONCILE_MS = 2_000;
 
@@ -114,10 +145,32 @@ function wsPortsOf(multiaddrs: readonly string[]): Set<string> {
   return ports;
 }
 
+/**
+ * Await the phone's client, rethrowing a failure with its stage, host code and host
+ * wording in the message. The borrowing is one `it`, so this is what still names the
+ * part of it that broke.
+ */
+async function explainFailure<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (err) {
+    if (!(err instanceof HostNodeRequestError)) throw err;
+    throw new Error(
+      `requestHostNode failed at stage '${err.stage}' (code: ${err.code ?? 'none'}): ${err.message} `
+      + `Detail: ${err.detail ?? 'none'}`,
+      { cause: err },
+    );
+  }
+}
+
 describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', () => {
   let tmpRoot: string;
   let hostOrch: HostProcessOrchestrator;
+  let grants: GrantService;
   let donationService: DonationService;
+  /** The host's real management server, carrying the `/grants` routes the phone calls. */
+  let server: LocalUiServer | undefined;
+  let hostUrl: string;
 
   /** The requester's durable identity — the same key both incarnations start on. */
   let requesterKey: PrivateKey;
@@ -126,12 +179,12 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
   let requesterOwnerKey: string;
   /**
    * The requester's control storage and its node-local dial-target store, BOTH held
-   * outside the node so step 8's restart reaches the same durable state a phone's
+   * outside the node so step 6's restart reaches the same durable state a phone's
    * file/IndexedDB-backed stores would.
    */
   let requesterStorage: RawStorageCapture;
   let requesterPeerStore: BootstrapPeerStore;
-  /** Reassigned in step 8; `afterAll` stops whichever incarnation is current. */
+  /** Reassigned in step 6; `afterAll` stops whichever incarnation is current. */
   let requester: CadreNode | undefined;
 
   const partyId = `donation-phone-${Math.random().toString(36).slice(2)}`;
@@ -140,8 +193,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
   let grantToken: string;
   let donationId: string;
   let dronePeerId: string;
-  let droneMultiaddrs: string[];
-  /** The `/ws` port set from step 3 — step 7 requires the respawn to come back on it. */
+  /** The `/ws` port set from step 3 — step 5 requires the respawn to come back on it. */
   let wsPortsBeforeRespawn: Set<string>;
 
   /** Build the phone-shaped requester on the durable state held above. */
@@ -176,16 +228,30 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     });
     await hostOrch.init();
 
-    const grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
+    grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
     grantToken = grants.issue({ label: 'phone requester test cadre' }).token;
     donationService = new DonationService({
       orchestrator: hostOrch,
       grants,
       store: new DonationStore(join(tmpRoot, 'donations')),
     });
+
+    // Donor-only, like a host with `ownCadre` off. Not `createTestCadreHost`: that brings
+    // up the founder role's trust-circle and NAT services, which nothing here needs.
+    server = createLocalUiServer({
+      uiPort: 0, // unused: `forcePort` binds whatever port the OS hands out
+      dataDir: join(tmpRoot, 'ui'),
+      orchestrator: hostOrch,
+      grants,
+      donations: donationService,
+      forcePort: 0,
+    });
+    hostUrl = (await server.start()).url;
   }, STARTUP_MS);
 
   afterAll(async () => {
+    // The server first, so no request lands on a node mid-teardown.
+    try { await server?.stop(); } catch { /* ignore */ }
     try { await requester?.stop(); } catch { /* ignore */ }
     if (hostOrch) {
       for (const n of hostOrch.listNodes()) {
@@ -213,99 +279,68 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     expect(requester.getMultiaddrs()).toEqual([]);
   }, STARTUP_MS);
 
-  it('step 2: the host provisions a lent node with NO bootstrap nodes', async () => {
-    const donation = await donationService.provision({
-      grantToken,
-      partyId,
-      // A phone has no address to hand over. Before `donated-node-reachable-by-phone`
-      // this was rejected as a required non-empty list.
-      bootstrapNodes: [],
-      ownerKeys: [requesterOwnerKey],
-      profile: 'storage',
+  it('step 2: the real server refuses a wrong grant token, and the phone reports it as one', async () => {
+    const failure = await requestHostNode(hostUrl, 'not-a-real-token', {
+      fetch: globalThis.fetch,
+      node: requester!,
+    }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(HostNodeRequestError);
+    expect(failure).toMatchObject({
+      stage: 'requesting',
+      code: 'unauthorized',
+      message: expect.stringContaining('does not recognise this grant token'),
     });
-    donationId = donation.id;
+    // The grant is checked before a record is written, so nothing was spawned.
+    expect(hostOrch.listNodes()).toEqual([]);
+  }, OP_MS);
 
-    expect(donation.status).toBe('awaiting_seed');
-    expect(donation.partyId).toBe(partyId);
-    // Persisted as empty rather than dropped — `respawn` treats a MISSING
-    // `bootstrapNodes` as "record predates spawn inputs" and refuses, so an empty list
-    // that round-trips as `undefined` would fail step 7 rather than this assertion.
-    expect(donationService.get(donationId)?.bootstrapNodes).toEqual([]);
+  it('step 3: the phone’s own client borrows the node over /grants, and the requester DIALS IN', async () => {
+    const stages: HostNodeRequestStage[] = [];
+    const borrowed = await explainFailure(requestHostNode(hostUrl, grantToken, {
+      fetch: globalThis.fetch,
+      node: requester!,
+      onStage: (stage) => stages.push(stage),
+      budgets: { nodeStartupMs: STARTUP_MS, seedRetryMs: OP_MS, connectMs: STARTUP_MS, pollIntervalMs: 500 },
+    }));
+    donationId = borrowed.donationId;
+    dronePeerId = borrowed.peerId;
 
+    expect(stages).toEqual(['requesting', 'waiting-for-node', 'authorizing', 'seeding', 'connecting', 'connected']);
+
+    // `seeded` is the proof the trust wiring worked: a node WITHOUT the pinned owner key
+    // answers `rejected`, which the client retries and then reports at `seeding`.
+    // Deliberately NOT asserting the `PUT`'s `peersAdded >= 1`, as the sibling scenario
+    // does: it counts only seed peers that carry multiaddrs, and a phone-shaped owner
+    // contributes none, so here it measures nothing about the claim under test.
+    const record = donationService.get(donationId);
+    expect(record?.status).toBe('seeded');
+    expect(record?.partyId).toBe(partyId);
+    // The phone's POST leaves `bootstrapNodes` off, and the record must still hold it as
+    // empty rather than dropped — `respawn` treats a MISSING `bootstrapNodes` as "record
+    // predates spawn inputs" and refuses, so a field that round-trips as `undefined`
+    // would fail step 5 rather than this assertion.
+    expect(record?.bootstrapNodes).toEqual([]);
     // Registered with the HOST orchestrator, but joined the REQUESTER's party.
     expect(hostOrch.getNode(donationId)?.partyId).toBe(partyId);
-  }, STARTUP_MS);
 
-  it('step 3: the lent node reports a WebSocket listen address', async () => {
-    let peerInfo: { peerId: string; multiaddrs: string[] } | undefined;
-    await waitUntil(async () => {
-      try {
-        peerInfo = await donationService.getPeer(donationId);
-        return !!peerInfo.peerId;
-      } catch {
-        return false;
-      }
-    }, { timeoutMs: STARTUP_MS, intervalMs: 500, description: 'lent node peer identity' });
-
-    dronePeerId = peerInfo!.peerId;
-    // Bind the peer id onto each address now: the requester dials this list, and a bare
-    // address gives the dial nothing to authenticate the far side against.
-    droneMultiaddrs = peerInfo!.multiaddrs.map((a) => withPeerId(a, dronePeerId));
-
+    const peer = await donationService.getPeer(donationId);
+    expect(peer.peerId).toBe(dronePeerId);
     expect(dronePeerId).toMatch(/^12D3Koo/); // Ed25519 libp2p peer id prefix
-
-    // The load-bearing assertion of this step: a phone carries no TCP transport, so a
-    // list of TCP-only addresses is unreachable for it no matter how many entries it has.
-    wsPortsBeforeRespawn = wsPortsOf(droneMultiaddrs);
+    // A phone carries no TCP transport, so a list of TCP-only addresses is unreachable
+    // for it no matter how many entries it has.
+    wsPortsBeforeRespawn = wsPortsOf(peer.multiaddrs);
     expect([...wsPortsBeforeRespawn]).toHaveLength(1);
-    // The list is MIXED (TCP and `/ws`, loopback and LAN). Nothing filters it — see
-    // step 5.
-    expect(droneMultiaddrs.some((a) => !a.includes('/ws'))).toBe(true);
-  }, STARTUP_MS);
+    // The list is MIXED (TCP and `/ws`, loopback and LAN), and the client hands it to
+    // `addDrone` unfiltered, to be dialed one address per `dial()` (`dialPeerAddrs`): a
+    // TCP entry this node has no transport for is rejected at once and the next address
+    // tried. A failure reading "no valid addresses" for EVERY candidate is a defect in
+    // that path, NOT something to work around by filtering the list.
+    expect(peer.multiaddrs.some((a) => !a.includes('/ws'))).toBe(true);
 
-  it('step 4: the requester vouches the lent node and seeds it', async () => {
-    const drone = await requester!.addDrone({ dronePeerId, droneMultiaddrs });
-    expect(drone.encodedSeed.length).toBeGreaterThan(0);
-
-    // `applySeed` can briefly race the node's seed-route readiness — poll until it
-    // reports `seeded`. A node WITHOUT the pinned owner key comes back `rejected`, so
-    // this (correctly) times out if the pin wiring is broken.
-    //
-    // Deliberately NOT asserting `peersAdded >= 1`, which the sibling scenario does:
-    // `applySeed` counts only seed peers that carry multiaddrs, and a phone-shaped owner
-    // contributes none. Here that count measures nothing about the claim under test —
-    // the proof that the trust wiring worked is `seeded`, and the proof that the two
-    // nodes found each other is step 5.
-    let result: DonationSeedResult | undefined;
-    await waitUntil(async () => {
-      result = await donationService.applySeed(donationId, drone.encodedSeed);
-      return result.outcome === 'seeded';
-    }, { timeoutMs: OP_MS, intervalMs: 1_000, description: 'lent node accepts seed' });
-
-    expect(result?.outcome).toBe('seeded');
-    expect(donationService.get(donationId)?.status).toBe('seeded');
-  }, OP_MS + 10_000);
-
-  it('step 5: the requester DIALS IN over WebSocket and the node joins its cadre', async () => {
-    // Dial now rather than waiting out a timed pass. `addDrone` retained the handed-over
-    // addresses as this sibling's dial target; the node's own `CadrePeer` row is still
-    // unsigned (it has never had a connection to self-publish over), so the retained
-    // entry is the only source `resolveControlDialAddrs` can answer from.
-    //
-    // The retained list is MIXED and is dialed unfiltered, one address per `dial()`
-    // (`dialPeerAddrs`): a TCP entry this node has no transport for is rejected at once
-    // and the next address tried. A failure here reading "no valid addresses" for EVERY
-    // candidate is a defect in that path, NOT something to work around by filtering the
-    // list in this test.
-    await requester!.reconcileControlCohort();
-
-    await waitUntil(() => hasOutboundTo(requester!, dronePeerId), {
-      // Generous: `reconcileControlCohort` joins a pass already in flight rather than
-      // restarting it, so the dial can land as late as one further timed pass.
-      timeoutMs: STARTUP_MS,
-      intervalMs: 250,
-      description: 'requester holds an OUTBOUND control connection to the lent node',
-    });
+    // The client's own check accepts any open connection to the node; this pins that the
+    // REQUESTER opened it.
+    expect(hasOutboundTo(requester!, dronePeerId)).toBe(true);
 
     // The node's own view: it is in the REQUESTER's party, and the connection it holds
     // is a WEBSOCKET one. The transport is the strongest complement to the requester-side
@@ -337,9 +372,9 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     // the requester a listener would otherwise let the lent node dial out and satisfy
     // everything above for the wrong reason.
     expect(requester!.getMultiaddrs()).toEqual([]);
-  }, STARTUP_MS);
+  }, 3 * STARTUP_MS + OP_MS + 10_000); // the client's three budgets, then the `/status` poll
 
-  it('step 6: rows cross both ways — the node self-publishes and its record reaches the requester', async () => {
+  it('step 4: rows cross both ways — the node self-publishes and its record reaches the requester', async () => {
     // Non-empty only if BOTH directions worked: the requester's rows had to reach the
     // lent node (so it could find its own owner-vouched row and self-publish a signed,
     // addressed one), and that signed row had to replicate back. The node self-publishes
@@ -355,7 +390,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     expect(resolved.some((a) => a.includes('/ws'))).toBe(true);
   }, STARTUP_MS);
 
-  it('step 7: a respawned lent node keeps its WebSocket port and the requester reconnects', async () => {
+  it('step 5: a respawned lent node keeps its WebSocket port and the requester reconnects', async () => {
     const before = hostOrch.getNode(donationId)!;
     // Capture the live connection ids first. The requester can hold the DEAD connection
     // `open` for several seconds after the child exits — until its connection monitor
@@ -400,7 +435,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     );
   }, STARTUP_MS + 60_000);
 
-  it('step 8: a restarted requester reconnects with no new donation request', async () => {
+  it('step 6: a restarted requester reconnects with no new donation request', async () => {
     await requester!.stop();
     requester = undefined;
 
@@ -435,9 +470,41 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     expect(resolved.some((a) => a.includes('/ws'))).toBe(true);
   }, STARTUP_MS + 60_000);
 
-  it('step 9: terminate releases the lent node', async () => {
+  it('step 7: terminate releases the lent node', async () => {
     await donationService.terminate(donationId);
     expect(donationService.get(donationId)?.status).toBe('terminated');
     expect(hostOrch.getNode(donationId)).toBeUndefined();
   }, OP_MS);
+
+  it('step 8: a request cancelled after the host provisioned ends the loan through the phone’s DELETE', async () => {
+    // A grant of its own, so this does not depend on step 7 having freed the first
+    // grant's single node slot.
+    const token = grants.issue({ label: 'phone requester cancelled request' }).token;
+
+    // Cancelling as `waiting-for-node` begins lands before the first `GET .../peer` is
+    // sent, so the failure is the same however fast the child boots. It is also the
+    // device's path: `use-cadre.ts`'s `stop` aborts a running request.
+    const controller = new AbortController();
+    const failure = await requestHostNode(hostUrl, token, {
+      fetch: globalThis.fetch,
+      node: requester!,
+      signal: controller.signal,
+      onStage: (stage) => { if (stage === 'waiting-for-node') controller.abort(); },
+      // The app's 10 s would do; this only keeps a slow child stop on a loaded machine
+      // from timing the DELETE out before the host has finished answering it.
+      budgets: { cleanupMs: OP_MS },
+    }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(HostNodeRequestError);
+    expect(failure).toMatchObject({ stage: 'waiting-for-node' });
+
+    // The phone's body-less `DELETE` once declared `content-type: application/json`, which
+    // Fastify refused with 400, leaving the loan and its node running. The host now
+    // tolerates that header too, so what this pins is that the loan really ends through
+    // the real route.
+    const loans = donationService.list(token);
+    expect(loans).toHaveLength(1);
+    expect(loans[0]!.status).toBe('terminated');
+    expect(hostOrch.getNode(loans[0]!.id)).toBeUndefined();
+  }, STARTUP_MS);
 });
