@@ -2,17 +2,21 @@
 
 Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
 
+What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
+- `sql schema` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view.
+- `sql script` — a complete statement sequence, run as-is.
+- `sql fragment` — shown for reading only (a lone constraint line, a query against tables the block does not declare). Never run.
+
 Key Quereus characteristics:
-- Declarative, order-independent schema blocks (`schema { ... }`).
+- Declarative, order-independent schema blocks (`declare schema <name> { ... }`).
 - Columns are NOT NULL by default (unless explicitly `null`).
-- `using memory` (or another vtab) selects the storage module.
-- Table-level mutation context variables available in `DEFAULT` and `CHECK`.
-- Global assertions (`create assertion ... check (...)`).
+- Table-level mutation context variables, declared with `with context (...)`, available in `default` and `check`.
+- Global assertions (an `assertion ... check (...)` item).
 - Auto-deferred row-level CHECKs when needed; immediate for simple per-row checks.
 
 Declarative workflow (engine-driven migration):
 
-```sql
+```sql script
 -- Optional: ensure standard SQL nullability semantics
 pragma default_column_nullability = 'not_null';  -- or 'nullable'
 
@@ -21,7 +25,7 @@ declare schema main using (default_vtab_module = 'memory') {
   table users { id integer primary key, email text unique, name text }
   index users_email on users(email)
   view v_users as select id, email from users
-  seed users values (id, email, name) values (1,'a@x','A'), (2,'b@x','B')
+  seed users ((1,'a@x','A'), (2,'b@x','B'))
 }
 
 -- Compute and inspect migration DDL
@@ -35,6 +39,8 @@ apply schema main with seed;
 explain schema main;       -- returns { info: 'hash:...' }
 ```
 
+That is raw Quereus. Inside Sereus you write only the items between the braces; see "What the examples are" above.
+
 Conventions used below:
 - "Strand" = the database shared by consenting participants.
 - "Cadre" = a user's personal device cluster that manages/stores data on their behalf.
@@ -45,39 +51,36 @@ Conventions used below:
 
 ### Minimal Strand Schema Skeleton
 
-```sql
-schema "com.example.messaging" version 1 using (default_vtab_module = 'memory') {
-  -- Identities scoped to the strand; emails optional to allow pseudonyms/handles
-  table users (
-    id          text primary key,
-    display     text,         -- Handle or display name (not globally unique)
-    email       text null,    -- Optional; Quereus defaults to NOT NULL unless marked null
-    created_at  text           -- Caller-supplied ISO 8601; there is no server clock to default to
-                               -- (see "Ordering Events (There Is No Commit-Order Column)")
-  );
+```sql schema
+-- Identities scoped to the strand; emails optional to allow pseudonyms/handles
+table users (
+  id          text primary key,
+  display     text,         -- Handle or display name (not globally unique)
+  email       text null,    -- Optional; Quereus defaults to NOT NULL unless marked null
+  created_at  text           -- Caller-supplied ISO 8601; there is no server clock to default to
+                             -- (see "Ordering Events (There Is No Commit-Order Column)")
+);
 
-  -- Simple messages; each row belongs to a conversation (strand-local grouping)
-  table conversations (
-    id          text primary key,
-    title       text,
-    created_by  text references users(id),
-    created_at  text
-  );
+-- Simple messages; each row belongs to a conversation (strand-local grouping)
+table conversations (
+  id          text primary key,
+  title       text,
+  created_by  text references users(id),
+  created_at  text
+);
 
-  table messages (
-    id             text primary key,
-    conversation   text references conversations(id),
-    sender_id      text references users(id),
-    content        text,
-    sent_at        text,
-    -- Prevent empty content at insert-time only
-    constraint nonempty_content check on insert (length(content) > 0)
-  );
+table messages (
+  id             text primary key,
+  conversation   text references conversations(id),
+  sender_id      text references users(id),
+  content        text,
+  sent_at        text,
+  -- Prevent empty content at insert-time only
+  constraint nonempty_content check on insert (length(content) > 0)
+);
 
-  -- Seed minimal roles & an admin user
-  seed users (id, display) values
-    ('u_admin', 'Admin');
-}
+-- Seed an admin user (Sereus does not apply seeds to a strand today; see "Seeds" below)
+seed users (('u_admin', 'Admin', null, '2026-01-01T00:00:00Z'));
 ```
 
 ---
@@ -86,94 +89,95 @@ schema "com.example.messaging" version 1 using (default_vtab_module = 'memory') 
 
 Quereus supports table-level mutation context (e.g., `actor_id`, `auth_token`) for use in defaults and checks. This enables application-enforced RBAC without a central auth server.
 
-```sql
-schema "com.example.rbac" version 1 using (default_vtab_module = 'memory') {
-  table roles (
-    code text primary key,           -- 'admin', 'member', ...
-    sort integer default 0
-  );
+```sql schema
+table roles (
+  code text primary key,           -- 'admin', 'member', ...
+  sort integer default 0
+);
 
-  table user_roles (
-    user_id  text,
-    role     text references roles(code),
-    constraint pk_user_roles primary key (user_id, role)
-  );
+table user_roles (
+  user_id  text,
+  role     text references roles(code),
+  constraint pk_user_roles primary key (user_id, role)
+);
 
-  -- Application-provided context (names are up to you):
-  --   context.actor_id, context.auth_token, context.current_tenant_id, ...
-  -- You can use custom functions: has_role(token, 'admin') → 1/0
+-- Application-provided context (names are up to you), declared by the table that reads it
+-- and supplied with each write: `insert ... with context auth_token = ?, ...`
+-- You can use custom functions: has_role(token, 'admin') → 1/0
 
-  table protected_records (
-    id       text primary key,
-    tenant   text,
-    data     text,
-    created  text,
+table protected_records (
+  id       text primary key,
+  tenant   text,
+  data     text,
+  created  text,
 
-    -- Multi-tenant isolation: write must match current_tenant
-    constraint tenant_guard check (
-      tenant = context.current_tenant_id
-    ),
+  -- Multi-tenant isolation: write must match current_tenant
+  constraint tenant_guard check (
+    tenant = context.current_tenant_id
+  ),
 
-    -- Require a particular role to insert/update
-    required_role text default 'member',
-    constraint write_auth check (
-      has_role(context.auth_token, required_role) = 1
-    )
-  );
-}
+  -- Require a particular role to insert/update
+  required_role text default 'member',
+  constraint write_auth check (
+    has_role(context.auth_token, required_role) = 1
+  )
+) with context (
+  current_tenant_id text,
+  auth_token        text
+);
 ```
 
 Notes:
-- Use your own user-defined functions (UDFs) such as `has_role(token, role)` to integrate signatures/claims.
+- Use your own user-defined functions (UDFs) such as `has_role(token, role)` to integrate signatures/claims. Register them as deterministic, or the CHECK that calls them is rejected.
+- A table must declare every context variable it reads in `with context (...)`. Undeclared, a bare name in a `default` fails when the schema is applied, but a `context.<name>` in a `check` applies cleanly and fails only on the first write.
 - The same pattern works for audit trails (see below) and cryptographic checks.
 
 ---
 
 ### Integrity: Foreign Keys, Composite Keys, Immediate vs Auto-Deferred Checks
 
-```sql
-schema "com.example.orders" version 1 using (default_vtab_module = 'memory') {
-  table customers (
-    id    text primary key,
-    name  text
-  );
+```sql schema
+table customers (
+  id           text primary key,
+  name         text,
+  credit_limit real
+);
 
-  table products (
-    id    text primary key,
-    name  text,
-    price real check (price >= 0)
-  );
+table products (
+  id    text primary key,
+  name  text,
+  price real check (price >= 0)
+);
 
-  table orders (
-    id          text primary key,
-    customer_id text references customers(id),
-    created_at  text
-  );
+table orders (
+  id          text primary key,
+  customer_id text references customers(id),
+  created_at  text
+);
 
-  table order_items (
-    order_id   text,
-    product_id text,
-    qty        integer check on insert (qty > 0),
-    price      real    check (price >= 0),
-    constraint pk_order_items primary key (order_id, product_id),
-    constraint fk_order   foreign key (order_id)   references orders(id),
-    constraint fk_product foreign key (product_id) references products(id),
+table order_items (
+  order_id   text,
+  product_id text,
+  qty        integer check on insert (qty > 0),
+  price      real    check (price >= 0),
+  constraint pk_order_items primary key (order_id, product_id),
+  constraint fk_order   foreign key (order_id)   references orders(id),
+  constraint fk_product foreign key (product_id) references products(id),
 
-    -- Auto-deferred example: ensure order total ≤ customer limit at COMMIT
-    -- (references external row and aggregate → validated at commit time)
-    constraint within_limit check (
-      (select ifnull(sum(qty * price), 0.0)
-         from order_items oi
-        where oi.order_id = new.order_id)
-      <= (select credit_limit from customers c where c.id = (select o.customer_id from orders o where o.id = new.order_id))
-    )
-  );
-}
+  -- Auto-deferred example: ensure order total ≤ customer limit at COMMIT
+  -- (references external row and aggregate → validated at commit time)
+  constraint within_limit check (
+    (select coalesce(sum(qty * price), 0.0)
+       from order_items oi
+      where oi.order_id = new.order_id)
+    <= (select credit_limit from customers c where c.id = (select o.customer_id from orders o where o.id = new.order_id))
+  )
+);
 ```
 
 Id immutability / delete guards:
 
-```sql
+```sql fragment
 constraint id_immutable check on update (new.id = old.id);
 constraint no_delete    check on delete (false);
 ```
@@ -182,48 +186,42 @@ constraint no_delete    check on delete (false);
 
 ### Generated Columns, Defaults, and Domain-Like Checks
 
-```sql
-schema "com.example.content" version 1 using (default_vtab_module = 'memory') {
-  table articles (
-    id       text primary key,
-    title    text,
-    body     text,
-    slug     text generated always as (lower(replace(title, ' ', '-'))) stored,
-    created  text,
+```sql schema
+table articles (
+  id       text primary key,
+  title    text,
+  body     text,
+  slug     text generated always as (lower(replace(title, ' ', '-'))) stored,
+  created  text,
 
-    -- Simple email-like check for author contact
-    author_email text null check (like(author_email, '%@%'))
-  );
-}
+  -- Simple email-like check for author contact
+  author_email text null check (like(author_email, '%@%'))
+);
 ```
 
 ---
 
 ### Views for Read Models / Projections
 
-```sql
-schema "com.example.views" version 1 using (default_vtab_module = 'memory') {
-  table users ( id text primary key, email text, display text );
-  table user_roles ( user_id text, role text );
+```sql schema
+table users ( id text primary key, email text, display text );
+table user_roles ( user_id text, role text );
 
-  view v_users_with_roles as
-    select u.id, u.email, u.display,
-           group_concat(ur.role, ',') as roles
-      from users u left join user_roles ur on u.id = ur.user_id
-     group by u.id, u.email, u.display;
-}
+view v_users_with_roles as
+  select u.id, u.email, u.display,
+         group_concat(ur.role, ',') as roles
+    from users u left join user_roles ur on u.id = ur.user_id
+   group by u.id, u.email, u.display;
 ```
 
 ---
 
 ### Indexes (Performance & Uniqueness)
 
-```sql
-schema "com.example.indexes" version 1 using (default_vtab_module = 'memory') {
-  table users ( id text primary key, handle text );
+```sql schema
+table users ( id text primary key, handle text );
 
-  create unique index idx_users_handle on users(handle);
-}
+unique index idx_users_handle on users(handle);
 ```
 
 ---
@@ -250,7 +248,7 @@ writer resolves the value and passes it with the statement, so it becomes part o
 replayable transaction rather than something each validator re-evaluates (see "Explicit table
 context declaration" below):
 
-```sql
+```sql schema
 table events (
   id         text primary key,
   body       text,
@@ -258,7 +256,9 @@ table events (
 ) with context (
   now_iso text
 );
+```
 
+```sql fragment
 insert into events (id, body) with context now_iso = datetime('now') values ('e1', 'hi');
 ```
 
@@ -281,7 +281,7 @@ do. Simple, and its weakness is worth saying plainly: the timestamp is asserted 
 author, so a wrong or dishonest clock silently reorders history and nothing in the stack
 notices. Fine for a cooperative app; not fine when back-dating matters.
 
-```sql
+```sql fragment
 select Id, Content, Timestamp
   from Message
  order by Timestamp asc, Id asc;
@@ -294,21 +294,19 @@ claiming to predate something its author had demonstrably already seen becomes d
 honest participants can bound a dishonest clock from both sides. This is the shape Matrix uses
 (`prev_events`) and Secure Scuttlebutt uses (per-feed hash chains). A minimal sketch:
 
-```sql
-schema "com.example.causal" version 1 using (default_vtab_module = 'memory') {
-  table Message (
-    Id        text primary key,
-    Content   text not null,
-    Timestamp datetime not null   -- still client-asserted; the edges below are what bound it
-  );
+```sql schema
+table Message (
+  Id        text primary key,
+  Content   text not null,
+  Timestamp datetime not null   -- still client-asserted; the edges below are what bound it
+);
 
-  -- Edges: which prior messages this message's author had already seen
-  table MessageParent (
-    MessageId text references Message(Id),
-    ParentId  text references Message(Id),
-    constraint pk_message_parent primary key (MessageId, ParentId)
-  );
-}
+-- Edges: which prior messages this message's author had already seen
+table MessageParent (
+  MessageId text references Message(Id),
+  ParentId  text references Message(Id),
+  constraint pk_message_parent primary key (MessageId, ParentId)
+);
 ```
 
 **Not a third pattern: a self-imposed integer sequence is a poor fit here.** The obvious idea — an
@@ -422,7 +420,7 @@ same key and the second write is refused rather than duplicated.
 
 ### Common Table Expressions (CTE), Recursive, and Hints
 
-```sql
+```sql fragment
 -- Non-recursive CTE used as a staging read model
 with active_users as (
   select id from users where last_seen > datetime('now','-7 days')
@@ -449,7 +447,7 @@ select ...;
 
 Set operations:
 
-```sql
+```sql fragment
 select id from a
 union
 select id from b;
@@ -474,70 +472,76 @@ select id from b;
 
 Use assertions for invariants that aren’t naturally bound to a single table mutation.
 
-```sql
-schema "com.example.assertions" version 1 using (default_vtab_module = 'memory') {
-  table ledger (
-    id    integer primary key,
-    kind  text check (kind in ('debit','credit')),
-    amt   real check (amt >= 0)
-  );
+```sql schema
+table ledger (
+  id    integer primary key,
+  kind  text check (kind in ('debit','credit')),
+  amt   real check (amt >= 0)
+);
 
-  -- Sum(credits) = Sum(debits)
-  create assertion balanced_book check (
-    (select ifnull(sum(case when kind='credit' then amt else 0 end),0) from ledger)
-    =
-    (select ifnull(sum(case when kind='debit'  then amt else 0 end),0) from ledger)
-  );
-}
+-- Sum(credits) = Sum(debits)
+assertion balanced_book check (
+  (select coalesce(sum(case when kind='credit' then amt else 0 end),0) from ledger)
+  =
+  (select coalesce(sum(case when kind='debit'  then amt else 0 end),0) from ledger)
+);
 ```
 
 ---
 
 ### Audit & Security with Mutation Context (Signatures, Tenants, Actor Info)
 
-```sql
-schema "com.example.security" version 1 using (default_vtab_module = 'memory') {
-  -- Expect application to set context variables on each mutation:
-  --   context.actor_id, context.actor_name, context.operation_signature, context.current_tenant_id
+```sql schema
+-- The application supplies the context variables with each write:
+--   insert into documents (...) with context actor_name = ?, actor_key = ?, ... values (...)
 
-  table documents (
-    id        text primary key,
-    tenant    text,
-    title     text,
-    content   text,
+table documents (
+  id        text primary key,
+  tenant    text,
+  title     text,
+  content   text,
 
-    -- Audit defaults derived from context
-    created_by text default actor_name,
-    created_at text,
-    op_sig     blob default operation_signature,
+  -- Audit defaults derived from context
+  created_by text default actor_name,
+  created_at text,
+  op_sig     text default operation_signature,
 
-    -- Multi-tenant write barrier
-    constraint tenant_isolation check (tenant = context.current_tenant_id),
+  -- Multi-tenant write barrier
+  constraint tenant_isolation check (tenant = context.current_tenant_id),
 
-    -- Example signature verification hook (via UDFs)
-    constraint signature_valid check (
-      verify_signature(op_sig, id, title, content, created_by) = 1
-    )
-  );
-}
+  -- Signature check with the crypto functions every strand registers (digest, verify);
+  -- signatures and keys are base64url text, the same idiom schemas/strand.qsql uses
+  constraint signature_valid check (
+    verify(digest(id, title, content, created_by), op_sig, context.actor_key, 'ed25519')
+  )
+) with context (
+  actor_name          text,
+  actor_key           text,   -- the signer's ed25519 public key
+  operation_signature text,
+  current_tenant_id   text
+);
 ```
 
 ---
 
 ### Seeds (Deterministic Bootstrapping)
 
-```sql
-schema "com.example.seed" version 1 using (default_vtab_module = 'memory') {
-  table roles (code text primary key);
-  seed roles (code) values ('admin'),('member');
-}
+```sql schema
+table roles (code text primary key, label text null);
+
+-- One seed item per table; each row lists every column in declaration order
+seed roles (('admin', 'Administrator'), ('member', 'Member'), ('guest', null));
 ```
+
+Quereus also parses a `seed <table> values (<columns>) values (...)` form, but it ignores that column list and inserts each row positionally: a row that omits a column fails, and one that lists columns out of declaration order lands its values in the wrong columns. List every column instead.
+
+Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **The Sereus plugin applies an sApp schema without `with seed`** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/compose-strand.ts`), so seed items do not insert rows into a strand today; an app that needs rows at birth writes them itself when it founds the strand. Whether Sereus should apply seeds is an open decision (`tickets/blocked/decide-sapp-schema-seed-rows.md`).
 
 ---
 
 ### RETURNING with NEW/OLD (DML Feedback)
 
-```sql
+```sql fragment
 -- Insert returning generated values
 insert into messages (id, conversation, sender_id, body)
 values ('m1','c1','u1','Hello!')
@@ -563,7 +567,7 @@ Rules recap:
 
 ### Table-Valued Functions & JSON Helpers
 
-```sql
+```sql fragment
 -- Explode a JSON array column into rows (e.g., message tags)
 select m.id, t.value as tag
   from messages m,
@@ -582,103 +586,103 @@ select *
 
 This example demonstrates a realistic consent-based messaging app schema using all key features: FK, composite PK, checks (immediate + auto-deferred), generated columns, indexes, views, mutation context, assertions, and seeds.
 
-```sql
-schema "org.sereus.chat" version 1 using (default_vtab_module = 'memory') {
-  -- Users & roles
-  table users (
-    id         text primary key,
-    handle     text,
-    display    text,
-    joined_at  text
-  );
-  create unique index idx_users_handle on users(handle);
+```sql schema
+-- Users & roles
+table users (
+  id         text primary key,
+  handle     text,
+  display    text,
+  joined_at  text
+);
+unique index idx_users_handle on users(handle);
 
-  table roles (
-    code text primary key
-  );
-  seed roles (code) values ('admin'),('member');
+table roles (
+  code text primary key
+);
+seed roles (('admin'), ('member'));
 
-  table user_roles (
-    user_id text,
-    role    text references roles(code),
-    constraint pk_user_roles primary key (user_id, role)
-  );
+table user_roles (
+  user_id text,
+  role    text references roles(code),
+  constraint pk_user_roles primary key (user_id, role)
+);
 
-  -- Conversations & membership
-  table conversations (
-    id          text primary key,
-    tenant      text, -- optional org/workspace isolation
-    title       text,
-    created_by  text references users(id),
-    created_at  text,
-    constraint tenant_write_guard check (
-      tenant is null or tenant = context.current_tenant_id
+-- Conversations & membership
+table conversations (
+  id          text primary key,
+  tenant      text null, -- optional org/workspace isolation
+  title       text,
+  created_by  text references users(id),
+  created_at  text,
+  constraint tenant_write_guard check (
+    tenant is null or tenant = context.current_tenant_id
+  )
+) with context (
+  current_tenant_id text null
+);
+
+table conversation_members (
+  conversation_id text references conversations(id),
+  user_id         text references users(id),
+  role            text default 'member' references roles(code),
+  constraint pk_conv_members primary key (conversation_id, user_id)
+);
+
+-- Messages with generated slug, immediate & auto-deferred checks
+table messages (
+  id             text primary key,
+  conversation   text references conversations(id),
+  sender_id      text references users(id),
+  body           text,
+  slug           text generated always as (lower(replace(substr(body, 1, 40), ' ', '-'))) stored,
+  sent_at        text,
+
+  -- Per-row immediate check: body required on insert
+  constraint nonempty_body check on insert (length(body) > 0),
+
+  -- Membership guard: sender must be a member (auto-deferred; cross-table)
+  constraint sender_is_member check (
+    exists (
+      select 1 from conversation_members m
+       where m.conversation_id = new.conversation
+         and m.user_id = new.sender_id
     )
-  );
+  )
+);
 
-  table conversation_members (
-    conversation_id text references conversations(id),
-    user_id         text references users(id),
-    role            text default 'member' references roles(code),
-    constraint pk_conv_members primary key (conversation_id, user_id)
-  );
+-- View: who’s in each conversation with role list
+view v_conversation_roster as
+  select c.id as conversation_id,
+         c.title,
+         group_concat(u.handle, ',') as members
+    from conversations c
+    join conversation_members m on m.conversation_id = c.id
+    join users u on u.id = m.user_id
+   group by c.id, c.title;
 
-  -- Messages with generated slug, immediate & auto-deferred checks
-  table messages (
-    id             text primary key,
-    conversation   text references conversations(id),
-    sender_id      text references users(id),
-    body           text,
-    slug           text generated always as (lower(replace(substr(body, 1, 40), ' ', '-'))) stored,
-    sent_at        text,
-
-    -- Per-row immediate check: body required on insert
-    constraint nonempty_body check on insert (length(body) > 0),
-
-    -- Membership guard: sender must be a member (auto-deferred; cross-table)
-    constraint sender_is_member check (
-      exists (
-        select 1 from conversation_members m
-         where m.conversation_id = new.conversation
-           and m.user_id = new.sender_id
-      )
-    )
-  );
-
-  -- View: who’s in each conversation with role list
-  view v_conversation_roster as
-    select c.id as conversation_id,
-           c.title,
-           group_concat(u.handle, ',') as members
+-- Global assertion: each conversation must have at least one admin member
+assertion conversation_has_admin check (
+  not exists (
+    select 1
       from conversations c
-      join conversation_members m on m.conversation_id = c.id
-      join users u on u.id = m.user_id
-     group by c.id, c.title;
-
-  -- Global assertion: each conversation must have at least one admin member
-  create assertion conversation_has_admin check (
-    not exists (
-      select 1
-        from conversations c
-       where not exists (
-               select 1
-                 from conversation_members m
-                where m.conversation_id = c.id and m.role = 'admin'
-             )
-    )
-  );
-}
+     where not exists (
+             select 1
+               from conversation_members m
+              where m.conversation_id = c.id and m.role = 'admin'
+           )
+  )
+);
 ```
 
 ---
 
 ### Practical Guidance & Patterns
-- Prefer declarative `schema { ... }` blocks; they’re order-independent and diffable.
+- Prefer declarative schema items (the body Sereus wraps in `declare schema App { ... }`); they’re order-independent and diffable.
 - Model authorization at the data layer using context variables + checks; keep business rules close to data.
 - Use global assertions for invariants spanning multiple tables.
 - Expect some checks to be validated at COMMIT (auto-deferred) when referencing external rows/aggregates.
 - Keep views as read models; avoid complex write logic in views.
-- Use seeds for deterministic bootstrap (roles, system users, defaults).
+- Seeds give a local Quereus database deterministic bootstrap rows, but Sereus does not apply them to a strand today (see [Seeds](#seeds-deterministic-bootstrapping)); write bootstrap rows from the app when it founds the strand.
 - Index for uniqueness and query speed; prefer named composite PKs where natural.
 - Mint a client-generated primary key once per logical event and hold it across retries — a strand write can fail without settling whether it landed, so a key minted per attempt turns a manual retry into a duplicate row. See [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
 - Per-user state (read position, drafts, preferences) has no private home yet: a per-party key in the strand table partitions it but hides nothing from other members — see [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim).
@@ -692,23 +696,23 @@ This guide is intentionally compact and example-first. With it, an agent should 
 
 Explicit table context declaration:
 
-```sql
+```sql schema
 table secured_objects (
   id   text primary key,
   data text,
   constraint signed_change check (
-    SignatureValid(Digest(Tid, id, data), context.signature, context.user_key) = 1
+    verify(digest(Tid, id, data), context.signature, context.user_key, 'ed25519')
   )
 ) with context (
-  user_key  text,
-  signature text,
+  user_key  text,   -- base64url ed25519 public key
+  signature text,   -- base64url signature over the digest
   Tid       int
 );
 ```
 
 VALUES-based enum/view:
 
-```sql
+```sql schema
 view Status as
   select * from (values
     ('new','New'),
@@ -719,7 +723,7 @@ view Status as
 
 LATERAL with JSON table-valued function:
 
-```sql
+```sql fragment
 -- Explode JSON array column with explicit lateral
 select p.id, t.tag
   from posts p
@@ -729,7 +733,7 @@ select p.id, t.tag
 
 Window functions (analytics) and cumulative digests:
 
-```sql
+```sql fragment
 -- Running total by account
 select account_id,
        amount,
@@ -745,20 +749,20 @@ select x,
 
 Utility validation functions in constraints:
 
-```sql
+```sql schema
 table events (
   id     text primary key,
   at     text,    -- ISO8601 UTC timestamp
   suffix text,
   n      any null,
-  constraint ts_valid    check (isISODatetime(at) and endswith(at, 'Z')),
+  constraint ts_valid    check (isISODatetime(at) and at like '%Z'),
   constraint n_is_int    check (n is null or typeof(n) = 'integer')
 );
 ```
 
 Id immutability / delete guards (inline on a real table):
 
-```sql
+```sql schema
 table things (
   id   text primary key,
   name text,
