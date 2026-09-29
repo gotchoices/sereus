@@ -515,6 +515,12 @@ export class StrandInstanceManager {
    * rejection belongs to the call that started it.
    */
   private runtimeBuilds: Map<string, Promise<void>> = new Map();
+  /**
+   * The resume in flight per strand id ({@link runResume}), present until it settles. The
+   * WHOLE operation, not its entry in {@link runtimeBuilds}: that settles before the resume's
+   * own catch records `'error'`, so a joiner awaiting it could read a stale status.
+   */
+  private resumesInFlight: Map<string, Promise<StrandInstance>> = new Map();
   private stopping = false;
 
   constructor() {
@@ -1042,8 +1048,9 @@ export class StrandInstanceManager {
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
 
+      // No `lastActivity` stamp: bringing a runtime up is not activity. A check-in marks
+      // activity before its resume and must see only what landed while the strand was up.
       instance.status = liveStrandStatus(instance);
-      instance.lastActivity = new Date();
       if (instance.status === 'syncing') {
         log('Strand %s launched as a joiner with no Strand.Header held yet — writes are withheld until ' +
           'a member of the strand is reached', strandId);
@@ -1344,10 +1351,43 @@ export class StrandInstanceManager {
    * launch (the cohort `bootstrapNodes` seed and the strand's `servingMachines`
    * count) and updates the retained config so a later resume reuses the latest
    * values. Returns the live instance unchanged if it is already running.
+   *
+   * Overlapping calls share one rebuild: a call made while a resume of the same strand is
+   * in flight — a wake landing during a check-in — joins it and settles exactly as it does,
+   * `'error'` status included. The joiner's own `overrides` are ignored; the first resume's
+   * seed wins, and both callers resolved the cohort seed moments apart. A call made while
+   * `startStrand` is still building waits for that build rather than starting a second.
    */
   async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
     if (this.stopping) {
       throw new Error('StrandInstanceManager is stopping');
+    }
+    // Checked before any "already live" test: mid-build the libp2p node is attached while
+    // the database is not, and the caller must wait for the finished runtime. No `await`
+    // between this read and the `set` below, or a second caller slips through and builds.
+    const inFlight = this.resumesInFlight.get(strandId);
+    if (inFlight) {
+      log('resumeStrand: strand %s — joining the resume already in flight', strandId);
+      return inFlight;
+    }
+    const resume = this.runResume(strandId, overrides);
+    this.resumesInFlight.set(strandId, resume);
+    try {
+      return await resume;
+    } finally {
+      if (this.resumesInFlight.get(strandId) === resume) {
+        this.resumesInFlight.delete(strandId);
+      }
+    }
+  }
+
+  /** Body of {@link resumeStrand}; at most one runs per strand at a time. */
+  private async runResume(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
+    // Backstop for a wake issued while the launch is still building: the instance is tracked
+    // with no handles yet, so it would read as quiesced and build a second runtime. A failed
+    // launch has already dropped the instance, and the check below reports it untracked.
+    if (this.runtimeBuilds.has(strandId)) {
+      await this.settleRuntimeBuilds(strandId);
     }
     const instance = this.instances.get(strandId);
     if (!instance) {
@@ -1611,9 +1651,11 @@ export class StrandInstanceManager {
       this.firstSyncGates.delete(strandId);
     }
     instance.database = database;
-    instance.lastActivity = new Date();
     const wasGated = instance.status !== 'starting';
     if (wasGated) {
+      // A Header delivered by a peer is strand activity; a publish during bring-up is not
+      // (see the build's end in `buildStrandRuntime`).
+      instance.lastActivity = new Date();
       instance.status = 'active';
       log('Strand %s is now writable: Strand.Header held', strandId);
     }

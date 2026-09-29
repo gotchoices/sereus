@@ -4773,7 +4773,13 @@ export class CadreNode implements SAppIdLookup {
    * its runtime via the strand manager. If it is still live (e.g. waking an idle
    * strand, which retains its resources), just flip the status. Overlapping wake
    * triggers are coalesced upstream by `HibernationManager`, so this runs once
-   * per wake; `resumeStrand` is itself idempotent as a backstop.
+   * per wake; a wake racing a check-in joins the check-in's rebuild in `resumeStrand`.
+   *
+   * A failed rebuild re-hibernates the strand (see {@link rehibernateAfterFailedResume})
+   * and rethrows, so the waker still sees the error.
+   *
+   * Records no activity itself: whoever asked for the wake did ({@link wakeStrand},
+   * `HibernationManager.recordActivity`), and {@link serviceWake}'s own probe must not.
    */
   private async handleStrandWake(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
@@ -4783,10 +4789,11 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // Still live (idle wake, or defensive double-wake): no rebuild needed. A joiner
-    // still behind its first-sync gate wakes back to `'syncing'`, not `'active'`.
-    if (instance.libp2pNode || instance.database) {
+    // still behind its first-sync gate wakes back to `'syncing'`, not `'active'`. A
+    // `'starting'` strand is mid-build (a check-in's resume, or its launch) with the node
+    // attached before the database: not live yet, so it falls through and joins that build.
+    if (instance.status !== 'starting' && (instance.libp2pNode || instance.database)) {
       instance.status = liveStrandStatus(instance);
-      instance.lastActivity = new Date();
       log('Strand %s woke (already live)', strandId);
       this.emit('strand:waking', { strandId });
       return;
@@ -4795,18 +4802,38 @@ export class CadreNode implements SAppIdLookup {
     // Quiesced: re-resolve the volatile cohort input (the seed may have grown)
     // and rebuild the runtime.
     log('Waking strand %s — rebuilding strand-network resources', strandId);
-    await this.resumeStrandRuntime(strandId);
-    instance.lastActivity = new Date();
+    try {
+      await this.resumeStrandRuntime(strandId);
+    } catch (error) {
+      log('Wake of strand %s failed; re-hibernating so a later wake or check-in retries: %o', strandId, error);
+      await this.rehibernateAfterFailedResume(instance, 'Wake');
+      throw error;
+    }
     this.emit('strand:waking', { strandId });
     log('Strand %s awake (resources rebuilt)', strandId);
+  }
+
+  /**
+   * Put a strand whose resume failed back to `'hibernating'`, after a best-effort quiesce
+   * that releases any partially rebuilt runtime. `resumeStrand` leaves a failed strand
+   * `'error'`, which nothing retries: `HibernationManager` wakes only `idle`/`hibernating`
+   * strands, and reads any other status after a check-in as "woke", ending its chain.
+   * Safe to run twice for one failure (a wake that joined a failed check-in's rebuild):
+   * quiescing a quiesced strand is a no-op.
+   */
+  private async rehibernateAfterFailedResume(instance: StrandInstance, context: string): Promise<void> {
+    await this.strandManager.quiesceStrand(instance.strandId).catch((cleanupErr) => {
+      log('%s cleanup quiesce for strand %s failed: %o', context, instance.strandId, cleanupErr);
+    });
+    instance.status = 'hibernating';
   }
 
   /**
    * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort input
    * first: the discovery seed may have grown since the strand last ran. Shared by
    * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so both
-   * apply the same fresh resolution. `resumeStrand` is idempotent
-   * (returns the live instance unchanged) as a backstop against double-resume.
+   * apply the same fresh resolution. `resumeStrand` returns a live instance unchanged
+   * and joins a rebuild already in flight, so the two paths never build twice.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
     // Re-derive the transport peerId (deterministic and cheap — a quiesced
@@ -4860,6 +4887,9 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
+    // Before the resume, so a wake that joins this rebuild, or activity recorded while it
+    // runs, counts: the window then leaves the strand up for it.
+    const activityMark = instance.lastActivity;
     try {
       // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
       //    seed, then rebuild the runtime.
@@ -4869,7 +4899,7 @@ export class CadreNode implements SAppIdLookup {
       // 2-3. Bounded window for the strand network to connect + the app to act,
       //      then re-hibernate-if-idle. Shared with the on-demand serviceWake.
       const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
-      await this.runWakeWindow(instance, windowMs);
+      await this.runWakeWindow(instance, activityMark, windowMs);
     } catch (err) {
       // A check-in that throws part-way — resume failing on a flaky network (the
       // very scenario hibernation targets), the window rejecting, or quiesce
@@ -4882,10 +4912,7 @@ export class CadreNode implements SAppIdLookup {
       // any partially-rebuilt runtime) makes the manager escalate the backoff and
       // retry on the next tick.
       log('Check-in failed for strand %s; re-hibernating to retry on backoff: %o', strandId, err);
-      await this.strandManager.quiesceStrand(strandId).catch((cleanupErr) => {
-        log('Check-in cleanup quiesce for strand %s failed: %o', strandId, cleanupErr);
-      });
-      instance.status = 'hibernating';
+      await this.rehibernateAfterFailedResume(instance, 'Check-in');
     }
   }
 
@@ -4893,19 +4920,19 @@ export class CadreNode implements SAppIdLookup {
    * Window-then-decide for a just-resumed strand, shared by the check-in timer
    * path ({@link handleStrandCheckIn}) and the on-demand {@link serviceWake}:
    *
-   *   1. Capture the post-resume activity marker. `recordActivity` assigns a
-   *      FRESH `Date`, so a changed reference after the window means real
-   *      activity landed during it — not millisecond-resolution noise.
-   *   2. Hold the strand live for `windowMs` so its strand network reaches the
+   *   1. Hold the strand live for `windowMs` so its strand network reaches the
    *      cohort and the app can drive pull-on-read activity.
-   *   3. If activity landed, leave the strand `active` (return `true`); otherwise
-   *      quiesce and mark it `hibernating` again (return `false`).
+   *   2. If activity landed since `activityMark`, leave the strand `active` (return
+   *      `true`); otherwise quiesce and mark it `hibernating` again (return `false`).
    *
-   * @returns whether activity was observed during the window (strand left active).
+   * @param activityMark - `instance.lastActivity` as the caller read it BEFORE bringing the
+   *   strand up. The bring-up records none, and every writer assigns a FRESH `Date`, so a
+   *   changed reference means a wake or activity landed during the resume or the window —
+   *   not millisecond-resolution noise.
+   * @returns whether activity was observed (strand left active).
    */
-  private async runWakeWindow(instance: StrandInstance, windowMs: number): Promise<boolean> {
+  private async runWakeWindow(instance: StrandInstance, activityMark: Date, windowMs: number): Promise<boolean> {
     const strandId = instance.strandId;
-    const activityMark = instance.lastActivity;
 
     await this.holdWakeWindow(instance, windowMs);
 
@@ -6738,9 +6765,15 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Force wake a hibernating strand
+   * Force wake a hibernating strand. A requested wake is activity, recorded before the
+   * wake starts: a check-in holding the strand — or rebuilding it, a rebuild this wake then
+   * joins — leaves it up instead of re-quiescing it at the end of its window.
    */
   async wakeStrand(strandId: string): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (instance) {
+      instance.lastActivity = new Date();
+    }
     await this.hibernationManager.wakeStrand(strandId);
   }
 
@@ -6821,7 +6854,9 @@ export class CadreNode implements SAppIdLookup {
    * strand share one in-flight operation ({@link serviceWakePromises}), and the
    * underlying resume coalesces with a racing push-wake via
    * {@link HibernationManager}'s wake coalescing — one runtime build, one window,
-   * one re-hibernate decision. Returns `{ serviced: false }` (never throws) when
+   * one re-hibernate decision. A wake or activity from elsewhere that lands during
+   * the resume or the window leaves the strand up; this call's own wake does not.
+   * Returns `{ serviced: false }` (never throws) when
    * the node is not running or the strand is unknown, and surfaces a resume
    * failure as `{ serviced: true, hadActivity: false }` after re-hibernating.
    *
@@ -6859,30 +6894,31 @@ export class CadreNode implements SAppIdLookup {
       return { strandId, serviced: false, hadActivity: false };
     }
 
-    // Already live (active or idle — both retain their runtime): servicing is a
-    // no-op success. Do NOT run a window that would re-hibernate a strand the app
-    // may be actively using, and do NOT rebuild a second runtime.
-    if (instance.libp2pNode || instance.database) {
+    // Already live (active or idle — both retain their runtime) or coming up (a launch,
+    // or a check-in with its own window): servicing is a no-op success. Do NOT run a
+    // window that would re-hibernate a strand the app may be actively using, and do NOT
+    // rebuild a second runtime. `'starting'` counts before any handle is attached.
+    if (instance.status === 'starting' || instance.libp2pNode || instance.database) {
       log('serviceWake: strand %s already live; no-op success', strandId);
       return { strandId, serviced: true, hadActivity: true };
     }
 
+    // Before the resume, as the check-in takes it (see handleStrandCheckIn).
+    const activityMark = instance.lastActivity;
     try {
-      // Coalesced resume: routes through wakeStrand → HibernationManager.beginWake
-      // so a racing push-wake shares this single runtime build.
-      await this.wakeStrand(strandId);
+      // Coalesced resume: HibernationManager.beginWake, so a racing push-wake shares this
+      // single runtime build. Not through `wakeStrand`, which records the wake as activity:
+      // this probe's own wake must not count as a reason to stay up.
+      await this.hibernationManager.wakeStrand(strandId);
       const windowMs = opts?.windowMs ?? this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
-      const hadActivity = await this.runWakeWindow(instance, windowMs);
+      const hadActivity = await this.runWakeWindow(instance, activityMark, windowMs);
       return { strandId, serviced: true, hadActivity };
     } catch (error) {
       // Resume failing mid-window (network unreachable inside a Doze grant, etc.)
       // must not throw out of a background task: re-hibernate and report no
       // activity, mirroring handleStrandCheckIn's re-hibernate-on-error.
       log('serviceWake: strand %s failed during wake window; re-hibernating: %o', strandId, error);
-      await this.strandManager.quiesceStrand(strandId).catch((cleanupErr) => {
-        log('serviceWake cleanup quiesce for strand %s failed: %o', strandId, cleanupErr);
-      });
-      instance.status = 'hibernating';
+      await this.rehibernateAfterFailedResume(instance, 'serviceWake');
       return { strandId, serviced: true, hadActivity: false };
     }
   }

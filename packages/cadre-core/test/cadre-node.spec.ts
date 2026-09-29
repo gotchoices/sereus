@@ -617,7 +617,6 @@ describe('CadreNode', () => {
           i.libp2pNode = {} as never;
           i.database = {} as never;
           i.status = 'active';
-          i.lastActivity = new Date();
           return i;
         }
       };
@@ -840,7 +839,8 @@ describe('CadreNode', () => {
 
       expect(result).toEqual({ strandId: 'sw-fail', serviced: true, hadActivity: false });
       expect(instance.status).toBe('hibernating');
-      expect(calls.quiesce).toEqual(['sw-fail']);
+      // The failed wake and serviceWake's own catch each quiesce; the repeat is a no-op.
+      expect(new Set(calls.quiesce)).toEqual(new Set(['sw-fail']));
     });
 
     it('coalesces concurrent serviceWake calls for the same strand into one runtime build', async () => {

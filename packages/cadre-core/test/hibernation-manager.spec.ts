@@ -523,6 +523,62 @@ describe('HibernationManager', () => {
       manager.stop();
     });
 
+    it('a check-in that leaves the strand live restarts its idle countdown even when nothing re-armed it', async () => {
+      const instance = createInstance('strand-checkin-live', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => {
+        callbacks.hibernateCalls.push(id);
+        instance.status = 'hibernating';
+      });
+      // Activity that landed while CadreNode's check-in was still rebuilding keeps the strand
+      // up, but found it `'starting'`, so recordActivity armed no idle timer.
+      callbacks.onCheckIn.mockImplementation(async () => { instance.status = 'active'; });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // idle @1000, hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 leaves it active
+      expect(callbacks.idleCalls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1000 + 10); // idle again @3100
+      expect(callbacks.idleCalls).toHaveLength(2);
+
+      manager.stop();
+    });
+
+    it('a failed wake restores the check-in chain it cancelled, and starts none for a strand without one', async () => {
+      const instance = createInstance('strand-wake-fail', 'interactive');
+      // Force-hibernated (the mobile background path): deliberately no check-in chain.
+      const chainless = createInstance('strand-chainless', 'interactive');
+      const byId = (id: string) => (id === instance.strandId ? instance : chainless);
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => { byId(id).status = 'hibernating'; });
+      // As CadreNode.handleStrandWake does on a failed rebuild: re-hibernate, then rethrow.
+      callbacks.onWake.mockImplementation(async (id: string) => {
+        byId(id).status = 'hibernating';
+        throw new Error('wake boom');
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating(); // hibernated @2000, first check-in armed @2100
+      await manager.forceHibernate(chainless);
+
+      await expect(manager.wakeStrand('strand-wake-fail')).rejects.toThrow(/wake boom/);
+      await expect(manager.wakeStrand('strand-chainless')).rejects.toThrow(/wake boom/);
+
+      // Re-armed at base delay from the failure (@2050), not left with nothing scheduled.
+      expect(instance.nextCheckIn?.getTime()).toBe(2150);
+      expect(chainless.nextCheckIn).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(callbacks.checkInCalls).toContain('strand-wake-fail');
+      expect(callbacks.checkInCalls).not.toContain('strand-chainless');
+
+      manager.stop();
+    });
+
     it('a throwing onCheckIn does not break the chain (the next tick still fires)', async () => {
       const instance = createInstance('strand-throw', 'interactive');
       const callbacks = createCallbacks();

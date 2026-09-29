@@ -1140,6 +1140,12 @@ export interface StrandInstance {
 
   /** Activity tracking */
   connectedPeers: number;
+  /**
+   * When the strand last saw activity: the app's (`recordStrandActivity`), a requested wake
+   * (`wakeStrand`), or a peer delivering a gated joiner's `Strand.Header`. Always a fresh
+   * `Date`. Bringing the runtime up is NOT activity — a check-in window decides whether to
+   * re-hibernate by whether this changed since before its resume.
+   */
   lastActivity: Date;
   nextCheckIn?: Date;
 

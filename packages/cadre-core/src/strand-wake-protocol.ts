@@ -128,8 +128,9 @@ export interface StrandWakeServiceOptions {
   getStrand(strandId: string): StrandInstance | undefined;
   /**
    * Trigger the local wake path for a hibernating/idle strand. Wired to
-   * `CadreNode.wakeStrand` (→ `HibernationManager` → `resumeStrand`), whose
-   * resume coalescing prevents a push-wake racing a concurrent check-in.
+   * `CadreNode.wakeStrand` (→ `HibernationManager` → `resumeStrand`); `resumeStrand`
+   * joins any resume already in flight, so a push-wake racing a check-in shares its
+   * runtime build.
    *
    * Started, not awaited: the ack goes back before the strand is up, and a wake
    * that fails afterwards is logged here rather than reported to the sender.

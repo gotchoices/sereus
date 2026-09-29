@@ -153,12 +153,33 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     mocks.createLibp2pNode.mockClear();
     mocks.stop.mockClear();
 
+    // Hold the build between attaching the libp2p node and initializing the database.
+    let releaseInitialize!: () => void;
+    const initializeReached = new Promise<void>((reached) => {
+      mocks.initialize.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((release) => { releaseInitialize = release; });
+      });
+    });
+
     const first = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
     const second = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
-    const [a, b] = await Promise.all([first, second]);
+    await initializeReached;
+    expect(instance.libp2pNode).toBeDefined();
+    // Mid-build, with the node attached: must wait for the database, not read "already live".
+    let midBuildSettled = false;
+    const midBuild = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] })
+      .finally(() => { midBuildSettled = true; });
+    await new Promise<void>((tick) => { setTimeout(tick, 0); });
+    expect(midBuildSettled).toBe(false);
 
-    expect(a).toBe(instance);
-    expect(b).toBe(instance);
+    releaseInitialize();
+    const results = await Promise.all([first, second, midBuild]);
+
+    for (const result of results) {
+      expect(result).toBe(instance);
+    }
+    expect(instance.database).toBeDefined();
     // One build, and no node orphaned by a second build overwriting the first.
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
     await manager.quiesceStrand('overlap-strand');
