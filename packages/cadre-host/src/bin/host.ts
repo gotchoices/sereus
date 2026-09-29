@@ -730,8 +730,7 @@ trust
 // A grant token lets one grantee (friend/family) present a Bearer credential to
 // ask this host to donate cadre nodes, up to a per-grantee cap. These commands
 // are thin HTTP clients of the loopback `/grants-admin` admin surface — no
-// bearer (same-machine admin), same posture as `invite` / `trust`. The
-// grantee-facing provisioning surface lands in the donation-service ticket.
+// bearer (same-machine admin), same posture as `invite` / `trust`.
 
 const grant = program
   .command('grant')
@@ -836,29 +835,56 @@ grant
 
 grant
   .command('revoke')
-  .description('Revoke a grant token (blocks future requests; live nodes are not torn down)')
+  .description('Revoke a grant token (blocks future requests) and shut down the nodes donated under it')
   .argument('<token>', 'Grant token to revoke')
+  .option('--keep-nodes', 'Leave the nodes already donated under this grant running')
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
-  .action(async (token: string, opts: { port: string; host: string }) => {
+  .action(async (token: string, opts: { keepNodes?: boolean; port: string; host: string }) => {
     const base = `http://${opts.host}:${resolvePort(opts.port)}`;
-    let response: Response;
-    try {
-      response = await fetch(`${base}/grants-admin/${encodeURIComponent(token)}`, { method: 'DELETE' });
-    } catch (err) {
-      console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
-      process.exit(2);
-      return;
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
-      process.exit(1);
-      return;
-    }
+    const query = opts.keepNodes ? '?keepNodes=true' : '';
+    const response = await adminDelete(base, `/grants-admin/${encodeURIComponent(token)}${query}`);
+    const body = await response.json() as { terminated?: string[] };
     console.log(`revoked grant: ${token}`);
+    console.log(opts.keepNodes
+      ? 'existing donated nodes left running'
+      : `terminated ${body.terminated?.length ?? 0} donated node(s)`);
     process.exit(0);
   });
+
+grant
+  .command('terminate')
+  .description('Shut down one donated node (the id shown on the Nodes page)')
+  .argument('<donation-id>', 'Donation id (grn_…) of the node to shut down')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (id: string, opts: { port: string; host: string }) => {
+    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
+    await adminDelete(base, `/grants-admin/donations/${encodeURIComponent(id)}`);
+    console.log(`terminated donated node: ${id}`);
+    process.exit(0);
+  });
+
+/**
+ * DELETE against the loopback admin surface, exiting the process on failure —
+ * 2 when cadre-host is unreachable, 1 on a non-OK response — so callers only
+ * ever see an OK response.
+ */
+async function adminDelete(base: string, path: string): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(`${base}${path}`, { method: 'DELETE' });
+  } catch (err) {
+    console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+    process.exit(1);
+  }
+  return response;
+}
 
 // ============================================================================
 // nat subcommands

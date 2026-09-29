@@ -956,6 +956,35 @@ describe('DonationService.terminate', () => {
   });
 });
 
+describe('DonationService.terminateGrant', () => {
+  it('terminates every unterminated donation under the grant, error included, and leaves other grants alone', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    const otherToken = grants.issue({ label: 'Bob' }).token;
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const seeded = await svc.provision(baseRequest(token)); // dock_1
+    store.put({ ...store.get(seeded.id)!, status: 'seeded' });
+    // A loan the supervisor gave up on keeps its workdir for a later terminate —
+    // which, once the grant is revoked, only this teardown can make.
+    const gaveUp = await svc.provision(baseRequest(token)); // dock_2
+    store.put({ ...store.get(gaveUp.id)!, status: 'error', error: 'respawn gave up' });
+    const ended = await svc.provision(baseRequest(token)); // dock_3
+    await svc.terminate(ended.id);
+    const bobs = await svc.provision(baseRequest(otherToken)); // dock_4
+
+    grants.revoke(token);
+    const terminated = await svc.terminateGrant(token);
+
+    expect(terminated.sort()).toEqual([seeded.id, gaveUp.id].sort());
+    expect(store.get(seeded.id)?.status).toBe('terminated');
+    expect(store.get(gaveUp.id)?.status).toBe('terminated');
+    expect(store.get(bobs.id)?.status).toBe('awaiting_seed');
+    expect(orch.removed.sort()).toEqual(['dock_1', 'dock_2', 'dock_3']);
+  });
+});
+
 describe('DonationService.reapStaleAwaitingSeed', () => {
   it('terminates awaiting_seed donations past the TTL and leaves fresh ones alone', async () => {
     const orch = new FakeOrchestrator();

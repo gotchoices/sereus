@@ -168,12 +168,20 @@ Grants:
 Revoke a grant:
 
 ```bash
-cadre-host grant revoke <token>
+$ cadre-host grant revoke <token>
+revoked grant: Zx8kq1...
+terminated 2 donated node(s)
 ```
 
-Revoking denies every future request on that token — including the grantee's own `DELETE /grants/:id`, which is refused (403) once the grant is revoked.
+Revoking denies every future request on that token — including the grantee's own `DELETE /grants/:id`, which is refused (403) once the grant is revoked — and shuts down every node already donated under it: each is stopped and its working directory (its identity key and node-local data) deleted. Pass `--keep-nodes` to revoke without touching the nodes already running; they then stay up until you end them yourself.
 
-**Nodes already donated under it keep running, and there is no supported way to tear them down from the host side yet.** Stopping one from the UI's Nodes page does not stick: the respawn supervisor treats a live donation as "expected to be running" and brings it straight back. So if you want a node *gone*, ask the grantee to release it with `DELETE /grants/:id` **before** you revoke the grant. Tracked as `backlog/bug-cadre-host-donated-node-teardown-unavailable`.
+To shut down one donated node — under a revoked grant or a live one — use its id, which is the id the UI's Nodes page shows (`grn_…`):
+
+```bash
+cadre-host grant terminate <donation-id>
+```
+
+The Nodes page's Stop button does not work on donated nodes, and says so: the respawn supervisor treats a live donation as "expected to be running" and would bring it straight back, so the page answers with an error pointing at `grant terminate` instead. Revoking a grant again is safe and ends whatever is still running under it.
 
 ## The founder role — running your own cadre here (opt-in)
 
@@ -278,9 +286,13 @@ Issue a grant token — the credential that lets one person ask this host to don
 
 Print every issued grant token with its label, node cap, expiry, and revoked state.
 
-### `cadre-host grant revoke <token>`
+### `cadre-host grant revoke <token> [--keep-nodes]`
 
-Revoke a grant token. Every future request presenting it is denied, the grantee's own `DELETE /grants/:id` included. **Nodes already donated under it keep running and cannot yet be torn down host-side** — see [*Manage grants*](#5-manage-grants).
+Revoke a grant token. Every future request presenting it is denied, the grantee's own `DELETE /grants/:id` included, and every node already donated under it is shut down (stopped, working directory deleted). Prints how many were terminated. `--keep-nodes` revokes only and leaves those nodes running. See [*Manage grants*](#5-manage-grants).
+
+### `cadre-host grant terminate <donation-id>`
+
+Shut down one donated node — stop it and delete its working directory — whatever state its grant is in. `<donation-id>` is the `grn_…` id the Nodes page shows.
 
 ### `cadre-host invite <label> [--ttl <duration>]`
 
@@ -357,10 +369,10 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 `start` loads `host.config.json` + the identity, brings up the orchestrator, the donation grant layer, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Only when `ownCadre.enabled` does it also spawn the host's own owner node and bring up the trust-circle and NAT services. Routes:
 
-- `/grants-admin` (issue/list/revoke grants — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
+- `/grants-admin` (issue/list/revoke grants, where revoke also shuts down the grant's donated nodes unless `?keepNodes=true`, and `DELETE /grants-admin/donations/:id` to shut down one donated node — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
 - `/update/*` (update flow) — matches the CLI's contract.
 - `/auth/*` (trust circle), `/nat/*` (NAT/DDNS), `/api/strands` — **founder role only**; left unmounted and 404 on a donor-only install.
-- `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
+- `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}` (stop/start/restart act on the owner node only; a donated node answers 501), `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
 - `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
 
 If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
@@ -386,7 +398,7 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 Six pages cover the day-to-day operations. Three of them belong to the opt-in founder role and are marked as such:
 
 - **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner. Its trust-circle-size and connectivity tiles are fed by founder-only routes.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. The start/stop/restart buttons act on your own owner node only; on a donated node they report an error, and you end a donated node with `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
 - **Trust Circle** *(founder role only)* — list members, invite a friend (modal generates a paste-friendly token + QR), revoke pending invites or remove members.
 - **Connectivity** *(founder role only)* — port-forwarding status, "Test reachability", DDNS provider configuration, manual port-forward instructions when UPnP isn't working.

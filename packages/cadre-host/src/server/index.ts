@@ -73,8 +73,9 @@ export interface LocalUiServerOptions {
   update?: UpdateService;
   /**
    * Donation grant layer. When present, mounts the loopback admin surface at
-   * `/grants-admin` (issue/list/revoke). Optional so existing callers/tests
-   * that don't exercise donations need not wire it.
+   * `/grants-admin` (issue/list/revoke, plus donated-node teardown when
+   * `donations` is wired too). Optional so existing callers/tests that don't
+   * exercise donations need not wire it.
    */
   grants?: GrantService;
   /**
@@ -159,7 +160,7 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
   if (opts.grants) {
-    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants) });
+    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants, opts.donations) });
     // Grantee-facing provisioning surface needs both the donation service and a
     // grant validator (the GrantService doubles as the validator).
     if (opts.donations) {

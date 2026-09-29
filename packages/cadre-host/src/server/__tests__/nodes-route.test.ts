@@ -90,27 +90,15 @@ const SAMPLE_NODE: ManagedNodeInfo = {
 
 describe('/api/nodes routes', () => {
   let app: ReturnType<typeof Fastify>;
-  let bus: EventBus;
   let orchestrator: FakeOrchestrator;
   let workdir: string;
 
   beforeEach(async () => {
     workdir = mkdtempSync(join(tmpdir(), 'cadre-host-nodes-'));
-    bus = new EventBus();
     app = Fastify();
     registerErrorHandler(app);
     orchestrator = fakeOrchestrator([{ ...SAMPLE_NODE, workdir }]);
     registerNodesRoutes(app, { orchestrator });
-    // Mirror what createLocalUiServer.start() does — forward orchestrator
-    // state changes onto the bus. The route itself doesn't publish; the
-    // listener is the single publication point.
-    orchestrator.onStateChange((info) => {
-      bus.publish({
-        type: 'node-state-changed',
-        nodeId: info.id,
-        status: info.status === 'running' ? 'running' : 'stopped',
-      });
-    });
   });
 
   afterEach(async () => {
@@ -158,17 +146,15 @@ describe('/api/nodes routes', () => {
     expect(body.data.lines).toEqual([]);
   });
 
-  it('POST /api/nodes/:id/stop calls orchestrator and publishes exactly one event via the listener', async () => {
-    const events: unknown[] = [];
-    bus.subscribe((e) => events.push(e));
+  it('POST /api/nodes/:id/stop on a non-owner (donated) node returns 501 and stops nothing', async () => {
+    // The donation supervisor would respawn it at once — the stop must not look
+    // like it worked.
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/stop' });
-    expect(res.statusCode).toBe(200);
-    expect(orchestrator.__stoppedDockerIds).toContain(SAMPLE_NODE.dockerId);
-    // Exactly one event — the orchestrator listener publishes; the route
-    // does not re-publish (regression guard).
-    expect(events).toEqual([
-      { type: 'node-state-changed', nodeId: 'alice', status: 'stopped' },
-    ]);
+    expect(res.statusCode).toBe(501);
+    const body = res.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('not_implemented');
+    expect(body.error.message).toContain('cadre-host grant terminate alice');
+    expect(orchestrator.__stoppedDockerIds).toEqual([]);
   });
 
   it('POST /api/nodes/:id/start on a non-owner node returns 501 not_implemented', async () => {
@@ -215,6 +201,30 @@ describe('/api/nodes — owner node start/restart', () => {
   });
 
   afterEach(async () => { await app.close(); });
+
+  it('stop calls the orchestrator and publishes exactly one event via the listener', async () => {
+    // Mirror what createLocalUiServer.start() does — the orchestrator listener is
+    // the single publication point.
+    const bus = new EventBus();
+    orchestrator.onStateChange((info) => {
+      bus.publish({
+        type: 'node-state-changed',
+        nodeId: info.id,
+        status: info.status === 'running' ? 'running' : 'stopped',
+      });
+    });
+    const events: unknown[] = [];
+    bus.subscribe((e) => events.push(e));
+
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/owner/stop' });
+
+    expect(res.statusCode).toBe(200);
+    expect(orchestrator.__stoppedDockerIds).toEqual([OWNER_NODE.dockerId]);
+    // Exactly one event — the route does not re-publish (regression guard).
+    expect(events).toEqual([
+      { type: 'node-state-changed', nodeId: 'owner', status: 'stopped' },
+    ]);
+  });
 
   it('start ensures the owner node', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/nodes/owner/start' });

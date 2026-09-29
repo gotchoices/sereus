@@ -6,18 +6,33 @@ import { join } from 'node:path';
 
 import { registerErrorHandler } from '../error-handler.js';
 import { registerGrantsAdminRoutes } from '../routes/grants-admin.js';
-import { GrantService, GrantStore, createGrantAdminHandlers } from '../../donation/index.js';
-import type { Grant } from '../../donation/index.js';
+import {
+  DonationService,
+  DonationStore,
+  GrantService,
+  GrantStore,
+  createGrantAdminHandlers,
+} from '../../donation/index.js';
+import type { DonationView, Grant } from '../../donation/index.js';
+import { FakeOrchestrator } from '../../donation/__tests__/fake-orchestrator.js';
+
+/** A well-formed 32-byte base64url owner key, which `provision` requires. */
+const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
 
 let tmpRoot: string;
 let app: ReturnType<typeof Fastify>;
+let grants: GrantService;
+let donations: DonationService;
+let orch: FakeOrchestrator;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-grants-route-'));
-  const service = new GrantService({ store: new GrantStore(tmpRoot) });
+  grants = new GrantService({ store: new GrantStore(tmpRoot) });
+  orch = new FakeOrchestrator();
+  donations = new DonationService({ orchestrator: orch, grants, store: new DonationStore(tmpRoot) });
   app = Fastify();
   registerErrorHandler(app);
-  registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(service) });
+  registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(grants, donations) });
 });
 
 afterEach(async () => {
@@ -69,5 +84,56 @@ describe('/grants-admin routes', () => {
     const res = await app.inject({ method: 'DELETE', url: '/grants-admin/nope' });
     expect(res.statusCode).toBe(404);
     expect((res.json() as { error: { code: string } }).error.code).toBe('not_found');
+  });
+});
+
+describe('/grants-admin donated-node teardown', () => {
+  function provisionUnder(token: string): Promise<DonationView> {
+    return donations.provision({ grantToken: token, partyId: 'party-P', bootstrapNodes: [], ownerKeys: [OWNER_KEY] });
+  }
+
+  it('DELETE /grants-admin/:token terminates the nodes donated under the grant', async () => {
+    const { token } = grants.issue({ label: 'Alice' });
+    const donation = await provisionUnder(token);
+
+    const res = await app.inject({ method: 'DELETE', url: `/grants-admin/${encodeURIComponent(token)}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, terminated: [donation.id] });
+    expect(donations.get(donation.id)?.status).toBe('terminated');
+    expect(orch.removed).toEqual(['dock_1']);
+  });
+
+  it('?keepNodes=true revokes the grant but leaves its nodes running', async () => {
+    const { token } = grants.issue({ label: 'Alice' });
+    const donation = await provisionUnder(token);
+
+    const res = await app.inject({
+      method: 'DELETE',
+      url: `/grants-admin/${encodeURIComponent(token)}?keepNodes=true`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, terminated: [] });
+    expect(grants.validate(token).reason).toBe('revoked');
+    expect(donations.get(donation.id)?.status).toBe('awaiting_seed');
+    expect(orch.stopped).toEqual([]);
+  });
+
+  it('DELETE /grants-admin/donations/:id ends one node under a revoked grant; an unknown id 404s', async () => {
+    const { token } = grants.issue({ label: 'Alice', maxNodes: 2 });
+    const kept = await provisionUnder(token);
+    const ended = await provisionUnder(token);
+    grants.revoke(token);
+
+    const res = await app.inject({ method: 'DELETE', url: `/grants-admin/donations/${ended.id}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(donations.get(ended.id)?.status).toBe('terminated');
+    expect(donations.get(kept.id)?.status).toBe('awaiting_seed');
+
+    const unknown = await app.inject({ method: 'DELETE', url: '/grants-admin/donations/grn_nope' });
+    expect(unknown.statusCode).toBe(404);
+    expect((unknown.json() as { error: { code: string } }).error.code).toBe('not_found');
   });
 });

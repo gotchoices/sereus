@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
+import type { DonationService } from './donation-service.js';
 import type { GrantStore } from './grant-store.js';
 import type {
   Grant,
@@ -127,10 +128,13 @@ export class GrantService implements GrantValidator {
   }
 
   /**
-   * Revoke a grant by token: mark it revoked (denies future requests). Existing
-   * live nodes are **not** torn down here — that is a separate admin action via
-   * the donation service's terminate (`2-donation-service`). Throws not_found
-   * when the token is unknown.
+   * Revoke a grant by token: mark it revoked (denies future requests).
+   * Idempotent on an already-revoked grant; throws not_found when the token is
+   * unknown.
+   *
+   * This only marks the grant. Tearing down the nodes already donated under it
+   * is `DonationService.terminateGrant`, which the admin handler
+   * ({@link createGrantAdminHandlers}) runs after this unless asked to keep them.
    */
   revoke(token: string): void {
     if (!this.store.markRevoked(token, this.now().toISOString())) {
@@ -147,11 +151,18 @@ export class GrantService implements GrantValidator {
 
 /**
  * Wrap a GrantService into the typed handler shape consumed by the loopback
- * management server's `/grants-admin` routes. Errors propagate as GrantError;
- * the server maps `.code` → HTTP status.
+ * management server's `/grants-admin` routes. Errors propagate as GrantError /
+ * DonationError; the server maps `.code` → HTTP status.
+ *
+ * `donations` is where revoke's node teardown and the single-donation terminate
+ * go. Without it there can be no donated nodes, so revoke only marks the grant
+ * and `terminateDonation` is left off.
  */
-export function createGrantAdminHandlers(service: GrantService): GrantAdminHandlers {
-  return {
+export function createGrantAdminHandlers(
+  service: GrantService,
+  donations?: Pick<DonationService, 'terminate' | 'terminateGrant'>,
+): GrantAdminHandlers {
+  const handlers: GrantAdminHandlers = {
     async postGrant(body) {
       if (!body || typeof body.label !== 'string') {
         throw new GrantError('invalid_label', 'label is required');
@@ -166,10 +177,18 @@ export function createGrantAdminHandlers(service: GrantService): GrantAdminHandl
     async listGrants() {
       return { grants: service.list() };
     },
-    async deleteGrant(token) {
+    async deleteGrant(token, { keepNodes }) {
+      // Revoke first: it throws not_found for an unknown token before any
+      // teardown, and a provision racing this call is then refused as revoked.
       service.revoke(token);
+      if (keepNodes || !donations) return { terminated: [] };
+      return { terminated: await donations.terminateGrant(token) };
     },
   };
+  if (donations) {
+    handlers.terminateDonation = (id) => donations.terminate(id);
+  }
+  return handlers;
 }
 
 function generateToken(): string {
