@@ -17,7 +17,8 @@
  * plain Node against fakes. `use-cadre.ts` is what passes the real ones. The
  * integration scenario named below also imports this file by relative path from
  * Node, so it must keep importing nothing at all: a native or Expo import would
- * break that scenario as it loads.
+ * break that scenario as it loads. `eslint.config.mjs` refuses any runtime
+ * import here.
  *
  * The six stages, against the routes in
  * `packages/cadre-host/src/server/routes/grants.ts`:

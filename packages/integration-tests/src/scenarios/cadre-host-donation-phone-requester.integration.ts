@@ -339,8 +339,13 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     expect(peer.multiaddrs.some((a) => !a.includes('/ws'))).toBe(true);
 
     // The client's own check accepts any open connection to the node; this pins that the
-    // REQUESTER opened it.
-    expect(hasOutboundTo(requester!, dronePeerId)).toBe(true);
+    // REQUESTER opened it. Waited for rather than read once only so a redial in between
+    // cannot flake it: a requester with no listener has no inbound connection to wait for.
+    await waitUntil(() => hasOutboundTo(requester!, dronePeerId), {
+      timeoutMs: OP_MS,
+      intervalMs: 250,
+      description: 'requester holds an OUTBOUND control connection to the lent node',
+    });
 
     // The node's own view: it is in the REQUESTER's party, and the connection it holds
     // is a WEBSOCKET one. The transport is the strongest complement to the requester-side
@@ -372,7 +377,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     // the requester a listener would otherwise let the lent node dial out and satisfy
     // everything above for the wrong reason.
     expect(requester!.getMultiaddrs()).toEqual([]);
-  }, 3 * STARTUP_MS + OP_MS + 10_000); // the client's three budgets, then the `/status` poll
+  }, 3 * STARTUP_MS + 2 * OP_MS + 10_000); // the client's three budgets, then the outbound and `/status` waits
 
   it('step 4: rows cross both ways — the node self-publishes and its record reaches the requester', async () => {
     // Non-empty only if BOTH directions worked: the requester's rows had to reach the
@@ -496,7 +501,9 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     }).catch((err: unknown) => err);
 
     expect(failure).toBeInstanceOf(HostNodeRequestError);
-    expect(failure).toMatchObject({ stage: 'waiting-for-node' });
+    // The message too: any other failure at this stage (a 404 from `/peer`, say) would
+    // also end the loan, and would pass on the stage alone.
+    expect(failure).toMatchObject({ stage: 'waiting-for-node', message: 'The request was cancelled.' });
 
     // The phone's body-less `DELETE` once declared `content-type: application/json`, which
     // Fastify refused with 400, leaving the loan and its node running. The host now

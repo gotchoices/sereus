@@ -187,7 +187,9 @@ hand-written equivalent of them.
   it. Moving the module into a shared or published package is more than one test is worth, and the
   module carries phone-specific wording for the user.
 - **The module must stay import-free.** Whatever it imports has to load in plain Node; a native or
-  Expo import breaks the scenario as it loads. The module's header says so.
+  Expo import breaks the scenario as it loads. The module's header says so, and
+  `eslint.config.mjs` refuses any runtime import in it (type-only imports are erased, so they
+  stay allowed); a second module used this way goes on that rule's `files` list.
 - **No stale-build guard is involved.** Vitest resolves the `.js` specifier to the `.ts` source, so
   there is no `dist` to go stale.
 - **Scenario files are not built.** `integration-tests`' `tsconfig.build.json` excludes
@@ -392,6 +394,9 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   Not caught: other names (`…_WAIT_MS`) and inline `setTimeout(…, 5000)`. Converting a `link-bound` site means
   deleting its directive too: `reportUnusedDisableDirectives: 'error'` fails the gate on any directive, anywhere
   in the repo, that no longer disables anything.
+- **Import-free app modules:** `@typescript-eslint/no-restricted-imports` refuses every runtime import in
+  `reference-app-rn/src/host-node-request.ts`, which an `integration-tests` scenario imports by source path
+  and runs in plain Node (see "App modules in a scenario"). Type-only imports stay allowed.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
