@@ -14,7 +14,7 @@ import type {
   RecoverableOrchestrator,
 } from './orchestrator.js';
 import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
-import { PortAllocator, allocatePortSet, releasePortSet } from './port-allocator.js';
+import { PortAllocator, allocatePortSet, releasePortSet, reservePortSet } from './port-allocator.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -59,13 +59,31 @@ const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p'] as const;
 type ContainerHostPorts = Record<(typeof CONTAINER_PORT_KEYS)[number], number>;
 
 /**
+ * The host ports `createContainer` bound, read back from an inspect's
+ * `HostConfig.PortBindings` — the exact inverse of that write. Not from a list
+ * result's `Ports`, which Docker fills only for running containers: a stopped
+ * one keeps its bindings and gets them back when it restarts. A key with no
+ * binding (a container from a build that published fewer ports) is left out.
+ */
+function hostPortsOf(info: Docker.ContainerInspectInfo): Partial<ContainerHostPorts> {
+  const bindings: Docker.PortMap = info.HostConfig.PortBindings ?? {};
+  const ports: Partial<ContainerHostPorts> = {};
+  for (const key of CONTAINER_PORT_KEYS) {
+    const hostPort = bindings[`${CONTAINER_PORTS[key]}/tcp`]?.[0]?.HostPort;
+    if (hostPort !== undefined) ports[key] = Number(hostPort);
+  }
+  return ports;
+}
+
+/**
  * Docker orchestrator using dockerode.
  */
 export class DockerOrchestrator implements RecoverableOrchestrator {
   private readonly docker: Docker;
   private readonly config: DockerConfig;
   private readonly portAllocator: PortAllocator;
-  private readonly containerPorts = new Map<string, ContainerHostPorts>();
+  private readonly containerPorts = new Map<string, Partial<ContainerHostPorts>>();
+  private portsRehydrated: Promise<void> | undefined;
 
   constructor(config: DockerConfig, docker?: Docker) {
     this.config = config;
@@ -105,6 +123,54 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     return true;
   }
 
+  /**
+   * Run {@link rehydratePorts} once per process, handing every caller the same
+   * promise. A rejected pass (daemon unreachable) is forgotten so the next call
+   * retries it.
+   */
+  private ensurePortsRehydrated(): Promise<void> {
+    this.portsRehydrated ??= this.rehydratePorts().catch((err: unknown) => {
+      this.portsRehydrated = undefined;
+      throw err;
+    });
+    return this.portsRehydrated;
+  }
+
+  /**
+   * Reserve the ports of every container this orchestrator created, running or
+   * not. They outlive the provider process (`unless-stopped`), and Docker is the
+   * only record of their ports across a restart — no separate ledger is kept.
+   * Filling `containerPorts` too lets `removeContainer` release a pre-restart
+   * container's ports the same way as a fresh one's.
+   */
+  private async rehydratePorts(): Promise<void> {
+    // The bare label key matches every container wearing it, whatever its value.
+    const listed = await this.docker.listContainers({ all: true, filters: { label: [CONTAINER_ID_LABEL] } });
+    const inspected = await Promise.all(listed.map(({ Id }) => this.inspectIfPresent(Id)));
+    for (const info of inspected) {
+      if (!info) continue;
+      const ports = hostPortsOf(info);
+      reservePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
+      this.containerPorts.set(info.Id, ports);
+    }
+    log('Rehydrated ports for %d existing container(s)', this.containerPorts.size);
+  }
+
+  /**
+   * A container's inspect, or `undefined` when the daemon no longer has it
+   * (404). Every other failure rethrows: a Docker outage must not read as
+   * "nothing there".
+   */
+  private async inspectIfPresent(dockerId: string): Promise<Docker.ContainerInspectInfo | undefined> {
+    try {
+      return await this.docker.getContainer(dockerId).inspect();
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode !== 404) throw err;
+      log('Container %s is gone (404)', dockerId);
+      return undefined;
+    }
+  }
+
   /** Best-effort volume removal; a missing volume must never fail a termination. */
   private async removeVolume(name: string): Promise<void> {
     try {
@@ -118,9 +184,9 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
   /**
    * Names of the durable volumes attached to a container, read from a live
    * inspect *before* removal — the container's own record is the only
-   * authoritative source. Deliberately not an in-memory map: `containerPorts`
-   * already loses its contents across a provider restart, and volume cleanup
-   * must not inherit that weakness.
+   * authoritative source. Deliberately not an in-memory map like
+   * `containerPorts`, which after a provider restart is empty until rebuilt from
+   * the daemon; the container's own record needs no rebuild.
    *
    * Only the volume this orchestrator would itself have created for the
    * container's own id is returned, so an operator-attached mount is never
@@ -149,6 +215,10 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     if (this.config.pullPolicy === 'always') {
       await this.pullImage();
     }
+
+    // Ports handed out before the live containers' ports are known would collide
+    // with them, so a failed rehydration fails the create; the next one retries.
+    await this.ensurePortsRehydrated();
 
     // Allocate ports atomically (releases partial allocations on failure).
     const ports = allocatePortSet(this.portAllocator, CONTAINER_PORT_KEYS);
@@ -204,8 +274,8 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           RestartPolicy: { Name: 'unless-stopped' },
         },
         Labels: {
-          // The label `resolveDockerId` filters on — the only containerId → handle
-          // mapping that survives a provider restart.
+          // The label `resolveDockerId` and `rehydratePorts` filter on — the only
+          // containerId → handle mapping that survives a provider restart.
           [CONTAINER_ID_LABEL]: request.containerId,
           'sereus.party-id': request.partyId,
           'sereus.profile': request.profile,
@@ -254,6 +324,16 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
 
   async removeContainer(dockerId: string): Promise<void> {
     log('Removing container %s', dockerId);
+
+    // Before the removal: a pass still running after it could record this
+    // container's ports once the release below had found nothing, stranding them.
+    // Best-effort — a removal must not fail over port bookkeeping.
+    try {
+      await this.ensurePortsRehydrated();
+    } catch (err) {
+      log('Port rehydration failed before removing %s (continuing): %O', dockerId, err);
+    }
+
     const container = this.docker.getContainer(dockerId);
 
     // Read the attached volumes while the container still exists — removal
@@ -310,13 +390,8 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
    * fine" is the far more expensive mistake.
    */
   async inspectRunState(dockerId: string): Promise<ContainerRunState | undefined> {
-    let info: Docker.ContainerInspectInfo;
-    try {
-      info = await this.docker.getContainer(dockerId).inspect();
-    } catch (err) {
-      if ((err as { statusCode?: number }).statusCode === 404) return undefined;
-      throw err;
-    }
+    const info = await this.inspectIfPresent(dockerId);
+    if (!info) return undefined;
 
     const exitedAt = parseDockerFinishedAt(info.State.FinishedAt);
     return {
@@ -331,9 +406,11 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
    * the `sereus.container-id` label every created container wears.
    *
    * Asks the daemon rather than the in-memory `containerPorts` map on purpose:
-   * the map is empty after a provider restart, which is exactly when the reap
-   * needs an answer. `all: true` so a container that exited (or never got past
-   * creation) is still found — an orphan to reclaim is usually not running.
+   * after a provider restart the map is rebuilt only once a create or remove
+   * triggers `rehydratePorts`, and the reap can run before either — the daemon
+   * is authoritative anyway. `all: true` so a container that exited (or never
+   * got past creation) is still found — an orphan to reclaim is usually not
+   * running.
    *
    * Errors are NOT swallowed: "the daemon could not answer" must not reach the
    * reap as "there is nothing to reclaim".

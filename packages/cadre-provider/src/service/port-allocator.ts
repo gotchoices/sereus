@@ -6,8 +6,9 @@
 
 /**
  * Range-based port tracker. Allocations are in-memory; on orchestrator
- * restart the caller rehydrates the used-set from persisted state via
- * `markUsed(port)` before serving new allocations.
+ * restart the caller rehydrates the used-set via `markUsed(port)` before
+ * serving new allocations — cadre-host from its persisted node handles, the
+ * provider from its live containers' Docker port bindings.
  */
 export class PortAllocator {
   private readonly usedPorts = new Set<number>();
@@ -108,9 +109,12 @@ export function allocatePortSet<K extends string>(
 export function reservePortSet<K extends string>(
   allocator: PortAllocator,
   keys: readonly K[],
-  ports: Record<K, number>,
+  ports: Partial<Record<K, number>>,
 ): void {
-  for (const key of keys) allocator.markUsed(ports[key]);
+  for (const key of keys) {
+    const port = ports[key];
+    if (port !== undefined) allocator.markUsed(port);
+  }
 }
 
 /**
@@ -120,7 +124,10 @@ export function reservePortSet<K extends string>(
 export function releasePortSet<K extends string>(
   allocator: PortAllocator,
   keys: readonly K[],
-  ports: Record<K, number>,
+  ports: Partial<Record<K, number>>,
 ): void {
-  for (const key of keys) allocator.release(ports[key]);
+  for (const key of keys) {
+    const port = ports[key];
+    if (port !== undefined) allocator.release(port);
+  }
 }
