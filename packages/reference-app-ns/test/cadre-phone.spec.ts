@@ -498,6 +498,23 @@ describe('the saved start options', () => {
 			autoStart: false,
 		});
 	});
+
+	it('shares one database open and one node between the launch read and overlapping starts', async () => {
+		// The launch auto-start and a Connect tap can overlap. Two opens of the same
+		// file would leak a native handle, which blocks every later open of it.
+		const { loadSavedStartOptions, startPhoneNode } = await loadModule();
+		const opts = { partyId: PARTY, bootstrapAddrs: [] };
+
+		const [, first, second] = await Promise.all([
+			loadSavedStartOptions(),
+			startPhoneNode(opts),
+			startPhoneNode(opts),
+		]);
+
+		expect(H.state.opens).toEqual(['sereus-peer-identity']);
+		expect(H.state.nodes).toHaveLength(1);
+		expect(second).toBe(first);
+	});
 });
 
 // ── The helpers that delegate to the running node ─────────────────────────────

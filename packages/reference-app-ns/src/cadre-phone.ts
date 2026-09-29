@@ -333,7 +333,6 @@ export async function stopPhoneNode(): Promise<void> {
 	}
 }
 
-
 // Every helper below guards on `!node`, not on `node.isRunning`. A start that
 // failed inside `CadreNode.start()` leaves a non-running node in the singleton
 // until `stopPhoneNode` clears it, so these would forward to it.
