@@ -4,6 +4,7 @@ import path from 'node:path';
 import debug from 'debug';
 import { EnrollmentService, verifyPeerAuthorization } from '@serfab/cadre-core';
 import { peerIdFromString } from '@libp2p/peer-id';
+import { enrollAddCommand } from './enroll-add.js';
 
 const log = debug('cadre:cli:enroll');
 
@@ -58,10 +59,13 @@ export const enrollCommand = new Command('enroll')
         console.log(`  ID file:      ${idPath}`);
         console.log('');
         console.log('Next steps:');
-        console.log('1. Have an owner sign this peer ID to authorize it');
-        console.log('2. Run "cadre enroll register" with the signature');
+        console.log('1. On the owner machine, admit this peer and capture its seed:');
+        console.log(`     cadre enroll add ${peerId} --admin-port <port> > ${options.name}.seed`);
+        console.log('2. Start this node with that seed and the owner key it names:');
+        console.log(`     cadre start -c cadre.yaml --identity-file ${keyPath} --pin-owner-key <owner key> --seed <contents of ${options.name}.seed>`);
       })
   )
+  .addCommand(enrollAddCommand)
   .addCommand(
     new Command('register')
       .description('Verify an owner-signed peer authorization (offline check — does not contact the control network or register the peer)')
@@ -119,9 +123,8 @@ export const enrollCommand = new Command('enroll')
         console.log('');
         console.log('This command ONLY verified the signature offline. It did NOT');
         console.log('register or enroll this peer anywhere. Membership is granted by');
-        console.log('the running owner node, which self-registers and authorizes');
-        console.log('peers — an operator on the owner node runs:');
-        console.log('  cadre start --owner');
+        console.log('the running owner node — an operator on the owner machine runs:');
+        console.log(`  cadre enroll add ${options.peerId} --admin-port <port>`);
       })
   );
 

@@ -56,6 +56,7 @@
     "@libp2p/crypto": "^5.1.13",
     "@libp2p/interface": "^3.1.0",
     "@libp2p/peer-id": "^6.0.4",
+    "@multiformats/multiaddr": "^12.5.1",
     "@optimystic/db-p2p": "^1.7.0",
     "@optimystic/db-p2p-storage-fs": "^1.7.0",
     "@serfab/cadre-core": "workspace:^",

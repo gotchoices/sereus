@@ -107,8 +107,8 @@ mean to re-key.
 
 Verify an owner's signature over a peer ID. This is an **offline check**:
 it confirms the signature is valid but does **not** contact the control network
-or register the peer. Membership is granted by the running owner node
-(`cadre start --owner`), which self-registers and authorizes peers.
+or register the peer. Membership is granted by the running owner node — see
+[Add a Machine to the Cadre](#add-a-machine-to-the-cadre).
 
 ```bash
 cadre enroll register \
@@ -117,6 +117,34 @@ cadre enroll register \
   --owner-key <public-key> \
   --signature <signature>
 ```
+
+### Add a Machine to the Cadre
+
+A new machine joins in three steps: it makes an identity, the owner admits it and prints a seed, and it starts with that seed.
+
+```bash
+# 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
+cadre enroll create --output . --name node-b
+
+# 2. On the owner machine A, which is already running as:
+#      CADRE_STARTUP_TOKEN=<token> cadre start --owner --admin-port 7070 -c cadre.yaml
+CADRE_STARTUP_TOKEN=<token> cadre enroll add "$(cat node-b.id)" --admin-port 7070 > node-b.seed
+
+# 3. On machine B, whose config names the same controlNetwork.partyId as A's
+cadre start -c cadre.yaml --identity-file node-b.key --pin-owner-key <owner key> --seed "$(cat node-b.seed)"
+```
+
+`cadre enroll add` asks the running owner node, over its loopback admin channel, to authorize the new machine and mint a seed for it. The owner therefore has to be running with `--owner --admin-port <port>` and `CADRE_STARTUP_TOKEN` set; `enroll add` takes the same port (`--admin-port` or `CADRE_ADMIN_PORT`) and the same token (`--token-file <path>`, the file `cadre start --startup-token-file` writes, or `CADRE_STARTUP_TOKEN`). The token is never accepted as a flag value, since it would show in the process list.
+
+Only the seed goes to stdout, so `>` and `$(…)` capture exactly what `--seed` takes. Stderr names the party ID the new machine's config must carry, the owner key it pins with `--pin-owner-key`, and the owner addresses the seed carries. `--json` prints `{ peerId, partyId, signerKey, ownerAddrs, encodedSeed, warnings }` on stdout instead. Every failure exits 1 with a message that names the fix: no admin channel on that port, a token that does not match the owner's, or a node not started with `--owner`. On the new machine, `cadre start` refuses to start when the seed does not decode or was minted for a different party than its config names.
+
+The seed carries whatever addresses the owner advertises; `enroll add` does not choose them. Which setup works depends on the network between the machines:
+
+- **Same LAN:** the owner's listen addresses are enough.
+- **Owner behind NAT:** set `network.appendAnnounceAddrs` on the owner to a forwarded public address, or give it a relay (`network.relayAddrs`), and restart it before running `enroll add`.
+- **New machine reachable, owner not:** pass `--addr <the new machine's multiaddr>` (repeatable) and the owner dials out to it instead, on its next control-cohort reconcile pass (every 15 s by default).
+
+When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized changes nothing but mints a fresh seed, so it is the way to pick up changed owner addresses.
 
 ### Strands
 
@@ -197,6 +225,8 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
+| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` presents it (or reads it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
+| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` connects to when it is not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
 
 Environment variables override config file values. A variable that is **set but

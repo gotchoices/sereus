@@ -5048,6 +5048,7 @@ __metadata:
     "@libp2p/crypto": "npm:^5.1.13"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/peer-id": "npm:^6.0.4"
+    "@multiformats/multiaddr": "npm:^12.5.1"
     "@optimystic/db-p2p": "npm:^1.7.0"
     "@optimystic/db-p2p-storage-fs": "npm:^1.7.0"
     "@serfab/cadre-core": "workspace:^"
