@@ -421,7 +421,7 @@ that hand-written target list against the package's actual dependencies.
 `scripts/bundle-check.js` runs the webpack compile and asserts the whole graph
 resolves with 0 errors **and 0 warnings** (see `exportsPresence: 'warn'` above for
 why warnings are fatal). It is the only gate without an Android device that reaches
-the *whole* import graph — the unit suite above touches two modules and mocks the
+the *whole* import graph — the unit suite above loads a few modules and mocks the
 native seams — and everything that requires the native SQLite / WebSocket plugins
 stays device-only. A green bundle proves resolution and parse, **not** execution.
 

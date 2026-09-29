@@ -47,14 +47,14 @@ const POLL_MS = 60_000;
 /** A statement, named by the table it touches — never by its full SQL text. */
 type StatementKind = 'participant-insert' | 'participant-list' | 'message-insert' | 'message-list' | 'message-lookup';
 
-function classify(sql: string): StatementKind {
+function classify(sql: string): StatementKind | undefined {
 	if (/^\s*insert\b[^;]*\binto\s+App\.Participant\b/i.test(sql)) return 'participant-insert';
 	if (/^\s*insert\b[^;]*\binto\s+App\.Message\b/i.test(sql)) return 'message-insert';
 	// The poll's list joins Participant; the resend's point lookup does not.
 	if (/\bfrom\s+App\.Message\b[^;]*\bjoin\b/i.test(sql)) return 'message-list';
 	if (/\bfrom\s+App\.Message\b/i.test(sql)) return 'message-lookup';
 	if (/\bfrom\s+App\.Participant\b/i.test(sql)) return 'participant-list';
-	throw new Error(`ScriptedDatabase got a statement it does not recognise: ${sql}`);
+	return undefined;
 }
 
 /** What happens to the next statement of one kind. */
@@ -78,6 +78,8 @@ interface Held {
 class ScriptedDatabase {
 	/** Every statement started, in order. */
 	readonly started: StatementKind[] = [];
+	/** SQL {@link classify} did not recognise; refused, and reported by `afterEach`. */
+	readonly unrecognised: string[] = [];
 	/** Statements that reached the database and have not finished. A held one is not counted until released. */
 	private active = 0;
 	private readonly scripts = new Map<StatementKind, Script[]>();
@@ -128,6 +130,10 @@ class ScriptedDatabase {
 	 * Resolves once nothing is running — held statements aside — across a
 	 * macrotask boundary, so whatever the view model does with each outcome
 	 * (including starting its next statement) has already happened.
+	 *
+	 * NOTE: assumes `chat-vm.ts` starts a follow-up statement on a microtask, which holds while
+	 * its only timer is the poll; if it ever waits on a timer between two statements, this can
+	 * resolve early and a count assertion after it reads short.
 	 */
 	async idle(): Promise<void> {
 		await vi.waitFor(async () => {
@@ -172,6 +178,10 @@ class ScriptedDatabase {
 
 	private async admit(sql: string): Promise<Script | undefined> {
 		const kind = classify(sql);
+		if (!kind) {
+			this.unrecognised.push(sql);
+			throw new Error(`ScriptedDatabase got a statement it does not recognise: ${sql}`);
+		}
 		this.started.push(kind);
 		const script = this.scripts.get(kind)?.shift();
 		await script?.before?.();
@@ -186,12 +196,16 @@ class ScriptedDatabase {
 const live: { vm: ChatViewModel | null; databases: ScriptedDatabase[] } = { vm: null, databases: [] };
 
 afterEach(() => {
+	const unrecognised = live.databases.flatMap((db) => db.unrecognised);
 	live.vm?.stop();
 	for (const db of live.databases) db.releaseAll();
 	live.vm = null;
 	live.databases = [];
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+	// A refused statement otherwise surfaces only as a view-model error or a (possibly silenced)
+	// registration warning, and the test fails on a count that names neither.
+	expect(unrecognised, 'statements the scripted database could not classify').toEqual([]);
 });
 
 /** A fresh in-memory database holding the app's chat schema, as a strand would. */
