@@ -28,6 +28,7 @@ import { connectionBanner } from '../../src/connection-status';
 import {
   createOpenInvitation,
   getRelayState,
+  loadSavedStartOptions,
   startPhoneNode,
   type PhoneNodeOptions,
   type SavedStartOptions,
@@ -611,30 +612,6 @@ describe('useCadreInternal — BackgroundRunner wiring', () => {
     expect(h.ctl.appState.removeCount).toBe(1);
     expect(n1.listenerCount('control:disconnected')).toBe(0);
   });
-
-  // A node already running at mount without `start()` having run in this JS context:
-  // a push wake started it before the UI mounted. Only the saved options can tell the
-  // runner how to bring it back after the OS kills it.
-  it('cold-starts a node that was already running at mount from the saved options', async () => {
-    h.ctl.saved = { options: SAVED_OPTS, autoStart: true } satisfies SavedStartOptions;
-    h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
-    const warm = h.ctl.node;
-
-    const sink = await mountLaunched();
-    expect(sink.current!.node).toBe(warm as unknown as UseCadreResult['node']);
-    // The running node is kept: launch starts nothing on top of it.
-    expect(h.ctl.startCount).toBe(0);
-
-    await actFlush(() => h.ctl.appState.fire('background'));
-    h.ctl.node = null; // OS kills it
-
-    await actFlush(() => h.ctl.appState.fire('active'));
-
-    expect(startPhoneNode).toHaveBeenCalledTimes(1);
-    expect(startPhoneNode).toHaveBeenCalledWith(SAVED_OPTS);
-    expect(h.ctl.node).not.toBeNull();
-    expect(sink.current!.node).toBe(h.ctl.node as unknown as UseCadreResult['node']);
-  });
 });
 
 describe('useCadreInternal — resuming the last session at launch', () => {
@@ -649,6 +626,22 @@ describe('useCadreInternal — resuming the last session at launch', () => {
     expect(startPhoneNode).toHaveBeenCalledWith(SAVED_OPTS);
     expect(sink.current!.status).toBe('connected');
     expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
+  });
+
+  // A push wake's cold start in this JS runtime finished after the first render (which
+  // saw no node) but before the launch read resolved. The hook must adopt that node.
+  it('adopts a node a push wake started while the saved options were being read', async () => {
+    h.ctl.saved = { options: SAVED_OPTS, autoStart: true } satisfies SavedStartOptions;
+    vi.mocked(loadSavedStartOptions).mockImplementationOnce(async () => {
+      h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
+      return h.ctl.saved as SavedStartOptions;
+    });
+
+    const sink = await mountLaunched();
+
+    expect(h.ctl.nodeCounter).toBe(1);
+    expect(sink.current!.node).toBe(h.ctl.node as unknown as UseCadreResult['node']);
+    expect(sink.current!.status).toBe('connected');
   });
 
   it('starts nothing after a Disconnect, but still offers the options to Settings', async () => {

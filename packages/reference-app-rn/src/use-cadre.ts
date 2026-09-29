@@ -242,9 +242,9 @@ export function useCadreInternal(): UseCadreResult {
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
 
-  // Last options passed to `start` — or, when the app launched into a session that
-  // was still connected, the saved ones — so the BackgroundRunner can cold-start the
-  // node (re-run `startPhoneNode`) on a foreground return after the OS killed it.
+  // Last options passed to `start` (a Connect tap, or the launch resume below with the
+  // saved ones), so the BackgroundRunner can cold-start the node (re-run
+  // `startPhoneNode`) on a foreground return after the OS killed it.
   const optsRef = useRef<PhoneNodeOptions | null>(null);
   const runnerRef = useRef<BackgroundRunner | null>(null);
 
@@ -474,9 +474,12 @@ export function useCadreInternal(): UseCadreResult {
   // with the options it last started with, through `start`, so status, device-token
   // registration and every other side effect of Connect happen exactly as for a tap.
   //
-  // A node a push wake already started in this JS runtime is left running; the saved
-  // options still go to `optsRef` so the runner can cold-start it after a later kill.
-  // A Connect tap that beat this read owns `optsRef` already and is not second-guessed.
+  // Through `start` even when a push wake already started the node in this JS runtime:
+  // `startPhoneNode` hands back the running node, or joins that start while it is still
+  // in flight, so the hook's state catches up with it either way (the initial state read
+  // the singleton only once, at first render) and `optsRef` gets the saved options for
+  // the runner's cold start. A Connect tap that beat this read owns `optsRef` already
+  // and is not second-guessed.
   useEffect(() => {
     let unmounted = false;
     const resume = async () => {
@@ -497,8 +500,7 @@ export function useCadreInternal(): UseCadreResult {
       if (unmounted || !saved) return;
       setSavedStartOptions(saved.options);
       if (!saved.autoStart || optsRef.current) return;
-      optsRef.current = saved.options;
-      if (!getPhoneNode()?.isRunning) await start(saved.options);
+      await start(saved.options);
     };
     void resume();
     return () => {
@@ -507,6 +509,11 @@ export function useCadreInternal(): UseCadreResult {
   }, [start]);
 
   const stop = useCallback(async () => {
+    // The singleton reads null from the moment `stopPhoneNode` begins its teardown, so a
+    // foreground return during Disconnect would have the runner cold-start the node
+    // straight back on the handle that teardown is about to close. With no options the
+    // runner's `ensureNode` does nothing.
+    optsRef.current = null;
     // Cancel a host-node request first, and give it a bounded moment to unwind:
     // the first thing its cleanup does is drop the lent node's authorization row,
     // which needs this node still running. Aborting without waiting would leave

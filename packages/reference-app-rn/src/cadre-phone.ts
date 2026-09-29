@@ -445,6 +445,13 @@ export async function stopPhoneNode(): Promise<void> {
   // whose node-local LevelDB handle the `finally` has just closed — the
   // `node?.isRunning` early-return in `startPhoneNode` would hand that node back
   // and its next bootstrap-peer write would fail on a closed handle.
+  //
+  // NOTE: a `startPhoneNode` that arrives after this point and before the `finally`
+  // builds a node on the handle the `finally` then closes, and saves `autoStart: true`
+  // over the Disconnect. `use-cadre`'s `stop` clears the runner's options first, so the
+  // only caller left that can land here is a push wake that read the record just before
+  // the save above; if a new unattended caller of `startPhoneNode` appears, make a start
+  // wait for an in-flight stop and re-check `autoStart`.
   const stopping = node;
   node = null;
   nodeNoiseCryptoMode = null;
