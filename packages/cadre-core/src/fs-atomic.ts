@@ -35,6 +35,7 @@ export const FILE_MODE = 0o600;
  * id) is the same as before uppercase letters were escaped.
  */
 export function encodeFileSafeComponent(component: string): string {
+	// NOTE: a file left from before uppercase letters were escaped (`trusted-owners.Alice.json`) has, ignoring case, the new name of the all-lowercase id (`alice`), so on Windows/macOS a lookup for that id opens it; the per-party records' envelope party-id check rejects it (cold start), and `FileKeyStore` needs two parties in one key directory whose ids fold to the same lowercase string. The release note says to delete old files; if a store ever reads another id's old file in practice, rename or remove old-format files when the store opens.
 	return encodeURIComponent(component).replace(
 		/(%[0-9A-F]{2})|[!'()*~.A-Z]/g,
 		(c, escape: string | undefined) => escape ?? `%${c.charCodeAt(0).toString(16).toUpperCase()}`
