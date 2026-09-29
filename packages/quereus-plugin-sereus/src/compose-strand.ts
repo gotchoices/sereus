@@ -328,12 +328,7 @@ export async function composeStrand(
 		// is a note for whoever first ships a migration that does.
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
-			await db.exec(`
-				declare schema App {
-					${schema}
-				}
-				apply schema App;
-			`);
+			await applyAppSchema(db, schema);
 			log('sApp schema applied');
 		}
 	} catch (err) {
@@ -370,6 +365,23 @@ export async function composeStrand(
 			log('Strand connection %s shut down', strandId);
 		},
 	};
+}
+
+/**
+ * Step 7 of {@link composeStrand}: declare the sApp's schema as `App` and apply it — a
+ * declarative diff against the catalog, so re-applying a schema that is already in place
+ * emits nothing. The one site that applies an `App` schema: `composeStrand` calls it at
+ * bring-up, and cadre-core's `StrandDatabase.attachAppSchema` calls it on a live storage
+ * replica when an app claims the strand. The database must already be composed (optimystic
+ * set as the default vtab), or the tables land in memory instead of the strand.
+ */
+export async function applyAppSchema(db: Database, schema: string): Promise<void> {
+	await db.exec(`
+		declare schema App {
+			${schema}
+		}
+		apply schema App;
+	`);
 }
 
 /**

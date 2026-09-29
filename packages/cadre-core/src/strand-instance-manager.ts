@@ -95,7 +95,8 @@ export interface StartStrandConfig {
    * replica** — a strand this node stores and serves without the app installed
    * (`CadreNodeConfig.hostUnclaimedStrands`): no schema signature check, no `App`
    * schema, no `sAppInfo` on the instance, and the default latency hint. A replica is
-   * always a joiner; `StrandDatabase` refuses to found one.
+   * always a joiner; `StrandDatabase` refuses to found one. An app that later claims the
+   * strand upgrades the running replica in place ({@link StrandInstanceManager.attachSApp}).
    */
   sAppConfig?: SAppConfig;
   storage?: StorageConfig;
@@ -506,6 +507,14 @@ export class StrandInstanceManager {
    * wake becomes the better trade.
    */
   private strandStorages: Map<string, IRawStorage> = new Map();
+  /**
+   * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
+   * `resumeStrand`), present until it settles. The instance is tracked for the whole build,
+   * with its database not yet constructed or not yet initialized, so a caller that must act
+   * on the FINISHED runtime ({@link attachSApp}) waits on this instead. A failed build's
+   * rejection belongs to the call that started it.
+   */
+  private runtimeBuilds: Map<string, Promise<void>> = new Map();
   private stopping = false;
 
   constructor() {
@@ -613,7 +622,7 @@ export class StrandInstanceManager {
     }
 
     try {
-      await this.buildStrandRuntime(instance, config);
+      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, config));
       timing('[startStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
       log('Strand %s started successfully (%s)', strandId, describeSApp(sAppConfig));
       return instance;
@@ -631,6 +640,30 @@ export class StrandInstanceManager {
       // retained cache wrapper would be handed back (already retired) on a retry.
       await this.disposeStrandStorage(strandId);
       throw error;
+    }
+  }
+
+  /** Hold `build` in {@link runtimeBuilds} until it settles, and settle as it does. */
+  private async trackRuntimeBuild(strandId: string, build: Promise<void>): Promise<void> {
+    this.runtimeBuilds.set(strandId, build);
+    try {
+      await build;
+    } finally {
+      if (this.runtimeBuilds.get(strandId) === build) {
+        this.runtimeBuilds.delete(strandId);
+      }
+    }
+  }
+
+  /**
+   * Wait until no runtime build of `strandId` is in flight. Never rejects: a failed build
+   * is reported by the call that started it, and the caller re-reads the instance after.
+   */
+  private async settleRuntimeBuilds(strandId: string): Promise<void> {
+    for (let build = this.runtimeBuilds.get(strandId); build; build = this.runtimeBuilds.get(strandId)) {
+      await build.catch((error: unknown) => {
+        log('Strand %s: the runtime build waited on failed (reported by its launcher): %o', strandId, error);
+      });
     }
   }
 
@@ -1346,7 +1379,7 @@ export class StrandInstanceManager {
 
     instance.status = 'starting';
     try {
-      await this.buildStrandRuntime(instance, resumeConfig);
+      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, resumeConfig));
       timing('[resumeStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
       log('Strand %s resumed successfully', strandId);
       return instance;
@@ -1417,6 +1450,75 @@ export class StrandInstanceManager {
       throw error;
     }
     return 'bootstrapped';
+  }
+
+  /**
+   * Give a tracked storage replica ({@link StartStrandConfig.sAppConfig} absent) the app's
+   * schema in place — the seam for an app on this machine claiming a strand this node was
+   * already hosting. No runtime rebuild: the libp2p node, its peer id and connections, the
+   * store and its warm cache all stay, and the new `App` tables read the blocks the replica
+   * already holds. Callers attach BEFORE {@link foundExistingStrand}: the founder bootstrap
+   * writes the sApp into `Strand.Header` and refuses a database that has none.
+   *
+   * A runtime build in flight (the replica's launch, or a hibernation wake) is waited out
+   * first, so the attach acts on the database that build produced. Then, in order: the
+   * schema signature is checked before anything changes; the retained launch config takes
+   * the sApp, so every later rebuild applies it through `composeStrand`; the live database —
+   * published, or still held by the first-sync gate — gets the schema; and only then does
+   * the instance record `sAppInfo` and the sApp's latency hint. A quiesced instance gets the
+   * config alone, and its next resume applies the schema.
+   *
+   * @returns `'already-attached'` when the instance already runs an sApp — a DIFFERENT one
+   *   is logged and left as it is, as a second claim of a claimed strand always has been —
+   *   else `'attached'`.
+   * @throws when the strand is not tracked (a caller bug, or a launch that failed while
+   *   this waited on it); when the schema signature is refused, having changed nothing; and
+   *   whatever the live apply throws (e.g. a quiesce closed the database mid-apply) — the
+   *   retained config then still carries the sApp and `sAppInfo` stays unset, so the next
+   *   claim retries the apply.
+   *
+   * NOTE: two claims of one replica racing each other both pass the `sAppInfo` check and
+   * apply concurrently; the loser of the declarative diff can reject, and its `addStrand`
+   * retry then resolves `'already-attached'`. Needs an app calling `addStrand` twice at once
+   * (or beside a watcher retry); if it is ever seen, chain attaches per strand id.
+   */
+  async attachSApp(
+    strandId: string,
+    sAppConfig: SAppConfig,
+    options: { requireSignedSchemas?: boolean } = {}
+  ): Promise<'attached' | 'already-attached'> {
+    await this.settleRuntimeBuilds(strandId);
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config) {
+      throw new Error(`Cannot attach an sApp to strand ${strandId}: not tracked`);
+    }
+    if (instance.sAppInfo) {
+      if (instance.sAppInfo.id !== sAppConfig.id) {
+        log('attachSApp: strand %s already runs sApp %s — the claim for sApp %s is ignored',
+          strandId, instance.sAppInfo.id, sAppConfig.id);
+      }
+      return 'already-attached';
+    }
+    const sAppInfo = verifiedSAppInfo(strandId, sAppConfig, options.requireSignedSchemas);
+    // A fresh object rather than mutating in place: startStrand retains the CALLER'S
+    // config object, which is not ours to rewrite.
+    this.launchConfigs.set(strandId, { ...config, sAppConfig });
+    const database = instance.database ?? this.firstSyncGates.get(strandId)?.database;
+    if (database) {
+      await database.attachAppSchema(sAppConfig);
+    } else {
+      log('attachSApp: strand %s is quiesced — its next resume applies the sApp schema', strandId);
+    }
+    instance.sAppInfo = sAppInfo;
+    if (sAppConfig.latencyHint) {
+      // HibernationManager reads the hint whenever it arms a timer, so the app's hint governs
+      // from the next one: a timer already armed runs once at the old duration, and a replica
+      // launched under a realtime default was never tracked, so it stays up until relaunched.
+      instance.latencyHint = sAppConfig.latencyHint;
+    }
+    log('Strand %s upgraded from storage replica to %s', strandId, describeSApp(sAppConfig));
+    return 'attached';
   }
 
   /**

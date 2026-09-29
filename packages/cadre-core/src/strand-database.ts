@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { Database } from '@quereus/quereus';
-import { connectToStrand } from '@serfab/quereus-plugin-sereus';
+import { applyAppSchema, connectToStrand } from '@serfab/quereus-plugin-sereus';
 import type { SereusPluginResult } from '@serfab/quereus-plugin-sereus';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
@@ -223,6 +223,20 @@ export class StrandDatabase {
     this.config.partyMemberPrivateKey ??= partyMemberPrivateKey;
     await this.bootstrapFounder();
     this.config.founder = true;
+  }
+
+  /**
+   * Give a live storage replica the app's schema: apply `App` to the already-composed
+   * database — same libp2p node, same store, so the new tables read the blocks this node
+   * already holds — and record the sApp, so a later {@link ensureFounderBootstrap} has it
+   * for the `Header`. Idempotent: the apply is a declarative diff, so re-applying the same
+   * schema emits nothing. A failed apply records nothing.
+   */
+  async attachAppSchema(sAppConfig: SAppConfig): Promise<void> {
+    this.ensureInitialized();
+    await applyAppSchema(this.db!, sAppConfig.schema);
+    this.config.sAppConfig = sAppConfig;
+    log('StrandDatabase for strand %s attached sApp %s v%s', this.config.strandId, sAppConfig.id, sAppConfig.version);
   }
 
   /**

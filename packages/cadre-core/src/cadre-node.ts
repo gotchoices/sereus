@@ -5613,9 +5613,11 @@ export class CadreNode implements SAppIdLookup {
    * An absent `sAppConfig` launches a storage replica ({@link CadreNodeConfig.hostUnclaimedStrands}),
    * which is ALWAYS a joiner whatever the row says: the founder bootstrap writes the sApp
    * into `Strand.Header`, and a replica has none. So a self-founded row whose watcher poll
-   * wins the race against its app's `addStrand` after a restart comes up as a replica, and
-   * the claim must give that instance the app's schema before founding it in place — not
-   * built yet: `implement/claiming-a-hosted-strand-upgrades-in-place`.
+   * wins the race against its app's `addStrand` after a restart comes up as a replica — and
+   * so does a `foundStrand` whose publish a watcher poll saw before its attach. A claim
+   * that finds a tracked replica upgrades it in place, over the same node and store
+   * ({@link StrandInstanceManager.attachSApp}), BEFORE any founding: the founder bootstrap
+   * needs the sApp the attach supplies.
    */
   private async launchStrand(
     strand: StrandRow,
@@ -5651,39 +5653,7 @@ export class CadreNode implements SAppIdLookup {
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('startOrFoundStrand', strand.Id, step, op);
     const existing = this.strandManager.getInstance(strand.Id);
     if (existing) {
-      if (resolvedFounder) {
-        // The resolver runs only when the retained config lacks a party key for a
-        // closed strand (see foundExistingStrand), so the common watcher re-entry
-        // ('already-founder') still costs no control read.
-        const outcome = await timed('foundExistingStrand', () => this.strandManager.foundExistingStrand(strand.Id,
-          () => this.resolveStrandPartyKey(strand, explicitPartyKey)));
-        if (outcome === 'needs-resume') {
-          try {
-            // Quiesced instance: the retained config now founds, but founding promises
-            // the bootstrap has RUN by the time the caller resolves — wake through the
-            // hibernation manager (coalesced with any in-flight wake, timer-aware) so
-            // the rebuild executes it now rather than at some eventual wake.
-            await timed('wakeStrand', () => this.wakeStrand(strand.Id));
-            // The wake's rebuild founds — UNLESS a wake was already in flight when the
-            // config flipped, in which case it had already read the pre-flip config and
-            // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
-            // (insert-if-absent) bootstrap so founding never resolves headerless.
-            await timed('ensureFounderBootstrap', () => this.strandManager.ensureFounderBootstrap(strand.Id));
-          } catch (error) {
-            // The founding did not happen (e.g. the rebuild refused a pre-split strand and
-            // rolled back, leaving the instance tracked with no runtime): withdraw the flip
-            // so the next attempt re-runs the founding instead of resolving
-            // 'already-founder' over an instance that never founded.
-            this.strandManager.withdrawFounderRequest(strand.Id);
-            throw error;
-          }
-        }
-        log('launchStrand: strand %s already tracked — founder request honored (%s)',
-          strand.Id, outcome);
-      } else {
-        log('launchStrand: strand %s already tracked locally — skipping re-launch', strand.Id);
-      }
-      return existing;
+      return this.claimTrackedStrand(existing, strand, sAppConfig, resolvedFounder, explicitPartyKey);
     }
 
     // A closed strand's launch carries the party's OWN membership identity key: the
@@ -5729,6 +5699,16 @@ export class CadreNode implements SAppIdLookup {
     // client awaits the replies).
     const delegatePeerId = transportKey ? peerIdFromPrivateKey(transportKey).toString() : undefined;
     const bootstrapNodes = await timed('resolveCohortSeed', () => this.resolveCohortSeed(strand.Id, delegatePeerId));
+
+    // Checked again after the awaits above: another launch of this strand may have started
+    // meanwhile (a replica's watcher launch racing an app's claim, in either order), and
+    // `startStrand` would hand its instance back unchanged — a claim holding a replica with
+    // no `App` tables, a founder request dropped. Nothing awaits between this check and
+    // `startStrand`'s own, so no third launch can slip in.
+    const raced = this.strandManager.getInstance(strand.Id);
+    if (raced) {
+      return this.claimTrackedStrand(raced, strand, sAppConfig, resolvedFounder, explicitPartyKey);
+    }
 
     const instance = await timed('strandManager.startStrand', () => this.strandManager.startStrand({
       strandRow: strand,
@@ -5801,6 +5781,63 @@ export class CadreNode implements SAppIdLookup {
     this.hibernationManager.trackStrand(instance);
     this.emit('strand:started', { strandId: strand.Id });
     return instance;
+  }
+
+  /**
+   * {@link startOrFoundStrand} for a strand the manager already tracks: a claim of a
+   * storage replica gives it the app's schema in place, then a founder request founds it,
+   * waking a quiesced instance so the bootstrap has run before this resolves. Emits
+   * nothing — `strand:started` fired when the instance launched.
+   */
+  private async claimTrackedStrand(
+    existing: StrandInstance,
+    strand: StrandRow,
+    sAppConfig: SAppConfig | undefined,
+    resolvedFounder: boolean,
+    explicitPartyKey: string | undefined
+  ): Promise<StrandInstance> {
+    const timed = <T>(step: string, op: () => Promise<T>) => timedStep('startOrFoundStrand', strand.Id, step, op);
+    // Before the founder branch: the founder bootstrap writes the sApp into Strand.Header,
+    // so it must run against the attached config.
+    if (sAppConfig && !existing.sAppInfo) {
+      const attached = await timed('attachSApp', () => this.strandManager.attachSApp(strand.Id, sAppConfig,
+        { requireSignedSchemas: this.config.requireSignedSchemas }));
+      log('launchStrand: strand %s was running as a storage replica — sApp %s claimed it (%s)',
+        strand.Id, sAppConfig.id, attached);
+    }
+    if (!resolvedFounder) {
+      log('launchStrand: strand %s already tracked locally — skipping re-launch', strand.Id);
+      return existing;
+    }
+    // The resolver runs only when the retained config lacks a party key for a
+    // closed strand (see foundExistingStrand), so the common watcher re-entry
+    // ('already-founder') still costs no control read.
+    const outcome = await timed('foundExistingStrand', () => this.strandManager.foundExistingStrand(strand.Id,
+      () => this.resolveStrandPartyKey(strand, explicitPartyKey)));
+    if (outcome === 'needs-resume') {
+      try {
+        // Quiesced instance: the retained config now founds, but founding promises
+        // the bootstrap has RUN by the time the caller resolves — wake through the
+        // hibernation manager (coalesced with any in-flight wake, timer-aware) so
+        // the rebuild executes it now rather than at some eventual wake.
+        await timed('wakeStrand', () => this.wakeStrand(strand.Id));
+        // The wake's rebuild founds — UNLESS a wake was already in flight when the
+        // config flipped, in which case it had already read the pre-flip config and
+        // rebuilt as a joiner, and `wakeStrand` merely coalesced onto it. Re-run the
+        // (insert-if-absent) bootstrap so founding never resolves headerless.
+        await timed('ensureFounderBootstrap', () => this.strandManager.ensureFounderBootstrap(strand.Id));
+      } catch (error) {
+        // The founding did not happen (e.g. the rebuild refused a pre-split strand and
+        // rolled back, leaving the instance tracked with no runtime): withdraw the flip
+        // so the next attempt re-runs the founding instead of resolving
+        // 'already-founder' over an instance that never founded.
+        this.strandManager.withdrawFounderRequest(strand.Id);
+        throw error;
+      }
+    }
+    log('launchStrand: strand %s already tracked — founder request honored (%s)',
+      strand.Id, outcome);
+    return existing;
   }
 
   /**
