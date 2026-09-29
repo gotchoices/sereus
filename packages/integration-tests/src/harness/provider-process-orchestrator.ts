@@ -44,6 +44,7 @@ import {
 	type OrchestratorStats,
 	type RecoverableOrchestrator,
 } from '@serfab/cadre-provider';
+import type { CliConfigFile } from '@serfab/cadre-cli';
 
 const log = debug('sereus:integration:provider-orchestrator');
 
@@ -374,7 +375,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	private ensureConfigFile(volumeDir: string): string {
 		const configPath = join(volumeDir, CONFIG_FILE);
 		if (!existsSync(configPath)) {
-			const config = {
+			const config: CliConfigFile = {
 				strandWatchInterval: 5000,
 				hibernation: { enabled: true, defaultLatencyHint: 'interactive' },
 			};

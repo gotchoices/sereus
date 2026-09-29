@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { StrandFilter } from '@serfab/cadre-core';
-import { applyEnvironmentOverrides, parseStrandFilter } from '../src/config/loader.js';
+import { applyEnvironmentOverrides, parseStrandFilter, validateConfig } from '../src/config/index.js';
 import type { CliConfigFile } from '../src/config/types.js';
 
 const baseConfig: CliConfigFile = {
@@ -10,14 +10,14 @@ const baseConfig: CliConfigFile = {
 
 /**
  * Round-trip a raw env value through the real startup path:
- * `applyEnvironmentOverrides` (env → merged config) then `parseStrandFilter`
- * (merged config → StrandFilter). This mirrors what `resolveConfig` does and is
- * the path the container/systemd deployment exercises.
+ * `applyEnvironmentOverrides` (env → merged tree), `validateConfig` (merged tree
+ * → checked config) then `parseStrandFilter` (config → StrandFilter). This
+ * mirrors what `resolveConfig` does and is the path the container/systemd
+ * deployment exercises.
  */
 function resolveFromEnv(value: string): StrandFilter {
-  process.env.CADRE_STRAND_FILTER = value;
-  const merged = applyEnvironmentOverrides({ ...baseConfig });
-  return parseStrandFilter(merged.strandFilter);
+  const { tree, provenance } = applyEnvironmentOverrides({ ...baseConfig }, { CADRE_STRAND_FILTER: value });
+  return parseStrandFilter(validateConfig(tree, provenance, 'cadre.yaml').strandFilter);
 }
 
 describe('parseStrandFilter', () => {
@@ -63,10 +63,6 @@ describe('parseStrandFilter', () => {
 });
 
 describe('CADRE_STRAND_FILTER env override', () => {
-  afterEach(() => {
-    delete process.env.CADRE_STRAND_FILTER;
-  });
-
   it('keeps bare "all" / "none" scalars (case-insensitive)', () => {
     expect(resolveFromEnv('all')).toEqual({ mode: 'all' });
     expect(resolveFromEnv('none')).toEqual({ mode: 'none' });

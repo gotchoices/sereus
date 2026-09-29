@@ -15,6 +15,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadValidatedConfig } from '../src/config/index.js';
 
 const entrypointPath = join(dirname(fileURLToPath(import.meta.url)), '../docker/entrypoint.sh');
 
@@ -76,6 +77,12 @@ afterEach(() => {
   rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+/** The variables the entrypoint is started with — what a compose file would set. */
+const ENTRYPOINT_ENV: NodeJS.ProcessEnv = {
+  CADRE_PARTY_ID: 'party-1',
+  CADRE_BOOTSTRAP_NODES: '/ip4/127.0.0.1/tcp/4001',
+};
+
 /** Run the real entrypoint.sh's `start` branch against the fake node stub. */
 function runEntrypointStart(): { status: number | null; stdout: string; stderr: string } {
   const tmpPosix = toPosixPath(tmpRoot);
@@ -84,8 +91,7 @@ function runEntrypointStart(): { status: number | null; stdout: string; stderr: 
     'set -e',
     'export PATH="$1/bin:$PATH"',
     'export DATA_DIR="$1/data"',
-    'export CADRE_PARTY_ID="party-1"',
-    'export CADRE_BOOTSTRAP_NODES="/ip4/127.0.0.1/tcp/4001"',
+    ...Object.entries(ENTRYPOINT_ENV).map(([name, value]) => `export ${name}="${value}"`),
     'sh "$2" start',
   ].join('\n');
   const result = spawnSync('sh', ['-c', outerScript, 'sh', tmpPosix, entryPosix], {
@@ -99,7 +105,7 @@ function runEntrypointStart(): { status: number | null; stdout: string; stderr: 
 // entrypoint's identity wiring would go unguarded there. If CI ever moves to a shell-less
 // (plain Windows) runner, make the skip loud — assert `sh` is present on Linux runners.
 describe.skipIf(!shAvailable())('cadre-cli docker entrypoint identity wiring', () => {
-  it('creates the identity before the config, exports it to the started child, and records it in cadre.yaml', () => {
+  it('creates the identity before the config, exports it to the started child, and records it in cadre.yaml', async () => {
     const result = runEntrypointStart();
     expect(result.status, `entrypoint failed: ${result.stderr}`).toBe(0);
 
@@ -114,6 +120,14 @@ describe.skipIf(!shAvailable())('cadre-cli docker entrypoint identity wiring', (
     const config = readFileSync(join(dataDir, 'cadre.yaml'), 'utf8');
     expect(config).toContain('identity:');
     expect(config).toContain(`keyFile: ${keyFilePosix}`);
+
+    // The generated file, under the variables the entrypoint was started with, must pass the
+    // CLI's own strict validation — the CLI must never reject the config its launcher writes.
+    // (`network:` is written with no children here, which parses to null and must count as absent.)
+    await expect(loadValidatedConfig(join(dataDir, 'cadre.yaml'), ENTRYPOINT_ENV)).resolves.toMatchObject({
+      controlNetwork: { partyId: 'party-1' },
+      storage: { type: 'file' },
+    });
   });
 
   it('reuses the same key byte-for-byte on a second start against the same data dir', () => {

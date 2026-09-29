@@ -383,7 +383,8 @@ describe('one-shot command config failures', () => {
       const result = await runCli(['strand', 'list', '-c', configPath], dir);
 
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain('Storage path is required for file storage type');
+      // The config validator reaches this before `resolveStorageConfig`'s own check, and names the file.
+      expect(result.stderr).toContain("storage.path is required when storage.type is 'file'");
     });
   }, CONFIG_TEST_TIMEOUT_MS);
 });

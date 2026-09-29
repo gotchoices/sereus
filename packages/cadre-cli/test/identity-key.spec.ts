@@ -253,9 +253,9 @@ describe('resolveConfig identity block', () => {
     expect(resolved.nodeStateDir).toBe(resolve(dir));
   });
 
-  // `loadConfigFile` is a bare `yaml.load(...) as CliConfigFile` cast, so without the allowlist a
-  // config still naming the retired key would resolve to NO identity and the node would generate a
-  // fresh keypair — the same wrong-identity outcome by a quieter door.
+  // Before the config file was validated, a config still naming the retired key resolved to NO
+  // identity and the node generated a fresh keypair — the same wrong-identity outcome by a quieter
+  // door. The schema's retired-key map keeps this pointed message over a generic "unknown key".
   it('rejects the retired identity.protobufKeyFile, naming keyFile', async () => {
     const dir = tmpDir('retired-pb');
     const { keyFile } = await writeEnrolledKey(dir, 'node.key');
@@ -307,7 +307,7 @@ describe('resolveConfig identity block', () => {
       storage: { type: 'memory' },
     }));
 
-    await expect(resolveConfig(configPath)).rejects.toThrow(/Invalid identity block/);
+    await expect(resolveConfig(configPath)).rejects.toThrow(/identity must be a mapping/);
   });
 
   // An empty `identity: {}` names nothing, so it stays legal — the node runs without a stable peer

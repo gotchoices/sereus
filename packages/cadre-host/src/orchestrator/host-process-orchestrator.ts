@@ -35,6 +35,9 @@ import { StateStore, type PersistedHandle, type PersistedState } from './state-s
 import { isPidAlive } from './pid-liveness.js';
 import { assertPortFree, type PortBinding } from './port-probe.js';
 import type { PushCredentials } from '@serfab/cadre-core';
+// The child's `cadre.json` is typed against the CLI's own config schema, so a key the CLI stops
+// accepting (or starts requiring) is a compile error here rather than a child that fails to start.
+import { strandFilterConfigFromText, type CliConfig } from '@serfab/cadre-cli';
 import {
   encodeDockerId,
   type OwnerSpawnConfig,
@@ -566,7 +569,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     profile: 'storage' | 'transaction';
     ports: NodePorts;
     owner: boolean;
-    buildConfig: (workdir: string) => Record<string, unknown>;
+    buildConfig: (workdir: string) => CliConfig;
     extraArgs: string[];
     /** Extra env vars merged into the child's environment (e.g. CADRE_OWNER_KEYS). */
     extraEnv?: Record<string, string>;
@@ -1011,24 +1014,26 @@ export class HostProcessOrchestrator implements Orchestrator {
     req: OrchestratorCreateRequest,
     workdir: string,
     push?: PushCredentials,
-  ): Record<string, unknown> {
-    const cfg: Record<string, unknown> = {
+  ): CliConfig {
+    const cfg: CliConfig = {
       controlNetwork: {
         partyId: req.partyId,
         bootstrapNodes: req.bootstrapNodes,
       },
       profile: req.profile,
-      strandFilter: req.strandFilter ?? 'all',
+      // The request carries the filter as text (the provider hands the same text to
+      // CADRE_STRAND_FILTER); the file form is `all`/`none` or the parsed JSON object, and a
+      // filter the node would refuse fails here, before anything is spawned.
+      strandFilter: req.strandFilter === undefined ? 'all' : strandFilterConfigFromText(req.strandFilter),
     };
     if (req.profile === 'storage') {
-      const storage: Record<string, unknown> = {
+      cfg.storage = {
         type: 'file',
         path: join(workdir, 'storage'),
+        ...(req.resources?.storageQuotaBytes !== undefined
+          ? { quotaBytes: req.resources.storageQuotaBytes }
+          : {}),
       };
-      if (req.resources?.storageQuotaBytes !== undefined) {
-        storage.quotaBytes = req.resources.storageQuotaBytes;
-      }
-      cfg.storage = storage;
     }
     // Push credentials land in the child's cadre.json on the host filesystem —
     // the same trust boundary as the control-DB storage in this workdir. The
@@ -1055,8 +1060,8 @@ export class HostProcessOrchestrator implements Orchestrator {
     profile: 'storage' | 'transaction',
     workdir: string,
     push?: PushCredentials,
-  ): Record<string, unknown> {
-    const config: Record<string, unknown> = {
+  ): CliConfig {
+    const config: CliConfig = {
       controlNetwork: {
         partyId: cfg.partyId,
         bootstrapNodes: [],

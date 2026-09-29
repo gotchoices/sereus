@@ -205,6 +205,16 @@ removed key stay valid.
 
 See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration example.
 
+Every key in the file is checked at start, after the environment variables below have been
+applied. An unknown or misspelled key (`network.listenAddr` — the error suggests
+`listenAddrs`), a retired key (`identity.protobufKeyFile`), a value of the wrong type
+(`hibernation.enabled: "yes"`, `storage.type: fs`), or a missing required key
+(`controlNetwork.partyId`) stops the node with an error naming the key and its source — the
+config file, or the `CADRE_*` variable that supplied the value. Every problem in the file is
+reported in one run, one per line, so a hand-edited file is fixed in one pass. There is no
+warn-only mode: a setting the node does not recognise was never doing anything, and the node
+says so rather than starting without it.
+
 ### Environment Variables
 
 | Variable | Config Path | Description |

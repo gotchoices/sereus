@@ -1,10 +1,22 @@
 import type { PrivateKey } from '@libp2p/interface';
 import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials } from '@serfab/cadre-core';
 
+/** The forms the `strandFilter` key may take in a config file. */
+export type StrandFilterConfig =
+  | 'all'
+  | 'none'
+  | { sAppId: string }
+  | { strandId: string };
+
 /**
- * CLI configuration file format (YAML/JSON)
+ * The validated, complete node configuration: what a config file plus its environment
+ * overrides amount to once `validateConfig` has accepted them. Every key here is checked at
+ * start — an unknown, retired or ill-typed key fails start naming the key and its source.
+ *
+ * The field tables in `schema.ts` are typed against this interface, so a key added here
+ * without a checker is a compile error rather than a silently accepted setting.
  */
-export interface CliConfigFile {
+export interface CliConfig {
   /**
    * Node identity. `keyFile` is the only accepted key — the loader rejects anything else in this
    * block (including the retired `protobufKeyFile` / `privateKeyHex`) rather than resolving to no
@@ -33,11 +45,7 @@ export interface CliConfigFile {
   profile: NodeProfile;
 
   /** Strand filter configuration */
-  strandFilter?:
-    | 'all'
-    | 'none'
-    | { sAppId: string }
-    | { strandId: string };
+  strandFilter?: StrandFilterConfig;
 
   /** Storage configuration (required for storage profile) */
   storage?: {
@@ -143,6 +151,24 @@ export interface CliConfigFile {
 }
 
 /**
+ * Every plain-object level made optional, recursively. Arrays are kept whole: a partial
+ * list is still a list of complete entries.
+ */
+export type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
+
+/**
+ * What a config file may contain on its own, before environment overrides fill it in.
+ * Required keys (`controlNetwork`, `profile`, ...) are checked on the merged tree, not the
+ * file, because real deployments supply them through `CADRE_*` variables — so a writer that
+ * produces a partial file types its output against this.
+ */
+export type CliConfigFile = DeepPartial<CliConfig>;
+
+/**
  * Environment variable mappings for config overrides
  */
 export const ENV_MAPPINGS = {
@@ -164,9 +190,12 @@ export const ENV_MAPPINGS = {
 } as const;
 
 /**
- * Resolved configuration after loading and applying environment overrides
+ * Resolved configuration after loading, applying environment overrides, validating, and
+ * loading the identity key. The node-facing blocks (`controlNetwork`, `storage`, `network`,
+ * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the three keys that resolve
+ * into something else are replaced.
  */
-export interface ResolvedConfig {
+export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter'> {
   privateKey?: PrivateKey;
   /**
    * Directory for this node's durable node-local stores (the bootstrap-peer
@@ -176,37 +205,5 @@ export interface ResolvedConfig {
    * key file (`identity.keyFile`), which may live anywhere.
    */
   nodeStateDir: string;
-  controlNetwork: {
-    partyId: string;
-    bootstrapNodes: string[];
-  };
-  profile: NodeProfile;
   strandFilter: StrandFilter;
-  storage?: {
-    type: 'memory' | 'file';
-    path?: string;
-    quotaBytes?: number;
-  };
-  network?: {
-    listenAddrs?: string[];
-    /** Advertised INSTEAD OF `listenAddrs` — see `CadreConfig.network.announceAddrs`. */
-    announceAddrs?: string[];
-    /** Advertised IN ADDITION TO `listenAddrs` — see `CadreConfig.network.appendAnnounceAddrs`. */
-    appendAnnounceAddrs?: string[];
-    relayAddrs?: string[];
-    enableRelay?: boolean;
-    /** See `CadreConfig.network.unauthorizedRelayReservationCap`. */
-    unauthorizedRelayReservationCap?: number;
-    /** See `CadreConfig.network.cohortQueryTimeoutMs`. */
-    cohortQueryTimeoutMs?: number;
-    /** See `CadreConfig.network.linkRoundTripMs`. */
-    linkRoundTripMs?: number;
-  };
-  hibernation?: {
-    enabled: boolean;
-    defaultLatencyHint?: LatencyHint;
-  };
-  strandWatchInterval?: number;
-  push?: PushCredentials;
 }
-
