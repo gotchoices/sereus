@@ -4,7 +4,9 @@ import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
 import { MemoryRawStorage, defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
+import { readFileSync } from 'node:fs';
 import { parseConfig } from '../src/plugin.js';
+import { PLUGIN_SETTING_KEYS } from '../src/parse-config.js';
 import { connectToStrand } from '../src/connect.js';
 import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
@@ -63,7 +65,7 @@ function createMockNode() {
 
 describe('parseConfig', () => {
 	it('should parse minimal config with strand_id', () => {
-		const result = parseConfig({ strand_id: 'abc-123' });
+		const result = parseConfig({ strand_id: 'abc-123' }).options;
 		expect(result.strandId).toBe('abc-123');
 		expect(result.bootstrapNodes).toEqual([]);
 		expect(result.schema).toBeUndefined();
@@ -86,23 +88,18 @@ describe('parseConfig', () => {
 		const result = parseConfig({
 			strand_id: 'abc',
 			bootstrap_nodes: '/ip4/1.2.3.4/tcp/9100/p2p/A, /ip4/5.6.7.8/tcp/9100/p2p/B',
-		});
+		}).options;
 		expect(result.bootstrapNodes).toEqual([
 			'/ip4/1.2.3.4/tcp/9100/p2p/A',
 			'/ip4/5.6.7.8/tcp/9100/p2p/B',
 		]);
 	});
 
-	it('should handle empty bootstrap_nodes', () => {
-		const result = parseConfig({ strand_id: 'abc', bootstrap_nodes: '' });
-		expect(result.bootstrapNodes).toEqual([]);
-	});
-
 	it('should parse schema string', () => {
 		const result = parseConfig({
 			strand_id: 'abc',
 			schema: 'table Msg (Id integer primary key, Body text)',
-		});
+		}).options;
 		expect(result.schema).toBe('table Msg (Id integer primary key, Body text)');
 	});
 
@@ -111,39 +108,53 @@ describe('parseConfig', () => {
 			strand_id: 'abc',
 			sapp_id: 'my-app-key',
 			sapp_version: '2.0.0',
-		});
+		}).options;
 		expect(result.sAppId).toBe('my-app-key');
 		expect(result.sAppVersion).toBe('2.0.0');
 	});
 
 	it('should parse port as number', () => {
-		const result = parseConfig({ strand_id: 'abc', port: 9100 });
-		expect(result.port).toBe(9100);
+		expect(parseConfig({ strand_id: 'abc', port: 9100 }).options.port).toBe(9100);
 	});
 
 	it('should parse enable_cache as boolean', () => {
-		expect(parseConfig({ strand_id: 'abc', enable_cache: false }).enableCache).toBe(false);
-		expect(parseConfig({ strand_id: 'abc', enable_cache: 0 }).enableCache).toBe(false);
-		expect(parseConfig({ strand_id: 'abc', enable_cache: true }).enableCache).toBe(true);
-		expect(parseConfig({ strand_id: 'abc', enable_cache: 1 }).enableCache).toBe(true);
+		expect(parseConfig({ strand_id: 'abc', enable_cache: false }).options.enableCache).toBe(false);
+		expect(parseConfig({ strand_id: 'abc', enable_cache: 0 }).options.enableCache).toBe(false);
+		expect(parseConfig({ strand_id: 'abc', enable_cache: true }).options.enableCache).toBe(true);
+		expect(parseConfig({ strand_id: 'abc', enable_cache: 1 }).options.enableCache).toBe(true);
 	});
 
 	it('should parse fret_profile', () => {
-		expect(parseConfig({ strand_id: 'abc', fret_profile: 'core' }).fretProfile).toBe('core');
-		expect(parseConfig({ strand_id: 'abc', fret_profile: 'edge' }).fretProfile).toBe('edge');
-		expect(parseConfig({ strand_id: 'abc', fret_profile: 'unknown' }).fretProfile).toBe('edge');
+		expect(parseConfig({ strand_id: 'abc', fret_profile: 'core' }).options.fretProfile).toBe('core');
+		expect(parseConfig({ strand_id: 'abc', fret_profile: 'edge' }).options.fretProfile).toBe('edge');
 	});
 
 	it('should parse every known transactor', () => {
-		expect(parseConfig({ strand_id: 'abc', transactor: 'local' }).transactor).toBe('local');
-		expect(parseConfig({ strand_id: 'abc', transactor: 'network' }).transactor).toBe('network');
-		expect(parseConfig({ strand_id: 'abc', transactor: 'test' }).transactor).toBe('test');
+		expect(parseConfig({ strand_id: 'abc', transactor: 'local' }).options.transactor).toBe('local');
+		expect(parseConfig({ strand_id: 'abc', transactor: 'network' }).options.transactor).toBe('network');
+		expect(parseConfig({ strand_id: 'abc', transactor: 'test' }).options.transactor).toBe('test');
 	});
 
 	it('should leave the transactor unset when absent or empty', () => {
 		// Unset, so `composeStrand` applies the default — see its resolution.
-		expect(parseConfig({ strand_id: 'abc' }).transactor).toBeUndefined();
-		expect(parseConfig({ strand_id: 'abc', transactor: '' }).transactor).toBeUndefined();
+		expect(parseConfig({ strand_id: 'abc' }).options.transactor).toBeUndefined();
+		expect(parseConfig({ strand_id: 'abc', transactor: '' }).options.transactor).toBeUndefined();
+	});
+
+	it('should read empty strings and NULL on optional keys as absent', () => {
+		// Quoomb Web's text inputs send '' for a cleared field, and the manifest's
+		// own default for bootstrap_nodes is ''.
+		const result = parseConfig({
+			strand_id: 'abc',
+			schema: '',
+			sapp_id: null,
+			fret_profile: '',
+			bootstrap_nodes: '',
+		}).options;
+		expect(result.schema).toBeUndefined();
+		expect(result.sAppId).toBe('unknown');
+		expect(result.fretProfile).toBe('edge');
+		expect(result.bootstrapNodes).toEqual([]);
 	});
 
 	it('should reject an unrecognised transactor rather than silently defaulting', () => {
@@ -157,14 +168,46 @@ describe('parseConfig', () => {
 			.toThrow(/transactor must be one of/);
 	});
 
-	it('should ignore a key it does not know, including the retired `mode`', () => {
-		// `parseConfig` has no allowlist: the loader hands through whatever the
-		// host's settings file holds, and unknown keys are dropped. Pinned so the
-		// silent-drop contract is a decision on record rather than an accident.
-		const result = parseConfig({ strand_id: 'abc', mode: 'bootstrap', nonsense: 'x' });
-		expect(result.strandId).toBe('abc');
-		expect(result.transactor).toBeUndefined();
-		expect(result as unknown as Record<string, unknown>).not.toHaveProperty('mode');
+	it.each<[string, SqlValue]>([
+		['fret_profile', 'cor'],
+		['port', '4001'],
+		['port', 70000],
+		['port', 1.5],
+		['enable_cache', 'false'],
+		['sapp_version', 2],
+	])('should reject %s = %j, naming the key', (key, value) => {
+		expect(() => parseConfig({ strand_id: 'abc', [key]: value }))
+			.toThrow(new RegExp(`${key} must be`));
+	});
+
+	it('should reject an unknown key, and the retired mode with a pointed message', () => {
+		expect(() => parseConfig({ strand_id: 'abc', transactr: 'local' }))
+			.toThrow(/unknown setting "transactr"/);
+		expect(() => parseConfig({ strand_id: 'abc', mode: 'bootstrap' }))
+			.toThrow(/mode was removed.*transactor/);
+	});
+
+	it('should report every problem in one error', () => {
+		let message = '';
+		try {
+			parseConfig({ fret_profile: 'cor', port: 'x' });
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).toMatch(/strand_id is required/);
+		expect(message).toMatch(/fret_profile must be/);
+		expect(message).toMatch(/port must be/);
+	});
+
+	it('should accept exactly the settings the package manifest lists', () => {
+		// Quoomb Web renders its settings form from the manifest and Quoomb CLI's
+		// `.plugin config` refuses keys it does not list, so a key missing from
+		// either side is a setting the user can set but the plugin rejects, or
+		// the reverse.
+		const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+			quereus: { settings: { key: string }[] };
+		};
+		expect(new Set(manifest.quereus.settings.map(s => s.key))).toEqual(new Set(PLUGIN_SETTING_KEYS));
 	});
 });
 

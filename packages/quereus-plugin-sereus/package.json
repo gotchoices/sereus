@@ -125,16 +125,21 @@
 			},
 			{
 				"key": "fret_profile",
-				"type": "string",
+				"type": "select",
+				"options": [
+					"edge",
+					"core"
+				],
 				"default": "edge"
 			},
 			{
-				"key": "mode",
-				"type": "string"
-			},
-			{
 				"key": "transactor",
-				"type": "string"
+				"type": "select",
+				"options": [
+					"network",
+					"local",
+					"test"
+				]
 			},
 			{
 				"key": "storage_path",

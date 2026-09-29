@@ -301,10 +301,18 @@ on shutdown.
 | `schema` | string | — | sApp schema DDL |
 | `sapp_id` | string | `'unknown'` | sApp author public key |
 | `sapp_version` | string | `'1.0.0'` | sApp version |
-| `port` | number | `0` | libp2p listening port |
-| `enable_cache` | boolean | `true` | Enable caching |
-| `fret_profile` | string | `'edge'` | FRET profile (`'edge'` or `'core'`) |
-| `transactor` | string | `'network'` | Storage engine (`'local'`, `'network'` or `'test'`) — see the `transactor` row above. An unrecognised value is rejected at load |
+| `port` | number | `0` | libp2p listening port: an integer from 0 to 65535 (0 = random) |
+| `enable_cache` | boolean | `true` | Enable caching: `true`, `false`, `1` or `0` |
+| `fret_profile` | select | `'edge'` | FRET profile (`'edge'` or `'core'`) |
+| `transactor` | select | `'network'` | Storage engine (`'local'`, `'network'` or `'test'`) — see the `transactor` row above |
+| `storage_path` | string | — | Node entry only: directory for a persistent `FileRawStorage`. The browser entry rejects it (it stores in IndexedDB) |
+
+Settings are checked strictly at load. An unknown key (including the retired
+`mode`) or a value of the wrong type fails the load with one error that names
+every offending setting; nothing falls back to a default the user did not
+choose. Leaving a setting out, NULL, or `''` means "use the default" (`''`
+only for the string and select settings). A host that adds keys of its own to
+the plugin's settings map therefore fails to load the plugin.
 
 **Bootstrap multiaddrs.** Browsers can only dial transports reachable from an
 `https://` page. Use `/wss` (or `/dns/.../wss`, or a relay-fronted multiaddr).

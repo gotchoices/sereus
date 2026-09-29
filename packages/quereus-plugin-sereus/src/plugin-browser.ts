@@ -16,14 +16,17 @@ export { parseConfig };
 /**
  * Default export: Quereus plugin registration function (browser).
  *
- * Note: the `storage_path` setting is Node-only (it resolves to a filesystem
- * `FileRawStorage` in `./plugin`). The browser entry ignores it and defaults
- * storage to IndexedDB via `connectToStrandBrowser`.
+ * The `storage_path` setting is Node-only (it resolves to a filesystem
+ * `FileRawStorage` in `./plugin`), so it is rejected here rather than ignored;
+ * storage defaults to IndexedDB via `connectToStrandBrowser`.
  */
 export default async function register(
 	db: Database,
 	config: Record<string, SqlValue> = {},
 ): Promise<SereusPluginResult> {
-	const options = parseConfig(config);
+	const { options, storagePath } = parseConfig(config);
+	if (storagePath) {
+		throw new Error('quereus-plugin-sereus: storage_path is Node-only; the browser entry stores in IndexedDB');
+	}
 	return connectToStrandBrowser(db, options);
 }
