@@ -580,7 +580,7 @@ export class ControlDatabase {
     // NOTE: this is where a slow launch is felt. Duration is (raw-storage operations
     // issued) × per-operation storage latency: ~1ms/op on an idle machine, but
     // 50-90ms/op on a loaded disk or a phone's flash under launch contention. A cold
-    // start now reaches the backend 45 times (9 tables + 1 index, 20 distinct blocks
+    // start now reaches the backend 48 times (10 tables + 1 index, 23 distinct blocks
     // — dominated by its genuine writes), a warm restart 13, because cadre-core
     // wraps every embedder storage in `@optimystic/db-p2p`'s write-through cache
     // (@serfab/quereus-plugin-sereus's cached-storage.ts). Uncached the same start issued ~2000 operations — the
@@ -650,6 +650,11 @@ export class ControlDatabase {
     //    exactly why `initialize` hydrates persisted optimystic schemas BEFORE getting here.
     //    A table the live catalog already lists generates no statements at all, which is what
     //    makes an apply over an already-complete schema (a warm start) a no-op.
+    //    NOTE: a table the catalog lists with DIFFERENT constraint text diffs to
+    //    `alter table ... drop constraint`, which the optimystic module refuses, so a store
+    //    written by a build with older constraint text fails here on every start (policy:
+    //    recreate, docs/architecture.md after the Control Network table). If backwards
+    //    compatibility becomes a requirement, this apply is the migration site.
     //  - a failed apply is taken back WHOLE (Quereus 4.20.0). The migration loop keeps an
     //    undo journal; when a step fails it runs that journal in reverse, re-renders the
     //    catalog, compares it against a fingerprint taken BEFORE the apply, and only then

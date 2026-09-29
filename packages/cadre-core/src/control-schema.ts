@@ -844,8 +844,8 @@ declare schema CadreControl {
     -- thing to suspect.
     index FormationUsageByToken on FormationUsage (Token);
 
-    -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
-    -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add
+    -- Append-only retirement record for the one-off StampId nonces of removed rows of every
+    -- guarded table (listed on TableName below). Without it a removal was undoable: the add
     -- approval is a signature over
     -- (row key, stamp) that never expires, and deleting the row freed the stamp, so anyone who
     -- kept a copy of the approval could resurrect the row.
