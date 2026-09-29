@@ -76,6 +76,13 @@
  * cadre connection gater, so the 12 094 ms contains no admission decision at all. The
  * allowance is therefore on top of the measured dial rather than already inside it.
  *
+ * NOTE: the measured dial also reused a connection to the relay that the dialer already held
+ * (the instrument dials the relay first). A relayed dial that has to open that connection itself
+ * spends one more link round trip, plus the relay's own admission decision when the relay is a
+ * party-run control node, and the count counts neither; at the supported link such a dial fits
+ * only while the called machine decides in under about 0.9 s.
+ * `bug-relayed-dial-budget-omits-opening-the-relay-connection`.
+ *
  * ── libp2p's own two limits ──
  *
  * Two limits inside libp2p bound the same relayed dial as cadre's budgets do, and both were
