@@ -4,10 +4,12 @@ import {
 	DECLARED_LINK_ROUND_TRIP_MS,
 	PUSH_TRANSFER_ALLOWANCE_MS,
 	RELAYED_DIAL_ROUND_TRIPS,
+	RELAYED_REQUEST_ROUND_TRIPS,
 	RELAY_RESERVATION_ROUND_TRIPS,
 	circuitRequestBudgetMs,
 	relayReservationBudgetMs,
 	relayedDialBudgetMs,
+	relayedRequestBudgetMs,
 	resolveLinkRoundTripMs
 } from '../src/link-budget.js';
 
@@ -24,12 +26,14 @@ describe('link budgets', () => {
 	it('multiplies each operation\'s round-trip count by the declared link round trip', () => {
 		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 		expect(relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 
 		// A host that declares a slower link moves every budget at once, which is the whole
 		// reason the declaration exists.
 		const declared = 3 * DECLARED_LINK_ROUND_TRIP_MS;
 		expect(relayedDialBudgetMs(declared)).toBe(3 * relayedDialBudgetMs());
 		expect(relayReservationBudgetMs(declared)).toBe(3 * relayReservationBudgetMs());
+		expect(relayedRequestBudgetMs(declared)).toBe(3 * relayedRequestBudgetMs());
 	});
 
 	it('scales only the latency part of a circuit request, leaving the transfer allowance flat', () => {

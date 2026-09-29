@@ -1940,7 +1940,11 @@ export interface WakeRequest {
 export interface WakeAck {
   /** Whether the receiver honored the wake (member + participated strand). */
   accepted: boolean;
-  /** The strand's status after the wake (present when `accepted`). */
+  /**
+   * The strand's status when the receiver accepted the wake (present when `accepted`). The
+   * receiver replies before the wake runs, so `hibernating` or `idle` here means "a wake was
+   * started", not "the strand is now up".
+   */
   status?: StrandStatus;
   /** Reason for rejection (non-member, unknown strand, malformed frame). */
   reason?: string;

@@ -36,6 +36,7 @@ import type { StrandAddrRequest, StrandAddrResponse, StrandAddrStatus } from './
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { orderSignalingFirst } from './peer-record.js';
 import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-addr');
 
@@ -48,9 +49,6 @@ export const STRAND_ADDR_PROTOCOL = '/sereus/strand-addr/1.0.0';
  * that bounds the bytes a peer can make the receiver buffer per stream.
  */
 const MAX_ADDR_SIZE = 64 * 1024;
-
-/** Default time to wait for the response before abandoning a strand-addr dial (ms). */
-const DEFAULT_ADDR_TIMEOUT_MS = 10_000;
 
 /** Default time the receiver waits for an inbound request frame before aborting (ms). */
 const DEFAULT_ADDR_READ_TIMEOUT_MS = 10_000;
@@ -290,7 +288,13 @@ export interface StrandAddrPeer {
 
 /** Options for {@link collectStrandAddrs}. */
 export interface CollectStrandAddrsOptions {
-  /** Per-dial timeout in ms (default {@link DEFAULT_ADDR_TIMEOUT_MS}). */
+  /**
+   * The asker's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which the
+   * per-dial timeout is derived when {@link timeoutMs} is not given. Unset means the declared
+   * default.
+   */
+  linkRoundTripMs?: number;
+  /** Per-dial timeout in ms (default: {@link attemptTimeoutMs}). */
   timeoutMs?: number;
   /** Override the protocol id (defaults to {@link STRAND_ADDR_PROTOCOL}). */
   protocolId?: string;
@@ -394,11 +398,13 @@ export async function collectStrandAddrs(
  * per-target lines scattered through a concurrent fan-out do not reassemble into
  * "this sibling was unreachable".
  *
- * NOTE: cost is (targets × `timeoutMs`) with no whole-sibling budget, the same
- * shape `dialWake` bounds with `DEFAULT_WAKE_DIAL_BUDGET_MS`. Fine today —
- * `dialTargets` yields the peerId plus whatever `resolvePeerAddrs` returned,
- * which for a cadre device is one or two addresses. If a sibling's record ever
- * carries a long address list, give this the same whole-sibling budget.
+ * NOTE: cost is (targets × `timeoutMs`, 21 s each at the default declared link) with
+ * no whole-sibling budget, the same shape `dialWake` bounds with
+ * `DEFAULT_WAKE_DIAL_BUDGET_MS`. Siblings are asked concurrently, so a collection costs
+ * its slowest sibling, not the sum. Fine today — `dialTargets` yields the peerId plus
+ * whatever `resolvePeerAddrs` returned, which for a cadre device is one or two
+ * addresses. If a sibling's record ever carries a long address list, give this the same
+ * whole-sibling budget.
  */
 async function dialOneSibling(
   node: Libp2p,
@@ -407,7 +413,7 @@ async function dialOneSibling(
   options: CollectStrandAddrsOptions
 ): Promise<SiblingAnswer> {
   const protocolId = options.protocolId ?? STRAND_ADDR_PROTOCOL;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_ADDR_TIMEOUT_MS;
+  const timeoutMs = attemptTimeoutMs(options);
   const targets = dialTargets(peer);
 
   if (targets.length === 0) {
@@ -435,6 +441,23 @@ async function dialOneSibling(
   log('Strand-addr dial to %s failed on all %d target(s), contributing no addrs: %s',
     peer.peerId, failures.length, failures.join('; '));
   return { outcome: 'unreachable', multiaddrs: [] };
+}
+
+/**
+ * Deadline for ONE attempt to ask a sibling — dial, request, response — unless the caller set
+ * its own: `relayedRequestBudgetMs` at the declared link (21 s at the default).
+ *
+ * An attempt is either a dial by peer id, which normally reuses an open control connection
+ * (`CIRCUIT_REQUEST_ROUND_TRIPS`, 2), or the fallback to the sibling's control addresses, a
+ * fresh and possibly relayed dial. One deadline covers both, so it is sized for the fallback.
+ *
+ * NOTE: the receiver's membership check (`isMember` → a control-database read) still runs
+ * inside the exchange, and a read that consults a silent cohort peer can take up to
+ * `COHORT_READ_DEADLINE_MS`. That is a read deadline, not link time, and is not counted
+ * here; `debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns it.
+ */
+function attemptTimeoutMs(options: CollectStrandAddrsOptions): number {
+  return options.timeoutMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
 }
 
 /** Map a validated reply to its outcome; only an `ok` reply contributes addresses. */

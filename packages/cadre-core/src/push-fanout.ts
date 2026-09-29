@@ -198,6 +198,12 @@ export class PushFanoutService {
    * double-wake). Only a dial/transport REJECTION means the phone is suspended
    * and unreachable over the control network, which is the one case that falls
    * through to FCM/APNs.
+   *
+   * NOTE: the platform push waits for the whole direct dial to fail, up to
+   * `DEFAULT_WAKE_DIAL_BUDGET_MS` (42 s at the default declared link). A suspended
+   * phone typically fails its relay address fast and spends the rest on its direct
+   * one. If that delay shows up, start the platform push in parallel with the dial,
+   * or after its first attempt.
    */
   private async wakePeer(peerId: string, strandId: string, reason: string): Promise<void> {
     // A wake of either kind is now being attempted → arm the cooldown up front.

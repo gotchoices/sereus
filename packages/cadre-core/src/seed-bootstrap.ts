@@ -6,6 +6,7 @@ import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
 import { dialPeerAddrs, SelfRelayOnlyError, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
+import { relayedRequestBudgetMs } from './link-budget.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -47,9 +48,6 @@ const DEFAULT_SEED_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound seed streams a single peer can pin open. */
 const DEFAULT_MAX_CONCURRENT_SEEDS = 100;
-
-/** Default time the sender waits for a seed delivery (dial + ack read) before aborting (ms). */
-const DEFAULT_SEED_DELIVER_TIMEOUT_MS = 10_000;
 
 /**
  * Decode a 4-byte big-endian length-prefixed frame; returns the body bytes.
@@ -120,6 +118,26 @@ export function canonicalSeedPayload(
  */
 function seedRejected(error: string): ApplySeedResult {
   return { success: false, peersAdded: 0, error, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+}
+
+/** What dialing a seed's owner peers produced — the owner-dial half of an {@link ApplySeedResult}. */
+type OwnerDialCounts = Pick<ApplySeedResult, 'ownerDialsAttempted' | 'ownerDialsFailed'>;
+
+/**
+ * Write one ack frame and close the stream, best-effort on both: a peer that has already gone
+ * away cannot be answered, and the seed's outcome does not depend on whether it heard.
+ */
+async function replyAndClose(stream: ControlStream, ack: SeedAckMessage): Promise<void> {
+  try {
+    writeFrame(stream, ack);
+  } catch (error) {
+    log('Failed to write seed ack: %o', error);
+  }
+  try {
+    await stream.close();
+  } catch (error) {
+    log('Failed to close seed stream: %o', error);
+  }
 }
 
 /**
@@ -193,12 +211,27 @@ export interface SeedBootstrapConfig {
    */
   maxConcurrentSeeds?: number;
   /**
+   * The host's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * {@link seedDeliverTimeoutMs}'s default is derived. Unset means the declared default.
+   */
+  linkRoundTripMs?: number;
+  /**
    * Time {@link SeedBootstrapService.deliverSeed} waits for the whole exchange —
-   * dial, write, ack read — before aborting (ms). Defaults to
-   * {@link DEFAULT_SEED_DELIVER_TIMEOUT_MS}. Bounds the SENDER against a seed
+   * dial, write, ack read — before aborting (ms). Bounds the SENDER against a seed
    * target that accepts the stream and then never replies; the target is a
    * not-yet-trusted node during onboarding, so this is the more exposed
    * direction than the receiver knobs above.
+   *
+   * Defaults to `relayedRequestBudgetMs(linkRoundTripMs)` (`link-budget.ts`; 21 s at the
+   * default declaration): one dial that may need a relay, then one request and its answer.
+   * Delivery does not set `runOnLimitedConnection`, so it does not use a limited relayed
+   * connection today; the relayed-dial count is the upper bound on the dial it can use, the
+   * same choice `CadreNode.controlDialBudget` makes for every address. It holds only link work
+   * because the receiver acks before its owner dials.
+   *
+   * NOTE: no transfer allowance — a seed is a peer list of a few KB, and `MAX_SEED_SIZE` (1 MiB)
+   * is a defensive cap. If seeds ever grow toward that cap, add an allowance the way
+   * `PUSH_TRANSFER_ALLOWANCE_MS` does.
    */
   seedDeliverTimeoutMs?: number;
   /**
@@ -256,7 +289,7 @@ export class SeedBootstrapService {
     this.trustPolicy = config.trustPolicy ?? anchoredTrustPolicy();
     this.seedReadTimeoutMs = config.seedReadTimeoutMs ?? DEFAULT_SEED_READ_TIMEOUT_MS;
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
-    this.seedDeliverTimeoutMs = config.seedDeliverTimeoutMs ?? DEFAULT_SEED_DELIVER_TIMEOUT_MS;
+    this.seedDeliverTimeoutMs = config.seedDeliverTimeoutMs ?? relayedRequestBudgetMs(config.linkRoundTripMs);
     this.dialBudget = config.dialBudget ?? DEFAULT_PEER_DIAL_BUDGET;
 
     // Derive public key from private key if not provided
@@ -742,6 +775,22 @@ export class SeedBootstrapService {
     seed: ControlNetworkSeed,
     options?: { trustPolicy?: SeedTrustPolicy }
   ): Promise<ApplySeedResult> {
+    const merged = await this.verifyAndMergeSeed(seed, options);
+    if (!merged.success) {
+      return merged;
+    }
+    return { ...merged, ...await this.dialSeedOwners(seed) };
+  }
+
+  /**
+   * The first half of {@link applySeed}: check the signature and the signer's trust, then merge
+   * the seed's peer addresses into the peer store. Every rejection happens here, so this result is
+   * what the inbound handler acks with; the owner dials that follow cannot change it.
+   */
+  private async verifyAndMergeSeed(
+    seed: ControlNetworkSeed,
+    options?: { trustPolicy?: SeedTrustPolicy }
+  ): Promise<ApplySeedResult> {
     if (!this.libp2pNode) {
       return seedRejected('Service not initialized');
     }
@@ -799,12 +848,28 @@ export class SeedBootstrapService {
       }
     }
 
-    // Dial owner peers to establish connections. Best-effort and COUNTED: an
-    // owner that is momentarily down leaves this node seeded but unconnected,
-    // which the caller can only see if the outcome is reported (see
-    // `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
-    // `CadreNode.dialColdStartBootstrap` retries these same addresses on every
-    // control-cohort reconcile pass until the control database has siblings.
+    log('Merged seed: %d peers added', peersAdded);
+    return { success: true, peersAdded, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+  }
+
+  /**
+   * The second half of {@link applySeed}: dial the seed's owner peers to establish connections.
+   *
+   * Best-effort and COUNTED: an owner that is momentarily down leaves this node seeded but
+   * unconnected, which the caller can only see if the outcome is reported (see
+   * `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
+   * `CadreNode.dialColdStartBootstrap` retries these same addresses on every control-cohort
+   * reconcile pass until the control database has siblings.
+   *
+   * The inbound handler runs this AFTER it has acked and closed the stream
+   * ({@link handleSeedStream}), because an unreachable owner can take `dialBudget.totalMs`.
+   */
+  private async dialSeedOwners(seed: ControlNetworkSeed): Promise<OwnerDialCounts> {
+    const node = this.libp2pNode;
+    if (!node) {
+      log('Seed service shut down before its owner dials; none attempted');
+      return { ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+    }
     // `createSeed` projects every non-revoked CadrePeer row, so an owner applying
     // a seed minted after it joined finds ITSELF in the owner list. Dialing self always
     // throws, which would report a healthy owner as "seeded but stranded".
@@ -813,12 +878,7 @@ export class SeedBootstrapService {
     // Every one of an owner's addresses is a candidate, each on its own time limit
     // (`dialPeerAddrs`), so an owner whose first address never answers neither
     // stalls seed application nor goes undialed at its other addresses.
-    // NOTE: `handleSeedStream` acks only after this loop, so an unreachable owner
-    // can hold the ack for up to `dialBudget.totalMs` each — 56 s at the default declared link
-    // round trip, more on a host that declared a slower one (`link-budget.ts`) — past a sender's
-    // 10 s `seedDeliverTimeoutMs`; the seed is still applied. If senders start
-    // reporting accepted seeds as timed out, ack before dialing.
-    const selfPeerId = this.libp2pNode.peerId?.toString();
+    const selfPeerId = node.peerId?.toString();
     let ownerDialsAttempted = 0;
     let ownerDialsFailed = 0;
     for (const peer of seed.peers.filter(p => p.isOwner)) {
@@ -830,7 +890,7 @@ export class SeedBootstrapService {
         const addrs = parseDialAddrs(peer.multiaddrs);
 
         log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
-        await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
+        await dialPeerAddrs(node, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
       } catch (error) {
         // Counted even when the owner reaches us only through our own relay: this node is still
         // not connected to it, and `ownerDialsFailed` is how the caller learns that.
@@ -844,9 +904,8 @@ export class SeedBootstrapService {
       }
     }
 
-    log('Applied seed: %d peers added, %d/%d owner dial(s) failed',
-      peersAdded, ownerDialsFailed, ownerDialsAttempted);
-    return { success: true, peersAdded, ownerDialsAttempted, ownerDialsFailed };
+    log('Dialed seed owners: %d/%d owner dial(s) failed', ownerDialsFailed, ownerDialsAttempted);
+    return { ownerDialsAttempted, ownerDialsFailed };
   }
 
   /**
@@ -1088,90 +1147,79 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Read one inbound seed frame, apply it, and write the ack.
+   * Read one inbound seed frame, verify and merge it, write the ack and close the
+   * stream, then dial the seed's owners.
+   *
+   * The ack and the close come BEFORE the owner dials: an unreachable owner can hold
+   * a dial for `dialBudget.totalMs` (56 s at the default declared link), which is not
+   * link time and does not belong inside the sender's delivery deadline. The close is
+   * what releases the sender, which reads the ack to end-of-stream. The stream stays
+   * counted in {@link activeStreams} through the dials, so {@link maxConcurrentSeeds}
+   * still bounds concurrent owner-dial phases.
    *
    * Hardened against a buggy/compromised own-cadre node: a concurrency cap (over
    * {@link maxConcurrentSeeds}, reply without applying), a read timeout (a peer
    * that never half-closes is aborted inside `readStreamToEnd`), and the existing
    * malformed/oversized-frame guard — all reported as a non-accepting
    * {@link SeedAckMessage} rather than a dropped/hung stream.
+   *
+   * NOTE: a receiver configured with an interactive trust-on-first-use policy asks a
+   * human before acking, and that wait sits inside the sender's delivery deadline. If
+   * TOFU is ever used on this wire path, ack "pending" or move the confirmation out of
+   * the exchange.
    */
   private async handleSeedStream(stream: ControlStream, remotePeerId: string): Promise<void> {
     log('Incoming seed delivery from: %s', remotePeerId);
 
     if (this.activeStreams >= this.maxConcurrentSeeds) {
       log('Rejecting seed from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrentSeeds);
-      const ack: SeedAckMessage = { accepted: false, reason: 'Too many concurrent seed deliveries' };
-      try {
-        writeFrame(stream, ack);
-      } catch {
-        // Ignore send errors on the reject path.
-      }
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
+      await replyAndClose(stream, { accepted: false, reason: 'Too many concurrent seed deliveries' });
       return;
     }
 
     this.activeStreams++;
+    let acked = false;
     try {
-      // Read the seed frame to EOF (bounded + size-capped), then decode it.
-      const data = await readStreamToEnd(stream, {
-        maxBytes: MAX_SEED_SIZE,
-        timeoutMs: this.seedReadTimeoutMs,
-        label: 'Seed',
-      });
+      const seed = await this.readSeedFrame(stream);
+      this.eventCallbacks.onSeedReceived?.(seed.partyId, remotePeerId);
 
-      const messageBody = decodeLengthPrefixedFrame(data);
-      const messageJson = new TextDecoder().decode(messageBody);
-      const message = JSON.parse(messageJson) as SeedMessage;
+      const merged = await this.verifyAndMergeSeed(seed);
+      acked = true;
+      await replyAndClose(stream, { accepted: merged.success, reason: merged.error });
 
-      // Emit seed received event
-      this.eventCallbacks.onSeedReceived?.(message.partyId, remotePeerId);
-
-      // Convert to seed and apply
-      const seed: ControlNetworkSeed = {
-        partyId: message.partyId,
-        peers: message.peers,
-        signature: message.signature,
-        signerKey: message.signerKey,
-      };
-
-      const result = await this.applySeed(seed);
-
-      // Emit appropriate event based on result
-      if (result.success) {
-        this.eventCallbacks.onSeedApplied?.(seed.partyId, result.peersAdded, seed);
+      if (merged.success) {
+        await this.dialSeedOwners(seed);
+        this.eventCallbacks.onSeedApplied?.(seed.partyId, merged.peersAdded, seed);
       } else {
-        this.eventCallbacks.onSeedError?.(seed.partyId, result.error ?? 'Unknown error');
+        this.eventCallbacks.onSeedError?.(seed.partyId, merged.error ?? 'Unknown error');
       }
-
-      const ack: SeedAckMessage = { accepted: result.success, reason: result.error };
-      writeFrame(stream, ack);
     } catch (error) {
       log('Error handling seed delivery: %o', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-      // Emit error event
       this.eventCallbacks.onSeedError?.(this.config.partyId, errorMessage);
-
-      // Send error acknowledgment (best-effort on the still-open write side).
-      const ack: SeedAckMessage = { accepted: false, reason: errorMessage };
-      try {
-        writeFrame(stream, ack);
-      } catch {
-        // Ignore send errors
+      // Once acked the stream is closed, so a later failure has no reply to make.
+      if (!acked) {
+        await replyAndClose(stream, { accepted: false, reason: errorMessage });
       }
     } finally {
       this.activeStreams--;
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
     }
+  }
+
+  /** Read the inbound seed frame to EOF (bounded and size-capped) and decode it. */
+  private async readSeedFrame(stream: ControlStream): Promise<ControlNetworkSeed> {
+    const data = await readStreamToEnd(stream, {
+      maxBytes: MAX_SEED_SIZE,
+      timeoutMs: this.seedReadTimeoutMs,
+      label: 'Seed',
+    });
+    const message = JSON.parse(new TextDecoder().decode(decodeLengthPrefixedFrame(data))) as SeedMessage;
+    return {
+      partyId: message.partyId,
+      peers: message.peers,
+      signature: message.signature,
+      signerKey: message.signerKey,
+    };
   }
 
   /**

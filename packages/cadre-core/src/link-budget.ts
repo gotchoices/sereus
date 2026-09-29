@@ -39,6 +39,7 @@
  * | dial the relay itself                                 | 1                | 3 500 ms                |
  * | request a reservation on an open relay connection     | 1                | 3 500 ms                |
  * | negotiate a protocol over an established circuit      | 1                | 3 500 ms                |
+ * | open a relayed connection, then one request on it     | 6                | 21 000 ms               |
  *
  * **Measured** 2026-09-26, one Windows machine, loopback dedicated relay: a relayed dial took
  * 20-25 ms at no delay, **7 255-7 279 ms at 900 ms one-way**, and **12 066-12 094 ms at 1 500 ms
@@ -72,9 +73,11 @@
  *   375 ms one-way. A request over a connection that is already open does not dial, and the
  *   connections cadre opens itself are budgeted here. Upstream:
  *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic.
- * - **Cadre deadlines still typed as milliseconds.** The strand wake, strand-address and seed
- *   delivery deadlines, and the cohort read deadline, bound exchanges over the same link but do
- *   not derive from it: `tickets/backlog/debt-three-more-dial-deadlines-ignore-the-declared-link`.
+ * - **Cadre deadlines still typed as milliseconds.** The cohort read deadline
+ *   (`COHORT_READ_DEADLINE_MS`) bounds reads over the same link but does not derive from it:
+ *   `debt-cadre-deadlines-sized-against-old-optimystic-bounds`. Neither do the strand formation
+ *   step deadline and the relay's reservation-admission deadline:
+ *   `debt-formation-and-relay-admission-deadlines-ignore-the-declared-link`.
  * - **A machine that declares a faster link than its peers.** Every machine is the listener
  *   for the others, so its `inboundUpgradeTimeout` — derived from ITS declaration — bounds
  *   connections other machines open to it. A peer declaring 3 500 ms dialing a machine that
@@ -138,6 +141,14 @@ export const RELAY_RESERVATION_ROUND_TRIPS = 4;
  * Optimystic's `dialTimeoutMs` / `responseTimeoutMs` pair is for.
  */
 export const CIRCUIT_REQUEST_ROUND_TRIPS = 2;
+
+/**
+ * Link round trips one request-and-answer costs when the connection may first have to be OPENED,
+ * possibly through a relay: {@link RELAYED_DIAL_ROUND_TRIPS} + {@link CIRCUIT_REQUEST_ROUND_TRIPS}.
+ * The shape of cadre's own one-frame control protocols (strand wake, strand address, seed
+ * delivery), each of which bounds the dial and the exchange with ONE deadline.
+ */
+export const RELAYED_REQUEST_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + CIRCUIT_REQUEST_ROUND_TRIPS;
 
 /**
  * What a block-transfer push message's BYTES get to cross, on top of the latency
@@ -240,6 +251,17 @@ export function circuitRequestBudgetMs(
 	transferAllowanceMs = PUSH_TRANSFER_ALLOWANCE_MS
 ): number {
 	return CIRCUIT_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + transferAllowanceMs;
+}
+
+/**
+ * Deadline for opening a (possibly relayed) connection and completing one small request on it:
+ * {@link RELAYED_REQUEST_ROUND_TRIPS} at the declared link round trip.
+ *
+ * No transfer allowance, unlike {@link circuitRequestBudgetMs}: the requests this bounds are a few
+ * hundred bytes to a few KB, so their bytes cost nothing a round trip does not already cover.
+ */
+export function relayedRequestBudgetMs(linkRoundTripMs?: number): number {
+	return RELAYED_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
 }
 
 /** The two deadlines one peer-join catch-up push needs, both derived from the declared link. */

@@ -54,7 +54,7 @@ describe('WAKE_PROTOCOL', () => {
 });
 
 describe('StrandWakeService.processWakeRequest — decision matrix', () => {
-  it('wakes a hibernating strand and returns accepted + post-wake status', async () => {
+  it('wakes a hibernating strand and returns accepted + the status at acceptance', async () => {
     const instance = makeInstance('hib');
     const wakeCalls: string[] = [];
     const service = makeService(instance, {
@@ -64,7 +64,7 @@ describe('StrandWakeService.processWakeRequest — decision matrix', () => {
     const ack = await service.processWakeRequest({ strandId: 'hib', reason: 'activity' }, 'member-peer');
 
     expect(wakeCalls).toEqual(['hib']);
-    expect(ack).toEqual({ accepted: true, status: 'active' });
+    expect(ack).toEqual({ accepted: true, status: 'hibernating' });
   });
 
   it('also wakes an idle strand', async () => {
@@ -78,7 +78,7 @@ describe('StrandWakeService.processWakeRequest — decision matrix', () => {
 
     expect(wakeCalls).toEqual(['idle-strand']);
     expect(ack.accepted).toBe(true);
-    expect(ack.status).toBe('active');
+    expect(ack.status).toBe('idle');
   });
 
   it('does not re-wake an already-active strand but still accepts', async () => {
@@ -131,7 +131,7 @@ describe('StrandWakeService.handleStream — framing round-trip', () => {
     await runHandleStream(service, stream, 'member-peer');
 
     expect(stream.closed).toBe(true);
-    expect(decodeFrames<WakeAck>(stream.sent)).toEqual({ accepted: true, status: 'active' });
+    expect(decodeFrames<WakeAck>(stream.sent)).toEqual({ accepted: true, status: 'hibernating' });
   });
 
   it('replies accepted:false to an oversized/malformed frame (decodeLengthPrefixedFrame guard)', async () => {
@@ -246,7 +246,31 @@ describe('dialWake — sender round-trip against a live receiver', () => {
       { strandId: 'push', reason: 'activity' }
     );
 
-    expect(ack).toEqual({ accepted: true, status: 'active' });
+    expect(ack).toEqual({ accepted: true, status: 'hibernating' });
+    expect(wakeCalls).toEqual(['push']);
+  });
+
+  it('gets the ack while the wake is still running', async () => {
+    // The sender's attempt deadline counts link round trips only, so the receiver must not
+    // hold the ack for its resume (sibling address collection, strand node build, relay
+    // reservation drive). Pre-fix the ack waited for the wake and this timed out.
+    const instance = makeInstance('push');
+    const wakeCalls: string[] = [];
+    const receiver = makeService(instance, {
+      wake: (id) => {
+        wakeCalls.push(id);
+        return new Promise<void>(() => { /* a resume that never finishes */ });
+      }
+    });
+
+    const ack = await dialWake(
+      loopbackNode(receiver),
+      [multiaddr('/ip4/1.2.3.4/tcp/4001')],
+      { strandId: 'push' },
+      { timeoutMs: 1_000 }
+    );
+
+    expect(ack).toEqual({ accepted: true, status: 'hibernating' });
     expect(wakeCalls).toEqual(['push']);
   });
 

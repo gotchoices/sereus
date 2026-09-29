@@ -527,12 +527,14 @@ export {
   RELAYED_DIAL_ROUND_TRIPS,
   RELAY_RESERVATION_ROUND_TRIPS,
   CIRCUIT_REQUEST_ROUND_TRIPS,
+  RELAYED_REQUEST_ROUND_TRIPS,
   PUSH_TRANSFER_ALLOWANCE_MS,
   resolveLinkRoundTripMs,
   relayedDialBudgetMs,
   connectionManagerTimeouts,
   relayReservationBudgetMs,
   circuitRequestBudgetMs,
+  relayedRequestBudgetMs,
   peerJoinPushBudget,
   type PeerJoinPushBudget
 } from './link-budget.js';

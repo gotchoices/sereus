@@ -32,6 +32,7 @@ import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { type ControlStream, writeFrame, exchangeFrame, readStreamToEnd } from './control-stream.js';
 import { tryAddrsInTurn } from './peer-dial.js';
+import { relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-wake');
 
@@ -45,36 +46,55 @@ export const WAKE_PROTOCOL = '/sereus/strand-wake/1.0.0';
  */
 const MAX_WAKE_SIZE = 64 * 1024;
 
-/** Default time to wait for the ack before abandoning ONE wake dial attempt (ms). */
-const DEFAULT_WAKE_TIMEOUT_MS = 10_000;
+/**
+ * Default deadline for ONE wake attempt — dial, request, ack — at the default declared link
+ * (ms): `relayedRequestBudgetMs` in `link-budget.ts`, because the target may be reachable
+ * only through a relay and the attempt has to open that connection before the exchange.
+ * {@link dialWake} derives it from {@link DialWakeOptions.linkRoundTripMs} instead when given.
+ *
+ * It holds only link work because the receiver acks as soon as it has DECIDED, before the
+ * wake itself runs ({@link StrandWakeService.processWakeRequest}).
+ *
+ * NOTE: the receiver's membership check (`isMember` → a control-database read) still runs
+ * inside the exchange, and a read that consults a silent cohort peer can take up to
+ * `COHORT_READ_DEADLINE_MS`. That is a read deadline, not link time, and is not counted
+ * here; `debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns it.
+ */
+export const DEFAULT_WAKE_TIMEOUT_MS = relayedRequestBudgetMs();
 
 /**
- * Default budget for a WHOLE {@link dialWake} call, in ms — every candidate
- * address together, not each one.
+ * Whole attempts one {@link dialWake} call budgets for: a stale signaling address, then the
+ * direct address that works.
+ */
+export const WAKE_DIAL_ATTEMPTS = 2;
+
+/**
+ * Default budget for a WHOLE {@link dialWake} call at the default declared link, in ms —
+ * every candidate address together, not each one: {@link WAKE_DIAL_ATTEMPTS} attempt
+ * deadlines.
  *
  * Without it the cost of a wake is (candidate count × {@link
  * DEFAULT_WAKE_TIMEOUT_MS}), a number nothing chooses or bounds. That is not
  * hypothetical: an address behind a dropped NAT mapping, or any host that
  * blackholes rather than sending a RST, burns its full attempt timeout instead
- * of failing in milliseconds, so a two-address peer costs 20 s and a
- * five-address one costs 50 s.
+ * of failing in milliseconds, so a five-address peer would cost five attempts.
  *
  * This makes the TARGET PEER the unit rather than the address — the same
  * decision, for the same reason, as
  * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `peer-dial.ts`, though not the same
- * number: that one is sized to fit several dead addresses ahead of a working one,
+ * count: that one is sized to fit several dead addresses ahead of a working one,
  * while a wake target is expected to be awake and reachable on its first or second
- * address. 20 s is deliberately wider than one attempt timeout so a
- * reachable peer whose signaling address is stale still gets a genuine try at
- * its direct one; a peer needing longer than that is not "asleep and reachable",
- * which is the only case a wake is for. The last attempt inside the budget gets
- * whatever remains of it, so the call returns at the budget, not past it.
+ * address. Two whole attempts so a reachable peer whose signaling address is stale
+ * still gets a genuine try at its direct one; a peer needing longer than that is
+ * not "asleep and reachable", which is the only case a wake is for. The last
+ * attempt inside the budget gets whatever remains of it, so the call returns at
+ * the budget, not past it.
  *
  * Override per call with {@link DialWakeOptions.budgetMs} — tests that drive
  * dead addresses on purpose set it low so a dial's duration is a chosen number
  * rather than a transitive libp2p default stretched by machine load.
  */
-export const DEFAULT_WAKE_DIAL_BUDGET_MS = 20_000;
+export const DEFAULT_WAKE_DIAL_BUDGET_MS = WAKE_DIAL_ATTEMPTS * DEFAULT_WAKE_TIMEOUT_MS;
 
 /** Default time the receiver waits for an inbound wake frame before aborting (ms). */
 const DEFAULT_WAKE_READ_TIMEOUT_MS = 10_000;
@@ -107,6 +127,9 @@ export interface StrandWakeServiceOptions {
    * Trigger the local wake path for a hibernating/idle strand. Wired to
    * `CadreNode.wakeStrand` (→ `HibernationManager` → `resumeStrand`), whose
    * resume coalescing prevents a push-wake racing a concurrent check-in.
+   *
+   * Started, not awaited: the ack goes back before the strand is up, and a wake
+   * that fails afterwards is logged here rather than reported to the sender.
    */
   wake(strandId: string): Promise<void>;
   /**
@@ -119,6 +142,11 @@ export interface StrandWakeServiceOptions {
    * Cap on concurrent inbound wake streams (defaults to
    * {@link DEFAULT_MAX_CONCURRENT_WAKES}). Over the cap, a non-accepting ack is
    * returned without invoking the wake path.
+   *
+   * It counts streams, not wakes: a wake started after its ack is no longer
+   * counted. Those are bounded by the strands this node participates in instead,
+   * since an unknown strand is refused before any wake starts and the wake path
+   * coalesces per strand.
    */
   maxConcurrent?: number;
 }
@@ -126,8 +154,8 @@ export interface StrandWakeServiceOptions {
 /**
  * Receiver side of the push-wake protocol. Registers a `WAKE_PROTOCOL` handler
  * on the control node and, for each inbound {@link WakeRequest}, gates on cadre
- * membership, then resumes the named strand if it is hibernating/idle and we
- * participate in it — replying with a {@link WakeAck}.
+ * membership, replies with a {@link WakeAck}, and starts resuming the named
+ * strand if it is hibernating/idle and we participate in it.
  */
 export class StrandWakeService {
   private readonly options: StrandWakeServiceOptions;
@@ -177,7 +205,7 @@ export class StrandWakeService {
   }
 
   /**
-   * Read the inbound request, decide + execute the wake, and write the ack.
+   * Read the inbound request, decide the wake, and write the ack.
    *
    * Three hardening layers, all reported as a non-accepting ack rather than a
    * dropped/hung stream: a concurrency cap (over {@link maxConcurrent}, reply
@@ -231,13 +259,18 @@ export class StrandWakeService {
   }
 
   /**
-   * Decide and execute the wake for a decoded request. Exposed (not private) so
+   * Decide the wake for a decoded request and start it. Exposed (not private) so
    * the decision matrix can be unit-tested directly.
    *
    * - Non-member sender → rejected (`accepted: false`).
    * - Unknown / not-participated strand → rejected.
-   * - Hibernating or idle strand → resumed via the wake path, then `accepted`.
+   * - Hibernating or idle strand → `accepted` with that status, and a wake started.
    * - Already-live strand → no-op, `accepted` with current status.
+   *
+   * The wake is not awaited, so the ack means "a wake was started", not "the
+   * strand is up". Awaiting it would put the whole resume — a sibling address
+   * collection, a strand node build, a relay reservation drive — inside the
+   * sender's attempt deadline, coupling that deadline to this node's own budgets.
    */
   async processWakeRequest(request: WakeRequest, remotePeerId: string): Promise<WakeAck> {
     // The injected membership predicate is the whole v1 authorization (CadreNode
@@ -253,25 +286,41 @@ export class StrandWakeService {
       return { accepted: false, reason: 'Strand not found or not participated in' };
     }
 
-    if (instance.status === 'hibernating' || instance.status === 'idle') {
+    // Read before the wake starts: the wake path mutates the shared instance.
+    const status = instance.status;
+    if (status === 'hibernating' || status === 'idle') {
       log('Waking strand %s on push from %s (reason=%s)', request.strandId, remotePeerId, request.reason ?? 'unspecified');
-      await this.options.wake(request.strandId);
+      this.startWake(request.strandId);
     } else {
-      log('Strand %s already %s; push-wake is a no-op', request.strandId, instance.status);
+      log('Strand %s already %s; push-wake is a no-op', request.strandId, status);
     }
 
-    // The wake path mutates the shared instance, so re-read its current status.
-    return { accepted: true, status: instance.status };
+    return { accepted: true, status };
+  }
+
+  /**
+   * Start a wake without awaiting it — the same fire-and-forget an activity-driven
+   * local wake uses (`HibernationManager`), which also coalesces the two.
+   */
+  private startWake(strandId: string): void {
+    void this.options.wake(strandId).catch((err: unknown) => {
+      log('Push-wake of strand %s failed after it was accepted: %o', strandId, err);
+    });
   }
 }
 
 /** Options for {@link dialWake}. */
 export interface DialWakeOptions {
-  /** Per-ATTEMPT timeout in ms (default {@link DEFAULT_WAKE_TIMEOUT_MS}). */
+  /**
+   * The sender's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * both deadlines below are derived when not given. Unset means the declared default.
+   */
+  linkRoundTripMs?: number;
+  /** Per-ATTEMPT timeout in ms (default: derived as {@link DEFAULT_WAKE_TIMEOUT_MS} is). */
   timeoutMs?: number;
   /**
-   * Budget for the whole call — every candidate together (default
-   * {@link DEFAULT_WAKE_DIAL_BUDGET_MS}).
+   * Budget for the whole call — every candidate together (default:
+   * {@link WAKE_DIAL_ATTEMPTS} × the per-attempt timeout, as {@link DEFAULT_WAKE_DIAL_BUDGET_MS}).
    */
   budgetMs?: number;
   /** Override the protocol id (defaults to {@link WAKE_PROTOCOL}). */
@@ -318,9 +367,10 @@ export async function dialWake(
     throw new Error('No dialable address for wake target');
   }
   const protocolId = options.protocolId ?? WAKE_PROTOCOL;
+  const perAddressMs = options.timeoutMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
   const budget = {
-    perAddressMs: options.timeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS,
-    totalMs: options.budgetMs ?? DEFAULT_WAKE_DIAL_BUDGET_MS,
+    perAddressMs,
+    totalMs: options.budgetMs ?? WAKE_DIAL_ATTEMPTS * perAddressMs,
   };
   // The attempt's signal aborts the in-flight dialProtocol and resets the live
   // stream, so neither the connect nor the ack-read leaks.

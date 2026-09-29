@@ -108,7 +108,7 @@ import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
-import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
+import { SeedBootstrapService, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
   StrandSolicitationService,
@@ -121,7 +121,7 @@ import {
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
-import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer, type StrandAddrOutcome } from './strand-addr-protocol.js';
+import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer, type StrandAddrOutcome, type StrandAddrCollection } from './strand-addr-protocol.js';
 import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
@@ -3418,6 +3418,34 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The link-derived limits shared by every {@link SeedBootstrapService} this node builds: its
+   * owner and invite dials ({@link controlDialBudget}) and its seed delivery deadline, derived
+   * from `network.linkRoundTripMs`. One helper so the four construction sites cannot drift.
+   */
+  private seedServiceBudgets(): Pick<SeedBootstrapConfig, 'dialBudget' | 'linkRoundTripMs'> {
+    return {
+      dialBudget: this.controlDialBudget(),
+      linkRoundTripMs: this.config.network?.linkRoundTripMs,
+    };
+  }
+
+  /**
+   * {@link collectStrandAddrs} at this node's declared `network.linkRoundTripMs`, so each ask's
+   * deadline derives from it. One helper so the four call sites cannot drift.
+   */
+  private async collectSiblingStrandAddrs(
+    controlNode: Libp2p,
+    peers: StrandAddrPeer[],
+    strandId: string,
+    delegatePeerId?: string
+  ): Promise<StrandAddrCollection> {
+    return await collectStrandAddrs(controlNode, peers, strandId, {
+      delegatePeerId,
+      linkRoundTripMs: this.config.network?.linkRoundTripMs,
+    });
+  }
+
+  /**
    * Dial one sibling from its already-resolved addresses, best-effort. Returns
    * whether the dial resolved (false when no address resolves or the dial fails).
    *
@@ -5995,7 +6023,7 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     const bootstrapNodes = targets.length
-      ? (await collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })).addrs
+      ? (await this.collectSiblingStrandAddrs(this.controlNode, targets, strandId, delegatePeerId)).addrs
       : [];
     // Throttle state for the RELAY targets only — refreshDelegateGrants never
     // looks up a sibling key, so recording one would only be dead weight. The
@@ -6162,10 +6190,10 @@ export class CadreNode implements SAppIdLookup {
    * caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
-   * timeouts (10 s each: dial by peer id, then by addr) before the reservation drive even
-   * starts, so one failed re-drive holds the supervisor `driving` for those 20 s plus the
-   * drive's own deadline — 34 s at the default declared link round trip, and longer on a host
-   * that declared a slower one (`link-budget.ts`).
+   * timeouts (dial by peer id, then by addr; 21 s each at the default declared link round trip)
+   * before the reservation drive even starts, so one failed re-drive holds the supervisor
+   * `driving` for those 42 s plus the drive's own deadline — 56 s at the default, and longer on
+   * a host that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the
    * control node holds no connection to the relay (the drive's own dial fails
@@ -6181,11 +6209,11 @@ export class CadreNode implements SAppIdLookup {
       log('announceDelegateToRelay: relay addr %s names no peer id; strand %s not announced', relayAddr, strandId);
       return;
     }
-    await collectStrandAddrs(
+    await this.collectSiblingStrandAddrs(
       controlNode,
       [{ peerId: relayPeerId, addrs: [multiaddr(relayAddr)] }],
       strandId,
-      { delegatePeerId }
+      delegatePeerId
     );
     this.recordDelegateAnnounces([relayPeerId], strandId);
   }
@@ -6205,7 +6233,7 @@ export class CadreNode implements SAppIdLookup {
     if (due.length === 0) {
       return;
     }
-    await collectStrandAddrs(controlNode, due.map(relayStrandAddrPeer), strandId, { delegatePeerId });
+    await this.collectSiblingStrandAddrs(controlNode, due.map(relayStrandAddrPeer), strandId, delegatePeerId);
     this.recordDelegateAnnounces(due.map((relay) => relay.relayPeerId), strandId, now);
   }
 
@@ -6372,7 +6400,7 @@ export class CadreNode implements SAppIdLookup {
     delegatePeerId: string,
     now: number
   ): Promise<string[]> {
-    const { addrs, outcomes } = await collectStrandAddrs(controlNode, [...due], strandId, { delegatePeerId });
+    const { addrs, outcomes } = await this.collectSiblingStrandAddrs(controlNode, [...due], strandId, delegatePeerId);
     const refreshMs = this.config.network?.controlCohort?.strandAddrRefreshMs ?? STRAND_PEER_ADDR_REFRESH_MS;
     // A configured refresh shorter than the retry must not leave a failing sibling
     // waiting longer than a healthy one.
@@ -7070,7 +7098,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       ownerPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
-      dialBudget: this.controlDialBudget(),
+      ...this.seedServiceBudgets(),
       trustPolicy: this.config.seedTrustPolicy,
       // Seed trust anchors on the node-local store (seeded just above with this
       // node's own genesis key), never on the replicated OwnerKey table.
@@ -7280,7 +7308,8 @@ export class CadreNode implements SAppIdLookup {
    * is reachable through its circuit-relay address), dials `WAKE_PROTOCOL`, sends
    * the {@link WakeRequest}, and returns the peer's {@link WakeAck}. The receiver
    * gates the request on cadre membership and only resumes a strand it already
-   * participates in.
+   * participates in; it acks once it has decided, before the strand is up. The
+   * dial deadlines derive from this node's `network.linkRoundTripMs`.
    *
    * @param targetPeerId - The hibernating cadre peer to wake.
    * @param strandId - The strand the caller knows has pending activity.
@@ -7296,7 +7325,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error(`No dialable control-network address for peer ${targetPeerId}`);
     }
     const request: WakeRequest = { strandId, reason };
-    return await dialWake(this.controlNode, addrs, request);
+    return await dialWake(this.controlNode, addrs, request, { linkRoundTripMs: this.config.network?.linkRoundTripMs });
   }
 
   /**
@@ -7319,7 +7348,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       // No owner key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
-      dialBudget: this.controlDialBudget(),
+      ...this.seedServiceBudgets(),
       trustPolicy: this.config.seedTrustPolicy,
       // A listener-only node accepts a wire-delivered seed solely against this
       // anchor (there is no per-call override on the inbound handler): with no
@@ -7585,7 +7614,7 @@ export class CadreNode implements SAppIdLookup {
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
         trustPolicy: this.config.seedTrustPolicy,
-        dialBudget: this.controlDialBudget(),
+        ...this.seedServiceBudgets(),
         // The anchor is node-scoped, not service-scoped: a throwaway service
         // must consult (and persist an accepted signer into) the SAME store the
         // persistent one would, or a cold-start enrollment via this path would
@@ -7780,7 +7809,7 @@ export class CadreNode implements SAppIdLookup {
       const tempService = new SeedBootstrapService({
         partyId: invite.partyId,
         trustPolicy: this.config.seedTrustPolicy,
-        dialBudget: this.controlDialBudget(),
+        ...this.seedServiceBudgets(),
       });
       if (this.controlNode && this.controlDatabase) {
         await tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });

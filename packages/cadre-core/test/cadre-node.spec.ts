@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -955,10 +955,11 @@ describe('CadreNode', () => {
 
       const ack = await sender.pushWake('target-peer', 'push-strand', 'activity');
 
+      // The receiver acks with the status at acceptance and wakes after replying.
       expect(ack.accepted).toBe(true);
-      expect(ack.status).toBe('active');
+      expect(ack.status).toBe('hibernating');
+      await vi.waitFor(() => expect(receiverInstance.status).toBe('active'));
       expect(wakeCalls).toEqual(['push-strand']);
-      expect(receiverInstance.status).toBe('active');
     });
 
     it('pushWake throws when the target has no resolvable control-network address', async () => {
