@@ -21,7 +21,7 @@ Found while planning `debt-three-more-dial-deadlines-ignore-the-declared-link` (
 Two details matter for the fix:
 
 - `withTimeout` does not pass an abort signal into `dialProtocol`, so an expired dial keeps running in the background and its result is discarded. `withDeadline` in `control-stream.ts` passes the signal, as the wake, strand-address and seed senders do.
-- `DEFAULT_SESSION_TIMEOUT_MS` (30 000) must contain the dial, the contact exchange and the provisioning wait. `resolveProvisionTimeoutMs` enforces an ordering between the three layers, so deriving the dial part means re-checking that the session layer still contains the rest. `DEFAULT_PROVISION_TIMEOUT_MS` is also listed by `debt-cadre-deadlines-sized-against-old-optimystic-bounds`, which owns its relation to Optimystic's commit bounds; this ticket owns only its link part.
+- `DEFAULT_SESSION_TIMEOUT_MS` (30 000) must contain the dial, the contact exchange and the provisioning wait. `resolveProvisionTimeoutMs` enforces an ordering between the three layers, so deriving the dial part means re-checking that the session layer still contains the rest. `DEFAULT_PROVISION_TIMEOUT_MS` is owned here whole, including its relation to Optimystic's read and commit bounds. See "Added section: provisioning holds Optimystic reads and a commit" below.
 
 `repro: static`: arithmetic from the measured count, not observed. To confirm, run formation between two nodes that reach each other only through a party-run relay (unlimited relayed connections: the formation stream does not set `runOnLimitedConnection`) with the relayed-dial-cost scenario's frame delay at 1 500 ms one-way, and look for `Formation dial-connect` timing out.
 
@@ -34,3 +34,13 @@ The relay's own declaration is the right input here, since the relay decides. Th
 ## What done looks like
 
 Each deadline is either derived from a round-trip count in `link-budget.ts` or carries a stated reason why it does not scale with the link. For formation, that means one count for the dial (4) and the frame steps under `withDeadline`. If `link-deadline-literal-lint-gate` has landed, these sites carry `link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link` disable comments, which the conversion deletes.
+
+## Added section (2026-09-29, from the audit of cadre deadlines against Optimystic's bounds): provisioning holds Optimystic reads and a commit
+
+`files:` add `packages/cadre-core/src/strand-formation-manager.ts` (`provisionUnbound` ~607, `resolveInviteSAppId`) and `PROVISION_SETTLE_GRACE_MS` in `strand-formation-protocol.ts` (~87).
+
+The responder's provisioning budget (`DEFAULT_PROVISION_TIMEOUT_MS`, 12 000 ms, of which the last 2 000 ms is the settle grace) wraps control-database work, not just the approval hook. The provisioning hook reads the invitation (`isTokenValid`, and `resolveInviteSAppId` on the fallback path), then commits the `FormationUsage` row. Each read can consult the cohort about a block it does not hold, and on a consult one silent peer costs one per-peer cohort read deadline: 5 000 ms today (`COHORT_READ_DEADLINE_MS`), 7 000 ms once `cohort-read-deadline-derived-from-the-link` lands, against 1 000 ms when this budget was sized. A commit costs several link round trips, about 6 s or more at the supported 3 s round trip.
+
+The protocol already documents one open window (`settleWithinGrace`'s NOTE): the work budget expires after the `FormationUsage` insert was issued, and the commit outlasts the grace. The joiner is then told "timed out" while its one-time invite is spent, and no retry can recover it. A 2 000 ms grace is shorter than one commit at the supported link, so on a slow link that window is the likely outcome whenever the reads eat most of the work budget, not an unlucky edge. `repro: static`: reasoning from the deadlines above, not observed.
+
+What done looks like, for this part: the provisioning budget, or at least its grace, is sized to contain one control commit at the declared link, with any reads before it counted, or the insert is made the first thing the hook does so a late expiry aborts before it. Either way, keep the step < provision < initiator < session ordering intact. The directive on `DEFAULT_PROVISION_TIMEOUT_MS` names this ticket's slug (`cadre-deadline-ladder-recorded` retargets it).
