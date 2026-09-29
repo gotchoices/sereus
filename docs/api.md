@@ -77,21 +77,29 @@ the strand up somewhere else. See [architecture.md → Strand-Address
 Resolution](architecture.md#strand-address-resolution).
 
 The node **remembers the join** — strand id, type and, for a closed strand, `memberPrivateKey` —
-in its `KeyStore`, and offers it again as `strand:discovered` on every later start, so the app keeps
-no list of joined strands (see [strands.md → What a joiner's node
-remembers](strands.md#what-a-joiners-node-remembers)). A node with no `keyStore` remembers joins in
-memory only unless it is given `joinedStrands.store`. If the join cannot be recorded, `formStrand`
-throws: the invitation's token is spent, so fix the store and redeem a fresh invitation.
+in its `KeyStore`, and an owner machine of the party publishes it to the party's control database
+(`JoinedStrand`) at its next connected reconcile pass. From then on every machine of the party
+offers it as `strand:discovered` (and a storage replica host keeps a copy), on every later start
+too, so the app keeps no list of joined strands (see [strands.md → What a joiner's node
+remembers](strands.md#what-a-joiners-node-remembers)). A join made on a machine that is not an owner
+stays on that machine. A node with no `keyStore` remembers unpublished joins in memory only unless
+it is given `joinedStrands.store`. If the join cannot be recorded, `formStrand` throws: the
+invitation's token is spent, so fix the store and redeem a fresh invitation.
 
 Leaving a joined strand:
 ```ts
 forgetJoinedStrand(strandId: string): Promise<void>;
 ```
 
-Forgets the remembered join, so no later start offers it, then `stopStrand`s it on this node. It is
-the joiner's counterpart of `unpublishStrand`, which only works on a row this party's control
-database holds. It tells no other member anything, and this party's membership row in the strand
-stays. `stopStrand` on its own keeps the join, and the strand comes back on the next start.
+Leaves the strand for the whole party: removes the party-wide `JoinedStrand` row (owner-signed,
+with a tombstone), forgets this machine's record, then `stopStrand`s it here. Every other machine of
+the party, a storage replica host included, detaches the strand (`strand:stopped`) when the removal
+reaches it. It is the joiner's counterpart of `unpublishStrand`, which only works on a row the
+party's own `Strand` table holds. On a machine that is not an owner it throws when a party-wide row
+exists, since removing it takes an owner machine; `stopStrand` is the per-machine stop. A join
+still local to this machine has no party-wide row and is simply forgotten and stopped. It tells no
+other member of the strand anything, and this party's membership row in the strand stays.
+`stopStrand` on its own keeps the join, and the strand comes back on the next start.
 
 ## Validate Strand Formation (approval hook)
 

@@ -117,10 +117,10 @@ export {
   type EnrolledMachineStore
 } from './enrolled-machine-store.js';
 
-// Node-local record of the strands this node joined from ANOTHER party, re-offered on
-// every start as `strand:discovered`. Cross-platform: its durable form rides the
-// KeyStore seam above (the record carries a closed strand's read secret), so there is
-// no file-backed subpath.
+// Node-local record of the strands this node joined from ANOTHER party and has not yet
+// published party-wide, re-offered on every start as `strand:discovered`.
+// Cross-platform: its durable form rides the KeyStore seam above (the record carries a
+// closed strand's read secret), so there is no file-backed subpath.
 export {
   MemoryJoinedStrandStore,
   KeyStoreJoinedStrandStore,

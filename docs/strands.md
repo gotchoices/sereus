@@ -297,10 +297,13 @@ database, which Optimystic replicates to **every node the party owns**:
 - **The strand-wide read secret** — the control-layer `Strand.MemberPrivateKey`.
   Formation delivers it to *every* joining party
   (`FormationProvisionResult.memberPrivateKey`, disclosed only after token +
-  disclosure validation), and the joiner's node remembers it in its `KeyStore` (see
-  [What a joiner's node remembers](#what-a-joiners-node-remembers)) — the `Strand` row
-  itself lives only in the founding party's control DB. It gates reads; it
-  deliberately derives **nobody's identity**.
+  disclosure validation). The `Strand` row itself lives only in the founding party's
+  control DB; the joining party records the join party-wide in its own `JoinedStrand`
+  table (see [What a joiner's node remembers](#what-a-joiners-node-remembers)), so the
+  read secret replicates in plaintext to every machine of the joining party too, under
+  the same accepted risk this section states for `Strand.MemberPrivateKey`. Until an
+  owner machine publishes the join, the joining machine keeps it in its `KeyStore`. It
+  gates reads; it deliberately derives **nobody's identity**.
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
   `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it at
@@ -388,46 +391,25 @@ Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Se
 
 ### What a joiner's node remembers
 
-A strand joined from another party has no row in the joiner's control database — its
-`Strand` row lives in the founding party's — so the control database cannot bring it back
-after a restart the way it brings back the party's own strands. cadre-core records every
-such join itself: `CadreNode.formStrand` records the strand it just joined (id, `Type`,
-and for a closed strand the read secret the formation delivered), and so does an
-`addStrand` that joins (no `founder: true`) a row this party's control database does not hold. The record lives in the
-node's `KeyStore`, one slot per strand under
-`cadre/joined-strand/<base64url party id>/<strand id>`: the read secret is secret-grade,
-and the KeyStore is where every platform already keeps secrets (the platform enclave on
-React Native). The party segment keeps two parties sharing one KeyStore apart. A node
-configured with `privateKey` and no `keyStore` falls back to memory and warns once; such
-an embedder injects `joinedStrands: { store: new KeyStoreJoinedStrandStore(new
-FileKeyStore(dir), partyId) }` or its own `JoinedStrandStore`.
+A strand joined from another party has no `Strand` row in the joiner's control database — that row lives in the founding party's — so the control database cannot bring it back the way it brings back the party's own strands. cadre-core keeps two records of such a join instead (`joined-strand-store.ts`):
 
-On every start the strand watcher polls the remembered joins beside the control rows, so
-a join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the
-read secret — or relaunched on its own when the app registered its sApp config first, with
-the same retry ladder and `stopStrand` suppression the party's own strands get. A node that
-hosts storage replicas also launches an offered join as a replica, as it does the party's own
-unclaimed strands. That row is
-the product of the formation's consent, so an app may claim it without a second handshake;
-the React Native reference app claims a closed row that carries its key. **Apps keep no
-list of their own.**
+- **The party-wide record** is a `CadreControl.JoinedStrand` row in the joining party's control database: id, `Type`, and for a closed strand the read secret the formation delivered. Once it exists it is the authority. Every machine of the party offers it, a storage replica host launches it, and removing it is how the party leaves.
+- **The machine-local record** is a queue of joins this machine made that the party does not know about yet. `CadreNode.formStrand` records the strand it just joined, and so does an `addStrand` that joins (no `founder: true`) a row this party's control database names neither as its own strand nor as a party-wide join. A local record is forgotten as soon as the party-wide row for its id is visible, so it always means "joined here, not yet published". It lives in the node's `KeyStore`, one slot per strand under `cadre/joined-strand/<base64url party id>/<strand id>`: the read secret is secret-grade, and the KeyStore is where every platform already keeps secrets (the platform enclave on React Native). The party segment keeps two parties sharing one KeyStore apart. A node configured with `privateKey` and no `keyStore` falls back to memory and warns once; such an embedder injects `joinedStrands: { store: new KeyStoreJoinedStrandStore(new FileKeyStore(dir), partyId) }` or its own `JoinedStrandStore`.
 
-A join is forgotten:
+**Publication.** The periodic control-cohort reconcile pass (every 15 s) publishes each local record as a `JoinedStrand` row, then forgets the local record. It runs only while the machine holds a control connection, because a control write committed alone is local-only and forks the collection, and only on an **owner machine**: one whose seed bootstrap holds an owner key that the party's `OwnerKey` table enrolls. A join therefore reaches the party within one pass of its machine being connected. If another machine of the party published the same join first (both phones redeemed invitations to the same strand), the id conflict counts as published and the party-wide row wins. A machine that is not an owner never publishes: its joins stay machine-local, offered on that machine only, exactly as before the party-wide table existed.
 
-- when the app calls `forgetJoinedStrand` — the joiner's "leave": forget, then `stopStrand`;
-- when this party is removed from the strand (`strand:revoked`) — the strand keeps running
-  for the rest of the session, as that event promises, but the next start does not
-  re-attach it;
-- when this party's own control database gains a row with the same id — the strand is the
-  party's own now, and the control database remembers it.
+**Offering.** On every poll the strand watcher offers, one row per id: the party's own `Strand` rows, then the party-wide joins, then this machine's unpublished joins. A join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the read secret — or relaunched on its own when the app registered its sApp config first, with the same retry ladder and `stopStrand` suppression the party's own strands get. A node that hosts storage replicas launches a party-wide join as a replica, as it does the party's own unclaimed strands, so the party's always-on machine keeps a copy of a strand its phone joined. The party's **other devices** receive `strand:discovered` for each party-wide join too, and the React Native reference app claims such a row as it claims the party's own (an open row, or a closed row that carries its key), so a second phone of the party joins the strand. That row is the product of the formation's consent, so an app may claim it without a second handshake. **Apps keep no list of their own.** A failed read of the party-wide table offers the last list that succeeded (empty at first), so a machine cut off from its party before it ever received that table's block still offers its own strands and its local joins.
 
-`stopStrand` alone keeps the record, as an own-party strand is rediscovered on restart too.
+**Leaving is party-wide.** `forgetJoinedStrand` removes the `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then the local record and the strand peer book entries, then `stopStrand`s the strand here. Every other machine's watcher sees the row gone and detaches the strand (`strand:stopped`), the replica host included; a machine that was offline at the time drops the stale row through the reap branch once the tombstone reaches it. On a machine that is not an owner, `forgetJoinedStrand` of a strand with a party-wide row throws: leaving for the whole party takes an owner machine, and `stopStrand` stops the strand on this machine only. For a join that is still local-only there is no party-wide row, and it forgets the local record and stops the strand, as before. `stopStrand` alone keeps both records, as an own-party strand is rediscovered on restart too. The strand itself is not told: this party's `Strand.Member` row stays, and a later re-formation reuses the same identity.
 
-**The record brings the strand back, not the other party's addresses** (gotchoices/sereus#18).
-Those live in the node's strand peer book (see "How a restarted machine re-finds its strand's
-peers" above), so a restarted joiner re-meshes only when that book is durable too: an embedder
-injects both `strandPeers.store` and a `keyStore` (or `joinedStrands.store`). With either one
-in memory, the join either is not re-offered or comes back with nothing to dial.
+**Removal from the strand** (`strand:revoked`) removes the party-wide record. The machine that observes the revocation keeps offering the strand for the rest of its session, as that event promises, and queues the `JoinedStrand` row for removal by its next connected owner reconcile pass, so the next start of any machine does not re-attach it. The queue is in memory: if the process dies first, the next start relaunches the strand, the revoked-peer gate raises `strand:revoked` again, and the removal is queued again. A `formStrand` or a remembered `addStrand` of the same id cancels a queued removal, so a re-join is never deleted by a stale revocation. Two limits, both accepted:
+
+- A **sibling** machine that has not raised `strand:revoked` itself detaches the strand (`strand:stopped`) when the removal reaches it, instead of keeping it for the session. So "nothing is stopped on the removed machine's behalf" (see the revoked-peer gate below) (see [What the app has to call, and what the removed party is told](#what-the-app-has-to-call-and-what-the-removed-party-is-told)) holds for the machine that observed the revocation, not for its siblings. The alternative was a party-wide record that brings a revoked strand back on every start of every machine. If apps need the "you were removed" screen on every device, the sibling could re-check its own revocation state before detaching a vanished joined row.
+- A machine that is not an owner cannot remove the row. A revoked strand whose row no owner machine observes stays party-wide until an owner leaves it.
+
+A local record is also forgotten when this party's own control database gains a `Strand` row with the same id: the strand is the party's own now.
+
+**The records bring the strand back, not the other party's addresses** (gotchoices/sereus#18). Those live in the node's strand peer book (see "How a restarted machine re-finds its strand's peers" above), so a restarted joiner re-meshes only when that book is durable too: an embedder injects both `strandPeers.store` and a `keyStore` (or `joinedStrands.store`). With either one in memory, a local-only join either is not re-offered or comes back with nothing to dial. A machine that launches a party-wide join it never formed itself (a replica host, a second phone) has no peer-book entry for it; its launch is seeded through the strand-address RPC by the machines of its own party that run the strand.
 
 ## Who May Administer a Closed Strand
 

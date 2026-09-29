@@ -1,18 +1,25 @@
 /**
- * Node-local record of the strands this node joined from ANOTHER party.
+ * The strands this party joined from ANOTHER party, held in two records.
  *
  * A party's own strands come back after a restart through its control database: the
  * `Strand` table holds their rows, the strand watcher polls it, and each row no sApp
  * config claims is offered as `strand:discovered`. A strand joined through formation with
- * another party (`CadreNode.formStrand`) has no row there — the other party's control
- * database holds it — so nothing re-offered it after a restart, and every embedding app
- * kept its own list of joins, read secret included (gotchoices/sereus#18).
+ * another party (`CadreNode.formStrand`) has its `Strand` row in the OTHER party's control
+ * database, so it needs a record of its own (gotchoices/sereus#18):
  *
- * `CadreNode` records each such join here, hands the records to its strand watcher beside
- * the control rows ({@link JoinedStrandRows}), and forgets one on `forgetJoinedStrand` or
- * when this party is removed from the strand.
+ *  - the PARTY-WIDE record, a `CadreControl.JoinedStrand` row ({@link PartyJoinedStrandLedger}).
+ *    Once it exists it is the authority: every machine of the party offers it, a storage
+ *    replica host launches it, and removing it is how the party leaves the strand;
+ *  - the MACHINE-LOCAL record ({@link JoinedStrandStore}, below), a queue of joins this
+ *    machine made that the party does not know about yet. A join is recorded here first,
+ *    published by an owner machine's connected reconcile pass, and forgotten as soon as the
+ *    party-wide row is visible, so a local record always means "joined here, not yet
+ *    published". A machine that is not an owner never publishes; its joins stay here.
  *
- * Two implementations:
+ * {@link JoinedStrandSession} moves joins between the two and is what the strand watcher
+ * polls beside the control rows.
+ *
+ * Two store implementations:
  *  - {@link MemoryJoinedStrandStore} — joins die with the process. The default only for a
  *    node configured with no `keyStore`.
  *  - {@link KeyStoreJoinedStrandStore} — one {@link KeyStore} slot per join. A record holds
@@ -35,7 +42,7 @@ import type { StrandRow } from './types.js';
 
 const log = debug('sereus:cadre:joined-strand-store');
 
-/** One strand this node joined from ANOTHER party — nothing in this party's control DB names it. */
+/** One strand this node joined from ANOTHER party and has not yet published party-wide. */
 export interface JoinedStrandRecord {
 	/** The strand id (a valid scope key, see storage-scope.ts). */
 	Id: string;
@@ -222,85 +229,221 @@ function parseRecord(strandId: string, bytes: Uint8Array): JoinedStrandRecord | 
 }
 
 /**
- * What the strand watcher sees of the joined-strand store: the control rows plus one row per
- * remembered join, which is how a join comes back as `strand:discovered` (or auto-launches)
- * after a restart with no second offer path. One instance per node session.
- *
- * Holds the two pieces of state a plain union would get wrong, both of which would otherwise
- * make the watcher detach running strands, since a joined row missing from a poll reads to it
- * as a removal:
- *  - the last list the store answered, reused when a later list fails, so a read failure is
- *    not "every join was forgotten";
- *  - joins forgotten because this party was removed from the strand
- *    ({@link forgetAfterThisSession}): gone from the store, so the next start does not
- *    re-attach them, but still offered until this session ends, because `strand:revoked`
- *    promises that nothing is torn down for the app.
+ * The party-wide joined-strand table (`CadreControl.JoinedStrand`), as the node's control
+ * database exposes it. `CadreNode` builds it over `ControlDatabase` and the owner signing
+ * key; this module sees only the seam, so it stays free of the runtime.
  */
-export class JoinedStrandRows {
-	private lastListed: JoinedStrandRecord[] = [];
-	private readonly keptForSession = new Map<string, JoinedStrandRecord>();
+export interface PartyJoinedStrandLedger {
+	/** Every party-wide join, as offerable rows (`FounderOwnerKey: null`). */
+	list(): Promise<StrandRow[]>;
+	/** Whether this party's control database names `strandId`, as its own strand or as a party-wide join. */
+	names(strandId: string): Promise<boolean>;
+	/** Whether this machine can sign {@link publish} and {@link remove}: it holds an owner key the party enrolls. */
+	canSign(): Promise<boolean>;
+	/** Owner-signed insert. Resolves when the row landed or a sibling's join already holds the id. */
+	publish(record: JoinedStrandRecord): Promise<void>;
+	/** Owner-signed delete + tombstone; false when there is no row. Throws when a row exists and this machine cannot sign. */
+	remove(strandId: string): Promise<boolean>;
+}
 
-	constructor(private readonly store: JoinedStrandStore) {}
+/**
+ * One node session's joined strands: what the strand watcher sees of the two records, and
+ * the moves between them. Rebuilt at every start, which is what ends the per-session state
+ * below.
+ *
+ * The watcher reads a row missing from a poll as a removal and detaches the strand, so this
+ * holds the state a plain union would get wrong:
+ *  - the last list each record answered, reused when a later read fails, so a failed read
+ *    is not "every join was forgotten";
+ *  - joins this party was removed from ({@link forgetAfterThisSession}): offered until this
+ *    session ends, because `strand:revoked` promises that nothing is torn down for the app,
+ *    and queued for party-wide removal so the next start does not re-attach them.
+ */
+export class JoinedStrandSession {
+	private lastUnpublished: JoinedStrandRecord[] = [];
+	private lastPartyWide: StrandRow[] = [];
+	private readonly keptForSession = new Map<string, StrandRow>();
+	/** Strands whose party-wide row {@link syncWithParty} removes, queued by a self-revocation. */
+	private readonly pendingRemovals = new Set<string>();
+
+	constructor(private readonly store: JoinedStrandStore, private readonly ledger: PartyJoinedStrandLedger) {}
 
 	/**
-	 * `control` plus a row for every remembered join. A control row wins an id collision: the
-	 * strand is this party's own now (its founding party enrolled this machine, say), the
-	 * control database remembers it, and the record is stale — so it is forgotten here.
+	 * `control` plus every join, one row per id, in this precedence: the control rows (the
+	 * party's own strands), then the party-wide joins, then this machine's unpublished joins
+	 * and the joins kept for this session. A local record named by either of the first two is
+	 * stale — published, or the strand is the party's own now — so it is forgotten here; this
+	 * also cleans up after a crash between a publish and its local forget.
 	 */
 	async withControlRows(control: readonly StrandRow[]): Promise<StrandRow[]> {
 		const controlIds = new Set(control.map((row) => row.Id));
-		const joined = new Map<string, JoinedStrandRecord>(this.keptForSession);
-		for (const record of await this.listed()) {
-			joined.set(record.Id, record);
-		}
-		const rows = [...control];
-		for (const record of joined.values()) {
-			if (controlIds.has(record.Id)) {
-				await this.forgetSuperseded(record.Id);
-			} else {
-				rows.push(joinedStrandRow(record));
+		const offered = new Map<string, StrandRow>(control.map((row) => [row.Id, row]));
+		// NOTE: a party-wide join whose id the party's own `Strand` table also holds (the party
+		// founded AND joined it — contrived) is shadowed here, not deleted: a watcher poll must
+		// not make owner-signed writes. If the party later unpublishes its own row the join row
+		// resurfaces; if that is ever seen, remove the join row inside `unpublishStrand`.
+		for (const row of await this.partyWide()) {
+			if (!offered.has(row.Id)) {
+				offered.set(row.Id, row);
 			}
 		}
-		return rows;
+		for (const record of await this.unpublished()) {
+			if (offered.has(record.Id)) {
+				await this.forgetSuperseded(record.Id);
+			} else {
+				offered.set(record.Id, joinedStrandRow(record));
+			}
+		}
+		for (const [strandId, row] of this.keptForSession) {
+			if (controlIds.has(strandId)) {
+				this.keptForSession.delete(strandId);
+			} else if (!offered.has(strandId)) {
+				offered.set(strandId, row);
+			}
+		}
+		return [...offered.values()];
 	}
 
-	/** Forget a join for good: the app is leaving the strand. */
-	async forget(strandId: string): Promise<void> {
+	/** Record a join `formStrand` just made. A re-join also cancels a removal a revocation queued. */
+	async remember(record: JoinedStrandRecord): Promise<void> {
+		this.pendingRemovals.delete(record.Id);
+		await this.store.record(record);
+	}
+
+	/**
+	 * Record `row`, joined by `addStrand`, unless this party's control database already names
+	 * it (its own strand, or a join already published) or an identical record is already here
+	 * (an app re-claiming a remembered join on every start). Keeps the first `joinedAt`. Like
+	 * {@link remember}, cancels a queued removal.
+	 */
+	async rememberForeign(row: StrandRow): Promise<void> {
+		this.pendingRemovals.delete(row.Id);
+		if (await this.ledger.names(row.Id)) {
+			return;
+		}
+		const existing = (await this.store.list()).find((record) => record.Id === row.Id);
+		if (existing?.Type === row.Type && existing.MemberPrivateKey === row.MemberPrivateKey) {
+			return;
+		}
+		await this.store.record({
+			Id: row.Id,
+			Type: row.Type,
+			MemberPrivateKey: row.MemberPrivateKey,
+			joinedAt: existing?.joinedAt ?? Date.now()
+		});
+	}
+
+	/**
+	 * Leave a join for the whole party: remove the party-wide row, then this machine's record.
+	 * Throws, keeping both, when a party-wide row exists and this machine cannot sign.
+	 */
+	async leave(strandId: string): Promise<void> {
+		await this.ledger.remove(strandId);
+		this.pendingRemovals.delete(strandId);
 		this.keptForSession.delete(strandId);
+		this.lastPartyWide = this.lastPartyWide.filter((row) => row.Id !== strandId);
 		await this.store.forget(strandId);
 	}
 
 	/**
-	 * Forget a join durably, but keep offering it until this session ends. For a strand this
-	 * party was removed from: it must not re-attach on every launch, and it must not be torn
-	 * down underneath the app either. A no-op for a strand with no record.
+	 * For a strand this party was removed from: keep offering it until this session ends, and
+	 * queue its party-wide row for removal by {@link syncWithParty}, so it does not re-attach
+	 * on every start of every machine. A no-op for a strand with neither record (one of the
+	 * party's own). The queue is in memory: if the process dies first, the next start
+	 * relaunches the strand, the revoked-peer gate raises `strand:revoked` again, and this
+	 * runs again.
 	 */
 	async forgetAfterThisSession(strandId: string): Promise<void> {
-		const record = (await this.listed()).find((listed) => listed.Id === strandId);
-		if (!record) {
+		const local = (await this.unpublished()).find((record) => record.Id === strandId);
+		const row = local ? joinedStrandRow(local) : this.lastPartyWide.find((listed) => listed.Id === strandId);
+		if (!row) {
 			return;
 		}
-		// Kept BEFORE the store forgets, so no poll can list the store without it and union
-		// without the kept copy.
-		this.keptForSession.set(strandId, record);
-		await this.store.forget(strandId);
+		// Kept BEFORE the store forgets, so no poll can union without it. Queued even for a
+		// local-only join: a publish of it may be in flight.
+		this.keptForSession.set(strandId, row);
+		this.pendingRemovals.add(strandId);
+		if (local) {
+			await this.store.forget(strandId);
+		}
 	}
 
-	private async listed(): Promise<JoinedStrandRecord[]> {
+	/**
+	 * The owner machine's half, run by the node's connected reconcile pass: publish every
+	 * unpublished join party-wide, then remove the party-wide rows queued by
+	 * {@link forgetAfterThisSession}. Does nothing on a machine that cannot sign, whose joins
+	 * stay machine-local. Per strand, a failure is logged and kept for the next pass; a
+	 * failure to list the store or to check the signer throws.
+	 */
+	async syncWithParty(): Promise<void> {
+		// Straight from the store, never the last-good list: a stale list could republish a
+		// join that was left since.
+		const unpublished = await this.store.list();
+		if (unpublished.length === 0 && this.pendingRemovals.size === 0) {
+			return;
+		}
+		if (!(await this.ledger.canSign())) {
+			return;
+		}
+		for (const record of unpublished) {
+			await this.publish(record);
+		}
+		for (const strandId of [...this.pendingRemovals]) {
+			await this.removeQueued(strandId);
+		}
+	}
+
+	// NOTE: a sibling that joined the same strand and has not yet published publishes it after
+	// a leave, bringing the strand back party-wide. Needs two devices joining one strand within
+	// a reconcile interval of the leave; if it is ever seen, check the strand's `Revocation`
+	// tombstone before publishing.
+	private async publish(record: JoinedStrandRecord): Promise<void> {
 		try {
-			this.lastListed = await this.store.list();
+			if (!(await this.ledger.names(record.Id))) {
+				await this.ledger.publish(record);
+				log('joined strand %s published party-wide (party=%s)', record.Id, this.store.partyId);
+			}
+			await this.store.forget(record.Id);
+		} catch (error) {
+			log('joined strand %s: publishing party-wide failed; kept for the next pass: %o', record.Id, error);
+		}
+	}
+
+	private async removeQueued(strandId: string): Promise<void> {
+		try {
+			const removed = await this.ledger.remove(strandId);
+			this.pendingRemovals.delete(strandId);
+			log('joined strand %s: party-wide row %s after this party was removed from it',
+				strandId, removed ? 'removed' : 'already absent');
+		} catch (error) {
+			log('joined strand %s: removing the party-wide row failed; queued for the next pass: %o', strandId, error);
+		}
+	}
+
+	private async partyWide(): Promise<StrandRow[]> {
+		try {
+			this.lastPartyWide = await this.ledger.list();
+		} catch (error) {
+			log('party-wide joined-strand read failed; offering the last list it answered (%d join(s)): %o',
+				this.lastPartyWide.length, error);
+		}
+		return this.lastPartyWide;
+	}
+
+	private async unpublished(): Promise<JoinedStrandRecord[]> {
+		try {
+			this.lastUnpublished = await this.store.list();
 		} catch (error) {
 			log('joined-strand store list failed; offering the last list it answered (%d join(s)): %o',
-				this.lastListed.length, error);
+				this.lastUnpublished.length, error);
 		}
-		return this.lastListed;
+		return this.lastUnpublished;
 	}
 
 	private async forgetSuperseded(strandId: string): Promise<void> {
-		this.keptForSession.delete(strandId);
 		try {
 			await this.store.forget(strandId);
-			log('joined strand %s now has a control row — record forgotten', strandId);
+			log('joined strand %s is named by this party\'s control database — local record forgotten', strandId);
 		} catch (error) {
 			log('forgetting superseded joined strand %s failed; the next poll retries: %o', strandId, error);
 		}

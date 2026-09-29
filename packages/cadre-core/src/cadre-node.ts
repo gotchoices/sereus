@@ -60,10 +60,11 @@ import { MemoryStrandPeerBookStore, type StrandPeerBookStore, type StrandPeerEnt
 import type { StrandPeerObservation } from './strand-peer-observer.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
 import {
-  JoinedStrandRows,
+  JoinedStrandSession,
   KeyStoreJoinedStrandStore,
   MemoryJoinedStrandStore,
-  type JoinedStrandStore
+  type JoinedStrandStore,
+  type PartyJoinedStrandLedger
 } from './joined-strand-store.js';
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
@@ -748,23 +749,23 @@ export class CadreNode implements SAppIdLookup {
   private enrolledMachineStore: EnrolledMachineStore | null = null;
 
   /**
-   * Node-local record of the strands this node joined from ANOTHER party (see
-   * `joined-strand-store.ts`) — the only thing that names them after a restart, since
-   * this party's control database holds no row for them. Written by {@link formStrand}
-   * and by an {@link addStrand} of a foreign row; forgotten by {@link forgetJoinedStrand}
-   * and on self-revocation. Adopted from `config.joinedStrands.store`, else built over
+   * Node-local record of the strands this node joined from ANOTHER party and has not yet
+   * published party-wide (see `joined-strand-store.ts`). Written by {@link formStrand}
+   * and by an {@link addStrand} of a foreign row; drained once the party-wide
+   * `JoinedStrand` row is visible. Adopted from `config.joinedStrands.store`, else built over
    * `config.keyStore`, else in-memory, by {@link initializeJoinedStrandStore}. Like
    * {@link bootstrapPeerStore} it is deliberately NOT cleared by {@link cleanup}.
    */
   private joinedStrandStore: JoinedStrandStore | null = null;
 
   /**
-   * The strand watcher's view of {@link joinedStrandStore}: its records unioned with the
-   * control rows each poll. Per SESSION, unlike the store — rebuilt at every
+   * This session's joined strands: {@link joinedStrandStore} and the party-wide
+   * `JoinedStrand` table, unioned with the control rows each watcher poll, published and
+   * removed by the reconcile pass. Per SESSION, unlike the store — rebuilt at every
    * {@link start}, which is what ends a revoked join's "keep offering until this session
-   * ends" (see `JoinedStrandRows.forgetAfterThisSession`).
+   * ends" (see `JoinedStrandSession.forgetAfterThisSession`).
    */
-  private joinedStrandRows: JoinedStrandRows | null = null;
+  private joinedStrands: JoinedStrandSession | null = null;
 
   /**
    * The enrolled-machine count this node's CONTROL libp2p node was (or will be)
@@ -1517,7 +1518,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Construct (or adopt) the node-local joined-strand store (see
-   * {@link joinedStrandStore}) and this session's watcher view over it.
+   * {@link joinedStrandStore}) and this session's {@link joinedStrands} over it.
    *
    * The store instance is kept across stop()→start(); the view is rebuilt. A store
    * scoped to a different party is a configuration error, fail closed: its joins
@@ -1536,7 +1537,7 @@ export class CadreNode implements SAppIdLookup {
       );
     }
     this.joinedStrandStore = store;
-    this.joinedStrandRows = new JoinedStrandRows(store);
+    this.joinedStrands = new JoinedStrandSession(store, this.createPartyJoinedStrandLedger());
   }
 
   /**
@@ -2335,9 +2336,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * What the strand watcher polls: this party's control rows plus a row per remembered
-   * cross-party join (see {@link joinedStrandRows}), so a joined strand is re-offered
-   * and relaunched on the same path as the party's own.
+   * What the strand watcher polls: this party's control rows plus a row per cross-party
+   * join (see {@link joinedStrands}), so a joined strand is offered and relaunched on
+   * the same path as the party's own.
    */
   private createStrandQueryable(): StrandQueryable {
     return {
@@ -2348,9 +2349,75 @@ export class CadreNode implements SAppIdLookup {
         }
         log('Querying strands from control database');
         const control = await this.controlDatabase.queryStrands();
-        return this.joinedStrandRows ? await this.joinedStrandRows.withControlRows(control) : control;
+        return this.joinedStrands ? await this.joinedStrands.withControlRows(control) : control;
       }
     };
+  }
+
+  /**
+   * The party-wide `JoinedStrand` table as {@link joinedStrands} reads and writes it.
+   * Reads {@link controlDatabase} at call time, so start-up order does not matter.
+   */
+  private createPartyJoinedStrandLedger(): PartyJoinedStrandLedger {
+    const database = (): ControlDatabase => {
+      if (!this.controlDatabase) {
+        throw new Error('CadreNode must be started before using the party-wide joined-strand table');
+      }
+      return this.controlDatabase;
+    };
+    return {
+      // NOTE: one more control read per watcher poll (5 s), and for a party that never
+      // joined anything it reads a never-written block, which consults the cohort. If poll
+      // cost shows up in a device profile, cache the list and re-read it on the reconcile
+      // cadence.
+      list: () => database().queryJoinedStrands(),
+      names: async (strandId) => (await database().queryStrand(strandId)) !== null
+        || (await database().queryJoinedStrand(strandId)) !== null,
+      canSign: async () => (await this.enrolledOwnerSigningKey()) !== null,
+      publish: async (record) => {
+        const signingKey = await this.enrolledOwnerSigningKey();
+        if (!signingKey) {
+          throw new Error(`Cannot publish joined strand ${record.Id}: this machine is not an enrolled owner`);
+        }
+        try {
+          await database().insertJoinedStrand(record, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+        } catch (error) {
+          // Another machine of the party published this join first; its row wins.
+          if (!isStrandIdConflict(error, 'JoinedStrand')) {
+            throw error;
+          }
+        }
+      },
+      remove: async (strandId) => {
+        const signingKey = await this.enrolledOwnerSigningKey();
+        if (signingKey) {
+          return database().deleteJoinedStrand(strandId, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+        }
+        if (await database().queryJoinedStrand(strandId)) {
+          throw new Error(
+            `Cannot leave strand ${strandId} for the whole party: the join is recorded party-wide, and ` +
+            `removing it takes an owner machine, which this one is not. stopStrand('${strandId}') stops ` +
+            'it on this machine only.'
+          );
+        }
+        return false;
+      }
+    };
+  }
+
+  /**
+   * This machine's owner signing key when it can make owner-gated control writes: its seed
+   * bootstrap holds an owner key (`SeedBootstrapService.canAuthorize`) and the party's
+   * `OwnerKey` table enrolls it. A phone that ran self-genesis after another machine
+   * founded the party passes the first test and not the second (`runOwnerGenesis` in the
+   * reference apps), and a write it signed would only be refused.
+   */
+  private async enrolledOwnerSigningKey(): Promise<{ privateKeyB64: string; publicKeyB64: string } | null> {
+    const signingKey = this.seedBootstrapService?.canAuthorize() ? this.getSelfSigningKey() : null;
+    if (!signingKey || !this.controlDatabase) {
+      return null;
+    }
+    return (await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64) ? signingKey : null;
   }
 
   /**
@@ -3109,6 +3176,19 @@ export class CadreNode implements SAppIdLookup {
       // made fork-safe (e.g. filed inside the genesis transaction, before any other machine
       // can hold the party's collections).
       await this.openRevocationLedgerIfDue();
+      if (!this._running || !this.controlNode || !this.controlDatabase) {
+        return { dialed: [] };
+      }
+
+      // Publish this machine's unpublished cross-party joins party-wide and remove the rows a
+      // self-revocation queued (JoinedStrandSession.syncWithParty). Connected-only for the
+      // reap's reason above; owner-only by the session's own signer check. Nothing is urgent:
+      // a join reaches the party within one pass of this machine being connected.
+      try {
+        await this.joinedStrands?.syncWithParty();
+      } catch (error) {
+        log('reconcileControlCohort: joined-strand sync failed (retrying next pass): %o', error);
+      }
       if (!this._running || !this.controlNode || !this.controlDatabase) {
         return { dialed: [] };
       }
@@ -4855,9 +4935,10 @@ export class CadreNode implements SAppIdLookup {
    * published (e.g. re-attaching its own orphan after a restart) founds it, and attaching
    * anyone else's row joins, without the caller needing to know which it is.
    *
-   * A joined row (no `founder: true`) this party's control database does not hold — a
-   * strand joined from another party — is remembered in the node's joined-strand store, so it is re-offered as
-   * `strand:discovered` after a restart (see {@link forgetJoinedStrand}).
+   * A joined row (no `founder: true`) this party's control database does not name — a
+   * strand joined from another party — is remembered in the node's joined-strand store, so it
+   * is re-offered as `strand:discovered` after a restart, and published party-wide by an
+   * owner machine's reconcile pass (see {@link forgetJoinedStrand}).
    *
    * A rejected call leaves nothing running but DOES leave the sApp config
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
@@ -6399,28 +6480,36 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Leave a strand joined from another party: forget its remembered join, so no later
-   * start re-offers it, then {@link stopStrand} it here. The "leave" a joiner has, since it
-   * cannot {@link unpublishStrand} a row its party's control database never held. For one
-   * of this party's own strands the forget is a no-op and this is just {@link stopStrand}.
+   * Leave a strand joined from another party, for the whole party: remove its party-wide
+   * `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then this machine's
+   * unpublished record, its strand peer book entries and any session-kept entry, then
+   * {@link stopStrand} it here. Every other machine's watcher then sees the row gone and
+   * detaches the strand, a storage replica included; a machine offline at the time reaps the
+   * row once the tombstone reaches it. The joiner's counterpart of {@link unpublishStrand},
+   * which only works on a row the party's own `Strand` table holds. For one of those, or for
+   * a join still local-only, there is no party-wide row and this is a local forget plus
+   * {@link stopStrand}.
    *
-   * Touches nothing beyond this node — the other members are not told, and this party's
-   * membership row in the strand stays.
+   * The other members of the strand are not told, and this party's membership row in the
+   * strand stays, so a later re-formation reuses the same identity.
+   *
+   * @throws when a party-wide row exists and this machine cannot sign its removal (not an
+   *   enrolled owner) — {@link stopStrand} stops the strand on this machine only — or when
+   *   the party-wide table cannot be read.
    */
   async forgetJoinedStrand(strandId: string): Promise<void> {
     if (!this._running) {
       throw new Error('CadreNode not running');
     }
-    await this.joinedStrandRows!.forget(strandId);
+    await this.joinedStrands!.leave(strandId);
     this.forgetStrandPeers(strandId, 'forgetJoinedStrand');
     await this.stopStrand(strandId);
   }
 
   /**
-   * Record `row` as a join from another party when this party's control database holds no
-   * row for it — the one case nothing else would re-offer after a restart. Skips the write
-   * when an identical record is already there (an app re-claiming a remembered join on
-   * every start), and keeps the first `joinedAt`.
+   * Record `row` as a join from another party when this party's control database names it
+   * neither as its own strand nor as a party-wide join — the one case nothing else would
+   * re-offer after a restart (`JoinedStrandSession.rememberForeign`).
    *
    * Best-effort, for {@link addStrand}: a failure costs the strand its re-offer after the
    * next restart, not this attach, so it is reported and the attach goes on.
@@ -6434,24 +6523,11 @@ export class CadreNode implements SAppIdLookup {
    * tombstone here before recording.
    */
   private async rememberForeignStrand(row: StrandRow): Promise<void> {
-    const store = this.joinedStrandStore;
-    if (!store || !this.controlDatabase) {
+    if (!this.joinedStrands || !this.controlDatabase) {
       return;
     }
     try {
-      if (await this.controlDatabase.queryStrand(row.Id)) {
-        return;
-      }
-      const existing = (await store.list()).find((record) => record.Id === row.Id);
-      if (existing?.Type === row.Type && existing.MemberPrivateKey === row.MemberPrivateKey) {
-        return;
-      }
-      await store.record({
-        Id: row.Id,
-        Type: row.Type,
-        MemberPrivateKey: row.MemberPrivateKey,
-        joinedAt: existing?.joinedAt ?? Date.now()
-      });
+      await this.joinedStrands.rememberForeign(row);
     } catch (error) {
       console.warn(`addStrand(${row.Id}): could not remember this strand as joined from another party, ` +
         'so it will not be re-offered after a restart:', error);
@@ -6459,21 +6535,30 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Self-revocation arm of the joined-strand record: a party removed from a strand must
-   * not re-attach it on every launch. The strand keeps running this session — the
-   * `strand:revoked` contract is that nothing is torn down for the app — and is gone
-   * after the next start. The join record is a no-op for this party's own strands, which
-   * have none; the strand peer book is forgotten either way, since a removed party must
-   * not keep dialing the strand's peers.
+   * Self-revocation arm of the joined-strand records: a party removed from a strand must
+   * not re-attach it on every launch of every machine. The strand keeps running this
+   * session here — the `strand:revoked` contract is that nothing is torn down for the app —
+   * and its party-wide row is queued for removal by the next connected owner reconcile pass
+   * (`JoinedStrandSession.forgetAfterThisSession`). A no-op for this party's own strands,
+   * which have neither record; the strand peer book is forgotten either way, since a
+   * removed party must not keep dialing the strand's peers.
+   *
+   * NOTE: accepted tradeoff — a sibling machine that has not raised `strand:revoked` itself
+   * detaches the strand (`strand:stopped`) when the party-wide removal reaches it, instead
+   * of keeping it for the session, which weakens "nothing is stopped on the removed
+   * machine's behalf" for siblings. Weighed against a party-wide row that brings a revoked
+   * strand back on every start of every machine. Revisit if apps need the "you were
+   * removed" screen on every device: the sibling could re-check its own revocation state
+   * (`refreshRevocationEnforcement`) before detaching a vanished joined row.
    *
    * NOTE: a manager can re-admit a removed party directly (`addMemberByManager`), and the
-   * membership loop then finishes the join on its own — but the record is gone by then, so
-   * the next start does not re-attach the strand. Re-forming records it again. If direct
+   * membership loop then finishes the join on its own — but the records are gone by then,
+   * so the next start does not re-attach the strand. Re-forming records it again. If direct
    * re-admission becomes a routine flow, re-record the join when the revoked-peer gate
    * clears for this node.
    */
   private forgetRevokedJoin(strandId: string): void {
-    void this.joinedStrandRows?.forgetAfterThisSession(strandId).catch((error: unknown) => {
+    void this.joinedStrands?.forgetAfterThisSession(strandId).catch((error: unknown) => {
       log('forgetting revoked joined strand %s failed; it will be re-offered on the next start: %o',
         strandId, error);
     });
@@ -7825,7 +7910,9 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Remember the strand a formation just joined (see {@link joinedStrandStore}), so it
-   * is re-offered after a restart even when the app is killed before its `addStrand`.
+   * is re-offered after a restart even when the app is killed before its `addStrand`, and
+   * published party-wide by the next connected owner reconcile pass. A re-join also
+   * cancels a party-wide removal a self-revocation queued for the strand.
    * Last in {@link formStrand}, after the membership adoption, so a failure here leaves
    * the party key and staged invitation in place for the re-formation it asks for.
    *
@@ -7834,7 +7921,7 @@ export class CadreNode implements SAppIdLookup {
    */
   private async rememberFormedStrand(result: FormStrandResult): Promise<void> {
     try {
-      await this.joinedStrandStore!.record({
+      await this.joinedStrands!.remember({
         Id: result.strandId,
         Type: result.memberPrivateKey ? 'c' : 'o',
         MemberPrivateKey: result.memberPrivateKey ?? null,

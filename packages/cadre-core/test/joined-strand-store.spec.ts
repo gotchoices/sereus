@@ -1,15 +1,18 @@
 /**
- * The node-local record of strands joined from ANOTHER party (`joined-strand-store.ts`):
- * nothing in this party's control database names such a strand, so this record is the only
+ * The records of strands joined from ANOTHER party (`joined-strand-store.ts`): the party-wide
+ * `JoinedStrand` row and the machine-local record of a join not yet published. The founding
+ * party's control database holds such a strand's `Strand` row, so these records are the only
  * thing that brings it back after a restart (gotchoices/sereus#18).
  *
  *  - The KeyStore-backed store reads its joins back through a fresh instance, drops a slot
  *    that is not a record for its own id while keeping the rest, and never lists another
  *    party's joins from a KeyStore two parties share (the React Native app keeps one per
  *    device).
- *  - The strand watcher's view unions the joins with the control rows, lets a control row
- *    win (and forgets the stale record), and keeps offering a join forgotten on
- *    self-revocation until the session ends — `strand:revoked` tears nothing down.
+ *  - The session unions control rows over party-wide joins over local ones, forgets a local
+ *    record either table names, and keeps offering the last party-wide list when a read
+ *    fails; it publishes local records party-wide, keeping one whose publish failed; and a
+ *    self-revocation removes the party-wide row while the strand stays offered until the
+ *    session ends — `strand:revoked` tears nothing down.
  *  - End to end on a real node: a join `formStrand` recorded comes back as
  *    `strand:discovered` after a restart over the same `keyStore`, with no app-side list,
  *    until `forgetJoinedStrand`.
@@ -19,9 +22,11 @@ import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import {
-	JoinedStrandRows,
+	JoinedStrandSession,
 	KeyStoreJoinedStrandStore,
-	type JoinedStrandRecord
+	joinedStrandRow,
+	type JoinedStrandRecord,
+	type PartyJoinedStrandLedger
 } from '../src/joined-strand-store.js';
 import type { StrandWatcher } from '../src/strand-watcher.js';
 import type { FormStrandResult, StrandRow } from '../src/types.js';
@@ -73,36 +78,103 @@ describe('KeyStoreJoinedStrandStore', () => {
 	});
 });
 
-describe('JoinedStrandRows', () => {
-	it('offers each join beside the control rows, and forgets one a control row now names', async () => {
-		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
-		const control: StrandRow[] = [
-			{ Id: 'own', Type: 'o', MemberPrivateKey: null, FounderOwnerKey: 'owner-key' },
-			{ Id: 'adopted', Type: 'c', MemberPrivateKey: 'control-secret', FounderOwnerKey: null }
-		];
-		await store.record(closedJoin);
-		await store.record({ Id: 'adopted', Type: 'c', MemberPrivateKey: 'stale-secret', joinedAt: 3 });
+/**
+ * A stand-in for the party-wide `JoinedStrand` table over a map — the seam, not a mock of
+ * `ControlDatabase`. `controlIds` are the party's own `Strand` rows, which `names` also reports.
+ */
+class MapLedger implements PartyJoinedStrandLedger {
+	readonly rows: Map<string, StrandRow>;
+	listFails = false;
+	readonly refusedPublishes = new Set<string>();
 
-		expect(await new JoinedStrandRows(store).withControlRows(control)).toEqual([
-			...control,
-			{ Id: closedJoin.Id, Type: 'c', MemberPrivateKey: 'read-secret', FounderOwnerKey: null }
+	constructor(rows: StrandRow[] = [], private readonly controlIds: string[] = []) {
+		this.rows = new Map(rows.map((row) => [row.Id, row]));
+	}
+
+	async list(): Promise<StrandRow[]> {
+		if (this.listFails) {
+			throw new Error('cohort-unreachable');
+		}
+		return [...this.rows.values()];
+	}
+
+	async names(strandId: string): Promise<boolean> {
+		return this.controlIds.includes(strandId) || this.rows.has(strandId);
+	}
+
+	async canSign(): Promise<boolean> {
+		return true;
+	}
+
+	async publish(record: JoinedStrandRecord): Promise<void> {
+		if (this.refusedPublishes.has(record.Id)) {
+			throw new Error(`publish of ${record.Id} refused`);
+		}
+		this.rows.set(record.Id, joinedStrandRow(record));
+	}
+
+	async remove(strandId: string): Promise<boolean> {
+		return this.rows.delete(strandId);
+	}
+}
+
+const joinedRow = (Id: string, MemberPrivateKey: string): StrandRow => ({ Id, Type: 'c', MemberPrivateKey, FounderOwnerKey: null });
+const localJoin = (Id: string, MemberPrivateKey: string): JoinedStrandRecord => ({ Id, Type: 'c', MemberPrivateKey, joinedAt: 1 });
+
+describe('JoinedStrandSession', () => {
+	it('offers control rows over party-wide joins over local ones, drains the stale local records, and survives a failed party-wide read', async () => {
+		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
+		const control: StrandRow[] = [{ Id: 'a', Type: 'o', MemberPrivateKey: null, FounderOwnerKey: 'owner-key' }];
+		const ledger = new MapLedger([joinedRow('a', 'ledger-a'), joinedRow('b', 'ledger-b')], ['a']);
+		for (const record of [localJoin('a', 'local-a'), localJoin('b', 'local-b'), localJoin('c', 'local-c')]) {
+			await store.record(record);
+		}
+		const session = new JoinedStrandSession(store, ledger);
+
+		expect(await session.withControlRows(control)).toEqual([
+			control[0],
+			joinedRow('b', 'ledger-b'),
+			joinedRow('c', 'local-c')
 		]);
-		expect(await store.list()).toEqual([closedJoin]);
+		expect((await store.list()).map((record) => record.Id),
+			'a local record the party-wide table or the control table already names was kept — it would be published again'
+		).toEqual(['c']);
+
+		ledger.listFails = true;
+		expect((await session.withControlRows(control)).map((row) => row.Id),
+			'a failed party-wide read dropped the join — the watcher would read that as a removal and detach the strand'
+		).toEqual(['a', 'b', 'c']);
 	});
 
-	it('keeps offering a join forgotten on self-revocation until the session ends', async () => {
+	it('publishes each unpublished join, keeping a record whose publish failed for the next pass', async () => {
 		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
-		await store.record(closedJoin);
-		const session = new JoinedStrandRows(store);
+		const ledger = new MapLedger();
+		ledger.refusedPublishes.add('e');
+		await store.record(localJoin('d', 'secret-d'));
+		await store.record(localJoin('e', 'secret-e'));
+
+		await new JoinedStrandSession(store, ledger).syncWithParty();
+
+		expect((await store.list()).map((record) => record.Id)).toEqual(['e']);
+		expect([...ledger.rows.values()]).toEqual([joinedRow('d', 'secret-d')]);
+	});
+
+	it('keeps offering a party-wide join after self-revocation removes its row, until the session ends', async () => {
+		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
+		const ledger = new MapLedger([joinedRow(closedJoin.Id, 'read-secret')]);
+		const session = new JoinedStrandSession(store, ledger);
+		await session.withControlRows([]);
 
 		await session.forgetAfterThisSession(closedJoin.Id);
+		await session.syncWithParty();
 
+		expect(ledger.rows.has(closedJoin.Id),
+			'the party-wide row of a strand this party was removed from survived, so every machine re-attaches it on every start'
+		).toBe(false);
 		expect((await session.withControlRows([])).map((row) => row.Id),
 			'a revoked join vanished mid-session — the watcher would read that as a removal and tear the strand down'
 		).toEqual([closedJoin.Id]);
-		expect(await new JoinedStrandRows(store).withControlRows([]),
-			'a revoked join is still offered by the next session, so the removed party re-attaches it on every launch'
-		).toEqual([]);
+		expect(await new JoinedStrandSession(store, ledger).withControlRows([])).toEqual([]);
 	});
 });
 
