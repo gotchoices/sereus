@@ -399,7 +399,10 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// this is the proof the dial crossed relays. Pinned on B's outbound side only —
 		// the shape of the inbound side's remoteAddr is libp2p's business.
 		const viaRelayA = `/p2p/${relayA.peerId}/p2p-circuit`;
-		for (const conn of B.getControlNode()!.getConnections().filter((c) => c.remotePeer.toString() === aPeerId)) {
+		const bDialsToA = B.getControlNode()!.getConnections()
+			.filter((c) => c.remotePeer.toString() === aPeerId && c.direction === 'outbound');
+		expect(bDialsToA.length, 'B control holds its formation dial to A').toBeGreaterThan(0);
+		for (const conn of bDialsToA) {
 			expect(conn.remoteAddr.toString(), 'B control reached A through relay A').toContain(viaRelayA);
 		}
 
@@ -543,8 +546,9 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		tally.check('final sweep');
 	} finally {
 		await Promise.allSettled([B?.stop(), A?.stop()]);
-		// Deduplicated: in the shared arm relayA and relayB are the same relay.
-		for (const relay of new Set([relayA, relayB])) await relay?.stop();
+		// Deduplicated: in the shared arm relayA and relayB are the same relay. Settled, so
+		// one relay failing to stop neither leaks the other nor skips the restore below.
+		await Promise.allSettled([...new Set([relayA, relayB])].map((relay) => relay?.stop()));
 		// After the nodes are down, so this arm's frame summary counts only its own traffic —
 		// and in the `finally`, so a failing arm still hands the next one a clean constructor
 		// instead of burying its error under "already installed".
