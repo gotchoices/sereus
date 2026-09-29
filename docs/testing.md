@@ -617,6 +617,14 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   machine catches up when it returns) — `strand-two-party-two-machine.integration.ts`. It
   asserts the commit, not the cohort width: whether the surviving three approved as 3-of-4
   or as a downsized 3-of-3 is not distinguished there.
+- Cross-party strand joined by a two-machine party whose second machine runs no app (the host
+  party founds an open strand; the joiner party's phone redeems the invitation and claims the
+  strand; its owner reconcile pass publishes the join as a party-wide `JoinedStrand` row; the
+  party's always-on machine launches a storage replica from that row and receives every block
+  the phone holds; the phone's `forgetJoinedStrand` then stops that replica while the host's
+  strand keeps running) — `strand-always-on-replica-hosts-cross-party-join.integration.ts`.
+  The replica serving a replacement phone is not repeated here; that is
+  `strand-always-on-replica-survives-phone-loss.integration.ts` (the one-party line above).
 - Membership actions issued from a party's second machine on that shape (a closed strand's
   invite consumed, both of a party's machines registered as devices of ONE member, and a
   promoted manager issuing/admitting — all authored on a machine that neither founded the
