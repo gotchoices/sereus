@@ -50,23 +50,10 @@ export const MIN_CLUSTER_SIZE = 2;
  * report named. 3000 is the fallback if that margin ever goes — still 1.7x the reported round
  * trip, and a doomed consult costs 40% less.
  *
- * **What else it lengthens, which the first-sync budget is only the largest case of.** Every
- * cadre-core deadline that wraps an Optimystic read or commit was sized when one silent peer
- * cost 1 s and a whole reconcile pass cost 5 s; those are now 5 s and 25 s. Two consequences
- * are already true rather than hypothetical:
- *
- *  - The inbound membership admission gate reads the control database uncached and FAILS OPEN
- *    after 2 s (`ADMISSION_DECISION_TIMEOUT_MS`, cadre-core's
- *    `membership-connection-gater.ts`), so a decision whose read consults a silent peer can no
- *    longer settle inside that deadline at all: an unplaced peer is admitted at the connection
- *    layer for the whole 5 s instead of roughly 1 s. It is admitted to nothing more than a
- *    connection — the per-protocol stream gates still decide, and unplaced relay reservations
- *    stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`) — which is why this is a widened cost
- *    and not a hole. `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns
- *    the audit of the rest.
- *  - `CONTROL_READ_RETRY_BUDGET_MS` (1500 ms) now terminates the control-read retry loop after
- *    the FIRST attempt whenever that attempt burned this deadline, so a read failing that way
- *    gets no second presentation. Its own doc carries the coupling.
+ * **What else it lengthens.** Every cadre-core deadline that waits on an Optimystic read or
+ * commit waits on this one too; which of them cut the read off on purpose and which must
+ * outlast it is listed in `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and
+ * Commits".
  *
  * **One value for both networks, not two.** The reason to widen is the link, and a phone's
  * control node and its strand nodes share it; nothing about control traffic or strand traffic

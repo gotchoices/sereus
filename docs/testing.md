@@ -348,6 +348,9 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   property, an assignment, or the right side of `??` / `||` (`opts?.timeoutMs ?? 5000`). A deadline over the machine-to-machine link has to derive from
   `link-budget.ts`; one that stays a number carries `// eslint-disable-next-line no-restricted-syntax --
   link-independent: <why>` or `-- link-bound, not yet derived: <ticket slug>`, so the unconverted set is one grep.
+  A third reason, `-- cuts off by design: <why>; see …`, keeps a deadline that waits on the link through an
+  Optimystic read or commit but is sized by what its caller can tolerate; the sites are listed in
+  [cadre-consistency.md](cadre-consistency.md) → "Deadlines Over Optimystic's Reads and Commits".
   Not caught: other names (`…_WAIT_MS`) and inline `setTimeout(…, 5000)`. Converting a `link-bound` site means
   deleting its directive too: `reportUnusedDisableDirectives: 'error'` fails the gate on any directive, anywhere
   in the repo, that no longer disables anything.

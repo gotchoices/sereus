@@ -82,6 +82,14 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * already exceeds this budget when attempt 1 returns — so that case is surfaced immediately
  * and retry adds ZERO latency to the case where it cannot help.
  *
+ * It cuts the loop off by design, so it does not grow with the link: its job is to end the
+ * retries of slow attempts, and the caller gets the last attempt's error unchanged. An attempt
+ * whose read phase consulted a silent peer ends at about one per-peer read deadline
+ * (`COHORT_READ_DEADLINE_MS`, 5 s since sereus declared it, 1 s before), so it still gets one
+ * retry inside this budget where it used to get two; an attempt that runs into the 10 s
+ * `ClusterClient` response deadline still gets none. See `docs/cadre-consistency.md` →
+ * "Deadlines Over Optimystic's Reads and Commits".
+ *
  * NOTE: a failed commit attempt now also pays a cancel discharge before its error returns
  * (optimystic `TransactorSource.transact`'s catch, added by upstream
  * `1-a-failed-attempt-must-discharge-its-own-pend`) — bounded by six rounds and
@@ -93,7 +101,7 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * to do: if that case ever starts failing with `failed after 2/3 attempt(s)`, the cancel
  * discharge is where the time went.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: it ends the retries of slow attempts rather than waiting them out; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
 
 /**

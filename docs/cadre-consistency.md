@@ -1,6 +1,6 @@
 # Cadre Control Consistency Model
 
-**Status**: Design exploration. Not yet implemented. Captures a target architecture for the cadre control network's consistency model, intended to sit between Optimystic's synchronous quorum semantics and Quereus Sync's eventually-consistent CRDT semantics. The single exception is [What Ships Today](#what-ships-today-the-control-database-replicates-to-the-whole-party), which describes current behaviour and is marked as such.
+**Status**: Design exploration. Not yet implemented. Captures a target architecture for the cadre control network's consistency model, intended to sit between Optimystic's synchronous quorum semantics and Quereus Sync's eventually-consistent CRDT semantics. The exceptions are [What Ships Today](#what-ships-today-the-control-database-replicates-to-the-whole-party) and [Deadlines Over Optimystic's Reads and Commits](#deadlines-over-optimystics-reads-and-commits), which describe current behaviour and are marked as such.
 
 ## Motivation
 
@@ -15,7 +15,7 @@ The cadre control network needs **both** properties: a holder of a locally-integ
 
 ## What Ships Today: The Control Database Replicates to the Whole Party
 
-> **This section is shipped behaviour, not design exploration.** Everything from [Two Layers](#two-layers) onward is the target architecture and is not yet implemented; this one section describes what the code does now. Read it as the baseline the rest of the document proposes to improve on.
+> **This section is shipped behaviour, not design exploration.** Everything from [Two Layers](#two-layers) onward is the target architecture and is not yet implemented; this section and the next describe what the code does now. Read them as the baseline the rest of the document proposes to improve on.
 
 Today the control network gets its durability from Optimystic's cluster replication, with no sync/CRDT layer underneath. Each block is replicated to a **cohort** — a group of nodes drawn from the network — and the number of nodes Cadre asks for is the constant `CONTROL_REPLICATION_BREADTH` (currently 16) in `packages/quereus-plugin-sereus/src/cluster-size.ts`. Optimystic caps a cohort at the peers that actually serve the network and shrinks a cohort it cannot fill, so any number at or above the party's node count has the same effect: **every member of the party holds every control block.** 16 is roughly twice the largest deployment [`architecture.md`](architecture.md) documents, so in practice the cohort is the whole party.
 
@@ -32,6 +32,40 @@ And the payoff, measured 2026-08-03 in the same file: **a strand founder can now
 **What it costs.** A commit needs a super-majority of its cohort to approve. With the cohort now the whole party rather than two nodes, a single flaky or slow member counts against that threshold where before it would simply have been outside the cohort and ignored. Broader replication buys convergence and pays for it in write availability — which is the tradeoff the asynchronous-authority design below exists to remove; meanwhile the *transient* slice of that cost (a cohort that hiccuped rather than refused) is absorbed by a bounded retry at the control-write funnel (see [architecture.md → "Replication cluster size"](architecture.md#replication-cluster-size)).
 
 **Two things this does *not* change.** The breadth is frozen when a node's libp2p node is created, so it does not track a party that grows at runtime — see [`architecture.md` → Replication cluster size](architecture.md#replication-cluster-size) for why it is a constant rather than the live member count. And it is not the same knob as `assumedClusterSize`, the separate "smallest cohort this deployment can genuinely field" value that feeds Optimystic's membership admission gate; both Cadre policies declare it as 2, because a party — and a strand — legitimately runs one or two machines. Declaring it matters even though the admission gate already defaults to the same 2: it is also the read-repair corroboration floor's last fallback before `clusterSize`, so a policy that omits the field makes two corroborators mandatory on a mesh that can field one, and repair then never converges. The corroboration floor prefers a *separate* declaration, `repairCorroborationClusterSize`, which the **control** network derives per node from the machines enrolled in the party — unlike the breadth, that number does track a growing party, applied on the node's next launch. A **strand** declares nothing there and so runs on the 2: the only count a node holds is the party's machines, and a strand runs on a subset of them, so declaring it would over-state the cohort and make repair impossible rather than merely weak. See [`architecture.md` → Replication cluster size](architecture.md#replication-cluster-size), "Two yardsticks, not one".
+
+## Deadlines Over Optimystic's Reads and Commits
+
+> **This section is shipped behaviour too**, like the one above. It records how cadre-core's own deadlines relate to the bounds Optimystic puts on the reads and commits they wait on, so a change to a number on either side starts here.
+
+Optimystic bounds a read in two ways. Each cohort peer gets `clusterPolicy.cohortQueryTimeoutMs` to answer one read-path request, and a whole reconcile pass is bounded at `max(5000, 5 × per-peer)`. Sereus declares the per-peer figure as `COHORT_READ_DEADLINE_MS`, 5 000 ms, in `packages/quereus-plugin-sereus/src/cluster-size.ts`, so the pass bound is 25 000 ms; Optimystic's own defaults are 1 000 and 5 000 ms. A host moves the per-peer figure with cadre-core's `NetworkConfig.cohortQueryTimeoutMs`.
+
+A cadre-core deadline that waits on one of those reads, or on a commit, does one of two things:
+
+- It **cuts off** the work: its caller cannot wait longer, and what happens when it expires is designed. It is sized by what the caller can tolerate, so it must not grow with the link or with Optimystic's bounds. These sites carry the lint reason `cuts off by design`, and the rows marked "cuts off" below are exactly those sites.
+- It **contains** the work: it has to be longer than what it waits on, so it grows when that work does.
+
+The reasoning for each value lives in the constant's own comment, in `packages/cadre-core/src/`. This table only indexes them.
+
+| deadline | value | waits on | intent | reasoning at |
+| --- | --- | --- | --- | --- |
+| `ADMISSION_DECISION_TIMEOUT_MS` | 2 000 ms | one inbound admission decision, in both gaters: the control node's membership policy (`listAuthorizedMembers`, which reads `Revocation` then `CadrePeer` live) and the closed-strand revoked-peer gate (the strand's revocation state) | cuts off | `membership-connection-gater.ts` |
+| `CONTROL_READ_RETRY_BUDGET_MS` | 1 500 ms | the control-read retry loop, checked between attempts | cuts off | `control-read-retry.ts` |
+| `CONTROL_WRITE_RETRY_BUDGET_MS` | 10 000 ms | the control-write retry loop, checked between attempts | cuts off | `control-write-retry.ts` |
+| `DEFAULT_PROVISION_TIMEOUT_MS` | 12 000 ms | the formation provisioning hook: control reads, one `FormationUsage` commit, the approval hook | contains, with a designed cut-off at its end | `strand-formation-protocol.ts` |
+| `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` | 300 000 ms | a joining machine's whole first sync, which runs several cohort consults | contains | `strand-first-sync-gate.ts` |
+| wake and strand-address attempt deadlines (`DEFAULT_WAKE_TIMEOUT_MS`, `attemptTimeoutMs`) | 21 000 ms at the default declared link | a dial and one request, plus the receiver's membership check | contains, except the membership check (see the last bullet below) | `strand-wake-protocol.ts`, `strand-addr-protocol.ts` |
+| `DEFAULT_SEED_READ_TIMEOUT_MS` | 10 000 ms | one inbound seed frame; the trust decision and peer-store merge run after it, and touch no Optimystic data | neither: `link-independent` | `seed-bootstrap.ts` |
+| `DEFAULT_CONTROL_COHORT_RECONCILE_MS` | 15 000 ms | nothing: an interval between reconcile passes | not a deadline | `control-cohort.ts` |
+
+Three relationships between these numbers are load-bearing:
+
+- **The read-retry budget is below the admission deadline**, so a read that recovers on its second attempt still decides the admission instead of arriving after the gate failed open. Checked by `control-read-retry.spec.ts`.
+- **Every dial into a gated node has room for the admission decision.** libp2p's listener runs the gate before it answers the multiplexer negotiation the dialer is waiting on, so the decision is spent inside the dialer's budget. Not checked yet: at the supported 3 s round trip a relayed dial measured 12 094 ms against a 14 000 ms budget, about 1.9 s of room for a 2 s decision. It holds by construction once `dial-budgets-contain-the-admission-decision` adds the decision to the dial budgets.
+- **The plugin's per-peer read deadline equals cadre-core's derivation from the declared link.** Not checked yet: `COHORT_READ_DEADLINE_MS` is fixed milliseconds today. `cohort-read-deadline-derived-from-the-link` derives it and adds the spec that pins the two equal.
+
+One gap is deliberate, with a stated condition for revisiting it:
+
+- **The receiver's membership check inside a wake or strand-address exchange is not counted** in the sender's attempt deadline. The receiver answers only after `isMember`, which is two live control reads. In steady state those reads touch only held blocks and do not consult the cohort. If a wake or address request is seen timing out while the receiver's membership read is consulting, count one membership decision in the attempt deadline, or answer the check from the materialized authorized-peer snapshot.
 
 ## Two Layers
 

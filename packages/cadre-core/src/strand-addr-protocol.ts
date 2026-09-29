@@ -440,10 +440,12 @@ async function dialOneSibling(
  * (`CIRCUIT_REQUEST_ROUND_TRIPS`, 2), or the fallback to the sibling's control addresses, a
  * fresh and possibly relayed dial. One deadline covers both, so it is sized for the fallback.
  *
- * NOTE: the receiver's membership check (`isMember` → a control-database read) still runs
- * inside the exchange, and a read that consults a silent cohort peer can take up to
- * `COHORT_READ_DEADLINE_MS`. That is a read deadline, not link time, and is not counted
- * here; `debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns it.
+ * NOTE: the receiver's membership check (two live control reads) runs inside this deadline and
+ * is not counted. In steady state those reads touch only held blocks and do not consult the
+ * cohort. If a wake or address request is seen timing out while the receiver's membership read
+ * is consulting, count one membership decision in this deadline or answer the check from the
+ * materialized authorized-peer snapshot. See docs/cadre-consistency.md → "Deadlines Over
+ * Optimystic's Reads and Commits".
  */
 function attemptTimeoutMs(options: CollectStrandAddrsOptions): number {
   return options.timeoutMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);

@@ -67,19 +67,19 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * 2 s only because each stays well under it. Do not raise these numbers without
  * re-checking against `ADMISSION_DECISION_TIMEOUT_MS`.
  *
- * NOTE: the obligation runs the other way too, and the number that dominates this budget is
- * declared in another package. One attempt whose cohort consult finds a silent peer costs
- * `clusterPolicy.cohortQueryTimeoutMs`, which sereus declares at 5000 ms
- * (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`) for relayed phone
- * links — more than three times this budget, so such an attempt is never retried and the
- * admission gate above it has already fail-opened. That is a widened cost of a deliberate
- * choice, not a hole (the stream gates still decide), and the whole ladder of cadre-core
- * deadlines against Optimystic's is audited by
- * `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds`. What this budget still
- * buys is the failure it was built for: the ~25 ms transactor read-phase aggregate off a
- * stream still forming, which retries twice well inside 1500 ms.
+ * It cuts the loop off by design, so it does not grow with the link or with the number that
+ * dominates a slow attempt, which is declared in another package: an attempt whose cohort
+ * consult finds a silent peer costs `clusterPolicy.cohortQueryTimeoutMs`, which sereus declares
+ * at 5000 ms (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`). That is
+ * more than three times this budget, so such an attempt is never retried and the caller gets its
+ * error unchanged. That is deliberate: the caller this budget is sized for, the admission gate, has
+ * already taken its fail-open answer by then, and a retry would only spend time after it. What
+ * the budget still buys is the fast failures it was built for: the ~25 ms transactor read-phase
+ * aggregate off a stream still forming, and a `cohort-unreachable` read during bring-up, which
+ * fails fast because there is no connection to ask. Both retry twice well inside 1500 ms. See
+ * `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and Commits".
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a slow attempt is not retried, because the admission gate this budget is sized for has already failed open by then; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 
 /**

@@ -186,7 +186,9 @@ export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * Deadline for one admission decision, after which the fail-open outcome is
- * used (connection admitted / reservation admitted).
+ * used (connection admitted / reservation admitted). Both inbound gaters use
+ * it: the control node's membership gate here, and the closed-strand
+ * revoked-peer gate (`strand-revocation-enforcer.ts`).
  *
  * libp2p awaits `denyInboundEncryptedConnection` inside the inbound upgrade
  * WITHOUT racing its inbound-upgrade timeout signal (unlike the pre-encryption
@@ -197,8 +199,35 @@ export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
  * over the network, so "never settles" is reachable. Bounding it here keeps the
  * fail-open contract honest: a slow decision admits rather than silently
  * failing closed (or not at all).
+ *
+ * The control gate's decision waits on the link, through two live control reads
+ * (`Revocation`, then `CadrePeer`) that can consult the cohort, yet this deadline
+ * cuts it off on purpose and must not grow with the link:
+ *
+ * - **Fail-open is the designed outcome.** An expired decision admits a
+ *   connection and nothing more: the per-protocol stream gates still refuse
+ *   every members-only protocol from the materialized snapshot, and unplaced
+ *   relay reservations stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`).
+ * - **The slow case is bring-up, not steady state.** A membership read consults
+ *   the cohort only for a block this node does not hold, or before the
+ *   `Revocation` ledger marker exists; once the marker exists every block the
+ *   decision reads is held (`control-founding-consult-budget.spec.ts` pins both
+ *   states). So the gate always fails open only on a node whose membership reads
+ *   still consult: one consult costs about two link round trips, and asking a
+ *   silent peer costs the per-peer read deadline (`COHORT_READ_DEADLINE_MS`, 5 s).
+ * - **The decision is spent on the dialing machine's clock.** libp2p's listener
+ *   runs this gate before it answers the multiplexer negotiation the dialer is
+ *   waiting on (`libp2p/dist/src/upgrader.js`), so every millisecond spent here
+ *   is added to the other machine's dial. A relayed dial at the supported 3 s
+ *   round trip measured 12 094 ms against its 14 000 ms budget (`link-budget.ts`),
+ *   which leaves about 1.9 s. Raising this deadline narrows the fail-open window
+ *   and makes dials into this node time out instead;
+ *   `dial-budgets-contain-the-admission-decision` makes the dial budgets count it.
+ *
+ * `CONTROL_READ_RETRY_BUDGET_MS` must stay below this, which
+ * `control-read-retry.spec.ts` pins.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: an expired decision admits a connection only, and the time spent here is added to the dialing machine's dial; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
 
 /**

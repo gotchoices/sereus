@@ -43,8 +43,11 @@ export const SEED_PROTOCOL = '/sereus/seed/1.0.0';
 /** Maximum seed message size (1MB) */
 const MAX_SEED_SIZE = 1024 * 1024;
 
-/** Default time the receiver waits for an inbound seed frame before aborting (ms). */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+/**
+ * Default time the receiver waits for an inbound seed frame before aborting (ms). It covers the
+ * read only: the trust decision and the peer-store merge run after it.
+ */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: a receiver cap on one seed frame on a stream the peer already opened; it bounds a peer that opens a stream and never sends, not the dial
 const DEFAULT_SEED_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound seed streams a single peer can pin open. */

@@ -141,7 +141,7 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * "no peer at all" could then be reported at once and this budget would only ever be spent on a
  * sync that is actually in progress — worth more the longer this budget gets.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: cohort-read-deadline-derived-from-the-link
 export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 300_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */

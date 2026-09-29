@@ -98,9 +98,14 @@ const PHONE_RUNTIME_GUARD = [
 // a relayed exchange costs a fixed number of round trips and a fixed millisecond figure stops
 // working on any link slow enough. A check on names containing "dial" would have missed every
 // site that broke this so far, so this check covers every deadline-named value and makes the
-// author classify the ones that stay numbers, with one of two greppable disable reasons:
+// author classify the ones that stay numbers, with one of three greppable disable reasons:
 //   `-- link-independent: <why>`                 the deadline never waits on the link
 //   `-- link-bound, not yet derived: <slug>`     it does, and that open ticket owns converting it
+//   `-- cuts off by design: <why>; see …`        it waits on the link through an Optimystic read
+//                                                or commit, but its value is what its caller can
+//                                                tolerate, so it must not grow with the link; the
+//                                                sites are listed in docs/cadre-consistency.md →
+//                                                "Deadlines Over Optimystic's Reads and Commits"
 //
 // Flagged: a value named `…TIMEOUT_MS`, `…BUDGET_MS`, `…DEADLINE_MS` (any case, so `timeoutMs`,
 // `dialBudgetMs` too) whose value is a numeric literal or arithmetic over numeric literals only
@@ -117,7 +122,7 @@ const PHONE_RUNTIME_GUARD = [
 // left disabling nothing fails `yarn lint` (reportUnusedDisableDirectives, below).
 //
 // Scope is cadre-core's src only (LINK_DEADLINE_SCOPE). `COHORT_READ_DEADLINE_MS` in
-// quereus-plugin-sereus is owned by `debt-cadre-deadlines-sized-against-old-optimystic-bounds`;
+// quereus-plugin-sereus is owned by `cohort-read-deadline-derived-from-the-link`;
 // widening the scope is one glob.
 const LINK_DEADLINE_MESSAGE = 'A deadline written as milliseconds. If it bounds an exchange with another machine, derive it from packages/cadre-core/src/link-budget.ts: count the round trips, as that module\'s doc describes. If it does not, keep the number and disable this line with the reason: `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>`.';
 const LINK_DEADLINE_NAME = '/(timeout|budget|deadline)_?ms$/i';

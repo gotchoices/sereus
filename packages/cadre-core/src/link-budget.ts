@@ -13,11 +13,15 @@
  * This module is the only place a new deadline over the link should be written, and in
  * cadre-core's source `yarn lint` enforces it (`LINK_DEADLINE_GUARD` in `eslint.config.mjs`): a
  * value named `…TIMEOUT_MS`, `…BUDGET_MS` or `…DEADLINE_MS` (or `…TimeoutMs` and the like) set
- * to a number rather than a derivation fails, unless the line above it gives one of two
+ * to a number rather than a derivation fails, unless the line above it gives one of three
  * reasons. `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>` keeps a
  * deadline that never waits on the link; `-- link-bound, not yet derived: <ticket slug>` marks
  * one that does and names the ticket that owns converting it. Grep for the second to list the
- * deadlines this module does not yet cover.
+ * deadlines this module does not yet cover. `-- cuts off by design: <why>; see
+ * docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"` keeps a deadline
+ * that does wait on the link, through an Optimystic read or commit, but whose value is what its
+ * caller can tolerate: it gives up on purpose and must not grow with the link. That doc section
+ * lists every such site.
  *
  * ── The instrument ──
  *
@@ -84,7 +88,7 @@
  *   `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` in optimystic.
  * - **Cadre deadlines still typed as milliseconds.** The cohort read deadline
  *   (`COHORT_READ_DEADLINE_MS`) bounds reads over the same link but does not derive from it:
- *   `debt-cadre-deadlines-sized-against-old-optimystic-bounds`. Neither do the strand formation
+ *   `cohort-read-deadline-derived-from-the-link`. Neither do the strand formation
  *   step deadline and the relay's reservation-admission deadline:
  *   `debt-formation-and-relay-admission-deadlines-ignore-the-declared-link`.
  * - **A machine that declares a faster link than its peers.** Every machine is the listener

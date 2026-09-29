@@ -74,7 +74,7 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
  * approval unavailable, retry' against 'Formation provisioning timed out'. Both are retryable
  * and both leave the invite unspent, so the race is benign.
  */
-// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
 const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
 /**
  * Settle grace (ms), carved OUT of `provisionTimeoutMs` — never added on top, so the budget

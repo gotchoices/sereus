@@ -3083,7 +3083,9 @@ export class CadreNode implements SAppIdLookup {
     // Ride this pass's cadence to refresh the per-stream gate's materialized
     // authorized set — membership changes that ARRIVED BY REPLICATION (rather
     // than a local write) are picked up here, bounding the snapshot's staleness
-    // to the reconcile interval.
+    // to the time between pass starts: the reconcile interval, or the previous
+    // pass's length when that is longer (passes are single-flight, and one
+    // unreachable sibling's dial alone can take `controlDialBudget().totalMs`).
     // NOTE: this refresh and the sibling enumeration below each run their own
     // CadrePeer query (two reads per pass), plus a third from
     // `refreshStrandPeerAddrs` on every pass where a strand is running AND this
