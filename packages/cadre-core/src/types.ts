@@ -322,7 +322,8 @@ export interface NetworkConfig {
    * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
    * out that first attempt, which costs the drive's whole timeout
    * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, four link round trips at
-   * {@link linkRoundTripMs} — 14 s at its default) against a relay that is unreachable
+   * {@link linkRoundTripMs} plus two admission decisions — 18 s at its default) against a relay
+   * that is unreachable
    * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
    * case libp2p's own discovery lands a reservation independently).
    *
@@ -558,7 +559,9 @@ export interface NetworkConfig {
      * {@link dialTimeoutMs}. Each address is dialed on its own under this limit,
      * so an address that never answers cannot use up the time the peer's other
      * addresses needed. Defaults to
-     * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}.
+     * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}. A value given
+     * here replaces that whole derived budget, including its allowance for the
+     * called machine's admission decision (`relayedDialBudgetMs`).
      */
     perAddressDialTimeoutMs?: number;
     /**

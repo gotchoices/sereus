@@ -58,8 +58,8 @@
  *
  * | budget | value | relayed dial impossible above |
  * | --- | --- | --- |
- * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 14 s at the default declared link | 1750 ms one-way, and moves with `NetworkConfig.linkRoundTripMs` |
- * | libp2p `connectionManager.dialTimeout` and `inboundUpgradeTimeout`, as cadre-core declares them on every node (`connectionManagerTimeouts`) | the same 14 s | the same 1750 ms one-way |
+ * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 16 s at the default declared link: 4 round trips plus a flat 2 s for the called machine's admission decision | 1750 ms one-way when that decision takes its whole 2 s (2000 ms to a machine that runs no gate), and moves with `NetworkConfig.linkRoundTripMs` |
+ * | libp2p `connectionManager.dialTimeout` and `inboundUpgradeTimeout`, as cadre-core declares them on every node (`connectionManagerTimeouts`) | the same 16 s | the same |
  * | the same two, left to db-p2p (libp2p's own 10 s default; db-p2p's fallback 10_000) | 10 s | 1250 ms one-way (2.5 s round trip) |
  * | Optimystic's `DEFAULT_DIAL_TIMEOUT_MS` (`rpc-deadline.ts`, fixed; outside this repo) | 3 s | 375 ms one-way (0.75 s round trip) |
  *
@@ -84,7 +84,7 @@
  * `newStream` took 3031 ms and the listener held 1.
  *
  * **Proved** 2026-09-26, same machine, with `RELAY_DIAL_COST_DELAYS=0,1500`, once cadre-core
- * declared both limits (14 000 ms each at its default link): at 1500 ms one-way, the
+ * declared both limits (then 14 000 ms each at its default link): at 1500 ms one-way, the
  * `cadre-core declared` arm's relayed dial took 12 061 ms, `newStream` over it took 3016 ms,
  * the listener held 1 relayed connection after the stream, and a second dial with no signal of
  * its own completed in 12 068 ms inside the node's `dialTimeout`. The `db-p2p fallback` arm in

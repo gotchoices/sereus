@@ -13,7 +13,7 @@ import {
 } from '../src/control-read-retry.js';
 import { CONTROL_WRITE_ATTEMPTS } from '../src/control-write-retry.js';
 import type { ControlWriteRetryOptions } from '../src/control-write-retry.js';
-import { ADMISSION_DECISION_TIMEOUT_MS } from '../src/membership-connection-gater.js';
+import { ADMISSION_DECISION_TIMEOUT_MS } from '../src/link-budget.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { captureDebugLog } from './capture-debug-log.js';

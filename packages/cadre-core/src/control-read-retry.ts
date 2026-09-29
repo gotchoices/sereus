@@ -14,7 +14,7 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * was absorbed). This module gives reads the same bounded re-presentation with a SHORTER
  * deadline and a NARROWER failure set, because the tightest caller deadline over a control
  * read is the inbound admission gate's 2 s fail-open timeout
- * (`ADMISSION_DECISION_TIMEOUT_MS`, `membership-connection-gater.ts`) — a read budget that
+ * (`ADMISSION_DECISION_TIMEOUT_MS`, `link-budget.ts`) — a read budget that
  * does not fit inside it with headroom spends its retries after the gate has already
  * admitted.
  *

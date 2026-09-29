@@ -67,7 +67,7 @@ const log = debug('sereus:cadre:strand-peer-book');
  * Cap on the peers remembered per strand. When full, the entry with the smallest
  * `max(issuedAt, lastSeenAt)` is evicted. Sixteen is generous for the parties a
  * strand has today (two, occasionally a few), and it bounds the worst case of a
- * launch dialing dead entries: a failed relayed dial costs up to 14 s at the
+ * launch dialing dead entries: a failed relayed dial costs up to 16 s at the
  * declared link, so the cap — with aging — is what keeps a stale book from
  * stalling bring-up for minutes.
  */

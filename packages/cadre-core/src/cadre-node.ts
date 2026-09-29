@@ -6192,9 +6192,9 @@ export class CadreNode implements SAppIdLookup {
    * caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
-   * timeouts (dial by peer id, then by addr; 21 s each at the default declared link round trip)
+   * timeouts (dial by peer id, then by addr; 23 s each at the default declared link round trip)
    * before the reservation drive even starts, so one failed re-drive holds the supervisor
-   * `driving` for those 42 s plus the drive's own deadline — 56 s at the default, and longer on
+   * `driving` for those 46 s plus the drive's own deadline — 64 s at the default, and longer on
    * a host that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the
@@ -6913,8 +6913,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * BUDGET: the supervisor's first attempt is what `start()` waits on — deliberately the drive's
    * ordinary deadline rather than a boot-specific one. That deadline is now COUNTED, four link
-   * round trips at the declared `network.linkRoundTripMs` (14 s at its default, where it was a
-   * fixed 10 s): a healthy dial-plus-reserve is sub-second even over a WAN, so this is slack for
+   * round trips at the declared `network.linkRoundTripMs` plus the relay's two admission
+   * decisions (18 s at its default, where it was a fixed 10 s): a healthy dial-plus-reserve is sub-second even over a WAN, so this is slack for
    * a slow link, while going much longer would make a dead relay indistinguishable from a hung
    * start and much shorter would fail nodes on links that were merely slow. A host that declares
    * a slower link lengthens it without touching this path — `link-budget.ts`. The retries carry

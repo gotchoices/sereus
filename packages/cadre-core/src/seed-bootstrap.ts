@@ -209,7 +209,7 @@ export interface SeedBootstrapConfig {
    * not-yet-trusted node during onboarding, so this is the more exposed
    * direction than the receiver knobs above.
    *
-   * Defaults to `relayedRequestBudgetMs(linkRoundTripMs)` (`link-budget.ts`; 21 s at the
+   * Defaults to `relayedRequestBudgetMs(linkRoundTripMs)` (`link-budget.ts`; 23 s at the
    * default declaration): one dial that may need a relay, then one request and its answer.
    * Delivery does not set `runOnLimitedConnection`, so it does not use a limited relayed
    * connection today; the relayed-dial count is the upper bound on the dial it can use, the
@@ -1138,7 +1138,7 @@ export class SeedBootstrapService {
    * stream, then dial the seed's owners.
    *
    * The ack and the close come BEFORE the owner dials: an unreachable owner can hold
-   * a dial for `dialBudget.totalMs` (56 s at the default declared link), which is not
+   * a dial for `dialBudget.totalMs` (64 s at the default declared link), which is not
    * link time and does not belong inside the sender's delivery deadline. The close is
    * what releases the sender, which reads the ack to end-of-stream. The stream stays
    * counted in {@link activeStreams} through the dials, so {@link maxConcurrentSeeds}

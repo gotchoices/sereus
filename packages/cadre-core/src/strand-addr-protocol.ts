@@ -387,7 +387,7 @@ export async function collectStrandAddrs(
  * per-target lines scattered through a concurrent fan-out do not reassemble into
  * "this sibling was unreachable".
  *
- * NOTE: cost is (targets × `timeoutMs`, 21 s each at the default declared link) with
+ * NOTE: cost is (targets × `timeoutMs`, 23 s each at the default declared link) with
  * no whole-sibling budget, the same shape `dialWake` bounds with
  * `DEFAULT_WAKE_DIAL_BUDGET_MS`. Siblings are asked concurrently, so a collection costs
  * its slowest sibling, not the sum. Fine today — `dialTargets` yields the peerId plus
@@ -434,7 +434,7 @@ async function dialOneSibling(
 
 /**
  * Deadline for ONE attempt to ask a sibling — dial, request, response — unless the caller set
- * its own: `relayedRequestBudgetMs` at the declared link (21 s at the default).
+ * its own: `relayedRequestBudgetMs` at the declared link (23 s at the default).
  *
  * An attempt is either a dial by peer id, which normally reuses an open control connection
  * (`CIRCUIT_REQUEST_ROUND_TRIPS`, 2), or the fallback to the sibling's control addresses, a

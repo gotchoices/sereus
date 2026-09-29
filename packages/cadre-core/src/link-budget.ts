@@ -62,6 +62,20 @@
  * supports rather than matching it exactly: a declaration equal to the supported round trip
  * would derive a budget marginally BELOW the dial it has to contain.
  *
+ * ── The listener's admission decision ──
+ *
+ * The table is link time only. Every budget that OPENS a connection also adds
+ * {@link ADMISSION_DECISION_TIMEOUT_MS} (2 000 ms) per admission decision the machine being
+ * called may make on the way, because that machine's gate runs on the dialer's clock (the
+ * constant's doc says why). So a relayed dial is budgeted at 14 000 + 2 000 = 16 000 ms at the
+ * default declaration, a dial plus one request at 23 000 ms, and a reservation drive, which a
+ * party-run relay decides twice, at 18 000 ms. The allowance is flat: it is local decision
+ * time, not link time, so it does not scale with the declaration.
+ *
+ * The measurement above crossed no gate. The instrument is bare libp2p on both sides, with no
+ * cadre connection gater, so the 12 094 ms contains no admission decision at all. The
+ * allowance is therefore on top of the measured dial rather than already inside it.
+ *
  * ── libp2p's own two limits ──
  *
  * Two limits inside libp2p bound the same relayed dial as cadre's budgets do, and both were
@@ -109,9 +123,11 @@ import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
  * `docs/architecture.md` → "Relay Integration"). The worst relayed dial measured at that link
  * was 12 094 ms, above the 12 000 ms a declaration of exactly 3 000 would derive, so the
  * declaration rounds the supported link up to the next half second. 3 500 derives 14 000 ms
- * and leaves about 1.9 s over that dial: room for a phone's Noise handshake, which the
- * loopback measurement on a desktop does not contain. (The previous 2 000 followed the same
- * convention for the 1.8 s band sereus supported before, with about 720 ms to spare.)
+ * of link time and leaves about 1.9 s over that dial: room for a phone's Noise handshake,
+ * which the loopback measurement on a desktop does not contain. The listener's admission
+ * decision is not in that 1.9 s; it has its own allowance on top (the module doc's "The
+ * listener's admission decision"). (The previous 2 000 followed the same convention for the
+ * 1.8 s band sereus supported before, with about 720 ms to spare.)
  *
  * Two budgets outside this module were sized against the 1.8 s band and do NOT move with it:
  * `COHORT_READ_DEADLINE_MS` (`quereus-plugin-sereus/src/cluster-size.ts`, 5 000 ms) and
@@ -119,8 +135,9 @@ import type { Libp2pConnectionTimeouts } from '@optimystic/db-p2p';
  * "What still fails" list carries the first.
  *
  * What 3 500 costs, against 2 000: a peer that is genuinely gone holds each operation longer
- * before it is abandoned and retried — a relayed dial or a reservation drive 14 s instead of
- * 8 s, and a control-cohort dial of one peer across all its addresses 56 s instead of 32 s.
+ * before it is abandoned and retried — the link part of a relayed dial or a reservation drive
+ * 14 s instead of 8 s, and of a control-cohort dial of one peer across all its addresses 56 s
+ * instead of 32 s. The admission allowance adds to both (see {@link relayedDialBudgetMs}).
  * Raise it further for a link slower still; lower it only on a deployment where EVERY machine
  * of the party is that close, for the reason the "What still fails" list gives.
  */
@@ -159,7 +176,8 @@ export const CIRCUIT_REQUEST_ROUND_TRIPS = 2;
  * Link round trips one request-and-answer costs when the connection may first have to be OPENED,
  * possibly through a relay: {@link RELAYED_DIAL_ROUND_TRIPS} + {@link CIRCUIT_REQUEST_ROUND_TRIPS}.
  * The shape of cadre's own one-frame control protocols (strand wake, strand address, seed
- * delivery), each of which bounds the dial and the exchange with ONE deadline.
+ * delivery), each of which bounds the dial and the exchange with ONE deadline. Link time only:
+ * {@link relayedRequestBudgetMs} adds the listener's admission allowance on top.
  */
 export const RELAYED_REQUEST_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + CIRCUIT_REQUEST_ROUND_TRIPS;
 
@@ -179,6 +197,58 @@ export const RELAYED_REQUEST_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + CIRCUIT_RE
  * not the declared round trip.
  */
 export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
+
+/**
+ * Deadline for one admission decision, after which the fail-open outcome is
+ * used (connection admitted / reservation admitted). Both inbound gaters use
+ * it: the control node's membership gate (`membership-connection-gater.ts`),
+ * and the closed-strand revoked-peer gate (`strand-revocation-enforcer.ts`).
+ * It lives here, not beside the gaters, because the dial budgets below add it
+ * and this module imports nothing of cadre-core's own: importing the gater
+ * would close the cycle link-budget → membership-connection-gater →
+ * seed-bootstrap → link-budget.
+ *
+ * libp2p awaits `denyInboundEncryptedConnection` inside the inbound upgrade
+ * WITHOUT racing its inbound-upgrade timeout signal (unlike the pre-encryption
+ * `denyInboundConnection` hook), so a decision that never settles wedges that
+ * upgrade forever — the connection-manager's inbound-upgrade slot is taken by
+ * `acceptIncomingConnection` and released in the `finally` that never runs. The
+ * real policy reads the control DB (`listAuthorizedMembers`), which can pull
+ * over the network, so "never settles" is reachable. Bounding it keeps the
+ * fail-open contract honest: a slow decision admits rather than silently
+ * failing closed (or not at all).
+ *
+ * The control gate's decision waits on the link, through two live control reads
+ * (`Revocation`, then `CadrePeer`) that can consult the cohort, yet this deadline
+ * cuts it off on purpose and must not grow with the link:
+ *
+ * - **Fail-open is the designed outcome.** An expired decision admits a
+ *   connection and nothing more: the per-protocol stream gates still refuse
+ *   every members-only protocol from the materialized snapshot, and unplaced
+ *   relay reservations stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`).
+ * - **The slow case is bring-up, not steady state.** A membership read consults
+ *   the cohort only for a block this node does not hold, or before the
+ *   `Revocation` ledger marker exists; once the marker exists every block the
+ *   decision reads is held (`control-founding-consult-budget.spec.ts` pins both
+ *   states). So the gate always fails open only on a node whose membership reads
+ *   still consult: one consult costs about two link round trips, and asking a
+ *   silent peer costs the per-peer read deadline (`COHORT_READ_DEADLINE_MS`, 5 s).
+ * - **The decision is spent on the dialing machine's clock.** libp2p's listener
+ *   runs this gate before it answers the multiplexer negotiation the dialer is
+ *   waiting on (`libp2p/dist/src/upgrader.js`), and the listener's own
+ *   `inboundUpgradeTimeout` is already running while it does. So
+ *   {@link relayedDialBudgetMs}, and every budget built on it, adds this
+ *   deadline once per decision the called machine may make, and the two libp2p
+ *   limits ({@link connectionManagerTimeouts}) contain it by construction.
+ *   Raising it therefore lengthens every dial budget with it: a slow decision
+ *   still fits, and a dial to a peer that is gone takes that much longer to
+ *   give up.
+ *
+ * `CONTROL_READ_RETRY_BUDGET_MS` must stay below this, which
+ * `control-read-retry.spec.ts` pins.
+ */
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: an expired decision admits a connection only, and the dial budgets add it as a flat allowance; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
+export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
 
 /**
  * Resolve a host's declared link round trip, falling back to
@@ -210,10 +280,22 @@ export function resolveLinkRoundTripMs(linkRoundTripMs?: number): number {
 
 /**
  * Deadline for OPENING a connection to another machine that may only be reachable through a
- * relay: {@link RELAYED_DIAL_ROUND_TRIPS} at the declared link round trip.
+ * relay: {@link RELAYED_DIAL_ROUND_TRIPS} at the declared link round trip, plus one
+ * {@link ADMISSION_DECISION_TIMEOUT_MS} for the called machine's inbound gate, which runs on
+ * this dial's clock. 4 x 3 500 + 2 000 = 16 000 ms at the default declaration.
+ *
+ * What the allowance costs: a peer that is truly gone holds each dial 2 s longer before it is
+ * abandoned — a per-address dial 16 s instead of 14 s, a control-cohort dial of one peer across
+ * its 4 addresses 64 s instead of 56 s, and a wake call's two attempts 46 s instead of 42 s. A
+ * machine that runs no gate (the dedicated relay container, an open-strand node) gets the same
+ * budget; the extra 2 s only lengthens a failure there, never a success.
+ *
+ * A per-field override of a deadline derived from this one
+ * (`network.controlCohort.perAddressDialTimeoutMs`, `strandBackfill.dialTimeoutMs`,
+ * `DialWakeOptions.timeoutMs`, …) replaces the whole derived value, allowance included.
  */
 export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
-	return RELAYED_DIAL_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+	return RELAYED_DIAL_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + ADMISSION_DECISION_TIMEOUT_MS;
 }
 
 /**
@@ -222,9 +304,10 @@ export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
  * node.
  *
  * Both bound the same thing — opening a relayed connection, measured at 8 one-way link delays,
- * which is {@link RELAYED_DIAL_ROUND_TRIPS} (4) link round trips — so both are
- * {@link relayedDialBudgetMs}: 4 x 3 500 = 14 000 ms at the default declaration, covering the
- * 12 094 ms measured at the supported 3-second link.
+ * which is {@link RELAYED_DIAL_ROUND_TRIPS} (4) link round trips, and the listener's admission
+ * decision inside it — so both are {@link relayedDialBudgetMs}: 4 x 3 500 + 2 000 = 16 000 ms
+ * at the default declaration, covering the 12 094 ms measured at the supported 3-second link
+ * plus a decision that takes its whole {@link ADMISSION_DECISION_TIMEOUT_MS}.
  *
  * The listener's limit is deliberately NOT smaller than the dialer's. The listener's clock
  * starts only when the relay hands it the circuit, a few one-way delays after the dialer's
@@ -233,7 +316,7 @@ export function relayedDialBudgetMs(linkRoundTripMs?: number): number {
  * listener limit below the dialer's is what produced the silent failure in the module doc.
  *
  * The cost of a longer `inboundUpgradeTimeout` is that a peer which opens a connection and then
- * stalls its handshake holds that half-built connection 14 s instead of 10 s.
+ * stalls its handshake holds that half-built connection 16 s instead of 10 s.
  *
  * NOTE: derived from the declaration alone, so a per-field override that raises a cadre dial
  * budget above it (`controlCohort.perAddressDialTimeoutMs`, `strandBackfill.dialTimeoutMs`)
@@ -248,10 +331,18 @@ export function connectionManagerTimeouts(linkRoundTripMs?: number): Libp2pConne
 
 /**
  * Deadline for one whole relay reservation drive: {@link RELAY_RESERVATION_ROUND_TRIPS} at the
- * declared link round trip.
+ * declared link round trip, plus two {@link ADMISSION_DECISION_TIMEOUT_MS}.
+ * 4 x 3 500 + 2 x 2 000 = 18 000 ms at the default declaration.
+ *
+ * Two, because a party-run relay is a control node and decides twice on the drive's clock:
+ * once for the connection (`denyInboundEncryptedConnection`), then again for the reservation
+ * (`denyInboundRelayReservation`), each under the same deadline. The count's slack of 2 round
+ * trips over the measured protocol work happens to cover both at the default declaration, but
+ * not at a declared round trip under 2 000 ms; counting them makes the budget hold at every
+ * declaration.
  */
 export function relayReservationBudgetMs(linkRoundTripMs?: number): number {
-	return RELAY_RESERVATION_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+	return RELAY_RESERVATION_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs) + 2 * ADMISSION_DECISION_TIMEOUT_MS;
 }
 
 /**
@@ -268,13 +359,16 @@ export function circuitRequestBudgetMs(
 
 /**
  * Deadline for opening a (possibly relayed) connection and completing one small request on it:
- * {@link RELAYED_REQUEST_ROUND_TRIPS} at the declared link round trip.
+ * {@link relayedDialBudgetMs}, admission allowance included, plus
+ * {@link CIRCUIT_REQUEST_ROUND_TRIPS} at the declared link round trip — so
+ * {@link RELAYED_REQUEST_ROUND_TRIPS} of link time in all. 16 000 + 2 x 3 500 = 23 000 ms at the
+ * default declaration.
  *
  * No transfer allowance, unlike {@link circuitRequestBudgetMs}: the requests this bounds are a few
  * hundred bytes to a few KB, so their bytes cost nothing a round trip does not already cover.
  */
 export function relayedRequestBudgetMs(linkRoundTripMs?: number): number {
-	return RELAYED_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+	return relayedDialBudgetMs(linkRoundTripMs) + CIRCUIT_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
 }
 
 /** The two deadlines one peer-join catch-up push needs, both derived from the declared link. */

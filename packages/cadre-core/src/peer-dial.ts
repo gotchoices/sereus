@@ -34,8 +34,9 @@ const log = debug('sereus:cadre:peer-dial');
 
 /**
  * Default limit on ONE address's dial attempt, in ms, at the DEFAULT declared link round trip:
- * `RELAYED_DIAL_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS` (3500 ms) = 14 000 ms. It was
- * a fixed 8000 ms before it was derived.
+ * `RELAYED_DIAL_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS` (3500 ms) plus the called
+ * machine's `ADMISSION_DECISION_TIMEOUT_MS` (2000 ms) = 16 000 ms (`relayedDialBudgetMs`). It
+ * was a fixed 8000 ms before it was derived.
  *
  * It has to cover the slowest address that should succeed, because an attempt
  * that needs longer fails the same way on every retry. That is a relayed dial on

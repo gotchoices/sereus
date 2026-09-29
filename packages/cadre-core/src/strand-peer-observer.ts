@@ -16,7 +16,7 @@
  *
  * Throttled to one report per peer per {@link STRAND_PEER_OBSERVE_THROTTLE_MS}
  * unless the address set changed, so a flapping relayed connection — identify
- * fires on every reconnect, every 14 s at worst — does not rewrite the node-local
+ * fires on every reconnect, every 16 s at worst — does not rewrite the node-local
  * slot each time. Best-effort throughout: nothing here throws into a libp2p event
  * handler.
  *

@@ -48,19 +48,19 @@ The reasoning for each value lives in the constant's own comment, in `packages/c
 
 | deadline | value | waits on | intent | reasoning at |
 | --- | --- | --- | --- | --- |
-| `ADMISSION_DECISION_TIMEOUT_MS` | 2 000 ms | one inbound admission decision, in both gaters: the control node's membership policy (`listAuthorizedMembers`, which reads `Revocation` then `CadrePeer` live) and the closed-strand revoked-peer gate (the strand's revocation state) | cuts off | `membership-connection-gater.ts` |
+| `ADMISSION_DECISION_TIMEOUT_MS` | 2 000 ms | one inbound admission decision, in both gaters: the control node's membership policy (`listAuthorizedMembers`, which reads `Revocation` then `CadrePeer` live) and the closed-strand revoked-peer gate (the strand's revocation state) | cuts off; every dial budget adds it as a flat allowance | `link-budget.ts` |
 | `CONTROL_READ_RETRY_BUDGET_MS` | 1 500 ms | the control-read retry loop, checked between attempts | cuts off | `control-read-retry.ts` |
 | `CONTROL_WRITE_RETRY_BUDGET_MS` | 10 000 ms | the control-write retry loop, checked between attempts | cuts off | `control-write-retry.ts` |
 | `DEFAULT_PROVISION_TIMEOUT_MS` | 12 000 ms | the formation provisioning hook: control reads, one `FormationUsage` commit, the approval hook | contains, with a designed cut-off at its end | `strand-formation-protocol.ts` |
 | `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` | 300 000 ms | a joining machine's whole first sync, which runs several cohort consults | contains | `strand-first-sync-gate.ts` |
-| wake and strand-address attempt deadlines (`DEFAULT_WAKE_TIMEOUT_MS`, `attemptTimeoutMs`) | 21 000 ms at the default declared link | a dial and one request, plus the receiver's membership check | contains, except the membership check (see the last bullet below) | `strand-wake-protocol.ts`, `strand-addr-protocol.ts` |
+| wake and strand-address attempt deadlines (`DEFAULT_WAKE_TIMEOUT_MS`, `attemptTimeoutMs`) | 23 000 ms at the default declared link | a dial and one request, plus the receiver's membership check | contains, except the membership check (see the last bullet below) | `strand-wake-protocol.ts`, `strand-addr-protocol.ts` |
 | `DEFAULT_SEED_READ_TIMEOUT_MS` | 10 000 ms | one inbound seed frame; the trust decision and peer-store merge run after it, and touch no Optimystic data | neither: `link-independent` | `seed-bootstrap.ts` |
 | `DEFAULT_CONTROL_COHORT_RECONCILE_MS` | 15 000 ms | nothing: an interval between reconcile passes | not a deadline | `control-cohort.ts` |
 
 Three relationships between these numbers are load-bearing:
 
 - **The read-retry budget is below the admission deadline**, so a read that recovers on its second attempt still decides the admission instead of arriving after the gate failed open. Checked by `control-read-retry.spec.ts`.
-- **Every dial into a gated node has room for the admission decision.** libp2p's listener runs the gate before it answers the multiplexer negotiation the dialer is waiting on, so the decision is spent inside the dialer's budget. Not checked yet: at the supported 3 s round trip a relayed dial measured 12 094 ms against a 14 000 ms budget, about 1.9 s of room for a 2 s decision. It holds by construction once `dial-budgets-contain-the-admission-decision` adds the decision to the dial budgets.
+- **Every dial into a gated node has room for the admission decision.** libp2p's listener runs the gate before it answers the multiplexer negotiation the dialer is waiting on, so the decision is spent inside the dialer's budget. It holds by construction: `link-budget.ts` derives `relayedDialBudgetMs` as four link round trips plus `ADMISSION_DECISION_TIMEOUT_MS` (16 000 ms at the default declared link, against a relayed dial measured at 12 094 ms with no gate in it), `relayedRequestBudgetMs` as that dial plus two round trips, and `relayReservationBudgetMs` as four round trips plus two decisions, because a party-run relay decides the connection and then the reservation. libp2p's `dialTimeout` and `inboundUpgradeTimeout` are the dial budget, so the listener's own limit contains its gate too. `link-budget.spec.ts` pins each formula.
 - **The plugin's per-peer read deadline equals cadre-core's derivation from the declared link.** Not checked yet: `COHORT_READ_DEADLINE_MS` is fixed milliseconds today. `cohort-read-deadline-derived-from-the-link` derives it and adds the spec that pins the two equal.
 
 One gap is deliberate, with a stated condition for revisiting it:

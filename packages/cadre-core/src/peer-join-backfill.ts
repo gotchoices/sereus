@@ -176,7 +176,8 @@ export interface PeerJoinBackfillConfig {
   maxChunkBlocks?: number;
   /**
    * Per-push dial deadline, ms. Default {@link peerJoinPushBudget}'s `dialTimeoutMs` — four link
-   * round trips at the declared link, 14 000 ms as shipped. NOT a fixed number: a relayed dial
+   * round trips at the declared link plus the called machine's admission decision, 16 000 ms as
+   * shipped. NOT a fixed number: a relayed dial
    * costs a fixed number of exchanges, so a host on a slower link moves this (and every other
    * cadre dial budget) by declaring `NetworkConfig.linkRoundTripMs`. Naming it here still wins
    * over the derived value — `link-budget.ts` has the counts and the measurement.

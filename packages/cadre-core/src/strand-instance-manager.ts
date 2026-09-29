@@ -1032,7 +1032,7 @@ export class StrandInstanceManager {
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
       //
       // NOTE: a relay that is down costs this launch one full drive — the reservation budget
-      // counted from the declared link round trip, 14 s at its default (`link-budget.ts`) — and
+      // counted from the declared link round trip, 18 s at its default (`link-budget.ts`) — and
       // `StrandWatcher` launches strands one at a time, so N strands cost N of those in
       // bring-up during a relay outage, and MORE on a host that declared a slower link. If that
       // ever matters, stop awaiting here (the circuit addr then lands after `active`) rather

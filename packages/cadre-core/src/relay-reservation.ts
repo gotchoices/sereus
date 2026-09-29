@@ -143,7 +143,9 @@ export interface RelayReservationState {
 /**
  * How long {@link driveRelayReservation} waits for a reservation to appear, at the DEFAULT
  * declared link round trip: `RELAY_RESERVATION_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS`
- * (3500 ms) = 14 000 ms, where it was a fixed 10_000 before it was derived.
+ * (3500 ms), plus 2 x `ADMISSION_DECISION_TIMEOUT_MS` (2000 ms) for a party-run relay's
+ * connection and reservation decisions, = 18 000 ms (`relayReservationBudgetMs`), where it was a
+ * fixed 10_000 before it was derived.
  *
  * Counted rather than chosen because this one deadline bounds the whole drive — dial the relay,
  * request the reservation, wait — and each of those costs a fixed number of exchanges, not a

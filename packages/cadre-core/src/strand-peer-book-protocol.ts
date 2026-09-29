@@ -28,7 +28,7 @@
  *
  * 1. Open strands have no shared member key at all, and the book has to work there.
  * 2. A member-key signature proves only "some member said this", so any member could
- *    forge another member's address and cost every peer a 14 s relayed dial per
+ *    forge another member's address and cost every peer a 16 s relayed dial per
  *    launch; a self-signature is a claim only the named peer can make.
  * 3. On a closed strand the member key is shared by every machine of a party, so it
  *    cannot identify a machine anyway.

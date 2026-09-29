@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+	ADMISSION_DECISION_TIMEOUT_MS,
 	CIRCUIT_REQUEST_ROUND_TRIPS,
 	DECLARED_LINK_ROUND_TRIP_MS,
 	PUSH_TRANSFER_ALLOWANCE_MS,
@@ -14,8 +15,9 @@ import {
 } from '../src/link-budget.js';
 
 /**
- * The derivation itself — a measured round-trip count times one declared round trip, and a
- * host's own declaration winning over the default. The COUNTS are not asserted against literal
+ * The derivation itself — a measured round-trip count times one declared round trip, plus a flat
+ * allowance per admission decision the called machine may make, and a host's own declaration
+ * winning over the default. The COUNTS are not asserted against literal
  * milliseconds here on purpose: the point of the module is that the numbers move together, so a
  * case that re-spelled 8000 would have to be edited by the very change it is supposed to guard.
  *
@@ -23,17 +25,19 @@ import {
  * (opt-in). Nothing here dials anything.
  */
 describe('link budgets', () => {
-	it('multiplies each operation\'s round-trip count by the declared link round trip', () => {
-		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
-		expect(relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
-		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+	it('multiplies each operation\'s round-trip count by the declared link round trip, plus its admission decisions', () => {
+		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
+		expect(relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + 2 * ADMISSION_DECISION_TIMEOUT_MS);
+		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 
-		// A host that declares a slower link moves every budget at once, which is the whole
-		// reason the declaration exists.
+		// A host that declares a slower link moves the round-trip part of every budget at once,
+		// which is the whole reason the declaration exists. The admission allowance is local
+		// decision time, so it stays flat.
 		const declared = 3 * DECLARED_LINK_ROUND_TRIP_MS;
-		expect(relayedDialBudgetMs(declared)).toBe(3 * relayedDialBudgetMs());
-		expect(relayReservationBudgetMs(declared)).toBe(3 * relayReservationBudgetMs());
-		expect(relayedRequestBudgetMs(declared)).toBe(3 * relayedRequestBudgetMs());
+		const added = declared - DECLARED_LINK_ROUND_TRIP_MS;
+		expect(relayedDialBudgetMs(declared) - relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * added);
+		expect(relayReservationBudgetMs(declared) - relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * added);
+		expect(relayedRequestBudgetMs(declared) - relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * added);
 	});
 
 	it('scales only the latency part of a circuit request, leaving the transfer allowance flat', () => {
