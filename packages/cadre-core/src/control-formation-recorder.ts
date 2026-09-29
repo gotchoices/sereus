@@ -31,7 +31,8 @@ const NEVER_EXPIRES = new Date(8640000000000000);
  *
  * - **Bound (provision-then-record):** the host strand already exists (owner-signed
  *   up front and named by the invite's `StrandId`), so {@link resolveStrand} reports it
- *   and {@link recordUsage} writes the consent row against that pre-existing strand
+ *   and {@link authorizeUsage} then its `record()` (or {@link recordUsage}, both at once)
+ *   writes the consent row against that pre-existing strand
  *   (record-only) rather than inserting a new `Strand`.
  * - **Unbound (responder-provisions):** the invite carries no `StrandId`, so
  *   {@link provisionAndRecord} mints a fresh strand and records consent against it
