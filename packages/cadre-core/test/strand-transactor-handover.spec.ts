@@ -32,7 +32,7 @@ import { tempStorageDir } from './control-db-node-helpers.js';
  * unread would quietly degrade into a network→network test that still passes.
  */
 
-const SCHEMA = 'create table Note (Id text primary key, Body text not null);';
+const SCHEMA = 'table Note (Id text primary key, Body text not null);';
 
 /** Rows the local-transactor era writes; the network era must see every one. */
 const GEN1_IDS = ['gen1-a', 'gen1-b', 'gen1-c'];

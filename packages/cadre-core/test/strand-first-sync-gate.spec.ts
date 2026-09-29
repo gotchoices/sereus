@@ -56,7 +56,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
-const testSchema = 'create table Test (id text primary key);';
+const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
 /** Fast gate: a 5 ms probe cadence, and a 40 ms default wait so timeouts are cheap. */
 const FAST_GATE = { pollIntervalMs: 5, timeoutMs: 40 };

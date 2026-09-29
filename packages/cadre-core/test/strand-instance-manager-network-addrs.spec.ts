@@ -64,7 +64,7 @@ describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
   let authorPublicKey: string;
 
-  const testSchema = 'create table Test (id text primary key);';
+  const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
 
   beforeEach(() => {

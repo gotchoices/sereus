@@ -16,7 +16,7 @@ describe('StrandInstanceManager', () => {
     authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
 
-  const testSchema = 'create table Test (id text primary key);';
+  const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
   /**
    * Unparseable sApp DDL (no table name): StrandDatabase.initialize() throws
@@ -24,7 +24,8 @@ describe('StrandInstanceManager', () => {
    * failure AFTER the instance is registered — the schema-signature rejections
    * below fail earlier, before anything is recorded.
    */
-  const BAD_SCHEMA = 'create table (id text primary key);';
+  const BAD_SCHEMA = 'table (id text primary key);';
+  const BAD_SCHEMA_ERROR = /Expected table name in declaration/;
 
   // Helper to create test strand rows
   function createStrandRow(id: string, type: 'o' | 'c' = 'o'): StrandRow {
@@ -246,7 +247,7 @@ describe('StrandInstanceManager', () => {
         requireSignedSchemas: false
       });
 
-      await expect(manager.startStrand(config)).rejects.toThrow();
+      await expect(manager.startStrand(config)).rejects.toThrow(BAD_SCHEMA_ERROR);
 
       expect(manager.getInstance('doomed-strand')).toBeUndefined();
       expect(manager.hasStrand('doomed-strand')).toBe(false);
@@ -260,7 +261,7 @@ describe('StrandInstanceManager', () => {
       await expect(manager.startStrand(createStartConfig(strandId, {
         sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
         requireSignedSchemas: false
-      }))).rejects.toThrow();
+      }))).rejects.toThrow(BAD_SCHEMA_ERROR);
 
       // Same id, now with a valid schema: the retry must actually build a runtime
       // rather than hand back the dead record from the first attempt.
@@ -281,7 +282,7 @@ describe('StrandInstanceManager', () => {
       await expect(manager.startStrand(createStartConfig('orphan-config-strand', {
         sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
         requireSignedSchemas: false
-      }))).rejects.toThrow();
+      }))).rejects.toThrow(BAD_SCHEMA_ERROR);
 
       await expect(manager.resumeStrand('orphan-config-strand')).rejects.toThrow(/not tracked/);
     }, 30000);
