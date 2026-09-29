@@ -42,7 +42,9 @@ if (tokenPath) {
     CADRE_LISTEN_ADDRS: process.env.CADRE_LISTEN_ADDRS ?? null,
     DEBUG: process.env.DEBUG ?? null,
   };
-  try { fs.writeFileSync(path.join(dir, 'env-seen.json'), JSON.stringify(record), 'utf8'); } catch (e) { console.error(e); }
+  // Write then rename: the test polls for the file's existence, and must never read it half-written.
+  const seenPath = path.join(dir, 'env-seen.json');
+  try { fs.writeFileSync(seenPath + '.tmp', JSON.stringify(record), 'utf8'); fs.renameSync(seenPath + '.tmp', seenPath); } catch (e) { console.error(e); }
   if (token) { try { fs.writeFileSync(tokenPath, token, 'utf8'); } catch (e) { console.error(e); } }
 }
 process.on('SIGTERM', () => process.exit(0));
