@@ -5,15 +5,16 @@
  * connection.
  *
  * Topology: two DIFFERENT parties, each a single `CadreNode` with
- * `listenAddrs: []` (cannot listen) and `relayAddrs: [<relay>]`, sharing one
+ * `listenAddrs: []` (cannot listen) and `relayAddrs: [<relay>]`, each on a
  * DEDICATED relay (`harness/dedicated-relay.ts` — the loopback stand-in for the
- * `ops/docker/libp2p-infra` container). The relay is strictly a relay: no cadre
+ * `ops/docker/libp2p-infra` container). A relay is strictly a relay: no cadre
  * protocols, no membership gate, in no cohort, holding no data. This is the
  * cross-party sibling of `strand-circuit-same-party-e2e.integration.ts` (one
  * party's two machines over the same fixture) — here the two ends are
  * STRANGERS, so formation, not membership, is what carries the introduction.
  *
- * Flow under test (all over the one relay):
+ * Flow under test (described for the shared-relay arms; the per-party arm is
+ * the paragraph after this list):
  *
  *   1. Party A boots relay-only, founds a CLOSED strand, and publishes a BOUND
  *      invitation. The invitation's bootstrap addresses are A's control
@@ -55,24 +56,43 @@
  *      measured same-party: one slot per node per network, so every strand a
  *      NAT'd node joins costs one extra relay slot per node.
  *
- * The same journey runs TWICE, from one body: once on bare loopback, and once with 10 ms of
- * one-way per-frame delay on every dialed WebSocket (`harness/ws-latency.ts`). The second arm
- * is the only place in the suite where relayed bring-up meets a link that is not instant, so
- * a change that made formation, seeding or replication far more latency-sensitive fails here
- * instead of shipping. It is NOT a bandwidth or loss model — delay only.
+ * The same journey runs THREE times, from one body. Twice on one shared relay: once on bare
+ * loopback, and once with 10 ms of one-way per-frame delay on every dialed WebSocket
+ * (`harness/ws-latency.ts`). That latency arm is the only place in the suite where relayed
+ * bring-up meets a link that is not instant, so a change that made formation, seeding or
+ * replication far more latency-sensitive fails here instead of shipping. It is NOT a
+ * bandwidth or loss model — delay only. `WS_SEND_DELAY_MS` (docs/testing.md) pins the whole
+ * process, so setting it runs all three tests in this file at that delay.
  *
- * Delegate admission is a NON-PARTICIPANT here: the dedicated relay speaks no
- * `/sereus/strand-addr/1.0.0` (asserted against its live protocol list), so the
+ * The third run is the PER-PARTY arm, on loopback: A reserves on relay 1 and B on relay 2, the
+ * shape two strangers who each configured their own relay actually have. Every address A
+ * publishes names relay 1 and every address B publishes names relay 2, so B's formation dial
+ * (and its strand node's seeded dial) goes THROUGH relay 1, where B holds no reservation — B
+ * is only a client of that relay's hop — and A reaching B goes through relay 2. Formation is
+ * asserted to have crossed: every connection B's control node holds to A's names relay 1 in its
+ * remote address. The slot cost is measured per relay and every relay is checked at every
+ * checkpoint, including once more after rows have crossed both ways: relay 1 holds 2 (A's
+ * control and strand) and relay 2 holds 2 (B's), measured stable over three runs — no node
+ * took a slot on a relay it was not configured with, although each dials through the other
+ * party's relay. (libp2p's relay discovery can nominate the foreign relay once the dial through
+ * it has recorded the hop protocol against it — `relay-reservation.ts` — but
+ * `@libp2p/circuit-relay-v2`'s reservation store refuses a discovered relay while no pending
+ * reservation is waiting, and each node's is already filled by its own relay.)
+ * NOTE: a node that LOST its own reservation re-opens a pending slot that discovery could fill
+ * from the foreign relay instead; this arm never loses one. If reservation loss is ever
+ * scenarioed in the per-party shape, count reservations per relay there too.
+ *
+ * Delegate admission is a NON-PARTICIPANT here: no dedicated relay speaks
+ * `/sereus/strand-addr/1.0.0` (asserted against each one's live protocol list), so the
  * delegate-announce half of `resolveCohortSeed` folds to a no-op — the RPC
  * fan-out folds the unsupported-protocol failure into an `unreachable` outcome
  * with no addrs (`collectStrandAddrs` → `dialOneSibling`) — and both `foundStrand`/`addStrand`
  * resolving is the proof nothing in the flow blocks on it.
  *
  * ── Out of scope, deliberately ──
- * TWO relays (A and B each reserved on a different relay, so the circuit path
- * crosses relay boundaries) is untested — this scenario proves the one-shared-
- * relay shape only; ticket `feat-scenario-two-relay-circuit`. Reservation loss under a running strand is characterized by
- * the same-party sibling and not repeated here.
+ * Reservation loss under a running strand is characterized by the same-party
+ * sibling and not repeated here. The per-party arm runs on loopback only: link
+ * sensitivity does not depend on which relay each party uses.
  *
  * Lookup shape: App.Data reads scan and filter in JavaScript — a where-equality
  * on the primary key can MISS on a networked strand
@@ -161,32 +181,64 @@ function expectAllPathsRelayed(node: Libp2p, peerId: string, label: string): voi
 }
 
 /**
- * Assert `node` holds NO direct connection to anyone but the relay itself —
- * the "a direct fallback cannot pass for relayed success" sweep. (The direct
- * ws connection to the relay is the reservation keep-alive and is expected.)
+ * Assert `node` holds NO direct connection to anyone but a configured relay —
+ * the "a direct fallback cannot pass for relayed success" sweep. (A direct ws
+ * connection to a relay is either the reservation keep-alive or, in the
+ * per-party arm, the hop-client link to the OTHER party's relay; both expected.)
  */
-function expectOnlyRelayDirect(node: Libp2p, relayPeerId: string, label: string): void {
+function expectOnlyRelayDirect(node: Libp2p, relayPeerIds: ReadonlySet<string>, label: string): void {
 	for (const path of summarizeConnectionPaths(node.getConnections()).paths) {
-		if (path.peerId !== relayPeerId) {
+		if (!relayPeerIds.has(path.peerId)) {
 			expect(path.kind, `${label}: non-relay peer ${path.peerId} via ${path.remoteAddr}`).toBe('relayed');
 		}
 	}
 }
 
+/**
+ * Expected reservation counts, per relay. `reserved(relay, label)` records one
+ * more slot on `relay` and then checks EVERY relay against its tally — checking
+ * them all at each step is what catches a node taking a slot on a relay it was
+ * never configured with. `check(label)` re-asserts without recording one.
+ */
+function reservationTally(relays: readonly DedicatedRelay[]) {
+	const expected = new Map<DedicatedRelay, number>(relays.map((r) => [r, 0]));
+	const check = (label: string): void => {
+		for (const [relay, n] of expected) {
+			expect(relay.reservationCount(), `${label}: reservations on relay ${relay.peerId}`).toBe(n);
+		}
+	};
+	return {
+		reserved(on: DedicatedRelay, label: string): void {
+			expected.set(on, expected.get(on)! + 1);
+			check(label);
+		},
+		check,
+	};
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
+
+interface BlindRelayRunOptions {
+	/** Holds every outbound WebSocket frame in the process this long — the slow-link arm. */
+	latency?: WsLatencyOptions;
+	/** `shared`: both parties reserve on one relay. `per-party`: each reserves on its own. */
+	relays: 'shared' | 'per-party';
+}
 
 /**
  * The whole scenario, run once. `latency`, when given, holds every outbound WebSocket frame
  * in the process for that long before it leaves the dialing node (`harness/ws-latency.ts`),
- * which is what turns this loopback topology into a slow-link one. Everything else — the
- * gates, the assertions, the teardown — is identical between the arms on purpose: what the
- * latency arm adds is the link condition, not a different test.
+ * which is what turns this loopback topology into a slow-link one. `relays` picks whether B
+ * reserves on A's relay or on its own; every difference between those shapes follows from
+ * `relayA` / `relayB`. Everything else — the gates, the assertions, the teardown — is
+ * identical between the arms on purpose: an arm adds a condition, not a different test.
  */
-async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<void> {
+async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<void> {
 	// Before any node is constructed: the shim swaps the global WebSocket constructor, and a
 	// node dials its relay during start().
-	const link = latency === undefined ? undefined : installWsLatency(latency);
-	let relay: DedicatedRelay | undefined;
+	const link = opts.latency === undefined ? undefined : installWsLatency(opts.latency);
+	let relayA: DedicatedRelay | undefined; // the relay A reserves on
+	let relayB: DedicatedRelay | undefined; // the relay B reserves on — relayA itself when shared
 	let A: CadreNode | undefined; // party A: founder/owner, one phone
 	let B: CadreNode | undefined; // party B: joiner, one phone, a total stranger to A
 	try {
@@ -194,12 +246,18 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		const strandId = `strand-blind-${runTag}`;
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 
-		// ── The dedicated relay: ungated, no cadre protocols, no default limit ──
-		relay = await startDedicatedRelay();
-		// Delegate admission is a non-participant: the relay speaks no
+		// ── The dedicated relay(s): ungated, no cadre protocols, no default limit ──
+		relayA = await startDedicatedRelay();
+		relayB = opts.relays === 'per-party' ? await startDedicatedRelay() : relayA;
+		const relays = [...new Set([relayA, relayB])];
+		const relayPeerIds: ReadonlySet<string> = new Set(relays.map((r) => r.peerId));
+		const tally = reservationTally(relays);
+		// Delegate admission is a non-participant: no relay speaks the
 		// strand-addr protocol, so no delegate grant can exist and none is
 		// needed — the announce fan-out folds to a no-op (see file header).
-		expect(relay.node.getProtocols()).not.toContain(STRAND_ADDR_PROTOCOL);
+		for (const relay of relays) {
+			expect(relay.node.getProtocols()).not.toContain(STRAND_ADDR_PROTOCOL);
+		}
 
 		// ── Party A: one phone — relay-only, no relay server of its own ─────
 		// `relayAddrs` is fail-fast, so a resolved start() means the control
@@ -212,7 +270,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 			profile: 'storage',
 			enableRelay: false,
 			listenAddrs: [],
-			relayAddrs: [relay.dialAddr],
+			relayAddrs: [relayA.dialAddr],
 		}));
 		await A.start();
 		await makeOwnOwner(A, aKey);
@@ -234,7 +292,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 			expect(addr).toContain('/p2p-circuit');
 		}
 		expect(A.getRelayReservationState().status).toBe('reserved');
-		expect(relay.reservationCount()).toBe(1);
+		tally.reserved(relayA, 'after A control start');
 
 		// ── A founds the CLOSED strand, live BEFORE the invite is published ──
 		// Bound-invite formation replies with the host strand's addresses and
@@ -249,7 +307,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		// The strand node's per-relay reservation supervisor landed its first attempt
 		// before foundStrand resolved: its announced addrs already include the circuit.
 		expect(aStrandNode.getMultiaddrs().map(String).some(isCircuit)).toBe(true);
-		expect(relay.reservationCount()).toBe(2);
+		tally.reserved(relayA, 'after A founds the strand');
 
 		// ── The bound invitation, delivered out-of-band (encode → decode) ────
 		const invitation = await A.createOpenInvitation(SAPP_ID, YEAR_MS);
@@ -274,7 +332,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 			partyId: `blind-b-${runTag}`,
 			privateKey: bKey,
 			listenAddrs: [],
-			relayAddrs: [relay.dialAddr],
+			relayAddrs: [relayB.dialAddr],
 		}));
 		await B.start();
 		// B is a REAL party, not a bare node: a closed-strand formation makes the
@@ -286,13 +344,14 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		for (const addr of controlAddrs(B)) {
 			expect(addr).toContain('/p2p-circuit');
 		}
-		expect(relay.reservationCount()).toBe(3);
+		tally.reserved(relayB, 'after B control start');
 
 		// ── B decodes the invitation and forms — a stranger, over the relay ──
 		// This dial is the first-ever exercise of the stranger-open formation
 		// protocol across a circuit: B's control node dials A's `/p2p-circuit`
-		// bootstrap address through the shared relay, and A's membership gate
-		// admits the stranger only because the invitation is outstanding.
+		// bootstrap address through A's relay — in the per-party arm a relay B
+		// holds no reservation on — and A's membership gate admits the stranger
+		// only because the invitation is outstanding.
 		const decoded = B.decodeInvitation(encoded);
 		expect(decoded.token).toBe(invitation.token);
 		expect(decoded.expiration.getTime()).toBe(invitation.expiration.getTime());
@@ -336,6 +395,13 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		// captures the classification while the stream is live.
 		expectAllPathsRelayed(B.getControlNode()!, aPeerId, 'B control');
 		expectAllPathsRelayed(A.getControlNode()!, bPeerId, 'A control');
+		// ...and it rode A's relay, the one the invitation names: in the per-party arm
+		// this is the proof the dial crossed relays. Pinned on B's outbound side only —
+		// the shape of the inbound side's remoteAddr is libp2p's business.
+		const viaRelayA = `/p2p/${relayA.peerId}/p2p-circuit`;
+		for (const conn of B.getControlNode()!.getConnections().filter((c) => c.remotePeer.toString() === aPeerId)) {
+			expect(conn.remoteAddr.toString(), 'B control reached A through relay A').toContain(viaRelayA);
+		}
 
 		// ── B launches the strand from the carried seed alone ────────────────
 		// FounderOwnerKey stays null, so B attaches as a joiner; the carried
@@ -355,6 +421,7 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		const bStrandNode = bStrand.libp2pNode!;
 		const bStrandPeerId = bStrandNode.peerId.toString();
 		expect(bStrandNode.getMultiaddrs().map(String).some(isCircuit)).toBe(true);
+		tally.reserved(relayB, 'after B strand node reserves');
 
 		await waitUntil(
 			() => bStrandNode.getConnections().some((c) => c.remotePeer.toString() === aStrandPeerId),
@@ -430,10 +497,12 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 		// ── Per-strand relay-slot cost, cross-party: 2 control + 2 strand ────
 		// Same number as the same-party measurement: one reservation per node
 		// per network — every strand a NAT'd node joins costs one extra relay
-		// slot per node, regardless of whose party the other end is.
-		expect(relay.reservationCount()).toBe(4);
-		console.log('[blind-relay] relay reservations with one cross-party strand running: %d (2 control + 2 strand)',
-			relay.reservationCount());
+		// slot per node, regardless of whose party the other end is. Per relay
+		// in the per-party arm: 2 on each, none on the relay a node only dials
+		// through (the strand mesh and book swap have run by now).
+		tally.check('with the strand meshed');
+		console.log('[blind-relay] reservations with one cross-party strand running (2 control + 2 strand): %s',
+			relays.map((r, i) => `relay ${i + 1}: ${r.reservationCount()}`).join(', '));
 
 		// ── The closed strand's founding rows reach the stranger ─────────────
 		// A's founder bootstrap seated Strand.Header/Member/Manager; B wrote
@@ -458,18 +527,24 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 			{ ...GATE, description: 'the row written on B is readable on A over the circuit' },
 		);
 
-		// ── Final sweep: nothing direct anywhere, except to the relay ────────
+		// ── Final sweep: nothing direct anywhere, except to a relay ──────────
 		// Four nodes, one rule: every connection to a non-relay peer is
 		// relayed. This is what makes the successes above unable to have been
-		// served by a direct fallback path.
-		const relayPeerId = relay.peerId;
-		expectOnlyRelayDirect(A.getControlNode()!, relayPeerId, 'A control (sweep)');
-		expectOnlyRelayDirect(B.getControlNode()!, relayPeerId, 'B control (sweep)');
-		expectOnlyRelayDirect(aStrandNode, relayPeerId, 'A strand (sweep)');
-		expectOnlyRelayDirect(bStrandNode, relayPeerId, 'B strand (sweep)');
+		// served by a direct fallback path. Every node gets every relay id: in
+		// the per-party arm a node may hold a direct hop-client link to the
+		// other party's relay, which is how it dialled through it.
+		expectOnlyRelayDirect(A.getControlNode()!, relayPeerIds, 'A control (sweep)');
+		expectOnlyRelayDirect(B.getControlNode()!, relayPeerIds, 'B control (sweep)');
+		expectOnlyRelayDirect(aStrandNode, relayPeerIds, 'A strand (sweep)');
+		expectOnlyRelayDirect(bStrandNode, relayPeerIds, 'B strand (sweep)');
+		// Rows have now crossed both ways, so every dial through the other
+		// party's relay has run — a slot taken there on the node's own
+		// initiative (relay discovery) would show here if nowhere earlier.
+		tally.check('final sweep');
 	} finally {
 		await Promise.allSettled([B?.stop(), A?.stop()]);
-		await relay?.stop();
+		// Deduplicated: in the shared arm relayA and relayB are the same relay.
+		for (const relay of new Set([relayA, relayB])) await relay?.stop();
 		// After the nodes are down, so this arm's frame summary counts only its own traffic —
 		// and in the `finally`, so a failing arm still hands the next one a clean constructor
 		// instead of burying its error under "already installed".
@@ -477,9 +552,9 @@ async function runBlindRelayPhoneToPhone(latency?: WsLatencyOptions): Promise<vo
 	}
 }
 
-describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedicated relay)', () => {
+describe('E2E blind-relay phone-to-phone (two parties, both relay-only, on a shared relay or one each)', () => {
 	it('forms a strand between two strangers through the relay and replicates data both ways', async () => {
-		await runBlindRelayPhoneToPhone();
+		await runBlindRelayPhoneToPhone({ relays: 'shared' });
 	}, 300_000);
 
 	// The same journey with a real link condition. 10 ms of one-way per-frame delay ran
@@ -495,6 +570,10 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, one dedi
 	// loosening that gate — the gate asserts a product claim about join latency, whereas the
 	// delay is only this arm's chosen link condition.
 	it(`forms the same strand and replicates both ways over a link with ${LINK_LATENCY_MS} ms of latency`, async () => {
-		await runBlindRelayPhoneToPhone({ delayMs: LINK_LATENCY_MS, mode: 'pipelined' });
+		await runBlindRelayPhoneToPhone({ latency: { delayMs: LINK_LATENCY_MS, mode: 'pipelined' }, relays: 'shared' });
+	}, 300_000);
+
+	it('forms the strand when each stranger reserves on a DIFFERENT relay, and replicates both ways', async () => {
+		await runBlindRelayPhoneToPhone({ relays: 'per-party' });
 	}, 300_000);
 });

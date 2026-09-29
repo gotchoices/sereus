@@ -64,7 +64,7 @@ A user with only a phone wants to connect to another such user.
 - This allows the second party to discover a current dial address using only the Peer ID plus bootstrap information.
 - If a party loses its phone, it should be able to rejoin the cadre with a new phone only if its identity key material can be recovered/rotated safely.
 
-**The use case itself is proven end to end (one shared relay).** Two DIFFERENT parties,
+**The use case itself is proven end to end (one shared relay, and one relay per party).** Two DIFFERENT parties,
 each a single node that cannot listen (`listenAddrs: []`), form a closed strand and
 replicate rows both ways with every byte crossing one dedicated ungated relay:
 `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`.
@@ -76,6 +76,13 @@ reservation on the same relay — reaches the host's strand node from that seed 
 hand-dial. Every A↔B connection classifies `relayed`. Cost, measured there: 4 relay
 reservations for the pair sharing one strand (2 control + 2 strand) — one slot per node
 per network, so every strand a NAT'd node joins costs one extra relay slot per node. The
+same scenario runs the journey a second way, with each party reserved on its OWN relay —
+the ordinary case once each phone picks its own relay. Every address the host publishes
+names the host's relay, so the joiner forms, and its strand node dials, THROUGH a relay it
+holds no reservation on (a client of that relay's hop only), and the host reaches the
+joiner through the joiner's relay. That works with nothing added to cadre-core, and the
+cost stays per relay: 2 slots on each (that party's control and strand node), none taken on
+the relay a node only dials through, checked after rows have crossed both ways. The
 same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
 (one party's two machines over the same fixture) additionally pins reservation-loss
@@ -87,10 +94,7 @@ schedules a peer only once its libp2p identify names the strand's own block-tran
 protocol, which a relay never does (gotchoices/sereus#18 — before this, the relay was
 scheduled anyway, every push to it failed, and it was eventually named in a misleading
 `console.warn`).
-Still open, and NOT covered by that scenario: TWO relays (the parties reserved on
-different relays, so the path between them crosses relay boundaries — the ordinary case
-once each phone picks its own relay) is untested
-(`backlog/feat-scenario-two-relay-circuit`); discovery and roaming remain unsolved — a
+Still open, and NOT covered by that scenario: discovery and roaming remain unsolved — a
 party that moves to a different relay after formation has no way to say so, and no way to
 be found; and the last bullet above (rejoining with a new phone after losing the old one)
 has no mechanism and no test.

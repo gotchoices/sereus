@@ -175,7 +175,7 @@ The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/
 
 **Two costs worth knowing.** A configured-but-unreachable relay adds about ten seconds to `start()` and about ten more to **every** strand launch: cadre-core waits out each reservation supervisor's first attempt (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s), and a refused dial spends that whole budget polling in case libp2p's own discovery lands a reservation anyway. Nothing fails — founding is just slower while the relay is down, which the Settings screen's slow-founding hint will surface.
 
-**One relay per phone, and both ends are assumed to share it.** Two people configuring *different* relays is untested and out of scope (backlog `feat-scenario-two-relay-circuit`). Relaying through the phone's own always-on cadre node instead of third-party infrastructure is the intended end state but is blocked on two cadre-core defects — see backlog `feat-phone-relays-through-its-own-always-on-node`.
+**One relay per phone, and the two ends need not share it.** Two people who each configured their own relay form strands and replicate through their two relays — each phone dials the other through the other's relay, without reserving there (`blind-relay-phone-to-phone-e2e.integration.ts`, per-party arm). Relaying through the phone's own always-on cadre node instead of third-party infrastructure is the intended end state but is blocked on two cadre-core defects — see backlog `feat-phone-relays-through-its-own-always-on-node`.
 
 ### How It Connects
 

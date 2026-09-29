@@ -979,8 +979,12 @@ replicate both ways, and every cross-party connection classifies `relayed`.
 Slot cost is the same measured number as above: 4 for the pair (2 control +
 2 strand) — party boundaries change nothing about it. The delegate-admission
 path is a non-participant against a dedicated relay (it speaks no strand-addr
-RPC, so the announce folds to a no-op). Untested: the two-relay shape, where
-each party reserved on a different relay.
+RPC, so the announce folds to a no-op). The same scenario's third arm gives
+each party its OWN relay: the joiner forms, and its strand node dials, through
+the host's relay, where it holds no reservation, and the host reaches the
+joiner through the joiner's. Nothing in cadre-core refuses dialling a relay the
+node does not reserve on, and no node takes a slot on one: 2 per relay, checked
+at every step and again after rows have crossed both ways.
 
 **And the same pair restarting:**
 `packages/integration-tests/src/scenarios/strand-relay-only-restart-reconverges.integration.ts`

@@ -50,9 +50,9 @@ Link latency is the one measurement with no spec to live in, so it lives here. `
 | 50 ms | passes in 24.6–31.8 s over two runs; worst observed send wait 128–153 ms | — |
 | 100 ms, 150 ms | first sync completes; joiner's membership rows miss the 20 s join gate | — |
 
-Reproduce any row with `WS_SEND_DELAY_MS=<ms> WS_SEND_DELAY_MODE=<mode> yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e`, or with `WS_FRAME_STATS=1` for the counters-only row. `WS_SEND_DELAY_MS` pins the whole process, so the committed 10 ms arm's own request is logged and ignored and both tests in that file run at the delay you asked for.
+Reproduce any row with `WS_SEND_DELAY_MS=<ms> WS_SEND_DELAY_MODE=<mode> yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e`, or with `WS_FRAME_STATS=1` for the counters-only row. `WS_SEND_DELAY_MS` pins the whole process, so the committed 10 ms arm's own request is logged and ignored and all three tests in that file run at the delay you asked for.
 
-**Read the right line.** The environment path has no end-of-run hook — vitest recycles its forked workers rather than exiting them, so neither `exit` nor `beforeExit` output reaches the terminal — and the fixture therefore reports on a 5 s timer. Every one of those lines is a RUNNING SUBTOTAL, and a scenario that finishes inside one tick prints none at all. Exact totals come only from a boundary something in the process declares, and under `WS_FRAME_STATS=1` this file has one: the committed latency arm's `installWsLatency` prints the accumulated counters immediately before zeroing them, and its `restore()` prints that arm's closing line. So the first summary after the loopback test passes is the baseline total, and the last line of the run is the 10 ms arm's total. Do not filter the run down to one test with `-t` when you want a total — that removes the only boundary in the file.
+**Read the right line.** The environment path has no end-of-run hook — vitest recycles its forked workers rather than exiting them, so neither `exit` nor `beforeExit` output reaches the terminal — and the fixture therefore reports on a 5 s timer. Every one of those lines is a RUNNING SUBTOTAL, and a scenario that finishes inside one tick prints none at all. Exact totals come only from a boundary something in the process declares, and under `WS_FRAME_STATS=1` this file has one: the committed latency arm's `installWsLatency` prints the accumulated counters immediately before zeroing them, and its `restore()` prints that arm's closing line. So the first summary after the loopback test passes is the baseline total, and the line printed as the 10 ms arm finishes (by its `restore()`) is that arm's total. The per-party test runs after it, and since `restore()` does not zero the counters, any line after that one adds the per-party arm's frames onto the 10 ms arm's and is neither arm's total. Do not filter the run down to one test with `-t` when you want a total — that removes the only boundary in the file.
 
 Measured that way on 2026-09-21 (same machine, two runs), the baseline is 11,939 and 12,531 frames and the 10 ms `pipelined` arm 12,200 and 13,760 — so on this hardware the delay does NOT multiply the frame count. That does not match the 4,735-frame baseline in the row below, and the two windows are not the same (the boundary-declared one also covers the loopback arm's teardown), so treat any frames-vs-delay RATIO built on the older figure as unconfirmed until it is re-measured at a declared boundary. `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips` carries the ratio claim that depends on it.
 
@@ -613,8 +613,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   suite's ONLY relayed coverage of a link that is not instant; every other line on this map,
   relayed or direct, runs at loopback speed. The injected delay is process-wide, so both
   parties are equally slow — the asymmetric shape (a slow phone talking to a fast desktop) is
-  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. One SHARED relay only; the
-  two-relay shape (each party reserved on a different relay) is not covered.
+  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. Those two arms share one
+  relay; a third arm (loopback) gives each party its OWN relay, so B's formation and strand
+  dials go through A's relay, where B holds no reservation, and A reaches B through B's. It
+  asserts B's control connection to A names A's relay, and counts reservations per relay at
+  every checkpoint and again after rows have crossed both ways: 2 on each relay (that party's
+  control and strand node), none on the relay a node only dials through — stable over three
+  runs on 2026-09-29, 2.8–2.9 s each.
 - Relayed strand plane across parties, RESTARTED over persisted storage (the line above's
   shape; after a write has crossed, both machines stop and are rebuilt over the identity key,
   raw stores, strand peer book and joined-strand record they kept, each re-claims its strand
@@ -677,9 +682,6 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   relay-mediated variant stays uncovered, as above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
-- **Uncovered**: the two-relay circuit shape — each party holding its reservation on a
-  DIFFERENT relay, so the path between them crosses relay boundaries. Both relay scenarios
-  above share one relay. Ticket `feat-scenario-two-relay-circuit`.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology
