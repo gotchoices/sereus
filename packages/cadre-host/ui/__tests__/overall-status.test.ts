@@ -34,4 +34,8 @@ describe('deriveOverallStatus', () => {
 	it('warns a reachable founder about a stopped node', () => {
 		expect(deriveOverallStatus('founder', REACHABLE, [node('running'), node('stopped')], null)).toBe('warn');
 	});
+
+	it('ignores a donor owner node left stopped by an earlier founder run', () => {
+		expect(deriveOverallStatus('donor', null, [node('running'), { ...node('stopped'), owner: true }], null)).toBe('ok');
+	});
 });

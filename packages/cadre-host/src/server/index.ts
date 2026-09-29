@@ -37,7 +37,7 @@ import { registerNatRoutes } from './routes/nat.js';
 import { registerTrustCircleRoutes } from './routes/trust-circle.js';
 import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
-import { registerStatusRoute } from './routes/status.js';
+import { registerStatusRoute, type HostRole } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
@@ -119,6 +119,7 @@ const UPDATE_OBSERVER_INTERVAL_MS = 60_000;
 
 export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   const { founder } = opts;
+  const role: HostRole = founder ? 'founder' : 'donor';
   const events = opts.events ?? new EventBus();
   const settingsStore = opts.settingsStore ?? new HostSettingsStore({ dataDir: opts.dataDir });
 
@@ -137,11 +138,11 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
 
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
-    role: founder ? 'founder' : 'donor',
+    role,
     ...(founder ? { trustCircle: founder.trustCircle, nat: founder.nat } : {}),
     ...(opts.update ? { update: opts.update } : {}),
   });
-  registerNodesRoutes(app, { orchestrator: opts.orchestrator });
+  registerNodesRoutes(app, { orchestrator: opts.orchestrator, role });
   registerSettingsRoutes(app, { settingsStore, ...(founder ? { nat: founder.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
 
   // Trust-circle + NAT + strand surfaces exist only when the host runs its own

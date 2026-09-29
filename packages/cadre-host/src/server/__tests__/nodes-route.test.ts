@@ -98,7 +98,7 @@ describe('/api/nodes routes', () => {
     app = Fastify();
     registerErrorHandler(app);
     orchestrator = fakeOrchestrator([{ ...SAMPLE_NODE, workdir }]);
-    registerNodesRoutes(app, { orchestrator });
+    registerNodesRoutes(app, { orchestrator, role: 'founder' });
   });
 
   afterEach(async () => {
@@ -197,7 +197,7 @@ describe('/api/nodes — owner node start/restart', () => {
     app = Fastify();
     registerErrorHandler(app);
     orchestrator = fakeOrchestrator([OWNER_NODE], { ownerId: 'owner', hasOwnerConfig: true });
-    registerNodesRoutes(app, { orchestrator });
+    registerNodesRoutes(app, { orchestrator, role: 'founder' });
   });
 
   afterEach(async () => { await app.close(); });
@@ -242,10 +242,24 @@ describe('/api/nodes — owner node start/restart', () => {
     const app2 = Fastify();
     registerErrorHandler(app2);
     const orch2 = fakeOrchestrator([OWNER_NODE], { ownerId: 'owner', hasOwnerConfig: false });
-    registerNodesRoutes(app2, { orchestrator: orch2 });
+    registerNodesRoutes(app2, { orchestrator: orch2, role: 'founder' });
     const res = await app2.inject({ method: 'POST', url: '/api/nodes/owner/start' });
     expect(res.statusCode).toBe(501);
     await app2.close();
+  });
+  it('start and restart answer 409 own_cadre_disabled on a donor-only host that kept a saved owner config', async () => {
+    const donorApp = Fastify();
+    registerErrorHandler(donorApp);
+    const donorOrch = fakeOrchestrator([OWNER_NODE], { ownerId: 'owner', hasOwnerConfig: true });
+    registerNodesRoutes(donorApp, { orchestrator: donorOrch, role: 'donor' });
+    for (const verb of ['start', 'restart']) {
+      const res = await donorApp.inject({ method: 'POST', url: `/api/nodes/owner/${verb}` });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('own_cadre_disabled');
+    }
+    expect(donorOrch.__ensured).toBe(0);
+    expect(donorOrch.__restarted).toBe(0);
+    await donorApp.close();
   });
 });
 

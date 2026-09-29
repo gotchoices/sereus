@@ -12,6 +12,11 @@
  * surface — this route no longer spawns generic nodes, and a stop here would
  * be undone at once by the donation supervisor's respawn. So all three verbs
  * answer a known non-owner node with 501, pointing at the donation teardown.
+ *
+ * Owner start/restart are founder-only: a donor-only host that once ran as a
+ * founder still holds the owner handle and saved config (so re-enabling
+ * `ownCadre` can resume it), but spawning it here would bring the owner node
+ * back without its trust circle, NAT or strand services — so those answer 409.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
@@ -21,15 +26,18 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import { defaultLogPath } from '../../orchestrator/log-rotator.js';
 
+import type { HostRole } from './status.js';
+
 const DEFAULT_LOG_LINES = 200;
 const MAX_LOG_LINES = 2000;
 
 export interface NodesRoutesOptions {
   orchestrator: HostProcessOrchestrator;
+  role: HostRole;
 }
 
 export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptions): void {
-  const { orchestrator } = opts;
+  const { orchestrator, role } = opts;
 
   app.get('/api/nodes', async () => {
     return { ok: true, data: { nodes: orchestrator.listNodes() } };
@@ -81,6 +89,7 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
   app.post<{ Params: { id: string } }>('/api/nodes/:id/start', async (request, reply) => {
     const { id } = request.params;
     if (orchestrator.isOwnerNode(id)) {
+      if (role === 'donor') return ownCadreDisabled(reply, 'start');
       if (!orchestrator.hasOwnerConfig()) {
         return notImplemented(reply, `start ${id}: owner node has no saved spawn config.`);
       }
@@ -93,6 +102,7 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
   app.post<{ Params: { id: string } }>('/api/nodes/:id/restart', async (request, reply) => {
     const { id } = request.params;
     if (orchestrator.isOwnerNode(id)) {
+      if (role === 'donor') return ownCadreDisabled(reply, 'restart');
       if (!orchestrator.hasOwnerConfig()) {
         return notImplemented(reply, `restart ${id}: owner node has no saved spawn config.`);
       }
@@ -132,6 +142,16 @@ function notFound(reply: FastifyReply, id: string) {
 
 function notImplemented(reply: FastifyReply, message: string) {
   return reply.code(501).send({ ok: false, error: { code: 'not_implemented', message } });
+}
+
+function ownCadreDisabled(reply: FastifyReply, verb: 'start' | 'restart') {
+  return reply.code(409).send({
+    ok: false,
+    error: {
+      code: 'own_cadre_disabled',
+      message: `${verb} owner: this host's own cadre is turned off (donor-only mode). Set ownCadre.enabled in host.config.json (or start with --own-cadre) and restart cadre-host to run it again.`,
+    },
+  });
 }
 
 /**
