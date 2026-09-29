@@ -21,7 +21,7 @@
 
 import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeProfile, PushCredentials } from '@serfab/cadre-core';
 import { ENV_MAPPINGS, type CliConfig, type StrandFilterConfig } from './types.js';
-import { invalidStrandFilterMessage, parseStrandFilter } from './strand-filter.js';
+import { parseStrandFilter } from './strand-filter.js';
 
 // ---------------------------------------------------------------------------
 // Problems
@@ -108,8 +108,11 @@ function kindOf(value: unknown): string {
   return `a ${typeof value}`;
 }
 
+/** A string echoed in a message is cut here: enough to recognise a typo, not a pasted file. */
+const MAX_ECHOED_CHARS = 120;
+
 /**
- * How a rejected value is shown: scalars in full, containers by kind only.
+ * How a rejected value is shown: scalars in full (long strings cut), containers by kind only.
  *
  * NOTE: a secret pasted where a scalar belongs (`push.fcm: "-----BEGIN PRIVATE KEY..."`) would be
  * echoed by the "must be a mapping" message. The `privateKey` fields themselves go through
@@ -117,7 +120,11 @@ function kindOf(value: unknown): string {
  * than orchestrator-generated, switch the whole `push` subtree to kind-only descriptions.
  */
 export function describeValue(value: unknown): string {
-  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'string') {
+    return value.length > MAX_ECHOED_CHARS
+      ? `${JSON.stringify(value.slice(0, MAX_ECHOED_CHARS))}… (${value.length} characters)`
+      : JSON.stringify(value);
+  }
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   return kindOf(value);
 }
@@ -344,7 +351,6 @@ const controlNetwork = objectOf<Block<'controlNetwork'>>(
 
 /** Whatever {@link parseStrandFilter} accepts; its message already names the key. */
 const strandFilter: Checker<StrandFilterConfig> = (value, keyPath, ctx) => {
-  if (value === null) return ctx.fail(keyPath, invalidStrandFilterMessage(value));
   try {
     parseStrandFilter(value);
     return value as StrandFilterConfig;

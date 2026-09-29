@@ -21,9 +21,8 @@ function resolveFromEnv(value: string): StrandFilter {
 }
 
 describe('parseStrandFilter', () => {
-  it('treats undefined / null / "all" as mode all', () => {
+  it('treats an absent key and "all" as mode all', () => {
     expect(parseStrandFilter(undefined)).toEqual({ mode: 'all' });
-    expect(parseStrandFilter(null)).toEqual({ mode: 'all' });
     expect(parseStrandFilter('all')).toEqual({ mode: 'all' });
   });
 
@@ -43,8 +42,10 @@ describe('parseStrandFilter', () => {
     expect(() => parseStrandFilter('garbage')).toThrow(/Invalid strandFilter/);
   });
 
-  it('throws on an empty-string filter', () => {
+  // `strandFilter:` with no value parses to null — an empty leaf, not "unset".
+  it('throws on an empty-string or null filter', () => {
     expect(() => parseStrandFilter('')).toThrow(/Invalid strandFilter/);
+    expect(() => parseStrandFilter(null)).toThrow(/Invalid strandFilter/);
   });
 
   it('throws when the discriminant is missing', () => {
@@ -57,8 +58,10 @@ describe('parseStrandFilter', () => {
     expect(() => parseStrandFilter({ strandId: 42 })).toThrow(/Invalid strandFilter/);
   });
 
-  it('rejects an object carrying both sAppId and strandId', () => {
+  // An extra key beside the discriminant is a setting that would be silently ignored.
+  it('rejects an object carrying more than the one discriminant', () => {
     expect(() => parseStrandFilter({ sAppId: 'a', strandId: 'b' })).toThrow(/Invalid strandFilter/);
+    expect(() => parseStrandFilter({ sAppId: 'a', extra: 1 })).toThrow(/Invalid strandFilter/);
   });
 });
 

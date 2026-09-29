@@ -16,26 +16,23 @@ export function invalidStrandFilterMessage(filter: unknown): string {
  *
  * This is the single validation point for both env-driven and file-loaded
  * configs, so it takes `unknown`: env overrides inject already-parsed JSON
- * ahead of the narrow config type. Accepted forms are `all`, `none`,
- * `{ sAppId }`, and `{ strandId }` (each object carrying exactly one
- * discriminant with a non-empty string value). Anything else throws — a
- * misconfigured node must refuse to start rather than silently over-subscribe
- * to every strand.
+ * ahead of the narrow config type. An absent key (`undefined`) means `all`.
+ * Accepted values are `all`, `none`, `{ sAppId }`, and `{ strandId }` — an
+ * object carries exactly one key, the discriminant, with a non-empty string
+ * value; an extra key is a setting that would otherwise be silently ignored,
+ * and `null` (a `strandFilter:` line with no value) is an empty leaf like any
+ * other. Anything else throws — a misconfigured node must refuse to start
+ * rather than silently over-subscribe to every strand.
  */
 export function parseStrandFilter(filter: unknown): StrandFilter {
-  if (filter === undefined || filter === null || filter === 'all') return { mode: 'all' };
+  if (filter === undefined || filter === 'all') return { mode: 'all' };
   if (filter === 'none') return { mode: 'none' };
-  if (typeof filter === 'object') {
-    const obj = filter as Record<string, unknown>;
-    const sAppId = obj.sAppId;
-    const strandId = obj.strandId;
-    const hasSAppId = sAppId !== undefined;
-    const hasStrandId = strandId !== undefined;
-    if (hasSAppId && !hasStrandId && typeof sAppId === 'string' && sAppId.length > 0) {
-      return { mode: 'sAppId', sAppId };
-    }
-    if (hasStrandId && !hasSAppId && typeof strandId === 'string' && strandId.length > 0) {
-      return { mode: 'strandId', strandId };
+  if (typeof filter === 'object' && filter !== null) {
+    const keys = Object.keys(filter);
+    const value = keys.length === 1 ? (filter as Record<string, unknown>)[keys[0]] : undefined;
+    if (typeof value === 'string' && value.length > 0) {
+      if (keys[0] === 'sAppId') return { mode: 'sAppId', sAppId: value };
+      if (keys[0] === 'strandId') return { mode: 'strandId', strandId: value };
     }
   }
   throw new Error(invalidStrandFilterMessage(filter));

@@ -1024,6 +1024,9 @@ export class HostProcessOrchestrator implements Orchestrator {
       // The request carries the filter as text (the provider hands the same text to
       // CADRE_STRAND_FILTER); the file form is `all`/`none` or the parsed JSON object, and a
       // filter the node would refuse fails here, before anything is spawned.
+      // NOTE: an empty string is refused here, where cadre-provider's container-env treats it as
+      // unset. Nothing in cadre-host populates `req.strandFilter` today; if the provision route
+      // starts accepting one, pick one rule for both.
       strandFilter: req.strandFilter === undefined ? 'all' : strandFilterConfigFromText(req.strandFilter),
     };
     if (req.profile === 'storage') {
