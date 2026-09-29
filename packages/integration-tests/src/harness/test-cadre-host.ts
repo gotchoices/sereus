@@ -24,6 +24,7 @@ import {
 	HostProcessOrchestrator,
 	Installer,
 	NatService,
+	StrandService,
 	TrustCircleService,
 	TrustCircleStore,
 	UpdateService,
@@ -34,6 +35,7 @@ import {
 	type HostConfigFile,
 	type LocalUiEvent,
 	type LocalUiServer,
+	type StrandCadreNodeLike,
 	type UpdateSettings,
 } from '@serfab/cadre-host';
 
@@ -60,6 +62,16 @@ export function defaultFakeCadreNode(): CadreNodeLike {
 		async isMember() { return false; },
 		async listAuthorizedMembers() { return []; },
 		async isAuthorizedMember() { return false; },
+	};
+}
+
+/** Strand-admin CadreNodeLike for a party that takes part in no strands. */
+export function emptyStrandNode(): StrandCadreNodeLike {
+	return {
+		async listStrands() { return { strands: [], controlConnections: 0 }; },
+		async removeStrand(strandId) {
+			return { strandId, published: false, type: null, removed: false, alone: false };
+		},
 	};
 }
 
@@ -208,8 +220,7 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		uiPort: config.uiPort,
 		dataDir,
 		orchestrator,
-		trustCircle,
-		nat,
+		founder: { trustCircle, nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 		forcePort: 0,
 	};
 	if (update) serverOpts.update = update;

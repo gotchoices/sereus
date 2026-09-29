@@ -22,6 +22,8 @@
 	const memberCount = $derived(app.trustCircle.members.length);
 	const pendingCount = $derived(app.trustCircle.pending.length);
 	const nodesRunning = $derived(app.nodes.filter((n) => n.status === 'running').length);
+	const donatedNodes = $derived(app.nodes.filter((n) => !n.owner));
+	const donatedRunning = $derived(donatedNodes.filter((n) => n.status === 'running').length);
 </script>
 
 <section class="stack">
@@ -46,34 +48,44 @@
 			</dl>
 		</div>
 
-		<div class="card">
-			<h3>Connectivity</h3>
-			{#if app.connectivity}
-				<ConnectivityBadge
-					reachability={app.connectivity.directReachability}
-					portMode={app.connectivity.portMode}
-				/>
-				<dl class="kv">
-					<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
-					<div><dt>External port</dt><dd>{app.connectivity.externalPort}</dd></div>
-					<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
-				</dl>
-				{#if app.connectivity.directReachability !== 'reachable'}
-					<a class="link" href={hrefFor('connectivity')}>Resolve →</a>
+		{#if app.role === 'founder'}
+			<div class="card">
+				<h3>Connectivity</h3>
+				{#if app.connectivity}
+					<ConnectivityBadge
+						reachability={app.connectivity.directReachability}
+						portMode={app.connectivity.portMode}
+					/>
+					<dl class="kv">
+						<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
+						<div><dt>External port</dt><dd>{app.connectivity.externalPort}</dd></div>
+						<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
+					</dl>
+					{#if app.connectivity.directReachability !== 'reachable'}
+						<a class="link" href={hrefFor('connectivity')}>Resolve →</a>
+					{/if}
+				{:else}
+					<p class="muted">Loading connectivity…</p>
 				{/if}
-			{:else}
-				<p class="muted">Loading connectivity…</p>
-			{/if}
-		</div>
+			</div>
 
-		<div class="card">
-			<h3>Trust circle</h3>
-			<p class="big">{memberCount}<span class="muted"> members</span></p>
-			{#if pendingCount > 0}
-				<p class="muted">{pendingCount} pending invite{pendingCount === 1 ? '' : 's'}</p>
-			{/if}
-			<a class="link" href={hrefFor('trust-circle')}>Manage →</a>
-		</div>
+			<div class="card">
+				<h3>Trust circle</h3>
+				<p class="big">{memberCount}<span class="muted"> members</span></p>
+				{#if pendingCount > 0}
+					<p class="muted">{pendingCount} pending invite{pendingCount === 1 ? '' : 's'}</p>
+				{/if}
+				<a class="link" href={hrefFor('trust-circle')}>Manage →</a>
+			</div>
+		{:else if app.role === 'donor'}
+			<div class="card">
+				<h3>Donation</h3>
+				<p class="muted">This machine donates cadre nodes to other people's cadres.</p>
+				<p class="big">{donatedRunning}<span class="muted"> / {donatedNodes.length} donated nodes running</span></p>
+				<!-- Until the dashboard has a grants page, point at the command that issues one. -->
+				<p class="muted">Issue a grant with <code>cadre-host grant issue &lt;label&gt;</code></p>
+			</div>
+		{/if}
 
 		<div class="card">
 			<h3>Nodes</h3>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 
 	import {
 		appState,
@@ -13,7 +13,7 @@
 		pushToast,
 		type OverallStatus,
 	} from './lib/state.svelte.js';
-	import { hrefFor, type RouteName } from './lib/router.js';
+	import { hrefFor, isFounderRoute, type RouteName } from './lib/router.js';
 	import { routeState, startRouter, stopRouter } from './lib/router.svelte.js';
 	import { subscribeEvents } from './lib/events.js';
 
@@ -48,6 +48,21 @@
 		{ name: 'strands', label: 'Strands' },
 	];
 
+	// Founder-only items stay hidden while the role is still unknown, so a donor
+	// dashboard never flashes links that would 404.
+	const nav = $derived(NAV.filter((item) => app.role === 'founder' || !isFounderRoute(item.name)));
+
+	// The founder-only slices are fetched once the role resolves to founder —
+	// whether that is the boot status fetch or a later one after a failed boot.
+	// Their routes 404 in the donor role, so fetching unconditionally would toast.
+	$effect(() => {
+		if (app.role !== 'founder') return;
+		untrack(() => {
+			void refreshTrustCircle();
+			void refreshConnectivity();
+		});
+	});
+
 	function isActive(name: RouteName): boolean {
 		if (name === 'nodes') {
 			return route.route.name === 'nodes' || route.route.name === 'node-detail';
@@ -59,8 +74,6 @@
 		startRouter();
 		void refreshStatus();
 		void refreshNodes();
-		void refreshTrustCircle();
-		void refreshConnectivity();
 		void refreshUpdate();
 		void refreshSettings();
 
@@ -95,7 +108,7 @@
 		<StatusDot status={app.status} label={statusBadgeLabel(app.status)} size={10} />
 	</div>
 	<nav aria-label="Primary">
-		{#each NAV as item (item.name)}
+		{#each nav as item (item.name)}
 			<a
 				href={hrefFor(item.name)}
 				class:active={isActive(item.name)}
@@ -108,7 +121,17 @@
 </header>
 
 <main id="main">
-	{#if route.route.name === 'trust-circle'}
+	{#if isFounderRoute(route.route.name) && app.role !== 'founder'}
+		<!-- The page component is not mounted: its own fetch would 404 in the donor role. -->
+		<div class="card">
+			{#if app.role === null}
+				<p class="muted">Loading…</p>
+			{:else}
+				<p>This page is for running your own cadre, which is turned off on this machine.</p>
+				<a href={hrefFor('home')}>← Back to Home</a>
+			{/if}
+		</div>
+	{:else if route.route.name === 'trust-circle'}
 		<TrustCircle />
 	{:else if route.route.name === 'connectivity'}
 		<Connectivity />

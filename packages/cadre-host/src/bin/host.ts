@@ -57,7 +57,7 @@ import {
 } from '../push/index.js';
 import { StrandService } from '../strands/index.js';
 import { OwnerNodeClient } from '../owner/index.js';
-import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
+import { createLocalUiServer, HostSettingsStore, type FounderServices } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
@@ -353,9 +353,7 @@ program
       // (they 404). Per-donated-node WAN reachability is deferred to
       // backlog/feat-cadre-host-wan-grant-reachability, so v1 donor mode is
       // loopback-only — nothing for NatService to map without an owner node.
-      let trustCircle: TrustCircleService | undefined;
-      let natService: NatService | undefined;
-      let strandService: StrandService | undefined;
+      let founder: FounderServices | undefined;
       if (hostOwnsCadre(cfg)) {
         // Spawn the owner node. Best-effort: a spawn failure leaves the
         // management API up (trust-circle listing degrades to local labels,
@@ -376,19 +374,19 @@ program
         const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
         const trustCircleStore = new TrustCircleStore(cfg.dataDir);
-        trustCircle = new TrustCircleService({
+        const trustCircle = new TrustCircleService({
           cadreNode: owner,
           store: trustCircleStore,
         });
 
-        natService = new NatService({
+        const natService = new NatService({
           rootDir: cfg.dataDir,
           cadreNode: owner,
         });
 
         // Strand management is founder-only for the same reason as the trust
         // circle: it asks the owner node, and donor-only mode has none.
-        strandService = new StrandService({ cadreNode: owner });
+        const strandService = new StrandService({ cadreNode: owner });
 
         // Push NAT-resolved invite addresses to the node on every NAT change.
         // NatService.start() also fires this once as an initial push, retried
@@ -422,6 +420,8 @@ program
         } catch (err) {
           console.error(`self trust-circle label failed: ${(err as Error).message}`);
         }
+
+        founder = { trustCircle, nat: natService, strands: strandService };
       } else {
         // Donor-only. If ownCadre was toggled off after a prior founder run,
         // orchestrator.init() re-attaches the still-running owner child (it would
@@ -442,9 +442,7 @@ program
         uiPort: cfg.uiPort,
         dataDir: cfg.dataDir,
         orchestrator,
-        ...(trustCircle ? { trustCircle } : {}),
-        ...(natService ? { nat: natService } : {}),
-        ...(strandService ? { strands: strandService } : {}),
+        ...(founder ? { founder } : {}),
         update: updateService,
         grants: grantService,
         donations: donationService,
@@ -460,7 +458,7 @@ program
       clearInterval(reapTimer);
       donationSupervisor.stop();
       try { await server.stop(); } catch { /* ignore */ }
-      try { await natService?.stop(); } catch { /* ignore */ }
+      try { await founder?.nat.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');

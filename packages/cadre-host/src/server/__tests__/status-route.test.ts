@@ -11,6 +11,7 @@ import type { NatService } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
 import type { UpdateService } from '../../update/index.js';
 import type { UpdateState } from '../../update/types.js';
+import { SAMPLE_CONNECTIVITY } from './fakes.js';
 
 function fakeOrchestrator(nodes: ManagedNodeInfo[]): HostProcessOrchestrator {
   return { listNodes: () => nodes } as unknown as HostProcessOrchestrator;
@@ -25,27 +26,6 @@ function fakeUpdate(state: UpdateState): UpdateService {
   return { getState: async () => state } as unknown as UpdateService;
 }
 
-const SAMPLE_CONNECTIVITY: NatStatusSnapshot = {
-  portMode: 'auto-upnp',
-  externalPort: 4001,
-  internalPort: 4001,
-  routerExternalIp: '203.0.113.5',
-  mappingLeaseExpiresAt: null,
-  externalIp: '203.0.113.5',
-  externalIpDetectedAt: null,
-  cgnatDetected: false,
-  directReachability: 'reachable',
-  lastTestedAt: null,
-  ddns: {
-    providerId: null,
-    hostname: null,
-    externallyManaged: false,
-    lastUpdateAt: null,
-    lastUpdateOk: null,
-    lastError: null,
-  },
-};
-
 describe('GET /api/status', () => {
   let app: ReturnType<typeof Fastify>;
 
@@ -55,6 +35,7 @@ describe('GET /api/status', () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
+      role: 'founder',
       orchestrator: fakeOrchestrator([
         {
           id: 'alice',
@@ -78,12 +59,14 @@ describe('GET /api/status', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
       service: { name: string; version: string; uptimeSeconds: number };
+      role: string;
       nodes: Array<{ id: string; status: string }>;
       trustCircle: { members: number; pending: number };
       connectivity: { portMode: string };
       update?: { available?: string };
     };
     expect(body.service.name).toBe('cadre-host');
+    expect(body.role).toBe('founder');
     expect(body.nodes).toHaveLength(1);
     expect(body.nodes[0]).toMatchObject({ id: 'alice', status: 'running' });
     expect(body.trustCircle).toEqual({ members: 1, pending: 0 });
@@ -95,6 +78,7 @@ describe('GET /api/status', () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
+      role: 'donor',
       orchestrator: fakeOrchestrator([]),
     });
 
@@ -102,11 +86,13 @@ describe('GET /api/status', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
       service: { name: string };
+      role: string;
       nodes: unknown[];
       trustCircle?: unknown;
       connectivity?: unknown;
     };
     expect(body.service.name).toBe('cadre-host');
+    expect(body.role).toBe('donor');
     expect(body.nodes).toEqual([]);
     expect(body.trustCircle).toBeUndefined();
     expect(body.connectivity).toBeUndefined();
@@ -116,6 +102,7 @@ describe('GET /api/status', () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
+      role: 'founder',
       orchestrator: fakeOrchestrator([]),
       trustCircle: fakeTrustCircle({ members: [], pending: [] }),
       nat: fakeNat(SAMPLE_CONNECTIVITY),

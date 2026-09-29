@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { createLocalUiServer } from '../index.js';
 import type { LocalUiEvent } from '../events/types.js';
+import { fakeFounder } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { StrandService } from '../../strands/index.js';
 import { StrandError } from '../../strands/index.js';
@@ -79,7 +80,7 @@ function buildServer(opts: { withStrands: boolean }): void {
     uiPort: 8765,
     dataDir,
     orchestrator: fakeOrchestrator(),
-    ...(opts.withStrands ? { strands: strands.service } : {}),
+    ...(opts.withStrands ? { founder: fakeFounder({ strands: strands.service }) } : {}),
     forcePort: 0,
   });
   events = [];
@@ -214,7 +215,7 @@ describe('DELETE /api/strands/:id — error mapping', () => {
   });
 });
 
-describe('donor-only mode (no strands option)', () => {
+describe('donor-only mode (no founder services)', () => {
   beforeEach(async () => {
     await server.app.close();
     buildServer({ withStrands: false });

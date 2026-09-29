@@ -236,6 +236,8 @@ export {
   HostSettingsStore,
 } from './server/index.js';
 export type {
+  FounderServices,
+  HostRole,
   LocalUiServer,
   LocalUiServerOptions,
   LocalUiEvent,

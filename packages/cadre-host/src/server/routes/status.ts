@@ -20,8 +20,15 @@ import type { UpdateService } from '../../update/index.js';
 
 const PROCESS_STARTED_AT = process.hrtime.bigint();
 
+/**
+ * Which role the running process is in: `'founder'` also runs the host's own
+ * cadre (`ownCadre.enabled` at start), `'donor'` only donates nodes.
+ */
+export type HostRole = 'founder' | 'donor';
+
 export interface StatusRouteOptions {
   orchestrator: HostProcessOrchestrator;
+  role: HostRole;
   /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
   trustCircle?: TrustCircleService;
   /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
@@ -31,11 +38,18 @@ export interface StatusRouteOptions {
 
 export interface StatusResponse {
   service: { name: 'cadre-host'; version: string; uptimeSeconds: number };
+  /**
+   * Decided at start from `ownCadre.enabled` — the running process, not the file
+   * on disk, which may have been edited since without a restart.
+   */
+  role: HostRole;
   nodes: Array<{
     id: string;
     partyId: string;
     status: ManagedNodeInfo['status'];
     profile: ManagedNodeInfo['profile'];
+    /** Present (true) only on the host's own owner node; every other node is donated. */
+    owner?: true;
   }>;
   /** Omitted in donor-only mode (no host-own trust circle). */
   trustCircle?: { members: number; pending: number };
@@ -53,6 +67,7 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
       partyId: n.partyId,
       status: n.status,
       profile: n.profile,
+      ...(n.owner ? { owner: true as const } : {}),
     }));
 
     const response: StatusResponse = {
@@ -61,6 +76,7 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
         version,
         uptimeSeconds: secondsSince(PROCESS_STARTED_AT),
       },
+      role: opts.role,
       nodes,
     };
 

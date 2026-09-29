@@ -8,10 +8,14 @@
  */
 
 import { apiFetch, ApiError } from './api.js';
+import { deriveOverallStatus } from './overall-status.js';
 
 // --- Mirrors of server-side types (kept narrow on purpose) ---
 
 export type ContainerStatus = 'running' | 'stopped';
+
+/** Mirror of the server's `HostRole`: whether this host also runs its own cadre. */
+export type HostRole = 'founder' | 'donor';
 
 export type PortForwardMode =
 	| 'auto-upnp'
@@ -30,6 +34,8 @@ export interface NodeInfo {
 	spawnedAt: string;
 	workdir: string;
 	ports: { health: number; metrics: number; p2p: number; ws: number };
+	/** True only on the host's own owner node; every other node is a donated one. */
+	owner?: boolean;
 }
 
 export interface NodeStats {
@@ -95,14 +101,18 @@ export interface NatStatusSnapshot {
 
 export interface StatusResponse {
 	service: { name: 'cadre-host'; version: string; uptimeSeconds: number };
+	role: HostRole;
 	nodes: Array<{
 		id: string;
 		partyId: string;
 		status: ContainerStatus;
 		profile: 'storage' | 'transaction';
+		owner?: true;
 	}>;
-	trustCircle: { members: number; pending: number };
-	connectivity: NatStatusSnapshot;
+	/** Omitted in the donor role. */
+	trustCircle?: { members: number; pending: number };
+	/** Omitted in the donor role. */
+	connectivity?: NatStatusSnapshot;
 	update?: { available?: string; lastChecked?: string };
 }
 
@@ -170,6 +180,8 @@ interface StrandsState {
 interface AppState {
 	status: OverallStatus;
 	service: StatusResponse['service'] | null;
+	/** Null until the first successful `/api/status`. */
+	role: HostRole | null;
 	nodes: NodeInfo[];
 	nodeStats: Record<string, NodeStats | null>;
 	trustCircle: { members: TrustCircleMember[]; pending: PendingInvite[] };
@@ -183,6 +195,7 @@ interface AppState {
 const state = $state<AppState>({
 	status: 'loading',
 	service: null,
+	role: null,
 	nodes: [],
 	nodeStats: {},
 	trustCircle: { members: [], pending: [] },
@@ -222,22 +235,8 @@ export function reportError(scope: string, err: unknown): void {
 
 // --- Overall status derivation ---
 
-function deriveOverallStatus(
-	connectivity: NatStatusSnapshot | null,
-	nodes: NodeInfo[],
-	update: UpdateState | null,
-): OverallStatus {
-	if (!connectivity) return 'loading';
-	const reachability = connectivity.directReachability;
-	const anyStopped = nodes.some((n) => n.status !== 'running');
-	if (reachability === 'unreachable' || reachability === 'cgnat') return 'warn';
-	if (anyStopped) return 'warn';
-	if (update?.lastError) return 'warn';
-	return 'ok';
-}
-
 function recomputeStatus(): void {
-	state.status = deriveOverallStatus(state.connectivity, state.nodes, state.update);
+	state.status = deriveOverallStatus(state.role, state.connectivity, state.nodes, state.update);
 }
 
 // --- Refresh helpers — called by pages on enter and after actions ---
@@ -246,7 +245,8 @@ export async function refreshStatus(): Promise<void> {
 	try {
 		const r = await apiFetch<StatusResponse>('/api/status');
 		state.service = r.service;
-		state.connectivity = r.connectivity;
+		state.role = r.role;
+		state.connectivity = r.connectivity ?? null;
 		// status returns a thin per-node summary; the Nodes page hydrates the
 		// full list separately. Keep what's already in state.nodes if it's
 		// non-empty, otherwise project the summary.
@@ -260,6 +260,7 @@ export async function refreshStatus(): Promise<void> {
 				spawnedAt: '',
 				workdir: '',
 				ports: { health: 0, metrics: 0, p2p: 0, ws: 0 },
+				...(n.owner ? { owner: true } : {}),
 			}));
 		}
 		recomputeStatus();
@@ -424,4 +425,4 @@ export function applyEvent(event: { type: string; data: string }): void {
 
 // --- Test-only seam ---
 
-export const __test__ = { deriveOverallStatus, recomputeStatus, state };
+export const __test__ = { recomputeStatus, state };

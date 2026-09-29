@@ -5,10 +5,9 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { createLocalUiServer } from '../index.js';
+import { fakeFounder } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { TrustCircleService } from '../../auth/index.js';
-import type { NatService } from '../../nat/index.js';
-import type { NatStatusSnapshot } from '../../nat/types.js';
 import { GrantService, GrantStore } from '../../donation/index.js';
 
 function fakeOrchestrator(): HostProcessOrchestrator {
@@ -43,37 +42,6 @@ function fakeTrustCircle(): TrustCircleService {
   } as unknown as TrustCircleService;
 }
 
-const SAMPLE_CONNECTIVITY: NatStatusSnapshot = {
-  portMode: 'disabled',
-  externalPort: 4001,
-  internalPort: 4001,
-  routerExternalIp: null,
-  mappingLeaseExpiresAt: null,
-  externalIp: null,
-  externalIpDetectedAt: null,
-  cgnatDetected: false,
-  directReachability: 'unknown',
-  lastTestedAt: null,
-  ddns: {
-    providerId: null,
-    hostname: null,
-    externallyManaged: false,
-    lastUpdateAt: null,
-    lastUpdateOk: null,
-    lastError: null,
-  },
-};
-
-function fakeNat(): NatService {
-  return {
-    getStatus: () => SAMPLE_CONNECTIVITY,
-    putSettings: async () => SAMPLE_CONNECTIVITY,
-    testReachability: async () => SAMPLE_CONNECTIVITY,
-    listDdnsProviders: () => [],
-    putDdns: async () => SAMPLE_CONNECTIVITY,
-  } as unknown as NatService;
-}
-
 function writeConfig(dir: string): void {
   const cfg = {
     version: 2,
@@ -102,8 +70,7 @@ describe('createLocalUiServer smoke', () => {
       uiPort: 8765,
       dataDir,
       orchestrator: fakeOrchestrator(),
-      trustCircle: fakeTrustCircle(),
-      nat: fakeNat(),
+      founder: fakeFounder({ trustCircle: fakeTrustCircle() }),
       forcePort: 0,
     });
     const { url } = await server.start();
@@ -119,8 +86,9 @@ describe('createLocalUiServer smoke', () => {
     // Without host header: undici's fetch sets it; this is the happy path.
     const res = await fetch(`${baseUrl}/api/status`);
     expect(res.status).toBe(200);
-    const body = await res.json() as { service: { name: string } };
+    const body = await res.json() as { service: { name: string }; role: string };
     expect(body.service.name).toBe('cadre-host');
+    expect(body.role).toBe('founder');
   });
 
   it('rejects requests with a foreign Host header', async () => {
@@ -205,16 +173,18 @@ describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('serves /api/status with no trustCircle / connectivity and no nodes', async () => {
+  it('serves /api/status as role donor, with no trustCircle / connectivity and no nodes', async () => {
     const res = await fetch(`${baseUrl}/api/status`);
     expect(res.status).toBe(200);
     const body = await res.json() as {
       service: { name: string };
+      role: string;
       nodes: unknown[];
       trustCircle?: unknown;
       connectivity?: unknown;
     };
     expect(body.service.name).toBe('cadre-host');
+    expect(body.role).toBe('donor');
     expect(body.nodes).toEqual([]);
     expect(body.trustCircle).toBeUndefined();
     expect(body.connectivity).toBeUndefined();
