@@ -55,7 +55,21 @@ await server.start();
 
 ## Configuration
 
-Configuration can be provided via YAML/JSON file or environment variables.
+Configuration can be provided via YAML/JSON file or environment variables. Both are checked
+strictly at start: an unknown or misspelled key, or a wrongly-typed value, stops the provider
+(`start` and `check` alike) with an error naming every problem and where it came from, instead
+of silently applying the default. A file holding `server: { prot: 3000 }` with
+`PROVIDER_AUTH_MODE=apikey` in the environment fails with:
+
+```
+Config /etc/cadre-provider.yaml: unknown key server.prot (did you mean 'port'?)
+Environment variable PROVIDER_AUTH_MODE: auth.mode must be one of 'none', 'api-key', 'oauth', got "apikey"
+```
+
+A block with no children (`server:` on its own) counts as absent. `storage.type: file` needs
+`storage.path`. `docker.defaultResources.memoryLimit` must be a size the orchestrator can read
+(`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`). Values under `push` and `billing` are
+never echoed into an error.
 
 ### Example Configuration
 
@@ -95,15 +109,30 @@ storage:
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `PROVIDER_HOST` | Server host |
-| `PROVIDER_PORT` | Server port |
-| `PROVIDER_AUTH_MODE` | Authentication mode (`none`, `api-key`, `oauth`) |
-| `PROVIDER_ALLOW_INSECURE_NO_AUTH` | Set to `true` to acknowledge running fully open with `PROVIDER_AUTH_MODE=none` |
-| `PROVIDER_DOCKER_SOCKET` | Docker socket path |
-| `PROVIDER_DOCKER_IMAGE` | Container image |
-| `STRIPE_SECRET_KEY` | Stripe API key |
+Each variable overrides one setting on its own; none depends on another being set. A boolean
+variable accepts `true`, `false`, `1` or `0`, and a number variable only a number
+(`PROVIDER_BILLING_ENABLED=yes` and `PROVIDER_PORT=3000abc` both fail start). An empty value
+counts as unset. Unknown `PROVIDER_*` names are ignored, since other software may use the prefix.
+
+| Variable | Setting | Description |
+|----------|---------|-------------|
+| `PROVIDER_HOST` | `server.host` | Server host |
+| `PROVIDER_PORT` | `server.port` | Server port (0 to 65535; 0 picks a free port) |
+| `PROVIDER_BASE_PATH` | `server.basePath` | Base path for API routes |
+| `PROVIDER_AUTH_MODE` | `auth.mode` | Authentication mode (`none`, `api-key`, `oauth`) |
+| `PROVIDER_ALLOW_INSECURE_NO_AUTH` | `auth.allowInsecureNoAuth` | Set to `true` to acknowledge running fully open with `PROVIDER_AUTH_MODE=none` |
+| `PROVIDER_JWKS_URI` | `auth.jwksUri` | JWKS endpoint (oauth mode) |
+| `PROVIDER_ISSUER` | `auth.issuer` | Expected token issuer (oauth mode) |
+| `PROVIDER_AUDIENCE` | `auth.audience` | Expected token audience (oauth mode) |
+| `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` | Docker socket path |
+| `PROVIDER_DOCKER_IMAGE` | `docker.image` | Container image |
+| `PROVIDER_DOCKER_NETWORK` | `docker.network` | Docker network for tenant containers |
+| `PROVIDER_BILLING_ENABLED` | `billing.enabled` | Enable billing (`true`/`false`) |
+| `STRIPE_SECRET_KEY` | `billing.stripeSecretKey` | Stripe API key |
+| `STRIPE_WEBHOOK_SECRET` | `billing.stripeWebhookSecret` | Stripe webhook signing secret |
+| `PROVIDER_STORAGE_TYPE` | `storage.type` | `memory` or `file` |
+| `PROVIDER_STORAGE_PATH` | `storage.path` | Directory for file storage (required with `file`) |
+| `PROVIDER_LOG_LEVEL` | `logging.level` | `debug`, `info`, `warn` or `error` |
 
 ## Authentication & permissions
 

@@ -6,10 +6,22 @@
 
 import { Command } from 'commander';
 import debug from 'debug';
-import { loadConfig } from '../config/index.js';
+import { PORT_EXPECTED, isPortNumber, loadConfig } from '../config/index.js';
 import { createProviderServer } from '../server/server.js';
 
 const log = debug('cadre:provider:cli');
+
+/**
+ * `--port` text → a port number. `parseInt` used to read `80x` as 80 and `abc` as `NaN`
+ * without a word; only digits that make a port number are accepted here.
+ */
+function parsePortOption(text: string): number {
+  const port = Number(text.trim());
+  if (!/^\d+$/.test(text.trim()) || !isPortNumber(port)) {
+    throw new Error(`Invalid --port ${JSON.stringify(text)}: expected ${PORT_EXPECTED}`);
+  }
+  return port;
+}
 
 const program = new Command();
 
@@ -37,7 +49,7 @@ program
       const config = loadConfig({
         configFile: options.config,
         overrides: options.port
-          ? { server: { port: parseInt(options.port, 10) } }
+          ? { server: { port: parsePortOption(options.port) } }
           : undefined,
       });
 

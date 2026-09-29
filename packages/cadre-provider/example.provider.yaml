@@ -1,5 +1,8 @@
 # Cadre Provider Configuration Example
 # Copy this file and customize for your deployment
+#
+# Every key is checked when the provider starts: an unknown key or a value of the
+# wrong type stops it with an error naming the key (see README → Configuration).
 
 # API Server Configuration
 server:

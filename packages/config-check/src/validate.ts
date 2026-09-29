@@ -5,7 +5,7 @@
  * environment variable whose write covers that key.
  */
 
-import { type Checker, ValidationContext, describeValue, isPlainObject } from './checkers.js';
+import { type Checker, ValidationContext, isPathPrefix, isPlainObject } from './checkers.js';
 
 export interface ValidateOptions {
   /** Named in every problem the environment did not cause. */
@@ -18,6 +18,11 @@ export interface ValidateOptions {
   provenance?: ReadonlyMap<string, string>;
   /** Variables that could supply a missing key, for "is required" messages. */
   suppliersOf?: (keyPath: string) => readonly string[];
+  /**
+   * Key paths whose whole subtree holds hand-written secrets (cadre-provider's `push` and
+   * `billing`): a rejected value at or under one is described by kind only, never echoed.
+   */
+  concealUnder?: readonly string[];
 }
 
 /**
@@ -26,7 +31,7 @@ export interface ValidateOptions {
  * one per line, each prefixed `Environment variable X:` or `Config <path>:`.
  */
 export function validateTree<T>(tree: unknown, root: Checker<T>, options: ValidateOptions): T {
-  const ctx = new ValidationContext(options.suppliersOf);
+  const ctx = new ValidationContext(options.suppliersOf, options.concealUnder);
   const checked = checkRoot(tree, root, ctx);
   if (checked === undefined || ctx.problems.length > 0) {
     const provenance = options.provenance ?? new Map<string, string>();
@@ -40,7 +45,7 @@ function checkRoot<T>(tree: unknown, root: Checker<T>, ctx: ValidationContext): 
   // An empty file parses to undefined/null: an empty mapping, for the environment to fill.
   const value = tree ?? {};
   if (!isPlainObject(value)) {
-    return ctx.fail('', `the top level must be a mapping of keys, got ${describeValue(value)}`);
+    return ctx.fail('', `the top level must be a mapping of keys, got ${ctx.describe('', value)}`);
   }
   return root(value, '', ctx);
 }
@@ -56,8 +61,4 @@ function sourceOf(keyPath: string, provenance: ReadonlyMap<string, string>, conf
     }
   }
   return envVar !== undefined ? `Environment variable ${envVar}` : `Config ${configPath}`;
-}
-
-function isPathPrefix(prefix: string, keyPath: string): boolean {
-  return keyPath === prefix || keyPath.startsWith(`${prefix}.`) || keyPath.startsWith(`${prefix}[`);
 }

@@ -229,9 +229,13 @@ export class FileStore implements ProviderStore {
 
 /** Create a store based on configuration */
 export function createStore(config: StorageConfig): ProviderStore {
-  if (config.type === 'file' && config.path) {
-    return new FileStore(config.path);
+  if (config.type === 'memory') return new MemoryStore();
+  // Defense in depth: `loadConfig` already rejects this. A StorageConfig built in code has
+  // not passed through it, and quietly running the in-memory store here would lose every
+  // tenant record on restart.
+  if (!config.path) {
+    throw new Error("storage.path is required when storage.type is 'file'");
   }
-  return new MemoryStore();
+  return new FileStore(config.path);
 }
 

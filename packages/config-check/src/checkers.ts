@@ -29,8 +29,13 @@ export class ValidationContext {
   /**
    * @param suppliersOf what, besides the config file, could supply a key — the environment
    * variables that write `keyPath` or a key beneath it. Named in "is required" messages.
+   * @param concealUnder key paths whose whole subtree holds secrets: a rejected value at or
+   * under one is described by kind only (see {@link ValidationContext.describe}).
    */
-  constructor(private readonly suppliersOf: (keyPath: string) => readonly string[] = () => []) {}
+  constructor(
+    private readonly suppliersOf: (keyPath: string) => readonly string[] = () => [],
+    private readonly concealUnder: readonly string[] = [],
+  ) {}
 
   /** Record a problem and hand back the "failed" result a checker returns. */
   fail(keyPath: string, text: string): undefined {
@@ -44,6 +49,23 @@ export class ValidationContext {
     const hint = variables.length > 0 ? ` (or set ${variables.join(' and ')})` : '';
     return this.fail(keyPath, `${keyPath} is required${condition ? ` ${condition}` : ''}${hint}`);
   }
+
+  /**
+   * How a rejected value at `keyPath` is shown in a message: {@link describeValue}'s echo,
+   * unless the key is at or under a `concealUnder` prefix, where a private key pasted in the
+   * wrong place (`push.fcm: "-----BEGIN PRIVATE KEY…"`) must not be echoed — then its kind only.
+   * Every checker in this package describes values through here, so a hand-written checker
+   * should too.
+   */
+  describe(keyPath: string, value: unknown): string {
+    const concealed = this.concealUnder.some((prefix) => isPathPrefix(prefix, keyPath));
+    return concealed ? kindOf(value) : describeValue(value);
+  }
+}
+
+/** Whether `keyPath` is `prefix` itself or a key beneath it (`a.b` is under `a`; `ab` is not). */
+export function isPathPrefix(prefix: string, keyPath: string): boolean {
+  return keyPath === prefix || keyPath.startsWith(`${prefix}.`) || keyPath.startsWith(`${prefix}[`);
 }
 
 // ---------------------------------------------------------------------------
@@ -58,10 +80,10 @@ export class ValidationContext {
 export interface Checker<T> {
   (value: unknown, keyPath: string, ctx: ValidationContext): T | undefined;
   /**
-   * Set on checkers built by {@link objectOf}: a `null` at this key means the block is absent.
-   * YAML `network:` with every child commented out parses to `null`, and cadre-cli's Docker
-   * entrypoint writes exactly that when no address variable is set. A `null` leaf, by contrast,
-   * is ill-typed.
+   * Set on checkers built by {@link objectOf} and {@link recordOf}: a `null` at this key means
+   * the block is absent. YAML `network:` with every child commented out parses to `null`, and
+   * cadre-cli's Docker entrypoint writes exactly that when no address variable is set. A `null`
+   * leaf, by contrast, is ill-typed.
    */
   readonly nullIsAbsent?: true;
 }
@@ -100,10 +122,12 @@ const MAX_ECHOED_CHARS = 120;
 /**
  * How a rejected value is shown: scalars in full (long strings cut), containers by kind only.
  *
- * NOTE: a secret pasted where a scalar belongs (cadre-cli's `push.fcm: "-----BEGIN PRIVATE KEY..."`)
- * would be echoed by the "must be a mapping" message. The `privateKey` fields themselves go through
- * {@link secretString}, which never shows the value. If push blocks are ever hand-written rather
- * than orchestrator-generated, switch the whole `push` subtree to kind-only descriptions.
+ * NOTE: a secret pasted where a scalar belongs (`push.fcm: "-----BEGIN PRIVATE KEY..."`) would be
+ * echoed by the "must be a mapping" message. The `privateKey` fields themselves go through
+ * {@link secretString}, which never shows the value; for a whole subtree that is hand-written
+ * and holds secrets, `validateTree`'s `concealUnder` option describes every value under it by
+ * kind only (cadre-provider lists `push` and `billing`). cadre-cli has not opted in: its `push`
+ * block is written by an orchestrator, not by hand.
  */
 export function describeValue(value: unknown): string {
   if (typeof value === 'string') {
@@ -118,12 +142,12 @@ export function describeValue(value: unknown): string {
 export const stringValue: Checker<string> = (value, keyPath, ctx) =>
   typeof value === 'string'
     ? value
-    : ctx.fail(keyPath, `${keyPath} must be a string, got ${describeValue(value)}`);
+    : ctx.fail(keyPath, `${keyPath} must be a string, got ${ctx.describe(keyPath, value)}`);
 
 export const nonEmptyString: Checker<string> = (value, keyPath, ctx) =>
   typeof value === 'string' && value.trim() !== ''
     ? value
-    : ctx.fail(keyPath, `${keyPath} must be a non-empty string, got ${describeValue(value)}`);
+    : ctx.fail(keyPath, `${keyPath} must be a non-empty string, got ${ctx.describe(keyPath, value)}`);
 
 /** A string whose value is a secret: the message says only what kind of thing arrived instead. */
 export const secretString: Checker<string> = (value, keyPath, ctx) =>
@@ -134,14 +158,14 @@ export const secretString: Checker<string> = (value, keyPath, ctx) =>
 export const booleanValue: Checker<boolean> = (value, keyPath, ctx) =>
   typeof value === 'boolean'
     ? value
-    : ctx.fail(keyPath, `${keyPath} must be a boolean (true or false), got ${describeValue(value)}`);
+    : ctx.fail(keyPath, `${keyPath} must be a boolean (true or false), got ${ctx.describe(keyPath, value)}`);
 
 /** A finite number `accepts` admits; `expected` completes "must be …" in the message. */
 export function numberWhere(accepts: (n: number) => boolean, expected: string): Checker<number> {
   return (value, keyPath, ctx) =>
     typeof value === 'number' && Number.isFinite(value) && accepts(value)
       ? value
-      : ctx.fail(keyPath, `${keyPath} must be ${expected}, got ${describeValue(value)}`);
+      : ctx.fail(keyPath, `${keyPath} must be ${expected}, got ${ctx.describe(keyPath, value)}`);
 }
 
 export const finiteNumber = numberWhere(() => true, 'a number');
@@ -163,13 +187,13 @@ export function oneOf<T extends string>(members: Record<T, true>): Checker<T> {
   return (value, keyPath, ctx) =>
     typeof value === 'string' && (values as string[]).includes(value)
       ? (value as T)
-      : ctx.fail(keyPath, `${keyPath} must be one of ${list}, got ${describeValue(value)}`);
+      : ctx.fail(keyPath, `${keyPath} must be one of ${list}, got ${ctx.describe(keyPath, value)}`);
 }
 
 export function arrayOf<T>(item: Checker<T>): Checker<T[]> {
   return (value, keyPath, ctx) => {
     if (!Array.isArray(value)) {
-      return ctx.fail(keyPath, `${keyPath} must be a list, got ${describeValue(value)}`);
+      return ctx.fail(keyPath, `${keyPath} must be a list, got ${ctx.describe(keyPath, value)}`);
     }
     const before = ctx.problems.length;
     const out = value.map((entry, i) => item(entry, `${keyPath}[${i}]`, ctx));
@@ -191,7 +215,7 @@ export function objectOf<T extends object>(fields: FieldTable<T>, opts: ObjectOp
 
   const checker = (value: unknown, keyPath: string, ctx: ValidationContext): T | undefined => {
     if (!isPlainObject(value)) {
-      return ctx.fail(keyPath, `${keyPath} must be a mapping of keys, got ${describeValue(value)}`);
+      return ctx.fail(keyPath, `${keyPath} must be a mapping of keys, got ${ctx.describe(keyPath, value)}`);
     }
     const before = ctx.problems.length;
     for (const key of Object.keys(value)) {
@@ -210,6 +234,32 @@ export function objectOf<T extends object>(fields: FieldTable<T>, opts: ObjectOp
       if (checked !== undefined) out[key] = checked;
     }
     return ctx.problems.length === before ? (out as T) : undefined;
+  };
+  return Object.assign(checker, { nullIsAbsent: true as const });
+}
+
+/**
+ * A mapping whose keys are the operator's own (cadre-provider's tenant ids), each value checked
+ * by `value` at `<keyPath>.<key>`. An empty or blank key is a problem. Unlike a key in an
+ * {@link objectOf} table, a `null` value is not an absent block: `tenants: { acme: }` is
+ * reported, because treating it as absent would silently hand that tenant the defaults.
+ */
+export function recordOf<T>(value: Checker<T>): Checker<Record<string, T>> {
+  const checker = (raw: unknown, keyPath: string, ctx: ValidationContext): Record<string, T> | undefined => {
+    if (!isPlainObject(raw)) {
+      return ctx.fail(keyPath, `${keyPath} must be a mapping of keys, got ${ctx.describe(keyPath, raw)}`);
+    }
+    const before = ctx.problems.length;
+    const out: Record<string, T> = {};
+    for (const [key, entry] of Object.entries(raw)) {
+      if (key.trim() === '') {
+        ctx.fail(keyPath, `${keyPath} has an empty key`);
+        continue;
+      }
+      const checked = value(entry, joinPath(keyPath, key), ctx);
+      if (checked !== undefined) out[key] = checked;
+    }
+    return ctx.problems.length === before ? out : undefined;
   };
   return Object.assign(checker, { nullIsAbsent: true as const });
 }

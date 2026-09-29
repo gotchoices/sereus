@@ -97,6 +97,10 @@ function setNestedValue(obj: Record<string, unknown>, pathStr: string, value: un
 function cloneBranch(existing: unknown, keyPath: string, envVar: string): Record<string, unknown> {
   if (existing === undefined || existing === null) return {};
   if (isPlainObject(existing)) return { ...existing };
+  // NOTE: this echoes the scalar in the way, before validation and so before `concealUnder`
+  // applies. A secret can reach it only when the file puts one where a block belongs AND a
+  // variable writes under that block (cadre-provider: `billing: sk_live_…` plus
+  // STRIPE_SECRET_KEY). If that ever shows up in a real report, take a conceal list here too.
   throw new Error(
     `Cannot apply ${envVar}: config key ${keyPath} is ${describeValue(existing)} where a mapping of keys was expected`,
   );

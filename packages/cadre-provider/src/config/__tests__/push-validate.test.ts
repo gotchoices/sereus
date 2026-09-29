@@ -31,12 +31,12 @@ describe('validatePushConfig', () => {
   });
 
   it('is wired into loadConfig (fails provider start on a partial set)', () => {
-    expect(() => loadConfig({ overrides: { push: { default: { apns: { keyId: 'K', teamId: 'T', bundleId: '', privateKey: 'P' } } } } }))
+    expect(() => loadConfig({ env: {}, overrides: { push: { default: { apns: { keyId: 'K', teamId: 'T', bundleId: '', privateKey: 'P' } } } } }))
       .toThrow(/push\.default\.apns\.bundleId/);
   });
 
   it('loadConfig accepts a complete push config', () => {
-    const config = loadConfig({ overrides: { push: { tenants: { 'cust-a': { fcm: FCM } } } } });
+    const config = loadConfig({ env: {}, overrides: { push: { tenants: { 'cust-a': { fcm: FCM } } } } });
     expect(config.push?.tenants?.['cust-a']).toEqual({ fcm: FCM });
   });
 });

@@ -15,6 +15,7 @@ import type {
 } from './orchestrator.js';
 import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
 import { PortAllocator, allocatePortSet, releasePortSet, reservePortSet } from './port-allocator.js';
+import { parseCpuLimit, parseMemoryLimit } from './resource-limits.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -287,8 +288,10 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           Mounts: [
             { Type: 'volume', Source: volumeNameFor(request.containerId), Target: DATA_MOUNT_TARGET },
           ],
-          Memory: this.parseMemoryLimit(resources.memoryLimit),
-          NanoCpus: this.parseCpuLimit(resources.cpuLimit),
+          // Config-supplied defaults were checked at provider start, so unreadable text can
+          // only arrive here in a create request's own `resources`; it yields no limit.
+          Memory: resources.memoryLimit ? parseMemoryLimit(resources.memoryLimit) : undefined,
+          NanoCpus: resources.cpuLimit ? parseCpuLimit(resources.cpuLimit) : undefined,
           NetworkMode: this.config.network,
           RestartPolicy: { Name: 'unless-stopped' },
         },
@@ -454,18 +457,5 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     });
   }
 
-  private parseMemoryLimit(limit?: string): number | undefined {
-    if (!limit) return undefined;
-    const match = limit.match(/^(\d+(?:\.\d+)?)\s*(B|K|M|G|T)?$/i);
-    if (!match) return undefined;
-    const [, num, unit] = match;
-    const multipliers: Record<string, number> = { B: 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
-    return Math.floor(parseFloat(num!) * (multipliers[unit?.toUpperCase() ?? 'B'] ?? 1));
-  }
-
-  private parseCpuLimit(limit?: string): number | undefined {
-    if (!limit) return undefined;
-    return Math.floor(parseFloat(limit) * 1e9); // Convert to nanocpus
-  }
 }
 

@@ -5153,6 +5153,7 @@ __metadata:
     "@fastify/cors": "npm:^11.2.0"
     "@libp2p/peer-id": "npm:^6.0.4"
     "@multiformats/multiaddr": "npm:^12.5.1"
+    "@serfab/config-check": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/dockerode": "npm:^3.3.31"
     "@types/js-yaml": "npm:^4.0.9"

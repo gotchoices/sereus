@@ -119,10 +119,11 @@ worth not re-litigating:
   walks `<dir>/node_modules` from the calling module up to the monorepo root inclusive, because
   packages setting `installConfig.hoistingLimits: "workspaces"` keep their own copies and that is
   what their suites load. A default would silently reinstate the blind spot.
-- **`cadre-provider` is the one package with a suite but no guard**, because it declares zero
-  `workspace:`/`link:` dependencies. Nothing here would flag its omission if it ever gains one — a
-  `NOTE:` in its `vitest.config.ts` says so at the site. (`config-check` has neither dependencies
-  nor a suite of its own; it is tested through cadre-cli's suite, which guards its `dist`.)
+- **Every package with a suite has a guard.** `cadre-provider` was the exception while it declared
+  zero `workspace:`/`link:` dependencies; it gained one (`@serfab/config-check`, for its strict
+  config check) and a `test/global-setup.ts` with it. (`config-check` has neither dependencies nor
+  a suite of its own; it is tested through cadre-cli's and cadre-provider's suites, which guard
+  its `dist`.)
 - Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded from the source scan —
   they are not build inputs, so editing a spec does not trip the guard.
 
@@ -145,8 +146,9 @@ root `yarn test`) proves it catches the drift rather than merely passing today �
 the never-used case, and the mentions-it-in-prose false positive.
 
 **What that gate cannot catch:** a package that gains a `workspace:`/`link:` dependency and never
-writes a setup module at all — `cadre-provider`'s case above. It is driven by the module existing,
-so there is nothing for it to compare against when there is none.
+writes a setup module at all (`cadre-provider` was that package until it took a dependency on
+`config-check`). It is driven by the module existing, so there is nothing for it to compare
+against when there is none.
 
 ### When it fires because a sibling's own runner is mid-ticket
 
