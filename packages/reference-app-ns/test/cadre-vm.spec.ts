@@ -159,6 +159,26 @@ describe('getCadreVm', () => {
 		expect(first.status).toBe('idle');
 		expect(second.mod.getCadreVm().status).toBe('connected');
 	});
+
+	it('resumes the last session at launch only when it ended connected', async () => {
+		// The launch half of the saved start options: a relaunch after anything but
+		// Disconnect reconnects to the same party by itself; after Disconnect it only
+		// offers the options back to the Settings form.
+		const options = { partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'] };
+
+		const resumed = await loadModule();
+		resumed.H.state.savedStartOptions = { options, autoStart: true };
+		const connected = resumed.mod.getCadreVm();
+		await vi.waitFor(() => expect(connected.status).toBe('connected'));
+		expect(resumed.H.state.startOpts).toEqual([options]);
+
+		const disconnected = await loadModule();
+		disconnected.H.state.savedStartOptions = { options, autoStart: false };
+		const idle = disconnected.mod.getCadreVm();
+		await vi.waitFor(() => expect(idle.savedStartOptions).toEqual(options));
+		expect(idle.status).toBe('idle');
+		expect(disconnected.H.state.startOpts).toEqual([]);
+	});
 });
 
 // ── ownerKeysFromInvite ───────────────────────────────────────────────────────

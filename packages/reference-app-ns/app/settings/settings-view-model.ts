@@ -6,8 +6,9 @@
  * from the XML as `{{ cadre.* }}`). Mirrors reference-app-rn's `app/settings.tsx`.
  */
 
-import { Observable } from '@nativescript/core';
+import { Observable, type EventData, type PropertyChangeData } from '@nativescript/core';
 import { getCadreVm, type CadreViewModel } from '../../src/cadre-vm';
+import type { PhoneNodeOptions } from '../../src/start-options';
 
 /** RFC-4122-ish v4 UUID (Math.random — good enough for the demo, matches RN). */
 function uuid(): string {
@@ -15,6 +16,11 @@ function uuid(): string {
 		const r = (Math.random() * 16) | 0;
 		return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
 	});
+}
+
+/** The bootstrap field's comma-separated list, trimmed, blanks dropped. */
+function splitAddrs(field: string): string[] {
+	return field.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0);
 }
 
 export class SettingsViewModel extends Observable {
@@ -33,6 +39,32 @@ export class SettingsViewModel extends Observable {
 	constructor() {
 		super();
 		this.cadre = getCadreVm();
+		this.prefillFromSavedStartOptions();
+	}
+
+	/**
+	 * Show the options the node last started with. They are read once at launch, and
+	 * this page can be built before that read resolves — then they are applied when it
+	 * does, once, and only into fields the user has not typed into meanwhile.
+	 */
+	private prefillFromSavedStartOptions(): void {
+		const saved = this.cadre.savedStartOptions;
+		if (saved) {
+			this.prefill(saved);
+			return;
+		}
+		const onChange = (args: EventData): void => {
+			if ((args as PropertyChangeData).propertyName !== 'savedStartOptions') return;
+			this.cadre.off('propertyChange', onChange);
+			const arrived = this.cadre.savedStartOptions;
+			if (arrived) this.prefill(arrived);
+		};
+		this.cadre.on('propertyChange', onChange);
+	}
+
+	private prefill(saved: PhoneNodeOptions): void {
+		if (!this._partyId) this.partyId = saved.partyId;
+		if (!this._bootstrapAddr) this.bootstrapAddr = saved.bootstrapAddrs.join(', ');
 	}
 
 	// ── Two-way bound inputs ────────────────────────────────────────────────
@@ -132,8 +164,8 @@ export class SettingsViewModel extends Observable {
 	async onConnect(): Promise<void> {
 		const partyId = this._partyId.trim() || uuid();
 		this.partyId = partyId;
-		const addrs = this._bootstrapAddr.trim() ? [this._bootstrapAddr.trim()] : [];
-		await this.cadre.start({ partyId, bootstrapAddrs: addrs });
+		// Comma-separated, so a remembered list of several round-trips.
+		await this.cadre.start({ partyId, bootstrapAddrs: splitAddrs(this._bootstrapAddr) });
 		if (this.cadre.status === 'error') {
 			this.showAlert('Connection failed', this.cadre.error);
 		}

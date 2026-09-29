@@ -24,6 +24,7 @@
  * the real class.
  */
 
+import type { SavedStartOptions } from '../../src/start-options';
 import type {
 	ApplySeedResult,
 	CadreInvite,
@@ -179,6 +180,8 @@ export const state = {
 	dialError: null as Error | null,
 	createStrandError: null as Error | null,
 	startOpts: [] as unknown[],
+	/** What the mocked `loadSavedStartOptions()` resolves to — nothing saved by default. */
+	savedStartOptions: undefined as SavedStartOptions | undefined,
 };
 
 /** Back to a fresh, empty world — one fake node, nothing running, nothing recorded. */
@@ -190,6 +193,7 @@ export function reset(): void {
 	state.dialError = null;
 	state.createStrandError = null;
 	state.startOpts = [];
+	state.savedStartOptions = undefined;
 }
 
 /** Make {@link state}'s node the one a freshly-constructed view model adopts. */
@@ -222,6 +226,10 @@ function getPhoneNode(): FakeNode | null {
 	return state.phoneNode;
 }
 
+async function loadSavedStartOptions(): Promise<SavedStartOptions | undefined> {
+	return state.savedStartOptions;
+}
+
 async function dialPeer(addr: string): Promise<void> {
 	calls.push(`dialPeer:${addr}`);
 	if (state.dialError) throw state.dialError;
@@ -238,7 +246,7 @@ async function createChatStrand(node: unknown, strandId: string): Promise<Strand
 
 /** Replacement module shape for `src/cadre-phone`. */
 export function phoneNodeMock(): Record<string, unknown> {
-	return { startPhoneNode, stopPhoneNode, getPhoneNode, dialPeer };
+	return { startPhoneNode, stopPhoneNode, getPhoneNode, loadSavedStartOptions, dialPeer };
 }
 
 /** Replacement module shape for `src/chat-strand`. */

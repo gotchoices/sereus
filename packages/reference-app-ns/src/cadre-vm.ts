@@ -15,8 +15,10 @@ import {
 	startPhoneNode,
 	stopPhoneNode,
 	getPhoneNode,
+	loadSavedStartOptions,
 	dialPeer as dialPeerImpl,
 	type PhoneNodeOptions,
+	type SavedStartOptions,
 } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
 
@@ -39,6 +41,7 @@ export class CadreViewModel extends Observable {
 	private _peerId = '';
 	private _error = '';
 	private _strands = new Map<string, StrandInstance>();
+	private _savedStartOptions: PhoneNodeOptions | null = null;
 
 	// Stored event handlers so they can be detached on stop.
 	private readonly onStrandStarted = (): void => this.refreshStrands();
@@ -75,6 +78,15 @@ export class CadreViewModel extends Observable {
 
 	get error(): string {
 		return this._error;
+	}
+
+	/**
+	 * The options the node last started with, read once at launch ({@link restore})
+	 * for the Settings form to prefill from. Null until that read resolves, and when
+	 * nothing is saved.
+	 */
+	get savedStartOptions(): PhoneNodeOptions | null {
+		return this._savedStartOptions;
 	}
 
 	// ── Derived display props (notified alongside their sources) ─────────────
@@ -146,6 +158,11 @@ export class CadreViewModel extends Observable {
 		this.notifyPropertyChange('error', error);
 	}
 
+	private setSavedStartOptions(options: PhoneNodeOptions): void {
+		this._savedStartOptions = options;
+		this.notifyPropertyChange('savedStartOptions', options);
+	}
+
 	private setStrands(strands: Map<string, StrandInstance>): void {
 		this._strands = strands;
 		this.notifyPropertyChange('strandCount', this.strandCount);
@@ -187,6 +204,31 @@ export class CadreViewModel extends Observable {
 	}
 
 	// ── Actions ─────────────────────────────────────────────────────────────
+
+	/**
+	 * Resume the last session at app launch. A session that ended connected (anything
+	 * but Disconnect — an OS kill included) starts again with the options it last
+	 * started with, through {@link start}, exactly as a Connect tap would; either way
+	 * {@link savedStartOptions} is set for the Settings form. A Connect tap that beat
+	 * this read owns the node and is not second-guessed.
+	 */
+	async restore(): Promise<void> {
+		let saved: SavedStartOptions | undefined;
+		try {
+			saved = await loadSavedStartOptions();
+		} catch (err) {
+			// NOTE: fields stay blank, so a Connect now mints a new party id and, on
+			// success, overwrites the unreadable record. Acceptable because the
+			// party-scoped records live in the same database and propagate a read fault,
+			// which fails that start before anything is saved.
+			console.warn('[cadre-vm] could not read the saved start options:', err);
+			this.setError(`Could not read the saved connection settings: ${errMessage(err)}`);
+			return;
+		}
+		if (!saved) return;
+		this.setSavedStartOptions(saved.options);
+		if (saved.autoStart && this._status === 'idle') await this.start(saved.options);
+	}
 
 	/**
 	 * Start (or adopt) the phone node. Sets status to `error` on failure rather
@@ -317,10 +359,15 @@ export class CadreViewModel extends Observable {
 
 let vm: CadreViewModel | null = null;
 
-/** Shared CadreViewModel — one per app, mirroring RN's `cadre-context`. */
+/**
+ * Shared CadreViewModel — one per app, mirroring RN's `cadre-context`. Creating it
+ * resumes the last session ({@link CadreViewModel.restore}); the Chat page is the
+ * default page and binds it on load, so that happens at app launch.
+ */
 export function getCadreVm(): CadreViewModel {
 	if (!vm) {
 		vm = new CadreViewModel();
+		void vm.restore();
 	}
 	return vm;
 }

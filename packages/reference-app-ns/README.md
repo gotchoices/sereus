@@ -65,8 +65,10 @@ A real device or emulator is required (the SQLite + WebSocket plugins are native
    node boots solo; status flips to *Connected* and the **Peer ID** is shown.
 5. **Create Chat Strand** → "Strand created" modal.
 6. **Chat** tab → type `hello` → **Send**. Expect it to appear in the list (local
-   echo). Relaunch cold and reconnect to confirm the **same Peer ID** (identity
-   persisted in the SQLite `kv` table under `peer-private-key`).
+   echo). Relaunch cold: the app reconnects by itself to the same party (the
+   last start options are remembered — Settings → **Disconnect** turns that off)
+   and shows the **same Peer ID** (identity persisted in the SQLite `kv` table
+   under `peer-private-key`).
 7. Against a drone (see [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)
    § Two-Node Startup): enter the drone's Party ID + bootstrap multiaddr before
    Connect. Then paste the drone's **enrollment invite** into *Paste enrollment

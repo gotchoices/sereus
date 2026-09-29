@@ -81,8 +81,9 @@ through `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore` over a
 `SqliteKVStore` with an *empty* key prefix over the same
 `sereus-peer-identity` database, under the literal keys
 `trusted-owners.<partyId>` and `bootstrap-peers.<partyId>`. `cadre-phone.ts`
-holds that database handle open for the node's whole life (`identityDb`) and
-closes it in `stopPhoneNode`.
+holds that database handle open for the node's whole life (`identityDbOpening`,
+which caches the in-flight open so overlapping callers share one native handle)
+and closes it in `stopPhoneNode`.
 
 One database, one fate: the identity BLOB and both node-local records are wiped
 together. This app has no Keychain/Keystore integration, so the anchor is only as
@@ -113,10 +114,34 @@ via an invite. (An owner private key would also land in the same plaintext SQLit
 blob as the identity key; see the Keychain/Keystore caveat above.) The
 bootstrap-peer record fills in from `applySeed`.
 
-⚠️ Both records are party-scoped and the party id is typed into Settings each
-launch, so a relaunch with a fresh id loads empty slots — a pin survives a
-relaunch only if the user retypes the same party id. Closed by
-`ns-persist-node-start-options` (React Native already remembers its start options).
+Every record above is filed under the party id, so they are read back on a
+relaunch only because the party id itself is remembered: the **start options**
+(party id and bootstrap addresses, plus `autoStart`) sit under the one key
+`start-options` of the same `kv` table — deliberately *not* party-scoped, since
+this is what selects the party. [`src/start-options.ts`](../packages/reference-app-ns/src/start-options.ts)
+parses it with the same rules as React Native's copy (see
+[`reference-app-rn.md` § Start options](reference-app-rn.md#start-options-app-private-leveldb)):
+unparseable, unknown version or no party id counts as no record (logged); a
+malformed bootstrap list becomes `[]`.
+
+- **Written** only by `cadre-phone.ts`: after every successful start
+  (`autoStart: true`) and on Settings → **Disconnect** (`autoStart: false`, same
+  options). A failed start writes nothing. Both writes are best-effort — a
+  failure is logged and the node carries on. `startSolo` (`solo-smoke.ts`) is a
+  start like any other and writes it too.
+- **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()`
+  first creates the shared view model). With `autoStart` true and nothing started
+  yet, the app connects by itself with those options, exactly as a Connect tap
+  would — so a pasted invite's pin is read back and a later seed from that owner
+  is accepted with the invite field blank. Either way the Settings Party ID and
+  Bootstrap fields prefill from them (the bootstrap field is comma-separated so a
+  list round-trips). A read fault shows "Could not read the saved connection
+  settings" and starts nothing.
+- **Overlapping starts** (the launch auto-start and a Connect tap) share one start
+  in flight; Disconnect during a start waits for it, then stops that node.
+- **Reinstall** deletes the SQLite database with the app, identity included, so a
+  reinstalled phone is a new peer in a new party. Nothing on this app lives in the
+  Keychain to outlive it.
 
 ## App Structure
 
@@ -135,6 +160,7 @@ src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
   ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
+  start-options.ts  the last start options + autoStart, remembered between launches
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands  (← RN use-cadre + cadre-context)
   chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN src/test-ids.ts)
@@ -163,7 +189,10 @@ libp2p and its dependencies reference Web/Node globals **at import time**, so th
 entry point (`app/app.ts`) loads polyfills and the WebSocket global before any
 cadre/libp2p code. The heavy cadre/db-p2p/Quereus graph is pulled in lazily by the
 Chat / Settings pages (via `cadre-vm` → `cadre-phone`) on navigation, after the
-audit runs.
+audit runs. The Chat page (the default page) creates the shared `CadreViewModel`,
+which reads the saved start options and reconnects when the last session ended
+connected — Settings → Connect is the other way the node starts (see
+[Node-local records](#node-local-records)).
 
 ```ts
 // app/app.ts

@@ -18,8 +18,16 @@
  * which deliberately does NOT share that machinery (an unreadable slot
  * cold-starts there rather than throwing, because a lost repair hint must not
  * stop a node starting).
+ *
+ * The same `kv` table also holds the app's saved start options
+ * ({@link START_OPTIONS_SLOT_KEY}, parsed by `start-options.ts`) — the one record
+ * here that is NOT party-scoped, because it carries the party id the others are
+ * filed under.
  */
 import type { DurableSlot } from '@serfab/cadre-core';
+
+/** `SqliteKVStore` key for the last start options — one per install, not per party. */
+export const START_OPTIONS_SLOT_KEY = 'start-options';
 
 /** `SqliteKVStore` key for a party's persisted trusted-owner anchor. */
 export function anchorSlotKey(partyId: string): string {
