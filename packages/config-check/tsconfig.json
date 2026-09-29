@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "NodeNext",
+    "target": "ES2020",
+    // No DOM and no ambient @types (node included): the package must run anywhere, so a
+    // `node:` import or a `NodeJS.*` type has to fail to compile here.
+    "lib": ["ES2022"],
+    "types": [],
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    "sourceMap": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": [
+    "src"
+  ]
+}

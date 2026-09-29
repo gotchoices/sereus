@@ -5,9 +5,10 @@ import debug from 'debug';
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { validatePushCredentials } from '@serfab/cadre-core';
+import { type OverrideResult, applyEnvOverrides } from '@serfab/config-check';
 import type { CliConfig, ResolvedConfig } from './types.js';
-import { ENV_MAPPINGS, checkEnvNames, parseEnvValue, specifiedEnv } from './env.js';
-import { describeValue, isPlainObject, validateConfig } from './schema.js';
+import { ENV_OVERRIDES, checkEnvNames } from './env.js';
+import { validateConfig } from './schema.js';
 import { parseStrandFilter } from './strand-filter.js';
 
 const log = debug('cadre:cli:config');
@@ -41,79 +42,22 @@ export async function loadConfigFile(configPath: string): Promise<unknown> {
   }
 }
 
-/** What {@link applyEnvironmentOverrides} produces: the merged tree and a record of what the environment wrote. */
-export interface OverrideResult {
-  /** The file's tree with every set `CADRE_*` variable written over it. Unchecked. */
-  tree: unknown;
-  /**
-   * Dotted config path → the variable that wrote it (`network.listenAddrs → CADRE_LISTEN_ADDRS`,
-   * `push → CADRE_PUSH`), so the validator attributes a problem under that path to the
-   * variable rather than to the file. A skipped (empty) variable records nothing.
-   */
-  provenance: ReadonlyMap<string, string>;
-}
-
 /**
  * Apply environment variable overrides to a parsed config tree, after rejecting any unknown or
- * retired `CADRE_*` variable by name (see `env.ts`).
+ * retired `CADRE_*` variable by name (see `env.ts`). The tree comes back with every set
+ * variable written over it, unchecked, and `provenance` records which variable wrote which path.
  *
  * `env` defaults to `process.env` at call time — `cadre start --identity-file` exports
  * `CADRE_KEY_FILE` just before resolving and relies on that — and tests pass their own.
  */
 export function applyEnvironmentOverrides(raw: unknown, env: NodeJS.ProcessEnv = process.env): OverrideResult {
   checkEnvNames(env);
-  const provenance = new Map<string, string>();
-
-  // An empty file parses to undefined/null: an empty mapping the environment may fill. Any
-  // other non-mapping root is left for the validator to reject by name — nothing can be
-  // written over it.
-  const base = raw ?? {};
-  if (!isPlainObject(base)) return { tree: raw, provenance };
-  const result: Record<string, unknown> = { ...base };
-
-  for (const [envVar, { path: configPath, kind }] of Object.entries(ENV_MAPPINGS)) {
-    const value = specifiedEnv(env[envVar]);
-    if (value === undefined) continue;
-
-    // CADRE_PUSH carries private keys, which are never logged.
-    log('Applying env override: %s=%s', envVar, envVar === 'CADRE_PUSH' ? '[redacted]' : value);
-    setNestedValue(result, configPath, parseEnvValue(envVar, kind, value), envVar);
-    provenance.set(configPath, envVar);
-  }
-
-  return { tree: result, provenance };
+  return applyEnvOverrides(raw, env, ENV_OVERRIDES, logOverride);
 }
 
-/**
- * Write `value` at a dotted path, copying each intermediate object on the way
- * down. {@link applyEnvironmentOverrides} only shallow-copies its input, so
- * writing straight through would mutate the caller's own nested objects (e.g. a
- * shared `network` block) rather than only the returned config.
- */
-function setNestedValue(obj: Record<string, unknown>, pathStr: string, value: unknown, envVar: string): void {
-  const parts = pathStr.split('.');
-  let current: Record<string, unknown> = obj;
-
-  for (let i = 0; i < parts.length - 1; i++) {
-    const branch = cloneBranch(current[parts[i]], parts.slice(0, i + 1).join('.'), envVar);
-    current[parts[i]] = branch;
-    current = branch;
-  }
-
-  current[parts[parts.length - 1]] = value;
-}
-
-/**
- * Shallow-copy an intermediate config object. Absent or `null` (YAML `storage:` with no
- * children) starts a fresh block. Anything else in the way — `storage: file` where a block
- * belongs — is a file error the variable must not paper over by replacing it with `{}`.
- */
-function cloneBranch(existing: unknown, keyPath: string, envVar: string): Record<string, unknown> {
-  if (existing === undefined || existing === null) return {};
-  if (isPlainObject(existing)) return { ...existing };
-  throw new Error(
-    `Cannot apply ${envVar}: config key ${keyPath} is ${describeValue(existing)} where a mapping of keys was expected`,
-  );
+function logOverride(envVar: string, value: string): void {
+  // CADRE_PUSH carries private keys, which are never logged.
+  log('Applying env override: %s=%s', envVar, envVar === 'CADRE_PUSH' ? '[redacted]' : value);
 }
 
 /**

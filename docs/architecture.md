@@ -1749,6 +1749,7 @@ Maestro Studio, with Appium as the documented fallback.
 - `packages/cadre-core` - Core cadre node library
 - `packages/cadre-cli` - CLI wrapper for cadre nodes
 - `packages/cadre-provider` - Reference provider service for hosting cadre nodes
+- `packages/config-check` - Dependency-free strict config-file checking (field tables, environment overrides, one error listing every problem), used by cadre-cli
 - `ops/docker/libp2p-infra` - Container infrastructure for relay/bootstrap nodes
 
 ---
@@ -1777,7 +1778,7 @@ Maestro Studio, with Appium as the documented fallback.
   - `cadre status` reads **live runtime** from the running node's health `/status` endpoint (`--health-host`/`--health-port`, env `CADRE_HEALTH_PORT`): it reports the live `running`/`peerId`/`multiaddrs`/strand counts when a node answers, clearly distinguished from the static "Configuration" summary. A missing config is non-fatal (the live query still runs); when no node is reachable it says so (and exits non-zero, code `3`) rather than asserting `running: false`.
   - `cadre enroll register` is an **offline signature verification** — it checks that the supplied owner signature is valid over the enrollment vouch digest `digest('Cadre.Enrollment', 'vouch', peerId)` (via `verifyPeerAuthorization` — domain-tagged, so an enrollment vouch cannot double as any table approval) and does **not** contact the control network or register the peer. Membership is granted by the running owner node, through `cadre enroll add`.
   - `cadre enroll add <peerId>` admits a new machine and prints its seed. It calls the **running** owner node's loopback admin channel (`GET /admin/identity`, then `POST /admin/add-drone`) rather than opening the node's state in a second process the way `strand remove` and `validation-key add` do: a second process would commit the `CadrePeer` row into the shared files while the running owner's membership gate never learned of it, so the owner would refuse the new machine when it dialed in. The owner must therefore run with `--owner --admin-port` and `CADRE_STARTUP_TOKEN`. The seed carries whatever addresses the owner advertises; the command warns when no owner in it has one and no `--addr` was given. On the joining side, `cadre start --seed` decodes the seed before anything starts and fails start-up when it does not decode or names a party other than the config's, since `applySeed` itself never compares the two.
-- YAML/JSON config with environment variable overrides
+- YAML/JSON config with environment variable overrides, checked strictly (unknown keys, types, required keys) through `@serfab/config-check`
 - Systemd service file with security hardening, graceful shutdown
 
 ### Container Runtime (Complete)

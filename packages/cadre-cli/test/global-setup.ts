@@ -30,8 +30,9 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
 
 /**
  * Every package this suite runs compiled code from. `@serfab/cadre-cli` is this
- * package itself (spawned as a child, not imported); `@serfab/cadre-core` is
- * declared directly; the rest are reached transitively through it, mirroring
+ * package itself (spawned as a child, not imported); `@serfab/cadre-core` and
+ * `@serfab/config-check` are declared directly; the rest are reached
+ * transitively through cadre-core, mirroring
  * `@serfab/cadre-core`'s own target list plus `@serfab/cadre-core` itself.
  *
  * Exported so `build-targets.spec.ts` can hold it against this package's actual
@@ -42,6 +43,7 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
 export const TARGETS: BuildTarget[] = [
   { packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
   { packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
+  { packageName: '@serfab/config-check', distEntry: 'dist/index.js', location: 'workspace' },
   { packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
   { packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
   { packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },

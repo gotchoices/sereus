@@ -43,6 +43,8 @@ export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-provider', distEntry: 'dist/index.js', location: 'workspace' },
+	// Reached through `@serfab/cadre-cli`, whose spawned `dist` loads it.
+	{ packageName: '@serfab/config-check', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },

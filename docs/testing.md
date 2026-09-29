@@ -119,9 +119,10 @@ worth not re-litigating:
   walks `<dir>/node_modules` from the calling module up to the monorepo root inclusive, because
   packages setting `installConfig.hoistingLimits: "workspaces"` keep their own copies and that is
   what their suites load. A default would silently reinstate the blind spot.
-- **`cadre-provider` is the one package with no guard**, because it declares zero
+- **`cadre-provider` is the one package with a suite but no guard**, because it declares zero
   `workspace:`/`link:` dependencies. Nothing here would flag its omission if it ever gains one — a
-  `NOTE:` in its `vitest.config.ts` says so at the site.
+  `NOTE:` in its `vitest.config.ts` says so at the site. (`config-check` has neither dependencies
+  nor a suite of its own; it is tested through cadre-cli's suite, which guards its `dist`.)
 - Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded from the source scan —
   they are not build inputs, so editing a spec does not trip the guard.
 
@@ -175,7 +176,7 @@ release measurement, where the whole point is to describe code someone can insta
 script (`tsc --noEmit`) so type validation does not depend on the slower `yarn build`, and test
 files are type-checked where possible (vitest itself never type-checks).
 
-- Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 workspaces.
+- Every TS package has a `typecheck` script; `yarn typecheck` validates every workspace.
 - Every package that **has** a `vitest.config.ts` also has that file inside its `typecheck` program, so a
   Vitest option the installed version no longer recognizes fails `yarn typecheck` instead of sitting
   silently unused (this bit once: a `test.poolOptions.forks.singleFork` removal in Vitest 4 went
@@ -246,6 +247,8 @@ files are type-checked where possible (vitest itself never type-checks).
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, checked by the separate `typecheck:e2e` script — which is chained into
     that package's `build`, **not** into root `yarn typecheck`, so the fast gate does not cover them)
+  - `config-check` has no tests; its `tsconfig.json` sets `"types": []` and `"lib": ["ES2022"]`, so a
+    `node:` import or a `NodeJS.*` type fails its type check (the package must stay runtime-neutral)
   - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`), whose
     `include` lists `test/**/*.ts` and `vitest.config.ts` beside `app/` and `src/`. That program keeps
     `customConditions: ["react-native", "browser"]`, which turned out not to disturb resolution of

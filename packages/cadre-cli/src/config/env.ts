@@ -9,7 +9,14 @@
  * retired one with the message naming its replacement.
  */
 
-import { nearestKey } from './nearest-key.js';
+import {
+  type EnvOverride,
+  nearestKey,
+  parseBooleanEnv,
+  parseListEnv,
+  parseNumberEnv,
+  specifiedEnv,
+} from '@serfab/config-check';
 import { parseStrandFilterText } from './strand-filter.js';
 
 /** How a variable's text becomes a config value. */
@@ -99,18 +106,9 @@ const ENV_PREFIX = 'CADRE_';
 const HOST_PREFIX = 'CADRE_HOST_';
 
 /**
- * The variable's value, or `undefined` when it is not specified. An empty or whitespace-only
- * value counts as not specified: a docker-compose default like `${CADRE_ENABLE_RELAY:-}` must
- * leave the config file's value (or the profile default) alone, and a variable set that way is
- * not checked by name either.
- */
-export function specifiedEnv(value: string | undefined): string | undefined {
-  return value === undefined || value.trim() === '' ? undefined : value;
-}
-
-/**
  * Reject every set `CADRE_*` variable that is retired or unknown, in one `Error` listing each.
- * Names under `CADRE_HOST_` are cadre-host's and are skipped.
+ * Names under `CADRE_HOST_` are cadre-host's and are skipped, and so is a set-but-empty value
+ * (`specifiedEnv`), which the overrides skip too.
  */
 export function checkEnvNames(env: NodeJS.ProcessEnv): void {
   const problems: string[] = [];
@@ -136,45 +134,19 @@ function nameProblem(name: string): string | undefined {
 // Value parsing — one parser per kind; `value` is never empty (see specifiedEnv)
 // ---------------------------------------------------------------------------
 
-const PARSERS: Record<EnvKind, (value: string, name: string) => unknown> = {
+const PARSERS: Record<EnvKind, EnvOverride['parse']> = {
   string: (value) => value,
-  // NOTE: a separators-only value (e.g. `,`) survives the empty check but yields [], clobbering
-  // the file's list. If that shape ever shows up in a real launcher, treat an all-empty split as
-  // unspecified here too.
-  list: (value) => value.split(',').map((s) => s.trim()).filter(Boolean),
-  boolean: parseBoolean,
-  number: parseNumber,
+  list: parseListEnv,
+  boolean: parseBooleanEnv,
+  number: parseNumberEnv,
   strandFilter: parseStrandFilterText,
   json: parseJsonObject,
 };
 
-/** Turn a config override's text into the value written at its config path. Throws naming `name`. */
-export function parseEnvValue(name: string, kind: EnvKind, value: string): unknown {
-  return PARSERS[kind](value, name);
-}
-
-const BOOLEAN_SPELLINGS = new Map<string, boolean>([
-  ['true', true],
-  ['1', true],
-  ['false', false],
-  ['0', false],
-]);
-
-function parseBoolean(value: string, name: string): boolean {
-  const parsed = BOOLEAN_SPELLINGS.get(value.trim().toLowerCase());
-  if (parsed === undefined) {
-    throw new Error(`Invalid ${name} ${JSON.stringify(value)}: expected true, false, 1 or 0`);
-  }
-  return parsed;
-}
-
-function parseNumber(value: string, name: string): number {
-  const parsed = Number(value.trim());
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid ${name} ${JSON.stringify(value)}: expected a number`);
-  }
-  return parsed;
-}
+/** {@link ENV_MAPPINGS} with each kind resolved to its parser, in the form `applyEnvOverrides` takes. */
+export const ENV_OVERRIDES: Readonly<Record<string, EnvOverride>> = Object.fromEntries(
+  Object.entries(ENV_MAPPINGS).map(([name, { path, kind }]) => [name, { path, parse: PARSERS[kind] }]),
+);
 
 /**
  * A JSON object, checked for shape only; the validator checks its keys. The value is never

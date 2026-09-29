@@ -5,15 +5,17 @@
 Sereus uses [bumpp](https://github.com/antfu/bumpp) for version bumping and follows semver.
 Tags use the `v` prefix (e.g. `v0.1.0`). All packages in the monorepo share one version number.
 
-Six workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
+Seven workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
 record — `yarn smoke:published` derives its set from them, so a package becomes covered the moment
 it gets a `pub:*` script:
 
-`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`, `cadre-rn`.
+`config-check`, `quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`,
+`cadre-rn`.
 
 Publish order matters and `yarn pub` already encodes it (dependency chain first):
-`quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` → `cadre-host` → `cadre-rn`
-(`cadre-rn` depends on no `@serfab/*` package, so its place is free; it goes last).
+`config-check` → `quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` →
+`cadre-host` → `cadre-rn` (`config-check` depends on nothing and `cadre-cli` depends on it, so it
+goes first; `cadre-rn` depends on no `@serfab/*` package, so its place is free; it goes last).
 
 ## Prerequisites
 
@@ -130,16 +132,18 @@ yarn pub
 Or publish individually:
 
 ```bash
+yarn pub:config-check
 yarn pub:quereus-plugin-sereus
 yarn pub:cadre-core
 yarn pub:cadre-cli
 yarn pub:cadre-provider
 yarn pub:cadre-host
+yarn pub:cadre-rn
 ```
 
 **`cadre-host` refuses to publish while its embedded release key is the all-zeros placeholder.**
-The guard is in `scripts/publish-package.mjs`. Either provision a real key, or publish the other
-four and hold `cadre-host` back. The escape hatch `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` exists for
+The guard is in `scripts/publish-package.mjs`. Either provision a real key, or publish the
+others and hold `cadre-host` back. The escape hatch `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` exists for
 testing the publish path and should not be used for a real release — an installer signed with a
 key everyone has is an installer nobody can trust.
 
@@ -241,8 +245,8 @@ SEREUS_DIST_TAG=alpha yarn pub
 $env:SEREUS_DIST_TAG = 'alpha'; yarn pub
 ```
 
-The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is six
-`&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
+The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is a
+chain of `&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
 command in that chain. `--tag` works for a single package's own script, where there is no chain to
 lose the flag partway through:
 

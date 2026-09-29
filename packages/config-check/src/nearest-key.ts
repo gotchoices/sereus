@@ -1,6 +1,6 @@
 /**
- * The "did you mean" suggestion shared by the config validator (unknown config keys) and the
- * environment check (unknown `CADRE_*` variables).
+ * The "did you mean" suggestion shared by `objectOf`'s unknown-key message and any caller's own
+ * name check (cadre-cli's unknown `CADRE_*` variables).
  */
 
 /** The accepted name a typo most likely meant: a case-insensitive match, else within two edits. */

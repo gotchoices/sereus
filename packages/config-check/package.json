@@ -1,0 +1,40 @@
+{
+  "name": "@serfab/config-check",
+  "version": "1.7.0",
+  "type": "module",
+  "description": "Strict, dependency-free config tree validation shared by Sereus's own packages",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/sereus.git",
+    "directory": "packages/config-check"
+  },
+  "keywords": [
+    "sereus",
+    "config",
+    "validation"
+  ],
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit"
+  },
+  "devDependencies": {
+    "rimraf": "^6.1.2",
+    "typescript": "^5.9.3"
+  },
+  "author": "Got Choices Foundation",
+  "license": "MIT"
+}
