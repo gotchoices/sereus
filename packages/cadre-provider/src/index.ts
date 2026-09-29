@@ -82,6 +82,13 @@ export {
 export { DockerOrchestrator } from './service/docker-orchestrator.js';
 
 export {
+  PortAllocator,
+  allocatePortSet,
+  reservePortSet,
+  releasePortSet,
+} from './service/port-allocator.js';
+
+export {
   type NodeEnvPorts,
   type NodeEnvSpec,
   CONTAINER_PORTS,

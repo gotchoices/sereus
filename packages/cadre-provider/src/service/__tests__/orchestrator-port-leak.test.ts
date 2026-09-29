@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type Docker from 'dockerode';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
+import type { PortAllocator } from '../port-allocator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
 import { volumeStubs } from './fake-docker.js';
@@ -14,7 +15,7 @@ const request: OrchestratorCreateRequest = {
 
 /** Private surface we read to prove ports were freed back to the allocator. */
 type OrchestratorInternal = {
-  allocatePorts(count: number): number[];
+  portAllocator: PortAllocator;
 };
 
 /** DockerConfig with a tiny port range so a single leak exhausts the pool. */
@@ -89,8 +90,10 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     // Allocation failed before reaching Docker.
     expect(createSpy).not.toHaveBeenCalled();
 
-    // Both briefly-taken ports are back: a fresh 2-port allocation succeeds.
-    expect(() => (orch as unknown as OrchestratorInternal).allocatePorts(2)).not.toThrow();
+    // Both briefly-taken ports are back.
+    const { portAllocator } = orch as unknown as OrchestratorInternal;
+    expect(portAllocator.has(10000)).toBe(false);
+    expect(portAllocator.has(10001)).toBe(false);
   });
 
   it('records ports and returns endpoints on success without any cleanup', async () => {

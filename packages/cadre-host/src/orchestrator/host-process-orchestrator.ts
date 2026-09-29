@@ -15,18 +15,18 @@ import {
 import { join, resolve as resolvePath, sep } from 'node:path';
 import debug from 'debug';
 import pidusage from 'pidusage';
-import type {
-  Orchestrator,
-  OrchestratorCreateRequest,
-  OrchestratorCreateResult,
-  OrchestratorStats,
+import {
+  PortAllocator,
+  type Orchestrator,
+  type OrchestratorCreateRequest,
+  type OrchestratorCreateResult,
+  type OrchestratorStats,
 } from '@serfab/cadre-provider';
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
 import {
   allocateNodePorts,
-  PortAllocator,
   releaseNodePorts,
   reserveNodePorts,
   reusedNodePorts,

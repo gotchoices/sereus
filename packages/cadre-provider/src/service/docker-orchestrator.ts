@@ -14,6 +14,7 @@ import type {
   RecoverableOrchestrator,
 } from './orchestrator.js';
 import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
+import { PortAllocator, allocatePortSet, releasePortSet } from './port-allocator.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -50,29 +51,9 @@ function parseDockerFinishedAt(finishedAt: string | undefined): Date | undefined
   return Number.isNaN(ms) || ms <= 0 ? undefined : at;
 }
 
-/** Port allocation tracker */
-class PortAllocator {
-  private usedPorts = new Set<number>();
-
-  constructor(
-    private readonly start: number,
-    private readonly end: number
-  ) {}
-
-  allocate(): number {
-    for (let port = this.start; port <= this.end; port++) {
-      if (!this.usedPorts.has(port)) {
-        this.usedPorts.add(port);
-        return port;
-      }
-    }
-    throw new Error('No available ports in range');
-  }
-
-  release(port: number): void {
-    this.usedPorts.delete(port);
-  }
-}
+/** A container's host ports, allocated in this order (matching the original `allocatePorts(3)` destructure). */
+const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p'] as const;
+type ContainerHostPorts = Record<(typeof CONTAINER_PORT_KEYS)[number], number>;
 
 /**
  * Docker orchestrator using dockerode.
@@ -81,7 +62,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
   private readonly docker: Docker;
   private readonly config: DockerConfig;
   private readonly portAllocator: PortAllocator;
-  private readonly containerPorts = new Map<string, { health: number; metrics: number; p2p: number }>();
+  private readonly containerPorts = new Map<string, ContainerHostPorts>();
 
   constructor(config: DockerConfig, docker?: Docker) {
     this.config = config;
@@ -91,25 +72,6 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       config.portRange?.end ?? 20000
     );
     log('DockerOrchestrator initialized with socket: %s', config.socketPath);
-  }
-
-  /** Allocate `count` ports atomically; release any already taken if one fails. */
-  private allocatePorts(count: number): number[] {
-    const ports: number[] = [];
-    try {
-      for (let i = 0; i < count; i++) ports.push(this.portAllocator.allocate());
-      return ports;
-    } catch (err) {
-      for (const p of ports) this.portAllocator.release(p);
-      throw err;
-    }
-  }
-
-  /** Release a set of ports (used by both the failure path and removeContainer). */
-  private releasePorts(ports: { health: number; metrics: number; p2p: number }): void {
-    this.portAllocator.release(ports.health);
-    this.portAllocator.release(ports.metrics);
-    this.portAllocator.release(ports.p2p);
   }
 
   /**
@@ -186,7 +148,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     }
 
     // Allocate ports atomically (releases partial allocations on failure).
-    const [healthPort, metricsPort, p2pPort] = this.allocatePorts(3) as [number, number, number];
+    const ports = allocatePortSet(this.portAllocator, CONTAINER_PORT_KEYS);
 
     const resources = request.resources ?? this.config.defaultResources ?? {};
 
@@ -222,9 +184,9 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           // route to the network. The p2p port (4001) intentionally stays on all
           // interfaces — libp2p peers must reach it remotely.
           PortBindings: {
-            [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(healthPort) }],
-            [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
-            [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(p2pPort) }],
+            [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.health) }],
+            [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.metrics) }],
+            [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(ports.p2p) }],
           },
           // Durable per-tenant state (identity key, generated config,
           // bootstrap-peer store, trusted-owner anchor, storage) all live under
@@ -250,7 +212,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       // Start container
       await container.start();
     } catch (err) {
-      this.releasePorts({ health: healthPort, metrics: metricsPort, p2p: p2pPort });
+      releasePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
       if (container) {
         // Free the reserved name + labels left by a created-but-unstarted container.
         try {
@@ -266,18 +228,18 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     }
 
     const dockerId = container.id;
-    this.containerPorts.set(dockerId, { health: healthPort, metrics: metricsPort, p2p: p2pPort });
+    this.containerPorts.set(dockerId, ports);
 
     log('Container %s started as %s', request.containerId, dockerId);
 
     return {
       dockerId,
-      healthEndpoint: `http://localhost:${healthPort}/health`,
-      metricsEndpoint: `http://localhost:${metricsPort}/metrics`,
+      healthEndpoint: `http://localhost:${ports.health}/health`,
+      metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
       // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
-      seedEndpoint: `http://localhost:${healthPort}/seed`,
+      seedEndpoint: `http://localhost:${ports.health}/seed`,
       seedToken,
-      p2pPort,
+      p2pPort: ports.p2p,
     };
   }
 
@@ -304,7 +266,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     // Release ports
     const ports = this.containerPorts.get(dockerId);
     if (ports) {
-      this.releasePorts(ports);
+      releasePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
       this.containerPorts.delete(dockerId);
     }
   }
