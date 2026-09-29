@@ -305,6 +305,34 @@ function requireMatchingStrandRow(live: StrandRow, desired: StrandRow, situation
 }
 
 /**
+ * Await `work` unless `signal` aborts first: `true` once `work` resolves, `false` when the
+ * signal aborted before it did (already at the call, or during the wait). A rejection of
+ * `work` that lands before the abort propagates. `work` is NOT cancelled — a caller that
+ * gets `false` owns its late settlement. The abort listener is detached on both endings, so
+ * a long-lived signal does not collect listeners.
+ */
+async function resolvesBeforeAbort(work: Promise<unknown>, signal: AbortSignal | undefined): Promise<boolean> {
+  if (!signal) {
+    await work;
+    return true;
+  }
+  if (signal.aborted) {
+    return false;
+  }
+  let detach = (): void => { /* replaced once the listener is attached */ };
+  const abortedFirst = new Promise<false>((resolve) => {
+    const onAbort = (): void => resolve(false);
+    signal.addEventListener('abort', onAbort, { once: true });
+    detach = () => signal.removeEventListener('abort', onAbort);
+  });
+  try {
+    return await Promise.race([work.then(() => true), abortedFirst]);
+  } finally {
+    detach();
+  }
+}
+
+/**
  * CadreNode is the main entry point for a cadre member.
  * It manages:
  * - Connection to the control network
@@ -7581,7 +7609,8 @@ export class CadreNode implements SAppIdLookup {
       // Overridden on the same grounds: only this node holds the running strand
       // instance's database and this party's `StrandPartyKey` identity, and a wrong
       // issuer here would admit joiners under someone else's authority.
-      issueMembershipInvite: (strandId: string) => this.issueStrandMembershipInvite(strandId)
+      issueMembershipInvite: (strandId: string, signal?: AbortSignal) =>
+        this.issueStrandMembershipInvite(strandId, signal)
     });
 
     // Set before the registration is awaited, so a concurrent createOpenInvitation /
@@ -7781,9 +7810,15 @@ export class CadreNode implements SAppIdLookup {
    *   founder's publish/launch paths mint it, so this is a not-yet-converged sibling.)
    *   The manager maps the throw to a clean retryable rejection BEFORE the formation
    *   token is spent.
-   * - Closed host strand with no running local instance/database → throw, same mapping:
-   *   a joiner admitted without an invitation would look joined and never become a
-   *   member, and a responder not running the strand cannot serve its sync anyway.
+   * - Closed host strand whose runtime is HIBERNATING → woken first
+   *   ({@link wakeHostStrandForFormation}, bounded by `signal`), then issued as below. In
+   *   every state the redemption counts as activity, so the host stays up for the
+   *   joiner's first sync.
+   * - Closed host strand with no running local instance/database (never launched, still
+   *   starting, quiescing, or a hibernating one whose wake failed or outran `signal`) →
+   *   throw, same mapping: a joiner admitted without an invitation would look joined and
+   *   never become a member, and a responder not running the strand cannot serve its sync
+   *   anyway.
    * - Closed host strand whose LIVE rows carry the pre-split fingerprint
    *   (`assertNotPreSplitStrand`) → throw `PreSplitStrandIdentityError`, same mapping as
    *   the recorded refusal. Covers the responders that never ran a refused founder launch:
@@ -7793,7 +7828,12 @@ export class CadreNode implements SAppIdLookup {
    * permanent diagnosis. Identity is checked BEFORE the runtime: it is the cheaper read
    * and the more actionable diagnosis when both are missing (a missing runtime is
    * transient, a missing identity is not), and it keeps the branch reachable without
-   * standing a strand runtime up.
+   * standing a strand runtime up. For the same reason every control-database check runs
+   * before a wake: a strand that cannot issue anyway is not woken.
+   *
+   * `signal` is the formation's provisioning budget. Once it has aborted nothing is
+   * issued — the joiner has already been told to retry, and an invitation written now
+   * would only sit in the strand until it expires.
    *
    * The invitation expires `MEMBERSHIP_INVITE_TTL_MS` from now — see that constant for
    * the slow-joiner / lost-result tradeoff.
@@ -7808,7 +7848,10 @@ export class CadreNode implements SAppIdLookup {
    * `MEMBERSHIP_INVITE_UNAVAILABLE_REASON` forever; that flow needs manager delegation,
    * not a retry.
    */
-  private async issueStrandMembershipInvite(strandId: string): Promise<StrandMembershipInvite | null> {
+  private async issueStrandMembershipInvite(
+    strandId: string,
+    signal?: AbortSignal
+  ): Promise<StrandMembershipInvite | null> {
     if (!this.controlDatabase) {
       throw new Error(`Cannot issue a membership invitation for strand ${strandId}: control database unavailable`);
     }
@@ -7832,20 +7875,72 @@ export class CadreNode implements SAppIdLookup {
         'no StrandPartyKey row for it (identity not yet converged from the machine that published it)'
       );
     }
+    await this.wakeHostStrandForFormation(strandId, signal);
     const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();
     if (!db) {
       throw new Error(
         `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
-        'not live on this responder (not launched, hibernating, or quiescing)'
+        'not live on this responder (not launched, still starting, or quiescing)'
       );
     }
     if (row.MemberPrivateKey) {
       await assertNotPreSplitStrand(db, strandId, strandMemberKeyPair(row.MemberPrivateKey).publicKeyB64);
     }
+    if (signal?.aborted) {
+      throw new Error(
+        `Cannot issue a membership invitation for closed strand ${strandId}: the formation ` +
+        'provisioning budget expired before issuance'
+      );
+    }
     return await issueInvite(db, {
       managerKeyPair: strandMemberKeyPair(partyKey),
       expiration: Date.now() + MEMBERSHIP_INVITE_TTL_MS
     });
+  }
+
+  /**
+   * Count a bound closed-strand redemption as activity on the host strand, and wake the
+   * strand when it is HIBERNATING so the membership invitation can be issued. Only reached
+   * after the formation manager has authorized the redemption (token, disclosure, outside
+   * approval, seat pre-check), so only a caller already entitled to the strand's member key
+   * can cause a wake. No other state is woken — never launched, still starting, or a
+   * quiesce in flight is not something this node recovers from on demand; the caller's
+   * live-database check refuses those.
+   *
+   * The activity is recorded in every state, through the hibernation manager rather than
+   * {@link recordStrandActivity}, whose push fan-out would wake this party's phones for
+   * nothing. It keeps the host up for the joiner's first sync: a live strand's idle timer
+   * restarts, a check-in window that happens to have the strand live sees activity and
+   * leaves it up instead of re-quiescing it, and a hibernating strand has its idle →
+   * hibernate timers re-armed once the wake leaves it `active`. The explicit
+   * {@link wakeStrand} coalesces onto the wake `recordActivity` began, and still wakes when
+   * `recordActivity` is a no-op (hibernation disabled but the strand force-hibernated, or
+   * the manager stopped).
+   *
+   * Bounded by `signal` (the formation's provisioning budget): when it aborts first this
+   * throws — a retryable rejection, token unspent — and leaves the wake running, so the
+   * joiner's retry finds the strand live.
+   */
+  private async wakeHostStrandForFormation(strandId: string, signal?: AbortSignal): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (!instance) {
+      return;
+    }
+    this.hibernationManager.recordActivity(instance);
+    if (instance.status !== 'hibernating' || instance.database) {
+      return;
+    }
+    log('issueStrandMembershipInvite: waking hibernating host strand %s for an authorized formation', strandId);
+    const wake = this.wakeStrand(strandId);
+    if (await resolvesBeforeAbort(wake, signal)) {
+      return;
+    }
+    void wake.catch((error: unknown) =>
+      log('issueStrandMembershipInvite: background wake of host strand %s failed: %o', strandId, error));
+    throw new Error(
+      `Cannot issue a membership invitation for closed strand ${strandId}: its hibernating ` +
+      'runtime did not wake within the formation provisioning budget (still waking)'
+    );
   }
 
   /**

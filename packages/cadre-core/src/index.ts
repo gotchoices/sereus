@@ -581,6 +581,7 @@ export {
   MEMBERSHIP_INVITE_TTL_MS,
   MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
   HOST_STRAND_MUST_BE_RECREATED_REASON,
+  type MembershipInviteIssuer,
   type StrandFormationManagerConfig,
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';

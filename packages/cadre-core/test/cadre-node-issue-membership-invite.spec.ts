@@ -12,6 +12,7 @@
  *  - `Strand` row gone (concurrent unpublish) → throw → retryable rejection,
  *  - no `StrandPartyKey` identity → throw → retryable rejection,
  *  - closed strand whose runtime is not live → throw → retryable rejection,
+ *  - closed strand whose runtime is hibernating → woken, then the invitation is issued,
  *  - closed strand whose founder launch was refused as pre-split → rethrow the
  *    `PreSplitStrandIdentityError` → non-retryable rejection, until the strand is stopped.
  *
@@ -91,6 +92,29 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
 
     await expect(issue(node, strandId)).rejects.toThrow(/runtime is\s+not live/);
   }, 30_000);
+
+  it('closed strand whose runtime is hibernating → wakes it and issues the invitation', async () => {
+    const strandId = 'strand-hibernating-' + rand();
+    await node.foundStrand({
+      strandId,
+      type: 'c',
+      memberPrivateKey: await generateStrandMemberKey(),
+      sAppConfig: signedSApp(),
+    });
+    // Force-hibernation works with hibernation disabled (the mobile background path),
+    // which is also why the wake cannot rely on `recordActivity` alone.
+    await node.hibernateStrand(strandId);
+    expect(node.getStrand(strandId)?.status).toBe('hibernating');
+
+    const invite = await issue(node, strandId);
+
+    expect(invite?.inviteKey).toBeTruthy();
+    const instance = node.getStrand(strandId)!;
+    expect(instance.status).toBe('active');
+    const row = await instance.database!.getDatabase().get(
+      'select Key from Strand.Invite where Key = ?', [invite!.inviteKey]);
+    expect(row?.Key).toBe(invite!.inviteKey);
+  }, 60_000);
 
   it('closed strand whose founder launch was refused as pre-split → rethrows the refusal until stopped', async () => {
     const strandId = 'strand-pre-split-' + rand();

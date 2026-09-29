@@ -62,12 +62,14 @@ export const MEMBERSHIP_INVITE_TTL_MS = 7 * 24 * 3600_000;
 /**
  * Rejection reason for a bound CLOSED-strand redemption whose responder could not issue
  * the joiner's membership invitation — the host strand runtime not live on this
- * responder, no party identity key yet, or the strand DB refusing the `Strand.Invite`
- * write. Retryable on purpose, and rejected BEFORE the consent row is recorded, so the
- * formation token stays unspent: approving without an invitation would admit a joiner
- * that looks joined but can never become a member, and a responder not running the
- * strand cannot serve the joiner's sync anyway. The one permanent failure,
- * a pre-split host strand, gets {@link HOST_STRAND_MUST_BE_RECREATED_REASON} instead.
+ * responder (never launched, mid-start, or a hibernating one that did not wake within the
+ * provisioning budget; a hibernating runtime is woken, not refused), no party identity key
+ * yet, or the strand DB refusing the `Strand.Invite` write. Retryable on purpose, and
+ * rejected BEFORE the consent row is recorded, so the formation token stays unspent:
+ * approving without an invitation would admit a joiner that looks joined but can never
+ * become a member, and a responder not running the strand cannot serve the joiner's sync
+ * anyway. The one permanent failure, a pre-split host strand, gets
+ * {@link HOST_STRAND_MUST_BE_RECREATED_REASON} instead.
  */
 export const MEMBERSHIP_INVITE_UNAVAILABLE_REASON = 'Strand membership invitation unavailable, retry';
 
@@ -94,6 +96,14 @@ const APPROVAL_REJECTION_REASONS: Record<FormationApprovalFailure, string> = {
   unenrolled: 'Formation approval key is not enrolled',
   misconfigured: 'Formation approval misconfigured'
 };
+
+/**
+ * Responder-side seam that issues a bound joiner's membership invitation — see
+ * {@link StrandFormationManagerOptions.issueMembershipInvite} for the contract. `signal`
+ * is the responder's provisioning budget: the issuer stops waiting (and throws) once it
+ * aborts.
+ */
+export type MembershipInviteIssuer = (strandId: string, signal?: AbortSignal) => Promise<StrandMembershipInvite | null>;
 
 /**
  * Configuration for StrandFormationManager
@@ -162,11 +172,15 @@ export interface StrandFormationManagerOptions {
    * `PreSplitStrandIdentityError` for a host strand that can never issue one; that maps
    * to the non-retryable {@link HOST_STRAND_MUST_BE_RECREATED_REASON}.
    *
+   * A hibernating host runtime is not a reason to throw: the issuer wakes it first,
+   * bounded by `signal` (the responder's provisioning budget), and throws only when the
+   * wake does not finish in time or fails.
+   *
    * Left unwired — mock/transport tests — the bound path approves with no invitation,
    * mirroring the unwired {@link resolveStrandAddrs} posture. Production
    * (`CadreNode.initializeStrandSolicitation`) always wires it.
    */
-  issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  issueMembershipInvite?: MembershipInviteIssuer;
   /** Configuration options */
   config?: StrandFormationManagerConfig;
 }
@@ -192,7 +206,7 @@ export class StrandFormationManager {
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
-  private readonly issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  private readonly issueMembershipInvite?: MembershipInviteIssuer;
   private readonly config: StrandFormationManagerConfig;
   private readonly listener: FormationListener;
   private readonly registeredNodes = new Set<Libp2p>();
@@ -457,7 +471,7 @@ export class StrandFormationManager {
           // live `Strand.Invite` no joiner ever received; bounded deliberately by its expiry
           // ({@link MEMBERSHIP_INVITE_TTL_MS}) rather than compensated, since nothing
           // here can atomically un-issue a strand-DB row.
-          const issued = await this.issueBoundMembershipInvite(token, resolved.strandId);
+          const issued = await this.issueBoundMembershipInvite(token, resolved.strandId, signal);
           if (!issued.ok) {
             return { approved: false, reason: issued.reason };
           }
@@ -536,7 +550,8 @@ export class StrandFormationManager {
    *   as an unwired `resolveStrandAddrs`.
    * - Hook returns an invitation (closed host strand): carry it on the approval.
    * - Hook returns `null` (open host strand): approve with no invitation.
-   * - Hook throws (runtime not live, no party key, strand-DB write rejected): report
+   * - Hook throws (runtime not live — including a hibernating one whose wake outran
+   *   `signal` — no party key, strand-DB write rejected): report
    *   `ok: false` with {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON} — the caller rejects
    *   BEFORE any consent row is written, so the formation token stays unspent.
    * - Hook throws `PreSplitStrandIdentityError` (the host strand was founded before the
@@ -548,13 +563,14 @@ export class StrandFormationManager {
    */
   private async issueBoundMembershipInvite(
     token: string,
-    strandId: string
+    strandId: string,
+    signal?: AbortSignal
   ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false; reason: string }> {
     if (!this.issueMembershipInvite) {
       return { ok: true };
     }
     try {
-      const invite = await this.issueMembershipInvite(strandId);
+      const invite = await this.issueMembershipInvite(strandId, signal);
       return { ok: true, invite: invite ?? undefined };
     } catch (err) {
       if (err instanceof PreSplitStrandIdentityError) {

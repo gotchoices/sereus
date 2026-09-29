@@ -7,8 +7,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import type {
   OpenInvitation,
   FormStrandResult,
-  StrandFormationDisclosure,
-  StrandMembershipInvite
+  StrandFormationDisclosure
 } from './types.js';
 // control-database does not import this service, so these imports introduce no cycle.
 import { generateStampId, formationConsentMessage } from './control-database.js';
@@ -17,6 +16,7 @@ import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
 import { mintPlaceholderStrandId } from './strand-id.js';
 import {
   StrandFormationManager,
+  type MembershipInviteIssuer,
   type StrandFormationManagerConfig
 } from './strand-formation-manager.js';
 import {
@@ -227,7 +227,7 @@ export interface StrandSolicitationServiceOptions {
    * (null = open strand, throw = reject the redemption retryably, unwired = mock/test
    * posture: approve with no invitation).
    */
-  issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  issueMembershipInvite?: MembershipInviteIssuer;
   /** Configuration for the formation manager */
   formationConfig?: StrandFormationManagerConfig;
 }
@@ -253,7 +253,7 @@ export class StrandSolicitationService {
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
-  private readonly issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  private readonly issueMembershipInvite?: MembershipInviteIssuer;
   private formationManager?: StrandFormationManager;
   private readonly formationConfig?: StrandFormationManagerConfig;
   /**
