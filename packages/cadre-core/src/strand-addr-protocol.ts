@@ -35,7 +35,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { StrandAddrRequest, StrandAddrResponse, StrandAddrStatus } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { orderSignalingFirst } from './peer-record.js';
-import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-addr');
@@ -184,40 +184,28 @@ export class StrandAddrService {
       log('Rejecting strand-addr from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrent);
       // The request frame is unread here, so the strand id is unknown — reply
       // under an empty strand id; the asker retries an `unavailable` sibling soon.
-      try {
-        writeFrame(stream, addrlessResponse('unavailable', ''));
-      } catch {
-        // Ignore send errors on the reject path.
-      }
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
+      await replyAndClose(stream, addrlessResponse('unavailable', ''), 'Strand-addr');
       return;
     }
 
     this.activeStreams++;
     try {
+      await replyAndClose(stream, await this.answerStream(stream, remotePeerId), 'Strand-addr');
+    } finally {
+      this.activeStreams--;
+    }
+  }
+
+  /** Read and decide one inbound request; any failure becomes an `unavailable` response. */
+  private async answerStream(stream: ControlStream, remotePeerId: string): Promise<StrandAddrResponse> {
+    try {
       const request = await readFrame<StrandAddrRequest>(stream, this.readTimeoutMs);
-      const response = await this.processAddrRequest(request, remotePeerId);
-      writeFrame(stream, response);
+      return await this.processAddrRequest(request, remotePeerId);
     } catch (err) {
       log('Error handling strand-addr request from %s: %o', remotePeerId, err);
       // Malformed/oversized/timed-out request, or a lookup that threw: reply
       // under an empty strand id rather than hanging.
-      try {
-        writeFrame(stream, addrlessResponse('unavailable', ''));
-      } catch {
-        // Ignore send errors on the error path.
-      }
-    } finally {
-      this.activeStreams--;
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
+      return addrlessResponse('unavailable', '');
     }
   }
 

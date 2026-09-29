@@ -30,7 +30,7 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
-import { type ControlStream, writeFrame, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { tryAddrsInTurn } from './peer-dial.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 
@@ -218,43 +218,26 @@ export class StrandWakeService {
 
     if (this.activeStreams >= this.maxConcurrent) {
       log('Rejecting wake from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrent);
-      const ack: WakeAck = { accepted: false, reason: 'Too many concurrent wake requests' };
-      try {
-        writeFrame(stream, ack);
-      } catch {
-        // Ignore send errors on the reject path.
-      }
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
+      await replyAndClose(stream, { accepted: false, reason: 'Too many concurrent wake requests' } satisfies WakeAck, 'Wake');
       return;
     }
 
     this.activeStreams++;
     try {
-      const request = await readFrame<WakeRequest>(stream, this.readTimeoutMs);
-      const ack = await this.processWakeRequest(request, remotePeerId);
-      writeFrame(stream, ack);
-    } catch (err) {
-      log('Error handling wake request from %s: %o', remotePeerId, err);
-      const ack: WakeAck = {
-        accepted: false,
-        reason: err instanceof Error ? err.message : 'Unknown error',
-      };
-      try {
-        writeFrame(stream, ack);
-      } catch {
-        // Ignore send errors on the error path.
-      }
+      await replyAndClose(stream, await this.answerStream(stream, remotePeerId), 'Wake');
     } finally {
       this.activeStreams--;
-      try {
-        await stream.close();
-      } catch {
-        // Ignore close errors.
-      }
+    }
+  }
+
+  /** Read and decide one inbound request; any failure becomes a non-accepting ack. */
+  private async answerStream(stream: ControlStream, remotePeerId: string): Promise<WakeAck> {
+    try {
+      const request = await readFrame<WakeRequest>(stream, this.readTimeoutMs);
+      return await this.processWakeRequest(request, remotePeerId);
+    } catch (err) {
+      log('Error handling wake request from %s: %o', remotePeerId, err);
+      return { accepted: false, reason: err instanceof Error ? err.message : 'Unknown error' };
     }
   }
 

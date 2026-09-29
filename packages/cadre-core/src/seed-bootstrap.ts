@@ -4,7 +4,7 @@ import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-c
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
-import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { dialPeerAddrs, SelfRelayOnlyError, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 import type {
@@ -122,23 +122,6 @@ function seedRejected(error: string): ApplySeedResult {
 
 /** What dialing a seed's owner peers produced — the owner-dial half of an {@link ApplySeedResult}. */
 type OwnerDialCounts = Pick<ApplySeedResult, 'ownerDialsAttempted' | 'ownerDialsFailed'>;
-
-/**
- * Write one ack frame and close the stream, best-effort on both: a peer that has already gone
- * away cannot be answered, and the seed's outcome does not depend on whether it heard.
- */
-async function replyAndClose(stream: ControlStream, ack: SeedAckMessage): Promise<void> {
-  try {
-    writeFrame(stream, ack);
-  } catch (error) {
-    log('Failed to write seed ack: %o', error);
-  }
-  try {
-    await stream.close();
-  } catch (error) {
-    log('Failed to close seed stream: %o', error);
-  }
-}
 
 /**
  * Parse each address, dropping (and logging) any that is malformed, so one bad
@@ -1173,7 +1156,7 @@ export class SeedBootstrapService {
 
     if (this.activeStreams >= this.maxConcurrentSeeds) {
       log('Rejecting seed from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrentSeeds);
-      await replyAndClose(stream, { accepted: false, reason: 'Too many concurrent seed deliveries' });
+      await replyAndClose(stream, { accepted: false, reason: 'Too many concurrent seed deliveries' } satisfies SeedAckMessage, 'Seed');
       return;
     }
 
@@ -1185,7 +1168,7 @@ export class SeedBootstrapService {
 
       const merged = await this.verifyAndMergeSeed(seed);
       acked = true;
-      await replyAndClose(stream, { accepted: merged.success, reason: merged.error });
+      await replyAndClose(stream, { accepted: merged.success, reason: merged.error } satisfies SeedAckMessage, 'Seed');
 
       if (merged.success) {
         await this.dialSeedOwners(seed);
@@ -1199,7 +1182,7 @@ export class SeedBootstrapService {
       this.eventCallbacks.onSeedError?.(this.config.partyId, errorMessage);
       // Once acked the stream is closed, so a later failure has no reply to make.
       if (!acked) {
-        await replyAndClose(stream, { accepted: false, reason: errorMessage });
+        await replyAndClose(stream, { accepted: false, reason: errorMessage } satisfies SeedAckMessage, 'Seed');
       }
     } finally {
       this.activeStreams--;
