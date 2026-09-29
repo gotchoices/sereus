@@ -395,7 +395,9 @@ instead of leaving the suites green while the app breaks on device — a `vi.moc
 factory is not otherwise checked against the module it replaces.
 
 The third is the chat screen's view model, `src/chat-vm.ts`
-(`test/chat-vm.spec.ts`): the poll's one-read-at-a-time guard, registering the
+(`test/chat-vm.spec.ts`): the poll's one-read-at-a-time guard, dropping a late
+read of a strand it has switched away from and clearing the list on the switch,
+registering the
 local participant once the strand is writable, and the send rule with its retry
 key (the NativeScript counterpart of `reference-app-rn`'s `chat-send.spec.ts`). It
 drives the same fake node, but `src/chat-operations.ts` runs unmocked against a

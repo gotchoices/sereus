@@ -328,6 +328,10 @@ export class ChatViewModel extends Observable {
 			this.draft = '';
 			// The draft's outcome is settled whichever strand is attached now; the row belongs to
 			// the strand it was stored in, so it joins the list only if that is still the one shown.
+			// NOTE: accepted tradeoff — the composer is not reset on a switch, so a resend after an
+			// uncertain failure on one strand, made once attached to another, stores the message in
+			// the second under the same id (one row per strand, not overall); revisit if this app
+			// ever lets the user pick among several live strands.
 			if (this.strand !== strand) return;
 			this._messages.push(this.toRow(message, participantId));
 			this.setError('');
