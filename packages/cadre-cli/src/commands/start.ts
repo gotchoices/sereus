@@ -17,6 +17,7 @@ import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-st
 import { FileStrandPeerBookStore } from '@serfab/cadre-core/strand-peer-book-file';
 import { fromString } from 'uint8arrays';
 import { resolveConfig } from '../config/index.js';
+import { commandEnv } from '../config/env.js';
 import { resolveStorageConfig } from './node-session.js';
 import { HealthServer } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
@@ -100,7 +101,7 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * those same ports.
  */
 function writeStartupToken(path: string | undefined): void {
-  const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+  const token = commandEnv('CADRE_STARTUP_TOKEN') ?? '';
   if (!path || token.length === 0) return;
   writeFileSync(path, token, { encoding: 'utf8' });
   log('Wrote startup token to %s', path);
@@ -167,7 +168,7 @@ export const startCommand = new Command('start')
       // policy BEFORE constructing CadreNode so every later service-construction
       // site (seed listener, temp-service for applySeed / POST /seed) captures
       // it as the node-wide default — it is read at construction time.
-      const pinnedKeys = validatePinnedOwnerKeys(collectPinnedOwnerKeys(options.pinOwnerKey, process.env.CADRE_OWNER_KEYS));
+      const pinnedKeys = validatePinnedOwnerKeys(collectPinnedOwnerKeys(options.pinOwnerKey, commandEnv('CADRE_OWNER_KEYS')));
       const seedTrustPolicy: SeedTrustPolicy | undefined =
         pinnedKeys.length > 0 ? pinnedKeyTrustPolicy(pinnedKeys) : undefined;
       if (pinnedKeys.length > 0) {
@@ -311,13 +312,13 @@ export const startCommand = new Command('start')
       // Start health/metrics servers if enabled
       let healthServer: HealthServer | null = null;
       if (options.healthServer !== false) {
-        const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
-        const metricsPort = parseInt(process.env.CADRE_METRICS_PORT ?? options.metricsPort, 10);
+        const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? options.healthPort, 10);
+        const metricsPort = parseInt(commandEnv('CADRE_METRICS_PORT') ?? options.metricsPort, 10);
 
         // POST /seed is registered only when CADRE_SEED_TOKEN is set; otherwise
         // the health port serves read-only liveness/readiness probes. Keep this
         // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
-        const seedToken = process.env.CADRE_SEED_TOKEN ?? '';
+        const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
 
         healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile, seedToken });
         healthServer.attach(node);
@@ -392,13 +393,13 @@ export const startCommand = new Command('start')
 
       // Bind the loopback admin channel if requested. The startup token doubles
       // as the bearer secret, so refuse to expose the surface without it.
-      const adminPortRaw = process.env.CADRE_ADMIN_PORT ?? options.adminPort;
+      const adminPortRaw = commandEnv('CADRE_ADMIN_PORT') ?? options.adminPort;
       if (adminPortRaw) {
         const adminPort = parseInt(adminPortRaw, 10);
         if (isNaN(adminPort) || adminPort < 0 || adminPort > 65535) {
           throw new Error(`Invalid admin port: ${adminPortRaw}`);
         }
-        const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+        const token = commandEnv('CADRE_STARTUP_TOKEN') ?? '';
         if (token.length === 0) {
           throw new Error('--admin-port requires CADRE_STARTUP_TOKEN in env (used as the admin bearer token)');
         }

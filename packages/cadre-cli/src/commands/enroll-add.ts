@@ -5,6 +5,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { PeerId } from '@libp2p/interface';
 import { withTrailingPeerId, type DroneInitResult } from '@serfab/cadre-core';
+import { commandEnv } from '../config/env.js';
 import { adminRequest, AdminRequestError, type AdminConnection, type AdminFetch } from './admin-client.js';
 
 const log = debug('cadre:cli:enroll-add');
@@ -166,8 +167,8 @@ function resolveRequest(rawPeerId: string, options: EnrollAddOptions, env: NodeJ
   return {
     peerId,
     addrs: parseTargetAddrs(options.addr, peerId),
-    port: resolveAdminPort(options.adminPort, env.CADRE_ADMIN_PORT),
-    token: resolveAdminToken(options.tokenFile, env.CADRE_STARTUP_TOKEN),
+    port: resolveAdminPort(options.adminPort, commandEnv('CADRE_ADMIN_PORT', env)),
+    token: resolveAdminToken(options.tokenFile, commandEnv('CADRE_STARTUP_TOKEN', env)),
     timeoutMs: resolveTimeout(options.timeout),
   };
 }

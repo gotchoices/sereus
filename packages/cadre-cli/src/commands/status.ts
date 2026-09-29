@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadValidatedConfig } from '../config/loader.js';
+import { commandEnv } from '../config/env.js';
 import {
   queryRuntime,
   buildStatusReport,
@@ -26,7 +27,7 @@ export const statusCommand = new Command('status')
     const configSummary = await loadConfigSummary(options.config, Boolean(options.json));
 
     // Resolve the health endpoint (mirrors start.ts's CADRE_HEALTH_PORT env).
-    const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
+    const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? options.healthPort, 10);
     const url = `http://${options.healthHost}:${healthPort}/status`;
     const timeoutMs = parseInt(options.timeout, 10);
 

@@ -198,8 +198,6 @@ describe('resolveConfig identity block', () => {
   const tmpDirs: string[] = [];
 
   afterEach(() => {
-    delete process.env.CADRE_KEY_FILE;
-    delete process.env.CADRE_IDENTITY_PROTOBUF;
     for (const d of tmpDirs) {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -325,9 +323,8 @@ describe('resolveConfig identity block', () => {
   it('lets CADRE_KEY_FILE rescue a config whose keyFile has no value', async () => {
     const dir = tmpDir('empty-keyfile-env');
     const { key, keyFile } = await writeEnrolledKey(dir, 'from-env.key');
-    process.env.CADRE_KEY_FILE = keyFile;
 
-    const resolved = await resolveConfig(writeConfig(dir, { keyFile: null }));
+    const resolved = await resolveConfig(writeConfig(dir, { keyFile: null }), { CADRE_KEY_FILE: keyFile });
 
     expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
       .toBe(peerIdFromPrivateKey(key).toString());
@@ -336,9 +333,8 @@ describe('resolveConfig identity block', () => {
   it('rejects the retired CADRE_IDENTITY_PROTOBUF env var, naming CADRE_KEY_FILE', async () => {
     const dir = tmpDir('retired-env');
     const { keyFile } = await writeEnrolledKey(dir, 'node.key');
-    process.env.CADRE_IDENTITY_PROTOBUF = keyFile;
 
-    await expect(resolveConfig(writeConfig(dir)))
+    await expect(resolveConfig(writeConfig(dir), { CADRE_IDENTITY_PROTOBUF: keyFile }))
       .rejects.toThrow(/CADRE_IDENTITY_PROTOBUF[\s\S]*CADRE_KEY_FILE/);
   });
 
@@ -349,9 +345,8 @@ describe('resolveConfig identity block', () => {
   it('adopts CADRE_KEY_FILE when the config file has no identity block', async () => {
     const dir = tmpDir('env-only');
     const { key, keyFile } = await writeEnrolledKey(dir, 'cadre-peer.key');
-    process.env.CADRE_KEY_FILE = keyFile;
 
-    const resolved = await resolveConfig(writeConfig(dir));
+    const resolved = await resolveConfig(writeConfig(dir), { CADRE_KEY_FILE: keyFile });
 
     expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
       .toBe(peerIdFromPrivateKey(key).toString());
@@ -365,9 +360,8 @@ describe('resolveConfig identity block', () => {
     const dir = tmpDir('env-both');
     const fromFile = await writeEnrolledKey(dir, 'from-file.key');
     const fromEnv = await writeEnrolledKey(dir, 'from-env.key');
-    process.env.CADRE_KEY_FILE = fromEnv.keyFile;
 
-    const resolved = await resolveConfig(writeConfig(dir, { keyFile: fromFile.keyFile }));
+    const resolved = await resolveConfig(writeConfig(dir, { keyFile: fromFile.keyFile }), { CADRE_KEY_FILE: fromEnv.keyFile });
 
     expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
       .toBe(peerIdFromPrivateKey(fromEnv.key).toString());
@@ -378,7 +372,6 @@ describe('resolveConfig nodeStateDir', () => {
   const tmpDirs: string[] = [];
 
   afterEach(() => {
-    delete process.env.CADRE_NODE_STATE_DIR;
     for (const d of tmpDirs) {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -420,9 +413,8 @@ describe('resolveConfig nodeStateDir', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cadre-state-env-'));
     tmpDirs.push(dir);
     const stateDir = join(dir, 'env-state');
-    process.env.CADRE_NODE_STATE_DIR = stateDir;
 
-    const resolved = await resolveConfig(writeConfig(dir));
+    const resolved = await resolveConfig(writeConfig(dir), { CADRE_NODE_STATE_DIR: stateDir });
 
     expect(resolved.nodeStateDir).toBe(resolve(stateDir));
   });
@@ -435,9 +427,8 @@ describe('resolveConfig nodeStateDir', () => {
     tmpDirs.push(dir);
     const fileStateDir = join(dir, 'from-file');
     const envStateDir = join(dir, 'from-env');
-    process.env.CADRE_NODE_STATE_DIR = envStateDir;
 
-    const resolved = await resolveConfig(writeConfig(dir, fileStateDir));
+    const resolved = await resolveConfig(writeConfig(dir, fileStateDir), { CADRE_NODE_STATE_DIR: envStateDir });
 
     expect(resolved.nodeStateDir).toBe(resolve(envStateDir));
   });

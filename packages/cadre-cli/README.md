@@ -225,15 +225,20 @@ says so rather than starting without it.
 | `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create` and by cadre-host's installer as `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
+| `CADRE_STORAGE_QUOTA` | `storage.quotaBytes` | Storage quota in bytes (a whole number) |
 | `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on. An entry naming a relay (`<relay addr>/p2p-circuit`) fails startup — use `CADRE_RELAY_ADDRS`, which reserves the slot after the control database is up. Only the **control node** binds these as written: a machine also runs one node per strand, and each of those binds the same entries with the port rewritten to `0`, since one port cannot be held twice. A port forwarded through NAT therefore reaches the control node only. Only TCP, WebSocket (`/ws`, `/wss`) and circuit-relay entries are bindable from config — anything else (`/quic-v1`, `/webrtc`, `/webtransport`) fails startup naming the address and the libp2p package it would need, since a config file cannot supply a transport factory |
 | `CADRE_ANNOUNCE_ADDRS` | `network.announceAddrs` | Comma-separated multiaddrs to advertise **instead of** `listenAddrs`. A non-empty value replaces everything the node advertises, including the `/p2p-circuit` address a `relayAddrs` reservation earns it — the node warns at start when both are set. **Control node only**: any entry names a port, and that port is the control node's, so strand nodes drop it rather than advertise an address that reaches the wrong node. A malformed entry fails startup |
 | `CADRE_APPEND_ANNOUNCE_ADDRS` | `network.appendAnnounceAddrs` | Comma-separated multiaddrs to advertise **in addition to** `listenAddrs` — the usual way to publish a reachable address without discarding the rest. Ignored while `announceAddrs` is non-empty. **Control node only**, on the same terms as `CADRE_ANNOUNCE_ADDRS`. A malformed entry fails startup |
-| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server. Unset ⇒ profile default (on for storage, off for transaction) |
+| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server, `false`/`0` disables it; any other value fails startup. Unset ⇒ profile default (on for storage, off for transaction) |
 | `CADRE_STRAND_FILTER` | `strandFilter` | `all`, `none`, or a JSON object — `{"sAppId":"myapp"}` / `{"strandId":"<id>"}`. A malformed value fails startup rather than degrading to `all` |
 | `CADRE_PUSH` | `push` | FCM/APNs credentials as a JSON object (e.g. `{"fcm":{…},"apns":{…}}`), injected per node by an orchestrator. A malformed or partial value fails startup |
 | `CADRE_RELAY_ADDRS` | `network.relayAddrs` | Comma-separated circuit-relay dial multiaddrs (each ending in the relay's peer id) to reserve a slot on, so peers can reach this node from behind NAT. The node listens on a bare `/p2p-circuit` alongside `listenAddrs` and reserves at the end of startup, once its control database is up. A malformed entry fails startup, and so does a relay that grants no reservation on the first attempt (~10 s) — naming a relay means the node does not come up without one |
-| `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
+| `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
+| `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
+| `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
+| `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
+| `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
 | `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` presents it (or reads it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
 | `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` connects to when it is not given `--admin-port` |
@@ -245,6 +250,15 @@ empty** (or whitespace-only) counts as unspecified and is ignored — this is wh
 optional variable the operator never set, and it must not clobber what the
 config file says. To force a value off, set it explicitly (e.g.
 `CADRE_ENABLE_RELAY=false`).
+
+A set `CADRE_*` variable the node does not recognise **fails startup**, naming it
+and suggesting the nearest known name — a misspelled variable is otherwise a
+setting silently not applied. Recognised are the variables in the table above,
+plus three read by the launchers around the CLI rather than by the CLI itself:
+`CADRE_CONFIG` (the systemd unit's config path), and `CADRE_CONFIG_FILE` and
+`CADRE_DEBUG` (the Docker entrypoint's). Names beginning `CADRE_HOST_` belong to
+cadre-host and are skipped. The retired `CADRE_IDENTITY_PROTOBUF` fails startup
+with a pointer to `CADRE_KEY_FILE`.
 
 ## Linux Server Deployment
 

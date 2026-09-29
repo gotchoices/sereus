@@ -398,7 +398,7 @@ interface SeedAckMessage {
 | Direct protocol | New node is dialable | Instigator dials, sends seed directly |
 | Provider API | Provider-hosted node | `PUT /containers/:id/seed` via HTTPS — delivery only; the container must also have been *created* with its tenant's owner key pinned (below) |
 | QR code / deep link | Mobile onboarding | Seed encoded in URL, opened by app |
-| Environment variable | Container startup | `CADRE_SEED` contains base64-encoded seed |
+| Start-up flag | Node start | `cadre start --seed <encoded>` applies a base64url-encoded seed before the node joins |
 
 All mechanisms deliver the same `SeedMessage` payload; only the transport differs.
 
@@ -444,9 +444,9 @@ cadreNode.on('seed', async (seed) => {
   await cadreNode.applySeed(seed);
 });
 
-// Option B: From environment (container startup)
-const seed = process.env.CADRE_SEED
-  ? decodeSeed(process.env.CADRE_SEED)
+// Option B: From the start command (`cadre start --seed <encoded>`)
+const seed = options.seed
+  ? decodeSeed(options.seed)
   : null;
 if (seed) {
   await cadreNode.applySeed(seed);

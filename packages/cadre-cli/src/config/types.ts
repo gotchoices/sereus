@@ -169,27 +169,6 @@ export type DeepPartial<T> = T extends readonly unknown[]
 export type CliConfigFile = DeepPartial<CliConfig>;
 
 /**
- * Environment variable mappings for config overrides
- */
-export const ENV_MAPPINGS = {
-  CADRE_PARTY_ID: 'controlNetwork.partyId',
-  CADRE_BOOTSTRAP_NODES: 'controlNetwork.bootstrapNodes',
-  CADRE_PROFILE: 'profile',
-  CADRE_KEY_FILE: 'identity.keyFile',
-  CADRE_STORAGE_PATH: 'storage.path',
-  CADRE_STORAGE_TYPE: 'storage.type',
-  CADRE_LISTEN_ADDRS: 'network.listenAddrs',
-  CADRE_ANNOUNCE_ADDRS: 'network.announceAddrs',
-  CADRE_APPEND_ANNOUNCE_ADDRS: 'network.appendAnnounceAddrs',
-  CADRE_RELAY_ADDRS: 'network.relayAddrs',
-  CADRE_ENABLE_RELAY: 'network.enableRelay',
-  CADRE_HIBERNATION_ENABLED: 'hibernation.enabled',
-  CADRE_STRAND_FILTER: 'strandFilter',
-  CADRE_PUSH: 'push',
-  CADRE_NODE_STATE_DIR: 'nodeState.dir',
-} as const;
-
-/**
  * Resolved configuration after loading, applying environment overrides, validating, and
  * loading the identity key. The node-facing blocks (`controlNetwork`, `storage`, `network`,
  * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the three keys that resolve

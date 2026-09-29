@@ -6,9 +6,9 @@ import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { validatePushCredentials } from '@serfab/cadre-core';
 import type { CliConfig, ResolvedConfig } from './types.js';
-import { ENV_MAPPINGS } from './types.js';
+import { ENV_MAPPINGS, checkEnvNames, parseEnvValue, specifiedEnv } from './env.js';
 import { describeValue, isPlainObject, validateConfig } from './schema.js';
-import { parseStrandFilter, parseStrandFilterText } from './strand-filter.js';
+import { parseStrandFilter } from './strand-filter.js';
 
 const log = debug('cadre:cli:config');
 
@@ -54,13 +54,14 @@ export interface OverrideResult {
 }
 
 /**
- * Apply environment variable overrides to a parsed config tree.
+ * Apply environment variable overrides to a parsed config tree, after rejecting any unknown or
+ * retired `CADRE_*` variable by name (see `env.ts`).
  *
  * `env` defaults to `process.env` at call time — `cadre start --identity-file` exports
  * `CADRE_KEY_FILE` just before resolving and relies on that — and tests pass their own.
  */
 export function applyEnvironmentOverrides(raw: unknown, env: NodeJS.ProcessEnv = process.env): OverrideResult {
-  rejectRetiredIdentityEnv(env);
+  checkEnvNames(env);
   const provenance = new Map<string, string>();
 
   // An empty file parses to undefined/null: an empty mapping the environment may fill. Any
@@ -70,71 +71,17 @@ export function applyEnvironmentOverrides(raw: unknown, env: NodeJS.ProcessEnv =
   if (!isPlainObject(base)) return { tree: raw, provenance };
   const result: Record<string, unknown> = { ...base };
 
-  for (const [envVar, configPath] of Object.entries(ENV_MAPPINGS)) {
-    const value = env[envVar];
-    // An empty value means "not specified" — a docker-compose default like
-    // `${CADRE_ENABLE_RELAY:-}` must leave the config file's value (or the
-    // profile default) alone rather than forcing false / [] / etc.
-    if (value === undefined || value.trim() === '') continue;
+  for (const [envVar, { path: configPath, kind }] of Object.entries(ENV_MAPPINGS)) {
+    const value = specifiedEnv(env[envVar]);
+    if (value === undefined) continue;
 
     // CADRE_PUSH carries private keys, which are never logged.
     log('Applying env override: %s=%s', envVar, envVar === 'CADRE_PUSH' ? '[redacted]' : value);
-    setNestedValue(result, configPath, parseEnvValue(envVar, value), envVar);
+    setNestedValue(result, configPath, parseEnvValue(envVar, kind, value), envVar);
     provenance.set(configPath, envVar);
   }
 
   return { tree: result, provenance };
-}
-
-function parseEnvValue(envVar: string, value: string): unknown {
-  // Handle array values (comma-separated)
-  // NOTE: a separators-only value (e.g. `,`) survives the loop's empty check but
-  // yields [], clobbering the file's list. If that shape ever shows up in a real
-  // launcher, treat an all-empty split as unspecified here too.
-  if (envVar.endsWith('_NODES') || envVar.endsWith('_ADDRS')) {
-    return value.split(',').map(s => s.trim()).filter(Boolean);
-  }
-  // Handle boolean values
-  if (envVar.includes('_ENABLED') || envVar.includes('_RELAY')) {
-    return value.toLowerCase() === 'true' || value === '1';
-  }
-  // The strand filter may be a scalar (`all`/`none`) or a JSON object form,
-  // so it needs dedicated parsing rather than passing the raw string through.
-  if (envVar === 'CADRE_STRAND_FILTER') {
-    return parseStrandFilterText(value);
-  }
-  // Push credentials are a nested object (FCM/APNs blocks). The provider injects
-  // them as a single JSON env var — the same explicit-encoding precedent the
-  // `_NODES`/`_ADDRS`/strand-filter vars set — rather than as many dotted leaves.
-  if (envVar === 'CADRE_PUSH') {
-    return parsePushEnv(value);
-  }
-  return value;
-}
-
-/**
- * Parse the `CADRE_PUSH` environment value into a `PushCredentials` object.
- *
- * The value MUST be a JSON object (e.g. `{"fcm":{...},"apns":{...}}`) — the
- * override loop already skips empty values, so a call here is always
- * non-empty. A value that fails to parse throws — a misconfigured push block
- * must fail loudly at start, not silently disable wake delivery.
- */
-function parsePushEnv(value: string): unknown {
-  const trimmed = value.trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (err) {
-    throw new Error(
-      `Invalid CADRE_PUSH: expected a JSON object (e.g. {"fcm":{...}} / {"apns":{...}})`,
-      { cause: err },
-    );
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`Invalid CADRE_PUSH: expected a JSON object, got ${JSON.stringify(parsed)}`);
-  }
-  return parsed;
 }
 
 /**
@@ -206,26 +153,6 @@ export function loadIdentityKey(keyPath: string): PrivateKey {
       `Invalid identity key file ${fullPath}: not a libp2p protobuf-encoded private key. ` +
       `Regenerate it with 'cadre enroll create', or point identity.keyFile at the correct file.`,
       { cause: err },
-    );
-  }
-}
-
-/**
- * Reject the retired `CADRE_IDENTITY_PROTOBUF` env var by name.
- *
- * It mapped to `identity.protobufKeyFile`, which no longer exists. Silently ignoring it would
- * leave a launcher that still sets it starting the node with no identity — a fresh keypair and a
- * new PeerId, the exact failure this collapse exists to close.
- *
- * NOTE: transitional, like the retired identity keys in `schema.ts` — deletable once no launcher
- * in circulation still exports the variable.
- */
-function rejectRetiredIdentityEnv(env: NodeJS.ProcessEnv): void {
-  const retired = env.CADRE_IDENTITY_PROTOBUF;
-  if (retired !== undefined && retired.trim() !== '') {
-    throw new Error(
-      `CADRE_IDENTITY_PROTOBUF is no longer supported — set CADRE_KEY_FILE instead ` +
-      `(same libp2p protobuf key file, no file change needed)`,
     );
   }
 }

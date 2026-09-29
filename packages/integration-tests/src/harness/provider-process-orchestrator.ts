@@ -367,10 +367,13 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	 * Deliberately near-empty rather than incomplete: everything the
 	 * entrypoint's generated YAML carries is re-applied from the env anyway
 	 * (applyEnvironmentOverrides beats the file), EXCEPT `strandWatchInterval`
-	 * and `hibernation.defaultLatencyHint`, which have no ENV_MAPPINGS entry —
-	 * so those two are written with the entrypoint's defaults and nothing else.
-	 * (`hibernation.enabled` is required by the file schema; the image env's
-	 * CADRE_HIBERNATION_ENABLED overrides it regardless.)
+	 * and `hibernation.defaultLatencyHint`. Those two do have variables
+	 * (CADRE_STRAND_WATCH_INTERVAL, CADRE_LATENCY_HINT), but neither the image
+	 * ENV nor the provider sets them — in a real container they come from the
+	 * entrypoint's own `${…:-default}` fallbacks — so they are written here with
+	 * those defaults and nothing else. (`hibernation.enabled` is required once
+	 * a hibernation block exists; the image env's CADRE_HIBERNATION_ENABLED
+	 * overrides it regardless.)
 	 */
 	private ensureConfigFile(volumeDir: string): string {
 		const configPath = join(volumeDir, CONFIG_FILE);
