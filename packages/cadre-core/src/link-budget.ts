@@ -10,6 +10,15 @@
  * budget changes ONE declaration, and the next person to add a dial writes down its round-trip
  * count beside the arithmetic.
  *
+ * This module is the only place a new deadline over the link should be written, and in
+ * cadre-core's source `yarn lint` enforces it (`LINK_DEADLINE_GUARD` in `eslint.config.mjs`): a
+ * value named `…TIMEOUT_MS`, `…BUDGET_MS` or `…DEADLINE_MS` (or `…TimeoutMs` and the like) set
+ * to a number rather than a derivation fails, unless the line above it gives one of two
+ * reasons. `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>` keeps a
+ * deadline that never waits on the link; `-- link-bound, not yet derived: <ticket slug>` marks
+ * one that does and names the ticket that owns converting it. Grep for the second to list the
+ * deadlines this module does not yet cover.
+ *
  * ── The instrument ──
  *
  * Every count and every number below comes from

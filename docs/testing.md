@@ -342,6 +342,14 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   config-level exemption, which would also switch off the `CadrePeer` selectors sharing the rule. Note that a
   later config entry setting `no-restricted-syntax` replaces the earlier one's selectors for the files it
   matches; the config composes each scope's list from shared constants for that reason.
+- **Link-deadline guard:** the same rule (`LINK_DEADLINE_GUARD`) flags, in `packages/cadre-core/src` only, a value
+  named `…TIMEOUT_MS` / `…BUDGET_MS` / `…DEADLINE_MS` (any case, so `timeoutMs` too) set to a number or to
+  arithmetic over numbers only — as a const, a parameter or destructuring default, a class field, an object
+  property, or the right side of `??`. A deadline over the machine-to-machine link has to derive from
+  `link-budget.ts`; one that stays a number carries `// eslint-disable-next-line no-restricted-syntax --
+  link-independent: <why>` or `-- link-bound, not yet derived: <ticket slug>`, so the unconverted set is one grep.
+  Not caught: other names (`…_WAIT_MS`) and inline `setTimeout(…, 5000)`. Converting a `link-bound` site means
+  deleting its directive too; ESLint only warns about a directive that no longer disables anything.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in

@@ -79,6 +79,7 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * buys is the failure it was built for: the ~25 ms transactor read-phase aggregate off a
  * stream still forming, which retries twice well inside 1500 ms.
  */
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 
 /**

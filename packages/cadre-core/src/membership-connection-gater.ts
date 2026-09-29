@@ -198,6 +198,7 @@ export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
  * fail-open contract honest: a slow decision admits rather than silently
  * failing closed (or not at all).
  */
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
 export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
 
 /**
@@ -209,6 +210,7 @@ export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
  * does the same from inside its own `listen()`), so a connection idle past this
  * deadline is not reserving.
  */
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-formation-and-relay-admission-deadlines-ignore-the-declared-link
 export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
 
 /**
@@ -222,6 +224,7 @@ export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
  * Applied through {@link withDeadline}, not `AbortSignal.timeout`: the latter is
  * not reliably present on React Native/Hermes, which loads this same module.
  */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: bounds a local connection close inside a timer callback, and expiry aborts the connection instead
 export const RELAY_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
 
 /**

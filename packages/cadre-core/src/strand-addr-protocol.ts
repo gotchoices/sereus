@@ -51,6 +51,7 @@ export const STRAND_ADDR_PROTOCOL = '/sereus/strand-addr/1.0.0';
 const MAX_ADDR_SIZE = 64 * 1024;
 
 /** Default time the receiver waits for an inbound request frame before aborting (ms). */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: a receiver cap on one small request frame on a stream the peer already opened; it bounds a peer that opens a stream and never sends, not the dial
 const DEFAULT_ADDR_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound strand-addr streams a single peer can pin open. */

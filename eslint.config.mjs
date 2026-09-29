@@ -93,6 +93,44 @@ const PHONE_RUNTIME_GUARD = [
 	},
 ];
 
+// Deadlines in cadre-core written as a fixed number of milliseconds. A deadline on an exchange
+// with another machine has to come from the declared link round trip (link-budget.ts), because
+// a relayed exchange costs a fixed number of round trips and a fixed millisecond figure stops
+// working on any link slow enough. A check on names containing "dial" would have missed every
+// site that broke this so far, so this check covers every deadline-named value and makes the
+// author classify the ones that stay numbers, with one of two greppable disable reasons:
+//   `-- link-independent: <why>`                 the deadline never waits on the link
+//   `-- link-bound, not yet derived: <slug>`     it does, and that open ticket owns converting it
+//
+// Flagged: a value named `…TIMEOUT_MS`, `…BUDGET_MS`, `…DEADLINE_MS` (any case, so `timeoutMs`,
+// `dialBudgetMs` too) whose value is a numeric literal or arithmetic over numeric literals only
+// (`10 * 60 * 1000`), as a const, a parameter or destructuring default, a class field, an
+// object property, or the right side of `??`. A value that names anything (`relayedDialBudgetMs()`,
+// `ATTEMPTS * PER_ATTEMPT_MS`) passes.
+//
+// NOTE: a guard against the idiom this codebase uses, not a proof. A deadline under another
+// name (`FOO_WAIT_MS`), an inline `setTimeout(…, 5000)` or `withDeadline(5000, …)`, or a literal
+// hidden behind `as` passes unflagged.
+//
+// NOTE: converting a `link-bound, not yet derived` site means deleting its directive too. The
+// directive then disables nothing, and ESLint reports that only as a warning, which this gate
+// does not fail on.
+//
+// Scope is cadre-core's src only (LINK_DEADLINE_SCOPE). `COHORT_READ_DEADLINE_MS` in
+// quereus-plugin-sereus is owned by `debt-cadre-deadlines-sized-against-old-optimystic-bounds`;
+// widening the scope is one glob.
+const LINK_DEADLINE_MESSAGE = 'A deadline written as milliseconds. If it bounds an exchange with another machine, derive it from packages/cadre-core/src/link-budget.ts: count the round trips, as that module\'s doc describes. If it does not, keep the number and disable this line with the reason: `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>`.';
+const LINK_DEADLINE_NAME = '/(timeout|budget|deadline)_?ms$/i';
+const LITERAL_ONLY_VALUE = ':matches(Literal[value=type(number)], BinaryExpression:not(:has(Identifier)))';
+const LINK_DEADLINE_GUARD = [
+	`VariableDeclarator[id.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.init`,
+	`AssignmentPattern[left.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.right`,
+	`PropertyDefinition[key.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.value`,
+	`Property[key.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.value`,
+	`LogicalExpression[operator='??']:matches([left.name=${LINK_DEADLINE_NAME}], [left.property.name=${LINK_DEADLINE_NAME}]) > ${LITERAL_ONLY_VALUE}.right`,
+].map((selector) => ({ selector, message: LINK_DEADLINE_MESSAGE }));
+const LINK_DEADLINE_SCOPE = ['packages/cadre-core/src/**/*.{ts,tsx,mts,cts}'];
+
 // `packages/*/src` is the first-party source of every package, including the two browser-only
 // apps (reference-app-web, cadre-host/ui) where these APIs exist — accepted deliberately: they
 // have no uses there today, and a browser-only need is one `eslint-disable-next-line` with its
@@ -186,7 +224,7 @@ export default tseslint.config(
 		},
 	},
 
-	// ---- `no-restricted-syntax`: CadrePeer writes everywhere, phone-runtime APIs in package src ----
+	// ---- `no-restricted-syntax`: CadrePeer writes everywhere, phone-runtime APIs in package src, literal deadlines in cadre-core src ----
 	// Every write to the party-membership table has to refresh the in-memory snapshot of
 	// approved members, or the node starts denying control traffic from the member it just
 	// approved. `ControlDatabase.mutateCadrePeer` is what triggers that refresh, and the
@@ -195,9 +233,10 @@ export default tseslint.config(
 	// happily while skipping the refresh — a mistake that has been made twice — so flag
 	// the SQL itself (CADRE_PEER_WRITE_GUARD, above).
 	//
-	// First-party package source additionally gets PHONE_RUNTIME_GUARD (above). A later entry
-	// replaces an earlier one's options for the files it matches, so the source scope repeats
-	// the CadrePeer selectors rather than adding to them.
+	// First-party package source additionally gets PHONE_RUNTIME_GUARD, and cadre-core's source
+	// LINK_DEADLINE_GUARD on top (both above). A later entry replaces an earlier one's options
+	// for the files it matches, so each narrower scope repeats the wider one's selectors rather
+	// than adding to them.
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {
@@ -211,12 +250,18 @@ export default tseslint.config(
 		},
 	},
 	{
+		files: LINK_DEADLINE_SCOPE,
+		rules: {
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
+		},
+	},
+	{
 		// The exemptions (flat config: a later entry wins, so these must follow the rules).
-		// The destination itself — these ARE the wrapped writers. It is package source, so
-		// only the CadrePeer selectors come off; the phone-runtime ones stay.
+		// The destination itself — these ARE the wrapped writers. It is cadre-core source, so
+		// only the CadrePeer selectors come off; the phone-runtime and deadline ones stay.
 		files: ['packages/cadre-core/src/control-database.ts'],
 		rules: {
-			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD],
+			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
 		},
 	},
 	{

@@ -88,12 +88,6 @@ export const STRAND_PEER_ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
  */
 export const MAX_BOOK_FRAME_SIZE = 64 * 1024;
 
-/** Default time the receiver waits for the inbound request frame before aborting (ms). */
-const DEFAULT_READ_TIMEOUT_MS = 10_000;
-
-/** Default time the client waits for the whole exchange (ms). */
-const DEFAULT_EXCHANGE_TIMEOUT_MS = 10_000;
-
 /** Default cap on concurrent inbound swap streams a single strand node serves. */
 const DEFAULT_MAX_CONCURRENT = 100;
 
@@ -320,8 +314,12 @@ export interface StrandPeerBookServiceDeps {
 	onEntries(entries: SignedStrandPeerEntry[], fromPeerId: string): void;
 	/** Clock, for tests. Default `Date.now`. */
 	now?: () => number;
-	/** Default {@link DEFAULT_READ_TIMEOUT_MS}. */
-	readTimeoutMs?: number;
+	/**
+	 * How long the receiver waits for the inbound request frame (ms). Required for the same
+	 * reason as {@link ExchangeStrandPeerBookOptions.timeoutMs}: the swap gives both sides one
+	 * link-derived deadline.
+	 */
+	readTimeoutMs: number;
 	/** Default {@link DEFAULT_MAX_CONCURRENT}. Over it, an empty frame is returned unread. */
 	maxConcurrent?: number;
 }
@@ -341,7 +339,7 @@ export class StrandPeerBookService {
 	private activeStreams = 0;
 
 	constructor(private readonly deps: StrandPeerBookServiceDeps) {
-		this.readTimeoutMs = deps.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS;
+		this.readTimeoutMs = deps.readTimeoutMs;
 		this.maxConcurrent = deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
 		this.now = deps.now ?? Date.now;
 	}
@@ -427,8 +425,13 @@ async function closeQuietly(stream: ControlStream): Promise<void> {
 export interface ExchangeStrandPeerBookOptions {
 	/** This strand node's own peer id: a returned entry naming it is dropped. */
 	selfPeerId: string;
-	/** Whole-exchange deadline (ms). Default {@link DEFAULT_EXCHANGE_TIMEOUT_MS}. */
-	timeoutMs?: number;
+	/**
+	 * Whole-exchange deadline (ms). Required, with no fallback here: the exchange crosses the
+	 * link, so its deadline derives from the declared link round trip (`link-budget.ts`), and
+	 * the caller is the one that knows the declaration. A default in this module would be a
+	 * second number free to drift from that derivation.
+	 */
+	timeoutMs: number;
 	/** Clock, for tests. Default `Date.now`. */
 	now?: () => number;
 }
@@ -444,7 +447,7 @@ export async function exchangeStrandPeerBook(
 	request: StrandPeerBookFrame,
 	options: ExchangeStrandPeerBookOptions
 ): Promise<SignedStrandPeerEntry[]> {
-	const timeoutMs = options.timeoutMs ?? DEFAULT_EXCHANGE_TIMEOUT_MS;
+	const { timeoutMs } = options;
 	const remotePeerId = connection.remotePeer.toString();
 	assertBookFrameFits(request);
 	// One deadline for the stream open and the exchange together: its signal aborts the

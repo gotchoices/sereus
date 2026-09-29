@@ -93,6 +93,7 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * to do: if that case ever starts failing with `failed after 2/3 attempt(s)`, the cancel
  * discharge is where the time went.
  */
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
 export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
 
 /**

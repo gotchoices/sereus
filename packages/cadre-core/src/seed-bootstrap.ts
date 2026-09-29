@@ -44,6 +44,7 @@ export const SEED_PROTOCOL = '/sereus/seed/1.0.0';
 const MAX_SEED_SIZE = 1024 * 1024;
 
 /** Default time the receiver waits for an inbound seed frame before aborting (ms). */
+// eslint-disable-next-line no-restricted-syntax -- link-bound, not yet derived: debt-cadre-deadlines-sized-against-old-optimystic-bounds
 const DEFAULT_SEED_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound seed streams a single peer can pin open. */

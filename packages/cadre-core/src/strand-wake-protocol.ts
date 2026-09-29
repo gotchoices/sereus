@@ -97,6 +97,7 @@ export const WAKE_DIAL_ATTEMPTS = 2;
 export const DEFAULT_WAKE_DIAL_BUDGET_MS = WAKE_DIAL_ATTEMPTS * DEFAULT_WAKE_TIMEOUT_MS;
 
 /** Default time the receiver waits for an inbound wake frame before aborting (ms). */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: a receiver cap on one small request frame on a stream the peer already opened; it bounds a peer that opens a stream and never sends, not the dial
 const DEFAULT_WAKE_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound wake streams a single peer can pin open. */

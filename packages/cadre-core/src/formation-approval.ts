@@ -10,6 +10,7 @@ import { formationVouchMessage } from './control-database.js';
 const log = debug('sereus:cadre:formation-approval');
 
 /** Abort an unanswered approval request after this long when no `timeoutMs` is supplied. */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: an outbound HTTP call to the approval hook, not the libp2p link between machines
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
