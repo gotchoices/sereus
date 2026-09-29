@@ -2,10 +2,13 @@ import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
 import type { DonationService } from './donation-service.js';
+import { isLiveDonationStatus } from './donation-store.js';
 import type { GrantStore } from './grant-store.js';
 import type {
+  DonationView,
   Grant,
   GrantAdminHandlers,
+  GrantListing,
   GrantValidation,
   GrantValidator,
 } from './types.js';
@@ -154,13 +157,14 @@ export class GrantService implements GrantValidator {
  * management server's `/grants-admin` routes. Errors propagate as GrantError /
  * DonationError; the server maps `.code` → HTTP status.
  *
- * `donations` is where revoke's node teardown and the single-donation terminate
- * go. Without it there can be no donated nodes, so revoke only marks the grant
- * and `terminateDonation` is left off.
+ * `donations` is where revoke's node teardown, the single-donation terminate and
+ * the listing's per-grant node counts come from. Without it there can be no
+ * donated nodes, so revoke only marks the grant, every grant lists with no
+ * nodes, and `terminateDonation` is left off.
  */
 export function createGrantAdminHandlers(
   service: GrantService,
-  donations?: Pick<DonationService, 'terminate' | 'terminateGrant'>,
+  donations?: Pick<DonationService, 'terminate' | 'terminateGrant' | 'list'>,
 ): GrantAdminHandlers {
   const handlers: GrantAdminHandlers = {
     async postGrant(body) {
@@ -175,7 +179,8 @@ export function createGrantAdminHandlers(
       return { grant };
     },
     async listGrants() {
-      return { grants: service.list() };
+      const byGrant = groupByGrant(donations?.list() ?? []);
+      return { grants: service.list().map((grant) => toListing(grant, byGrant.get(grant.token) ?? [])) };
     },
     async deleteGrant(token, { keepNodes }) {
       // Revoke first: it throws not_found for an unknown token before any
@@ -192,6 +197,31 @@ export function createGrantAdminHandlers(
     handlers.terminateDonation = (id) => donations.terminate(id);
   }
   return handlers;
+}
+
+/** One read of the donation store, bucketed by grant token. */
+function groupByGrant(donations: DonationView[]): Map<string, DonationView[]> {
+  const byGrant = new Map<string, DonationView[]>();
+  for (const donation of donations) {
+    const bucket = byGrant.get(donation.grantToken);
+    if (bucket) bucket.push(donation);
+    else byGrant.set(donation.grantToken, [donation]);
+  }
+  return byGrant;
+}
+
+/**
+ * `liveNodes` uses the quota's own rule; `donations` is the set a revoke tears
+ * down (every record not yet `terminated`, `error` included), so the admin can be
+ * told the real count before confirming.
+ */
+function toListing(grant: Grant, donations: DonationView[]): GrantListing {
+  const unterminated = donations.filter((d) => d.status !== 'terminated');
+  return {
+    ...grant,
+    liveNodes: unterminated.filter((d) => isLiveDonationStatus(d.status)).length,
+    donations: unterminated.map(({ id, status }) => ({ id, status })),
+  };
 }
 
 function generateToken(): string {

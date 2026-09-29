@@ -9,7 +9,7 @@
 		type PendingInvite,
 		type TrustCircleMember,
 	} from '../lib/state.svelte.js';
-	import { formatRelativeTime, shortPeerId } from '../lib/format.js';
+	import { formatRelativeDeadline, formatRelativeTime, shortPeerId } from '../lib/format.js';
 
 	import ConfirmDialog from '../components/ConfirmDialog.svelte';
 	import InviteModal from '../components/InviteModal.svelte';
@@ -114,7 +114,7 @@
 							<div class="muted small">
 								issued {formatRelativeTime(invite.createdAt)}
 								{#if invite.expiresAt}
-									· expires {formatRelativeTime(invite.expiresAt)}
+									· expires {formatRelativeDeadline(invite.expiresAt)}
 								{/if}
 							</div>
 						</div>

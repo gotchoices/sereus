@@ -116,8 +116,8 @@
 				<div><dt>Workdir</dt><dd><code>{node.workdir || '—'}</code></dd></div>
 				<div><dt>Spawned</dt><dd>{formatRelativeTime(node.spawnedAt)}</dd></div>
 				<div><dt>Ports</dt><dd>health {node.ports.health} · metrics {node.ports.metrics} · p2p {node.ports.p2p} · ws {node.ports.ws}</dd></div>
-				<div><dt>CPU</dt><dd>{stats ? stats.cpu.toFixed(1) + '%' : '—'}</dd></div>
-				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.rssBytes)}</dd></div>
+				<div><dt>CPU</dt><dd>{stats ? stats.cpuPercent.toFixed(1) + '%' : '—'}</dd></div>
+				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.memoryBytes)}</dd></div>
 			</dl>
 
 			<!-- Only the owner node has a lifecycle here; a donated node's belongs to its grant. -->

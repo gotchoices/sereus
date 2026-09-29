@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { registerErrorHandler } from '../error-handler.js';
+import { EventBus } from '../events/bus.js';
 import { registerGrantsAdminRoutes } from '../routes/grants-admin.js';
 import {
   DonationService,
@@ -13,7 +14,7 @@ import {
   GrantStore,
   createGrantAdminHandlers,
 } from '../../donation/index.js';
-import type { DonationView, Grant } from '../../donation/index.js';
+import type { DonationView, Grant, GrantListing } from '../../donation/index.js';
 import { FakeOrchestrator } from '../../donation/__tests__/fake-orchestrator.js';
 
 /** A well-formed 32-byte base64url owner key, which `provision` requires. */
@@ -23,16 +24,18 @@ let tmpRoot: string;
 let app: ReturnType<typeof Fastify>;
 let grants: GrantService;
 let donations: DonationService;
+let donationStore: DonationStore;
 let orch: FakeOrchestrator;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-grants-route-'));
   grants = new GrantService({ store: new GrantStore(tmpRoot) });
   orch = new FakeOrchestrator();
-  donations = new DonationService({ orchestrator: orch, grants, store: new DonationStore(tmpRoot) });
+  donationStore = new DonationStore(tmpRoot);
+  donations = new DonationService({ orchestrator: orch, grants, store: donationStore });
   app = Fastify();
   registerErrorHandler(app);
-  registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(grants, donations) });
+  registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(grants, donations), events: new EventBus() });
 });
 
 afterEach(async () => {
@@ -87,11 +90,40 @@ describe('/grants-admin routes', () => {
   });
 });
 
-describe('/grants-admin donated-node teardown', () => {
-  function provisionUnder(token: string): Promise<DonationView> {
-    return donations.provision({ grantToken: token, partyId: 'party-P', bootstrapNodes: [], ownerKeys: [OWNER_KEY] });
-  }
+function provisionUnder(token: string): Promise<DonationView> {
+  return donations.provision({ grantToken: token, partyId: 'party-P', bootstrapNodes: [], ownerKeys: [OWNER_KEY] });
+}
 
+describe('/grants-admin listing', () => {
+  it("GET reports each grant's live nodes and the donations a revoke would end", async () => {
+    const a = grants.issue({ label: 'A', maxNodes: 3 });
+    const b = grants.issue({ label: 'B' });
+    const seeded = await provisionUnder(a.token);
+    const failed = await provisionUnder(a.token);
+    const ended = await provisionUnder(a.token);
+    const other = await provisionUnder(b.token);
+    donationStore.put({ ...donationStore.get(seeded.id)!, status: 'seeded' });
+    donationStore.put({ ...donationStore.get(failed.id)!, status: 'error', error: 'respawn gave up' });
+    await donations.terminate(ended.id);
+
+    const res = await app.inject({ method: 'GET', url: '/grants-admin' });
+
+    const listed = (res.json() as { grants: GrantListing[] }).grants;
+    const rowA = listed.find(g => g.token === a.token);
+    const rowB = listed.find(g => g.token === b.token);
+    // `error` is not live, but a revoke still tears it down; `terminated` is neither.
+    expect(rowA?.liveNodes).toBe(1);
+    expect(rowA?.donations).toEqual(expect.arrayContaining([
+      { id: seeded.id, status: 'seeded' },
+      { id: failed.id, status: 'error' },
+    ]));
+    expect(rowA?.donations).toHaveLength(2);
+    expect(rowB?.liveNodes).toBe(1);
+    expect(rowB?.donations).toEqual([{ id: other.id, status: 'awaiting_seed' }]);
+  });
+});
+
+describe('/grants-admin donated-node teardown', () => {
   it('DELETE /grants-admin/:token terminates the nodes donated under the grant', async () => {
     const { token } = grants.issue({ label: 'Alice' });
     const donation = await provisionUnder(token);

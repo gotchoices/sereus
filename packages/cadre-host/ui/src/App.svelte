@@ -24,6 +24,7 @@
 	import NodeDetail from './routes/NodeDetail.svelte';
 	import Settings from './routes/Settings.svelte';
 	import Strands from './routes/Strands.svelte';
+	import Grants from './routes/Grants.svelte';
 	import StatusDot from './components/StatusDot.svelte';
 	import Toast from './components/Toast.svelte';
 
@@ -44,6 +45,7 @@
 		{ name: 'trust-circle', label: 'Trust Circle' },
 		{ name: 'connectivity', label: 'Connectivity' },
 		{ name: 'nodes', label: 'Nodes' },
+		{ name: 'grants', label: 'Grants' },
 		{ name: 'settings', label: 'Settings' },
 		{ name: 'strands', label: 'Strands' },
 	];
@@ -143,6 +145,8 @@
 		<Settings />
 	{:else if route.route.name === 'strands'}
 		<Strands />
+	{:else if route.route.name === 'grants'}
+		<Grants />
 	{:else}
 		<Home />
 	{/if}

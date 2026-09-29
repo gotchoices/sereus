@@ -817,7 +817,14 @@ grant
       return;
     }
     const body = await response.json() as {
-      grants: Array<{ token: string; label: string; maxNodes: number; expiresAt?: string; revokedAt?: string }>;
+      grants: Array<{
+        token: string;
+        label: string;
+        maxNodes: number;
+        liveNodes: number;
+        expiresAt?: string;
+        revokedAt?: string;
+      }>;
     };
     console.log('Grants:');
     if (body.grants.length === 0) {
@@ -825,7 +832,7 @@ grant
     } else {
       for (const g of body.grants) {
         const state = g.revokedAt ? ' [revoked]' : (g.expiresAt ? ` (expires ${g.expiresAt})` : '');
-        console.log(`  ${g.token}  ${g.label}  max=${g.maxNodes}${state}`);
+        console.log(`  ${g.token}  ${g.label}  live=${g.liveNodes} max=${g.maxNodes}${state}`);
       }
     }
     process.exit(0);

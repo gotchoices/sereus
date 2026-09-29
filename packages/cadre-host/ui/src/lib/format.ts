@@ -13,11 +13,26 @@ export function formatRelativeTime(iso: string | null | undefined, now: number =
 	const t = Date.parse(iso);
 	if (!Number.isFinite(t)) return '—';
 	const diff = now - t;
+	// A past event stamped slightly ahead of this clock reads as now, not as future.
 	if (diff < 0) return 'just now';
-	if (diff < MINUTE) return `${Math.floor(diff / SECOND)}s ago`;
-	if (diff < HOUR) return `${Math.floor(diff / MINUTE)}m ago`;
-	if (diff < DAY) return `${Math.floor(diff / HOUR)}h ago`;
-	return `${Math.floor(diff / DAY)}d ago`;
+	return `${formatSpan(diff)} ago`;
+}
+
+/**
+ * For a moment that may still lie ahead, such as an expiry: "in 3d" while it is
+ * in the future, "3d ago" once it has passed.
+ */
+export function formatRelativeDeadline(iso: string | null | undefined, now: number = Date.now()): string {
+	const t = iso ? Date.parse(iso) : NaN;
+	if (Number.isFinite(t) && t > now) return `in ${formatSpan(t - now)}`;
+	return formatRelativeTime(iso, now);
+}
+
+function formatSpan(ms: number): string {
+	if (ms < MINUTE) return `${Math.floor(ms / SECOND)}s`;
+	if (ms < HOUR) return `${Math.floor(ms / MINUTE)}m`;
+	if (ms < DAY) return `${Math.floor(ms / HOUR)}h`;
+	return `${Math.floor(ms / DAY)}d`;
 }
 
 export function formatBytes(bytes: number | null | undefined): string {

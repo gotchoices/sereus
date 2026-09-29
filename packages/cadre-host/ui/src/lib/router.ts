@@ -16,7 +16,8 @@ export type RouteName =
 	| 'nodes'
 	| 'node-detail'
 	| 'settings'
-	| 'strands';
+	| 'strands'
+	| 'grants';
 
 /**
  * Pages that exist only when the host runs its own cadre (their API routes 404
@@ -54,6 +55,8 @@ export function parseHash(hash: string): ParsedRoute {
 			return { name: 'settings', params: {} };
 		case 'strands':
 			return { name: 'strands', params: {} };
+		case 'grants':
+			return { name: 'grants', params: {} };
 		default:
 			return DEFAULT_ROUTE;
 	}
@@ -68,6 +71,7 @@ export function hrefFor(name: RouteName, params: Record<string, string> = {}): s
 		case 'node-detail': return `#/nodes/${encodeURIComponent(params['id'] ?? '')}`;
 		case 'settings': return '#/settings';
 		case 'strands': return '#/strands';
+		case 'grants': return '#/grants';
 	}
 }
 

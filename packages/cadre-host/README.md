@@ -158,11 +158,13 @@ Until someone requests a node, the Nodes page in the UI stays empty — that's e
 
 ### 5. Manage grants
 
+The dashboard's **Grants** page (`cadre-host ui`, then *Grants*) does everything below from the browser: issue a grant (with the same QR code and copyable token), see how many nodes each grant is using and which ones, show an active grant's token again to re-share it, and revoke a grant with or without its nodes. From the command line:
+
 ```bash
 $ cadre-host grant list
 Grants:
-  Zx8kq1...   Mom's cadre           max=2
-  Ld93af...   Friend — hobby group  max=1  (expires 2026-09-01T12:00:00Z)
+  Zx8kq1...   Mom's cadre           live=1 max=2
+  Ld93af...   Friend — hobby group  live=0 max=1  (expires 2026-09-01T12:00:00Z)
 ```
 
 Revoke a grant:
@@ -181,7 +183,7 @@ To shut down one donated node — under a revoked grant or a live one — use it
 cadre-host grant terminate <donation-id>
 ```
 
-The Nodes page's Stop button does not work on donated nodes, and says so: the respawn supervisor treats a live donation as "expected to be running" and would bring it straight back, so the page answers with an error pointing at `grant terminate` instead. Revoking a grant again is safe and ends whatever is still running under it.
+A donated node's page in the UI offers **Terminate** (the same call) rather than Stop: the respawn supervisor treats a live donation as "expected to be running" and would bring a merely stopped node straight back. Revoking a grant again is safe and ends whatever is still running under it.
 
 ## The founder role — running your own cadre here (opt-in)
 
@@ -195,7 +197,7 @@ Until it is enabled, the founder-only surfaces are **not mounted** and return **
 | `/nat/*` — NAT/DDNS | `cadre-host nat …` | Connectivity |
 | `/api/strands` | — | Strands |
 
-So if you followed the default install and `cadre-host invite` or `cadre-host nat status` reports a 404, nothing is broken — those belong to a role you didn't turn on. The UI still lists those three pages in its nav and they error when opened on a donor-only install; that's a known gap, not a misconfiguration.
+So if you followed the default install and `cadre-host invite` or `cadre-host nat status` reports a 404, nothing is broken — those belong to a role you didn't turn on. The UI leaves those three pages out of its nav on a donor-only install.
 
 The rest of this section applies **only** with the founder role enabled.
 
@@ -284,7 +286,7 @@ Issue a grant token — the credential that lets one person ask this host to don
 
 ### `cadre-host grant list`
 
-Print every issued grant token with its label, node cap, expiry, and revoked state.
+Print every issued grant token with its label, live donated nodes (`live=`), node cap (`max=`), expiry, and revoked state.
 
 ### `cadre-host grant revoke <token> [--keep-nodes]`
 
@@ -395,18 +397,19 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 `cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
 
-Six pages cover the day-to-day operations. Three of them belong to the opt-in founder role and are marked as such:
+Seven pages cover the day-to-day operations. Three of them belong to the opt-in founder role and are marked as such:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner. Its trust-circle-size and connectivity tiles are fed by founder-only routes.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. The start/stop/restart buttons act on your own owner node only; on a donated node they report an error, and you end a donated node with `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner. A donor-only install shows a Donation tile linking to Grants; the founder role shows trust-circle-size and connectivity tiles instead.
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). Your own owner node (founder role) has start/stop/restart; a donated node has **Terminate** instead, the same as `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
+- **Grants** — issue grant tokens (QR + copy), see each grant's node usage and the donated nodes under it (linked to their node pages), show an active grant's token again, revoke a grant with or without its nodes. Same `/grants-admin` surface as `cadre-host grant`.
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
 - **Trust Circle** *(founder role only)* — list members, invite a friend (modal generates a paste-friendly token + QR), revoke pending invites or remove members.
 - **Connectivity** *(founder role only)* — port-forwarding status, "Test reachability", DDNS provider configuration, manual port-forward instructions when UPnP isn't working.
 - **Strands** *(founder role only)* — the shared SQL databases your own cadre belongs to.
 
-The SPA does not yet hide the founder-only pages on a donor-only install: they stay in the nav and error when opened, and Home's connectivity tile never resolves. There is no donor-side view of grants or donated nodes beyond the Nodes page. Tracked as `backlog/feat-cadre-host-donor-aware-ui`.
+On a donor-only install the founder-only pages are left out of the nav, and opening one by its address shows a note instead of the page.
 
-The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the trust circle changes, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
+The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the trust circle or the grants change, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 
 ### Building the SPA
 

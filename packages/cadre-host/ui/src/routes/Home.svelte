@@ -82,8 +82,7 @@
 				<h3>Donation</h3>
 				<p class="muted">This machine donates cadre nodes to other people's cadres.</p>
 				<p class="big">{donatedRunning}<span class="muted"> / {donatedNodes.length} donated nodes running</span></p>
-				<!-- Until the dashboard has a grants page, point at the command that issues one. -->
-				<p class="muted">Issue a grant with <code>cadre-host grant issue &lt;label&gt;</code></p>
+				<a class="link" href={hrefFor('grants')}>Manage grants →</a>
 			</div>
 		{/if}
 

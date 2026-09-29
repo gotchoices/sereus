@@ -1,4 +1,6 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
+
 	import { typedConfirmationMatches } from '../lib/typed-confirm.js';
 
 	interface Props {
@@ -13,6 +15,8 @@
 		 * costs one reflexive click, typing costs deliberate attention.
 		 */
 		requireText?: string;
+		/** Extra controls the caller owns (e.g. an option checkbox), shown above the buttons. */
+		children?: Snippet;
 		confirmLabel?: string;
 		cancelLabel?: string;
 		danger?: boolean;
@@ -26,6 +30,7 @@
 		message,
 		note,
 		requireText,
+		children,
 		confirmLabel = 'Confirm',
 		cancelLabel = 'Cancel',
 		danger = false,
@@ -100,6 +105,7 @@
 				/>
 			</div>
 		{/if}
+		{@render children?.()}
 		<div class="actions">
 			<button onclick={onCancel} disabled={pending}>{cancelLabel}</button>
 			<button

@@ -158,7 +158,7 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
   if (opts.grants) {
-    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants, opts.donations) });
+    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants, opts.donations), events });
     // Grantee-facing provisioning surface needs both the donation service and a
     // grant validator (the GrantService doubles as the validator).
     if (opts.donations) {

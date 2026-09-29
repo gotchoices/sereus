@@ -23,6 +23,7 @@ const EVENT_TYPES = [
 	'node-state-changed',
 	'trust-circle-changed',
 	'strands-changed',
+	'grants-changed',
 	'connectivity-changed',
 	'update-available',
 ] as const;
