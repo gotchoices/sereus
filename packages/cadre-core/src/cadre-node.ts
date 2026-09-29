@@ -7930,13 +7930,13 @@ export class CadreNode implements SAppIdLookup {
     if (instance.status !== 'hibernating' || instance.database) {
       return;
     }
-    log('issueStrandMembershipInvite: waking hibernating host strand %s for an authorized formation', strandId);
+    log('wakeHostStrandForFormation: waking hibernating host strand %s for an authorized formation', strandId);
     const wake = this.wakeStrand(strandId);
     if (await resolvesBeforeAbort(wake, signal)) {
       return;
     }
     void wake.catch((error: unknown) =>
-      log('issueStrandMembershipInvite: background wake of host strand %s failed: %o', strandId, error));
+      log('wakeHostStrandForFormation: background wake of host strand %s failed: %o', strandId, error));
     throw new Error(
       `Cannot issue a membership invitation for closed strand ${strandId}: its hibernating ` +
       'runtime did not wake within the formation provisioning budget (still waking)'
