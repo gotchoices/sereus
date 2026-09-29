@@ -244,6 +244,9 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 			// `formStrand` would register the formation handler itself, and a change to the
 			// node's own protocols can start a reconcile pass that publishes the join before
 			// step 1 reads. Registered and settled here instead.
+			// NOTE: any other `self:peer:update` on the phone's control node between here and
+			// step 1's reads (an address change) would publish early and fail step 1; none
+			// occurs on loopback. If step 1 flakes on "join recorded on the phone", look there.
 			await phone.node.initializeStrandSolicitation();
 			await freshReconcilePass(phone.node);
 
