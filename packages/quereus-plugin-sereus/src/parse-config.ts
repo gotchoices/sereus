@@ -52,6 +52,9 @@ const COMMA_LIST: Setting<string[]> = {
 	read: raw => (typeof raw === 'string' ? raw.split(',').map(s => s.trim()).filter(Boolean) : undefined),
 };
 
+// NOTE: no numeric strings here or in FLAG, so a `${VAR}` in quoomb.config.json
+// (whose env interpolation always yields a string) cannot supply port or
+// enable_cache; if that is ever needed, accept decimal-integer strings here.
 const PORT: Setting<number> = {
 	expected: 'an integer from 0 to 65535',
 	read: raw => (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 65535 ? raw : undefined),

@@ -312,7 +312,9 @@ Settings are checked strictly at load. An unknown key (including the retired
 every offending setting; nothing falls back to a default the user did not
 choose. Leaving a setting out, NULL, or `''` means "use the default" (`''`
 only for the string and select settings). A host that adds keys of its own to
-the plugin's settings map therefore fails to load the plugin.
+the plugin's settings map therefore fails to load the plugin. `port` and
+`enable_cache` must be a JSON number and boolean: a `${VAR}` reference in
+`quoomb.config.json` expands to a string, which they reject.
 
 **Bootstrap multiaddrs.** Browsers can only dial transports reachable from an
 `https://` page. Use `/wss` (or `/dns/.../wss`, or a relay-fronted multiaddr).

@@ -92,39 +92,49 @@
 		"settings": [
 			{
 				"key": "strand_id",
+				"label": "Strand ID",
 				"type": "string"
 			},
 			{
 				"key": "bootstrap_nodes",
+				"label": "Bootstrap nodes",
 				"type": "string",
-				"default": ""
+				"default": "",
+				"help": "comma-separated multiaddrs"
 			},
 			{
 				"key": "schema",
+				"label": "sApp schema",
 				"type": "string"
 			},
 			{
 				"key": "sapp_id",
+				"label": "sApp ID",
 				"type": "string",
 				"default": "unknown"
 			},
 			{
 				"key": "sapp_version",
+				"label": "sApp version",
 				"type": "string",
 				"default": "1.0.0"
 			},
 			{
 				"key": "port",
+				"label": "Port",
 				"type": "number",
-				"default": 0
+				"default": 0,
+				"help": "0 = random"
 			},
 			{
 				"key": "enable_cache",
+				"label": "Enable cache",
 				"type": "boolean",
 				"default": true
 			},
 			{
 				"key": "fret_profile",
+				"label": "FRET profile",
 				"type": "select",
 				"options": [
 					"edge",
@@ -134,16 +144,20 @@
 			},
 			{
 				"key": "transactor",
+				"label": "Transactor",
 				"type": "select",
 				"options": [
 					"network",
 					"local",
 					"test"
-				]
+				],
+				"help": "storage engine"
 			},
 			{
 				"key": "storage_path",
-				"type": "string"
+				"label": "Storage path",
+				"type": "string",
+				"help": "Node only"
 			}
 		]
 	}
