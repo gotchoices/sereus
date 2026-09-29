@@ -13,7 +13,7 @@ import type { CadreNodeConfig } from '../src/types.js';
  *
  * Property, not instance: the assertions below are about the relationship between the
  * party id and the store handed out, so a future change that scopes by something other
- * than base64url still has to satisfy them.
+ * than lowercase hex still has to satisfy them.
  *
  * `buildControlNodeOptions` is private and pure on a bare `new CadreNode` — it reads
  * only `this.config` — so this file starts no libp2p node, opens no database and
@@ -81,7 +81,7 @@ function nodeForParty(partyId: string, provider: (scope: string) => IRawStorage)
 
 /** The inverse of `controlStorageScope`, spelled out so the encoding is pinned both ways. */
 function decodeControlScope(scope: string): string {
-	return uint8ArrayToString(uint8ArrayFromString(scope.slice('control-'.length), 'base64url'), 'utf8');
+	return uint8ArrayToString(uint8ArrayFromString(scope.slice('control-'.length), 'base16'), 'utf8');
 }
 
 describe('control storage scope', () => {
@@ -117,7 +117,8 @@ describe('control storage scope', () => {
 	 * namespaces unescaped (cadre-cli's `${config.path}/${scope}`, a LevelDB filename, an
 	 * IndexedDB database name), so the charset invariant is load-bearing rather than
 	 * decorative — without this arm the encoding looks like ceremony and the next editor
-	 * removes it.
+	 * removes it. Lowercase because Windows and macOS file names ignore case: the old
+	 * base64url keys of `aa@` and `aaZ` (`control-YWFA`, `control-YWFa`) were one folder.
 	 */
 	it.each([
 		['a path traversal', '../../etc/passwd'],
@@ -129,7 +130,7 @@ describe('control storage scope', () => {
 	])('keeps the scope key path-safe and reversible for %s', (_label, partyId) => {
 		const scope = controlStorageScope(partyId);
 
-		expect(scope).toMatch(/^[A-Za-z0-9._-]+$/);
+		expect(scope).toMatch(/^[a-z0-9._-]+$/);
 		expect(decodeControlScope(scope)).toBe(partyId);
 	});
 

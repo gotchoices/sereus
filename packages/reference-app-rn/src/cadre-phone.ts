@@ -86,10 +86,10 @@ function openLevelDb(name: string) {
 // ── Storage factory ──────────────────────────────────────────────────────────
 //
 // One LevelDB database per cadre-core storage SCOPE. cadre-core guarantees every
-// scope key is already within `[A-Za-z0-9._-]`, so it goes straight into the
+// scope key is already within `[a-z0-9._-]`, so it goes straight into the
 // filename with no escaping. The control scope carries the party id
 // (`controlStorageScope`), so switching parties in Settings now lands on a
-// different database — `sereus-control-<base64url party id>` — instead of every
+// different database — `sereus-control-<hex party id>` — instead of every
 // party sharing one `sereus-control`.
 //
 // NOTE: a dev device that ran a build predating the party scoping still has that

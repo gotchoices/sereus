@@ -62,7 +62,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
 describe('strand scope key validation', () => {
   it.each([
     ['a path traversal', '../../etc/passwd'],
-    ['a control-database key', 'control-ZmFrZQ'],
+    ['a control-database key', 'control-7061727479'],
   ])('refuses a strand whose id is %s, without reaching the storage provider', async (_label, strandId) => {
     const seen: string[] = [];
     const manager = new StrandInstanceManager();
@@ -93,7 +93,8 @@ describe('strand scope key validation', () => {
     ['a bare current directory', '.'],
     ['an embedded separator', 'strand/nested'],
     ['a Windows separator', 'strand\\nested'],
-    ['a control-database prefix', 'control-ZmFrZQ'],
+    ['a control-database prefix', 'control-7061727479'],
+    ['an uppercase letter', 'strand-ABC'],
     ['an id over the 128-character cap', `strand-${'a'.repeat(128)}`],
   ])('rejects %s', (_label, strandId) => {
     expect(isValidStrandScopeKey(strandId)).toBe(false);

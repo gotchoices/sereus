@@ -60,7 +60,7 @@ This is the same topology as the RN app — see
 The phone uses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`,
 `openOptimysticNSDb`, `loadOrCreateNSPeerKey`) over the
 `@nativescript-community/sqlite` native plugin. One database per cadre-core storage
-scope: `sereus-<strandId>` for each strand, and `sereus-control-<base64url party id>`
+scope: `sereus-<strandId>` for each strand, and `sereus-control-<hex party id>`
 for the party's control database — the control key carries the party id, so switching
 parties on one device lands on a different database rather than sharing one. The peer
 identity (Ed25519 key, producing a stable PeerId across cold launches) lives in

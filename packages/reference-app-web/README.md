@@ -77,8 +77,8 @@ and stored messages.
 
 `CadreNodeConfig.storage.provider` is a **synchronous** factory
 `(scope) => IRawStorage`, and cadre-core partitions data by scope key: the strand
-id for each strand, and `controlStorageScope(partyId)` — `control-<base64url party
-id>` — for the control database. `IndexedDBRawStorage` wraps an **already-open**
+id for each strand, and `controlStorageScope(partyId)` — `control-<hex party id>` —
+for the control database. `IndexedDBRawStorage` wraps an **already-open**
 handle (the opener is async) with no per-scope namespacing. The bridge pre-opens one
 IndexedDB database per key (`sereus-strand-<key>`) **before** the synchronous
 provider is hit — the app drives control bring-up and `addStrand` explicitly, so

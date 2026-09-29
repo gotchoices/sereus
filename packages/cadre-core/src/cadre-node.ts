@@ -1736,7 +1736,7 @@ export class CadreNode implements SAppIdLookup {
     const scope = controlStorageScope(this.config.controlNetwork.partyId);
     // The second seam that hands a scope key to an embedder's provider; the first
     // (`StrandInstanceManager.startStrand`) asserts the stricter strand rule. Holds by
-    // construction today — base64url is inside the charset — so this guards a future
+    // construction today — lowercase hex is inside the charset — so this guards a future
     // edit to `controlStorageScope`, not a reachable input.
     assertScopeKeyCharset(scope);
     const resolved = typeof provider === 'function' ? provider(scope) : provider;

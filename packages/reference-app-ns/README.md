@@ -128,7 +128,7 @@ matching is unworkable on NS, fall back to Appium — see
 Reuses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`, `openOptimysticNSDb`,
 `loadOrCreateNSPeerKey`) — SQLite via the `@nativescript-community/sqlite` peer
 dependency. One database per cadre-core storage scope: `sereus-<strandId>` per strand,
-and `sereus-control-<base64url party id>` for the party's control database. The peer
+and `sereus-control-<hex party id>` for the party's control database. The peer
 identity lives in `sereus-peer-identity`. Because `openOptimysticNSDb` is async but
 `CadreNodeConfig.storage.provider` is a sync factory, `ns-storage.ts` returns a lazy
 proxy that awaits a cached open before delegating (see that file).

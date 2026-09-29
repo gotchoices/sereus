@@ -1549,21 +1549,21 @@ A provider is a factory cadre-core calls once per **scope**, and the argument it
 | Scope | Key | Minted by |
 |-------|-----|-----------|
 | A strand | the strand id (`strand-<digits>-<base36>` or `strand-<hex>` as cadre-core mints them) | the node that founded the strand — which may be another node in the party, the row having replicated in |
-| The control database | `control-<base64url of the party id>` | `controlStorageScope(partyId)` (`cadre-core/src/storage-scope.ts`) |
+| The control database | `control-<lowercase hex of the party id's UTF-8 bytes>` | `controlStorageScope(partyId)` (`cadre-core/src/storage-scope.ts`) |
 
 Two properties an embedder may rely on, and must not undermine:
 
-- **A scope key is opaque and already safe as a name.** Every key stays within `[A-Za-z0-9._-]`, so it can be concatenated straight into a file path, a directory name or a database name with no escaping. Do not parse it; `controlStorageScope` and `isControlStorageScope` are the supported way to mint and recognize the control key. The two halves hold it for different reasons. The control key is base64url-encoded: a party id is arbitrary text (nothing validates its shape, and the React Native reference app lets a user type one in), so an unencoded one containing `/` or `..` would escape the directory it was meant to name. A strand's key is its strand id, which may have replicated in from another node in the party carrying that node's id verbatim — so it is *checked* rather than encoded: `assertStrandScopeKey` (`cadre-core/src/storage-scope.ts`) runs unconditionally at the top of `StrandInstanceManager.startStrand`, ahead of the storage provider and ahead of the `/optimystic/strand-<id>` protocol prefix the strand node is built with. An id that fails it — outside the charset, `.` or `..`, over 128 characters, or `control-`-prefixed — refuses the launch with `InvalidStrandIdError`, and `CadreNode.handleStrandAdded` suppresses that strand in the watcher rather than retrying it forever. The ids cadre-core itself mints come from `cadre-core/src/strand-id.ts`, which asserts the same predicate at the point of minting.
+- **A scope key is opaque and already safe as a name.** Every key stays within `[a-z0-9._-]`, so it can be concatenated straight into a file path, a directory name or a database name with no escaping — and two different keys are two different names even on a filesystem that ignores case. That second property is why the charset has no uppercase letter: Windows (NTFS) and macOS (APFS/HFS+ by default) compare file names without regard to case, so under a mixed-case charset `strand-ABC` and `strand-abc` (or the base64url control keys of party ids `aa@` and `aaZ`) would be two stores in memory and one folder on disk. Do not parse it; `controlStorageScope` and `isControlStorageScope` are the supported way to mint and recognize the control key. The two halves hold it for different reasons. The control key is lowercase-hex-encoded: a party id is arbitrary text (nothing validates its shape, and the React Native reference app lets a user type one in), so an unencoded one containing `/` or `..` would escape the directory it was meant to name. A strand's key is its strand id, which may have replicated in from another node in the party carrying that node's id verbatim — so it is *checked* rather than encoded: `assertStrandScopeKey` (`cadre-core/src/storage-scope.ts`) runs unconditionally at the top of `StrandInstanceManager.startStrand`, ahead of the storage provider and ahead of the `/optimystic/strand-<id>` protocol prefix the strand node is built with. An id that fails it — outside the charset (an uppercase letter included), `.` or `..`, over 128 characters, or `control-`-prefixed — refuses the launch with `InvalidStrandIdError`, and `CadreNode.handleStrandAdded` suppresses that strand in the watcher rather than retrying it forever. The ids cadre-core itself mints come from `cadre-core/src/strand-id.ts`, which asserts the same predicate at the point of minting.
 - **The control scope is per-party.** The control database holds one party's own records — its strands, owner keys, peers, invitations, revocations — so two parties on one device ask for two different keys and must get two different stores. A single `IRawStorage` instance handed to every scope shares one store across every strand *and* every party by construction; an embedder that can serve more than one party must use the factory form.
 
-To read a party id back off a device — from, say, a LevelDB file named `sereus-control-MTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1`:
+To read a party id back off a device — from, say, a LevelDB file named `sereus-control-7061727479`:
 
 ```js
-const b64 = key.slice('control-'.length).replace(/-/g, '+').replace(/_/g, '/');
-new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+const hex = key.slice(key.indexOf('control-') + 'control-'.length);
+new TextDecoder().decode(Uint8Array.from(hex.match(/../g) ?? [], (h) => parseInt(h, 16)))
 ```
 
-The `TextDecoder` step is not optional: `atob` alone yields one character per *byte*, so a party id containing any non-ASCII character decodes to mojibake.
+The `TextDecoder` step is not optional: each hex pair is one *byte*, so a party id containing any non-ASCII character decodes to mojibake without it.
 
 #### Node.js (Servers, CLI)
 

@@ -17,10 +17,11 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
  *
  * The file provider maps a cadre-core storage scope key straight onto a subdirectory of
  * `storage.path`: the strand id for each strand, `controlStorageScope(partyId)` for the
- * control database. Every key cadre-core mints is within `[A-Za-z0-9._-]`, so it is safe
+ * control database. Every key cadre-core mints is within `[a-z0-9._-]`, so it is safe
  * as a path segment as-is — which is also why a party id containing `/` or `..` can no
- * longer escape this directory. Two config files naming two parties over one
- * `storage.path` therefore get two control directories (`control-<encoded party id>`)
+ * longer escape this directory — and, having no uppercase, two keys never land in one
+ * directory on a filesystem that ignores case. Two config files naming two parties over
+ * one `storage.path` therefore get two control directories (`control-<hex party id>`)
  * rather than sharing one.
  */
 export function resolveStorageConfig(config: ResolvedConfig['storage']): StorageConfig | undefined {

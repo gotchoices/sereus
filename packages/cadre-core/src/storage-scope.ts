@@ -18,18 +18,26 @@
  * its shape, and the React Native reference app lets a user type one into Settings.
  * Scope keys reach real namespaces unescaped: cadre-cli builds `${config.path}/${scope}`,
  * React Native a LevelDB filename, the browser an IndexedDB database name. A party id
- * containing `/` or `..` would escape the CLI's storage directory. Base64url keeps every
- * key inside `[A-Za-z0-9._-]` — the charset embedders already rely on, and the same
- * encoding the React Native app's `secureStoreKeySegment` uses on a party id for the
- * same reason.
+ * containing `/` or `..` would escape the CLI's storage directory. Lowercase hex keeps
+ * every key inside `[a-z0-9._-]`, the charset embedders rely on.
+ *
+ * WHY THE CHARSET HAS NO UPPERCASE. Windows (NTFS) and macOS (APFS/HFS+ by default)
+ * compare file names without regard to case, while everything above the filesystem
+ * compares with it. Two keys differing only in case — `control-YWFA` and `control-YWFa`,
+ * the base64url keys of party ids `aa@` and `aaZ`, or strand ids `strand-ABC` and
+ * `strand-abc` — would be two stores in memory and one folder on disk. With no uppercase
+ * letter in the charset, two different keys are two different names on every
+ * filesystem.
  *
  * THE STRAND ARM OF THAT CHARSET RULE IS ENFORCED HERE. A strand's scope key is
  * `StrandRow.Id`, and a strand row replicated into the control database by another
  * node in the party carries whatever id THAT node wrote. `assertStrandScopeKey`
  * (below) is the check that makes the charset true of strand keys too; it runs
  * unconditionally at the top of `StrandInstanceManager.startStrand`, so no strand id
- * reaches an embedder's provider — or a libp2p protocol prefix — unvalidated. Ids
- * cadre-core mints come from `strand-id.ts`, which is built on the same predicate.
+ * reaches an embedder's provider — or a libp2p protocol prefix — unvalidated. A
+ * mixed-case id is refused, not lowercased: lowercasing would silently merge two
+ * distinct strands into one store. Ids cadre-core mints come from `strand-id.ts`, which
+ * is built on the same predicate.
  */
 
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
@@ -45,23 +53,29 @@ const CONTROL_SCOPE_PREFIX = 'control-';
 /**
  * The storage scope key for a party's control database.
  *
- * Returns `control-` followed by the base64url encoding of `partyId`'s UTF-8 bytes,
- * so the whole key stays within `[A-Za-z0-9._-]` and is safe to use directly as a
- * file name, directory name or database name. See the module comment for why the
- * encoding is load-bearing rather than decorative.
+ * Returns `control-` followed by the lowercase hexadecimal encoding of `partyId`'s
+ * UTF-8 bytes, so the whole key stays within `[a-z0-9._-]` and is safe to use directly
+ * as a file name, directory name or database name — and two party ids give two names
+ * even on a filesystem that ignores case. See the module comment for why the encoding
+ * is load-bearing rather than decorative.
  *
  * To read a party id back off a device — from, say, a LevelDB file named
- * `sereus-control-MTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1` — in a browser or
- * Node console, with no dependency on this package:
+ * `sereus-control-7061727479` — in a browser or Node console, with no dependency on
+ * this package:
  * ```js
- * const b64 = key.slice('control-'.length).replace(/-/g, '+').replace(/_/g, '/');
- * new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+ * const hex = key.slice(key.indexOf('control-') + 'control-'.length);
+ * new TextDecoder().decode(Uint8Array.from(hex.match(/../g) ?? [], (h) => parseInt(h, 16)))
  * ```
- * The `TextDecoder` step is not optional: `atob` alone yields one character per BYTE,
- * so a party id with any non-ASCII character in it decodes to mojibake.
+ * The `TextDecoder` step is not optional: each hex pair is one BYTE, so a party id with
+ * any non-ASCII character in it decodes to mojibake without it.
+ *
+ * NOTE: the key is twice the party id's UTF-8 byte length plus 8, so a party id over
+ * ~120 bytes overflows the 255-byte limit filesystems put on one path component. Party
+ * ids today are UUIDs (an 80-character key); if long party ids ever appear, hash the
+ * party id rather than encoding it.
  */
 export function controlStorageScope(partyId: string): string {
-	return CONTROL_SCOPE_PREFIX + uint8ArrayToString(uint8ArrayFromString(partyId, 'utf8'), 'base64url');
+	return CONTROL_SCOPE_PREFIX + uint8ArrayToString(uint8ArrayFromString(partyId, 'utf8'), 'base16');
 }
 
 /**
@@ -86,8 +100,11 @@ export function isControlStorageScope(scope: string): boolean {
  */
 const MAX_STRAND_SCOPE_KEY_LENGTH = 128;
 
-/** The charset every scope key stays within — see the module comment. */
-const SCOPE_KEY_CHARSET = /^[A-Za-z0-9._-]+$/;
+/**
+ * The charset every scope key stays within — see the module comment. Lowercase only,
+ * so keys that differ as strings also differ as names on a filesystem that ignores case.
+ */
+const SCOPE_KEY_CHARSET = /^[a-z0-9._-]+$/;
 
 /**
  * Whether a strand id is usable as a storage scope key and as a libp2p network name.
@@ -100,7 +117,9 @@ const SCOPE_KEY_CHARSET = /^[A-Za-z0-9._-]+$/;
  *
  * Valid means all of:
  * - non-empty, and at most {@link MAX_STRAND_SCOPE_KEY_LENGTH} characters;
- * - within `[A-Za-z0-9._-]`, so no separator, drive letter, NUL or non-ASCII text;
+ * - within `[a-z0-9._-]`, so no separator, drive letter, NUL or non-ASCII text, and no
+ *   uppercase letter, so no two valid ids name one folder on a filesystem that ignores
+ *   case;
  * - not `.` or `..`, which the charset admits but every filesystem reads as a
  *   directory rather than a name;
  * - not `control-`-prefixed, which would let a strand's store masquerade as a
@@ -128,7 +147,8 @@ export class InvalidStrandIdError extends Error {
 	constructor(strandId: string) {
 		super(
 			`Strand id ${JSON.stringify(strandId)} cannot be used as a storage scope key: ` +
-			`a strand id must be 1-${MAX_STRAND_SCOPE_KEY_LENGTH} characters within [A-Za-z0-9._-], ` +
+			`a strand id must be 1-${MAX_STRAND_SCOPE_KEY_LENGTH} characters within [a-z0-9._-] ` +
+			'(lowercase only, because Windows and macOS file names ignore case), ' +
 			"must not be '.' or '..', and must not begin 'control-'. " +
 			'This strand was created by a node that does not mint conforming ids; it cannot be ' +
 			'started here, because the id becomes a file, directory or database name.'
@@ -156,8 +176,9 @@ export function assertStrandScopeKey(strandId: string): void {
 export function assertScopeKeyCharset(scope: string): void {
 	if (!SCOPE_KEY_CHARSET.test(scope)) {
 		throw new Error(
-			`Storage scope key ${JSON.stringify(scope)} leaves the [A-Za-z0-9._-] charset ` +
-			'embedders rely on to use it directly as a file, directory or database name.'
+			`Storage scope key ${JSON.stringify(scope)} leaves the [a-z0-9._-] charset ` +
+			'embedders rely on to use it directly as a file, directory or database name ' +
+			'(lowercase only, so two keys never share one name on a filesystem that ignores case).'
 		);
 	}
 }

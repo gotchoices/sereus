@@ -153,7 +153,7 @@ class LazyNsRawStorage implements IRawStorage {
  *
  * `scope` is cadre-core's storage scope key — a strand id, or the party's control
  * key from `controlStorageScope`. Every key it mints is already within
- * `[A-Za-z0-9._-]`, so it goes straight into the database name unescaped.
+ * `[a-z0-9._-]`, so it goes straight into the database name unescaped.
  *
  * NOTE: a dev device that ran a build predating the party scoping still has an
  * unscoped `sereus-control` database on disk. Nothing opens or deletes it — its
