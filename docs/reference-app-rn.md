@@ -561,7 +561,7 @@ It sets neither condition names nor `unstable_enablePackageExports`: both toolch
 
 ## Two-Node Startup Sequence
 
-This section walks through starting the drone and phone from scratch, establishing a connection, and chatting.
+This section walks through starting the drone and phone from scratch, establishing a connection, and chatting. The phone dials the drone, so the drone must be reachable from the phone; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
 
 ### Prerequisites
 
@@ -672,7 +672,7 @@ A strand write can fail without settling whether it landed, so a failed send say
 
 ## Borrowing a Node From a cadre-host
 
-The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**.
+The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**. Here too the phone dials the node; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
 
 This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (the phone's own client, `src/host-node-request.ts`, run against the host's real `/grants` server and a real lent node, with a phone-shaped requester dialing in). That scenario covers the success path, a wrong grant token and the cleanup `DELETE` after a cancel; the retry loops and the other error mappings are covered only by the fake host. Neither runs on a device, uses React Native's `fetch`, or reaches the host by a LAN address (which the host's origin guard refuses), so this manual check is still the only coverage of those.
 

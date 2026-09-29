@@ -146,6 +146,8 @@ The seed carries whatever addresses the owner advertises; `enroll add` does not 
 
 When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized leaves its authorization as it is and mints a fresh seed, so it is the way to pick up changed owner addresses; any `--addr` given on the re-run replaces the address the owner dials.
 
+[docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this flow with the other ways to add a machine to a cadre, by which machine opens the connection.
+
 ### Strands
 
 List the strands this node is running (`cadre strands` is an alias for `cadre strand list`):

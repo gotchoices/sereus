@@ -254,7 +254,7 @@ addresses to reach members that are offline.
 
 ## Strand Creation
 
-_(TODO: not yet documented here. See the strand-formation and seed-bootstrap coverage in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+Two parties form a strand over the formation protocol in [architecture.md → Strand Formation](architecture.md#strand-formation), and its first members are seated as described in [Strand Membership Bootstrap](architecture.md#strand-membership-bootstrap).
 
 ## Joining: no writes before the first sync
 
@@ -286,7 +286,7 @@ Apps address their own tables as `App.<Table>`. Quereus's `schema_path` defaults
 
 ## Inviting Parties
 
-_(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+A party becomes a member of a closed strand through the signed invite handshake in [architecture.md → Invite → join handshake (closed strands)](architecture.md#invite--join-handshake-closed-strands).
 
 Attaching a human-readable legal agreement to a strand — reviewed before joining, executed
 as a separate in-strand signing act — is a design-stage plan: see

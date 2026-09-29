@@ -281,6 +281,7 @@ Key points:
 - The drone's row is unsigned until the drone self-publishes, so the phone dials from the addresses `CadreNode.addDrone` retained in its bootstrap-peer store — on this launch and after a relaunch. The caller triggers step 9 with `reconcileControlCohort()` once the seed is delivered; otherwise the next timed pass does it
 - Drone validates phone against seed cache → connection accepted
 - Normal sync populates authoritative state
+- This flow works today against a cadre-host lent node (row 2 of [Which Side Dials](#which-side-dials-the-add-a-node-flows-compared)) and not yet against `@serfab/cadre-provider`, whose containers listen on TCP only and require the requester's `bootstrapNodes` ([`feat-provider-drone-reachable-by-phone`](../tickets/backlog/feat-provider-drone-reachable-by-phone.md))
 
 ### Enrollment Flow: Server Adds Phone
 
@@ -338,6 +339,28 @@ From the CLI, this flow is `cadre enroll add <peerId>` on the owner machine, whi
 The key asymmetry:
 - **Instigator has public IP**: Seed includes `multiaddrs`, new node dials in
 - **Instigator is NAT'd**: Seed has no `multiaddrs`, instigator dials out after seed is applied
+
+### Which Side Dials: the Add-a-Node Flows Compared
+
+[When Is a Seed Needed?](#when-is-a-seed-needed) classifies by each machine's role; this table lists the concrete flows that add a machine to a cadre, and which machine opens the first connection in each.
+
+Every flow can arm that first connection from either end, and one working direction is enough. The adder dials the new machine when it knows the new machine's addresses: `CadreNode.addDrone` retains the addresses it is handed as a dial target, and the control-cohort reconcile pass dials from that entry every 15 s, or at once when the caller runs `reconcileControlCohort()`. An empty address list arms nothing. The new machine dials the adder when its seed, or its own bootstrap list, carries the adder's addresses. A seed minted by a phone carries none unless the phone holds a relay reservation, because a phone listens on nothing.
+
+A node that never joins is one whose armed direction targets a machine it cannot reach, while the other direction was never armed. Nothing reports this when the machines are configured: the seed is accepted, `ApplySeedResult` counts every owner dial as failed (or none attempted, when the seed carried no owner address), the `CadrePeer` table stays empty, and each side re-dials whatever addresses it holds on every reconcile pass ("Cold-start bootstrap retries" under [Control Network Seed](#control-network-seed)). It looks like a NAT or trust fault; the cause is that neither side was given an address the other can reach.
+
+| # | flow | who dials | who must be reachable |
+| --- | --- | --- | --- |
+| 1 | Reference app: a phone plus a `cadre-cli` drone ([reference-app-rn.md → Two-Node Startup Sequence](reference-app-rn.md#two-node-startup-sequence)) | the phone dials the drone's `/ws` bootstrap address | the drone: same LAN, or a public address |
+| 2 | A phone borrows a cadre-host node, no `bootstrapNodes` ([cadre-host.md → The donate-a-node lifecycle](cadre-host.md#the-donate-a-node-lifecycle), [reference-app-rn.md → Borrowing a Node](reference-app-rn.md#borrowing-a-node-from-a-cadre-host)) | the phone dials the lent node's `/ws` address from `GET /grants/:id/peer`, retained by `addDrone` | the lent node, which today means from the host's LAN ([cadre-host.md → Reachability](cadre-host.md#reachability-loopback-only-in-v1)) |
+| 3 | cadre-host lends a node to a requester that can be dialed, such as a desktop `cadre-cli` node, with `bootstrapNodes` ([cadre-host.md → The donate-a-node lifecycle](cadre-host.md#the-donate-a-node-lifecycle)) | the lent node dials the requester; a `CadreNode` requester that also passes the step-2 addresses to `addDrone` dials the lent node too | the requester, or the lent node when the requester also dials it |
+| 4 | `cadre enroll add` without `--addr` ([cadre-cli README → Add a Machine to the Cadre](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)) | the new machine dials the owner addresses in the seed | the owner: its listen addresses on a LAN, `network.appendAnnounceAddrs`, or a relay |
+| 5 | `cadre enroll add --addr <new machine's multiaddr>` (same page) | both: the owner also dials the new machine | either one |
+| 6 | A cadre-provider container ([Provider Integration](#provider-integration)) | the container dials the requester's `bootstrapNodes`, which `POST /containers` requires | the requester; a phone cannot rent a container yet, because the container listens on TCP only ([`feat-provider-drone-reachable-by-phone`](../tickets/backlog/feat-provider-drone-reachable-by-phone.md)) |
+| 7 | A cadre-host founder invites a device with `cadre-host invite` ([cadre-host.md → Lifecycle](cadre-host.md#lifecycle), [Enrollment Flow: Server Adds Phone](#enrollment-flow-server-adds-phone)) | the invitee dials the host's addresses carried in the `CadreInvite` | the host's owner node |
+
+Which flow fits depends on which of the two machines can accept a connection. A phone is not dialed unless it holds a relay reservation, so a phone adding a node needs that node reachable from where the phone is (rows 1 and 2). A machine that can be dialed passes its own address and the new node dials it (rows 3, 4 and 6, and the host in row 7). When it is unclear which side is reachable, give both sets of addresses (rows 3 and 5).
+
+A `/p2p-circuit` address makes a machine behind NAT reachable only if that machine holds a relay reservation, and which kinds of node can hold one is the table under [Which nodes can be reached through a relay](#which-nodes-can-be-reached-through-a-relay). cadre-host nodes, lent or owner, and cadre-provider containers cannot, so no relay makes the lent node in row 2 or the host in row 7 reachable, and none lets a phone dial a container in row 6.
 
 ### Seed Delivery Protocol
 
