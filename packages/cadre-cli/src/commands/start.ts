@@ -225,6 +225,10 @@ export const startCommand = new Command('start')
         strandPeers: { store: strandPeerBookStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
+        // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
+        // CLI node (every cadre-host donated node included) hosts a replica of every strand its
+        // party publishes; the only opt-out here is `strandFilter`. If an operator needs
+        // announce-only on an always-on node, surface the field in the CLI config.
         strandFilter: config.strandFilter,
         storage: resolveStorageConfig(config.storage),
         network: config.network,

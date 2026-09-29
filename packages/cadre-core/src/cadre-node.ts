@@ -5411,10 +5411,10 @@ export class CadreNode implements SAppIdLookup {
    * NOTE: "founding machine" here is the ROW's provenance, not the launch's resolved
    * `founder` flag — so an explicit `founder: false` over a row this machine published
    * still mints, an owner-signed write a caller that said "I am not founding" did not ask
-   * for. Harmless (the party needs that identity for the strand either way, and the mint
-   * is insert-if-absent) and unreachable today: the one explicit `founder: false` caller
-   * passes a row with a null `FounderOwnerKey`. If a caller ever pairs `founder: false`
-   * with its own published row, gate the mint on the resolved flag too.
+   * for. Reached by a storage replica of a row this machine published (always a joiner,
+   * see {@link launchStrand}) and kept on purpose: the party needs that identity for the
+   * strand either way, the mint is insert-if-absent, and a closed-strand replica runs its
+   * membership reconciler — which seats its own `MemberPeer` binding — only with a party key.
    */
   private async resolveStrandPartyKey(strand: StrandRow, explicitKey?: string): Promise<string | undefined> {
     if (explicitKey !== undefined) {

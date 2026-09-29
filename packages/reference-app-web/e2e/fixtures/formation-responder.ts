@@ -139,6 +139,9 @@ function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId
 		controlNetwork: { partyId, bootstrapNodes: [] },
 		profile: 'storage',
 		strandFilter: { mode: 'all' },
+		// Not a replica host, as in the integration harness: a watcher poll landing between
+		// `publishStrand` and `addStrand` below would launch the strand without the chat schema.
+		hostUnclaimedStrands: false,
 		storage: { provider: () => new MemoryRawStorage() },
 		network: {
 			transports: responderTransports(),
