@@ -45,6 +45,7 @@ import {
   DONATION_AWAITING_SEED_TTL_MS,
   DONATION_PROVISIONING_TTL_MS,
   DONATION_REAP_SWEEP_MS,
+  type GrantListing,
 } from '../donation/index.js';
 import { NatService } from '../nat/index.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
@@ -816,16 +817,7 @@ grant
       process.exit(1);
       return;
     }
-    const body = await response.json() as {
-      grants: Array<{
-        token: string;
-        label: string;
-        maxNodes: number;
-        liveNodes: number;
-        expiresAt?: string;
-        revokedAt?: string;
-      }>;
-    };
+    const body = await response.json() as { grants: GrantListing[] };
     console.log('Grants:');
     if (body.grants.length === 0) {
       console.log('  (none)');

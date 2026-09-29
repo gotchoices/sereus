@@ -71,7 +71,7 @@
 		const lead = `Revoke the grant for ${grant.label}? Whoever holds its token can no longer ask this machine for nodes.`;
 		const n = grant.donations.length;
 		if (n === 0) return lead;
-		if (keep) return `${lead} Its ${nodeCount(n)} keep running until you terminate them from their node pages.`;
+		if (keep) return `${lead} Its ${nodeCount(n)} keep running until you terminate each one, from its node page or with cadre-host grant terminate.`;
 		return `${lead} Its ${nodeCount(n)} will be shut down, and ${n === 1 ? 'its' : 'their'} data on this machine deleted.`;
 	}
 
