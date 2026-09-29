@@ -13,6 +13,9 @@
  *  - bound + hook throws (runtime absent / no party key / strand-DB reject) → clean
  *    retryable rejection with `MEMBERSHIP_INVITE_UNAVAILABLE_REASON`, NO usage
  *    recorded (the formation token stays unspent), NO responder disclosure,
+ *  - bound + approval refused (recorder's `authorizeUsage` throws) → rejected with the
+ *    approval reason BEFORE the hook is consulted: a refused join writes nothing into the
+ *    host strand, and NO usage is recorded,
  *  - bound + hook throws `PreSplitStrandIdentityError` → the NON-retryable
  *    `HOST_STRAND_MUST_BE_RECREATED_REASON`, token likewise unspent,
  *  - bound + hook returns null (open host strand) → approved, no invitation,
@@ -30,6 +33,7 @@ import {
   HOST_STRAND_MUST_BE_RECREATED_REASON
 } from '../src/strand-formation-manager.js';
 import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
+import { FormationApprovalError } from '../src/formation-approval.js';
 import {
   isWellFormedMembershipInvite,
   type FormationResultMessage
@@ -192,6 +196,28 @@ describe('formation membership invitation (bound closed path)', () => {
     expect(reply.partyId).toBeUndefined();
     expect(reply.cadrePeerAddrs).toBeUndefined();
     expect(reply.provisionResult).toBeUndefined();
+  });
+
+  it('approval refused → rejected before the hook is consulted, nothing recorded', async () => {
+    const recorder = fakeRecorder(BOUND);
+    recorder.authorizeUsage = async () => {
+      throw new FormationApprovalError('refused', 'the approval hook turned this joiner down');
+    };
+    const hookCalls: string[] = [];
+    const manager = new StrandFormationManager({
+      formationUsageRecorder: recorder,
+      partyId: HOST_PARTY,
+      cadrePeerAddrs: HOST_CADRE,
+      issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
+    });
+
+    const reply = await respondOnce(manager, 'invite-approval-refused');
+
+    expect(reply.approved).toBe(false);
+    expect(reply.reason).toBe('Formation approval refused');
+    // A refused join must write nothing into the host strand: no membership pass issued.
+    expect(hookCalls).toHaveLength(0);
+    expect(recorder.usageRecorded).toHaveLength(0);
   });
 
   it('hook throws PreSplitStrandIdentityError → non-retryable "must be recreated", token unspent', async () => {

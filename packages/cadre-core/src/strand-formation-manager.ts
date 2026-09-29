@@ -17,7 +17,9 @@ import { PreSplitStrandIdentityError } from './strand-membership-writer.js';
 import { mintPlaceholderStrandId } from './strand-id.js';
 import { canonicalJson } from './canonical-json.js';
 import type {
+  AuthorizedFormationUsage,
   DisclosureValidator,
+  FormationUsageParams,
   FormationUsageRecorder,
   ResolvedHostStrand,
   StrandProvisioner,
@@ -387,14 +389,16 @@ export class StrandFormationManager {
    * {@link ResponderProvisionOutcome} with `approved: false` — `runSession` turns that
    * into a clean, non-disclosing reply instead of a dropped result frame.
    *
-   * - **bound** (host strand present): provision-then-record — first issue the joiner's
-   *   single-use strand membership invitation via the wired `issueMembershipInvite` seam
-   *   ({@link issueBoundMembershipInvite}; a closed strand whose invitation cannot be
-   *   issued rejects retryably HERE, before any consent row spends the token), then write
-   *   the single `FormationUsage` consent row against the pre-existing strand
-   *   (record-only) and return it + its membership key + the invitation (all read-gating
-   *   secrets disclosed only here, behind the token + disclosure validation `runSession`
-   *   already enforced).
+   * - **bound** (host strand present): provision-then-record, in three steps —
+   *   (1) authorize ({@link authorizeBoundUsage}: the outside approval when the invite
+   *   demands one, and a seat pre-check), so a refused join writes nothing into the host
+   *   strand; (2) issue the joiner's single-use strand membership invitation via the wired
+   *   `issueMembershipInvite` seam ({@link issueBoundMembershipInvite}; a closed strand whose
+   *   invitation cannot be issued rejects retryably HERE, before any consent row spends the
+   *   token); (3) write the single `FormationUsage` consent row against the pre-existing
+   *   strand (record-only) and return it + its membership key + the invitation (all
+   *   read-gating secrets disclosed only here, behind the token + disclosure validation
+   *   `runSession` already enforced).
    * - **missing** (invite names a host strand absent on this responder, e.g. unconverged):
    *   reject cleanly + retryably, writing NO usage row — recording usage here would fail the
    *   deferred `StrandExists` CHECK at commit and drop the frame.
@@ -435,18 +439,8 @@ export class StrandFormationManager {
     try {
       switch (resolved.kind) {
         case 'bound': {
-          // Issued BEFORE the consent row is recorded, so an issue failure rejects with
-          // the formation token still unspent (retryable). The inverse window — invite
-          // issued, then recordUsage fails/aborts — orphans a live `Strand.Invite` no
-          // joiner ever received; bounded deliberately by its expiry
-          // ({@link MEMBERSHIP_INVITE_TTL_MS}) rather than compensated, since nothing
-          // here can atomically un-issue a strand-DB row.
-          const issued = await this.issueBoundMembershipInvite(token, resolved.strandId);
-          if (!issued.ok) {
-            return { approved: false, reason: issued.reason };
-          }
           // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
-          await recorder!.recordUsage({
+          const authorized = await this.authorizeBoundUsage(recorder!, {
             token,
             peerKey: contact.peerKey,
             peerSignature: contact.peerSignature,
@@ -455,6 +449,19 @@ export class StrandFormationManager {
             disclosure: disclosureText,
             signal
           });
+          // Issued only once authorized (a refused join writes nothing into the strand) and
+          // BEFORE consent is recorded (an issue failure leaves the token unspent, retryable).
+          // The remaining window — invite issued, then record() fails or aborts (a write that
+          // exhausted its retries, an abort, or the same-node seat race noted at
+          // `ControlFormationUsageRecorder.assertSeatFree`) — orphans a
+          // live `Strand.Invite` no joiner ever received; bounded deliberately by its expiry
+          // ({@link MEMBERSHIP_INVITE_TTL_MS}) rather than compensated, since nothing
+          // here can atomically un-issue a strand-DB row.
+          const issued = await this.issueBoundMembershipInvite(token, resolved.strandId);
+          if (!issued.ok) {
+            return { approved: false, reason: issued.reason };
+          }
+          await authorized.record();
           return this.approve({
             strand: { strandId: resolved.strandId, createdBy: 'responder' },
             memberPrivateKey: resolved.memberPrivateKey ?? undefined,
@@ -506,8 +513,24 @@ export class StrandFormationManager {
   }
 
   /**
+   * Authorize a BOUND redemption without writing it, through the recorder's optional
+   * {@link FormationUsageRecorder.authorizeUsage}. A recorder without it has nothing to ask up
+   * front, so its handle defers everything to `recordUsage`.
+   */
+  private async authorizeBoundUsage(
+    recorder: FormationUsageRecorder,
+    params: FormationUsageParams
+  ): Promise<AuthorizedFormationUsage> {
+    if (recorder.authorizeUsage) {
+      return await recorder.authorizeUsage(params);
+    }
+    return { record: () => recorder.recordUsage(params) };
+  }
+
+  /**
    * Issue the joiner's membership invitation for a BOUND redemption via the wired
-   * {@link StrandFormationManagerOptions.issueMembershipInvite} seam.
+   * {@link StrandFormationManagerOptions.issueMembershipInvite} seam. Runs after the
+   * redemption is authorized ({@link authorizeBoundUsage}) and before consent is recorded.
    *
    * - Hook unwired (mock/transport tests): approve with no invitation, the same posture
    *   as an unwired `resolveStrandAddrs`.

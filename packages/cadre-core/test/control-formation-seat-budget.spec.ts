@@ -35,6 +35,9 @@ import type { JoinerConsent } from './formation-consent-helper.js';
  *  - the schema's own count-based cap clause in `FormationUsage.Authorized`, asserted here
  *    with raw inserts that bypass the TypeScript guard, so the cap does not rest on it.
  *
+ * Ahead of both, `ControlFormationUsageRecorder.authorizeUsage` pre-checks the count outside
+ * the lock, so a spent seat is refused before the manager issues a membership pass.
+ *
  * Concurrency here means "started in the same tick without awaiting the first", the idiom
  * `control-write-lock.spec.ts` documents. On ONE node the local write queue serializes the
  * writers, so the loser reads the winner's committed row and is refused at the cap; the
@@ -352,6 +355,22 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
       expect(exhausted.totalUses).toBe(1);
 
       expect(await usageStampsFor(token)).toEqual([winner.usageStampId]);
+    });
+
+    it('refuses a spent seat at authorization, before the manager could issue anything', async () => {
+      // `authorizeUsage` runs ahead of the membership-pass issuance, so a seat taken while this
+      // redemption waited on its approval must be refused there, not only at the later write.
+      const { token, strandId } = await boundInvite('authorize-spent', { totalUses: 1 });
+      const recorder = new ControlFormationUsageRecorder(db, {
+        approver: { requestApproval: async () => { throw new Error('no ValidationUrl: never asked'); } },
+      });
+      await recorder.recordUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) });
+
+      const error = await captureError(
+        recorder.authorizeUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) }),
+      );
+      expect(error).toBeInstanceOf(InvitationExhaustedError);
+      expect((error as InvitationExhaustedError).usesRecorded).toBe(1);
     });
 
     it('the schema\'s own count-based cap refuses an over-cap raw insert (Authorized)', async () => {

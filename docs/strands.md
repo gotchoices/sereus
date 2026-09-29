@@ -306,9 +306,10 @@ database, which Optimystic replicates to **every node the party owns**:
   single-use strand membership invitation
   (`FormationProvisionResult.membershipInvite` — a `Strand.Invite` keypair the
   responder's live strand runtime issues under its party identity, disclosed on the
-  same terms as the read secret; issuance failing rejects the redemption retryably
-  *before* the formation token is spent, so a joiner is never admitted as an
-  unmemberable half-member). The joiner's node stages the invitation in memory
+  same terms as the read secret; it is issued only after the invite's outside approval
+  (when it names one) and a seat check pass, so a refused join writes nothing into the
+  strand, and before the formation token is spent, so issuance failing rejects the
+  redemption retryably and a joiner is never admitted as an unmemberable half-member). The joiner's node stages the invitation in memory
   (`getPendingMembershipInvite`), and strand bring-up redeems it automatically: a
   background membership reconciler on every machine of the party (launch and
   hibernation wake alike) consumes the invitation — seating the `Strand.Member`

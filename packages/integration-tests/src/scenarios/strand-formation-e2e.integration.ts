@@ -1026,7 +1026,7 @@ describe('E2E Strand Formation', () => {
 		 * `ControlFormationUsageRecorder.provisionAndRecord`, which mints the strand id and obtains
 		 * the approval over it in one go — the shortest real path to a committed `FormationUsage`
 		 * row that the schema only accepts with a valid sign-off. Pass `strandId` for the BOUND
-		 * shape, which routes through `recordUsage` → `ControlDatabase.recordFormationUsage`
+		 * shape, which routes through `authorizeUsage` → `record()` → `ControlDatabase.recordFormationUsage`
 		 * against a strand that must already exist on the responder.
 		 */
 		function publishGatedInvite(
@@ -1477,18 +1477,20 @@ describe('E2E Strand Formation', () => {
 	//   FormationListener.provision()                       strand-formation-protocol.ts
 	//     → AbortController.abort() at workMs, then settleWithinGrace()
 	//     → StrandFormationManager.provisionAsResponder(contact, signal)
-	//       → ControlFormationUsageRecorder.recordUsage({ ..., signal })
+	//       → ControlFormationUsageRecorder.authorizeUsage({ ..., signal })
 	//         → obtainApproval(..., signal) → askApprover(..., signal)   (relays onto the HTTP call)
+	//       → issue the membership pass, then the handle's record()
 	//         → ControlDatabase.recordFormationUsage({ ..., signal })
 	//
 	// Both cases use the BOUND (provision-then-record) invite shape — an owner-signed `Strand`
 	// row inserted up front and an invite naming it — because that is the shape production
-	// publishes and it routes through `recordUsage` → `recordFormationUsage`, the path carrying
+	// publishes and it routes through `authorizeUsage` → `recordFormationUsage`, the path carrying
 	// the real abort checks.
 	//
 	// Both hops above the recorder were measured NON-VACUOUS (2026-08-02): dropping `signal` from
 	// the listener→manager hop (`provisionStrand: (contact, signal) => provisionAsResponder(...)`)
-	// and, separately, from the manager→recorder hop (`recorder.recordUsage({ ..., signal })`)
+	// and, separately, from the manager→recorder hop (then `recorder.recordUsage({ ..., signal })`,
+	// now `authorizeBoundUsage(recorder, { ..., signal })`)
 	// each fails BOTH cases — (i) on `hook.abortedCount` never reaching 1, (ii) on `observedAbort`.
 	//
 	// NOT covered here, deliberately: `ControlDatabase`'s own in-lock abort check is reached only

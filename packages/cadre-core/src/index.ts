@@ -305,6 +305,8 @@ export {
   createDefaultFormationResponseValidator,
   type DisclosureValidator,
   type FormationUsageRecorder,
+  type FormationUsageParams,
+  type AuthorizedFormationUsage,
   type ResolvedHostStrand,
   type StrandProvisioner,
   type FormationResponseValidator,

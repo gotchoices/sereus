@@ -100,7 +100,9 @@ export class FormationAbortedError extends Error {
  *
  * Raised off the committed-count check ({@link ControlDatabase.assertSeatRemains}) ahead of
  * the write, inside {@link ControlDatabase.redeemInvitation} /
- * {@link ControlDatabase.recordFormationUsage} — and off nothing else. It exists because
+ * {@link ControlDatabase.recordFormationUsage}, and off the unlocked pre-check
+ * `ControlFormationUsageRecorder.authorizeUsage` runs before the manager issues a membership
+ * pass — and off nothing else. It exists because
  * without it the refusal surfaces as a generic `CHECK constraint failed: Authorized` from the
  * schema's own count-based cap clause, which the manager reports as a retryable
  * `Formation conflict, retry` — telling the joiner to retry something that can never succeed.

@@ -63,27 +63,46 @@ export type ResolvedHostStrand =
   | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
   | { kind: 'missing'; strandId: string };
 
+/** One redemption of an invite against an already-existing host strand (the record-only consent write). */
+export interface FormationUsageParams {
+  token: string;
+  /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
+  peerKey: string;
+  /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
+  peerSignature: string;
+  /** Joiner-minted single-use nonce; both signed digests cover it. */
+  usageStampId: string;
+  strandId: string;
+  /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
+  disclosure: string;
+  /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
+  signal?: AbortSignal;
+}
+
+/** A redemption the recorder has authorized (approval obtained, a seat still free) but not yet written. */
+export interface AuthorizedFormationUsage {
+  /** Write the consent row. Abort and seat budget are re-checked inside the write lock. */
+  record(): Promise<void>;
+}
+
 /**
  * Interface for recording formation usage
  */
 export interface FormationUsageRecorder {
   /**
-   * Record that a formation invite was used
+   * Record that a formation invite was used. Where {@link authorizeUsage} is implemented, this
+   * is the same as authorizing and then calling `record()` straight away.
    */
-  recordUsage(params: {
-    token: string;
-    /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
-    peerKey: string;
-    /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
-    peerSignature: string;
-    /** Joiner-minted single-use nonce; both signed digests cover it. */
-    usageStampId: string;
-    strandId: string;
-    /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
-    disclosure: string;
-    /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
-    signal?: AbortSignal;
-  }): Promise<void>;
+  recordUsage(params: FormationUsageParams): Promise<void>;
+
+  /**
+   * Everything {@link recordUsage} does short of the write: obtain the outside approval (when
+   * the invite demands one) and pre-check the seat budget, returning a handle whose `record()`
+   * writes the consent row with exactly the fields that were approved. Lets the manager ask
+   * before it writes anything into the host strand, and write consent only after.
+   * Optional: a recorder without it is treated as having nothing to ask up front.
+   */
+  authorizeUsage?(params: FormationUsageParams): Promise<AuthorizedFormationUsage>;
 
   /**
    * Check if a token has already been used (for single-use invites)
