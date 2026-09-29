@@ -31,7 +31,7 @@ const log = debug('cadre:cli:start');
  * while the node went on serving the configured party. Both are configuration errors caught
  * before anything starts, so they stop start-up rather than leave the node running unseeded.
  */
-function decodeSeedFor(encoded: string, partyId: string): ControlNetworkSeed {
+export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkSeed {
   let decoded: unknown;
   try {
     decoded = JSON.parse(new TextDecoder().decode(fromString(encoded, 'base64url')));

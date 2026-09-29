@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { DroneInitResult, SeedPeer } from '@serfab/cadre-core';
 import type { AdminConnection, AdminFetch } from '../src/commands/admin-client.js';
 import { buildEnrollAddReport, describeAdminFailure, mintSeed } from '../src/commands/enroll-add.js';
+import { decodeSeedFor } from '../src/commands/start.js';
 
 const NEW_PEER = '12D3KooWNewMachine';
 const OWNER_ADDR = '/ip4/192.168.1.10/tcp/4001/p2p/12D3KooWOwner';
@@ -58,5 +59,25 @@ describe('describeAdminFailure', () => {
   ])('%s', async (_case, fetch, expected) => {
     const failure: unknown = await mintSeed(connection(fetch), NEW_PEER, []).catch((err: unknown) => err);
     expect(describeAdminFailure(failure, 7070)).toMatch(expected);
+  });
+});
+
+describe('decodeSeedFor', () => {
+  const encode = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+
+  // The joining side's only party check: `applySeed` never compares the seed's party with the
+  // config's, so a seed minted by another party's owner must stop start-up here.
+  it.each([
+    ['a seed for this party', encode(minted([]).seed), undefined],
+    ['a seed for another party', encode({ ...minted([]).seed, partyId: 'party-b' }), /minted for party party-b.*names party party-a/],
+    ['a seed naming no party', encode({ peers: [] }), /names no party/],
+    ['text that is not a seed', 'not-a-seed', /does not decode/],
+  ])('%s', (_case, encoded, refusal) => {
+    const decode = (): unknown => decodeSeedFor(encoded, 'party-a');
+    if (refusal === undefined) {
+      expect(decode()).toMatchObject({ partyId: 'party-a' });
+    } else {
+      expect(decode).toThrow(refusal);
+    }
   });
 });

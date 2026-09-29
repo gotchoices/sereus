@@ -142,9 +142,9 @@ The seed carries whatever addresses the owner advertises; `enroll add` does not 
 
 - **Same LAN:** the owner's listen addresses are enough.
 - **Owner behind NAT:** set `network.appendAnnounceAddrs` on the owner to a forwarded public address, or give it a relay (`network.relayAddrs`), and restart it before running `enroll add`.
-- **New machine reachable, owner not:** pass `--addr <the new machine's multiaddr>` (repeatable) and the owner dials out to it instead, on its next control-cohort reconcile pass (every 15 s by default).
+- **New machine reachable, owner not:** pass `--addr <the new machine's multiaddr>` (repeatable) and the owner dials out to it instead, from its control-cohort reconcile pass (every 15 s by default; a pass already under way when the machine was added does not include it, so allow up to two passes).
 
-When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized changes nothing but mints a fresh seed, so it is the way to pick up changed owner addresses.
+When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized leaves its authorization as it is and mints a fresh seed, so it is the way to pick up changed owner addresses; any `--addr` given on the re-run replaces the address the owner dials.
 
 ### Strands
 
