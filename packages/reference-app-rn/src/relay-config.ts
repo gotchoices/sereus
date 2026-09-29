@@ -25,10 +25,12 @@
  *  - `localStorage` is absent in RN, so the web copy's per-device override branch is
  *    omitted — the same omission `ice-config.ts` documents. The per-device seam here
  *    is the Settings screen's "Relay" field, which passes its value as `explicit`.
- *  - Nothing persists the typed value between launches (`PhoneNodeOptions` is retyped
- *    into Settings on every launch — see the backlog ticket
- *    `feat-rn-persist-node-start-options`), so the env var is what makes a build work
- *    with no typing.
+ *  - The list a node started with is saved with the other start options
+ *    (`start-options.ts`) and is what the next launch starts with and prefills. It is
+ *    saved RESOLVED, so a remembered list wins over a later build's
+ *    `EXPO_PUBLIC_RELAY_ADDR`: to pick up a new build default, Disconnect, clear the
+ *    Relay field (empty means "build default", below) and Connect. The env var is what
+ *    makes a fresh install work with no typing.
  *
  * Framework-free by design: no `@serfab/cadre-core`, no native imports, no
  * validation. A malformed entry is cadre-core's to reject — `relayCircuitAddrs`
@@ -45,9 +47,10 @@ function envRelayAddrs(): string[] {
 
 /**
  * Split a comma-separated list into trimmed, non-empty multiaddrs. Exported because
- * the Settings screen parses its "Relay" text field with exactly this rule — one
- * spelling of "what counts as a list", so a typed value and a build-time default
- * cannot disagree about blanks or spacing.
+ * the Settings screen parses its "Relay" and "Bootstrap addr" text fields with exactly
+ * this rule — one spelling of "what counts as a list", so a typed value, a saved list
+ * and a build-time default cannot disagree about blanks or spacing. A multiaddr never
+ * contains a comma.
  */
 export function splitRelayAddrs(raw: string): string[] {
 	return raw

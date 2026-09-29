@@ -116,7 +116,7 @@ bootstrap-peer record fills in from `applySeed`.
 ⚠️ Both records are party-scoped and the party id is typed into Settings each
 launch, so a relaunch with a fresh id loads empty slots — a pin survives a
 relaunch only if the user retypes the same party id. Closed by
-`feat-rn-persist-node-start-options` (which carries an NS arm).
+`ns-persist-node-start-options` (React Native already remembers its start options).
 
 ## App Structure
 

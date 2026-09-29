@@ -70,6 +70,8 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 2. Tap **Create Chat Strand**
 3. Switch to the **Chat** tab and start messaging
 
+The app remembers what it last connected with. On the next launch it reconnects by itself with the same Party ID and addresses, unless you tapped **Disconnect** first; either way Settings shows the remembered values.
+
 Messages are stored locally in LevelDB. The node operates solo in "forming" mode — no network required yet.
 
 ### 4. Add a drone later

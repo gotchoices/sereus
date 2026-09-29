@@ -134,7 +134,7 @@ Every mode but `off` starts from optimystic's `noisePureJsCrypto` and overrides 
 | source | how | when to use it |
 | --- | --- | --- |
 | `EXPO_PUBLIC_NOISE_CRYPTO` | build-time env var: `off`, `symmetric` or `full`, read by [`src/noise-crypto-config.ts`](../packages/reference-app-rn/src/noise-crypto-config.ts). Unset or blank means `symmetric`, the kit's `DEFAULT_NOISE_CRYPTO_MODE`. Any other value throws an error naming the three, because silently running a different mode would corrupt the measurement the switch exists for | a build that should start in another mode |
-| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, below **Relay**, prefilled from the env var | switching one device between modes |
+| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, below **Relay**, prefilled from the mode the node last started with (see [Start options](#start-options-app-private-leveldb)), else from the env var. The choice is remembered: the next launch starts in the same mode | switching one device between modes |
 
 Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or host-node request in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
 
@@ -158,7 +158,7 @@ Two ways to supply it, both resolved by [`src/relay-config.ts`](../packages/refe
 | `EXPO_PUBLIC_RELAY_ADDR` | build-time env var, comma-separated; Expo inlines `EXPO_PUBLIC_`-prefixed vars into the bundle | a build that should work with no typing |
 | Settings → **Relay** | typed per device, comma-separated | pointing one device elsewhere; overrides the env var |
 
-The field is prefilled from the env var on launch, so a build that ships one needs no typing. A value typed into it wins; clearing it falls back to the env var, and with neither the phone runs with no relay.
+The field is prefilled with the relays the node last started with (see [Start options](#start-options-app-private-leveldb)), else from the env var, so a build that ships one needs no typing. A value typed into it wins; clearing it falls back to the env var, and with neither the phone runs with no relay. A remembered list also wins over a later build's env var until the field is cleared.
 
 The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooW…`. `ops/` has the relay container this repo ships.
 
@@ -213,7 +213,7 @@ No signature verification, no invite flow, no authorization constraints. This ke
 
 ## Node-Local Persistence
 
-Three things the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
+What the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
 
 ### Peer identity (secure enclave)
 
@@ -239,7 +239,20 @@ The dial targets the node learned out of band: the owner peers of every seed it 
 
 Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-binds every retained address to the peer id it was recorded under before dialing), and multiaddrs run 80–120 characters each with several per peer and the snapshot growing for the node's whole lifetime — it would cross SecureStore's ~2048-byte value limit and simply fail the write.
 
-⚠️ **Both records are party-scoped, and the app does not yet persist its party id** — it is typed into Settings each launch. Until `feat-rn-persist-node-start-options` lands, a fresh party id per launch means both slots load empty every time: the storage is correct, but survival across a relaunch is not yet observable on device.
+Both records are party-scoped, as are the enrolled-machine count and the strand peer book beside them in the same database. They are read back on a relaunch because the party id itself is remembered, below.
+
+### Start options (app-private LevelDB)
+
+What the node last started with — party id, bootstrap addresses, relay addresses and Noise crypto mode — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. [`src/start-options.ts`](../packages/reference-app-rn/src/start-options.ts) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
+
+- **Written** only by `cadre-phone.ts`: after every successful start (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing.
+- **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
+- **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
+- **Overlapping starts** — a launch auto-start, a push-wake cold start, the runner's resume and a Connect tap — share one start in flight, so they never build two nodes; the first caller's options win. Disconnect during a start waits for it, then stops the node it produced.
+- **Reinstall.** On iOS the trusted-owner anchor lives in the Keychain, which survives an uninstall; this record does not. A reinstalled phone picks a new party id and the surviving anchor, filed under the old one, is never read again — the same outcome as before start options were saved.
+
+The Maestro flows launch with `clearState: true`, so they always see a fresh, idle app.
 
 ## cadre-core React Native Compatibility
 
@@ -392,7 +405,8 @@ packages/reference-app-rn/
   src/
     cadre-phone.ts            # CadreNode setup: WS/WebRTC transports, LevelDB storage, seed apply
     secure-key-store.ts       # KeyStore over expo-secure-store (identity in the enclave)
-    node-local-slots.ts       # DurableSlots for the owner anchor + bootstrap peers
+    node-local-slots.ts       # DurableSlots for the owner anchor, dial hints and saved start options
+    start-options.ts          # The last start options + autoStart, remembered between launches
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
@@ -711,7 +725,7 @@ Expected result: the stages reach `connected`, and the lent node's peer id appea
 
 Disconnecting (Settings → Disconnect) while a request is running cancels it: the app drops the authorization it had given the lent node and asks the host to end the loan, then brings the node down. It waits a few seconds for that to finish — not indefinitely, so a host that has gone quiet cannot hold up a logout. If the wait runs out, the loan is left for the host's own UI or `cadre-host` CLI to end.
 
-Reconnecting to the lent node after the app relaunches is only observable on a device once the party id persists across restarts (ticket `feat-rn-persist-node-start-options`). Until then the headless proof of that reconnect is the integration scenario named above.
+Relaunching the app reconnects to the same cadre by itself (see [Start options](#start-options-app-private-leveldb)), so the phone should reach the lent node again from the address it recorded when it added it. The headless proof of that reconnect is the integration scenario named above; a device run has not checked it yet (blocked ticket `rn-host-node-request-device-run`).
 
 ### If the flow stalls
 

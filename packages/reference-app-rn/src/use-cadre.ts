@@ -22,11 +22,13 @@ import {
   getOwnerPublicKey,
   getNoiseCryptoMode,
   getRelayState,
+  loadSavedStartOptions,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
   formStrand,
   type PhoneNodeOptions,
+  type SavedStartOptions,
 } from './cadre-phone';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import {
@@ -160,6 +162,11 @@ export interface UseCadreResult {
    * the user taps Invite and finds out.
    */
   relayStatus: RelayReservationStatus;
+  /**
+   * The options the node last started with, read once at launch for the Settings form
+   * to prefill from. Null until that read resolves, and when nothing is saved.
+   */
+  savedStartOptions: PhoneNodeOptions | null;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -229,12 +236,14 @@ export function useCadreInternal(): UseCadreResult {
   const [resuming, setResuming] = useState(false);
   const [degraded, setDegraded] = useState(false);
   const [relayStatus, setRelayStatus] = useState<RelayReservationStatus>(() => getRelayState().status);
+  const [savedStartOptions, setSavedStartOptions] = useState<PhoneNodeOptions | null>(null);
 
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
 
-  // Last options passed to `start`, so the BackgroundRunner can cold-start the
+  // Last options passed to `start` — or, when the app launched into a session that
+  // was still connected, the saved ones — so the BackgroundRunner can cold-start the
   // node (re-run `startPhoneNode`) on a foreground return after the OS killed it.
   const optsRef = useRef<PhoneNodeOptions | null>(null);
   const runnerRef = useRef<BackgroundRunner | null>(null);
@@ -458,6 +467,45 @@ export function useCadreInternal(): UseCadreResult {
     }
   }, []);
 
+  // ── Launch: resume the last session ────────────────────────────────────
+
+  // The provider is mounted at the app root, so this runs once per launch. A session
+  // that ended connected (anything but Disconnect — an OS kill included) starts again
+  // with the options it last started with, through `start`, so status, device-token
+  // registration and every other side effect of Connect happen exactly as for a tap.
+  //
+  // A node a push wake already started in this JS runtime is left running; the saved
+  // options still go to `optsRef` so the runner can cold-start it after a later kill.
+  // A Connect tap that beat this read owns `optsRef` already and is not second-guessed.
+  useEffect(() => {
+    let unmounted = false;
+    const resume = async () => {
+      let saved: SavedStartOptions | undefined;
+      try {
+        saved = await loadSavedStartOptions();
+      } catch (err) {
+        // NOTE: fields stay blank, so a Connect now mints a new party id and, on
+        // success, overwrites the unreadable record. Acceptable because the party-scoped
+        // stores live in the same database and propagate a read fault, which fails that
+        // start before anything is saved.
+        console.warn('[use-cadre] could not read the saved start options:', err);
+        if (!unmounted) {
+          setError(`Could not read the saved connection settings: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+      if (unmounted || !saved) return;
+      setSavedStartOptions(saved.options);
+      if (!saved.autoStart || optsRef.current) return;
+      optsRef.current = saved.options;
+      if (!getPhoneNode()?.isRunning) await start(saved.options);
+    };
+    void resume();
+    return () => {
+      unmounted = true;
+    };
+  }, [start]);
+
   const stop = useCallback(async () => {
     // Cancel a host-node request first, and give it a bounded moment to unwind:
     // the first thing its cleanup does is drop the lent node's authorization row,
@@ -623,7 +671,7 @@ export function useCadreInternal(): UseCadreResult {
   return {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
-    error, runnerState, resuming, degraded, relayStatus,
+    error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
     start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite, requestHostNode,
   };

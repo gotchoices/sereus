@@ -35,8 +35,9 @@ export interface PhoneNodeOptions {
 	 * works, but it has no address anyone can dial, so it cannot mint an invitation
 	 * (`use-cadre.ts` → `createClosedStrandWithInvite` refuses, naming the reason).
 	 *
-	 * Typed into Settings on every launch alongside `partyId` and `bootstrapAddrs` —
-	 * nothing persists start options yet (backlog `feat-rn-persist-node-start-options`).
+	 * Remembered with the other start options after a successful start
+	 * (`start-options.ts`), as the resolved list the node ran with — so a later build's
+	 * `EXPO_PUBLIC_RELAY_ADDR` does not replace it until the user clears the field.
 	 */
 	relayAddrs: string[];
 	/**
@@ -45,6 +46,18 @@ export interface PhoneNodeOptions {
 	 * so changing it means stopping the node and starting a new one.
 	 */
 	noiseCryptoMode?: NoiseCryptoMode;
+}
+
+/**
+ * Every Noise crypto mode, in the order the Settings screen lists them. Here rather
+ * than beside the build default in `noise-crypto-config.ts`, which loads the native
+ * kit, so the saved-start-options parser (`start-options.ts`) can validate a stored
+ * mode in a Node test.
+ */
+export const NOISE_CRYPTO_MODES: readonly NoiseCryptoMode[] = ['symmetric', 'full', 'off'];
+
+export function isNoiseCryptoMode(value: unknown): value is NoiseCryptoMode {
+	return (NOISE_CRYPTO_MODES as readonly unknown[]).includes(value);
 }
 
 /** What {@link buildPhoneNodeConfig} takes from the platform wiring. */

@@ -111,9 +111,9 @@ export interface PushWakeHandlerDeps {
   getNode: () => CadreNode | null;
   /**
    * Cold-start hook: bring the node up when a background wake finds it
-   * stopped/killed. Optional — without it (or if start options aren't persisted)
-   * a wake into a fully-killed process degrades to a `no-node` no-op rather than
-   * crashing. Must be idempotent.
+   * stopped/killed. Optional — without it, or when it declines to start (the app's
+   * declines after the user disconnected), a wake into a fully-killed process
+   * degrades to a `no-node` no-op rather than crashing. Must be idempotent.
    */
   ensureNode?: () => Promise<void>;
   /**

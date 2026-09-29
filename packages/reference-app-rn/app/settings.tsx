@@ -25,7 +25,8 @@ import {
   type PendingFounding,
 } from '../src/founding-progress';
 import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
-import { defaultNoiseCryptoMode, NOISE_CRYPTO_MODES } from '../src/noise-crypto-config';
+import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
+import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '../src/phone-node-config';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
@@ -63,18 +64,51 @@ const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
   connected: 'Connected.',
 };
 
+/** What the disconnected Node form shows for each field. */
+interface ConnectForm {
+  partyId: string;
+  bootstrapAddr: string;
+  relayAddr: string;
+  noiseCryptoMode: NoiseCryptoMode;
+}
+
+/**
+ * The Node form's starting values: the options the node last started with when the app
+ * remembered them, else the build defaults — `EXPO_PUBLIC_RELAY_ADDR` so a build that
+ * ships a relay needs no typing, and `EXPO_PUBLIC_NOISE_CRYPTO`, else the kit's
+ * `symmetric` (a misspelt env value throws here, naming the three allowed values).
+ * A saved empty relay list shows the build default, which is what Connect would use.
+ */
+function connectFormFrom(saved: PhoneNodeOptions | null): ConnectForm {
+  return {
+    partyId: saved?.partyId ?? '',
+    bootstrapAddr: saved?.bootstrapAddrs.join(', ') ?? '',
+    relayAddr: resolveRelayAddrs(saved?.relayAddrs).join(', '),
+    noiseCryptoMode: saved?.noiseCryptoMode ?? defaultNoiseCryptoMode(),
+  };
+}
+
 export default function SettingsScreen() {
   const cadre = useCadre();
 
-  const [partyId, setPartyId] = useState('');
-  const [bootstrapAddr, setBootstrapAddr] = useState('');
-  // Prefilled from the build-time default (`EXPO_PUBLIC_RELAY_ADDR`) so a build that
-  // ships one needs no typing, and editable so a device can be pointed elsewhere.
   // Computed once on mount — re-resolving per render would fight the user's edits.
-  const [relayAddr, setRelayAddr] = useState(() => resolveRelayAddrs().join(', '));
-  // Prefilled from the build default (`EXPO_PUBLIC_NOISE_CRYPTO`, else the kit's
-  // `symmetric`); a misspelt env value throws here, naming the three allowed values.
-  const [noiseCryptoMode, setNoiseCryptoMode] = useState(defaultNoiseCryptoMode);
+  const [initialForm] = useState(() => connectFormFrom(cadre.savedStartOptions));
+  const [partyId, setPartyId] = useState(initialForm.partyId);
+  const [bootstrapAddr, setBootstrapAddr] = useState(initialForm.bootstrapAddr);
+  const [relayAddr, setRelayAddr] = useState(initialForm.relayAddr);
+  const [noiseCryptoMode, setNoiseCryptoMode] = useState(initialForm.noiseCryptoMode);
+  // The saved options are read once at launch, and that read can resolve after this
+  // screen mounted; apply them when it does. The hook sets them exactly once, so this
+  // never overwrites an edit made afterwards.
+  const { savedStartOptions } = cadre;
+  useEffect(() => {
+    if (!savedStartOptions) return;
+    const form = connectFormFrom(savedStartOptions);
+    setPartyId(form.partyId);
+    setBootstrapAddr(form.bootstrapAddr);
+    setRelayAddr(form.relayAddr);
+    setNoiseCryptoMode(form.noiseCryptoMode);
+  }, [savedStartOptions]);
   const [seedInput, setSeedInput] = useState('');
   const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
@@ -107,7 +141,8 @@ export default function SettingsScreen() {
   const handleConnect = async () => {
     const pid = partyId.trim() || uuid();
     setPartyId(pid);
-    const addrs = bootstrapAddr.trim() ? [bootstrapAddr.trim()] : [];
+    // Comma-separated, like Relay, so a remembered list of several round-trips.
+    const addrs = splitRelayAddrs(bootstrapAddr);
     // The typed value wins over the build-time default. Emptying the field asks for
     // that default BACK rather than for "no relay" — `resolveRelayAddrs` falls through
     // to `EXPO_PUBLIC_RELAY_ADDR` — so a build that ships none is the only way to run
