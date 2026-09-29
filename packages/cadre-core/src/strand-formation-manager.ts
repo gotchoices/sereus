@@ -29,7 +29,6 @@ import {
   FormationListener,
   INVALID_TOKEN_REASON,
   dialFormation,
-  formationDeadlines,
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   type FormationContactMessage,
@@ -37,6 +36,7 @@ import {
   type FormationResultMessage,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
+import { formationDeadlines } from './strand-formation-deadlines.js';
 
 const log = debug('sereus:cadre:formation-manager');
 
@@ -112,7 +112,7 @@ export interface StrandFormationManagerConfig {
   /**
    * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
    * every formation deadline is derived (`formationDeadlines` in
-   * `strand-formation-protocol.ts`). `CadreNode` fills it from its network config; the
+   * `strand-formation-deadlines.ts`). `CadreNode` fills it from its network config; the
    * fields below override single rungs of that ladder.
    */
   linkRoundTripMs?: number;

@@ -565,9 +565,7 @@ export {
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   sanitizeStrandAddrs,
-  formationDeadlines,
   FORMATION_PROTOCOL,
-  type FormationDeadlines,
   type FormationParty,
   type FormationContactMessage,
   type FormationResultMessage,
@@ -579,6 +577,7 @@ export {
   type FormationDialResult,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
+export { formationDeadlines, type FormationDeadlines } from './strand-formation-deadlines.js';
 
 // Strand Formation manager (drives the native transport)
 export {

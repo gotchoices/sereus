@@ -12,7 +12,7 @@ const log = debug('sereus:cadre:formation-approval');
 /**
  * Abort an unanswered approval request after this long when no `timeoutMs` is supplied.
  * Exported because the formation responder's provisioning budget has to contain it:
- * `formationDeadlines` (`strand-formation-protocol.ts`) adds it as a flat term, since an HTTP
+ * `formationDeadlines` (`strand-formation-deadlines.ts`) adds it as a flat term, since an HTTP
  * call to the hook does not cross the link between the two parties' machines.
  */
 // eslint-disable-next-line no-restricted-syntax -- link-independent: an outbound HTTP call to the approval hook, not the libp2p link between machines
