@@ -146,6 +146,25 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
   });
 
+  it('overlapping resumes share one runtime build (a wake landing during a check-in)', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('overlap-strand'));
+    await manager.quiesceStrand('overlap-strand');
+    mocks.createLibp2pNode.mockClear();
+    mocks.stop.mockClear();
+
+    const first = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
+    const second = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a).toBe(instance);
+    expect(b).toBe(instance);
+    // One build, and no node orphaned by a second build overwriting the first.
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
+    await manager.quiesceStrand('overlap-strand');
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('resume that fails to rebuild rolls back the partial runtime, so a later resume retries', async () => {
     const manager = new StrandInstanceManager();
     const instance = await manager.startStrand(createStartConfig('flaky-strand'));
