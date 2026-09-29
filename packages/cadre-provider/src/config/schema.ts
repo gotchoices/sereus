@@ -64,6 +64,9 @@ export const PORT_EXPECTED = 'a whole number from 0 to 65535';
 
 const portNumber = numberWhere(isPortNumber, PORT_EXPECTED);
 
+/** A port the allocator can hand to a container: `PortAllocator` rejects a range starting at 0. */
+const allocatablePort = numberWhere((n) => isPortNumber(n) && n >= 1, 'a whole number from 1 to 65535');
+
 const corsOrigin: Checker<string | string[] | boolean> = (value, keyPath, ctx) =>
   typeof value === 'string' || typeof value === 'boolean' || isStringList(value)
     ? value
@@ -131,10 +134,18 @@ const docker = objectOf<Block<'docker'>>({
     cpuLimit,
     storageQuotaBytes: nonNegativeInteger,
   }),
-  portRange: objectOf<NonNullable<Block<'docker'>['portRange']>>({
-    start: portNumber,
-    end: portNumber,
-  }),
+  portRange: refine(
+    objectOf<NonNullable<Block<'docker'>['portRange']>>({
+      start: allocatablePort,
+      end: allocatablePort,
+    }),
+    // Cross-field, within the file: `PortAllocator` refuses an inverted range, but only when the
+    // orchestrator is built, after `check` has said the config is valid.
+    (value, keyPath, ctx) =>
+      value.start !== undefined && value.end !== undefined && value.end < value.start
+        ? ctx.fail(keyPath, `${keyPath}.end must be at least ${keyPath}.start, got ${value.end} and ${value.start}`)
+        : value,
+  ),
 });
 
 const billing = objectOf<Block<'billing'>>({

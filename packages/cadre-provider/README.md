@@ -68,8 +68,10 @@ Environment variable PROVIDER_AUTH_MODE: auth.mode must be one of 'none', 'api-k
 
 A block with no children (`server:` on its own) counts as absent. `storage.type: file` needs
 `storage.path`. `docker.defaultResources.memoryLimit` must be a size the orchestrator can read
-(`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`). Values under `push` and `billing` are
-never echoed into an error.
+(`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`); a create request's own `resources` are
+held to the same rule. `docker.portRange.end` must not be below `start`. Values under `push` and
+`billing` are never echoed into an error, and `check` prints the loaded config with every secret
+shown as `[redacted]`.
 
 ### Example Configuration
 

@@ -94,10 +94,11 @@ export interface LoadConfigOptions {
 }
 
 /**
- * With no config file there is nothing to attribute a problem to. Every key in such a tree was
- * written by a variable, which the problem names instead, so this label is never printed.
+ * With no config file, every key in the tree was written by a variable, which a problem at that
+ * key names instead. This label is printed only for a key no variable wrote — a cross-field rule
+ * a variable tripped, such as `PROVIDER_STORAGE_TYPE=file` with no `PROVIDER_STORAGE_PATH`.
  */
-const NO_CONFIG_FILE = '(no config file)';
+const NO_CONFIG_FILE = '(no file; environment only)';
 
 /**
  * Load the complete configuration: file, then environment, then overrides, over the defaults.
@@ -122,14 +123,14 @@ export function loadConfig(options: LoadConfigOptions = {}): ProviderConfig {
   // Reject a partial push credential set up front rather than at first push.
   validatePushConfig(config.push);
 
-  log('Loaded configuration: %O', redactForLog(config));
+  log('Loaded configuration: %O', redactConfigSecrets(config));
   return config;
 }
 
 const REDACTED = '[redacted]';
 
-/** The config with every secret replaced, for the debug dump. */
-function redactForLog(config: ProviderConfig): ProviderConfig {
+/** The config with every secret replaced: for the debug dump and for `check`'s printout. */
+export function redactConfigSecrets(config: ProviderConfig): ProviderConfig {
   const billing = { ...config.billing };
   if (billing.stripeSecretKey !== undefined) billing.stripeSecretKey = REDACTED;
   if (billing.stripeWebhookSecret !== undefined) billing.stripeWebhookSecret = REDACTED;

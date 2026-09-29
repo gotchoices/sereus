@@ -228,7 +228,10 @@ describe('POST /containers request validation', () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ strandFilter: 42 }, 'strandFilter must be a string'],
       [{ resources: 'big' }, 'resources must be an object'],
-      [{ resources: { memoryLimit: 512 } }, 'resources.memoryLimit must be a string'],
+      [{ resources: { memoryLimit: 512 } }, 'resources.memoryLimit must be a size like "512M" or "2G"'],
+      // Text the orchestrator cannot read used to pass as "a string" and start the container with no limit.
+      [{ resources: { memoryLimit: '512MB' } }, 'resources.memoryLimit must be a size like "512M" or "2G"'],
+      [{ resources: { cpuLimit: 'half' } }, 'resources.cpuLimit must be a number of CPUs written as a string, like "0.5" or "2"'],
       [{ resources: { storageQuotaBytes: '1GB' } }, 'resources.storageQuotaBytes must be a finite number'],
       [{ tags: { env: 3 } }, 'tags must be an object of strings'],
     ];

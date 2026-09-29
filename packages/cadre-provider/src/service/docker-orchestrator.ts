@@ -288,8 +288,8 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           Mounts: [
             { Type: 'volume', Source: volumeNameFor(request.containerId), Target: DATA_MOUNT_TARGET },
           ],
-          // Config-supplied defaults were checked at provider start, so unreadable text can
-          // only arrive here in a create request's own `resources`; it yields no limit.
+          // Both sources were checked with these parsers already (config defaults at provider
+          // start, a request's own `resources` at the route), so `undefined` here means unset.
           Memory: resources.memoryLimit ? parseMemoryLimit(resources.memoryLimit) : undefined,
           NanoCpus: resources.cpuLimit ? parseCpuLimit(resources.cpuLimit) : undefined,
           NetworkMode: this.config.network,

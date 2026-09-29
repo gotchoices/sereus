@@ -92,6 +92,15 @@ describe('provider config validation', () => {
     expect(config.auth.allowInsecureNoAuth).toBe(true);
   });
 
+  // `check` used to pass this and `start` then died building the port allocator.
+  it('rejects a port range whose end is below its start', () => {
+    const configPath = writeConfig({ docker: { portRange: { start: 20000, end: 10000 } } });
+
+    const message = rejection(() => loadConfig({ configFile: configPath, env: {} }));
+
+    expect(message).toContain('docker.portRange.end must be at least docker.portRange.start, got 10000 and 20000');
+  });
+
   it('accepts the shipped example config', () => {
     const config = loadConfig({ configFile: EXAMPLE_CONFIG, env: {} });
 

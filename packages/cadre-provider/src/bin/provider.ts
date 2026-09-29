@@ -6,7 +6,7 @@
 
 import { Command } from 'commander';
 import debug from 'debug';
-import { PORT_EXPECTED, isPortNumber, loadConfig } from '../config/index.js';
+import { PORT_EXPECTED, isPortNumber, loadConfig, redactConfigSecrets } from '../config/index.js';
 import { createProviderServer } from '../server/server.js';
 
 const log = debug('cadre:provider:cli');
@@ -76,8 +76,8 @@ program
   .action(async (options) => {
     try {
       const config = loadConfig({ configFile: options.config });
-      console.log('Configuration is valid:');
-      console.log(JSON.stringify(config, null, 2));
+      console.log('Configuration is valid (secrets shown as [redacted]):');
+      console.log(JSON.stringify(redactConfigSecrets(config), null, 2));
     } catch (error) {
       console.error('Configuration error:', error instanceof Error ? error.message : error);
       process.exit(1);
