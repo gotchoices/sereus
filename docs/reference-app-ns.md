@@ -177,7 +177,7 @@ nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
 |---|---|
 | `src/use-cadre.ts` + `src/cadre-context.tsx` | `src/cadre-vm.ts` (`CadreViewModel`, `getCadreVm()` singleton) |
 | `src/use-chat.ts` | `src/chat-vm.ts` (`ChatViewModel`, `getChatVm()` singleton) |
-| `src/chat-send.ts` (`ChatSender` — extracted so the send rule is testable without React) | folded into `ChatViewModel.send`, which holds the pending draft itself (untestable under Node — `debt-ns-chat-vm-unit-tests`) |
+| `src/chat-send.ts` (`ChatSender` — extracted so the send rule is testable without React) | folded into `ChatViewModel.send`, which holds the pending draft itself (tested in `test/chat-vm.spec.ts`) |
 | `src/test-ids.ts` (`testID`) | `src/test-ids.ts` (same strings, surfaced via `automationText`) |
 | `app/settings.tsx` | `app/settings/settings-page.{xml,ts}` + `settings-view-model.ts` |
 | `app/index.tsx` | `app/chat/chat-page.{xml,ts}` |
@@ -362,7 +362,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, and the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen. Guarded by the shared stale-build check (`test/global-setup.ts`). `src/chat-vm.ts`, `src/ns-storage.ts` and the pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database. Guarded by the shared stale-build check (`test/global-setup.ts`). `src/ns-storage.ts` and the pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -371,7 +371,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 
 `vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`.
 
-Two groups are targeted. The first reaches no NativeScript API at all:
+Three groups are targeted. The first reaches no NativeScript API at all:
 `src/node-local-slots.ts` and `src/cadre-phone.ts`, the latter with
 `@optimystic/db-p2p-storage-ns` (SQLite, identity) and `src/ns-storage.ts`
 mocked, and cadre-core mocked **only** in its `CadreNode` export so the two
@@ -383,8 +383,9 @@ The second is the two `Observable` view models behind the Settings screen —
 `@nativescript/core/globals` as a *directory* import, which Node's ESM loader
 refuses). `resolve.alias` therefore redirects that exact specifier — anchored
 regex, so the subpaths are untouched — to `test/stubs/nativescript-core.ts`,
-which re-exports the **real** `Observable` from the one submodule that does load
-(`data/observable`). Both suites drive one shared fake `CadreNode`
+which re-exports the **real** `Observable` and `ObservableArray` from the
+submodules that do load (`data/observable`, `data/observable-array`). Both suites
+drive one shared fake `CadreNode`
 (`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
 array, because the behaviour under test is an ordering: an enrollment invite's
 owner keys must be anchored via `trustOwnerKeys` strictly *before* the seed is
@@ -393,10 +394,20 @@ methods it stands in for, so a cadre-core signature change fails `typecheck`
 instead of leaving the suites green while the app breaks on device — a `vi.mock`
 factory is not otherwise checked against the module it replaces.
 
-Still uncovered here: `src/chat-vm.ts` (it needs `ObservableArray`, which the
-same directory-import rule puts out of reach by this route —
-`tickets/backlog/debt-ns-chat-vm-unit-tests.md`), `src/ns-storage.ts`, and the
-pages. They need the device harness below.
+The third is the chat screen's view model, `src/chat-vm.ts`
+(`test/chat-vm.spec.ts`): the poll's one-read-at-a-time guard, registering the
+local participant once the strand is writable, and the send rule with its retry
+key (the NativeScript counterpart of `reference-app-rn`'s `chat-send.spec.ts`). It
+drives the same fake node, but `src/chat-operations.ts` runs unmocked against a
+real in-memory Quereus `Database` carrying the app's own chat schema, so
+primary-key and foreign-key refusals are real and a query that stops matching the
+schema fails here. The strand hands out a thin decorator over that database
+which records each statement by the table it touches and lets a test hold one
+open, refuse it, or apply it and then throw ("stored, then the outcome was
+lost"). Only the poll's `setInterval` is faked.
+
+Still uncovered here: `src/ns-storage.ts` and the pages. They need the device
+harness below.
 
 `test/global-setup.ts` runs the shared stale-build guard
 (`test-harness/build-freshness.ts`) first, because those specs execute real
