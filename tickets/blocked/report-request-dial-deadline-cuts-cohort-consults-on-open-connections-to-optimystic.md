@@ -49,3 +49,7 @@ Read repair and cohort corroboration stay unavailable at the supported link. Joi
 ## Reversibility
 
 Fully: the upstream change is a deadline's scope or a new option, and sereus's side is one derivation in `link-budget.ts`.
+
+## Status (2026-09-29)
+
+The measurement was sent to optimystic-tend (the agent tending ../optimystic) for its `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` ticket, asking for (a) no dial deadline on the connection-reuse path or (b) a NodeOptions knob. Unblock when a release carries either.
