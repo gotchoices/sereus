@@ -51,7 +51,10 @@ function parseDockerFinishedAt(finishedAt: string | undefined): Date | undefined
   return Number.isNaN(ms) || ms <= 0 ? undefined : at;
 }
 
-/** A container's host ports, allocated in this order (matching the original `allocatePorts(3)` destructure). */
+/**
+ * A container's host ports, allocated in this order. Reordering changes which
+ * host port each key gets from a fresh range, so a key added later goes on the end.
+ */
 const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p'] as const;
 type ContainerHostPorts = Record<(typeof CONTAINER_PORT_KEYS)[number], number>;
 
