@@ -2,10 +2,11 @@
 
 Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
 
-What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
-- `sql schema` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view.
+What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. Because Sereus puts the app's tables in schema `App`, app code qualifies them (`App.messages`), as the reference apps do (`packages/reference-app-web/src/lib/chat-dml.ts`); the query examples below leave them unqualified for brevity. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
+- `sql schema` or `sql schema <name>` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view. The name lets query examples refer to it.
+- `sql query <name>` — every statement is planned, not run, against the `sql schema <name>` block; tables are named unqualified.
 - `sql script` — a complete statement sequence, run as-is.
-- `sql fragment` — shown for reading only (a lone constraint line, a query against tables the block does not declare). Never run.
+- `sql fragment` — shown for reading only (a lone constraint line that is not a statement on its own). Never run.
 
 Key Quereus characteristics:
 - Declarative, order-independent schema blocks (`declare schema <name> { ... }`).
@@ -248,7 +249,7 @@ writer resolves the value and passes it with the statement, so it becomes part o
 replayable transaction rather than something each validator re-evaluates (see "Explicit table
 context declaration" below):
 
-```sql schema
+```sql schema event-clock
 table events (
   id         text primary key,
   body       text,
@@ -258,7 +259,7 @@ table events (
 );
 ```
 
-```sql fragment
+```sql query event-clock
 insert into events (id, body) with context now_iso = datetime('now') values ('e1', 'hi');
 ```
 
@@ -281,7 +282,7 @@ do. Simple, and its weakness is worth saying plainly: the timestamp is asserted 
 author, so a wrong or dishonest clock silently reorders history and nothing in the stack
 notices. Fine for a cooperative app; not fine when back-dating matters.
 
-```sql fragment
+```sql query message-graph
 select Id, Content, Timestamp
   from Message
  order by Timestamp asc, Id asc;
@@ -294,7 +295,7 @@ claiming to predate something its author had demonstrably already seen becomes d
 honest participants can bound a dishonest clock from both sides. This is the shape Matrix uses
 (`prev_events`) and Secure Scuttlebutt uses (per-feed hash chains). A minimal sketch:
 
-```sql schema
+```sql schema message-graph
 table Message (
   Id        text primary key,
   Content   text not null,
@@ -420,12 +421,22 @@ same key and the second write is refused rather than duplicated.
 
 ### Common Table Expressions (CTE), Recursive, and Hints
 
-```sql fragment
+The examples read this table:
+
+```sql schema org
+table employees (
+  employee_id text primary key,
+  manager_id  text null references employees(employee_id),
+  last_seen   text
+);
+```
+
+```sql query org
 -- Non-recursive CTE used as a staging read model
-with active_users as (
-  select id from users where last_seen > datetime('now','-7 days')
+with recently_active as (
+  select employee_id from employees where last_seen > datetime('now','-7 days')
 )
-select * from active_users;
+select * from recently_active;
 
 -- Recursive CTE for hierarchy (e.g., reporting chain)
 with recursive reporting_chain as (
@@ -438,32 +449,37 @@ with recursive reporting_chain as (
 option (maxrecursion 1000)
 select * from reporting_chain;
 
--- Materialization hints (parsed; future optimization)
-with recursive
-  large_cte as materialized (select * from big_table),
-  small_cte as not materialized (select * from small_table)
-select ...;
+-- Materialization hints (parsed; future optimization): employees who manage someone
+with
+  managers as materialized (select distinct manager_id from employees where manager_id is not null),
+  staff as not materialized (select employee_id, last_seen from employees)
+select s.employee_id, s.last_seen
+  from staff s join managers m on m.manager_id = s.employee_id;
 ```
 
-Set operations:
+Set operations (against the "Putting It All Together" schema below):
 
-```sql fragment
-select id from a
+```sql query chat
+-- union: users who started a conversation or posted a message
+select created_by from conversations
 union
-select id from b;
+select sender_id from messages;
 
-select id from a
+-- intersect: users who have posted
+select id from users
 intersect
-select id from b;
+select sender_id from messages;
 
-select id from a
+-- except: users who have never posted
+select id from users
 except
-select id from b;
+select sender_id from messages;
 
--- Quereus extension: diff (multiset difference)
-select id from a
+-- Quereus extension: diff (symmetric difference) — users who started a conversation
+-- or posted, but not both
+select created_by from conversations
 diff
-select id from b;
+select sender_id from messages;
 ```
 
 ---
@@ -472,7 +488,7 @@ select id from b;
 
 Use assertions for invariants that aren’t naturally bound to a single table mutation.
 
-```sql schema
+```sql schema ledger
 table ledger (
   id    integer primary key,
   kind  text check (kind in ('debit','credit')),
@@ -541,11 +557,13 @@ Quereus inserts seed rows only when a schema is applied `with seed`, idempotentl
 
 ### RETURNING with NEW/OLD (DML Feedback)
 
-```sql fragment
--- Insert returning generated values
-insert into messages (id, conversation, sender_id, body)
-values ('m1','c1','u1','Hello!')
-returning id, NEW.body as body_text, NEW.sent_at as at;
+Against the "Putting It All Together" schema below:
+
+```sql query chat
+-- Insert returning generated values (slug is a generated column)
+insert into messages (id, conversation, sender_id, body, sent_at)
+values ('m1', 'c1', 'u1', 'Hello!', '2026-01-01T00:00:00Z')
+returning id, NEW.slug as slug, NEW.sent_at as at;
 
 -- Update returning both OLD and NEW
 update messages
@@ -567,18 +585,22 @@ Rules recap:
 
 ### Table-Valued Functions & JSON Helpers
 
-```sql fragment
+Against the "Putting It All Together" schema below:
+
+```sql query chat
 -- Explode a JSON array column into rows (e.g., message tags)
 select m.id, t.value as tag
-  from messages m,
-       json_array_elements_text(m.tags) as t(value)
+  from messages m
+  cross join lateral json_each(m.tags) as t
  where m.id = 'm42';
 
--- Join with a table-valued function
-select *
-  from my_table_valued_func(:arg1, :arg2) as f(col1, col2)
- where col1 > 0;
+-- A table-valued function fed by a parameter: every integer anywhere in a JSON document
+select key, value
+  from json_tree(:payload)
+ where type = 'integer';
 ```
+
+A table-valued function sees a preceding table's columns only through `cross join lateral`; a comma join (`from messages m, json_each(m.tags)`) fails with "m.tags isn't a column".
 
 ---
 
@@ -586,7 +608,7 @@ select *
 
 This example demonstrates a realistic consent-based messaging app schema using all key features: FK, composite PK, checks (immediate + auto-deferred), generated columns, indexes, views, mutation context, assertions, and seeds.
 
-```sql schema
+```sql schema chat
 -- Users & roles
 table users (
   id         text primary key,
@@ -636,6 +658,7 @@ table messages (
   body           text,
   slug           text generated always as (lower(replace(substr(body, 1, 40), ' ', '-'))) stored,
   sent_at        text,
+  tags           text null,  -- JSON array of tag strings, e.g. '["urgent","todo"]'
 
   -- Per-row immediate check: body required on insert
   constraint nonempty_body check on insert (length(body) > 0),
@@ -721,31 +744,31 @@ view Status as
   ) as Status(Code, Name);
 ```
 
-LATERAL with JSON table-valued function:
+Window functions and a cumulative digest (against the Global Assertions `ledger` table):
 
-```sql fragment
--- Explode JSON array column with explicit lateral
-select p.id, t.tag
-  from posts p
-  cross join lateral json_array_elements_text(p.tags) as t(tag)
- where p.id = :pid;
-```
-
-Window functions (analytics) and cumulative digests:
-
-```sql fragment
--- Running total by account
-select account_id,
-       amount,
-       sum(amount) over (partition by account_id order by ts
-                         rows between unbounded preceding and current row) as running_balance
+```sql query ledger
+-- Running balance in entry order: credits add, debits subtract
+select id,
+       kind,
+       amt,
+       sum(case when kind = 'credit' then amt else -amt end)
+         over (order by id rows between unbounded preceding and current row) as running_balance
   from ledger;
 
--- Cumulative digest over ordered inputs (pattern used in VoteTorrent)
-select x,
-       DigestAll(Digest(x)) over (order by x) as cumulative_digest
-  from (select 1 as x union all select 2 union all select 3);
+-- Cumulative digest over ordered entries (pattern used in VoteTorrent): each step
+-- hashes the previous digest together with the next entry
+with recursive
+  entries as (select row_number() over (order by id) as n, id, kind, amt from ledger),
+  chain(n, cumulative_digest) as (
+    select n, digest(id, kind, amt) from entries where n = 1
+    union all
+    select e.n, digest(c.cumulative_digest, e.id, e.kind, e.amt)
+      from chain c join entries e on e.n = c.n + 1
+  )
+select n, cumulative_digest from chain;
 ```
+
+`group_concat` is not available as a window function and there is no digest window aggregate, so a running digest is a recursive CTE rather than an `over (...)` clause.
 
 Utility validation functions in constraints:
 
