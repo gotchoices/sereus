@@ -1312,8 +1312,9 @@ interface CadreNodeConfig {
     // node and every strand node — the same one-setting-covers-both-networks shape as
     // `cohortQueryTimeoutMs` above, and for the same reason. Unset takes 3500 ms, which
     // covers the 3-second relayed round trip sereus supports. NOT a timeout: it is the one
-    // declared assumption cadre's own dial and relay-reservation deadlines, and libp2p's
-    // `dialTimeout` and `inboundUpgradeTimeout`, are DERIVED from, each multiplied by the
+    // declared assumption cadre's own dial and relay-reservation deadlines, libp2p's
+    // `dialTimeout` and `inboundUpgradeTimeout`, and `cohortQueryTimeoutMs` above when it is
+    // unset, are DERIVED from, each multiplied by the
     // number of exchanges that operation was measured to cost (see "Dial budgets are counted
     // in round trips, not milliseconds"). Raise it for a link slower still; declare the same
     // value on every machine of a party, since each is the listener for the others.

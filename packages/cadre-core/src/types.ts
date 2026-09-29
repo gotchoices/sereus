@@ -477,10 +477,10 @@ export interface NetworkConfig {
    * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
    * reservation drive, the control-cohort dial budgets, libp2p's own `dialTimeout` and
    * `inboundUpgradeTimeout` on every node, and the per-peer cohort read deadline
-   * ({@link cohortQueryTimeoutMs}, unless set explicitly). Reaching another machine through a relay costs a
-   * fixed number of exchanges, so a deadline written as milliseconds has a link speed above
-   * which it can never open a connection — which is the defect this declaration exists to make
-   * impossible to reintroduce one budget at a time. The counts, the measurement behind them,
+   * ({@link cohortQueryTimeoutMs}, unless set explicitly). Reaching another machine through a
+   * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
+   * speed above which it can never open a connection — which is the defect this declaration
+   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement behind them,
    * and what still fails at the supported link are in `link-budget.ts`.
    *
    * The default covers the slowest link sereus supports, a 3-second round trip through a relay.

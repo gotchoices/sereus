@@ -3,7 +3,8 @@ architecture: docs/cadre-consistency.md#deadlines-over-optimystics-reads-and-com
 files:
   - ../optimystic/packages/db-p2p/src/network/open-protocol-stream.ts (forwards the caller's dial signal into `newStream` on the connection-reuse path)
   - ../optimystic/packages/db-p2p/src/rpc-deadline.ts (`DEFAULT_DIAL_TIMEOUT_MS`, 3000)
-  - ../optimystic/packages/db-p2p/src/cluster/client.ts (`withRpcDeadlineDefaults`; no node option reaches it)
+  - ../optimystic/packages/db-p2p/src/sync/client.ts (`SyncClient.requestBlock`, the latest-revision query; applies `withRpcDeadlineDefaults`, and no node option reaches it)
+  - ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (`clusterLatestCallback`, which calls `requestBlock` with no deadline options)
   - ../optimystic/tickets/backlog/debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection.md (the upstream ticket this answers)
   - packages/quereus-plugin-sereus/src/cluster-size.ts (the measurement, on `COHORT_READ_DEADLINE_MS`)
   - packages/cadre-core/src/link-budget.ts (`cohortReadDeadlineMs`; the module doc's "What still fails")
@@ -24,7 +25,7 @@ Measured 2026-09-29 while deriving the per-peer cohort read deadline from the de
 
 - Declined reads (`cluster-fetch:peers-silent` followed by `cluster-fetch:no-quorum`): 39 at 5 000 ms, 32 at 7 000 ms. Both joins completed (writable at 70.2 s and 63.6 s).
 - On the joiner, consecutive declined reads were 3.00 to 3.02 s apart in both runs, and every one came after the two strand nodes had held an open connection for at least 15 s. A consult that completed would need at least two link round trips, 6 s, so none of these ran to an answer, and neither the 5 000 nor the 7 000 ms deadline ever fired. The time that did fire is 3 000 ms.
-- The 3 000 ms is `DEFAULT_DIAL_TIMEOUT_MS` in `rpc-deadline.ts`, applied by `cluster/client.ts` through `withRpcDeadlineDefaults` to the latest-revision query, which `protocol-client.ts` turns into an abort signal for the dial phase. `open-protocol-stream.ts` forwards that signal into `chosen.newStream([protocol], { signal })` on the connection-reuse path, and libp2p's full multistream-select negotiation inside `newStream` costs one link round trip, 3 s at this delay. The dial deadline therefore bounds the negotiation even when no dial happens.
+- The 3 000 ms is `DEFAULT_DIAL_TIMEOUT_MS` in `rpc-deadline.ts`, applied through `withRpcDeadlineDefaults` by `sync/client.ts` (`SyncClient.requestBlock`, which `clusterLatestCallback` in `libp2p-node-base.ts` calls with no deadline options) to the latest-revision query, which `protocol-client.ts` turns into an abort signal for the dial phase. `open-protocol-stream.ts` forwards that signal into `chosen.newStream([protocol], { signal })` on the connection-reuse path, and libp2p's full multistream-select negotiation inside `newStream` costs one link round trip, 3 s at this delay. The dial deadline therefore bounds the negotiation even when no dial happens.
 - No `NodeOptions` field reaches that deadline. `underReplicationDrain.pushDialTimeoutMs` covers pushes only, and `connectionManager.dialTimeout` is replaced by the caller's signal, as the upstream ticket already says.
 
 The join completes anyway because cadre's peer-join backfill pushes the blocks and the first-sync gate probes until the machine holds them. What is lost is read repair itself: on this link a machine never corroborates a block with its cohort, and a read of a block it does not hold waits for a push instead of fetching it.

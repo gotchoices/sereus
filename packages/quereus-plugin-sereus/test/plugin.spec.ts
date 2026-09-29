@@ -742,7 +742,7 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 	});
 
 	it('replaces the declared deadline with the host\'s, on either network', () => {
-		// 12000, not 5000: an override equal to the declared value would also pass against a
+		// 12000, not 7000: an override equal to the declared value would also pass against a
 		// builder that ignored the field entirely.
 		expect(controlClusterPolicy({ cohortQueryTimeoutMs: 12_000 }).cohortQueryTimeoutMs).toBe(12_000);
 		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { cohortQueryTimeoutMs: 12_000 }).cohortQueryTimeoutMs)

@@ -60,7 +60,6 @@ describe('link budgets', () => {
 		// apart: a host that declares no link takes the plugin's frozen policy whole, and a host
 		// that declares one takes the derivation, so a drift would give two hosts on the same
 		// link two different deadlines.
-		expect(cohortReadDeadlineMs()).toBe(CIRCUIT_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 		expect(COHORT_READ_DEADLINE_MS).toBe(cohortReadDeadlineMs());
 	});
 

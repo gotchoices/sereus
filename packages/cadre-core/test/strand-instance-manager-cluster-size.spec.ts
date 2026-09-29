@@ -151,7 +151,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
 
     // Declared, not left to Optimystic's 1000 ms LAN default, which reads every peer on a
-    // relayed link as silent. Why 5000, and that it exceeds the upstream default, are pinned on
+    // relayed link as silent. Why 7000, and that it exceeds the upstream default, are pinned on
     // the constant in `quereus-plugin-sereus/test/plugin.spec.ts`.
     expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
   });
@@ -176,7 +176,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // too, not only the control node. The builder's own contract is pinned on the builder, in
     // `quereus-plugin-sereus/test/plugin.spec.ts`.
     //
-    // 12000, not 5000: an override equal to the declared default would also pass against a
+    // 12000, not 7000: an override equal to the declared default would also pass against a
     // manager that dropped `config.network` on the floor. Deep equality against the builder's
     // own output — the idiom the serving-machine test below uses — pins the deadline AND the
     // absence of a repair yardstick in one assertion.
