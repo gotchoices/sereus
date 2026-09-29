@@ -1360,7 +1360,12 @@ Key contract points:
   new bytes, never a torn/unloadable slot. `FileKeyStore` imports `node:fs` and
   is therefore exported from the subpath `@serfab/cadre-core/key-store-file` so
   the cross-platform default entry never pulls a Node-only edge into RN/browser
-  bundlers.
+  bundlers. A slot's file name is its key id percent-encoded with every uppercase
+  letter escaped too (`encodeFileSafeComponent`, `cadre-core/src/fs-atomic.ts`),
+  so two key ids differing only in case — `cadre/joined-strand/<base64url party
+  id>/…` for two parties — stay two files on Windows and macOS, which ignore case
+  in file names. The per-party record files (`<name>.<party id>.json`) use the
+  same encoding.
 
 **Identity resolution order** (performed once early in `CadreNode.start()`, before
 any libp2p/network bring-up, into a private resolved field):

@@ -22,13 +22,22 @@ export const FILE_MODE = 0o600;
  * also escapes the unreserved characters `encodeURIComponent` leaves intact but
  * that are unsafe in filenames on some platforms (notably `*` on Windows) — and
  * `.`, so a file suffix appended by the caller is the only literal dot, making
- * suffix-stripping unambiguous. Reversed by `decodeURIComponent`. The result
- * contains only `A-Za-z0-9-_` and `%XX`.
+ * suffix-stripping unambiguous — and every uppercase letter, because Windows
+ * (NTFS) and macOS (APFS/HFS+ by default) ignore case in file names. Reversed by
+ * `decodeURIComponent`.
+ *
+ * The result contains only `a-z0-9-_` and `%XX` escapes (uppercase hex). Since a
+ * literal `%` is itself escaped, every `%` starts an escape, so ignoring case
+ * can change only escape hex digits — which decode case-insensitively — and two
+ * different inputs never yield names equal ignoring case. The escapes keep
+ * `encodeURIComponent`'s uppercase hex so a name built from an id with no
+ * capital letters (the identity slot `cadre%2Fidentity.key`, a lowercase party
+ * id) is the same as before uppercase letters were escaped.
  */
 export function encodeFileSafeComponent(component: string): string {
 	return encodeURIComponent(component).replace(
-		/[!'()*~.]/g,
-		(c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+		/(%[0-9A-F]{2})|[!'()*~.A-Z]/g,
+		(c, escape: string | undefined) => escape ?? `%${c.charCodeAt(0).toString(16).toUpperCase()}`
 	);
 }
 
