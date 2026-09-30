@@ -25,3 +25,9 @@ The maintainer doesn't want the duplication (2026-09-28). Sereus built its own p
 5. **The #18 restart scenario must pass unchanged,** in both arms: in-process and two OS processes. That is the proof the replacement covers what the book did. Also check that formation-carried addresses still get dialled on the first attach.
 6. Close or fold `backlog/debt-strand-peer-book-remote-write-bounds`; its protections are required in the FRET ticket.
 7. Update the docs that describe the peer book: `docs/strands.md`, `docs/architecture.md`, and the release notes.
+
+## Unblocked (2026-09-30)
+
+FRET 1.0.0 (`p2p-fret`, Fret 92864ce) carries the address hints: `address-hints-live-exchange` (signed peer records in the neighbour exchange) and `address-hints-persisted-table` (addresses in the exported table). `@optimystic/*` 1.8.1 requires `p2p-fret ^1.0.0` (optimystic a43d83f9). Read those two completed FRET tickets (`../Fret/tickets/complete/10-address-hints-live-exchange.md`, `10.5-address-hints-persisted-table.md`) for the API and limits before planning. Step 1 below becomes: raise the `@optimystic/*` floor to `^1.8.1`.
+
+Before deleting the peer book, confirm on the #18 scenario that FRET's hints plus db-p2p `persistence` alone re-converge both arms. If they do not, stop and report what is missing, and don't delete the book on a partial replacement.
