@@ -6772,14 +6772,17 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Force wake a hibernating strand. A requested wake is activity, recorded before the
    * wake starts: a check-in holding the strand — or rebuilding it, a rebuild this wake then
-   * joins — leaves it up instead of re-quiescing it at the end of its window.
+   * joins — leaves it up instead of re-quiescing it at the end of its window. Once awake the
+   * strand's idle countdown runs, so it hibernates again if nothing uses it.
    */
   async wakeStrand(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
-    if (instance) {
-      instance.lastActivity = new Date();
+    if (!instance) {
+      log('wakeStrand: strand %s not found; nothing to wake', strandId);
+      return;
     }
-    await this.hibernationManager.wakeStrand(strandId);
+    instance.lastActivity = new Date();
+    await this.hibernationManager.wakeStrand(instance);
   }
 
   // ============================================================================
@@ -6861,6 +6864,9 @@ export class CadreNode implements SAppIdLookup {
    * {@link HibernationManager}'s wake coalescing — one runtime build, one window,
    * one re-hibernate decision. A wake or activity from elsewhere that lands during
    * the resume or the window leaves the strand up; this call's own wake does not.
+   * Afterwards a strand left up has its idle countdown running, and a re-hibernated one
+   * gets back the check-in chain this call interrupted — it never gains one it lacked,
+   * so a strand the mobile runner force-hibernated stays down until the next push.
    * Returns `{ serviced: false }` (never throws) when
    * the node is not running or the strand is unknown, and surfaces a resume
    * failure as `{ serviced: true, hadActivity: false }` after re-hibernating.
@@ -6914,7 +6920,7 @@ export class CadreNode implements SAppIdLookup {
       // Coalesced resume: HibernationManager.beginWake, so a racing push-wake shares this
       // single runtime build. Not through `wakeStrand`, which records the wake as activity:
       // this probe's own wake must not count as a reason to stay up.
-      await this.hibernationManager.wakeStrand(strandId);
+      await this.hibernationManager.probeWake(instance);
       const windowMs = opts?.windowMs ?? this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
       const hadActivity = await this.runWakeWindow(instance, activityMark, windowMs);
       return { strandId, serviced: true, hadActivity };
@@ -6925,6 +6931,10 @@ export class CadreNode implements SAppIdLookup {
       log('serviceWake: strand %s failed during wake window; re-hibernating: %o', strandId, error);
       await this.rehibernateAfterFailedResume(instance, 'serviceWake');
       return { strandId, serviced: true, hadActivity: false };
+    } finally {
+      // After the window (or the failure's re-hibernate) decided the state: the idle countdown
+      // if the strand stayed up, else the check-in chain this probe interrupted, if any.
+      this.hibernationManager.endProbe(instance);
     }
   }
 

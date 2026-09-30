@@ -64,10 +64,18 @@ export class HibernationManager {
   private readonly wakePromises: Map<string, Promise<void>> = new Map();
   /**
    * Hibernating strands whose armed check-in a wake cancelled, held until that wake
-   * settles. A failed wake re-arms the chain from here ({@link restoreCheckInChain});
-   * without it the strand is left with no runtime and nothing scheduled to retry.
+   * settles. A wake that leaves the strand hibernating again (a failed rebuild, or a probe's
+   * window that re-quiesced it) re-arms the chain from here ({@link rearmAfterWake}); without
+   * it the strand is left with no runtime and nothing scheduled to retry.
    */
-  private readonly checkInsCancelledByWake: Map<string, StrandInstance> = new Map();
+  private readonly checkInsCancelledByWake: Set<string> = new Set();
+  /**
+   * Strands an on-demand probe (`CadreNode.serviceWake`) holds from its wake to the end of its
+   * window, with whether a check-in chain was armed when it began. While held, the probe's end
+   * ({@link endProbe}) — not the wake's settle — sets the timers, since the window may
+   * re-hibernate the strand after the wake settled.
+   */
+  private readonly probes: Map<string, { hadCheckInChain: boolean }> = new Map();
   private running = false;
 
   constructor(config: HibernationConfig, callbacks: HibernationCallbacks) {
@@ -125,6 +133,7 @@ export class HibernationManager {
     // so a fresh start coalesces cleanly.
     this.wakePromises.clear();
     this.checkInsCancelledByWake.clear();
+    this.probes.clear();
 
     log('HibernationManager stopped');
   }
@@ -164,9 +173,10 @@ export class HibernationManager {
     // Cancel idle/hibernate + check-in timers BEFORE quiescing so nothing fights
     // the imperative hibernate (a stale hibernate timer firing on the quiesced
     // strand, or a check-in resuming a strand the caller wants kept down) — including
-    // a chain an in-flight wake would restore on failure.
+    // a chain an in-flight wake or probe would restore when it settles.
     this.clearTimers(instance.strandId);
     this.checkInsCancelledByWake.delete(instance.strandId);
+    this.probes.delete(instance.strandId);
     await this.callbacks.onHibernate(instance.strandId);
     log('forceHibernate: strand %s hibernated (timers cancelled, not re-armed)', instance.strandId);
     return true;
@@ -197,6 +207,7 @@ export class HibernationManager {
   untrackStrand(strandId: string): void {
     this.clearTimers(strandId);
     this.checkInsCancelledByWake.delete(strandId);
+    this.probes.delete(strandId);
     log('Untracked strand %s from hibernation', strandId);
   }
 
@@ -215,22 +226,9 @@ export class HibernationManager {
       log('Activity on %s strand %s - waking', status, strandId);
       this.clearTimersForWake(strandId);
       // Fire-and-forget; force-wake awaiters see errors, so swallow (and log)
-      // here to avoid an unhandled rejection on this best-effort path.
-      //
-      // Once the wake settles (CadreNode rebuilds the runtime and marks the
-      // strand `active`), re-arm the idle→hibernate→check-in cycle. Without this
-      // a strand that wakes then goes quiet stays `active` forever and never
-      // re-hibernates — so the check-in backoff could never restart at base.
-      // Guarded on `active` so a wake that did not transition (a coalesced
-      // no-op, or a still-mid-flight rebuild) never arms a stray timer.
-      void this.beginWake(strandId).then(() => {
-        if (this.running && instance.status === 'active') {
-          const timeouts = this.getTimeouts(instance.latencyHint);
-          if (timeouts.idleTimeout !== Infinity) {
-            this.scheduleIdleTransition(instance);
-          }
-        }
-      }).catch((err) => {
+      // here to avoid an unhandled rejection on this best-effort path. The wake's
+      // settle re-arms the timers for the state it leaves (see beginWake).
+      void this.beginWake(instance).catch((err) => {
         log('Activity-driven wake failed for strand %s: %o', strandId, err);
       });
       return;
@@ -246,21 +244,52 @@ export class HibernationManager {
   }
 
   /**
-   * Force wake a hibernating strand
+   * Force-wake a strand (an explicit or peer-sent wake). Works whether or not hibernation is
+   * enabled; once the wake settles the strand has the timers its resulting state calls for
+   * ({@link rearmAfterWake}).
    */
-  async wakeStrand(strandId: string): Promise<void> {
+  async wakeStrand(instance: StrandInstance): Promise<void> {
+    this.clearTimersForWake(instance.strandId);
+    await this.beginWake(instance);
+  }
+
+  /**
+   * Wake a strand for an on-demand probe (`CadreNode.serviceWake`), holding it until
+   * {@link endProbe}: the probe's window runs after the wake settles and may re-hibernate the
+   * strand, so the wake's settle arms nothing. Records whether a check-in chain was armed —
+   * or already cancelled by a wake this one joins — so the end can restore it.
+   */
+  async probeWake(instance: StrandInstance): Promise<void> {
+    const { strandId } = instance;
+    const hadCheckInChain = this.checkInTimers.has(strandId) || this.checkInsCancelledByWake.has(strandId);
+    this.probes.set(strandId, { hadCheckInChain });
     this.clearTimersForWake(strandId);
-    await this.beginWake(strandId);
+    await this.beginWake(instance);
+  }
+
+  /**
+   * End a probe begun by {@link probeWake}, success or failure: arm the timers the strand's
+   * state now calls for. A probe never creates a check-in chain, only restores one it
+   * interrupted. No-op when the probe is no longer held (a force-hibernate or untrack during
+   * it means "keep it down").
+   */
+  endProbe(instance: StrandInstance): void {
+    const probe = this.probes.get(instance.strandId);
+    if (!probe) return;
+    this.probes.delete(instance.strandId);
+    this.rearmAfterWake(instance, probe.hadCheckInChain);
   }
 
   /**
    * Begin a wake for a strand, or coalesce with one already in flight. Ensures
    * `onWake` runs at most once per concurrent wake — the returned promise is
    * shared by all overlapping callers and cleared once it settles. Force-wake
-   * callers await it; activity-driven callers fire-and-forget. A failed wake
-   * restores the check-in chain its callers cancelled, then rejects.
+   * callers await it; activity-driven callers fire-and-forget. Success or failure,
+   * the settle re-arms the strand's timers (unless a probe holds it), and a failure
+   * then rejects.
    */
-  private beginWake(strandId: string): Promise<void> {
+  private beginWake(instance: StrandInstance): Promise<void> {
+    const { strandId } = instance;
     const existing = this.wakePromises.get(strandId);
     if (existing) {
       return existing;
@@ -269,44 +298,54 @@ export class HibernationManager {
     const wake = (async () => {
       try {
         await this.callbacks.onWake(strandId);
-      } catch (error) {
-        this.restoreCheckInChain(strandId);
-        throw error;
       } finally {
-        this.checkInsCancelledByWake.delete(strandId);
-        this.wakePromises.delete(strandId);
+        this.settleWake(instance);
       }
     })();
     this.wakePromises.set(strandId, wake);
     return wake;
   }
 
+  private settleWake(instance: StrandInstance): void {
+    const { strandId } = instance;
+    const hadCheckInChain = this.checkInsCancelledByWake.delete(strandId);
+    this.wakePromises.delete(strandId);
+    if (!this.probes.has(strandId)) {
+      this.rearmAfterWake(instance, hadCheckInChain);
+    }
+  }
+
   /**
-   * {@link clearTimers} for a wake, first remembering an armed check-in so a failed wake
-   * can restore the chain. Only an ARMED chain is remembered: a strand force-hibernated
-   * without one (the mobile background path) must not gain one from a failed wake, and a
-   * check-in that is mid-run reschedules itself once the strand reads `hibernating` again.
+   * {@link clearTimers} for a wake, first remembering an armed check-in so a wake that leaves
+   * the strand hibernating can restore the chain. Only an ARMED chain is remembered: a strand
+   * force-hibernated without one (the mobile background path) must not gain one from a wake,
+   * and a check-in that is mid-run reschedules itself once the strand reads `hibernating` again.
    */
   private clearTimersForWake(strandId: string): void {
-    const pending = this.checkInTimers.get(strandId);
-    if (pending) {
-      this.checkInsCancelledByWake.set(strandId, pending.instance);
+    if (this.checkInTimers.has(strandId)) {
+      this.checkInsCancelledByWake.add(strandId);
     }
     this.clearTimers(strandId);
   }
 
   /**
-   * Re-arm, at the base delay, the check-in chain a failed wake's callers cancelled — only
-   * while the strand reads `hibernating` again (CadreNode re-hibernates a failed wake), so
-   * a strand the failure left in any other state is not probed.
+   * Leave a strand whose wake (or probe) settled with the timers its state calls for: the idle
+   * countdown if it is live, or — if it reads `hibernating` again (a failed rebuild, or a probe
+   * window that re-quiesced it) — the check-in chain it had before, at the base delay. A
+   * strand that had no chain gains none, and one in any other state gets nothing.
    */
-  private restoreCheckInChain(strandId: string): void {
-    const instance = this.checkInsCancelledByWake.get(strandId);
-    if (!instance || !this.running || instance.status !== 'hibernating') {
+  private rearmAfterWake(instance: StrandInstance, hadCheckInChain: boolean): void {
+    if (!this.config.enabled || !this.running) return;
+    if (instance.status === 'hibernating') {
+      // A hibernating strand has no idle countdown, e.g. one activity armed mid-probe.
+      this.clearTimer(instance.strandId);
+      if (hadCheckInChain) {
+        log('Wake of strand %s left it hibernating; restoring its check-in chain', instance.strandId);
+        this.scheduleCheckIn(instance);
+      }
       return;
     }
-    log('Wake of strand %s failed; restoring its check-in chain', strandId);
-    this.scheduleCheckIn(instance);
+    this.rearmIdleIfLive(instance);
   }
 
   private scheduleIdleTransition(instance: StrandInstance): void {
@@ -444,7 +483,7 @@ export class HibernationManager {
       // The chain is stopping; drop the now-stale next-check-in advertisement so
       // `getStrand` doesn't report a phantom check-in for a strand that is awake.
       instance.nextCheckIn = undefined;
-      this.rearmIdleAfterCheckIn(instance);
+      this.rearmIdleIfLive(instance);
       return;
     }
 
@@ -457,12 +496,12 @@ export class HibernationManager {
   }
 
   /**
-   * Start the idle countdown for a strand a check-in left live. Activity recorded while the
-   * check-in was still rebuilding found the strand neither idle nor active, so it armed
-   * nothing — without this the strand would stay up until the next activity. Only for a live
-   * status: a strand stopped mid-check-in must not gain a timer chain.
+   * Start the idle countdown for a strand a check-in or wake left live. Activity recorded
+   * while the runtime was still rebuilding found the strand neither idle nor active, so it
+   * armed nothing — without this the strand would stay up until the next activity. Only for
+   * a live status: a strand stopped or failed mid-rebuild must not gain a timer chain.
    */
-  private rearmIdleAfterCheckIn(instance: StrandInstance): void {
+  private rearmIdleIfLive(instance: StrandInstance): void {
     const live = instance.status === 'active' || instance.status === 'syncing';
     if (live && this.getTimeouts(instance.latencyHint).idleTimeout !== Infinity) {
       this.scheduleIdleTransition(instance);
