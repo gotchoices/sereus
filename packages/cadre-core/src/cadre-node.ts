@@ -5826,9 +5826,8 @@ export class CadreNode implements SAppIdLookup {
     explicitPartyKey: string | undefined
   ): Promise<StrandInstance> {
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('startOrFoundStrand', strand.Id, step, op);
-    const existing = this.strandManager.getInstance(strand.Id);
-    if (existing) {
-      return this.claimTrackedStrand(existing, strand, sAppConfig, resolvedFounder, explicitPartyKey);
+    if (this.strandManager.getInstance(strand.Id)) {
+      return this.claimTrackedStrand(strand, sAppConfig, resolvedFounder, explicitPartyKey);
     }
 
     // A closed strand's launch carries the party's OWN membership identity key: the
@@ -5880,9 +5879,8 @@ export class CadreNode implements SAppIdLookup {
     // `startStrand` would hand its instance back unchanged — a claim holding a replica with
     // no `App` tables, a founder request dropped. Nothing awaits between this check and
     // `startStrand`'s own, so no third launch can slip in.
-    const raced = this.strandManager.getInstance(strand.Id);
-    if (raced) {
-      return this.claimTrackedStrand(raced, strand, sAppConfig, resolvedFounder, explicitPartyKey);
+    if (this.strandManager.getInstance(strand.Id)) {
+      return this.claimTrackedStrand(strand, sAppConfig, resolvedFounder, explicitPartyKey);
     }
 
     const instance = await timed('strandManager.startStrand', () => this.strandManager.startStrand({
@@ -5963,15 +5961,24 @@ export class CadreNode implements SAppIdLookup {
    * storage replica gives it the app's schema in place, then a founder request founds it,
    * waking a quiesced instance so the bootstrap has run before this resolves. Emits
    * nothing — `strand:started` fired when the instance launched.
+   *
+   * A launch of the strand still in flight (the watcher's launch racing an app's
+   * `addStrand`, in either order) is waited out first: until its build settles the tracked
+   * instance is `'starting'` with no database, and returning it would resolve `addStrand`
+   * with a strand the app cannot use — and skip that call's first-sync wait, which only a
+   * `'syncing'` instance gets. If that launch fails, this rejects too: its record is gone.
    */
   private async claimTrackedStrand(
-    existing: StrandInstance,
     strand: StrandRow,
     sAppConfig: SAppConfig | undefined,
     resolvedFounder: boolean,
     explicitPartyKey: string | undefined
   ): Promise<StrandInstance> {
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('startOrFoundStrand', strand.Id, step, op);
+    const existing = await this.strandManager.whenRuntimeBuilt(strand.Id);
+    if (!existing) {
+      throw new Error(`Strand ${strand.Id}: the launch this one waited on failed (reported by the call that started it)`);
+    }
     // Before the founder branch: the founder bootstrap writes the sApp into Strand.Header,
     // so it must run against the attached config.
     if (sAppConfig && !existing.sAppInfo) {

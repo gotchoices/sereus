@@ -516,7 +516,7 @@ export class StrandInstanceManager {
    * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
    * `resumeStrand`), present until it settles. The instance is tracked for the whole build,
    * with its database not yet constructed or not yet initialized, so a caller that must act
-   * on the FINISHED runtime ({@link attachSApp}) waits on this instead. A failed build's
+   * on the FINISHED runtime ({@link attachSApp}, {@link whenRuntimeBuilt}) waits on this instead. A failed build's
    * rejection belongs to the call that started it.
    */
   private runtimeBuilds: Map<string, Promise<void>> = new Map();
@@ -1680,6 +1680,18 @@ export class StrandInstanceManager {
       (timer as { unref?: () => void }).unref?.();
       waiters.add(waiter);
     });
+  }
+
+  /**
+   * The tracked instance once no runtime build of it is in flight, or `undefined` when none
+   * is tracked by then — never launched, or the launch waited on failed and dropped its
+   * record. For a caller about to hand a tracked instance to an app: until its build settles
+   * the instance is `'starting'` with no database, and a failed launch leaves no instance.
+   * Never rejects; a failed build is reported by the call that started it.
+   */
+  async whenRuntimeBuilt(strandId: string): Promise<StrandInstance | undefined> {
+    await this.settleRuntimeBuilds(strandId);
+    return this.instances.get(strandId);
   }
 
   /**

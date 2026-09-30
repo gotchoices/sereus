@@ -622,6 +622,34 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     expect(await countRow(instance.database!.getDatabase(), 'Header')).toBe(1);
   }, 60_000);
 
+  // Two launches of one strand in flight at once — the watcher's launch of a registered
+  // strand racing the app's own `addStrand` is the production case. The one that loses
+  // the race to `startStrand` used to get the tracked instance back mid-build:
+  // `'starting'`, no libp2p node, no database.
+  it('an attach that finds the strand mid-launch resolves only once that launch has built it', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const strandId = 'attach-mid-launch-' + rand3();
+    const sAppConfig = signedSApp();
+    // Read at the moment each call resolves: the instance object is shared, so by the
+    // time both have resolved the build is over whichever call returned early.
+    const attach = async () => {
+      const instance = await node!.addStrand({
+        strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+        sAppConfig,
+        awaitFirstSync: false,
+      });
+      return { instance, status: instance.status, hasNode: instance.libp2pNode !== undefined };
+    };
+
+    const [first, second] = await Promise.all([attach(), attach()]);
+
+    expect(second.instance).toBe(first.instance);
+    for (const resolved of [first, second]) {
+      expect(resolved.status).toBe('syncing');
+      expect(resolved.hasNode).toBe(true);
+    }
+  }, 60_000);
+
   it('closed strand attached first as a joiner: a later founding seats Header/Member/Manager', async () => {
     ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
     const strandId = 'found-attached-closed-' + rand3();
