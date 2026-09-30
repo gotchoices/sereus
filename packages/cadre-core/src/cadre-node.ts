@@ -4966,9 +4966,13 @@ export class CadreNode implements SAppIdLookup {
 
     const sawActivity = instance.lastActivity !== activityMark;
     if (sawActivity) {
-      instance.status = liveStrandStatus(instance);
-      this.emit('strand:waking', { strandId });
-      log('Wake window: strand %s saw activity during the window; staying active', strandId);
+      // A force-hibernate during the window has released the runtime and marked the strand
+      // `hibernating`, which stands; a wake queued behind it writes its own status.
+      if (instance.libp2pNode || instance.database) {
+        instance.status = liveStrandStatus(instance);
+        this.emit('strand:waking', { strandId });
+      }
+      log('Wake window: strand %s saw activity during the window; not re-hibernating', strandId);
       return true;
     }
 

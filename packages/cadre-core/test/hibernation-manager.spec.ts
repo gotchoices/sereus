@@ -321,6 +321,42 @@ describe('HibernationManager', () => {
       manager.stop();
     });
 
+    it('a force-hibernate during a wake\'s rebuild leaves no idle countdown when the wake settles', async () => {
+      const instance = createInstance('strand-forced-mid-wake', 'interactive');
+      instance.status = 'hibernating';
+      const callbacks = createCallbacks();
+      let finishRebuild!: () => void;
+      const rebuild = new Promise<void>((resolve) => { finishRebuild = resolve; })
+        .then(() => { instance.status = 'active'; });
+      callbacks.onWake.mockImplementation(async () => rebuild);
+      // As StrandInstanceManager orders it: the quiesce waits for the rebuild and then
+      // releases it, so the wake settles 'active' while the quiesce is still pending.
+      let quiescing = false;
+      callbacks.isQuiescing.mockImplementation(() => quiescing);
+      callbacks.onHibernate.mockImplementation(async () => {
+        quiescing = true;
+        await rebuild;
+        await new Promise<void>((released) => { setTimeout(released, 50); });
+        instance.status = 'hibernating';
+        quiescing = false;
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      const wake = manager.wakeStrand(instance);
+      const forced = manager.forceHibernate(instance);
+      finishRebuild();
+      await wake;
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await forced;
+      expect(callbacks.onIdle).not.toHaveBeenCalled();
+      expect(callbacks.onCheckIn).not.toHaveBeenCalled();
+      expect(instance.status).toBe('hibernating');
+
+      manager.stop();
+    });
+
     it('is a no-op (returns false, no onHibernate) for a realtime strand', async () => {
       const callbacks = createCallbacks();
       const manager = new HibernationManager({ enabled: true }, callbacks);

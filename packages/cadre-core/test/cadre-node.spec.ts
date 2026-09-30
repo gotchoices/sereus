@@ -751,6 +751,31 @@ describe('CadreNode', () => {
       expect(calls.quiesce).toEqual([]);
     });
 
+    it('a strand force-hibernated during a window that saw activity stays hibernating', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-forced', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-forced', instance]]), calls);
+      injectControl(node, []);
+
+      // The app uses the strand, then backgrounds before the window ends.
+      (node as unknown as { holdWakeWindow: (i: StrandInstance, ms: number) => Promise<void> }).holdWakeWindow =
+        async () => {
+          instance.lastActivity = new Date(9999);
+          await node.hibernateStrand('sw-forced');
+        };
+
+      const result = await node.serviceWake('sw-forced');
+
+      expect(result.hadActivity).toBe(true);
+      expect(instance.status).toBe('hibernating');
+      expect(instance.database).toBeUndefined();
+    });
+
     it('serviceWake on an already-live strand is a no-op success without a second runtime build', async () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance = liveInstance('sw-live', 'interactive');

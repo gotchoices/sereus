@@ -590,10 +590,14 @@ export class HibernationManager {
    * Start the idle countdown for a strand a check-in or wake left live. Activity recorded
    * while the runtime was still rebuilding found the strand neither idle nor active, so it
    * armed nothing — without this the strand would stay up until the next activity. Only for
-   * a live status: a strand stopped or failed mid-rebuild must not gain a timer chain.
+   * a live status: a strand stopped or failed mid-rebuild must not gain a timer chain. Nor
+   * one being quiesced: it reads live until the quiesce ends, e.g. a force-hibernate queued
+   * behind the rebuild of the wake settling now, and the countdown would later idle the
+   * quiesced strand and start a check-in chain the caller meant to keep off.
    */
   private rearmIdleIfLive(instance: StrandInstance): void {
-    const live = instance.status === 'active' || instance.status === 'syncing';
+    const live = (instance.status === 'active' || instance.status === 'syncing')
+      && !this.callbacks.isQuiescing(instance.strandId);
     if (live && this.getTimeouts(instance.latencyHint).idleTimeout !== Infinity) {
       this.scheduleIdleTransition(instance);
     }
