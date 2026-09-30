@@ -19,6 +19,7 @@ import { decodeDockerId, encodeDockerId, type NodePorts } from '../orchestrator/
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { loadIdentity } from '../installer/identity.js';
+import { describeHandleContract } from './orchestrator-handle-contract.js';
 import { removeAllNodes } from './orchestrator-teardown.js';
 
 const FAKE_CHILD = `
@@ -122,6 +123,21 @@ function makeRequest(containerId: string, opts: { profile?: 'storage' | 'transac
     profile: opts.profile ?? 'transaction' as 'storage' | 'transaction',
   };
 }
+
+/** Replace `<workdir>/storage` with a file so the next launch throws EEXIST. */
+function sabotageWorkdir(workdir: string): string {
+  const storage = join(workdir, 'storage');
+  rmSync(storage, { recursive: true, force: true });
+  writeFileSync(storage, 'not-a-directory', 'utf8');
+  return storage;
+}
+
+describeHandleContract<HostProcessOrchestrator>('HostProcessOrchestrator', {
+  make: () => makeOrchestrator(),
+  request: (containerId) => makeRequest(containerId),
+  started: (orch, dockerId) => waitFor(() => orch.isRunning(dockerId)),
+  failNextCreate: (orch, containerId) => { sabotageWorkdir(orch.getNode(containerId)!.workdir); },
+});
 
 describe('HostProcessOrchestrator.createContainer', () => {
   it('spawns a live child and persists handle, ports, and endpoints', async () => {
@@ -257,14 +273,6 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
  * spawn.
  */
 describe('HostProcessOrchestrator failed launch', () => {
-  /** Replace `<workdir>/storage` with a file so the next launch throws EEXIST. */
-  function sabotageWorkdir(workdir: string): string {
-    const storage = join(workdir, 'storage');
-    rmSync(storage, { recursive: true, force: true });
-    writeFileSync(storage, 'not-a-directory', 'utf8');
-    return storage;
-  }
-
   it('keeps the prior handle addressable, so a later terminate still reclaims the workdir', async () => {
     const orch = makeOrchestrator();
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;

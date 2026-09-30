@@ -4,9 +4,12 @@
  * unique spawn results, and tracks per-`dockerId` liveness so a test can crash
  * one node and let the supervisor observe exactly that one as down.
  *
- * This file holds no tests of its own; its contract is pinned by the sibling
- * `fake-orchestrator.test.ts`, which exists so a future agent cannot make a
- * failing donation test go green by relaxing the fake.
+ * This file holds no tests of its own. The handle rules it shares with
+ * `HostProcessOrchestrator` live in `src/__tests__/orchestrator-handle-contract.ts`
+ * and run against both classes, so the two cannot come to disagree unnoticed.
+ * The sibling `fake-orchestrator.test.ts` runs that contract and pins what only
+ * the fake has (its recording arrays and hooks). Both exist so a future agent
+ * cannot make a failing donation test go green by relaxing the fake.
  */
 
 import type {
@@ -99,6 +102,11 @@ export class FakeOrchestrator implements Orchestrator {
     // spawn's every `await` and cannot fail afterwards, and a create that throws
     // puts the handles back (`restoreDroppedHandles`) — so a failed create must
     // leave them untouched. `DonationSupervisor`'s give-up test depends on that.
+    // NOTE: the real class refuses a re-spawn while the container's previous
+    // child is still alive (`refuseRespawnOverLiveChild`); this one replaces it.
+    // The shared contract stops the first child before every re-spawn for that
+    // reason. If a donation test comes to depend on the refusal, model it here
+    // and add the case to `orchestrator-handle-contract.ts`.
     for (const [id, child] of this.children) {
       if (child.containerId === request.containerId) this.children.delete(id);
     }
