@@ -8,9 +8,9 @@
     "clean": "rimraf dist",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
-    "test": "vitest run --reporter=verbose",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "test:debug": "DEBUG='sereus:*,optimystic:*' vitest run --reporter=verbose"
+    "test:debug": "DEBUG='sereus:*,optimystic:*' vitest run"
   },
   "devDependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",

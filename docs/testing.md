@@ -172,6 +172,27 @@ git -C ../quereus status --short                                        # clean 
 Only when a sibling is both idle and clean is its tree worth building. This matters most before a
 release measurement, where the whole point is to describe code someone can install.
 
+## Tests that did not run
+
+Vitest counts every test under a failed `beforeAll` as skipped. A scenario file whose shared boot throws adds one to `Test Files … failed` and nothing to `failed` on the `Tests` line; its tests go into `skipped`, together with the ones skipped on purpose. The run still exits non-zero and the hook's error is printed under `Failed Suites`.
+
+`test-harness/setup-failure-reporter.ts` is a Vitest reporter that separates the two. After the summary it prints one block naming the tests a failed setup kept from running, grouped by the suite (or file) whose hook threw, with the first line of the hook's error. It prints nothing when no setup failed, and does not change the exit code.
+
+```
+ NOT RUN  7 tests did not run because a setup hook (beforeAll) failed. Count as failed, not skipped.
+   src/scenarios/<file>.integration.ts > <suite name> — 7 tests
+     Error: <first line of the hook's error>
+```
+
+- **Recording a run's result.** Move the `NOT RUN` count from `skipped` to `failed` before quoting the `Tests` line in a ticket: `1 passed | 8 skipped` with `NOT RUN  7 tests` is 7 failed, 1 passed, 1 skipped.
+- **What is counted.** A test whose state is `skipped`, that was not marked to be skipped (`it.skip`, `describe.skipIf`, `todo`, a `-t` filter or `only` elsewhere), and that sits under a suite or file that is `failed` with a hook error and has no test that passed or failed. The last condition excludes a failed `afterAll`: its suite is also `failed` with an error, but its tests ran.
+- **What is miscounted.** A suite in which every test calls `ctx.skip()` at run time and whose `afterAll` then throws is reported as not run. Vitest's reporter API does not say which hook an error came from, and no suite here has that shape.
+- **A file that fails to import is not in the block.** It has no collected tests to name; it appears under `Failed Suites` and in `Test Files … failed`.
+- **A `--reporter` flag drops the block.** The flag replaces the config's `reporters` list rather than adding to it, so `vitest run --reporter=dot` prints no `NOT RUN` block. The `test` and `test:debug` scripts of `integration-tests` pass no such flag for that reason; `verbose` is selected in the config.
+- **Only `integration-tests` lists it.** Another package adopts it by adding the file's relative path to its own vitest `reporters`, after the reporter that prints the summary.
+
+The counting rule is covered by `test-harness/setup-failure-reporter.spec.ts`, which runs Vitest itself on a fixture suite written to the OS temp directory.
+
 ## App modules in a scenario
 
 An app module that imports nothing can run inside an `integration-tests` scenario: the scenario
