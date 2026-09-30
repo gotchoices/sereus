@@ -244,7 +244,7 @@ crypto library. The real signer is `peerKeySigner(privateKey)` from
 `loadOrCreateIdentityKey` — the single load-or-create rule the React Native app and
 `CadreNode` share, so the app can sign with the very key the node then starts with.
 
-### Forward pointers (TURN gaps — do not lose these when TURN is enabled)
+### Related TURN components
 - **`turn-credential-issuer`** (built — `../docker/turn-credential-issuer/`): the
   signing service that mints ephemeral TURN credentials and serves the dynamic
   manifest. This is what makes a TURN entry possible here. Peer-bound issuance

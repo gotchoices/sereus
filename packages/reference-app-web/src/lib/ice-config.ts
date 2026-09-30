@@ -3,9 +3,9 @@
  * `RTCIceServer[]` ready to drop into a WebRTC transport
  * (`webRTC({ rtcConfiguration: { iceServers: await loadIceConfig() } })`).
  *
- * Framework-free and self-contained:
- * no `@serfab/cadre-core` / node deps, so the browser bundle stays lean and the
- * React Native port (`reference-app-rn/src/ice-config.ts`) stays a mirror. The
+ * Framework-free and self-contained: no `@serfab/cadre-core` / node deps, so the
+ * browser bundle stays lean and the React Native port
+ * (`reference-app-rn/src/ice-config.ts`) stays a mirror. The
  * only platform touch-points are `fetch`, `localStorage`, `crypto.getRandomValues`,
  * and `import.meta.env`, each guarded. The peer-assertion signing capability is
  * *injected* as a structural interface ({@link IceConfigPeerSigner}) — this file

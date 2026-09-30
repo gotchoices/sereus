@@ -273,11 +273,14 @@ export async function refreshDiagnostics(): Promise<void> {
 	if (refreshInFlight) return;
 	refreshInFlight = true;
 	try {
-		const node = getControlNode();
 		snapshot.cadre = await collectCadre();
 		snapshot.authorization = await collectAuthorization();
+		// Read after the awaits above, and once, so a restart during them cannot
+		// leave the synchronous collectors below describing two different nodes.
+		const cadre = getCadreNode();
+		const node = cadre?.getControlNode() ?? null;
 		snapshot.identity = collectIdentity(node);
-		snapshot.connectivity = collectConnectivity(getCadreNode());
+		snapshot.connectivity = collectConnectivity(cadre);
 		snapshot.transports = collectTransports(node);
 		snapshot.fret = collectFret(node);
 		snapshot.storage = await collectStorage();
