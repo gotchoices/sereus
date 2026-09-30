@@ -3,13 +3,6 @@
  * (`/p2p-circuit`) vs direct, tag its transport, and summarise counts plus a
  * "stuck on relay" condition.
  *
- * This is the **canonical** implementation. The web reference app keeps a
- * deliberate, documented duplicate at
- * `packages/reference-app-web/src/lib/connection-path.ts` (it does not depend on
- * `@serfab/cadre-core`). Keep the function signatures and classification table
- * identical across both copies so a future shared micro-package would be a
- * drop-in.
- *
  * The whole signal is a pure function over `node.getConnections()` + a settle
  * window + `Date.now()`. A connection's path is derivable from its `remoteAddr`
  * multiaddr string alone — no I/O, no events, no stateful observer.

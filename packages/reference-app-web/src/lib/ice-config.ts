@@ -3,7 +3,7 @@
  * `RTCIceServer[]` ready to drop into a WebRTC transport
  * (`webRTC({ rtcConfiguration: { iceServers: await loadIceConfig() } })`).
  *
- * Framework-free and self-contained — same constraint as `connection-path.ts`:
+ * Framework-free and self-contained:
  * no `@serfab/cadre-core` / node deps, so the browser bundle stays lean and the
  * React Native port (`reference-app-rn/src/ice-config.ts`) stays a mirror. The
  * only platform touch-points are `fetch`, `localStorage`, `crypto.getRandomValues`,
@@ -37,9 +37,8 @@
  *    credential to the caller's node identity. That needs a client change — pass a
  *    {@link IceConfigPeerSigner} and this file attaches the five `X-Sereus-Peer-*`
  *    headers. Without a signer the request is unauthenticated, exactly as before.
- *  - A TURN-relayed WebRTC path is misclassified as `direct` by
- *    `connection-path.ts` (it only sees `/webrtc`) — backlog
- *    `web-turn-relayed-path-detection`. Dormant while TURN is off.
+ *  - A TURN-relayed WebRTC session is reported relayed, transport `webrtc-turn`,
+ *    by `CadreNode.getConnectionPaths()`.
  */
 
 const LOG_PREFIX = '[reference-app-web] ice-config:';

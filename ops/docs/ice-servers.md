@@ -249,7 +249,6 @@ crypto library. The real signer is `peerKeySigner(privateKey)` from
   signing service that mints ephemeral TURN credentials and serves the dynamic
   manifest. This is what makes a TURN entry possible here. Peer-bound issuance
   (`PEER_AUTH_MODE`) is built into it — see the section above.
-- **`web-turn-relayed-path-detection`** (backlog): the `connection-path` classifier treats
-  a TURN-relayed WebRTC connection as `direct` (it only sees `/webrtc`), so a
-  TURN-relayed path is **not** counted as relayed in connectivity observability.
-  Dormant while TURN is off; must be fixed when TURN is switched on.
+- **TURN-relayed path reporting** (built — `CadreNode.getConnectionPaths()`): a
+  TURN-relayed WebRTC session is counted relayed, transport `webrtc-turn`, in both
+  the CLI health output and the web Diagnostics page.

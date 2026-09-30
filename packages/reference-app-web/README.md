@@ -289,7 +289,6 @@ src/
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
-    connection-path.ts       # relayed-vs-direct classification (cadre-core duplicate)
     ice-config.ts            # ICE servers from a runtime manifest
     Copyable.svelte          # copy-to-clipboard chip used in /diag
   shims/
@@ -313,8 +312,7 @@ yarn workspace @serfab/reference-app-web test:e2e
   persistence, hash routing, the chat strand send/list round-trip, reload
   persistence of strand DML, the schema-signature gate (a pure-Node assertion
   that the valid signed config verifies and a tampered one throws
-  `SchemaVerificationError`), the connection-path classifier parity table, the
-  diagnostics-surface invariants — notably the **four-transport** Transports list,
+  `SchemaVerificationError`), the diagnostics-surface invariants — notably the **four-transport** Transports list,
   the canary that no TCP transport leaked into the browser bundle — and
   (`formation-rbac.spec.ts`) the **formation + RBAC** surface a single tab can
   prove: the formation panel renders, the dialability guard rejects *Create
