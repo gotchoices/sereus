@@ -9,13 +9,16 @@
 import type { CadreNode, StrandInstance, SAppConfig, StrandRow } from '@serfab/cadre-core';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
-// Matches schemas/chat-simple.qsql.  Embedded as a string constant so the
-// bundler doesn't need filesystem access.
+// Matches schemas/chat-simple.qsql (comments aside), enforced by
+// test/chat-schema-drift.spec.ts.  Embedded as a string constant so the
+// bundler doesn't need filesystem access.  This app never reads or assigns
+// `Participant.Role`; every participant it inserts takes the default.
 
-const CHAT_SCHEMA = `
+export const CHAT_SCHEMA = `
 table Participant (
     Id text primary key,
-    Name text not null check (length(Name) between 1 and 100)
+    Name text not null check (length(Name) between 1 and 100),
+    Role text not null default 'member' check (Role in ('owner', 'member'))
 );
 
 table Message (

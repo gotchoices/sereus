@@ -113,6 +113,13 @@ Owner genesis is **fail-soft**: the chat round-trip runs on the solo node
 and does not depend on owner, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
 
+The chat strand's database can only be opened with the chat schema that
+created it. A build whose `CHAT_SCHEMA` changes an existing table (a column
+added, say) cannot open a database an earlier build left in the browser: the
+schema apply issues `ALTER TABLE`, which the optimystic table module refuses,
+and `startCadre` fails. Nothing migrates it under the current
+no-backwards-compatibility policy; clear the site's data to start over.
+
 ## Strand formation (consent / invitation flow)
 
 The Home **Strand formation** panel drives the cadre-core formation API

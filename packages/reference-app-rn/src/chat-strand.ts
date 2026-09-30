@@ -18,7 +18,8 @@ import { generateStrandMemberKey } from '@serfab/cadre-core';
 import { insertParticipant, participantDisplayName, type ChatRole } from './chat-operations';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
-// Matches schemas/chat-simple.qsql.  Embedded as a string constant so the RN
+// Matches schemas/chat-simple.qsql (comments aside), enforced by
+// test/chat-schema-drift.spec.ts.  Embedded as a string constant so the RN
 // bundler doesn't need filesystem access.
 //
 // `Participant.Role` is an APP-LEVEL role (`owner` | `member`). Sereus's control
@@ -27,7 +28,7 @@ import { insertParticipant, participantDisplayName, type ChatRole } from './chat
 // the chat schema, and is assigned on create/join. See the README "Trust model"
 // section for where this boundary sits.
 
-const CHAT_SCHEMA = `
+export const CHAT_SCHEMA = `
 table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),

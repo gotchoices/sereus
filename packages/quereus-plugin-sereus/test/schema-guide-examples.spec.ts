@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { marked } from 'marked';
 import { Database, Parser, createScalarFunction, quoteIdentifier, registerPlugin } from '@quereus/quereus';
 import type { TableSchema } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { applyAppSchema } from '../src/compose-strand.js';
+import { fencedBlocks } from './helpers/fenced-blocks.js';
 
 /**
  * Executes the fenced SQL in `docs/schema-guide.md`, so an example the engine rejects fails
@@ -77,20 +77,12 @@ function fenceOf(info: string): Fence | undefined {
 }
 
 function extractBlocks(markdown: string): GuideBlock[] {
-	let heading = '(before the first heading)';
 	const countByHeading = new Map<string, number>();
-	const blocks: GuideBlock[] = [];
-	marked.walkTokens(marked.lexer(markdown), token => {
-		if (token.type === 'heading') {
-			heading = token.text;
-		} else if (token.type === 'code') {
-			const n = (countByHeading.get(heading) ?? 0) + 1;
-			countByHeading.set(heading, n);
-			const info = token.lang ?? '';
-			blocks.push({ name: `${heading} #${n}`, info, fence: fenceOf(info), text: token.text });
-		}
+	return fencedBlocks(markdown).map(({ heading, info, text }) => {
+		const n = (countByHeading.get(heading) ?? 0) + 1;
+		countByHeading.set(heading, n);
+		return { name: `${heading} #${n}`, info, fence: fenceOf(info), text };
 	});
-	return blocks;
 }
 
 function schemaNames(blocks: GuideBlock[]): string[] {

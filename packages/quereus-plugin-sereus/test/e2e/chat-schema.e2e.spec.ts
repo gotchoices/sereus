@@ -8,7 +8,7 @@ import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { connectToStrand } from '../../src/connect.js';
 import type { SereusPluginResult } from '../../src/types.js';
-import { extractDeclareSchemaBody } from '../helpers/qsql-body.js';
+import { extractDeclareSchemaBody } from '../../../../test-harness/qsql-body.js';
 
 /**
  * End-to-end suite for the reference chat schemas in `schemas/`.

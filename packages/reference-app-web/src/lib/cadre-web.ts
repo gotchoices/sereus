@@ -562,9 +562,9 @@ export interface CreatedInvitation {
  * Host side of closed-strand formation: mint a membership key, publish the
  * `Strand` row (`Type:'c'`) under this node's owner, and attach the local
  * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
- * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no participant
- * `Role` column, so unlike RN there is no owner/member role assignment to mirror —
- * bring-up is one `foundStrand` call.
+ * (`reference-app-rn/src/chat-strand.ts`), except that the web app assigns no
+ * owner/member role: the chat schema's `Participant.Role` column is left at its
+ * `'member'` default, so bring-up is one `foundStrand` call.
  *
  * `foundStrand` does both control-plane steps (publish + attach as founder, which
  * runs the one-time genesis bootstrap seating Header/Member/Owner from this party's

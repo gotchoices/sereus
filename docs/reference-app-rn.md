@@ -206,7 +206,8 @@ table Message (
 );
 ```
 
-`schemas/chat-simple.qsql` is the source of record for the above; `composeStrand` supplies the
+`schemas/chat-simple.qsql` is the source of record for the above, and a test fails when the block
+stops matching it (see [testing.md](testing.md) → "Lint coverage"); `composeStrand` supplies the
 `declare schema App { ... }` wrapper, so the file itself is a bare table list.
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.

@@ -1,16 +1,25 @@
 /**
- * Comment/string-aware extraction of a `declare schema <name> { ... }` body from a
- * `.qsql` artifact.
+ * Comment/string-aware scanning of Quereus SQL text: extraction of a
+ * `declare schema <name> { ... }` body from a `.qsql` artifact, and removal of comments.
  *
  * Implemented as a tiny tokenizer state machine (decomposed single-purpose helpers,
  * NOT one mega-regex) so it cannot be fooled by a file's own comment header — which
  * routinely contains the literal text `declare schema Strand { ... }` — nor by any
- * `{`/`}`/anchor that appears inside a comment or string literal.
+ * `{`/`}`/anchor/`--` that appears inside a comment or string literal.
  *
- * Two callers share it: the `strand-schema-drift` guard (which compares the extracted
- * body against the embedded `STRAND_SCHEMA` constant) and the `chat-schema` e2e suite
- * (which feeds the extracted body to `connectToStrand` as the sApp schema, since
- * `composeStrand` supplies its own `declare schema App { ... }` wrapper).
+ * Callers, all by relative import:
+ *   - `packages/quereus-plugin-sereus/test/strand-schema-drift.spec.ts` compares the
+ *     extracted body against the embedded `STRAND_SCHEMA` constant, and holds the
+ *     scanner's own test cases.
+ *   - `packages/quereus-plugin-sereus/test/e2e/chat-schema.e2e.spec.ts` feeds the
+ *     extracted body to `connectToStrand` as the sApp schema, since `composeStrand`
+ *     supplies its own `declare schema App { ... }` wrapper.
+ *   - `./chat-simple-schema.ts` strips comments before comparing the hand-kept copies of
+ *     `schemas/chat-simple.qsql`.
+ *
+ * NOTE: double-quoted identifiers are not recognised, so a `--` or `'` inside one is
+ * read as a comment or a literal; no schema here quotes an identifier. If one does, add
+ * a `skipQuotedIdentifier` beside `skipStringLiteral`.
  */
 
 const isWordChar = (c: string): boolean =>
@@ -44,16 +53,41 @@ function skipStringLiteral(src: string, i: number): number {
 	return src.length; // unterminated literal: consume to EOF rather than mis-reading the rest as code
 }
 
+/** If a comment begins at `i`, return the index just past it; otherwise return `i` unchanged. */
+function skipComment(src: string, i: number): number {
+	if (src.startsWith('--', i)) return skipLineComment(src, i);
+	if (src.startsWith('/*', i)) return skipBlockComment(src, i);
+	return i;
+}
+
 /**
  * If a comment or string literal begins at `i`, return the index just past it;
  * otherwise return `i` unchanged. Callers only ever advance over whole comments /
  * strings, so the scan position never lands inside one.
  */
 function skipNonCode(src: string, i: number): number {
-	if (src.startsWith('--', i)) return skipLineComment(src, i);
-	if (src.startsWith('/*', i)) return skipBlockComment(src, i);
-	if (src[i] === "'") return skipStringLiteral(src, i);
-	return i;
+	const pastComment = skipComment(src, i);
+	if (pastComment !== i) return pastComment;
+	return src[i] === "'" ? skipStringLiteral(src, i) : i;
+}
+
+/**
+ * `source` with every `--` and block comment removed. A `--` comment's terminating
+ * newline is kept, so line structure survives; a comment between two tokens on one
+ * line leaves the whitespace that surrounded it.
+ */
+export function stripSqlComments(source: string): string {
+	let out = '';
+	let i = 0;
+	while (i < source.length) {
+		const pastComment = skipComment(source, i);
+		if (pastComment !== i) { i = pastComment; continue; }
+		// A literal is copied whole, so a `--` or block-comment marker inside it is never read as a comment.
+		const end = source[i] === "'" ? skipStringLiteral(source, i) : i + 1;
+		out += source.slice(i, end);
+		i = end;
+	}
+	return out;
 }
 
 /** If `kw` matches at `i`, return the index just past it; else -1. */

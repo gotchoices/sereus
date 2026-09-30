@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { STRAND_SCHEMA } from '../src/strand-schema.js';
-import { extractDeclareSchemaBody } from './helpers/qsql-body.js';
+import { extractDeclareSchemaBody, stripSqlComments } from '../../../test-harness/qsql-body.js';
 
 /**
  * Drift guard for the security-critical `Strand` membership/RBAC schema.
@@ -20,12 +20,12 @@ import { extractDeclareSchemaBody } from './helpers/qsql-body.js';
  * MemberPeer / Manager / Revocation), a one-sided edit is a silent security regression.
  * This test fails the build whenever the two copies drift.
  *
- * This is a deliberate COPY of the shape of `cadre-core`'s
- * `control-schema-drift.spec.ts`, NOT a shared cross-package helper: there are
- * exactly two embedded-schema copies and they live in different packages
- * (`cadre-core` vs. `quereus-plugin-sereus`), which does not justify a shared
- * test-util home. If a THIRD embedded-schema copy ever appears, that tips the
- * balance toward extracting a shared parameterized helper — do that then, not now.
+ * The guard itself (`normalize`, `firstDiffLine`, the comparison) is a deliberate COPY
+ * of the shape of `cadre-core`'s `control-schema-drift.spec.ts`, not a shared helper:
+ * both compare a constant meant to be byte-for-byte the file's text, and two such
+ * guards do not justify a shared parameterized one. The chat schema copies are guarded
+ * separately and more loosely (comments and indentation ignored) by
+ * `test-harness/chat-simple-schema.ts`.
  *
  * Unlike the control guard (which compares whole-file == whole-constant because
  * `CONTROL_SCHEMA` embeds the full `declare ... apply ...`), `STRAND_SCHEMA` holds
@@ -35,7 +35,9 @@ import { extractDeclareSchemaBody } from './helpers/qsql-body.js';
  * against `STRAND_SCHEMA`. A scanner (not a regex) is required because the file's
  * OWN comment header literally contains the text `declare schema Strand { ... }`,
  * which a naive `indexOf`/regex would anchor on, extracting garbage. That scanner
- * lives in `test/helpers/qsql-body.ts`; the chat-schema e2e suite uses it too.
+ * lives in the repo-root `test-harness/qsql-body.ts`, shared with the chat-schema e2e
+ * suite and the chat schema copy guards; its test cases are the synthetic-input tests
+ * below.
  */
 
 // Resolve the repo-root `.qsql` relative to this source file. vitest runs the `.ts`
@@ -220,6 +222,20 @@ describe('strand schema drift guard', () => {
 	it('throws on an unbalanced (never-closed) block', () => {
 		const src = 'declare schema X {\n\tbody';
 		expect(() => extractDeclareSchemaBody(src, 'X')).toThrow(/unbalanced/);
+	});
+
+	it('stripSqlComments keeps a `--` that sits inside a string literal', () => {
+		expect(stripSqlComments("check (Tag <> '--') -- trailing\nnext")).toBe("check (Tag <> '--') \nnext");
+	});
+
+	it('stripSqlComments does not let a `\'` inside a `--` comment open a literal', () => {
+		// Were the apostrophe read as an opening quote, `b` and the real comment after it
+		// would be swallowed into an unterminated literal and copied through.
+		expect(stripSqlComments("a -- don't\nb -- gone\nc")).toBe('a \nb \nc');
+	});
+
+	it('stripSqlComments removes a `/* */` comment, including one spanning lines', () => {
+		expect(stripSqlComments("a /* x\n-- y '\n*/ b")).toBe('a  b');
 	});
 
 	it('normalize strips leading blank LINES but preserves the first content line indentation', () => {
