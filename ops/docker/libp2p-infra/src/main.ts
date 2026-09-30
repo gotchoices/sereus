@@ -153,19 +153,18 @@ const node = await createLibp2p({
       maxTimeout: 30_000
     }
   },
-  // The same two limits `@serfab/cadre-core` declares on every cadre node:
-  // `connectionManagerTimeouts()` in its `link-budget.ts`, 4 link round trips at its default
-  // declared link of 3500 ms plus 2000 ms for the listener's admission decision = 16 000 ms
-  // (libp2p's own default for both is 10 000). Keep them in step by hand; this container does
-  // not depend on cadre-core. It runs no admission gate, so the 2000 ms is unused here.
+  // The same two limits every cadre node runs with: `@optimystic/db-p2p` derives them as 5 link
+  // round trips from the link `@serfab/cadre-core` declares, 3500 ms by default, = 17 500 ms
+  // (libp2p's own default for both is 10 000). Keep them in step by hand; this container
+  // depends on neither package.
   //
   // This relay is the LISTENER for every client's direct connection to it, which costs about
   // one link round trip to set up, so 10 s already covers the 3-second round trip sereus
   // supports. The point of matching is that no node a relayed client touches gives up on a
   // slow connection sooner than the client's own node does.
   connectionManager: {
-    dialTimeout: 16_000,
-    inboundUpgradeTimeout: 16_000
+    dialTimeout: 17_500,
+    inboundUpgradeTimeout: 17_500
   },
   services
 })

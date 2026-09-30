@@ -58,21 +58,19 @@ export const MIN_CLUSTER_SIZE = 2;
  *
  * **Measured at 7000 against 5000**, 2026-09-29, same machine and shape, at 1 500 ms one-way
  * (the supported 3 s round trip), fresh-join arm, one run each under
- * `DEBUG=optimystic:db-p2p:coordinator-repo*`: **39 declined reads at 5000, 32 at 7000**, both
- * runs completing (writable at 70.2 s and 63.6 s). That difference is noise, not the deadline
- * at work: in both runs every consult on the joiner ended 3.00-3.02 s after the one before
- * it, the signature of Optimystic's fixed 3 000 ms request dial deadline
- * (`DEFAULT_DIAL_TIMEOUT_MS`), which its `openProtocolStream` forwards into `newStream` on an
- * ALREADY-OPEN connection, where the protocol negotiation alone costs one link round trip —
- * 3 s at this delay. So at the supported link neither 5000 nor 7000 is ever reached; every
- * consult is cut off first, and the join completes because peer-join backfill delivers the
- * blocks and the first-sync gate probes until it holds them. The derivation is right and
- * stays: it is the deadline a consult needs once it is allowed to run, and the 1.8 s-band
- * figures above (18 declined at 1000, 2 at 5000, where the negotiation fits inside 3 s) are
- * what show a per-peer deadline doing its work. Until the upstream dial deadline moves, no
- * value of this constant changes the count at 1 500 ms one-way:
- * `tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`.
- * The first-sync figures from the same runs are on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`.
+ * `DEBUG=optimystic:db-p2p:coordinator-repo*`, on `@optimystic/*` 1.7.0: **39 declined reads at
+ * 5000, 32 at 7000**, both runs completing (writable at 70.2 s and 63.6 s). That difference
+ * was noise, not the deadline at work: in both runs every consult on the joiner ended
+ * 3.00-3.02 s after the one before it, the signature of Optimystic's then-fixed 3 000 ms
+ * request dial deadline, which also bounded the protocol negotiation on an ALREADY-OPEN
+ * connection, where the negotiation alone costs one link round trip — 3 s at this delay.
+ *
+ * **Measured at 7000 on 1.8.0**, the same day and shape, once a consult ran under this deadline
+ * alone and cadre-core stated its declared link to Optimystic: **no declined read** during the
+ * measured attach, over two fresh joins and three re-attaches, and every consult on the joiner
+ * completed 6.03-6.05 s after the one before it — the two round trips this deadline is derived
+ * from, with about 0.95 s to spare. The first-sync figures from those runs are on
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`.
  *
  * **What it costs**, in the terms Optimystic's own field doc uses: a peer that is truly gone
  * now holds a read of a block missing locally for up to 7 s before the read is declined

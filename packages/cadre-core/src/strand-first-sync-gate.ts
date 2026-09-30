@@ -102,9 +102,23 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * several of those — which is why both bands are recorded here, and why a change to either
  * number has to be weighed against the other.
  *
- * AT THE SUPPORTED LINK (2026-09-29), 1 500 ms one-way, with the read deadline now derived
- * from the declared link at 7 000 ms (`cohortReadDeadlineMs` in `link-budget.ts`; the
- * plugin's `COHORT_READ_DEADLINE_MS` is the same number), the same scenario:
+ * AT THE SUPPORTED LINK ON `@optimystic/*` 1.8.0 (2026-09-29), 1 500 ms one-way, the read
+ * deadline derived from the declared link at 7 000 ms (`cohortReadDeadlineMs` in
+ * `link-budget.ts`; the plugin's `COHORT_READ_DEADLINE_MS` is the same number), and cadre
+ * stating its declared link to Optimystic, the same scenario, all under the coordinator debug
+ * channel:
+ *  - Fresh join: writable at 63.9 and 63.8 s over two runs, the row A wrote before the join
+ *    readable at 88.0 s in both. B's strand node connected to A's at 18.3-18.4 s. No read was
+ *    declined: every consult on B completed, 6.03-6.05 s after the one before it (two link
+ *    round trips each). The time did not fall, because B's consults ran one after another and
+ *    the gate opened only after the seventh.
+ *  - Re-attach over the store B kept: no longer bimodal. All 3 runs held everything and came
+ *    up writable at launch (9.2 s), and the row A wrote while B was away was readable at
+ *    35.6 s in each, read with one consult for the collection and its data block together. No
+ *    read was declined during the attach. The empty-store arm was not re-run.
+ *
+ * AT THE SUPPORTED LINK ON `@optimystic/*` 1.7.0 (2026-09-29), same delay, deadline and
+ * scenario, before cadre stated its link to Optimystic:
  *  - Fresh join: writable at 52.1 and 82.1 s over two runs, and 63.6 s in a third run under
  *    the coordinator debug channel; a fourth run with the deadline set back to 5 000 ms took
  *    70.2 s. B's strand node connected to A's at 18.2-18.3 s in every run at this delay. The
@@ -113,14 +127,12 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  *    writable at launch (9.1 s; the row at 33.4 s). The other 2 were gated and writable at
  *    75.7 and 78.7 s (the row at 120.8 and 175.0 s). The empty-store arm was not re-run; at
  *    900 ms it matched a fresh join.
- *  - What this band is NOT: a measure of the 7 000 ms deadline. Every cohort consult in those
+ *  - What that band was NOT: a measure of the 7 000 ms deadline. Every cohort consult in those
  *    runs ended 3.00-3.02 s after the one before it, at 5 000 and 7 000 alike, because
- *    Optimystic's fixed 3 000 ms request dial deadline also bounds the protocol negotiation on
- *    an already-open connection, and one negotiation is one link round trip — 3 s here
- *    (`tickets/blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`).
- *    So at the supported link this is the band of a join whose every consult fails and whose
- *    blocks arrive by peer-join backfill. Widening the read deadline further would not move
- *    it until that upstream deadline moves; when it does, re-measure here.
+ *    Optimystic's then-fixed 3 000 ms request dial deadline also bounded the protocol
+ *    negotiation on an already-open connection, and one negotiation is one link round trip —
+ *    3 s here. So it was the band of a join whose every consult failed and whose blocks
+ *    arrived by peer-join backfill.
  *
  * RE-ATTACH at 900 ms (2026-09-26, the opt-in
  * `integration-tests/src/scenarios/strand-reattach-first-sync-measure.integration.ts` — re-run
@@ -146,9 +158,10 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * injector are unknown to us) opened the gate at about 150 s, after the previous 120 s budget
  * had already rejected; and a real Galaxy S7 joining fresh through relay.sereus.org took 178 s.
  *
- * 300 s clears the worst harness sample (82 s, a fresh join at the supported link) by about
- * 3.6x, the reporter's re-attach by 2x and the device join by about 1.7x. Kept at 300 s on
- * 2026-09-29 by the rule that re-measure applied and the next one should: keep it while the
+ * 300 s clears the worst harness sample (82 s, a fresh join at the supported link on 1.7.0; the
+ * worst on 1.8.0 is 64 s) by about 3.6x, the reporter's re-attach by 2x and the device join by
+ * about 1.7x. Kept at 300 s on 2026-09-29, and again after the 1.8.0 re-measure the same day,
+ * by the rule that re-measure applied and the next one should: keep it while the
  * worst harness sample is at most 100 s, which holds a margin of at least 3x; otherwise raise
  * it to 3x the worst sample, rounded up to the next whole minute. 240 s was rejected earlier:
  * it clears the device join by only 1.35x, and that sample was not a re-attach. History: the

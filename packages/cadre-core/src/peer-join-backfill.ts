@@ -63,11 +63,12 @@ import { peerJoinPushBudget } from './link-budget.js';
 // `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts`.
 //
 // It does NOT work at every speed. Above the declared link, libp2p's own dial and
-// inbound-upgrade limits — derived from the same declaration — abandon the connection before
-// any deadline here is consulted, and the listener's one makes that failure look like an absent
-// peer rather than a timeout. That is also what happens when the machine being caught up
-// declared a FASTER link than this one, since its limit is the listener's. See
-// `link-budget.ts` ("libp2p's own two limits", "What still fails at the supported link").
+// inbound-upgrade limits — which Optimystic derives from the same declaration — abandon the
+// connection before any deadline here is consulted, and the listener's one makes that failure
+// look like an absent peer rather than a timeout. That is also what happens when the machine
+// being caught up declared a FASTER link than this one, since its limit is the listener's. See
+// `link-budget.ts` ("Optimystic's deadlines, from the same declaration", "What still fails at
+// the supported link").
 //
 // RETRY, and why it backs off. A run whose PUSH FAILED — the transport threw, which is what
 // a dial or response deadline expiring looks like here — re-arms on a doubling backoff

@@ -103,7 +103,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, connectionManagerTimeouts, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
@@ -1883,10 +1883,12 @@ export class CadreNode implements SAppIdLookup {
       // whose event loop is saturated by pure-JS Noise crypto. A configured value
       // replaces the default whole (see DEFAULT_CONNECTION_MONITOR).
       connectionMonitor: network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
-      // libp2p's own dial and inbound-upgrade limits, from the same declared link as every
-      // cadre dial budget. Left to db-p2p, both stay at 10 s, which cannot open a relayed
-      // connection above a 2.5 s round trip — and the listener's side of that fails silently.
-      connectionManager: connectionManagerTimeouts(network?.linkRoundTripMs),
+      // The declared link every cadre budget is derived from, stated to Optimystic too so it
+      // derives its own deadlines from the same number: its request dials and responses, its
+      // block pushes, and libp2p's `dialTimeout` and `inboundUpgradeTimeout`. Always stated,
+      // default included: undeclared, Optimystic keeps LAN deadlines that cannot open a
+      // relayed connection at the link sereus supports (`link-budget.ts`).
+      linkRoundTripMs: resolveLinkRoundTripMs(network?.linkRoundTripMs),
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.

@@ -475,9 +475,11 @@ export interface NetworkConfig {
    * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
    * reservation deadlines are DERIVED from, each by the number of round trips that operation
    * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
-   * reservation drive, the control-cohort dial budgets, libp2p's own `dialTimeout` and
-   * `inboundUpgradeTimeout` on every node, and the per-peer cohort read deadline
-   * ({@link cohortQueryTimeoutMs}, unless set explicitly). Reaching another machine through a
+   * reservation drive, the control-cohort dial budgets, and the per-peer cohort read deadline
+   * ({@link cohortQueryTimeoutMs}, unless set explicitly). It is also handed to Optimystic
+   * (`NodeOptions.linkRoundTripMs`), default included, which derives its own deadlines from it:
+   * its request dials and responses, its block pushes, and libp2p's `dialTimeout` and
+   * `inboundUpgradeTimeout` on every node. Reaching another machine through a
    * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
    * speed above which it can never open a connection — which is the defect this declaration
    * exists to make impossible to reintroduce one budget at a time. The counts, the measurement behind them,
@@ -494,7 +496,8 @@ export interface NetworkConfig {
    * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
    * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
    * zero, because every consumer multiplies it into a deadline where a zero means "give up at
-   * once" and a `NaN` means "never".
+   * once" and a `NaN` means "never". Optimystic refuses, in the same place, a value above its
+   * `MAX_LINK_ROUND_TRIP_MS` (about 1.66 days).
    */
   linkRoundTripMs?: number;
   /**

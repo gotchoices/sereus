@@ -532,7 +532,6 @@ export {
   ADMISSION_DECISION_TIMEOUT_MS,
   resolveLinkRoundTripMs,
   relayedDialBudgetMs,
-  connectionManagerTimeouts,
   relayReservationBudgetMs,
   circuitRequestBudgetMs,
   relayedRequestBudgetMs,
