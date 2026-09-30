@@ -40,6 +40,11 @@ const FIXTURE: Record<string, string> = {
 		beforeAll(() => { throw new Error('module boot failed'); });
 		it('never runs', () => {});
 	`,
+	// A thrown object with no `message` reaches the reporter with `message` undefined.
+	'object-thrown.spec.mjs': `
+		beforeAll(() => { throw { code: 5 }; });
+		it('never runs', () => {});
+	`,
 	'teardown.spec.mjs': `
 		describe('teardown throws', () => {
 			afterAll(() => { throw new Error('teardown failed'); });
@@ -92,9 +97,10 @@ describe('setup-failure reporter', () => {
 
 		expect(run.code, run.stderr).toBe(1);
 		expect(blockStart).toBeGreaterThan(run.stdout.indexOf('Test Files'));
-		expect(block).toMatch(/^NOT RUN {2}3 tests /);
+		expect(block).toMatch(/^NOT RUN {2}4 tests /);
 		expect(block).toContain('suite-setup.spec.mjs > setup throws — 2 tests\n     Error: suite boot failed');
 		expect(block).toContain('module-setup.spec.mjs — 1 test\n     Error: module boot failed');
+		expect(block).toContain('object-thrown.spec.mjs — 1 test\n     the hook threw a value with no message');
 		expect(block).not.toContain('teardown');
 		expect(block).not.toContain('plain.spec.mjs');
 	});

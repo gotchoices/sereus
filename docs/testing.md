@@ -189,7 +189,7 @@ Vitest counts every test under a failed `beforeAll` as skipped. A scenario file 
 - **What is miscounted.** A suite in which every test calls `ctx.skip()` at run time and whose `afterAll` then throws is reported as not run. Vitest's reporter API does not say which hook an error came from, and no suite here has that shape.
 - **A file that fails to import is not in the block.** It has no collected tests to name; it appears under `Failed Suites` and in `Test Files … failed`.
 - **A `--reporter` flag drops the block.** The flag replaces the config's `reporters` list rather than adding to it, so `vitest run --reporter=dot` prints no `NOT RUN` block. The `test` and `test:debug` scripts of `integration-tests` pass no such flag for that reason; `verbose` is selected in the config.
-- **Only `integration-tests` lists it.** Another package adopts it by adding the file's relative path to its own vitest `reporters`, after the reporter that prints the summary.
+- **Only `integration-tests` lists it.** Another package adopts it by adding the file's relative path to its own vitest `reporters`, after the reporter that prints the summary, and removing any `--reporter` flag from its scripts.
 
 The counting rule is covered by `test-harness/setup-failure-reporter.spec.ts`, which runs Vitest itself on a fixture suite written to the OS temp directory.
 

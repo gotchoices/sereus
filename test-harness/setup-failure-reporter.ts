@@ -79,11 +79,16 @@ function containerLabel(container: Container): string {
 		: `${container.module.relativeModuleId} > ${container.fullName}`;
 }
 
+/**
+ * A hook can throw any value. Vitest types `message` as a string, but a thrown
+ * object without one (`throw { code: 5 }`) arrives with `message` undefined, so
+ * the type is not trusted here: a throw from a reporter loses the whole block.
+ */
 function firstErrorLine(container: Container): string {
-	const [error] = container.errors();
-	if (!error) return 'no error recorded';
+	const error: { name?: unknown; message?: unknown } | undefined = container.errors()[0];
+	if (typeof error?.message !== 'string') return 'the hook threw a value with no message';
 	const firstLine = error.message.split('\n', 1)[0] ?? '';
-	return error.name ? `${error.name}: ${firstLine}` : firstLine;
+	return typeof error.name === 'string' && error.name ? `${error.name}: ${firstLine}` : firstLine;
 }
 
 function formatNotRunBlock(counts: ReadonlyMap<Container, number>): string {
