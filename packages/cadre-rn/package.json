@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-rn",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "type": "module",
   "description": "React Native kit for Sereus apps - native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
   "files": [
