@@ -379,6 +379,10 @@ export async function composeStrand(
  * Refuses a schema holding an item the Quereus parser skipped: it keeps any item whose leading
  * keyword it does not model (`create unique index …`, a misspelled `tabel`, `domain`) as an
  * opaque placeholder that apply ignores, so the app would otherwise run without that item.
+ *
+ * Refuses a schema holding a `seed` item: the apply runs on every node of the strand at every
+ * connect, so seed inserts would put a network write on each bring-up and two nodes inserting
+ * the same key at once would collide. Rows an app needs at birth are the founding app's to write.
  */
 export async function applyAppSchema(db: Database, schema: string): Promise<void> {
 	await db.exec(`
@@ -387,15 +391,29 @@ export async function applyAppSchema(db: Database, schema: string): Promise<void
 		}
 	`);
 	assertNoIgnoredItems(db);
+	assertNoSeedItems(db);
 	await db.exec('apply schema App;');
 }
 
+function declaredAppItems(db: Database) {
+	return db.declaredSchemaManager.getDeclaredSchema('App')?.items ?? [];
+}
+
 function assertNoIgnoredItems(db: Database): void {
-	const items = db.declaredSchemaManager.getDeclaredSchema('App')?.items ?? [];
-	const ignored = items.filter(item => item.type === 'declareIgnored').length;
+	const ignored = declaredAppItems(db).filter(item => item.type === 'declareIgnored').length;
 	if (ignored > 0) {
 		// Only a count: Quereus leaves an ignored item's source text empty.
-		throw new Error(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\`, \`seed\` and \`assertion\``);
+		throw new Error(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\` and \`assertion\``);
+	}
+}
+
+function assertNoSeedItems(db: Database): void {
+	const tables = new Set<string>();
+	for (const item of declaredAppItems(db)) {
+		if (item.type === 'declaredSeed') tables.add(item.tableName);
+	}
+	if (tables.size > 0) {
+		throw new Error(`sApp schema has seed item(s) for table(s) ${[...tables].join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
 	}
 }
 

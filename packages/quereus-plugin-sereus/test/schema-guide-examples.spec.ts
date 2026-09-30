@@ -129,9 +129,6 @@ function planSql(db: Database, sql: string): void {
 
 async function checkSchemaBody(db: Database, body: string): Promise<void> {
 	await applyAppSchema(db, body);
-	// The diff is already applied, so this only inserts the seed rows — proving their literals
-	// fit their tables. Sereus itself applies without `with seed`.
-	await db.exec('apply schema App with seed');
 	const app = db.schemaManager.getSchema('App');
 	if (!app) {
 		throw new Error('schema App missing after apply');

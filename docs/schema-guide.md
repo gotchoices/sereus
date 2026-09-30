@@ -2,7 +2,7 @@
 
 Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
 
-What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view`, `seed` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. Because Sereus puts the app's tables in schema `App`, app code qualifies them (`App.messages`), as the reference apps do (`packages/reference-app-web/src/lib/chat-dml.ts`); the query examples below leave them unqualified for brevity. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
+What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it), and so is a `seed` item (see [Seeds](#seeds-local-quereus-databases-only)). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. Because Sereus puts the app's tables in schema `App`, app code qualifies them (`App.messages`), as the reference apps do (`packages/reference-app-web/src/lib/chat-dml.ts`); the query examples below leave them unqualified for brevity. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
 - `sql schema` or `sql schema <name>` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view. The name lets query examples refer to it.
 - `sql query <name>` — every statement is planned, not run, against the `sql schema <name>` block; tables are named unqualified.
 - `sql script` — a complete statement sequence, run as-is.
@@ -40,7 +40,7 @@ apply schema main with seed;
 explain schema main;       -- returns { info: 'hash:...' }
 ```
 
-That is raw Quereus. Inside Sereus you write only the items between the braces; see "What the examples are" above.
+That is raw Quereus. Inside Sereus you write only the items between the braces; see "What the examples are" above. `seed` items and `with seed` have no Sereus equivalent; see [Seeds](#seeds-local-quereus-databases-only).
 
 Conventions used below:
 - "Strand" = the database shared by consenting participants.
@@ -79,9 +79,6 @@ table messages (
   -- Prevent empty content at insert-time only
   constraint nonempty_content check on insert (length(content) > 0)
 );
-
--- Seed an admin user (Sereus does not apply seeds to a strand today; see "Seeds" below)
-seed users (('u_admin', 'Admin', null, '2026-01-01T00:00:00Z'));
 ```
 
 ---
@@ -540,18 +537,22 @@ table documents (
 
 ---
 
-### Seeds (Deterministic Bootstrapping)
+### Seeds (Local Quereus Databases Only)
 
-```sql schema
-table roles (code text primary key, label text null);
+```sql script
+declare schema main using (default_vtab_module = 'memory') {
+  table roles (code text primary key, label text null);
 
--- One seed item per table; each row lists every column in declaration order
-seed roles (('admin', 'Administrator'), ('member', 'Member'), ('guest', null));
+  -- One seed item per table; each row lists every column in declaration order
+  seed roles (('admin', 'Administrator'), ('member', 'Member'), ('guest', null));
+}
+
+apply schema main with seed;
 ```
 
 Quereus also parses a `seed <table> values (<columns>) values (...)` form, but it ignores that column list and inserts each row positionally: a row that omits a column fails, and one that lists columns out of declaration order lands its values in the wrong columns. List every column instead.
 
-Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **The Sereus plugin applies an sApp schema without `with seed`** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/compose-strand.ts`), so seed items do not insert rows into a strand today; an app that needs rows at birth writes them itself when it founds the strand. Whether Sereus should apply seeds is an open decision (`tickets/blocked/decide-sapp-schema-seed-rows.md`).
+Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **Sereus refuses an sApp schema containing a `seed` item** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/compose-strand.ts`): the schema is applied on every node of the strand at every connect, and two nodes inserting the same seed key at once would collide (see [Ordering Events](#ordering-events-there-is-no-commit-order-column)). An app that needs rows at birth inserts them itself from the node that founds the strand.
 
 ---
 
@@ -606,7 +607,7 @@ A table-valued function sees a preceding table's columns only through `cross joi
 
 ### Putting It All Together: A Compact sApp Schema
 
-This example demonstrates a realistic consent-based messaging app schema using all key features: FK, composite PK, checks (immediate + auto-deferred), generated columns, indexes, views, mutation context, assertions, and seeds.
+This example demonstrates a realistic consent-based messaging app schema using all key features: FK, composite PK, checks (immediate + auto-deferred), generated columns, indexes, views, mutation context, and assertions.
 
 ```sql schema chat
 -- Users & roles
@@ -621,7 +622,7 @@ unique index idx_users_handle on users(handle);
 table roles (
   code text primary key
 );
-seed roles (('admin'), ('member'));
+-- The app inserts the 'admin' and 'member' rows when it founds the strand
 
 table user_roles (
   user_id text,
@@ -705,7 +706,7 @@ assertion conversation_has_admin check (
 - Use global assertions for invariants spanning multiple tables.
 - Expect some checks to be validated at COMMIT (auto-deferred) when referencing external rows/aggregates.
 - Keep views as read models; avoid complex write logic in views.
-- Seeds give a local Quereus database deterministic bootstrap rows, but Sereus does not apply them to a strand today (see [Seeds](#seeds-deterministic-bootstrapping)); write bootstrap rows from the app when it founds the strand.
+- Rows a strand needs at birth, such as a role list, are inserted by the app when it founds the strand, because Sereus refuses `seed` items (see [Seeds](#seeds-local-quereus-databases-only)).
 - Index for uniqueness and query speed; prefer named composite PKs where natural.
 - Mint a client-generated primary key once per logical event and hold it across retries — a strand write can fail without settling whether it landed, so a key minted per attempt turns a manual retry into a duplicate row. See [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
 - Per-user state (read position, drafts, preferences) has no private home yet: a per-party key in the strand table partitions it but hides nothing from other members — see [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim).

@@ -665,6 +665,19 @@ describe('applyAppSchema', () => {
 			await db.close();
 		}
 	});
+
+	it('refuses a seed item, before applying any of the schema', async () => {
+		const db = new Database();
+		try {
+			await expect(applyAppSchema(db, `
+				table roles (name text primary key);
+				seed roles (('admin'), ('member'));
+			`)).rejects.toThrow(/seed item\(s\) for table\(s\) roles/);
+			expect(db.schemaManager.getSchema('App')?.getAllTables() ?? []).toEqual([]);
+		} finally {
+			await db.close();
+		}
+	});
 });
 
 describe('resolveStrandClusterSize', () => {
