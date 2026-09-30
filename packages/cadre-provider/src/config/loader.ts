@@ -129,6 +129,7 @@ export function loadConfig(options: LoadConfigOptions = {}): ProviderConfig {
 
 const REDACTED = '[redacted]';
 
+// NOTE: any field marked `secretString` in schema.ts must also be redacted here; the mark carries no metadata, so the two lists can drift apart.
 /** The config with every secret replaced: for the debug dump and for `check`'s printout. */
 export function redactConfigSecrets(config: ProviderConfig): ProviderConfig {
   const billing = { ...config.billing };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { loadConfig } from '../loader.js';
+import { loadConfig, redactConfigSecrets } from '../loader.js';
 import { validatePushConfig, redactPushConfig } from '../validate.js';
 import type { ProviderPushConfig } from '../types.js';
 
@@ -41,13 +41,28 @@ describe('validatePushConfig', () => {
   });
 });
 
-describe('redactPushConfig', () => {
-  it('replaces every private key but keeps identifiers', () => {
+describe('secret redaction', () => {
+  it('redactPushConfig replaces every private key but keeps identifiers', () => {
     const redacted = redactPushConfig({ default: { fcm: FCM }, tenants: { a: { apns: APNS } } });
     const serialized = JSON.stringify(redacted);
     expect(serialized).not.toContain('FCM-PEM');
     expect(serialized).not.toContain('P8-PEM');
     expect(redacted.default?.fcm?.projectId).toBe('proj');
     expect(redacted.tenants?.a?.apns?.bundleId).toBe('com.example');
+  });
+
+  it('redactConfigSecrets hides the Stripe secrets and the push private keys', () => {
+    const config = loadConfig({
+      env: { STRIPE_SECRET_KEY: 'sk-PLANTED', STRIPE_WEBHOOK_SECRET: 'whsec-PLANTED' },
+      overrides: { push: { default: { fcm: FCM }, tenants: { a: { apns: APNS } } } },
+    });
+    const secrets = ['sk-PLANTED', 'whsec-PLANTED', 'FCM-PEM', 'P8-PEM'];
+    const before = JSON.stringify(config);
+    for (const secret of secrets) expect(before).toContain(secret);
+
+    const redacted = redactConfigSecrets(config);
+    const after = JSON.stringify(redacted);
+    for (const secret of secrets) expect(after).not.toContain(secret);
+    expect(redacted.push?.default?.fcm?.projectId).toBe('proj');
   });
 });
