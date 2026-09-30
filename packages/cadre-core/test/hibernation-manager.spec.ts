@@ -621,20 +621,26 @@ describe('HibernationManager', () => {
       await driveToHibernating(); // idle @1000, hibernated @2000, first check-in armed @2100
       await manager.forceHibernate(chainless);
 
+      await manager.probeWake(instance);
+      await manager.probeWake(chainless);
+      // The wakes' settles arm no idle countdown while the probes hold the strands: one
+      // shorter than the window would flip a probed strand to idle mid-window.
+      await vi.advanceTimersByTimeAsync(1000 + 10);
+      expect(callbacks.idleCalls).toEqual(['strand-probed']); // only the pre-probe idle @1000
+
       for (const probed of [instance, chainless]) {
-        await manager.probeWake(probed);
         manager.recordActivity(probed); // an idle countdown armed mid-probe must not outlive its end
         probed.status = 'hibernating';  // as CadreNode's window (or its failure path) leaves it
         manager.endProbe(probed);
       }
 
-      // Re-armed at base delay from the probe's end (@2050); the chainless strand gains none.
-      expect(instance.nextCheckIn?.getTime()).toBe(2150);
+      // Re-armed at base delay from the probe's end (@3060); the chainless strand gains none.
+      expect(instance.nextCheckIn?.getTime()).toBe(3160);
       expect(chainless.nextCheckIn).toBeUndefined();
       await vi.advanceTimersByTimeAsync(5000);
       expect(callbacks.checkInCalls).toContain('strand-probed');
       expect(callbacks.checkInCalls).not.toContain('strand-probed-chainless');
-      expect(callbacks.idleCalls).toEqual(['strand-probed']); // only the pre-probe idle @1000
+      expect(callbacks.idleCalls).toEqual(['strand-probed']); // the mid-probe countdown never fired
 
       manager.stop();
     });

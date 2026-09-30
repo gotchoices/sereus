@@ -4939,6 +4939,11 @@ export class CadreNode implements SAppIdLookup {
   private async runWakeWindow(instance: StrandInstance, activityMark: Date, windowMs: number): Promise<boolean> {
     const strandId = instance.strandId;
 
+    // NOTE: activity during the window arms the idle countdown, so a window longer than the
+    // hint's idle + hibernate timeouts (only reachable with a custom `windowMs`; the shortest
+    // default pair, archive's, is 40 s vs a 15 s window) can let the timer path quiesce the
+    // strand mid-window, which this then marks live. If such windows become real, suspend the
+    // idle countdown while a window holds the strand.
     await this.holdWakeWindow(instance, windowMs);
 
     const sawActivity = instance.lastActivity !== activityMark;
@@ -6915,6 +6920,10 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // Before the resume, as the check-in takes it (see handleStrandCheckIn).
+    // NOTE: a `wakeStrand` already resuming when this runs stamped its activity before this
+    // mark, so the probe joins it without counting it and the window can re-hibernate a strand
+    // that wake asked to keep up; if foreground wakes and serviceWake overlap in practice, mark
+    // before the joined wake's stamp instead.
     const activityMark = instance.lastActivity;
     try {
       // Coalesced resume: HibernationManager.beginWake, so a racing push-wake shares this
