@@ -180,8 +180,8 @@ exits 0.
 One caveat the CLI cannot paper over: a removal that commits while this node has **no**
 control-network connections is local-only, and a physical delete cannot be re-issued the way
 an insert can, so siblings may keep running the strand when they come back. Remove while the
-node is connected. See "Delete-while-alone durability" in
-[`docs/architecture.md`](../../docs/architecture.md).
+node is connected. See "Deletes made while alone" in
+[`docs/architecture.md`](../../docs/architecture.md#deletes-made-while-alone).
 
 ### Approver Keys
 

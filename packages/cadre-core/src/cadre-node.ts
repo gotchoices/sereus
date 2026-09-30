@@ -3771,7 +3771,7 @@ export class CadreNode implements SAppIdLookup {
   // local-only). The remedy: detect "wrote while alone" (0 connections is a sound
   // lower bound), queue the affected row, and RE-ISSUE the write once the cohort
   // grows (0→≥1 connection), as an idempotent monotonic update that now broadcasts.
-  // See docs/architecture.md (Control Network → write-while-alone durability).
+  // See docs/architecture.md (Control Network Convergence → "Writes made while alone").
   // ============================================================================
 
   /**
@@ -5432,7 +5432,7 @@ export class CadreNode implements SAppIdLookup {
    * — and with it the consent re-seat foreclosure — does propagate; but the physical row
    * deletion cannot be replayed, and `queryStrands` reads raw (no retired-stamp filter),
    * so siblings that already hold the row keep running the strand until the collection
-   * itself converges (logged loudly; see the delete-while-alone durability note in
+   * itself converges (logged loudly; see "Deletes made while alone" in
    * docs/architecture.md).
    *
    * A no-op (no throw, no tombstone) when the row is already absent — but a
