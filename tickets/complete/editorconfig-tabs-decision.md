@@ -34,3 +34,7 @@ A maintainer should choose one of:
 
 Until decided, this is documentation/tooling debt, not a bug. Pick (a) or (b) and update AGENTS.md +
 `docs/STATUS.md` to match whatever is chosen.
+
+## Closed (2026-09-30)
+
+Maintainer: the docs-versus-code indentation difference does not matter; ignore it. No change.

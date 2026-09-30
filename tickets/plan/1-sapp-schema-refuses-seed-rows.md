@@ -35,3 +35,7 @@ The guide (once repaired) is honest that seeds do nothing in a strand, and seed 
 ## Reversibility
 
 Fully reversible either way: no stored data depends on the choice, and switching later is a one-line change in `applyAppSchema` plus guide text.
+
+## Maintainer decision (2026-09-30)
+
+**Refuse seed rows.** Adopt the proposed rule: an sApp schema's `seed` items are not applied to a strand, and `applyAppSchema` refuses a schema containing any, with an error saying that rows an app needs at birth are written by the app when it founds the strand. Update `docs/schema-guide.md` so its seed section shows seeds only as a Quereus feature for local databases, and add a release note.
