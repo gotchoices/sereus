@@ -163,7 +163,7 @@ app/
   settings/         settings screen: connect/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
-  ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
+  ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   start-options.ts  the last start options + autoStart, remembered between launches
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands  (← RN use-cadre + cadre-context)

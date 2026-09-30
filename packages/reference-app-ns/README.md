@@ -29,7 +29,7 @@ app/
   settings/         settings screen: connect/seed/add-peer/create-strand/modal (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (hermes, event, abort, intl, websocket, node-crypto, node-os, buffer-global, audit)
-  ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
+  ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands (← use-cadre + cadre-context)
   chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, participant auto-register (← use-chat)
