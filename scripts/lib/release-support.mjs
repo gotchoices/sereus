@@ -1,9 +1,10 @@
 /**
- * Decisions shared by the four steps of a release — `release-preflight.mjs`, `release-guard.mjs`,
- * `publish-package.mjs` and `release-finish.mjs`. They live here rather than in any one of those
- * scripts because the whole point of the chain is that the steps cannot disagree: if the preflight
- * decides the pending notes are empty, the finish step must agree about which file it reads, and if
- * the guard decides a version is already on npm, the publish must skip exactly that version.
+ * Decisions shared by the five steps of a release — `release-preflight.mjs`, `release-guard.mjs`,
+ * `publish-package.mjs`, `await-published.mjs` and `release-finish.mjs`. They live here rather than
+ * in any one of those scripts because the whole point of the chain is that the steps cannot
+ * disagree: if the preflight decides the pending notes are empty, the finish step must agree about
+ * which file it reads; if the guard decides a version is already on npm, the publish must skip
+ * exactly that version; and the wait must ask the same registry the publish reached.
  *
  * Everything here is either a pure function of its inputs or a thin wrapper around one, so
  * `scripts/release-support.test.mjs` can exercise the decisions without a network or a git tree.
@@ -98,6 +99,17 @@ export function interpretPackument({ status, body }, name, version) {
 			'already published is unknown. Refusing to guess — re-run once the registry answers.',
 		);
 	}
+	return Object.hasOwn(readPackumentJson(body, name).versions, version);
+}
+
+/**
+ * Parse a packument the registry answered 200 with. A body that is not JSON, or has no `versions`
+ * map, throws: the registry was not answering the question asked, and reading past that would
+ * guess at whether a version is there.
+ *
+ * @returns {{ versions: Record<string, unknown>, [key: string]: unknown }}
+ */
+export function readPackumentJson(body, name) {
 	let packument;
 	try {
 		packument = JSON.parse(body);
@@ -108,7 +120,7 @@ export function interpretPackument({ status, body }, name, version) {
 	if (versions === null || typeof versions !== 'object') {
 		throw new Error(`registry response for ${name} has no \`versions\` map, so it cannot be read`);
 	}
-	return Object.prototype.hasOwnProperty.call(versions, version);
+	return packument;
 }
 
 /**

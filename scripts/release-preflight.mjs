@@ -2,10 +2,11 @@
 /**
  * Release preflight — the confirmation gate in front of the release chain.
  *
- * `yarn release` is five steps: this script, `yarn bump --no-push`, `release-guard.mjs`, `yarn pub`,
- * `release-finish.mjs`. This one runs before the version has been chosen, so it can only judge the
- * things that do not depend on it. Everything that needs the version — the dist-tag refusal, the tag
- * checks — belongs to the guard, which runs after the bump and still before anything is pushed.
+ * `yarn release` is six steps: this script, `yarn bump --no-push`, `release-guard.mjs`, `yarn pub`,
+ * `yarn await-published`, `release-finish.mjs`. This one runs before the version has been chosen, so
+ * it can only judge the things that do not depend on it. Everything that needs the version — the
+ * dist-tag refusal, the tag checks — belongs to the guard, which runs after the bump and still before
+ * anything is pushed.
  *
  * `yarn pub` publishes to npm, which is irreversible for a given version number. This script
  * deliberately does NOT run the checks itself: a release should not silently spend twenty minutes
