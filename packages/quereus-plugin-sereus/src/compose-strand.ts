@@ -408,12 +408,10 @@ function assertNoIgnoredItems(db: Database): void {
 }
 
 function assertNoSeedItems(db: Database): void {
-	const tables = new Set<string>();
-	for (const item of declaredAppItems(db)) {
-		if (item.type === 'declaredSeed') tables.add(item.tableName);
-	}
-	if (tables.size > 0) {
-		throw new Error(`sApp schema has seed item(s) for table(s) ${[...tables].join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
+	// Quereus refuses a second seed for one table at declare, so these names are distinct.
+	const tables = declaredAppItems(db).flatMap(item => item.type === 'declaredSeed' ? [item.tableName] : []);
+	if (tables.length > 0) {
+		throw new Error(`sApp schema has seed item(s) for table(s) ${tables.join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
 	}
 }
 
