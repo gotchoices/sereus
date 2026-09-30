@@ -26,6 +26,9 @@ export async function removeAllNodes(orchestrators: HostProcessOrchestrator[]): 
     for (const orch of orchestrators) {
       await removeNodesOf(orch, nodes, errors);
     }
+    // NOTE: liveness is by pid alone, not the startup token. If the OS hands a dead child's pid to an
+    // unrelated process before this line, that process is reported and killed; if this ever produces a
+    // false failure, verify the token before counting a pid as a survivor.
     const survivors = nodes.filter((n) => isPidAlive(n.pid));
     if (survivors.length === 0) return;
     survivors.forEach((n) => forceKill(n.pid));
