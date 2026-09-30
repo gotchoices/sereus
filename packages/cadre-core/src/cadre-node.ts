@@ -4775,7 +4775,7 @@ export class CadreNode implements SAppIdLookup {
    * triggers are coalesced upstream by `HibernationManager`, so this runs once
    * per wake; a wake racing a check-in joins the check-in's rebuild in `resumeStrand`.
    *
-   * A failed rebuild re-hibernates the strand (see {@link rehibernateAfterFailedResume});
+   * A failed rebuild re-hibernates the strand (see {@link rehibernateIfResumeFailed});
    * every failure rethrows, so the waker still sees the error.
    *
    * Records no activity itself: whoever asked for the wake did ({@link wakeStrand},
@@ -4805,13 +4805,7 @@ export class CadreNode implements SAppIdLookup {
     try {
       await this.resumeStrandRuntime(strandId);
     } catch (error) {
-      // Only a failed rebuild (this wake's, or the check-in's it joined) is this wake's to
-      // undo, and it reads `'error'`. A failure before the rebuild — the cohort seed — may
-      // find a check-in's runtime mid-build or held for its window; that is the check-in's.
-      if (instance.status === 'error') {
-        log('Wake of strand %s failed; re-hibernating so a later wake or check-in retries: %o', strandId, error);
-        await this.rehibernateAfterFailedResume(instance, 'Wake');
-      }
+      await this.rehibernateIfResumeFailed(instance, 'Wake', error);
       throw error;
     }
     this.emit('strand:waking', { strandId });
@@ -4819,12 +4813,29 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Put a strand whose resume failed back to `'hibernating'`, after a best-effort quiesce
-   * that releases any partially rebuilt runtime. `resumeStrand` leaves a failed strand
-   * `'error'`, which nothing retries: `HibernationManager` wakes only `idle`/`hibernating`
-   * strands, and reads any other status after a check-in as "woke", ending its chain.
-   * Safe to run twice for one failure (a wake that joined a failed check-in's rebuild):
-   * quiescing a quiesced strand is a no-op.
+   * Undo a failed {@link resumeStrandRuntime}, but only when the rebuild itself failed — this
+   * caller's, or the one it joined in `resumeStrand` — which leaves the instance `'error'`. A
+   * failure before the rebuild (the cohort seed read) built nothing, and may find the strand
+   * mid-build or just brought up by a concurrent wake or check-in; that runtime belongs to
+   * whoever is building or holding it, so quiescing it here would stop a node still in use.
+   */
+  private async rehibernateIfResumeFailed(instance: StrandInstance, context: string, error: unknown): Promise<void> {
+    if (instance.status !== 'error') {
+      log('%s of strand %s failed before its rebuild (status=%s); leaving the strand as it is: %o',
+        context, instance.strandId, instance.status, error);
+      return;
+    }
+    log('%s of strand %s failed; re-hibernating so a later wake or check-in retries: %o', context, instance.strandId, error);
+    await this.rehibernateAfterFailedResume(instance, context);
+  }
+
+  /**
+   * Put a strand whose rebuild or wake window failed back to `'hibernating'`, after a
+   * best-effort quiesce that releases any runtime left up. `resumeStrand` leaves a failed
+   * strand `'error'`, which nothing retries: `HibernationManager` wakes only
+   * `idle`/`hibernating` strands, and reads any other status after a check-in as "woke",
+   * ending its chain. Safe to run twice for one failure (a wake that joined a failed
+   * check-in's rebuild): quiescing a quiesced strand is a no-op.
    */
   private async rehibernateAfterFailedResume(instance: StrandInstance, context: string): Promise<void> {
     await this.strandManager.quiesceStrand(instance.strandId).catch((cleanupErr) => {
@@ -4895,28 +4906,34 @@ export class CadreNode implements SAppIdLookup {
     // Before the resume, so a wake that joins this rebuild, or activity recorded while it
     // runs, counts: the window then leaves the strand up for it.
     const activityMark = instance.lastActivity;
-    try {
-      // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
-      //    seed, then rebuild the runtime.
-      log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
-      await this.resumeStrandRuntime(strandId);
 
-      // 2-3. Bounded window for the strand network to connect + the app to act,
-      //      then re-hibernate-if-idle. Shared with the on-demand serviceWake.
-      const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+    // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
+    //    seed, then rebuild the runtime.
+    log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
+    try {
+      await this.resumeStrandRuntime(strandId);
+    } catch (err) {
+      // Every failure resolves: `HibernationManager.runCheckIn` decides wake-vs-escalate
+      // from `instance.status` alone. A failed rebuild — on a flaky network, the very
+      // scenario hibernation targets — leaves `resumeStrand`'s `error`, which reads as
+      // "woke" and would STOP the chain with no runtime and no future check-in, so it goes
+      // back to `hibernating` and the manager escalates the backoff and retries. A failure
+      // before the rebuild (the seed read) built nothing: the strand is still `hibernating`
+      // (the manager escalates), or a wake that began meanwhile is building or holding it,
+      // and the manager hands the chain to that wake, whose outcome restores or ends it.
+      await this.rehibernateIfResumeFailed(instance, 'Check-in', err);
+      return;
+    }
+
+    // 2-3. Bounded window for the strand network to connect + the app to act,
+    //      then re-hibernate-if-idle. Shared with the on-demand serviceWake.
+    const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+    try {
       await this.runWakeWindow(instance, activityMark, windowMs);
     } catch (err) {
-      // A check-in that throws part-way — resume failing on a flaky network (the
-      // very scenario hibernation targets), the window rejecting, or quiesce
-      // throwing — must leave the strand HIBERNATING, not in the `error` status
-      // that `resumeStrand` sets on failure. `HibernationManager.runCheckIn`
-      // decides wake-vs-escalate purely from `instance.status` after this
-      // resolves: an `error` status reads as "woke", which STOPS the check-in
-      // chain and strands the strand with no runtime and no future check-in.
-      // Forcing it back to `hibernating` (after a best-effort quiesce to release
-      // any partially-rebuilt runtime) makes the manager escalate the backoff and
-      // retry on the next tick.
-      log('Check-in failed for strand %s; re-hibernating to retry on backoff: %o', strandId, err);
+      // The window's quiesce threw with the rebuilt runtime up: release it best-effort and
+      // leave the strand `hibernating`, for the same reason as a failed rebuild above.
+      log('Check-in window failed for strand %s; re-hibernating to retry on backoff: %o', strandId, err);
       await this.rehibernateAfterFailedResume(instance, 'Check-in');
     }
   }
@@ -6873,8 +6890,8 @@ export class CadreNode implements SAppIdLookup {
    * gets back the check-in chain this call interrupted — it never gains one it lacked,
    * so a strand the mobile runner force-hibernated stays down until the next push.
    * Returns `{ serviced: false }` (never throws) when
-   * the node is not running or the strand is unknown, and surfaces a resume
-   * failure as `{ serviced: true, hadActivity: false }` after re-hibernating.
+   * the node is not running or the strand is unknown, and surfaces a wake or
+   * window failure as `{ serviced: true, hadActivity: false }`.
    *
    * @param strandId - the strand a push said has pending activity.
    * @param opts.windowMs - override the live-window duration (defaults to the
@@ -6925,25 +6942,41 @@ export class CadreNode implements SAppIdLookup {
     // that wake asked to keep up; if foreground wakes and serviceWake overlap in practice, mark
     // before the joined wake's stamp instead.
     const activityMark = instance.lastActivity;
+    const windowMs = opts?.windowMs ?? this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+    try {
+      return await this.wakeAndHoldForService(instance, activityMark, windowMs);
+    } finally {
+      // After the window (or a failure) decided the state: the idle countdown if the strand
+      // stayed up, else the check-in chain this probe interrupted, if any.
+      this.hibernationManager.endProbe(instance);
+    }
+  }
+
+  /**
+   * The wake and window of {@link runServiceWake}. A failure in either — the network
+   * unreachable inside a Doze grant, say — must not throw out of a background task, so it
+   * reports no activity. Each stage cleans up only what it owns.
+   */
+  private async wakeAndHoldForService(instance: StrandInstance, activityMark: Date, windowMs: number): Promise<ServiceWakeResult> {
+    const { strandId } = instance;
     try {
       // Coalesced resume: HibernationManager.beginWake, so a racing push-wake shares this
       // single runtime build. Not through `wakeStrand`, which records the wake as activity:
       // this probe's own wake must not count as a reason to stay up.
       await this.hibernationManager.probeWake(instance);
-      const windowMs = opts?.windowMs ?? this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+    } catch (error) {
+      // handleStrandWake has already re-hibernated a failed rebuild, and left alone a strand
+      // it failed before building, which may be a check-in's.
+      log('serviceWake: wake of strand %s failed: %o', strandId, error);
+      return { strandId, serviced: true, hadActivity: false };
+    }
+    try {
       const hadActivity = await this.runWakeWindow(instance, activityMark, windowMs);
       return { strandId, serviced: true, hadActivity };
     } catch (error) {
-      // Resume failing mid-window (network unreachable inside a Doze grant, etc.)
-      // must not throw out of a background task: re-hibernate and report no
-      // activity, mirroring handleStrandCheckIn's re-hibernate-on-error.
       log('serviceWake: strand %s failed during wake window; re-hibernating: %o', strandId, error);
       await this.rehibernateAfterFailedResume(instance, 'serviceWake');
       return { strandId, serviced: true, hadActivity: false };
-    } finally {
-      // After the window (or the failure's re-hibernate) decided the state: the idle countdown
-      // if the strand stayed up, else the check-in chain this probe interrupted, if any.
-      this.hibernationManager.endProbe(instance);
     }
   }
 

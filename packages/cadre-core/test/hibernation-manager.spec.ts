@@ -645,6 +645,42 @@ describe('HibernationManager', () => {
       manager.stop();
     });
 
+    it('a check-in that returns while a wake is rebuilding the strand hands its chain to that wake', async () => {
+      const instance = createInstance('strand-handoff', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async () => { instance.status = 'hibernating'; });
+      let failWake!: () => void;
+      // As CadreNode.handleStrandWake: the rebuild holds the strand `'starting'`; a failed one
+      // re-hibernates it and rethrows.
+      callbacks.onWake.mockImplementation(async () => {
+        instance.status = 'starting';
+        await new Promise<void>((resolve) => { failWake = resolve; });
+        instance.status = 'hibernating';
+        throw new Error('wake boom');
+      });
+      // A wake begins while the check-in reads the cohort seed; the read then fails, and the
+      // check-in leaves the wake's mid-build strand alone.
+      let wake!: Promise<void>;
+      callbacks.onCheckIn.mockImplementationOnce(async () => { wake = manager.wakeStrand(instance); });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 returns with the strand 'starting'
+      expect(instance.status).toBe('starting');
+
+      failWake();
+      await expect(wake).rejects.toThrow(/wake boom/);
+
+      // The wake's failure restored the chain at base delay from @2150.
+      expect(instance.nextCheckIn?.getTime()).toBe(2250);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(callbacks.onCheckIn).toHaveBeenCalledTimes(2);
+
+      manager.stop();
+    });
+
     it('a throwing onCheckIn does not break the chain (the next tick still fires)', async () => {
       const instance = createInstance('strand-throw', 'interactive');
       const callbacks = createCallbacks();

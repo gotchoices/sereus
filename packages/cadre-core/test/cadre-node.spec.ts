@@ -839,7 +839,7 @@ describe('CadreNode', () => {
 
       expect(result).toEqual({ strandId: 'sw-fail', serviced: true, hadActivity: false });
       expect(instance.status).toBe('hibernating');
-      // The failed wake and serviceWake's own catch each quiesce; the repeat is a no-op.
+      // The failed wake's cleanup quiesces; serviceWake adds none of its own for the wake stage.
       expect(new Set(calls.quiesce)).toEqual(new Set(['sw-fail']));
     });
 
