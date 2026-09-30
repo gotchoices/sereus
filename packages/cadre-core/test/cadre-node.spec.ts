@@ -866,6 +866,37 @@ describe('CadreNode', () => {
       expect(instance.libp2pNode).toBeDefined();
     });
 
+    it('a check-in that fails before rebuilding leaves a wake\'s mid-build runtime alone', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'checkin-mid-build', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['checkin-mid-build', instance]]), calls);
+      injectControl(node, []);
+      // While the check-in reads the cohort seed, a wake's rebuild starts (node attached,
+      // database not yet); then the check-in's seed read fails.
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => {
+          instance.status = 'starting';
+          instance.libp2pNode = {} as never;
+          throw new Error('control read failed');
+        }
+      };
+
+      const callCheckIn = (node as unknown as {
+        handleStrandCheckIn: (id: string) => Promise<void>;
+      }).handleStrandCheckIn.bind(node);
+      await expect(callCheckIn('checkin-mid-build')).resolves.toBeUndefined();
+
+      expect(calls.resume).toEqual([]);
+      expect(calls.quiesce).toEqual([]);
+      expect(instance.status).toBe('starting');
+      expect(instance.libp2pNode).toBeDefined();
+    });
+
     it('coalesces concurrent serviceWake calls for the same strand into one runtime build', async () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
