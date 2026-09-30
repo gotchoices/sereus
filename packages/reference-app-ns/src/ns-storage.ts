@@ -63,6 +63,22 @@ function openStorage(dbName: string): Promise<SqliteRawStorage> {
 }
 
 type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
+/**
+ * `getStoreIdentity`: see the accepted tradeoff on `LazyNsRawStorage`. `readCached`: a
+ * marker set only by a storage with a read cache beneath it, which `SqliteRawStorage`
+ * does not have.
+ */
+type OptionalMemberOmitted = 'getStoreIdentity' | 'readCached';
+
+type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
+type MustBeNever<T extends never> = T;
+/**
+ * Fails to compile when `IRawStorage` gains an optional member that is in neither list
+ * above, so each one is forwarded or omitted by decision rather than by default.
+ */
+export type UnclassifiedOptionalMember = MustBeNever<
+	Exclude<OptionalKeys<IRawStorage>, OptionalMethodForwarded | OptionalMemberOmitted>
+>;
 
 /**
  * Lazy `IRawStorage` proxy. Defers the async SQLite open until the first
@@ -71,7 +87,7 @@ type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
  * `IRawStorage`'s optional methods are detected by callers checking that the method
  * exists, so one this proxy leaves out reads as "not supported" on this app. The
  * `implements` clause names the optional methods the proxy forwards, so dropping one
- * is a compile error. It cannot catch an optional method added upstream later.
+ * is a compile error, and `UnclassifiedOptionalMember` rejects one added upstream later.
  *
  * NOTE: accepted tradeoff — `getStoreIdentity` is omitted although `SqliteRawStorage`
  * has it. It is synchronous and must return a string fixed at construction, but the
@@ -178,6 +194,9 @@ class LazyNsRawStorage
 		return (await this.storage()).getApproximateBytesUsed();
 	}
 
+	// NOTE: `SqliteRawStorage.listBlockIds` reads every block id into memory before yielding,
+	// and runs at node startup and at each peer join. Cost on a large phone database is
+	// unmeasured; if either is seen stalling, the upstream statement needs to page.
 	async *listBlockIds(): AsyncIterable<BlockId> {
 		const storage = await this.storage();
 		yield* storage.listBlockIds();
