@@ -529,6 +529,8 @@ describe('DonationService.applySeed', () => {
   });
 });
 
+// The orchestrator refuses to re-spawn a container whose child is still running, so
+// each case that expects a spawn has the first child (`dock_1`) go down first.
 describe('DonationService.respawn', () => {
   it('replays the persisted spawn inputs, swaps the handles, and leaves status alone', async () => {
     const orch = new FakeOrchestrator();
@@ -540,6 +542,7 @@ describe('DonationService.respawn', () => {
     // Pretend the borrower seeded it, then the child died.
     store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
 
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
 
     expect(result).toMatchObject({ outcome: 'respawned' });
@@ -573,6 +576,7 @@ describe('DonationService.respawn', () => {
     const svc = new DonationService({ orchestrator: orch, grants, store });
 
     const provisioned = await svc.provision(baseRequest(token));
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
 
     expect(result).toMatchObject({ outcome: 'respawned' });
@@ -615,6 +619,7 @@ describe('DonationService.respawn', () => {
     const provisioned = await svc.provision({ ...baseRequest(token), bootstrapNodes: [] });
     store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
 
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
 
     expect(result).toMatchObject({ outcome: 'respawned' });
@@ -710,6 +715,7 @@ describe('DonationService.respawn', () => {
     const provisioned = await svc.provision(baseRequest(token));
     store.failNextPut = true;
 
+    orch.crash('dock_1');
     await expect(svc.respawn(provisioned.id)).rejects.toMatchObject({ code: 'orchestrator_error' });
 
     // Stopped, not removed: `removeContainer` deletes the workdir, and the
@@ -780,6 +786,7 @@ describe('DonationService.respawn', () => {
     let terminated: Promise<void> | undefined;
     orch.onSpawned = () => { terminated ??= svc.terminate(provisioned.id); };
 
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
     await terminated;
 
@@ -849,6 +856,7 @@ describe('DonationService.respawn', () => {
       store.put({ ...store.get(provisioned.id)!, status: 'error', error: 'gave up' });
     };
 
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
 
     expect(result).toEqual({ outcome: 'abandoned', status: 'error' });
@@ -870,6 +878,7 @@ describe('DonationService.respawn', () => {
     orch.createDelayMs = 20;
     orch.onCreate = () => { store.remove(provisioned.id); };
 
+    orch.crash('dock_1');
     const result = await svc.respawn(provisioned.id);
 
     // No row to protect, so nothing is written back and the child is fully

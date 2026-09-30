@@ -42,6 +42,9 @@ interface FakeChild {
  *   resolving the moment its container re-spawns;
  * - a **failed** `createContainer` leaves those handles exactly as it found them
  *   (the real `restoreDroppedHandles`);
+ * - `createContainer` refuses a container whose previous child is still running
+ *   (the real `refuseRespawnOverLiveChild`), so a test re-spawns only after a
+ *   `stopContainer` or a {@link FakeOrchestrator.crash};
  * - `stopContainer` / `removeContainer` throw `Container not found: <dockerId>`
  *   for a handle this orchestrator no longer knows (the real `requireHandle`);
  * - `reclaimWorkdir` refuses a containerId that still resolves to a live
@@ -97,16 +100,14 @@ export class FakeOrchestrator implements Orchestrator {
     this.onCreate?.(request);
     if (this.createDelayMs) await sleep(this.createDelayMs);
     if (this.failCreate) throw new Error('spawn boom');
+    // After the delay, as in the real class, where the check is the last `await`
+    // before the drop: a stop that lands during the spawn window is seen here.
+    this.refuseRespawnOverLiveChild(request.containerId);
     // Drop the prior handles for this container, mirroring `dropStaleHandle`.
     // Success-only, and placed here on purpose: the real drop happens after the
     // spawn's every `await` and cannot fail afterwards, and a create that throws
     // puts the handles back (`restoreDroppedHandles`) — so a failed create must
     // leave them untouched. `DonationSupervisor`'s give-up test depends on that.
-    // NOTE: the real class refuses a re-spawn while the container's previous
-    // child is still alive (`refuseRespawnOverLiveChild`); this one replaces it.
-    // The shared contract stops the first child before every re-spawn for that
-    // reason. If a donation test comes to depend on the refusal, model it here
-    // and add the case to `orchestrator-handle-contract.ts`.
     for (const [id, child] of this.children) {
       if (child.containerId === request.containerId) this.children.delete(id);
     }
@@ -209,6 +210,15 @@ export class FakeOrchestrator implements Orchestrator {
   /** Emit an arbitrary state change (e.g. the owner node stopping). */
   emit(info: ManagedNodeInfo): void {
     for (const listener of this.listeners) listener(info);
+  }
+
+  /** Mirrors the real method of the same name for a child this process spawned. */
+  private refuseRespawnOverLiveChild(containerId: string): void {
+    for (const child of this.children.values()) {
+      if (child.containerId === containerId && child.running) {
+        throw new Error(`container ${containerId} is still running`);
+      }
+    }
   }
 
   /** Mirrors `HostProcessOrchestrator.requireHandle` — unknown handles throw. */

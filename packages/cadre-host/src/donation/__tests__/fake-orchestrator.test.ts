@@ -30,7 +30,7 @@ const request = (containerId: string): OrchestratorCreateRequest => ({
 describeHandleContract<FakeOrchestrator>('FakeOrchestrator', {
   make: () => new FakeOrchestrator(),
   request,
-  // No process to wait for: a fake child is stoppable as soon as it exists.
+  // No process to wait for: a fake child is running as soon as it exists.
   started: () => Promise.resolve(),
   failNextCreate: (orch) => { orch.failCreate = true; },
 });
@@ -39,6 +39,7 @@ describe('FakeOrchestrator handle lifecycle', () => {
   it('drops the prior handle when a re-spawn succeeds (mirrors dropStaleHandle)', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));
+    orch.crash(first.dockerId);
     const second = await orch.createContainer(request('grn_1'));
 
     await expect(orch.stopContainer(first.dockerId)).rejects.toThrow(
@@ -156,6 +157,7 @@ describe('FakeOrchestrator handle lifecycle', () => {
   it('fires onSpawned after the drop, with the new handle live and the old one gone', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));
+    orch.crash(first.dockerId);
 
     let observed: { spawned: string; resolves: string | undefined } | undefined;
     orch.onSpawned = (dockerId) => {

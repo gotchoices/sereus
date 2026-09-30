@@ -27,7 +27,7 @@ export interface HandleContractHarness<O extends ContractOrchestrator> {
   /** A fresh orchestrator. Teardown is the calling file's own afterEach. */
   make(): O;
   request(containerId: string): OrchestratorCreateRequest;
-  /** Resolve once the spawn named by `dockerId` can be stopped. */
+  /** Resolve once the spawn named by `dockerId` reads as running. */
   started(orch: O, dockerId: string): Promise<void>;
   /**
    * Make `createContainer` for `containerId` throw from here on. Only called
@@ -50,9 +50,7 @@ export function describeHandleContract<O extends ContractOrchestrator>(
     return result;
   }
 
-  // The real class refuses to start a container whose previous child is still
-  // alive; the fake does not model that refusal. Stopping first keeps both on
-  // the path they share.
+  // Stops first: a container whose previous child is still running is refused.
   async function respawn(orch: O, containerId: string, previousDockerId: string): Promise<OrchestratorCreateResult> {
     await orch.stopContainer(previousDockerId);
     return spawn(orch, containerId);
@@ -86,6 +84,19 @@ export function describeHandleContract<O extends ContractOrchestrator>(
       await expectNotFound(orch.stopContainer(first.dockerId), first.dockerId);
       expect(orch.resolveDockerId(CONTAINER)).toBe(second.dockerId);
       await expect(orch.stopContainer(second.dockerId)).resolves.toBeUndefined();
+    });
+
+    // Launching over a live child hands its ports to a second child that then
+    // dies on them, while the caller records the new dockerId and seed token.
+    it('refuses to re-spawn a container whose previous child is still running', async () => {
+      const orch = harness.make();
+      const first = await spawn(orch, CONTAINER);
+
+      await expect(orch.createContainer(harness.request(CONTAINER)))
+        .rejects.toHaveProperty('message', `container ${CONTAINER} is still running`);
+
+      expect(orch.resolveDockerId(CONTAINER)).toBe(first.dockerId);
+      await expect(orch.stopContainer(first.dockerId)).resolves.toBeUndefined();
     });
 
     // The drop on re-spawn filters on containerId; an orchestrator that cleared
