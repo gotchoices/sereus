@@ -681,6 +681,33 @@ describe('HibernationManager', () => {
       manager.stop();
     });
 
+    it('a force-hibernate during a running check-in ends its chain, even with a probe holding the strand', async () => {
+      const instance = createInstance('strand-forced-mid-check-in', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async () => { instance.status = 'hibernating'; });
+      callbacks.onWake.mockImplementation(async () => { instance.status = 'active'; });
+      // Mid-window, the app backgrounds (force-hibernate), then a push-wake probe starts.
+      callbacks.onCheckIn.mockImplementationOnce(async () => {
+        instance.status = 'active';
+        await manager.forceHibernate(instance);
+        await manager.probeWake(instance);
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 returns during the probe
+
+      instance.status = 'hibernating';        // the probe's window re-quiesced it
+      manager.endProbe(instance);
+      expect(instance.nextCheckIn).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(callbacks.onCheckIn).toHaveBeenCalledTimes(1);
+
+      manager.stop();
+    });
+
     it('a throwing onCheckIn does not break the chain (the next tick still fires)', async () => {
       const instance = createInstance('strand-throw', 'interactive');
       const callbacks = createCallbacks();

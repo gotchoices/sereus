@@ -77,6 +77,12 @@ export class HibernationManager {
    * re-hibernate the strand after the wake settled.
    */
   private readonly probes: Map<string, { hadCheckInChain: boolean }> = new Map();
+  /**
+   * Strands whose check-in is running (its timer fired, `onCheckIn` not yet returned). A
+   * force-hibernate or untrack removes the strand, so the run's return schedules nothing: a
+   * check-in already running is part of the chain those calls cancel.
+   */
+  private readonly runningCheckIns: Set<string> = new Set();
   private running = false;
 
   constructor(config: HibernationConfig, callbacks: HibernationCallbacks) {
@@ -135,6 +141,7 @@ export class HibernationManager {
     this.wakePromises.clear();
     this.checkInsCancelledByWake.clear();
     this.probes.clear();
+    this.runningCheckIns.clear();
 
     log('HibernationManager stopped');
   }
@@ -178,6 +185,7 @@ export class HibernationManager {
     this.clearTimers(instance.strandId);
     this.checkInsCancelledByWake.delete(instance.strandId);
     this.probes.delete(instance.strandId);
+    this.runningCheckIns.delete(instance.strandId);
     await this.callbacks.onHibernate(instance.strandId);
     log('forceHibernate: strand %s hibernated (timers cancelled, not re-armed)', instance.strandId);
     return true;
@@ -209,6 +217,7 @@ export class HibernationManager {
     this.clearTimers(strandId);
     this.checkInsCancelledByWake.delete(strandId);
     this.probes.delete(strandId);
+    this.runningCheckIns.delete(strandId);
     log('Untracked strand %s from hibernation', strandId);
   }
 
@@ -455,6 +464,7 @@ export class HibernationManager {
    * sync window → re-hibernate-if-idle cycle in `CadreNode`) and AWAIT it before
    * deciding the next step.
    *
+   * - If a force-hibernate, untrack or stop cancelled the chain while it ran, stop.
    * - If a wake or probe holds the strand, hand the chain to it
    *   ({@link handCheckInChainToHolder}).
    * - If the strand woke during the check-in (`onCheckIn` left it non-
@@ -468,6 +478,7 @@ export class HibernationManager {
     if (!this.running) return;
 
     log('Check-in for hibernating strand %s (delay=%dms)', strandId, currentDelay);
+    this.runningCheckIns.add(strandId);
 
     try {
       await this.callbacks.onCheckIn(strandId);
@@ -477,7 +488,11 @@ export class HibernationManager {
       log('onCheckIn failed for strand %s: %o', strandId, err);
     }
 
-    if (!this.running) return;
+    if (!this.runningCheckIns.delete(strandId) || !this.running) {
+      log('Check-in chain of strand %s was cancelled while it ran; not rescheduling', strandId);
+      instance.nextCheckIn = undefined;
+      return;
+    }
     if (this.handCheckInChainToHolder(instance)) return;
 
     // The check-in either woke the strand (CadreNode left it active) or left it
