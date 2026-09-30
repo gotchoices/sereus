@@ -20,6 +20,7 @@ import { join } from 'node:path';
 
 import type { PushCredentials } from '@serfab/cadre-core';
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 // Writes CADRE_OWNER_KEYS (as seen in the child env) next to the startup token,
 // then behaves like a minimal long-lived node.
@@ -52,14 +53,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    for (const n of orch.listNodes()) {
-      try { await orch.removeContainer(n.dockerId); } catch { /* ignore */ }
-    }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function makeOrchestrator(rootDir: string, pushResolver?: () => Promise<PushCredentials | undefined>): HostProcessOrchestrator {

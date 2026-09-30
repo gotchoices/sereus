@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 // Writes the vars under test (as seen in the child env) next to the startup token.
 const FAKE_CLI = `
@@ -69,17 +70,15 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    for (const n of orch.listNodes()) {
-      try { await orch.removeContainer(n.dockerId); } catch { /* ignore */ }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
-  }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-  for (const [key, value] of Object.entries(savedEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
   }
 });
 

@@ -14,6 +14,7 @@ import { join } from 'node:path';
 
 import type { PushCredentials } from '@serfab/cadre-core';
 import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 const FAKE_CLI = `
 import fs from 'node:fs';
@@ -41,12 +42,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    try { await orch.stopOwnerNode(); } catch { /* ignore */ }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function makeOrchestrator(rootDir: string, pushResolver?: () => Promise<PushCredentials | undefined>): HostProcessOrchestrator {
