@@ -62,11 +62,27 @@ function openStorage(dbName: string): Promise<SqliteRawStorage> {
 	return opening;
 }
 
+type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
+
 /**
  * Lazy `IRawStorage` proxy. Defers the async SQLite open until the first
  * operation, then delegates everything to the concrete `SqliteRawStorage`.
+ *
+ * `IRawStorage`'s optional methods are detected by callers checking that the method
+ * exists, so one this proxy leaves out reads as "not supported" on this app. The
+ * `implements` clause names the optional methods the proxy forwards, so dropping one
+ * is a compile error. It cannot catch an optional method added upstream later.
+ *
+ * NOTE: accepted tradeoff — `getStoreIdentity` is omitted although `SqliteRawStorage`
+ * has it. It is synchronous and must return a string fixed at construction, but the
+ * real identity exists only after the asynchronous open; the interface says a backend
+ * that cannot honour that must omit the method. `withReadCache` then identifies the
+ * store by object. Revisit if two proxies over one database are seen getting separate
+ * read caches, or if the interface allows a lazily-resolved identity.
  */
-class LazyNsRawStorage implements IRawStorage {
+class LazyNsRawStorage
+	implements IRawStorage, Required<Pick<IRawStorage, OptionalMethodForwarded>>
+{
 	constructor(private readonly dbName: string) {}
 
 	private storage(): Promise<SqliteRawStorage> {
@@ -160,6 +176,11 @@ class LazyNsRawStorage implements IRawStorage {
 
 	async getApproximateBytesUsed(): Promise<number> {
 		return (await this.storage()).getApproximateBytesUsed();
+	}
+
+	async *listBlockIds(): AsyncIterable<BlockId> {
+		const storage = await this.storage();
+		yield* storage.listBlockIds();
 	}
 }
 
