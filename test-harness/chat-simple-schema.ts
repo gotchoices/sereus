@@ -3,7 +3,7 @@
  *
  * The reference apps embed the schema as a string constant (a React Native bundle cannot
  * read a `.qsql` file from disk) and `docs/reference-app-rn.md` prints it. Each copy has
- * a spec that compares it, normalized, against the file:
+ * a spec that registers `describeChatSchemaCopy` for it:
  *   - `packages/reference-app-rn/test/chat-schema-drift.spec.ts`
  *   - `packages/reference-app-web/test/chat-schema-drift.spec.ts`
  *   - `packages/reference-app-ns/test/chat-schema-drift.spec.ts`
@@ -13,6 +13,7 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { stripSqlComments } from './qsql-body.js';
 
 // A path, not a `URL`: the apps' type-check programs include the DOM lib, whose global
@@ -29,7 +30,7 @@ const CHAT_SIMPLE_QSQL_PATH = join(dirname(fileURLToPath(import.meta.url)), '..'
  * a reformat that moves a token to another line fails. That false positive is accepted
  * in exchange for a normalization too simple to hide a real difference.
  */
-export function normalizeSchemaText(text: string): string {
+function normalizeSchemaText(text: string): string {
 	return stripSqlComments(text)
 		.replace(/\r\n/g, '\n')
 		.split('\n')
@@ -39,6 +40,24 @@ export function normalizeSchemaText(text: string): string {
 }
 
 /** `schemas/chat-simple.qsql`, normalized. Rejects if the file is missing. */
-export async function readChatSimpleSchema(): Promise<string> {
+async function readChatSimpleSchema(): Promise<string> {
 	return normalizeSchemaText(await readFile(CHAT_SIMPLE_QSQL_PATH, 'utf-8'));
+}
+
+/**
+ * Registers the guard for one copy. `where` names the copy in the test title and the
+ * failure message; `readCopy` returns its text, and may throw when the copy cannot be
+ * located. The await lives here rather than in each spec because `test/` trees are not
+ * linted for floating promises, and an unawaited assertion would pass.
+ */
+export function describeChatSchemaCopy(where: string, readCopy: () => string | Promise<string>): void {
+	describe('chat schema drift guard', () => {
+		it(`${where} matches schemas/chat-simple.qsql`, async () => {
+			expect(
+				normalizeSchemaText(await readCopy()),
+				`${where} differs from schemas/chat-simple.qsql. ` +
+					'Edit both so they match; comments, indentation and blank lines are ignored.'
+			).toBe(await readChatSimpleSchema());
+		});
+	});
 }
