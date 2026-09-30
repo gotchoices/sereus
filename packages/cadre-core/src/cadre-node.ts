@@ -928,7 +928,8 @@ export class CadreNode implements SAppIdLookup {
       onIdle: async (strandId) => this.handleStrandIdle(strandId),
       onHibernate: async (strandId) => this.handleStrandHibernate(strandId),
       onWake: async (strandId) => this.handleStrandWake(strandId),
-      onCheckIn: async (strandId) => this.handleStrandCheckIn(strandId)
+      onCheckIn: async (strandId) => this.handleStrandCheckIn(strandId),
+      isQuiescing: (strandId) => this.strandManager.isQuiescing(strandId)
     };
     this.hibernationManager = new HibernationManager(
       config.hibernation ?? { enabled: false },
@@ -4740,29 +4741,19 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Hibernate a strand: release its strand-network resources via the strand
-   * manager (stop the libp2p node, close the StrandDatabase) and mark it
+   * manager (stop the libp2p node, close the StrandDatabase), which marks it
    * `hibernating`. A quiesced strand holds no open strand-network connections,
-   * transports, or DB handles. No-ops if the strand is missing; if already
-   * quiesced (defensive), just marks status and emits.
+   * transports, or DB handles. No-ops if the strand is missing; one already quiesced
+   * is only marked, and still emits.
    */
   private async handleStrandHibernate(strandId: string): Promise<void> {
-    const instance = this.strandManager.getInstance(strandId);
-    if (!instance) {
+    if (!this.strandManager.getInstance(strandId)) {
       log('handleStrandHibernate: strand %s not found', strandId);
-      return;
-    }
-
-    if (!instance.libp2pNode && !instance.database) {
-      // Already quiesced — only the status flag needs updating.
-      instance.status = 'hibernating';
-      log('Strand %s already quiesced; marked hibernating', strandId);
-      this.emit('strand:hibernating', { strandId });
       return;
     }
 
     log('Hibernating strand %s — releasing strand-network resources', strandId);
     await this.strandManager.quiesceStrand(strandId);
-    instance.status = 'hibernating';
     this.emit('strand:hibernating', { strandId });
     log('Strand %s hibernating (resources released)', strandId);
   }
@@ -4792,7 +4783,10 @@ export class CadreNode implements SAppIdLookup {
     // still behind its first-sync gate wakes back to `'syncing'`, not `'active'`. A
     // `'starting'` strand is mid-build (a check-in's resume, or its launch) with the node
     // attached before the database: not live yet, so it falls through and joins that build.
-    if (instance.status !== 'starting' && (instance.libp2pNode || instance.database)) {
+    // A strand being quiesced still holds its handles but is on its way down: it falls
+    // through too, and its resume runs after the quiesce.
+    if (instance.status !== 'starting' && (instance.libp2pNode || instance.database)
+      && !this.strandManager.isQuiescing(strandId)) {
       instance.status = liveStrandStatus(instance);
       log('Strand %s woke (already live)', strandId);
       this.emit('strand:waking', { strandId });
@@ -4830,18 +4824,24 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Put a strand whose rebuild or wake window failed back to `'hibernating'`, after a
+   * Put a strand whose rebuild or wake window failed back to `'hibernating'`, through a
    * best-effort quiesce that releases any runtime left up. `resumeStrand` leaves a failed
    * strand `'error'`, which nothing retries: `HibernationManager` wakes only
    * `idle`/`hibernating` strands, and reads any other status after a check-in as "woke",
    * ending its chain. Safe to run twice for one failure (a wake that joined a failed
-   * check-in's rebuild): quiescing a quiesced strand is a no-op.
+   * check-in's rebuild): quiescing a quiesced strand only marks it.
+   *
+   * The quiesce writes the status itself, ordered before any resume requested meanwhile;
+   * this writes it only when the quiesce failed, since a failed release leaves the status
+   * alone.
    */
   private async rehibernateAfterFailedResume(instance: StrandInstance, context: string): Promise<void> {
-    await this.strandManager.quiesceStrand(instance.strandId).catch((cleanupErr) => {
+    try {
+      await this.strandManager.quiesceStrand(instance.strandId);
+    } catch (cleanupErr) {
       log('%s cleanup quiesce for strand %s failed: %o', context, instance.strandId, cleanupErr);
-    });
-    instance.status = 'hibernating';
+      instance.status = 'hibernating';
+    }
   }
 
   /**
@@ -4945,7 +4945,8 @@ export class CadreNode implements SAppIdLookup {
    *   1. Hold the strand live for `windowMs` so its strand network reaches the
    *      cohort and the app can drive pull-on-read activity.
    *   2. If activity landed since `activityMark`, leave the strand `active` (return
-   *      `true`); otherwise quiesce and mark it `hibernating` again (return `false`).
+   *      `true`); otherwise quiesce it, which marks it `hibernating` again (return `false`).
+   *      A wake or activity that lands during that quiesce rebuilds the strand after it.
    *
    * @param activityMark - `instance.lastActivity` as the caller read it BEFORE bringing the
    *   strand up. The bring-up records none, and every writer assigns a FRESH `Date`, so a
@@ -4973,7 +4974,6 @@ export class CadreNode implements SAppIdLookup {
 
     log('Wake window: no activity for strand %s; re-hibernating', strandId);
     await this.strandManager.quiesceStrand(strandId);
-    instance.status = 'hibernating';
     return false;
   }
 
@@ -6822,7 +6822,7 @@ export class CadreNode implements SAppIdLookup {
    * Routes through {@link HibernationManager.forceHibernate}, which cancels the
    * strand's pending idle/hibernate (and check-in) timers — so a stale timer
    * can't re-fire on or resurrect the strand — then runs the same `onHibernate`
-   * path as the timer (`quiesceStrand` + `status='hibernating'` +
+   * path as the timer (`quiesceStrand`, which marks it `hibernating`, then
    * `strand:hibernating`). Unlike the timer path it does NOT re-arm check-ins:
    * the strand stays down until the caller drives a wake (e.g. {@link serviceWake}).
    */
@@ -6930,8 +6930,10 @@ export class CadreNode implements SAppIdLookup {
     // Already live (active or idle — both retain their runtime) or coming up (a launch,
     // or a check-in with its own window): servicing is a no-op success. Do NOT run a
     // window that would re-hibernate a strand the app may be actively using, and do NOT
-    // rebuild a second runtime. `'starting'` counts before any handle is attached.
-    if (instance.status === 'starting' || instance.libp2pNode || instance.database) {
+    // rebuild a second runtime. `'starting'` counts before any handle is attached. A strand
+    // being quiesced does not count: the wake below rebuilds it after the quiesce.
+    if (!this.strandManager.isQuiescing(strandId)
+      && (instance.status === 'starting' || instance.libp2pNode || instance.database)) {
       log('serviceWake: strand %s already live; no-op success', strandId);
       return { strandId, serviced: true, hadActivity: true };
     }
@@ -8154,12 +8156,12 @@ export class CadreNode implements SAppIdLookup {
    *   founder's publish/launch paths mint it, so this is a not-yet-converged sibling.)
    *   The manager maps the throw to a clean retryable rejection BEFORE the formation
    *   token is spent.
-   * - Closed host strand whose runtime is HIBERNATING → woken first
+   * - Closed host strand whose runtime is HIBERNATING or being quiesced → woken first
    *   ({@link wakeHostStrandForFormation}, bounded by `signal`), then issued as below. In
    *   every state the redemption counts as activity, so the host stays up for the
    *   joiner's first sync.
    * - Closed host strand with no running local instance/database (never launched, still
-   *   starting, quiescing, or a hibernating one whose wake failed or outran `signal`) →
+   *   starting, or a hibernating one whose wake failed or outran `signal`) →
    *   throw, same mapping: a joiner admitted without an invitation would look joined and
    *   never become a member, and a responder not running the strand cannot serve its sync
    *   anyway.
@@ -8224,7 +8226,7 @@ export class CadreNode implements SAppIdLookup {
     if (!db) {
       throw new Error(
         `Cannot issue a membership invitation for closed strand ${strandId}: its runtime is ` +
-        'not live on this responder (not launched, still starting, or quiescing)'
+        'not live on this responder (not launched, or still starting)'
       );
     }
     if (row.MemberPrivateKey) {
@@ -8244,12 +8246,12 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Count a bound closed-strand redemption as activity on the host strand, and wake the
-   * strand when it is HIBERNATING so the membership invitation can be issued. Only reached
-   * after the formation manager has authorized the redemption (token, disclosure, outside
-   * approval, seat pre-check), so only a caller already entitled to the strand's member key
-   * can cause a wake. No other state is woken — never launched, still starting, or a
-   * quiesce in flight is not something this node recovers from on demand; the caller's
-   * live-database check refuses those.
+   * strand when it is HIBERNATING or being quiesced (its database is closing) so the
+   * membership invitation can be issued. Only reached after the formation manager has
+   * authorized the redemption (token, disclosure, outside approval, seat pre-check), so only
+   * a caller already entitled to the strand's member key can cause a wake. No other state is
+   * woken — never launched or still starting is not something this node recovers from on
+   * demand; the caller's live-database check refuses those.
    *
    * The activity is recorded in every state, through the hibernation manager rather than
    * {@link recordStrandActivity}, whose push fan-out would wake this party's phones for
@@ -8271,10 +8273,10 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     this.hibernationManager.recordActivity(instance);
-    if (instance.status !== 'hibernating' || instance.database) {
+    if (!this.strandManager.isQuiescing(strandId) && (instance.status !== 'hibernating' || instance.database)) {
       return;
     }
-    log('wakeHostStrandForFormation: waking hibernating host strand %s for an authorized formation', strandId);
+    log('wakeHostStrandForFormation: waking host strand %s (%s) for an authorized formation', strandId, instance.status);
     const wake = this.wakeStrand(strandId);
     if (await resolvesBeforeAbort(wake, signal)) {
       return;

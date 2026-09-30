@@ -319,6 +319,11 @@ export interface ResumeStrandOverrides {
   servingMachines?: number;
 }
 
+/** A {@link StrandInstanceManager.resumeStrand} or {@link StrandInstanceManager.quiesceStrand} of one strand. */
+type RuntimeTransition =
+  | { kind: 'resume'; operation: Promise<StrandInstance> }
+  | { kind: 'quiesce'; operation: Promise<void> };
+
 /**
  * Get the isolated storage path for a specific strand.
  *
@@ -516,11 +521,14 @@ export class StrandInstanceManager {
    */
   private runtimeBuilds: Map<string, Promise<void>> = new Map();
   /**
-   * The resume in flight per strand id ({@link runResume}), present until it settles. The
-   * WHOLE operation, not its entry in {@link runtimeBuilds}: that settles before the resume's
-   * own catch records `'error'`, so a joiner awaiting it could read a stale status.
+   * The latest resume or quiesce requested per strand id, present until it settles. Each one
+   * starts only once the one requested before it has settled, so a wake that lands during a
+   * quiesce rebuilds after it, and a quiesce requested during a rebuild releases what that
+   * rebuild finished. The WHOLE operation, not its entry in {@link runtimeBuilds}: that settles
+   * before a resume's own catch records `'error'`, so a joiner awaiting it could read a stale
+   * status.
    */
-  private resumesInFlight: Map<string, Promise<StrandInstance>> = new Map();
+  private transitions: Map<string, RuntimeTransition> = new Map();
   private stopping = false;
 
   constructor() {
@@ -1324,24 +1332,54 @@ export class StrandInstanceManager {
    * Quiesce a strand: release its strand-network resources (stop the libp2p node,
    * close the StrandDatabase) while RETAINING the instance record — identity,
    * sAppInfo, keys, latency hint, metadata — and its launch config so it can be
-   * resumed later. Mechanically this is `stopStrand` minus the instance/config
-   * deletion. The caller sets the post-quiesce status (e.g. `hibernating`).
-   * No-ops when the strand is missing or already quiesced.
+   * resumed later, then mark it `hibernating`. Mechanically this is `stopStrand` minus
+   * the instance/config deletion. A tracked strand with no runtime left (a failed
+   * rebuild already released it) is only marked; an untracked one is left alone.
+   *
+   * Ordered with {@link resumeStrand} (see {@link transitions}): it starts once the resume
+   * or launch build before it has settled, so it releases a finished runtime, and the
+   * status write is its last step, so a resume requested meanwhile writes after it. A call
+   * made while another quiesce is the latest request joins it. A failed release leaves the
+   * status as it was and rejects.
    */
   async quiesceStrand(strandId: string): Promise<void> {
+    const previous = this.transitions.get(strandId);
+    if (previous?.kind === 'quiesce') {
+      log('quiesceStrand: strand %s — joining the quiesce already requested', strandId);
+      return previous.operation;
+    }
+    const operation = this.runQuiesce(strandId, previous);
+    this.holdTransition(strandId, { kind: 'quiesce', operation });
+    return operation;
+  }
+
+  /** Body of {@link quiesceStrand}. */
+  private async runQuiesce(strandId: string, previous: RuntimeTransition | undefined): Promise<void> {
+    await this.settleTransition(strandId, previous);
+    await this.settleRuntimeBuilds(strandId);
     const instance = this.instances.get(strandId);
     if (!instance) {
       log('quiesceStrand: strand %s not found', strandId);
       return;
     }
-    if (!instance.libp2pNode && !instance.database) {
+    if (instance.libp2pNode || instance.database) {
+      log('Quiescing strand instance: %s', strandId);
+      await this.releaseRuntime(instance);
+      log('Strand %s quiesced (resources released, instance retained)', strandId);
+    } else {
       log('quiesceStrand: strand %s already quiesced', strandId);
-      return;
     }
+    instance.status = 'hibernating';
+  }
 
-    log('Quiescing strand instance: %s', strandId);
-    await this.releaseRuntime(instance);
-    log('Strand %s quiesced (resources released, instance retained)', strandId);
+  /**
+   * Whether the latest runtime transition requested for `strandId` is a quiesce that has
+   * not finished. Its handles may still be attached and its status still live, but it is on
+   * its way to `hibernating`, so a caller that needs it up must {@link resumeStrand} it — the
+   * resume runs after the quiesce — rather than treat it as live.
+   */
+  isQuiescing(strandId: string): boolean {
+    return this.transitions.get(strandId)?.kind === 'quiesce';
   }
 
   /**
@@ -1352,43 +1390,64 @@ export class StrandInstanceManager {
    * count) and updates the retained config so a later resume reuses the latest
    * values. Returns the live instance unchanged if it is already running.
    *
-   * Overlapping calls share one rebuild: a call made while a resume of the same strand is
-   * in flight — a wake landing during a check-in — joins it and settles exactly as it does,
-   * `'error'` status included. The joiner's own `overrides` are ignored; the first resume's
-   * seed wins, and both callers resolved the cohort seed moments apart. A call made while
-   * `startStrand` is still building waits for that build rather than starting a second.
+   * Overlapping calls share one rebuild: a call made while a resume is the latest request
+   * for the strand — a wake landing during a check-in — joins it and settles exactly as it
+   * does, `'error'` status included. The joiner's own `overrides` are ignored; the first
+   * resume's seed wins, and both callers resolved the cohort seed moments apart. A call made
+   * while a quiesce is the latest request runs after that quiesce and rebuilds (see
+   * {@link transitions}), and one made while `startStrand` is still building waits for that
+   * build rather than starting a second.
    */
   async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
     if (this.stopping) {
       throw new Error('StrandInstanceManager is stopping');
     }
-    // Checked before any "already live" test: mid-build the libp2p node is attached while
-    // the database is not, and the caller must wait for the finished runtime. No `await`
-    // between this read and the `set` below, or a second caller slips through and builds.
-    const inFlight = this.resumesInFlight.get(strandId);
-    if (inFlight) {
+    // No `await` between this read and `holdTransition`, or a second caller slips through
+    // and builds.
+    const previous = this.transitions.get(strandId);
+    if (previous?.kind === 'resume') {
       log('resumeStrand: strand %s — joining the resume already in flight', strandId);
-      return inFlight;
+      return previous.operation;
     }
-    const resume = this.runResume(strandId, overrides);
-    this.resumesInFlight.set(strandId, resume);
-    try {
-      return await resume;
-    } finally {
-      if (this.resumesInFlight.get(strandId) === resume) {
-        this.resumesInFlight.delete(strandId);
+    const operation = this.runResume(strandId, previous, overrides);
+    this.holdTransition(strandId, { kind: 'resume', operation });
+    return operation;
+  }
+
+  /** Record `transition` as the latest for `strandId` until it settles. */
+  private holdTransition(strandId: string, transition: RuntimeTransition): void {
+    this.transitions.set(strandId, transition);
+    const release = (): void => {
+      if (this.transitions.get(strandId) === transition) {
+        this.transitions.delete(strandId);
       }
+    };
+    // The rejection itself reaches the caller through the operation returned to it.
+    void transition.operation.then(release, release);
+  }
+
+  /** Wait for the transition requested before this one. Never rejects: its failure belongs to its caller. */
+  private async settleTransition(strandId: string, previous: RuntimeTransition | undefined): Promise<void> {
+    if (!previous) {
+      return;
     }
+    await (previous.operation as Promise<unknown>).catch((error: unknown) => {
+      log('Strand %s: the %s queued ahead failed (reported by its caller): %o', strandId, previous.kind, error);
+    });
   }
 
   /** Body of {@link resumeStrand}; at most one runs per strand at a time. */
-  private async runResume(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
-    // Backstop for a wake issued while the launch is still building: the instance is tracked
-    // with no handles yet, so it would read as quiesced and build a second runtime. A failed
-    // launch has already dropped the instance, and the check below reports it untracked.
-    if (this.runtimeBuilds.has(strandId)) {
-      await this.settleRuntimeBuilds(strandId);
-    }
+  private async runResume(
+    strandId: string,
+    previous: RuntimeTransition | undefined,
+    overrides?: ResumeStrandOverrides
+  ): Promise<StrandInstance> {
+    // Before any "already live" test: a quiesce ahead still has the handles attached, and
+    // mid-build (a launch still building) the libp2p node is attached while the database is
+    // not. A failed launch has already dropped the instance, and the check below reports it
+    // untracked.
+    await this.settleTransition(strandId, previous);
+    await this.settleRuntimeBuilds(strandId);
     const instance = this.instances.get(strandId);
     if (!instance) {
       throw new Error(`Cannot resume strand ${strandId}: not tracked`);
@@ -1453,7 +1512,8 @@ export class StrandInstanceManager {
    * - `'already-founder'` — the retained config already founds; nothing to do.
    * - `'bootstrapped'` — config flipped and the live database ran the bootstrap.
    * - `'needs-resume'` — config flipped, but the instance is quiesced (no live
-   *   database), so the bootstrap could not run here: the CALLER must wake the
+   *   database) or being quiesced (its database is closing), so the bootstrap could
+   *   not run here: the CALLER must wake the
    *   strand (`CadreNode.wakeStrand`, which owns the hibernation bookkeeping this
    *   manager does not) so the rebuild — which now founds — runs it.
    * @param resolvePartyKey - Asked for the party's own membership key when (and only
@@ -1486,7 +1546,7 @@ export class StrandInstanceManager {
     // A fresh object rather than mutating in place: startStrand retains the CALLER'S
     // config object, which is not ours to rewrite.
     this.launchConfigs.set(strandId, { ...config, founder: true, partyMemberPrivateKey });
-    if (!instance.database && !this.firstSyncGates.has(strandId)) {
+    if (this.isQuiescing(strandId) || (!instance.database && !this.firstSyncGates.has(strandId))) {
       return 'needs-resume';
     }
     try {

@@ -34,7 +34,8 @@ describe('HibernationManager', () => {
       onIdle: vi.fn(async (strandId: string) => { callbacks.idleCalls.push(strandId); }),
       onHibernate: vi.fn(async (strandId: string) => { callbacks.hibernateCalls.push(strandId); }),
       onWake: vi.fn(async (strandId: string) => { callbacks.wakeCalls.push(strandId); }),
-      onCheckIn: vi.fn(async (strandId: string) => { callbacks.checkInCalls.push(strandId); })
+      onCheckIn: vi.fn(async (strandId: string) => { callbacks.checkInCalls.push(strandId); }),
+      isQuiescing: vi.fn((_strandId: string) => false)
     };
     return callbacks;
   }
@@ -461,7 +462,8 @@ describe('HibernationManager', () => {
             instance.status = 'active';
             manager.recordActivity(instance);
           }
-        })
+        }),
+        isQuiescing: () => false
       };
 
       const manager = new HibernationManager(FAST_BACKOFF, callbacks);
@@ -704,6 +706,31 @@ describe('HibernationManager', () => {
       expect(instance.nextCheckIn).toBeUndefined();
       await vi.advanceTimersByTimeAsync(5000);
       expect(callbacks.onCheckIn).toHaveBeenCalledTimes(1);
+
+      manager.stop();
+    });
+
+    it('a force-hibernate during a timer-driven hibernate leaves the strand with no check-in chain', async () => {
+      const instance = createInstance('strand-forced-mid-hibernate', 'interactive');
+      const callbacks = createCallbacks();
+      let finishQuiesce!: () => void;
+      // The timer's quiesce is still releasing when the app backgrounds; the force-hibernate
+      // joins it (as CadreNode's does), and both mark the strand once it ends.
+      const quiesce = new Promise<void>((resolve) => { finishQuiesce = resolve; })
+        .then(() => { instance.status = 'hibernating'; });
+      callbacks.onHibernate.mockImplementation(async () => quiesce);
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating(); // idle @1000, hibernate timer fires @2000, its quiesce held
+      const forced = manager.forceHibernate(instance);
+      finishQuiesce();
+      await forced;
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(instance.nextCheckIn).toBeUndefined();
+      expect(callbacks.onCheckIn).not.toHaveBeenCalled();
 
       manager.stop();
     });
