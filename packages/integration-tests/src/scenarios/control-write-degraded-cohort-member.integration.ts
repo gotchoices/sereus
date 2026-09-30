@@ -13,17 +13,21 @@
  *
  * What bounds a silent member is NOT the coordinator (its promise fan-out is a
  * bare `Promise.all` with no phase deadline) but the per-RPC response deadline
- * in `ClusterClient` (`DEFAULT_RESPONSE_TIMEOUT_MS` = 10 s, two attempts per
+ * in `ClusterClient` (three link round trips at the link cadre-core declares,
+ * 10.5 s at the default; 10 s on a node that declares none; two attempts per
  * remote peer), under the transactor's 30 s transaction budget. The measured
  * outcomes (single machine, localhost websockets; the wall-clock is logged on
  * every run, and the bounds in "Deadlines" below are sized off these):
  *
  *  - no degradation            → commits, ~1 s;
- *  - 2 s delay (< 10 s bar)    → commits, ~55 s — the delay is paid serially
+ *  - 2 s delay (< 10.5 s bar)  → commits, ~55 s — the delay is paid serially
  *    across the ~27 inbound cluster RPCs one control write makes, so a small
  *    per-RPC delay becomes a large per-WRITE one;
- *  - never answers (> 10 s bar)→ clean failure at ~20 s (two response-deadline
- *    attempts) naming
+ *  - never answers (> 10.5 s bar)→ clean failure at ~21 s per pend round (two
+ *    response-deadline attempts). Measured 2026-09-30: a remove 42.2 s, and an
+ *    authorize 84.3 s because it queued behind a background control write
+ *    (`revocation-ledger-open`) that spent its own 42 s first; 40.2 and 80.2 s
+ *    with no link declared. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
  *
  * One case here was a standing EXPECTED FAILURE (`it.fails`) until 2026-08-25:
@@ -111,7 +115,7 @@ const log = debug('sereus:integration:degraded-cohort');
 //
 // The ~55 s delayed commit is the 2 s handler delay paid serially across the
 // ~27 inbound cluster RPCs a control write makes: a small per-RPC delay becomes
-// a large per-WRITE one. The failure is ~20 s per pend round — two 10 s
+// a large per-WRITE one. The failure is ~21 s per pend round — two 10.5 s
 // `ClusterClient` response-deadline attempts against the silent member — and
 // the number of rounds is NOT deterministic even with the coordinator pinned
 // (one round in some runs, two in others; see the failure case's assertions).
@@ -184,8 +188,8 @@ const WRITE_TIMEOUT_MS = 30_000;
 /** The 2 s-delayed writes: ~2× the ~55 s measurement. */
 const DELAYED_WRITE_TIMEOUT_MS = 120_000;
 /**
- * A write against a never-answering member: ~3× the slower (~40 s, two-round)
- * measured settle. A write that has not settled by here is the hang this
+ * A write against a never-answering member: above the slowest measured settle
+ * (84.3 s, an authorize queued behind a failing background write; see the header). A write that has not settled by here is the hang this
  * scenario exists to catch.
  */
 const STALLED_WRITE_TIMEOUT_MS = 120_000;
@@ -194,12 +198,12 @@ const STALLED_WRITE_TIMEOUT_MS = 120_000;
  * above, which only catches hangs). Floor: an INSTANT failure means the
  * response-deadline path was never exercised — an admission rejection or an
  * addressless dial wearing the same error, which would pass the error-text
- * assertion for the wrong reason. Ceiling: ~2× the slower measured variant, so
- * both the one-round (~20 s) and two-round (~40 s) settlements pass while a
- * genuinely unbounded stall does not.
+ * assertion for the wrong reason. Ceiling: above the slowest measured settlement
+ * (84.3 s, see the header) and below `STALLED_WRITE_TIMEOUT_MS`, which is what
+ * catches a genuinely unbounded stall.
  */
 const FAILURE_FLOOR_MS = 15_000;
-const FAILURE_CEILING_MS = 90_000;
+const FAILURE_CEILING_MS = 110_000;
 /**
  * Ceiling for the 2 s-delayed COMMIT case, ~1.8× the ~55 s measurement. Each
  * cluster-transaction phase pays the delay once per inbound RPC to the degraded
@@ -214,7 +218,7 @@ const DELAYED_COMMIT_CEILING_MS = 100_000;
 // wins over vitest's anonymous test timeout. They are ceilings that never fire
 // on a green run (slowest measured case: ~110 s).
 
-/** The delay matrix: under the 10 s response deadline, and past it forever. */
+/** The delay matrix: under the 10.5 s response deadline, and past it forever. */
 const UNDER_DEADLINE_DELAY_MS = 2_000;
 
 /**
@@ -241,8 +245,8 @@ const TRANSIENT_RESET_COUNT = 2;
  * both retry backoffs (jittered ≤375 ms, then ≤1 s — as of 2026-09-17 the
  * second one is always paid, see {@link TRANSIENT_RESET_COUNT}) and a healthy
  * ~1 s commit — a few seconds end to end. Headroom so a slow box
- * does not flake while an escalation into the 10 s response-deadline path
- * (≥20 s) still trips it.
+ * does not flake while an escalation into the 10.5 s response-deadline path
+ * (≥21 s) still trips it.
  */
 const TRANSIENT_RESET_COMMIT_CEILING_MS = 15_000;
 

@@ -127,6 +127,16 @@
  * from the declaration too, at three round trips; cadre states its own, at two
  * ({@link cohortReadDeadlineMs} says why).
  *
+ * NOTE: the longer deadlines are paid against a machine that is gone. An Optimystic request
+ * to a peer that never completes a connection now waits up to the 21 000 ms dial deadline where
+ * it waited 3 000, and one that connects and never answers waits 10 500 where it waited 10 000.
+ * Measured 2026-09-30 (`control-write-degraded-cohort-member.integration.ts`): a control write
+ * against a connected, silent member failed at 42.2 s, against 40.2 s with no link declared.
+ * The dial case was not measured. cadre's cut-off budgets (`CONTROL_WRITE_RETRY_BUDGET_MS`,
+ * `CONTROL_READ_RETRY_BUDGET_MS`) are checked between attempts, so one attempt can outlast
+ * them by that much. If writes on a fast link are seen waiting out the dial deadline against an
+ * unreachable machine, declare that deployment's real round trip instead of the default.
+ *
  * libp2p's two limits bound the same relayed dial as cadre's budgets do: the DIALER's
  * `dialTimeout`, which bounds every dial that carries no abort signal of its own, and the
  * LISTENER's `inboundUpgradeTimeout`, which is how long the machine being called lets a

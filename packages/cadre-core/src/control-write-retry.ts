@@ -77,8 +77,9 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * This budget — not the attempt count — is what makes the policy safe to sit under every
  * control write. A transient failure (stream reset while a connection is still forming)
  * surfaces in well under a second, so it is retried and the loop adds at most ~2.2 s. A
- * genuinely silent cohort member fails at ~20 s (two 10 s `ClusterClient` response-deadline
- * attempts, measured in `control-write-degraded-cohort-member.integration.ts`), which
+ * genuinely silent cohort member fails at ~21 s per pend round (two `ClusterClient`
+ * response-deadline attempts, 10.5 s each at the default declared link; a two-round write
+ * measured 42.2 s in `control-write-degraded-cohort-member.integration.ts`), which
  * already exceeds this budget when attempt 1 returns — so that case is surfaced immediately
  * and retry adds ZERO latency to the case where it cannot help.
  *
@@ -87,8 +88,8 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * whose read phase consulted a silent peer ends at about one per-peer read deadline
  * (`cohortReadDeadlineMs` in `link-budget.ts`: 7 s at the default declared link, 5 s before it
  * was derived, 1 s at Optimystic's own default), so it still gets one retry inside this budget
- * where it once got two; an attempt that runs into the 10 s
- * `ClusterClient` response deadline still gets none. See `docs/cadre-consistency.md` →
+ * where it once got two; an attempt that runs into the `ClusterClient` response deadline
+ * (10.5 s at the default declared link) still gets none. See `docs/cadre-consistency.md` →
  * "Deadlines Over Optimystic's Reads and Commits".
  *
  * NOTE: a failed commit attempt now also pays a cancel discharge before its error returns
