@@ -54,3 +54,4 @@ Fully: the upstream change is a deadline's scope or a new option, and sereus's s
 
 The measurement was sent to optimystic-tend (the agent tending ../optimystic) for its `debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection` ticket, asking for (a) no dial deadline on the connection-reuse path or (b) a NodeOptions knob. Unblock when a release carries either.
 - 2026-09-29: optimystic-tend confirmed the path and moved the ticket to optimystic `tickets/fix/debt-rpc-dial-deadlines-cannot-open-a-slow-relayed-connection.md` (f497ce6f), with (a) and (b) as options plus `clusterLatestCallback` passing `cohortQueryTimeoutMs` as the request deadline. Not implemented yet; optimystic-tend will send the release version.
+- 2026-09-29: fixed in `@optimystic/*` 1.8.0 (cohort consults bounded only by `cohortQueryTimeoutMs`, plus `NodeOptions.linkRoundTripMs`). Adoption is `adopt-optimystic-link-round-trip-option`. Closed.

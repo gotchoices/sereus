@@ -3,13 +3,14 @@ files: packages/cadre-core/src/link-budget.ts, packages/cadre-core/src/cadre-nod
 ----
 # Pass the declared link round trip to optimystic's `NodeOptions.linkRoundTripMs`
 
-## Blocked on
+## Unblocked (2026-09-29): `@optimystic/*` 1.8.0 is on npm
 
-A published `@optimystic/*` release containing optimystic main's:
+1.8.0 carries:
 - 7ac3a0e5, ce5a0068: `NodeOptions.linkRoundTripMs`;
-- e40ad2a5, e1849462: cohort consults bounded only by `cohortQueryTimeoutMs`.
+- e40ad2a5, e1849462: cohort consults bounded only by `cohortQueryTimeoutMs`;
+- the three other sereus-requested changes below.
 
-optimystic-tend will send the version once the maintainer cuts it. **Unblock when** that version is on npm. The same release should carry the fixes for `blocked/report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic`; close that ticket in the same pass.
+`report-request-dial-deadline-cuts-cohort-consults-on-open-connections-to-optimystic` is closed; its fix shipped here.
 
 ## What landed upstream (per optimystic-tend, 2026-09-29)
 
@@ -17,15 +18,19 @@ optimystic-tend will send the version once the maintainer cuts it. **Unblock whe
 - The hidden 3 s RPC dial deadline no longer bounds a cohort consult on an open connection.
 - Also in that range, relevant to sereus: re-attach over a partial replica (a node that remembers peers no longer treats itself as alone and serves missing blocks as absent), and a refresh after a refused write demanding the confirmed revision (bears on `blocked/forked-control-collection-sync-livelocks`).
 
-## Do, once unblocked
+Also in 1.8.0, from the same request:
+- catch-up from a stale replica: a multi-block read consults the cohort for all blocks at once (02b46fc1, 560ee381), and the coordinator no longer asks the reader for its own copy during read repair (98908f92, 329dd5fe). The speedup on relayed links is estimated upstream, not measured; step 4 settles it.
+- a read prefers its own copy when it holds the block (4dadc2d5, 5c2ed7c4).
 
-1. Raise the `@optimystic/*` floor (`yarn upgrade:optimystic`), then `yarn check` and `yarn check:published`.
+## Do
+
+1. Raise the `@optimystic/*` floor to `^1.8.0` (`yarn upgrade:optimystic`), then `yarn check`. Commit, then `yarn check:published`, which tests against npm and refuses a dirty tree.
 2. Pass `resolveLinkRoundTripMs(config.network?.linkRoundTripMs)` as `NodeOptions.linkRoundTripMs` for the control node and every strand node.
 3. Remove what that makes redundant. Keep anything that sizes cadre's own deadlines. Candidates:
    - the explicit `connectionManager.dialTimeout` / `inboundUpgradeTimeout` pass-through, since optimystic now derives them from the same number;
    - a hand-set `cohortQueryTimeoutMs`, if optimystic's derivation matches `cohortReadDeadlineMs`.
 
    Check each against `docs/cadre-consistency.md`'s deadline ladder; the upstream deadlines must still nest inside cadre's.
-4. Re-run the fresh-join arm of `strand-reattach-first-sync-measure.integration.ts` at 1500 ms one-way. Declined reads should no longer be spaced 3.00–3.02 s apart, and consults should complete. Record the numbers in the ticket and in `link-budget.ts`'s "What still fails".
+4. Re-run the fresh-join and restart arms of `strand-reattach-first-sync-measure.integration.ts` at 1500 ms one-way, as before. Declined reads should no longer be spaced 3.00–3.02 s apart, consults should complete, and the stale-replica catch-up should be faster than before. Record the numbers against the previous ones in the ticket, and update `link-budget.ts`'s "What still fails" and the first-sync bands in `strand-first-sync-gate.ts` if they moved.
 5. Re-check `blocked/forked-control-collection-sync-livelocks` against the revision-floor change; unblock it if it now converges.
 6. Release note: sereus now forwards `network.linkRoundTripMs` to optimystic.
