@@ -21,6 +21,9 @@ import {
   insertHeader,
   rawInsertMember,
   inTransaction,
+  memberStamp,
+  fileTombstone,
+  fileTombstoneNamingAnyTable,
 } from './strand-spec-helpers.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
@@ -43,39 +46,6 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 /** True iff a `Member` row exists for this key. */
 async function isMemberRow(db: Database, key: string): Promise<boolean> {
   return (await db.get('select Key from Strand.Member where Key = ?', [key])) != null;
-}
-
-/** The live StampId of one Member row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
-async function memberStampId(db: Database, key: string): Promise<string> {
-  for await (const row of db.eval('select Key, StampId from Strand.Member')) {
-    if (row.Key === key) return row.StampId as string;
-  }
-  throw new Error(`no Member row for ${key}`);
-}
-
-/**
- * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
- * Raw deletes that pin `/Authorized/` pair with one of these in the same
- * transaction — otherwise `RevocationRecorded` fires too and the reported
- * constraint becomes engine evaluation order. (The writer's own tombstone helper
- * is module-private, so the idiom is duplicated here.)
- *
- * `tableName` is deliberately a plain string rather than the three-name union the
- * schema accepts: the confinement of that column is itself under test below.
- */
-async function fileTombstone(
-  db: Database,
-  stampId: string,
-  retiree: Ed25519KeyPair,
-  tableName = 'Member',
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
-  );
 }
 
 /**
@@ -102,10 +72,10 @@ async function rawDeleteMember(
     await doDelete();
     return;
   }
-  const stampId = await memberStampId(db, key);
+  const stampId = await memberStamp(db, key);
   await inTransaction(db, async () => {
     await doDelete();
-    await fileTombstone(db, stampId, retiree);
+    await fileTombstone(db, 'Member', stampId, retiree);
   });
 }
 
@@ -142,7 +112,7 @@ describe('Member removal authorization', () => {
       rawDeleteMember(db, member.publicKeyB64, {
         managerKey: founder.publicKeyB64,
         managerSignature: signStrandApproval(
-          ['Strand.Member', 'remove', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+          ['Strand.Member', 'remove', member.publicKeyB64, await memberStamp(db, member.publicKeyB64)],
           stranger.privateKeyB64,
         ),
       }, founder),
@@ -165,7 +135,7 @@ describe('Member removal authorization', () => {
       rawDeleteMember(db, victim.publicKeyB64, {
         managerKey: founder.publicKeyB64,
         managerSignature: signStrandApproval(
-          ['Strand.Member', 'remove', approved.publicKeyB64, await memberStampId(db, approved.publicKeyB64)],
+          ['Strand.Member', 'remove', approved.publicKeyB64, await memberStamp(db, approved.publicKeyB64)],
           founder.privateKeyB64,
         ),
       }, founder),
@@ -186,8 +156,8 @@ describe('Member removal authorization', () => {
     // `collateral`'s row finds no branch and the whole transaction rolls back —
     // including the row the approval WAS minted for. Both stamps get same-txn
     // tombstones so RevocationRecorded is satisfied and /Authorized/ is the pin.
-    const approvedStamp = await memberStampId(db, approved.publicKeyB64);
-    const collateralStamp = await memberStampId(db, collateral.publicKeyB64);
+    const approvedStamp = await memberStamp(db, approved.publicKeyB64);
+    const collateralStamp = await memberStamp(db, collateral.publicKeyB64);
     await expect(inTransaction(db, async () => {
       await db.exec(
         `delete from Strand.Member
@@ -200,8 +170,8 @@ describe('Member removal authorization', () => {
           collateral.publicKeyB64,
         ],
       );
-      await fileTombstone(db, approvedStamp, founder);
-      await fileTombstone(db, collateralStamp, founder);
+      await fileTombstone(db, 'Member', approvedStamp, founder);
+      await fileTombstone(db, 'Member', collateralStamp, founder);
     })).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Member')).toBe(3);
@@ -219,7 +189,7 @@ describe('Member removal authorization', () => {
     // signer holds no committed Manager row, so the manager-removal branch finds
     // no authorizer.
     const signature = signStrandApproval(
-      ['Strand.Member', 'remove', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+      ['Strand.Member', 'remove', member.publicKeyB64, await memberStamp(db, member.publicKeyB64)],
       stranger.privateKeyB64,
     );
     await expect(
@@ -343,7 +313,7 @@ describe('revokeMember / leaveStrand', () => {
     // the departing key itself. MinOneMember (2 remain) and NotAManager (B holds
     // no Manager row) pass, so Authorized is the only possible rejector.
     const cSignsB = signStrandApproval(
-      ['Strand.Member', 'leave', memberB.publicKeyB64, await memberStampId(db, memberB.publicKeyB64)],
+      ['Strand.Member', 'leave', memberB.publicKeyB64, await memberStamp(db, memberB.publicKeyB64)],
       memberC.privateKeyB64,
     );
     await expect(
@@ -373,7 +343,7 @@ describe('Member action-tag domain separation', () => {
     // delete: the remove branch hashes the 'remove' tag, so verify fails. The
     // other delete constraints pass — Authorized is the pin.
     const addSignature = signStrandApproval(
-      ['Strand.Member', 'add', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+      ['Strand.Member', 'add', member.publicKeyB64, await memberStamp(db, member.publicKeyB64)],
       founder.privateKeyB64,
     );
     await expect(
@@ -654,7 +624,7 @@ describe('Revocation tombstones', () => {
     // A stamp that names no live row, so RowIsGone passes trivially; Immutable is
     // update/delete-only and OnlyClosed passes on a closed strand — Authorized is
     // the sole possible rejector.
-    await expect(fileTombstone(db, generateStrandStampId(), stranger)).rejects.toThrow(/Authorized/);
+    await expect(fileTombstone(db, 'Member', generateStrandStampId(), stranger)).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'Revocation')).toBe(0);
   }, 30_000);
 
@@ -667,7 +637,7 @@ describe('Revocation tombstones', () => {
     // the newcomer cannot authorize a tombstone in the transaction that seats it.
     await expect(inTransaction(db, async () => {
       await addMemberByManager(db, { managerKeyPair: founder, memberKey: newcomer.publicKeyB64 });
-      await fileTombstone(db, stampId, newcomer);
+      await fileTombstone(db, 'Member', stampId, newcomer);
     })).rejects.toThrow(/Authorized/);
 
     expect(await isMemberRow(db, newcomer.publicKeyB64)).toBe(false);
@@ -675,7 +645,7 @@ describe('Revocation tombstones', () => {
 
     // Positive control: with the membership committed, the identical tombstone lands.
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: newcomer.publicKeyB64 });
-    await fileTombstone(db, stampId, newcomer);
+    await fileTombstone(db, 'Member', stampId, newcomer);
     expect(await tableCount(db, 'Revocation')).toBe(1);
   }, 30_000);
 
@@ -683,12 +653,12 @@ describe('Revocation tombstones', () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
-    const liveStamp = await memberStampId(db, member.publicKeyB64);
+    const liveStamp = await memberStamp(db, member.publicKeyB64);
 
     // The founder is a committed member, so Authorized passes and RowIsGone is the
     // clean pin. This is what turns a delete that matched no rows into a loud commit
     // failure: the paired tombstone refuses to retire a still-visible stamp.
-    await expect(fileTombstone(db, liveStamp, founder)).rejects.toThrow(/RowIsGone/);
+    await expect(fileTombstone(db, 'Member', liveStamp, founder)).rejects.toThrow(/RowIsGone/);
     expect(await tableCount(db, 'Revocation')).toBe(0);
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
 
@@ -706,7 +676,7 @@ describe('Revocation tombstones', () => {
     // an unknown TableName matches none of them and the insert is refused — that is
     // what confines the column, not a separate check.
     await expect(
-      fileTombstone(db, generateStrandStampId(), founder, 'Bogus'),
+      fileTombstoneNamingAnyTable(db, 'Bogus', generateStrandStampId(), founder),
     ).rejects.toThrow(/RowIsGone/);
     expect(await tableCount(db, 'Revocation')).toBe(0);
   }, 30_000);
@@ -714,7 +684,7 @@ describe('Revocation tombstones', () => {
   it('rejects updating or deleting an existing tombstone (Immutable)', async () => {
     const { db, founder } = await openStrand('c');
     const retired = generateStrandStampId();
-    await fileTombstone(db, retired, founder);
+    await fileTombstone(db, 'Member', retired, founder);
     expect(await tableCount(db, 'Revocation')).toBe(1);
 
     // Retirement is permanent: re-pointing or clearing a tombstone would restore the
@@ -746,7 +716,7 @@ describe('Revocation tombstones', () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
-    const stampId = await memberStampId(db, member.publicKeyB64);
+    const stampId = await memberStamp(db, member.publicKeyB64);
 
     // A fully valid founder approval: Authorized, MinOneMember (the founder remains)
     // and NotAManager (the target holds no Manager row) all pass. The delete is

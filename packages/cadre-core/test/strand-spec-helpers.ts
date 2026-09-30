@@ -6,7 +6,12 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
-import { bootstrapFounderMembership, generateStrandStampId } from '../src/strand-membership-writer.js';
+import {
+  addMemberByManager,
+  bootstrapFounderMembership,
+  generateStrandStampId,
+  signStrandApproval,
+} from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { SAppConfig } from '../src/types.js';
 
@@ -181,6 +186,75 @@ export async function rawInsertMember(db: Database, key: string): Promise<void> 
        with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
        values (?, ?)`,
     [key, generateStrandStampId()],
+  );
+}
+
+/** The three tables whose rows carry a single-use `StampId` that `Strand.Revocation` can retire. */
+export type StampedTable = 'Member' | 'Manager' | 'MemberPeer';
+
+/** The live StampId of one Member row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
+export async function memberStamp(db: Database, key: string): Promise<string> {
+  for await (const row of db.eval('select Key, StampId from Strand.Member')) {
+    if (row.Key === key) return row.StampId as string;
+  }
+  throw new Error(`no Member row for ${key}`);
+}
+
+/** The live StampId of one Manager row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
+export async function managerStamp(db: Database, key: string): Promise<string> {
+  for await (const row of db.eval('select MemberKey, StampId from Strand.Manager')) {
+    if (row.MemberKey === key) return row.StampId as string;
+  }
+  throw new Error(`no Manager row for ${key}`);
+}
+
+/** The live StampId of one MemberPeer row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
+export async function memberPeerStamp(db: Database, memberKey: string, peerId: string): Promise<string> {
+  for await (const row of db.eval('select MemberKey, PeerId, StampId from Strand.MemberPeer')) {
+    if (row.MemberKey === memberKey && row.PeerId === peerId) return row.StampId as string;
+  }
+  throw new Error(`no MemberPeer row for (${memberKey}, ${peerId})`);
+}
+
+/** Seat a fresh member (admitted by `founder`) and return its keypair. */
+export async function seatMember(db: Database, founder: Ed25519KeyPair): Promise<Ed25519KeyPair> {
+  const member = freshKeyPair();
+  await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+  return member;
+}
+
+/**
+ * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
+ * (The writer's own tombstone helper is module-private.)
+ *
+ * A raw delete that pins `/Authorized/` must file one of these in the same
+ * transaction — otherwise `RevocationRecorded` fires too and the reported
+ * constraint depends on engine evaluation order. `Strand.Revocation` has its own
+ * constraint named `Authorized`, so a retiree that is not a committed member
+ * fails with that same name.
+ */
+export async function fileTombstone(
+  db: Database,
+  tableName: StampedTable,
+  stampId: string,
+  retiree: Ed25519KeyPair,
+): Promise<void> {
+  await fileTombstoneNamingAnyTable(db, tableName, stampId, retiree);
+}
+
+/** Same insert as {@link fileTombstone}, but `tableName` is any string — only for tests of how the schema confines that column. */
+export async function fileTombstoneNamingAnyTable(
+  db: Database,
+  tableName: string,
+  stampId: string,
+  retiree: Ed25519KeyPair,
+): Promise<void> {
+  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
+  await db.exec(
+    `insert into Strand.Revocation (TableName, StampId)
+       with context MemberKey = ?, Signature = ?
+       values (?, ?)`,
+    [retiree.publicKeyB64, signature, tableName, stampId],
   );
 }
 

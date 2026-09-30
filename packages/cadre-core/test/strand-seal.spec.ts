@@ -27,6 +27,10 @@ import {
   rawInsertMember,
   inTransaction,
   makeSAppConfig,
+  managerStamp,
+  seatMember,
+  fileTombstone,
+  type StampedTable,
 } from './strand-spec-helpers.js';
 
 /**
@@ -73,46 +77,16 @@ import {
 
 // ── Live-row readers + raw-write helpers (scan-not-seek, the writer's idiom) ───
 
-/** The live StampId of one Manager row, via unfiltered scan + JS filter. */
-async function managerStamp(db: Database, key: string): Promise<string> {
-  for await (const row of db.eval('select MemberKey, StampId from Strand.Manager')) {
-    if (row.MemberKey === key) return row.StampId as string;
-  }
-  throw new Error(`no Manager row for ${key}`);
-}
-
 /** Whether `Strand.Revocation` holds the tombstone retiring `stampId` from `tableName`. */
 async function hasRevocation(
   db: Database,
-  tableName: 'Member' | 'Manager' | 'MemberPeer',
+  tableName: StampedTable,
   stampId: string,
 ): Promise<boolean> {
   for await (const row of db.eval('select TableName, StampId from Strand.Revocation')) {
     if (row.TableName === tableName && row.StampId === stampId) return true;
   }
   return false;
-}
-
-/**
- * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
- * Raw deletes that pin `/Authorized/` pair with one of these in the same
- * transaction — otherwise `RevocationRecorded` fires too and the reported
- * constraint becomes engine evaluation order. (Duplicated per spec file today;
- * consolidating the four copies is `debt-hoist-strand-tombstone-helpers`.)
- */
-async function fileTombstone(
-  db: Database,
-  tableName: 'Member' | 'Manager' | 'MemberPeer',
-  stampId: string,
-  retiree: Ed25519KeyPair,
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
-  );
 }
 
 /**
@@ -134,13 +108,6 @@ async function rawSelfDeleteManager(
        where MemberKey = ?`,
     [self.publicKeyB64, signature, self.publicKeyB64],
   );
-}
-
-/** Seat a fresh member (admitted by `founder`) and return its keypair. */
-async function seatMember(db: Database, founder: Ed25519KeyPair): Promise<Ed25519KeyPair> {
-  const member = freshKeyPair();
-  await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
-  return member;
 }
 
 // ── sealStrand: the happy path and every guard around it ──────────────────────

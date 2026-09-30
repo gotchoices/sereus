@@ -11,8 +11,16 @@ import {
   leaveStrand,
   signStrandApproval,
 } from '../src/strand-membership-writer.js';
-import { freshKeyPair, tableCount, openStrand, inTransaction } from './strand-spec-helpers.js';
-import type { Ed25519KeyPair } from '../src/ed25519-key.js';
+import {
+  freshKeyPair,
+  tableCount,
+  openStrand,
+  inTransaction,
+  memberStamp,
+  memberPeerStamp,
+  seatMember,
+  fileTombstone,
+} from './strand-spec-helpers.js';
 
 /**
  * The CAPTURE-AND-REPLAY attacks the single-use stamp mechanism closes.
@@ -69,25 +77,11 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
 // ── Live-row readers (unfiltered scan + JS filter, the writer's scan-not-seek idiom) ──
 
-async function memberStamp(db: Database, key: string): Promise<string> {
-  for await (const row of db.eval('select Key, StampId from Strand.Member')) {
-    if (row.Key === key) return row.StampId as string;
-  }
-  throw new Error(`no Member row for ${key}`);
-}
-
 async function managerRow(db: Database, key: string): Promise<{ generation: number; stampId: string }> {
   for await (const row of db.eval('select MemberKey, Generation, StampId from Strand.Manager')) {
     if (row.MemberKey === key) return { generation: Number(row.Generation), stampId: row.StampId as string };
   }
   throw new Error(`no Manager row for ${key}`);
-}
-
-async function memberPeerStamp(db: Database, memberKey: string, peerId: string): Promise<string> {
-  for await (const row of db.eval('select MemberKey, PeerId, StampId from Strand.MemberPeer')) {
-    if (row.MemberKey === memberKey && row.PeerId === peerId) return row.StampId as string;
-  }
-  throw new Error(`no MemberPeer row for (${memberKey}, ${peerId})`);
 }
 
 async function isMember(db: Database, key: string): Promise<boolean> {
@@ -96,35 +90,6 @@ async function isMember(db: Database, key: string): Promise<boolean> {
 
 async function isManager(db: Database, key: string): Promise<boolean> {
   return (await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [key])) != null;
-}
-
-/**
- * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
- * Every replayed DELETE below rides one of these so `RevocationRecorded` is
- * satisfied and the `/Authorized/` pin names the authorization gate alone. (The
- * writer's own tombstone helper is module-private, so the idiom is duplicated
- * here — same as in the two sibling specs.)
- */
-async function fileTombstone(
-  db: Database,
-  tableName: 'Member' | 'Manager' | 'MemberPeer',
-  stampId: string,
-  retiree: Ed25519KeyPair,
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
-  );
-}
-
-/** Seat a fresh member (admitted by the founder) and return its keypair. */
-async function seatMember(db: Database, founder: Ed25519KeyPair): Promise<Ed25519KeyPair> {
-  const member = freshKeyPair();
-  await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
-  return member;
 }
 
 // ── Controls: the two premises every pin below rests on ──────────────────────
