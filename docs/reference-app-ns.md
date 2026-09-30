@@ -68,7 +68,10 @@ parties on one device lands on a different database rather than sharing one. The
 identity (Ed25519 key, producing a stable PeerId across cold launches) lives in
 `sereus-peer-identity`. Because `openOptimysticNSDb` is async but
 `CadreNodeConfig.storage.provider` is a sync factory, `src/ns-storage.ts` returns a
-lazy `IRawStorage` proxy that awaits a cached open before delegating each call.
+lazy `IRawStorage` proxy that awaits a cached open before delegating each call. The
+cache holds one open per database name. An open that fails is dropped from it, so the
+operations awaiting that open fail with its error and the next operation opens again;
+the identity database in `src/cadre-phone.ts` follows the same rule.
 
 A device that ran a build predating the party scoping still has an unscoped
 `sereus-control` database. Nothing opens or deletes it: its rows belong to whichever
@@ -364,7 +367,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database. Guarded by the shared stale-build check (`test/global-setup.ts`). `src/ns-storage.ts` and the pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -374,10 +377,14 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 `vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`.
 
 Three groups are targeted. The first reaches no NativeScript API at all:
-`src/node-local-slots.ts` and `src/cadre-phone.ts`, the latter with
-`@optimystic/db-p2p-storage-ns` (SQLite, identity) and `src/ns-storage.ts`
-mocked, and cadre-core mocked **only** in its `CadreNode` export so the two
-node-local store classes stay real.
+`src/node-local-slots.ts`, `src/cadre-phone.ts` and `src/ns-storage.ts`.
+`cadre-phone.ts` runs with `@optimystic/db-p2p-storage-ns` (SQLite, identity) and
+`src/ns-storage.ts` mocked, and cadre-core mocked **only** in its `CadreNode`
+export so the two node-local store classes stay real. `ns-storage.ts` has its own
+suite (`test/ns-storage.spec.ts`) over a mocked `@optimystic/db-p2p-storage-ns`,
+covering the open cache — one open per database name, a failed open retried by the
+next operation — and the proxy staying unopened until a listing is iterated; its
+one-line delegating methods are left to the `IRawStorage` types.
 
 The second is the two `Observable` view models behind the Settings screen —
 `src/cadre-vm.ts` and `app/settings/settings-view-model.ts`. They import
@@ -410,8 +417,7 @@ which records each statement by the table it touches and lets a test hold one
 open, refuse it, or apply it and then throw ("stored, then the outcome was
 lost"). Only the poll's `setInterval` is faked.
 
-Still uncovered here: `src/ns-storage.ts` and the pages. They need the device
-harness below.
+Still uncovered here: the pages. They need the device harness below.
 
 `test/global-setup.ts` runs the shared stale-build guard
 (`test-harness/build-freshness.ts`) first, because those specs execute real

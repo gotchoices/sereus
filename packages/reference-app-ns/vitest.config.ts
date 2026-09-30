@@ -10,8 +10,8 @@ import { defineConfig } from 'vitest/config';
  * and `ObservableArray`; the alias below redirects that specifier to
  * `test/stubs/nativescript-core.ts`, which re-exports the real classes from the
  * submodules that load here. Everything else collected here
- * (`src/node-local-slots.ts`, `src/cadre-phone.ts`) is plain module logic with no
- * platform coupling.
+ * (`src/node-local-slots.ts`, `src/cadre-phone.ts`, `src/ns-storage.ts`) is plain
+ * module logic once `@optimystic/db-p2p-storage-ns` is mocked.
  *
  * `globalSetup` runs the stale-build guard because these suites execute real,
  * non-mocked compiled output from `@serfab/cadre-core` (and, through it, the
@@ -19,8 +19,8 @@ import { defineConfig } from 'vitest/config';
  * `test/global-setup.ts`. The chat suite also runs `src/chat-operations.ts`
  * against a real in-memory Quereus `Database` carrying the app's chat schema.
  *
- * The remaining NativeScript-coupled modules (pages, `ns-storage.ts`) are not
- * unit-targeted here; they run under `test:bundle` and the on-device e2e harness
+ * The remaining NativeScript-coupled modules (the pages) are not unit-targeted
+ * here; they run under `test:bundle` and the on-device e2e harness
  * (`scripts/run-e2e.mjs`).
  */
 export default defineConfig({

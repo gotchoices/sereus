@@ -34,16 +34,32 @@ import { openOptimysticNSDb, SqliteRawStorage } from '@optimystic/db-p2p-storage
  * prepared statements) per strand rather than reopening the file on that second
  * call. The cache is for the connection, not for the `LazyNsRawStorage` proxy over
  * it — cadre-core owns the store instance's lifetime itself.
+ *
+ * A rejected open is forgotten, so the next operation on that database retries —
+ * the same policy as `openIdentityDb` in `cadre-phone.ts`. Callers already awaiting
+ * the failed promise still receive its rejection.
  */
 const openByDbName = new Map<string, Promise<SqliteRawStorage>>();
 
+/**
+ * NOTE: `openOptimysticNSDb` opens the native handle and then applies the schema, and
+ * does not close the handle if applying the schema throws; a retry then opens a second
+ * handle on the same file. Fine while schema application does not fail in practice; if
+ * retried opens are ever seen blocking on a leaked handle, the fix belongs in the
+ * upstream opener. Retries also have no backoff — one fresh open attempt per operation
+ * on a permanently broken file; revisit only if a failing scope is seen issuing opens
+ * in a tight loop.
+ */
 function openStorage(dbName: string): Promise<SqliteRawStorage> {
-	let pending = openByDbName.get(dbName);
-	if (!pending) {
-		pending = openOptimysticNSDb(dbName).then((db) => new SqliteRawStorage(db));
-		openByDbName.set(dbName, pending);
-	}
-	return pending;
+	const cached = openByDbName.get(dbName);
+	if (cached) return cached;
+	const opening = openOptimysticNSDb(dbName).then((db) => new SqliteRawStorage(db));
+	openByDbName.set(dbName, opening);
+	// The rejection itself reaches every caller awaiting `opening`; this only forgets it.
+	void opening.catch(() => {
+		if (openByDbName.get(dbName) === opening) openByDbName.delete(dbName);
+	});
+	return opening;
 }
 
 /**
