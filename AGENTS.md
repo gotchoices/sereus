@@ -19,6 +19,9 @@ machine-checkable, human-review-only (see [`docs/testing.md`](docs/testing.md) â
 - Lowercase SQL reserved words (e.g., `select * from Table`)
 - No inline `import()` unless dynamically loading
 - Don't create summary docs; update existing docs
+- Docs describe the system as it is now. A problem that was found and fixed is history: name the ticket slug (or the upstream commit) and stop. Do not retell the diagnosis, the dates, or the before-state. Keep a past fact only when it is the reason the current design is the way it is, and then state it as a constraint, not a story.
+- One list item, one claim plus its reason. When an item needs a second topic, give it a labelled sub-paragraph; when it describes a mechanism with several parts, make it a headed section and leave a one-sentence item linking to it.
+- Extending a doc: add to the section that owns the topic, or add a section. Do not append to the nearest bullet.
 - Stay DRY
 - No lengthy summaries
 - No backwards compat yet
