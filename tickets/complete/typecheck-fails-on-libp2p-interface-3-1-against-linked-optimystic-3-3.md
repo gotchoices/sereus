@@ -1,7 +1,7 @@
-description: This repo's libp2p libraries were a release behind the linked optimystic checkout, so TypeScript saw two copies of every libp2p type and refused to compile four packages. The libraries now sit on the same release line as optimystic; review the version move, the removed type casts and the corrected comments.
+description: This repo's libp2p libraries were a release behind the linked optimystic checkout, so TypeScript saw two copies of every libp2p type and refused to compile four packages. The libraries now sit on the same release line as optimystic, the casts that papered over the split are gone, and review confirmed the result.
 prereq:
 architecture: docs/testing.md
-files: packages/*/package.json, yarn.lock, packages/reference-app-web/src/lib/cadre-web.ts, packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-ns/src/cadre-phone.ts, packages/cadre-core/test/control-database-offline-peers.spec.ts, packages/cadre-core/src/{cadre-node,peer-dial,strand-formation-protocol,types}.ts, docs/architecture.md, .release-notes.pending.md, tickets/blocked/adopt-optimystic-address-dial-timeout.md, tickets/.pre-existing-known.md
+files: packages/*/package.json, docs/testing.md, yarn.lock, packages/reference-app-web/src/lib/cadre-web.ts, packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-ns/src/cadre-phone.ts, packages/cadre-core/test/control-database-offline-peers.spec.ts, packages/cadre-core/src/{cadre-node,peer-dial,strand-formation-protocol,types}.ts, docs/architecture.md, .release-notes.pending.md, tickets/blocked/adopt-optimystic-address-dial-timeout.md, tickets/.pre-existing-known.md
 repro: verified
 ----
 # Move this repo's libp2p family to the 3.3 line
@@ -59,7 +59,7 @@ Both failures are in `control-write-degraded-cohort-member.integration.ts`: a wr
 
 ## Known gaps
 
-- **Some suites ran before the last dependency change.** cadre-rn (44), reference-app-rn (302) and reference-app-web (67) passed before the uint8arrays 5→6 move. After it, only typecheck and the bundle checks covered those three packages; their unit suites were not re-run.
+- **Some suites ran before the last dependency change** (closed in review). cadre-rn, reference-app-rn and reference-app-web passed before the uint8arrays 5→6 move; review re-ran them on the final tree (see Review findings).
 - **Integration run relinked partway.** The uint8arrays `yarn install` relinked `node_modules` during the integration run. No file failed on module loading, but the run is not a clean single-tree run of the final state.
 - **One-off OS error.** `device-token-registry.spec.ts` failed once with `uv_interface_addresses returned Unknown system error 2`. That comes from Windows `os.networkInterfaces()`, inside optimystic's nested `@libp2p/tcp`. The file then passed 3 of 3 runs on its own.
 - **No device run on 3.3.** No phone (React Native or NativeScript) or browser device run was made on 3.3. The runtime change covers the transports and services this repo passes to optimystic (websockets, tcp, circuit-relay, identify, webrtc) and the integration harness's own bare libp2p nodes (`dedicated-relay.ts`, two scenarios). `@optimystic/db-p2p` already built its node from its own nested libp2p 3.3.11 before this change.
@@ -74,7 +74,28 @@ None added. The change is a dependency move. The type split it fixes is caught b
 - No tsconfig `paths`, no `skipLibCheck` change, no new casts. The existing skew casts were removed instead.
 - Nothing in `../optimystic` was touched.
 
-## Review focus
+## Review findings
 
-- Confirm the two exact pins (identify 4.1.14, webrtc 6.0.33) should stay exact. Their old reason, holding the interface at 3.1, no longer applies. Exact pins still keep this repo's identify on the same release as optimystic's resolution.
-- Spot-check the `yarn.lock` diff (about 1,200 lines) for an accidental second copy of `@libp2p/interface`, `@multiformats/multiaddr` or `uint8arrays` major versions in an app's top `node_modules`.
+The dependency move and cast removals landed in `` `ticket(fix): typecheck-fails-on-libp2p-interface-3-1-against-linked-optimystic-3-3` ``; `` `ticket(implement): …` `` only touched two comments. Both diffs were read.
+
+**Checked, nothing found:**
+
+- **Physical copies.** Listed every installed copy under `node_modules` and `packages/*/node_modules`. `@libp2p/interface` 3.3.0, `@multiformats/multiaddr` 13.0.3, `@libp2p/utils` 7.4.1, `@libp2p/crypto` 5.1.23, `@libp2p/peer-id` 6.0.15, `interface-datastore` 10.0.1: one version each. The apps' own `node_modules` copies (nohoist) are the same versions. `uint8arrays` 6.1.1 everywhere an app's top `node_modules` resolves. The only 5.x copy is nested under the root `uint8arraylist` 2.4.8, which only `@chainsafe/libp2p-noise` 17 and `@chainsafe/libp2p-yamux` 8 resolve; every `@libp2p/*` package has its own nested `uint8arraylist` 3.0.2, and the apps' top level holds 3.0.2.
+- **Removed casts.** Each removed cast's file typechecks without it, and `PrivateKey` is still used in `cadre-web.ts` (`runOwnerGenesis`). No other `TransportFactory`, "brand-skew" or `as unknown as` bridge to libp2p types remains.
+- **Comments citing libp2p behaviour.** The `addressDialTimeout` sizing the new comments state ("at least 6 s, or ten link round trips") matches `../optimystic/packages/db-p2p/src/libp2p-node-base.ts` and `rpc-deadline.ts`. The remaining `3.1.3` mentions in source and docs are measurements, as the handoff says.
+- **Bookkeeping.** The blocked-ticket edit, the removed known-failure entry and the release note are accurate.
+- **Exact pins** (`@libp2p/identify` 4.1.14, `@libp2p/webrtc` 6.0.33). Kept exact. optimystic declares identify `^4.1.14`, so a caret would also be correct. But a caret buys nothing here: the lockfile already fixes the version, both pins sit in devDependencies or unpublished apps, and changing them only churns the lockfile. The new `docs/testing.md` bullet says these pins must track optimystic like the rest of the family.
+
+**Fixed inline:**
+
+- `peer-dial.ts` (`tryAddrsInTurn` doc) and `cadre-node.ts` (`resolveControlDialAddrs` doc): the edits left one line about 120 characters long in each comment. Re-wrapped to match the surrounding comment.
+- **Doc the change should have touched.** `docs/testing.md` → "Declared dependency range vs linked workspace" covered only the linked `@optimystic/*` and `@quereus/*` packages. Nothing checked that this repo's libp2p family stays on optimystic's release line, and `yarn upgrade:optimystic` does not move it. That gap is how this failure arose. Added a bullet: which packages must follow `db-p2p`, that the dep-range gate does not see them, and that the symptom is a `yarn typecheck` failure naming two `@libp2p/interface` paths (or the NativeScript bundle check failing on `uint8arrays`).
+
+**Considered and left alone:**
+
+- `reference-app-ns/src/cadre-phone.ts` `loadOrCreatePhoneKey` is now a one-line wrapper. Inlining it would drop the app's only import of `@libp2p/interface`. knip would then flag that dependency as unused, and removing the dependency changes which copy the NativeScript webpack resolves from the app's own `node_modules`. Leaving the wrapper costs nothing.
+- **Architecture ladder.** The class (an unlinked package shared with a linked sibling drifts to another major/minor) is already caught at build time by `yarn typecheck`; that is how this instance was found. A dedicated gate for "one physical `@libp2p/interface`" would duplicate it, so no ticket was filed; the doc bullet above records the rule.
+
+**Tests:** none added or cut. The change is a dependency move whose failure mode `yarn typecheck` catches.
+
+**Validation on the final tree (review pass):** `yarn lint` exit 0; `yarn dep-check` exit 0; `yarn workspace @serfab/cadre-core typecheck` exit 0; cadre-core rebuilt (the comment edits made its `dist` stale for the app suites' stale-build guard). Unit suites: cadre-rn 44 passed, reference-app-rn 302 passed, reference-app-web 67 passed, reference-app-ns 131 passed. `../optimystic` clean at `249a26b8`. The integration suite was not re-run in review: the review edits are comments and docs only, and the implement-stage run is described above.

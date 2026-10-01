@@ -3602,7 +3602,8 @@ export class CadreNode implements SAppIdLookup {
    * addresses last — so one or two addresses that never answer use up most of
    * the deadline before the address that works is tried. libp2p 3.3's
    * per-address `addressDialTimeout` does not prevent that: optimystic sizes it
-   * for a cold relayed open (at least 6 s, or ten link round trips). {@link dialPeerAddrs} dials each address on its own time limit instead.
+   * for a cold relayed open (at least 6 s, or ten link round trips).
+   * {@link dialPeerAddrs} dials each address on its own time limit instead.
    */
   private async resolveControlDialAddrs(peerId: string, resolved: Multiaddr[]): Promise<Multiaddr[]> {
     if (resolved.length > 0) {

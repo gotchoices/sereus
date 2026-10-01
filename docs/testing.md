@@ -488,6 +488,14 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   `^0.29.0` except `@optimystic/db-core`, which stayed `^0.28.0` in five packages). The gate turns that
   into a failure naming each stale range and its suggested edit, for every package with a `link:`
   resolution — which, since the entry above was closed, is every `@optimystic/*` this repo depends on.
+- **The libp2p family follows the linked `@optimystic/db-p2p`, and this gate does not see it.**
+  `libp2p`, `@libp2p/*`, `@multiformats/multiaddr`, `datastore-core` and `uint8arrays` are not
+  linked, so their ranges here are checked against nothing. Keep them on the release line
+  `../optimystic/packages/db-p2p/package.json` declares, exact pins (`@libp2p/identify`,
+  `@libp2p/webrtc`) included. `yarn upgrade:optimystic` does not move them. When they drift, two
+  physical copies of `@libp2p/interface` (or of `multiaddr`) appear and `yarn typecheck` fails with
+  TS2322/TS2345 messages naming both paths; the NativeScript bundle check fails on `uint8arrays`
+  instead (`typecheck-fails-on-libp2p-interface-3-1-against-linked-optimystic-3-3`).
 - NOTE: the published packages declare `@quereus/quereus` as a regular `dependency`, not a
   `peerDependency` — including `quereus-plugin-sereus`, which is loaded *into* a Quereus host. Ranges
   agree today, so installers dedupe to one copy. If a consumer ever pins a Quereus major that our
