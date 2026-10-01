@@ -30,8 +30,18 @@ Today no other machine of the inviter's party can answer the formation, for thre
 
 The third is already met on an always-on node that hosts the party's strands (`hostUnclaimedStrands`, the default for the storage profile). `FormationInvite` and `FormationUsage` already replicate party-wide, so the responder's checks would pass there too. Fixing 1 and 2 therefore lets an always-on machine answer for the inviter. Together with the pending join, the two phones would never need to be online at the same time.
 
+## Maintainer direction (2026-09-30)
+
+> "In an ideal world, your entire cadre would enter a 'trying...' mode, so even if you exit the app on the phone, your other nodes can try on your behalf."
+
+So the pending join is a fact about the party, not the device. Each always-on machine of the invitee's party retries it on its own. The phone only records the attempt and shows the status.
+
+**Consequence for consent.** `FormationUsage.PeerKey` and `PeerSig` name the machine that dials, not the phone. A machine that retries therefore signs its own consent over the disclosure the phone recorded. The strand membership still goes to the party (`memberKey` is the party id), so it doesn't matter which machine completes the join.
+
+**Consequence for "spent".** If two machines race and one wins, the loser sees the token as spent. Before treating "spent" as a permanent failure, a machine must check its own party's `JoinedStrand` for that strand. If the strand is there, the join succeeded and the pending row is closed.
+
 ## Open questions for planning
 
 - **Source of other machines' addresses.** Should an invitation take them from `CadrePeer` rows, from live connections, or from both? They go stale; the joiner's retries make that tolerable.
-- **Retries from two of the invitee's machines at once.** `FormationUsage.UsageStampId` is minted per attempt, so a token with `TotalUses = 1` could be redeemed twice. The pending row should carry the stamp, so that every machine retries the same redemption.
+- **Retries from two of the invitee's machines at once.** Each machine mints its own `UsageStampId` and signs its own consent, so they can't share one redemption. Under `TotalUses = 1` the inviter admits only the first, and the second sees "spent" (handled above). For an invitation with no use limit, both could redeem it. That wastes a use but does no harm, because the membership is the party's. Decide whether to stagger retries by machine to make this rare.
 - **Ticket split.** (a) Install the responder on always-on nodes and put the party's addresses in invitations. (b) Add the pending-join row, the retry loop, typed failure codes and the status API.

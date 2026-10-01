@@ -26,8 +26,23 @@ They are asking now because a control-schema change means recreating every party
   - Labels are tiny and rarely written.
   - Read position is small but written often, so the cap and a limit on write rate must be settled.
 
+## Maintainer direction (2026-09-30)
+
+> "I try to avoid key/value stores, unless the semantics are truly opaque to the layer in question."
+
+That rules out #6's key/value recommendation.
+
+The relational alternative is **a party-private app database**:
+- **What it is:** a Quereus database per sApp, holding tables the app declares in a schema of its own (for example `table InviteNote (Token text primary key, Label text not null)`).
+- **Where it lives:** it replicates across the party's own machines the way the control database does, and never to strand members.
+- **What sereus does with it:** sereus hosts and replicates it but never reads its tables, so it stays opaque to sereus without being shapeless to the app.
+- **What it costs:** a second database per party per sApp, opened next to the control database. This is #6's "separate party-private database" option, and it is the most work.
+
 ## Decision needed
 
-- **A. Build the capped per-sApp key/value space now** (recommended), as a single control-schema change before apps have users. #6's TODO list becomes the plan.
+- **A. A party-private app database with an app-declared schema** (recommended, given the direction above). It serves #24 and #6 together. Its plan must settle three things:
+  - which machines host it;
+  - its start-up cost;
+  - how the app declares its private schema next to the strand schema.
 - **B. Add only an invitation label now** (option 1, not editable), and leave #6 for later.
 - **C. Leave both for later.** Chat keeps device-local storage keyed by token, as it already plans to in the meantime.
