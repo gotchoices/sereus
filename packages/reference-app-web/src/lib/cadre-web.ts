@@ -36,7 +36,6 @@ import {
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
-	peerKeySigner,
 	controlStorageScope,
 } from '@serfab/cadre-core';
 import type {
@@ -62,7 +61,7 @@ import {
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC, webRTCDirect } from '@libp2p/webrtc';
-import { loadIceConfig } from './ice-config.js';
+import { resolveIceServers } from './ice-config.js';
 import { resolveRelayAddrs } from './relay-config.js';
 import {
 	openStores,
@@ -327,19 +326,14 @@ export async function startCadre(): Promise<CadreNode> {
 	await openStores([controlStoreKey]);
 	controlStorage = getStoreStorage(controlStoreKey);
 
-	// ICE servers (STUN/TURN) from the runtime manifest. Never throws; `[]` when
-	// no manifest is configured (host/LAN candidates still work).
-	//
-	// The signer proves to a peer-bound TURN credential issuer that this tab owns
-	// the node key it is about to start with, so the issued credential can be
-	// attributed (and revoked) per peer id. A rejected assertion degrades to an
-	// unauthenticated retry inside `loadIceConfig` — it never costs us STUN.
-	const iceServers = await loadIceConfig({ signer: peerKeySigner(privateKey) });
-
 	// Relay multiaddr(s) from the runtime manifest. When configured, the tab
 	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation
 	// and become dialable for strand formation. Empty → Phase-1 solo posture.
 	const relayAddrs = resolveRelayAddrs();
+
+	// STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
+	// relay configured (host/LAN candidates still work).
+	const iceServers = resolveIceServers(relayAddrs);
 
 	// Durable node-local records, in the same node-local IndexedDB database as the
 	// identity/party-id above (shared fate — see `node-local-slots.ts`). No

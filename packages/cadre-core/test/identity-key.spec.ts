@@ -1,33 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { generateKeyPair, generateKeyPairFromSeed, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair, privateKeyToProtobuf, publicKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
 import { loadOrCreateIdentityKey, peerKeySigner } from '../src/identity-key.js';
-
-/**
- * The cross-repo pinned vector. The TURN credential issuer
- * (`ops/docker/turn-credential-issuer/src/self-test.ts`) and both reference-app
- * `ice-config.spec.ts` files pin the identical bytes, so a drift on either side
- * fails a test instead of silently failing to authenticate in production.
- */
-const PINNED = {
-	seed: new Uint8Array(32).fill(1),
-	peerId: '12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5',
-	publicKeyB64: 'CAESIIqI4910CfGV_VLbLTy6XXLKZwm_HZQSG_N0iAG0D29c',
-	audience: 'https://issuer.example/ice-servers.json',
-	issuedAtSec: 1735689600,
-	nonce: '00112233445566778899aabbccddeeff',
-	signatureB64: '6jvguqhDOhK9ZahdAYb3aYnzz1dJaJBJtVCFcLCWMwCdupTUClWMJzXoS7yujjr7V3XA-htohz-VCl8GQQFcDg',
-} as const;
-
-/** The five-line signed message the issuer rebuilds and verifies. */
-const PINNED_MESSAGE = [
-	'sereus.turn-issuer.v1',
-	PINNED.audience,
-	PINNED.peerId,
-	String(PINNED.issuedAtSec),
-	PINNED.nonce,
-].join('\n');
 
 describe('loadOrCreateIdentityKey', () => {
 	it('generates and persists an Ed25519 key into an empty store (first run)', async () => {
@@ -88,12 +64,10 @@ describe('loadOrCreateIdentityKey', () => {
 });
 
 describe('peerKeySigner', () => {
-	it('derives the pinned peer id and public key from the pinned seed', async () => {
-		const key = await generateKeyPairFromSeed('Ed25519', PINNED.seed);
-		const signer = peerKeySigner(key);
-
-		expect(signer.peerId).toBe(PINNED.peerId);
-		expect(signer.publicKeyB64).toBe(PINNED.publicKeyB64);
+	it('publicKeyB64 decodes back to the key\'s public key', async () => {
+		const key = await generateKeyPair('Ed25519');
+		const decoded = publicKeyFromProtobuf(uint8ArrayFromString(peerKeySigner(key).publicKeyB64, 'base64url'));
+		expect(decoded.equals(key.publicKey)).toBe(true);
 	});
 
 	it('peerId matches what libp2p itself reports for the key', async () => {
@@ -101,14 +75,16 @@ describe('peerKeySigner', () => {
 		expect(peerKeySigner(key).peerId).toBe(peerIdFromPrivateKey(key).toString());
 	});
 
-	it('signs the pinned message to exactly the pinned signature', async () => {
-		const key = await generateKeyPairFromSeed('Ed25519', PINNED.seed);
-		const signature = await peerKeySigner(key).sign(PINNED_MESSAGE);
+	it('signs so the signature verifies against the key\'s public key', async () => {
+		const key = await generateKeyPair('Ed25519');
+		const message = 'proof of possession';
+		const signature = await peerKeySigner(key).sign(message);
 
-		expect(signature).toBe(PINNED.signatureB64);
+		const verified = await key.publicKey.verify(new TextEncoder().encode(message), uint8ArrayFromString(signature, 'base64url'));
+		expect(verified).toBe(true);
 	});
 
-	it('rejects a non-Ed25519 key (the issuer accepts nothing else)', async () => {
+	it('rejects a non-Ed25519 key', async () => {
 		const key = await generateKeyPair('secp256k1');
 		expect(() => peerKeySigner(key)).toThrow(/Ed25519/);
 	});

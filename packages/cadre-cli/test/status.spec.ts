@@ -33,7 +33,6 @@ const HEALTH: HealthStatus = {
       byTransport: {
         'circuit-relay': 0,
         webrtc: 0,
-        'webrtc-turn': 0,
         'webrtc-direct': 0,
         websocket: 0,
         tcp: 0,

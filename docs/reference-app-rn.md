@@ -146,6 +146,8 @@ The field is prefilled from the env var on launch, so a build that ships one nee
 
 The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooW…`. `ops/` has the relay container this repo ships.
 
+Each relay is also the phone's **STUN** server, for upgrading a relayed connection to a direct WebRTC one: [`src/ice-config.ts`](../packages/reference-app-rn/src/ice-config.ts) turns each relay address into `stun:<relay host>:3478`. `EXPO_PUBLIC_STUN_URLS` (comma-separated `stun:` URLs) replaces that, for a relay whose STUN is published elsewhere. With no relay the phone has no STUN server and WebRTC upgrades use LAN candidates only — see `ops/docs/ice-servers.md`.
+
 **What the phone can and cannot do without one**
 
 | | with a relay reserved | without |
@@ -207,7 +209,7 @@ The phone node maintains a stable PeerId across app restarts:
 2. **Subsequent launches** — the key is loaded from the enclave, producing the same PeerId every time.
 3. **Single identity** — the same key is used for both the control network and all strand networks, matching the one-key-per-device architecture.
 
-`startPhoneNode` resolves the key itself (cadre-core's exported `loadOrCreateIdentityKey`, on the same store and slot the node uses) *before* constructing the `CadreNode`, so it can sign the ICE-manifest request with the identity the node is about to start with — see `ops/docs/ice-servers.md` → "Client side". Ordering is load-bearing: it must run before `loadIceConfig`. A locked/refused enclave read propagates and **fails the start** rather than booting on a replacement key.
+`CadreNode` resolves the key from that store when it starts. A locked/refused enclave read propagates and **fails the start** rather than booting on a replacement key.
 
 Gating: the store is opened **ungated** (no `requireAuthentication`) with `keychainAccessible: AFTER_FIRST_UNLOCK`, because the node must come up headless on a push wake while the device is locked, and because a biometric-set change would invalidate the entry. Earlier development builds kept the key in plaintext MMKV, then plaintext LevelDB; there is no upgrade path from either, and none was ever needed. The app reads its identity only from the enclave and generates one there on first run.
 
@@ -380,7 +382,7 @@ packages/reference-app-rn/
     push-wake.ts              # Platform-agnostic push-wake decision logic
     push-wake-native.ts       # Expo notifications wiring for push-wake
     connection-status.ts      # Derives UI connection state from node events
-    ice-config.ts             # STUN/TURN servers from the runtime manifest
+    ice-config.ts             # STUN servers derived from the relay addresses
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application

@@ -15,6 +15,7 @@
     "@libp2p/ping": "^3.1.4",
     "@libp2p/tcp": "^11.0.19",
     "@libp2p/websockets": "^10.1.12",
+    "@msimerson/stun": "^3.2.1",
     "@multiformats/multiaddr": "^13.0.3",
     "libp2p": "^3.3.8"
   },

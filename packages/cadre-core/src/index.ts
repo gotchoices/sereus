@@ -569,7 +569,6 @@ export {
 // Connection-path diagnostics (relayed vs direct classification + summary)
 export {
   classifyTransport,
-  classifyConnectionPath,
   summarizeConnectionPaths,
   emptyConnectionPathSummary,
   DEFAULT_SETTLE_WINDOW_MS,

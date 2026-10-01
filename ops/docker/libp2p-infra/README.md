@@ -1,7 +1,8 @@
 # sereus libp2p infra
 
-Container image for a party-operated libp2p **relay** node — a single Circuit Relay v2 hop.
-Built by `Dockerfile` from `src/main.ts`.
+Container image for a party-operated libp2p **relay** node — a single Circuit Relay v2 hop
+plus a STUN responder, so one process both relays traffic and helps peers upgrade to a
+direct WebRTC connection. Built by `Dockerfile` from `src/main.ts`.
 
 Sereus has no global DHT to bootstrap: each strand is its own FRET ring, and a node joins
 by dialing a known participating node directly or reaching it through a relay like this one.
@@ -19,6 +20,8 @@ replaced kad-DHT with FRET, which no kad-DHT client consumes.)
 | `PUBLIC_WS_PORT` | bound port | Port advertised for the WebSocket listener under `PUBLIC_HOST`. |
 | `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise, verbatim. Overrides `PUBLIC_HOST`, and **replaces** the advertised set — name every transport clients need. For what `PUBLIC_HOST` can't express, e.g. a `/tls/ws` address behind a TLS front. |
 | `RELAY_APPLY_DEFAULT_LIMIT` | `false` | See below. |
+| `STUN_ENABLED` | `true` | Run the STUN responder (`src/stun.ts`). See [`ops/docs/ice-servers.md`](../../docs/ice-servers.md). |
+| `STUN_PORT` | `3478` | UDP port the STUN responder binds, on all interfaces. |
 | `RELAY_MAX_RESERVATIONS` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
 
 ### `RELAY_APPLY_DEFAULT_LIMIT`
@@ -103,7 +106,7 @@ image-level variable must be added there too. See `../README.md`.
 
 The stack also has to *publish* the ports the process binds. Both default listen
 addresses are published: container `4001` and container `4002` (WebSockets), the
-latter under `HOST_WS_PORT`. Overriding `LISTEN_ADDRS` to bind different ports means changing
+latter under `HOST_WS_PORT` — and STUN's container `3478/udp`, under `HOST_STUN_PORT`. Overriding `LISTEN_ADDRS` to bind different ports means changing
 those mappings to match — a listener nothing maps to is bound inside the container
 and unreachable from anywhere else, with no error to show for it.
 

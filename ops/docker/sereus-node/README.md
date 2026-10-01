@@ -15,7 +15,7 @@ The duplicate has been removed; use the canonical template instead:
 
 ### Why this isn't a peer of `relay/`
 
-Unlike `relay/`, `coturn/`, and `turn-credential-issuer/`, a `sereus-node` is
+Unlike `relay/`, a `sereus-node` is
 not shared operational infrastructure — each one belongs to a single user's
 cadre (keyed by their own `CADRE_PARTY_ID` and bootstrap nodes) and is normally
 deployed via npm/git +
@@ -24,4 +24,4 @@ systemd, or the Docker template above. It is intentionally **not** wired into
 `quickstarts/` entry — there is nothing ops-shared to scaffold.
 
 See `../README.md` for the ops/docker overview of the actually-shared
-services (relay/coturn/etc).
+services (the relay).

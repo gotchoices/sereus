@@ -1330,14 +1330,11 @@ any libp2p/network bring-up, into a private resolved field):
 
 Step 2 lives in `identity-key.ts` and is a **package-root export**
 (`loadOrCreateIdentityKey`), not private to `CadreNode`, because an embedding app
-may need the identity key *before* the node is constructed — `reference-app-rn`
-resolves it to sign its ICE-manifest request with the very key the node then loads
-from the same slot. One copy of the rule is load-bearing: a second copy that
-drifted could generate a fresh key and orphan the real identity. The same module
-exports `peerKeySigner(privateKey)`, a generic proof-of-possession signer
-(`peerId` / `publicKeyB64` / `sign`) for out-of-band HTTP services that want to
-attribute a request to a peer id; its one consumer today is the reference apps'
-`loadIceConfig` (see `ops/docs/ice-servers.md` → "Client side").
+may need the identity key *before* the node is constructed. One copy of the rule
+is load-bearing: a second copy that drifted could generate a fresh key and orphan
+the real identity. The same module exports `peerKeySigner(privateKey)`, a generic
+proof-of-possession signer (`peerId` / `publicKeyB64` / `sign`) for out-of-band
+HTTP services that want to attribute a request to a peer id.
 
 Owner genesis stays **app-controlled**: cadre-core resolves and protects the
 identity, then exposes the derived owner pair via
