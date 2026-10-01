@@ -35,6 +35,9 @@ Upstream also found two related points:
 - [ ] Pass explicit values to optimystic, computed in `link-budget.ts`: `connectionManager.addressDialTimeout`, `dialTimeout`, and its RPC `dialTimeoutMs`.
   - Agreed with optimystic (2026-10-01): its default per-address limit is sized for the cold path (opening the relay leg, then the circuit) with no allowance for gates.
   - Sereus adds its own gate cost of up to 2 × `ADMISSION_DECISION_TIMEOUT_MS`, one decision at the relay and one at the target.
-  - Upstream ticket: `fix/1-a-relayed-dial-through-an-unconnected-relay-outruns-its-deadlines`. Do this together with `backlog/23-bug-relayed-dial-budget-omits-opening-the-relay-connection`.
+  - Upstream tickets:
+    - `fix/1-a-relayed-dial-through-an-unconnected-relay-outruns-its-deadlines`.
+    - `fix/1.5-the-rpc-dial-deadline-cannot-be-set-per-node`, which adds the node-level `dialTimeoutMs` override. Until that lands, only optimystic's own code could set it.
+    - `addressDialTimeout` and `dialTimeout` are already used as given through `connectionManager`. Do this together with `backlog/23-bug-relayed-dial-budget-omits-opening-the-relay-connection`.
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
