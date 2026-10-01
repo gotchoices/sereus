@@ -30,5 +30,6 @@ Upstream also found two related points:
   - So sereus's own tests and scenarios run on a different libp2p from its users, and cannot see this limit.
   - `check:published` uses the same lockfile, so it doesn't catch the difference either.
 - [ ] Check whether any libp2p node that sereus builds itself (outside optimystic) should set `addressDialTimeout` too. See `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`.
+- [ ] Check the strand-formation dial against the new per-address limit. It passes the invitation's whole address list to one `dialProtocol` call under `formationDeadlines().dialMs` (`5L + 2 s`, 19.5 s at the default declaration), so a first address that never answers costs one per-address timeout and the next address gets what is left. With optimystic's `max(6000, 5L)` that is 17.5 s of 19.5 s at the default, about 2 s for the next address, which is too short for a relayed dial. Decide whether `dialMs` should cover more than one per-address timeout (see the `NOTE:` at `openFormationStream` in `strand-formation-protocol.ts`).
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.

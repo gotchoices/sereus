@@ -689,8 +689,9 @@ export interface FormationDialOptions {
   contact: FormationContactMessage;
   /**
    * Responder multiaddrs to dial, normally the invitation's bootstrap list. Every entry that
-   * parses is tried, in libp2p's order (direct before circuit), until one connects, all under
-   * one dial-connect budget (`dialTimeoutMs`); an entry that does not parse is skipped.
+   * parses is tried, in the order libp2p's default address sorter picks (loopback last, then
+   * public before private, then circuit after direct), until one connects, all under one
+   * dial-connect budget (`dialTimeoutMs`); an entry that does not parse is skipped.
    */
   responderAddrs: string[];
   /** Validate the responder's result; a false return aborts the formation. */
@@ -747,11 +748,14 @@ export interface FormationDialResult {
  * rejection is the abort itself, or reaches the caller through the awaited copy, so the
  * handler below only stops it being reported as unhandled.
  *
- * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget, so an
- * address that hangs without answering (a black-holed relay host) spends the whole budget
- * before the next is tried. A budget per address would overrun the session or shrink the
- * await-response budget ({@link formationDeadlines}). If joins through a hung first relay are
- * seen in practice, give each address a sub-budget or dial them in parallel.
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. On
+ * libp2p 3.1.3 (sereus's lockfile) an address that hangs without answering (a black-holed relay
+ * host) spends the whole budget before the next is tried; libp2p 3.3+ (what embedders install)
+ * cuts each address off at its own `addressDialTimeout`, which leaves the rest of the budget to
+ * the next address only while that timeout is well under `dialTimeoutMs` (see
+ * `blocked/adopt-optimystic-address-dial-timeout`). A budget per address here would overrun the
+ * session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
+ * hung first relay are seen in practice, give each address a sub-budget or dial them in parallel.
  */
 function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
   return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {
