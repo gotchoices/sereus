@@ -630,6 +630,43 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     ]);
   });
 
+  it("re-merges a formation's carried addrs on every tick until FRET holds that peer's record", async () => {
+    // Until the first connection the carried addresses are all that names the responder,
+    // and FRET's bootstraps keep only its peer id — so if it stays away past the
+    // peerStore's one-hour expiry, only this re-merge leaves anything to dial.
+    const [self, unmet, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const cross = await crossPartyPeer();
+    const carriedCross = `/ip4/198.51.100.5/tcp/4100/ws/p2p/${cross.peerId}`;
+    const carriedUnmet = `/ip4/198.51.100.6/tcp/4100/ws/p2p/${unmet}`;
+    const fretEntries: FretEntryFake[] = [];
+    const strand = fakeStrandNode(ownStrand, { fretEntries });
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    await (harness.node as unknown as {
+      recordFormationStrandAddrs(id: string, addrs: readonly string[]): Promise<void>;
+    }).recordFormationStrandAddrs('s1', [carriedCross, carriedUnmet]);
+    strand.merges.length = 0;
+
+    await refresh(harness.node, T0);
+    expect(strand.merges).toEqual([
+      { peerId: cross.peerId, addrs: [carriedCross] },
+      { peerId: unmet, addrs: [carriedUnmet] }
+    ]);
+
+    // Once FRET holds the peer's own signed record, that record supersedes the carried one.
+    fretEntries.push(cross.entry);
+    strand.merges.length = 0;
+    await refresh(harness.node, T0 + 15_000);
+    expect(strand.merges).toEqual([
+      { peerId: cross.peerId, addrs: [cross.merged] },
+      { peerId: unmet, addrs: [carriedUnmet] }
+    ]);
+  });
+
   it('honours a configured strandAddrRefreshMs override, never retrying a failed sibling later than it', async () => {
     const [self, sib, sick, ownStrand] = await Promise.all(Array.from({ length: 4 }, () => freshPeerId()));
     const strand = fakeStrandNode(ownStrand);

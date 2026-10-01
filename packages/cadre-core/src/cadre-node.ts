@@ -619,7 +619,8 @@ export class CadreNode implements SAppIdLookup {
    * (`FormationResultMessage.strandAddrs`), by strand id: the responder's live strand
    * node addresses, kept so the strand's first attach has something to dial. Written by
    * {@link recordFormationStrandAddrs}, read by {@link resolveCohortSeed} (launch and
-   * hibernation resume).
+   * hibernation resume) and by every refresh pass for the peers the strand node's FRET
+   * table holds no record for yet ({@link remergeUnrecordedFormationAddrs}).
    *
    * This is the only cross-party input a FIRST attach has. The strand-addr RPC that
    * resolves a strand's addresses is membership-gated and answers own-party siblings
@@ -6405,8 +6406,10 @@ export class CadreNode implements SAppIdLookup {
    * swallowed so one strand's failure never costs the others their refresh.
    *
    * The sibling half runs first, so a failure reading the FRET table cannot cost a
-   * sibling answer its merge. The FRET half runs on EVERY pass, whether or not any
-   * sibling is due or connected — see {@link remergeStrandFretRecords} for why.
+   * sibling answer its merge. The FRET half, and the formation-carried addresses of
+   * the peers it holds no record for, run on EVERY pass, whether or not any sibling is
+   * due or connected — see {@link remergeStrandFretRecords} and
+   * {@link remergeUnrecordedFormationAddrs} for why.
    */
   private async refreshOneStrandPeerAddrs(
     strandId: string,
@@ -6436,7 +6439,8 @@ export class CadreNode implements SAppIdLookup {
       if (siblingAddrs.length > 0) {
         await this.mergeStrandPeerAddrs(strandNode, siblingAddrs, strandId);
       }
-      await this.remergeStrandFretRecords(strandNode, strandId);
+      const recorded = await this.remergeStrandFretRecords(strandNode, strandId);
+      await this.remergeUnrecordedFormationAddrs(strandNode, strandId, recorded);
     } catch (error) {
       log('refreshStrandPeerAddrs: strand %s refresh failed (continuing): %o', strandId, error);
     }
@@ -6472,14 +6476,14 @@ export class CadreNode implements SAppIdLookup {
    * per 15 s tick. Fine at strand table sizes, and an unchanged address set writes
    * nothing in libp2p's persistent peer store. If many strands or large tables make it
    * show up, read only the entries whose address stamp is near the one-hour mark.
+   *
+   * @returns the ids of the peers the table holds a usable record for.
    */
-  private async remergeStrandFretRecords(strandNode: Libp2p, strandId: string): Promise<void> {
+  private async remergeStrandFretRecords(strandNode: Libp2p, strandId: string): Promise<ReadonlySet<string>> {
     const { peers, rejected } = await strandFretPeerAddrs(strandNode);
-    if (peers.size === 0 && rejected === 0) {
-      return;
-    }
-    if (!this.isRunningStrandNode(strandId, strandNode)) {
-      return;
+    const recorded = new Set(peers.keys());
+    if ((peers.size === 0 && rejected === 0) || !this.isRunningStrandNode(strandId, strandNode)) {
+      return recorded;
     }
     const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
     for (const [peerId, addrs] of peers) {
@@ -6487,6 +6491,35 @@ export class CadreNode implements SAppIdLookup {
     }
     log('strand %s FRET address records re-merged (peers=%d, merged=%d, restamped=%d, failed=%d, rejected=%d)',
       strandId, peers.size, counts.merged, counts.restamped, counts.failed, rejected);
+    return recorded;
+  }
+
+  /**
+   * Re-merge the addresses this strand's formation carried ({@link formationStrandAddrs})
+   * for every peer the strand node's FRET table holds no record for (`recorded`).
+   *
+   * Until the first connection to the responder, the carried addresses are the only
+   * thing naming it, and the launch seed writes them once. FRET's `bootstraps` keep only
+   * the peer id, so if the responder stays unreachable past the peerStore's one-hour
+   * expiry, nothing could dial it when it returns. Once FRET holds the peer's own signed
+   * record, that record supersedes what the formation carried and this stops.
+   */
+  private async remergeUnrecordedFormationAddrs(
+    strandNode: Libp2p,
+    strandId: string,
+    recorded: ReadonlySet<string>
+  ): Promise<void> {
+    const carried = this.formationStrandAddrs.get(strandId);
+    if (!carried) {
+      return;
+    }
+    const unrecorded = [...groupAddrsByPeerId(carried)]
+      .filter(([peerId]) => !recorded.has(peerId))
+      .flatMap(([, addrs]) => addrs.map((addr) => addr.toString()));
+    if (unrecorded.length === 0 || !this.isRunningStrandNode(strandId, strandNode)) {
+      return;
+    }
+    await this.mergeStrandPeerAddrs(strandNode, unrecorded, strandId);
   }
 
   /**
@@ -6537,10 +6570,11 @@ export class CadreNode implements SAppIdLookup {
    *
    * NOTE: one input outlives that hour — a formation's carried addresses
    * ({@link formationStrandAddrs}) are in every launch and resume seed for as long as
-   * this process remembers the formation, so a junk address from a responder is
-   * re-merged on each of those. Bounded by `sanitizeStrandAddrs`, replaced by a
-   * re-formation, dropped on `unpublishStrand` / `forgetJoinedStrand`, and still
-   * authority-free — so the exposure is a handful of failed dials, not a trust hole.
+   * this process remembers the formation, and re-merged on every refresh pass until the
+   * strand node's FRET table holds the peer's own record, so a junk address from a
+   * responder that is never met keeps being re-merged. Bounded by `sanitizeStrandAddrs`,
+   * replaced by a re-formation, dropped on `unpublishStrand` / `forgetJoinedStrand`, and
+   * still authority-free — so the exposure is a handful of failed dials, not a trust hole.
    */
   private async mergeStrandPeerAddrs(strandNode: Libp2p, addrs: string[], strandId: string): Promise<void> {
     const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
@@ -8320,7 +8354,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * A strand already running when this lands (a re-formation, which is the recovery
    * path for a dead address) gets the new addresses merged into its address book now.
-   * Nothing else would deliver them: the seed is read only at launch and resume.
+   * Nothing else would deliver them: the seed is read only at launch and resume, and the
+   * refresh pass skips a peer FRET already holds a record for — the stale one, here.
    */
   private async recordFormationStrandAddrs(strandId: string, strandAddrs: readonly string[]): Promise<void> {
     const attributed = [...groupAddrsByPeerId([...strandAddrs]).values()]

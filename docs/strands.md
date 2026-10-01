@@ -188,8 +188,10 @@ strand id. An approving formation result now carries the responder's live strand
 addresses for the strand it provisioned (`strandAddrs`), disclosed under exactly the same gate
 as its party id and cadre addresses, so a rejected redemption discloses nothing. The joiner
 keeps them per strand, in memory, and adds them to that strand's discovery seed — behind any
-fresher sibling answer — on launch and on hibernation resume; a strand already running when a
-re-formation arrives has them merged into its address book at once.
+fresher sibling answer — on launch and on hibernation resume, and re-merges them into the
+running strand's address book on every periodic refresh until the strand node has met the
+responder; a strand already running when a re-formation arrives has them merged into its
+address book at once.
 `integration-tests` scenario `strand-formation-cross-party-seed` proves two different parties
 meshing on one strand, and replicating rows across it, with no hand-dial anywhere — over
 loopback addresses; `blind-relay-phone-to-phone-e2e` proves the same handshake carrying a
