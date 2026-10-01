@@ -32,5 +32,9 @@ Upstream also found two related points:
   - `check:published` uses the same lockfile, so it doesn't catch the difference either.
 - [ ] Check whether any libp2p node that sereus builds itself (outside optimystic) should set `addressDialTimeout` too. See `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`.
 - [ ] Check the strand-formation dial against the new per-address limit. It passes the invitation's whole address list to one `dialProtocol` call under `formationDeadlines().dialMs` (`5L + 2 s`, 19.5 s at the default declaration), so a first address that never answers costs one per-address timeout and the next address gets what is left. With optimystic's `max(6000, 5L)` that is 17.5 s of 19.5 s at the default, about 2 s for the next address, which is too short for a relayed dial. Decide whether `dialMs` should cover more than one per-address timeout (see the `NOTE:` at `openFormationStream` in `strand-formation-protocol.ts`).
+- [ ] Pass explicit values to optimystic, computed in `link-budget.ts`: `connectionManager.addressDialTimeout`, `dialTimeout`, and its RPC `dialTimeoutMs`.
+  - Agreed with optimystic (2026-10-01): its default per-address limit is sized for the cold path (opening the relay leg, then the circuit) with no allowance for gates.
+  - Sereus adds its own gate cost of up to 2 × `ADMISSION_DECISION_TIMEOUT_MS`, one decision at the relay and one at the target.
+  - Upstream ticket: `fix/1-a-relayed-dial-through-an-unconnected-relay-outruns-its-deadlines`. Do this together with `backlog/23-bug-relayed-dial-budget-omits-opening-the-relay-connection`.
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
