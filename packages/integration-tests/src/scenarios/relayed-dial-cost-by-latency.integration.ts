@@ -155,8 +155,8 @@ interface Arm {
  * the link.
  */
 function armOf(name: string, deadlines: LinkDeadlines): Arm {
-	const limitMs = deadlines.connectionTimeoutMs;
-	return { name, limits: { dialTimeout: limitMs, inboundUpgradeTimeout: limitMs }, requestDialTimeoutMs: deadlines.dialTimeoutMs };
+	const limits = { dialTimeout: deadlines.libp2pDialTimeoutMs, inboundUpgradeTimeout: deadlines.inboundUpgradeTimeoutMs };
+	return { name, limits, requestDialTimeoutMs: deadlines.dialTimeoutMs };
 }
 
 const DB_P2P_FALLBACK = armOf('db-p2p fallback', resolveLinkDeadlines());
