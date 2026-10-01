@@ -1707,7 +1707,7 @@ describe('E2E Strand Formation', () => {
 				// without spending the invite would sail past everything above and fail only here.
 				await expect(
 					bobService.formStrand(invitation, { partyId: bob.partyId, purpose: 'abort-adopt-again' }, bob.ownerNode.libp2p),
-				).rejects.toThrow(/Invalid token/);
+				).rejects.toMatchObject({ code: 'token-spent' });
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
 			} finally {
 				await aliceService.unregisterResponder(alice.ownerNode.libp2p);

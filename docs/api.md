@@ -86,6 +86,18 @@ stays on that machine. A node with no `keyStore` remembers unpublished joins in 
 it is given `joinedStrands.store`. If the join cannot be recorded, `formStrand` throws: the
 invitation's token is spent, so fix the store and redeem a fresh invitation.
 
+When the formation itself fails, `formStrand` throws one of two errors, both exported from
+`@serfab/cadre-core`, so a joiner can decide whether to try again without reading the message:
+
+- `FormationRejectedError` — the inviter answered no. `code` names why (for example
+  `'token-spent'` for an expired or used-up invitation, `'host-strand-unavailable'` for a host
+  strand not running there yet), `reason` is the inviter's human-facing text, and `retryable` says
+  whether the same invitation can succeed later. A code this build does not know reads as
+  `'unrecognized'`, retryable. The full list is in [architecture.md → Formation rejection
+  codes](architecture.md#formation-rejection-codes).
+- `FormationUnreachableError` — no answer arrived: no bootstrap address parsed, none could be
+  dialed, a deadline passed, or the stream closed early. Always retryable.
+
 Leaving a joined strand:
 ```ts
 forgetJoinedStrand(strandId: string): Promise<void>;
@@ -177,15 +189,15 @@ Answer with `200` and:
 | `ValidationUrl` is not `http:`/`https:`, or the runtime has no `fetch` | `misconfigured` |
 
 The joiner never sees the failure category itself — the responder maps it to one of these
-rejection reasons on the formation result:
+rejection codes and reasons on the formation result:
 
-| `failure` | Reason the joiner receives |
-| --- | --- |
-| `refused` | `Formation approval refused` |
-| `unavailable` | `Formation approval unavailable, retry` |
-| `malformed` | `Formation approval invalid` |
-| `unenrolled` | `Formation approval key is not enrolled` |
-| `misconfigured` | `Formation approval misconfigured` |
+| `failure` | Code the joiner receives | Reason text |
+| --- | --- | --- |
+| `refused` | `approval-refused` | `Formation approval refused` |
+| `unavailable` | `approval-unavailable` (retryable) | `Formation approval unavailable, retry` |
+| `malformed` | `approval-invalid` | `Formation approval invalid` |
+| `unenrolled` | `approval-invalid` | `Formation approval key is not enrolled` |
+| `misconfigured` | `approval-invalid` | `Formation approval misconfigured` |
 
 None of these write a `FormationUsage` row, so a rejected redemption does not consume the
 invitation — the same token can be presented again.

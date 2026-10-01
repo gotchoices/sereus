@@ -11,6 +11,12 @@ import {
   type FormationProvisionResult,
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
+import {
+  FORMATION_REJECTION_RETRYABLE,
+  FormationRejectedError,
+  FormationUnreachableError,
+  type FormationRejectionCode
+} from '../src/strand-formation-rejection.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 import { MockStream, captureHandler } from './formation-stream-helpers.js';
@@ -107,7 +113,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   it('rejects an invalid token without disclosing responder identity/cadre', async () => {
     let disclosureChecks = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: false }),
+      validateToken: async () => ({ valid: false, code: 'token-unknown' }),
       validateDisclosure: async () => { disclosureChecks++; return true; }
     });
     const listener = new FormationListener(options);
@@ -119,7 +125,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
     expect(result.approved).toBe(false);
-    expect(result.reason).toBe('Invalid token');
+    expect(result.code).toBe('token-unknown');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(result.strandAddrs).toBeUndefined();
@@ -195,7 +201,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   it('never looks up strand addrs on a rejection, so a stranger cannot probe them', async () => {
     // The positive control for every `strandAddrs === undefined` assertion in this file:
     // the hook is wired, the token is not, and the hook is never even CALLED.
-    const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false }) });
+    const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false, code: 'token-unknown' }) });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
     await listener.register(node);
@@ -212,7 +218,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // strand). The listener must reply with a clean, non-disclosing approved:false.
     const { options, identityDisclosed } = baseOptions({
       provisionStrand: async (): Promise<ResponderProvisionOutcome> =>
-        ({ approved: false, reason: 'Host strand not yet available on this responder' })
+        ({ approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' })
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
@@ -358,7 +364,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // 300ms — after the abort but inside the grace — so its approval is adopted.
     let uses = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: uses < 1 }),
+      validateToken: async () => (uses < 1 ? { valid: true } : { valid: false, code: 'token-spent' }),
       provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
         await new Promise((resolve) => setTimeout(resolve, 300));
         uses++; // stands in for the append-only FormationUsage insert: ignores the abort
@@ -390,7 +396,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // presentation of the same token is honest — not a silently lost invitation.
     const second = new MockStream([encodeFrame(contact)]);
     await invoke(second);
-    expect(decodeFirstFrame<FormationResultMessage>(second.sent).reason).toBe('Invalid token');
+    expect(decodeFirstFrame<FormationResultMessage>(second.sent).code).toBe('token-spent');
   });
 
   it('adopts a REJECTION that lands inside the settle grace, reporting its reason non-disclosingly', async () => {
@@ -400,7 +406,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed } = baseOptions({
       provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
         await new Promise((resolve) => setTimeout(resolve, 300));
-        return { approved: false, reason: 'Host strand not yet available on this responder' };
+        return { approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' };
       }
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
@@ -449,7 +455,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     let uses = 0;
     let calls = 0;
     const { options } = baseOptions({
-      validateToken: async () => ({ valid: uses < 1 }),
+      validateToken: async () => (uses < 1 ? { valid: true } : { valid: false, code: 'token-spent' }),
       provisionStrand: (_contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome> => {
         if (++calls === 1) {
           // Writes nothing and rejects the moment the work budget aborts it — what
@@ -818,14 +824,6 @@ describe('dialFormation provision-result invariant', () => {
     ).rejects.toThrow(/Missing provision result/);
   });
 
-  it('throws when the responder rejects the formation', async () => {
-    const { node } = dialNode({ approved: false, reason: 'Invalid token' });
-
-    await expect(
-      dialFormation(node, { contact, responderAddrs, validateResponse: async () => true })
-    ).rejects.toThrow(/Formation rejected: Invalid token/);
-  });
-
   it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect dialTimeoutMs', async () => {
     // Regression for the initiator side: the result read used to share one step budget with
     // dial-connect, so a responder doing real provisioning work could blow a 5s budget even
@@ -880,5 +878,52 @@ describe('dialFormation provision-result invariant', () => {
       provisionTimeoutMs: 50
     })).rejects.toThrow(/Formation await-response timed out after 50ms/);
     expect(stream.closed).toBe(true);
+  });
+});
+
+// ── dialFormation failure classification (what a joiner branches on to retry or stop) ──
+
+describe('dialFormation failure classification', () => {
+  const dial = (node: Libp2p, responderAddrs = ['/ip4/127.0.0.1/tcp/1']): Promise<unknown> =>
+    dialFormation(node, { contact, responderAddrs, validateResponse: async () => true }).then(
+      () => { throw new Error('expected the dial to fail'); },
+      (error: unknown) => error
+    );
+
+  /** The specified retryable set, written out so a change to the table has to change this too. */
+  const RETRYABLE: FormationRejectionCode[] = [
+    'token-unknown', 'approval-unavailable', 'host-strand-unavailable', 'busy', 'provisioning-timeout', 'conflict', 'internal'
+  ];
+
+  it('throws FormationRejectedError carrying each code, retryable exactly for the retryable set', async () => {
+    for (const code of Object.keys(FORMATION_REJECTION_RETRYABLE) as FormationRejectionCode[]) {
+      const error = await dial(dialNode({ approved: false, code, reason: `refused: ${code}` }).node);
+      expect(error, code).toBeInstanceOf(FormationRejectedError);
+      expect(error, code).toMatchObject({ code, reason: `refused: ${code}`, retryable: RETRYABLE.includes(code) });
+    }
+  });
+
+  it('reads an absent or unknown code as unrecognized and retryable', async () => {
+    // A responder on another version may send no code or one this build lacks; `constructor`
+    // checks the lookup does not reach the table's prototype.
+    for (const code of [undefined, 'from-a-newer-build', 'constructor']) {
+      const frame = { approved: false, code, reason: 'refused' } as unknown as FormationResultMessage;
+      const error = await dial(dialNode(frame).node);
+      expect(error, String(code)).toBeInstanceOf(FormationRejectedError);
+      expect(error, String(code)).toMatchObject({ code: 'unrecognized', retryable: true });
+    }
+  });
+
+  it('throws FormationUnreachableError when no address parses or every address refuses the dial', async () => {
+    const unparsable = await dial(dialNode({ approved: true }).node, ['not-a-multiaddr']);
+    expect(unparsable).toBeInstanceOf(FormationUnreachableError);
+    expect(unparsable).toMatchObject({ message: 'No responder addresses available for formation', retryable: true });
+
+    const refusal = new AggregateError([new Error('connect ECONNREFUSED 10.0.0.1:1')], 'All multiaddr dials failed');
+    const node = { dialProtocol: async () => { throw refusal; } } as unknown as Libp2p;
+    const refused = await dial(node);
+    expect(refused).toBeInstanceOf(FormationUnreachableError);
+    expect((refused as Error).message).toContain('ECONNREFUSED 10.0.0.1:1');
+    expect((refused as Error).cause).toBe(refusal);
   });
 });

@@ -72,14 +72,14 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }
 
   /** A token is valid when a matching, unexpired `FormationInvite` exists. */
-  async isTokenValid(token: string): Promise<{ valid: boolean; invitation?: OpenInvitation }> {
+  async isTokenValid(token: string): Promise<{ valid: boolean; reason?: 'unknown' | 'expired'; invitation?: OpenInvitation }> {
     const invite = await this.controlDatabase.queryFormationInvite(token);
     if (!invite) {
-      return { valid: false };
+      return { valid: false, reason: 'unknown' };
     }
     if (invite.expiresAtMs !== null && invite.expiresAtMs <= Date.now()) {
       log('Token expired: %s', token);
-      return { valid: false };
+      return { valid: false, reason: 'expired' };
     }
     return {
       valid: true,

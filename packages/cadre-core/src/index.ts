@@ -534,8 +534,18 @@ export {
   type FormationListenerOptions,
   type FormationDialOptions,
   type FormationDialResult,
+  type FormationRejection,
+  type FormationTokenCheck,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
+// How a formation dial fails: a typed refusal (with a fixed code) or no answer at all
+export {
+  FormationRejectedError,
+  FormationUnreachableError,
+  FORMATION_REJECTION_RETRYABLE,
+  isFormationRejectionCode,
+  type FormationRejectionCode
+} from './strand-formation-rejection.js';
 export { formationDeadlines, type FormationDeadlines } from './strand-formation-deadlines.js';
 
 // Strand Formation manager (drives the native transport)

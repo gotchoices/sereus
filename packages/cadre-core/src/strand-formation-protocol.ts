@@ -35,6 +35,11 @@ import {
   responderClampReserveMs,
   splitProvisionBudget
 } from './strand-formation-deadlines.js';
+import {
+  FormationRejectedError,
+  FormationUnreachableError,
+  type FormationRejectionCode
+} from './strand-formation-rejection.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -42,11 +47,12 @@ const log = debug('sereus:cadre:formation-proto');
 export const FORMATION_PROTOCOL = '/sereus/formation/1.0.0';
 
 /**
- * Rejection reason for an invitation that cannot be redeemed at all — unknown, expired, or
- * fully spent. Shared with `StrandFormationManager`, which reports an
- * `InvitationExhaustedError` (an invite spent out from under a redemption already in flight)
- * with this SAME wording on purpose: a joiner that lost the race must be indistinguishable
- * from a non-racing latecomer, so the two sites must never drift apart.
+ * Rejection reason for an invitation that cannot be redeemed — unknown here
+ * (`'token-unknown'`), or expired or fully spent (`'token-spent'`); the code tells them
+ * apart. Shared with `StrandFormationManager`, which reports an `InvitationExhaustedError`
+ * (an invite spent out from under a redemption already in flight) with this SAME wording and
+ * code on purpose: a joiner that lost the race must be indistinguishable from a non-racing
+ * latecomer, so the two sites must never drift apart.
  */
 export const INVALID_TOKEN_REASON = 'Invalid token';
 
@@ -127,7 +133,23 @@ export interface FormationProvisionResult {
  */
 export type ResponderProvisionOutcome =
   | { approved: true; result: FormationProvisionResult }
-  | { approved: false; reason: string };
+  | FormationRejection;
+
+/**
+ * A refusal as the responder sends it: never without a code. Carries nothing else — no
+ * identity, addresses or keys — so a rejection discloses nothing about the responder.
+ */
+export interface FormationRejection {
+  approved: false;
+  code: FormationRejectionCode;
+  /** Human-facing text for logs; joiners branch on `code`. */
+  reason: string;
+}
+
+/** What the responder's token check yields; an invalid token names which way it failed. */
+export type FormationTokenCheck =
+  | { valid: true }
+  | { valid: false; code: Extract<FormationRejectionCode, 'token-unknown' | 'token-spent'> };
 
 /** Initiator → Responder: carries the real token + disclosure + initiator cadre. */
 export interface FormationContactMessage {
@@ -156,7 +178,13 @@ export interface FormationContactMessage {
 /** Responder → Initiator: responder identity/cadre disclosed only after validation. */
 export interface FormationResultMessage {
   approved: boolean;
-  /** Present iff `approved === false`. */
+  /**
+   * Why the responder refused; present iff `approved === false`. Optional on this wire type
+   * only because a frame from another version may omit it — the responder always sends one
+   * ({@link FormationRejection}), and the joiner reads a missing one as `'unrecognized'`.
+   */
+  code?: FormationRejectionCode;
+  /** Human-facing text; present iff `approved === false`. */
   reason?: string;
   /** Responder's real party id (disclosed only after validation). */
   partyId?: string;
@@ -179,6 +207,9 @@ export interface FormationResultMessage {
   /** The provisioned strand/db result (always present on approval). */
   provisionResult?: FormationProvisionResult;
 }
+
+/** An approving result frame as the responder builds it. */
+type ApprovedResultMessage = FormationResultMessage & { approved: true };
 
 /**
  * Normalize a strand-address list arriving from — or heading to — the wire: keep only
@@ -338,8 +369,8 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
 // ── Responder (listener) ─────────────────────────────────────────────────────
 
 export interface FormationListenerOptions {
-  /** Validate the invitation token; returns whether it is valid. */
-  validateToken(token: string): Promise<{ valid: boolean }>;
+  /** Validate the invitation token; an invalid one says whether it is unknown here or spent. */
+  validateToken(token: string): Promise<FormationTokenCheck>;
   /** Validate the initiator's disclosure with the REAL token + disclosure. */
   validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean>;
   /**
@@ -450,7 +481,7 @@ export class FormationListener {
 
   private async handleStream(stream: ControlStream): Promise<void> {
     if (this.activeSessions >= this.maxConcurrentSessions) {
-      const rejection: FormationResultMessage = { approved: false, reason: 'Too many concurrent formation sessions' };
+      const rejection: FormationRejection = { approved: false, code: 'busy', reason: 'Too many concurrent formation sessions' };
       try { writeFrame(stream, rejection); } catch { /* best effort */ }
       try { await stream.close(); } catch { /* ignore */ }
       return;
@@ -613,7 +644,7 @@ export class FormationListener {
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
     // gone out yet. This closes the "stream closed with no result frame" class of bug.
     let wroteFrame = false;
-    const send = (msg: FormationResultMessage): void => {
+    const send = (msg: FormationRejection | ApprovedResultMessage): void => {
       writeFrame(stream, msg);
       wroteFrame = true;
     };
@@ -624,19 +655,19 @@ export class FormationListener {
       log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
 
       if (!this.isJoinerConsentValid(id, contact)) {
-        send({ approved: false, reason: 'Invalid joiner consent' });
+        send({ approved: false, code: 'consent-invalid', reason: 'Invalid joiner consent' });
         return;
       }
 
       const tokenResult = await this.options.validateToken(contact.token);
       if (!tokenResult.valid) {
-        send({ approved: false, reason: INVALID_TOKEN_REASON });
+        send({ approved: false, code: tokenResult.code, reason: INVALID_TOKEN_REASON });
         return;
       }
 
       const disclosureOk = await this.options.validateDisclosure(contact.token, contact.disclosure);
       if (!disclosureOk) {
-        send({ approved: false, reason: 'Invalid disclosure' });
+        send({ approved: false, code: 'disclosure-invalid', reason: 'Invalid disclosure' });
         return;
       }
 
@@ -644,13 +675,14 @@ export class FormationListener {
       if (!outcome) {
         // Reported as its own retryable reason rather than falling through to the generic
         // catch below, which would report the misleading 'Internal formation error'.
-        send({ approved: false, reason: 'Formation provisioning timed out' });
+        send({ approved: false, code: 'provisioning-timeout', reason: 'Formation provisioning timed out' });
         return;
       }
       if (!outcome.approved) {
-        // A post-validation rejection still discloses NEITHER identity NOR cadre,
-        // exactly like the token/disclosure rejections above.
-        send({ approved: false, reason: outcome.reason });
+        // A post-validation rejection still discloses NEITHER identity NOR cadre, exactly
+        // like the token/disclosure rejections above — copied field by field so nothing else
+        // a hook put on its outcome reaches the wire.
+        send({ approved: false, code: outcome.code, reason: outcome.reason });
         return;
       }
       // Validation + provisioning passed → safe to disclose responder identity/cadre.
@@ -674,7 +706,7 @@ export class FormationListener {
       // log + close. Re-throw either way so the failure is still recorded — this is a
       // deliberate, logged conversion, not silent.
       if (!wroteFrame) {
-        const internalError: FormationResultMessage = { approved: false, reason: 'Internal formation error' };
+        const internalError: FormationRejection = { approved: false, code: 'internal', reason: 'Internal formation error' };
         try { writeFrame(stream, internalError); } catch { /* stream already broken */ }
       }
       throw err;
@@ -792,7 +824,7 @@ function parseResponderAddrs(addrs: string[]): Multiaddr[] {
     }
   }
   if (parsed.length === 0) {
-    throw new Error('No responder addresses available for formation');
+    throw new FormationUnreachableError('No responder addresses available for formation');
   }
   return parsed;
 }
@@ -806,10 +838,58 @@ function parseResponderAddrs(addrs: string[]): Multiaddr[] {
 function describeAllAddressesFailed(error: unknown): unknown {
   if (!(error instanceof AggregateError)) return error;
   const reasons = error.errors.map((reason: unknown) => reason instanceof Error ? reason.message : String(reason));
-  return new Error(
+  return new FormationUnreachableError(
     `Formation could not reach the inviter at any of the ${reasons.length} addresses tried: ${reasons.join('; ')}`,
     { cause: error }
   );
+}
+
+/** Report a failure that came before any answer as {@link FormationUnreachableError}, keeping its message. */
+function asUnreachable(error: unknown): FormationUnreachableError {
+  if (error instanceof FormationUnreachableError) return error;
+  return new FormationUnreachableError(error instanceof Error ? error.message : String(error), { cause: error });
+}
+
+/**
+ * Open the formation stream, send the contact, and read back the one result frame, closing
+ * the stream either way. Nothing here has an answer from the responder yet, so the caller
+ * reports any failure as {@link FormationUnreachableError} — a frame too large or not JSON
+ * included, since it is not an answer either.
+ */
+async function exchangeContact(
+  node: Libp2p,
+  addrs: Multiaddr[],
+  contact: FormationContactMessage,
+  budgets: { protocolId: string; dialTimeoutMs: number; awaitResponseMs: number }
+): Promise<FormationResultMessage> {
+  const stream = await openFormationStream(node, addrs, budgets.protocolId, budgets.dialTimeoutMs);
+  try {
+    const reader = new FrameReader(stream);
+    writeFrame(stream, contact);
+    return await withTimeout(budgets.awaitResponseMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
+  } finally {
+    try { await stream.close(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Turn the responder's answer into the dial's result. A refusal throws
+ * {@link FormationRejectedError}; an approval that fails validation throws a plain `Error`,
+ * since that is a misbehaving responder rather than a refusal.
+ */
+async function acceptResult(
+  response: FormationResultMessage,
+  validateResponse: FormationDialOptions['validateResponse']
+): Promise<FormationDialResult> {
+  if (!response.approved) {
+    throw new FormationRejectedError(response.code, response.reason);
+  }
+  if (!(await validateResponse(response))) throw new Error('Responder result failed validation');
+
+  if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
+  // Sanitized HERE — the wire boundary — so nothing above this call ever handles an
+  // unvalidated, unbounded address list from a remote peer.
+  return { provision: response.provisionResult, strandAddrs: sanitizeStrandAddrs(response.strandAddrs) };
 }
 
 /**
@@ -817,6 +897,10 @@ function describeAllAddressesFailed(error: unknown): unknown {
  * contact (carrying the real disclosure/token/cadre), validates the responder's
  * result, and returns the strand the responder provisioned plus the responder's
  * strand-network addresses (see {@link FormationDialResult}).
+ *
+ * Throws {@link FormationUnreachableError} for every failure before a result frame is read
+ * (including the session deadline passing first), {@link FormationRejectedError} when the
+ * responder refuses, and a plain `Error` for an approval that fails validation.
  */
 export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
   const addrs = parseResponderAddrs(options.responderAddrs);
@@ -824,30 +908,19 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
   const deadlines = formationDeadlines(options.linkRoundTripMs);
   const sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
   const dialTimeoutMs = options.dialTimeoutMs ?? deadlines.dialMs;
-  const provisionTimeoutMs = resolveProvisionTimeoutMs(
+  const awaitResponseMs = resolveProvisionTimeoutMs(
     options.provisionTimeoutMs, deadlines.initiatorAwaitResponseMs,
     sessionTimeoutMs, dialTimeoutMs, 'dialFormation'
   );
 
-  return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
-    const stream = await openFormationStream(node, addrs, protocolId, dialTimeoutMs);
-    try {
-      const reader = new FrameReader(stream);
-      writeFrame(stream, options.contact);
-
-      const response = await withTimeout(provisionTimeoutMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
-      if (!response.approved) {
-        throw new Error(`Formation rejected: ${response.reason ?? 'no reason provided'}`);
-      }
-      const ok = await options.validateResponse(response);
-      if (!ok) throw new Error('Responder result failed validation');
-
-      if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
-      // Sanitized HERE — the wire boundary — so nothing above this call ever handles an
-      // unvalidated, unbounded address list from a remote peer.
-      return { provision: response.provisionResult, strandAddrs: sanitizeStrandAddrs(response.strandAddrs) };
-    } finally {
-      try { await stream.close(); } catch { /* ignore */ }
-    }
-  });
+  let answered = false;
+  try {
+    return await withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
+      const response = await exchangeContact(node, addrs, options.contact, { protocolId, dialTimeoutMs, awaitResponseMs });
+      answered = true;
+      return await acceptResult(response, options.validateResponse);
+    });
+  } catch (error) {
+    throw answered ? error : asUnreachable(error);
+  }
 }

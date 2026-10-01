@@ -67,7 +67,7 @@ import type { StrandFormationDisclosure } from '../src/types.js';
  *  (n) invalid joiner consent is rejected without burning the invite,
  *  (o) a reused joiner nonce is a retryable conflict, and a fresh nonce then succeeds,
  *  (p) a recorder-thrown `InvitationExhaustedError` — unit-level, an in-memory fake standing in
- *      for a retry the database layer ran out of — maps to the same `'Invalid token'` a spent
+ *      for a retry the database layer ran out of — maps to the same `'token-spent'` a spent
  *      invite gives, not a retryable conflict.
  */
 
@@ -189,7 +189,8 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
     expect(result.approved).toBe(false);
-    expect(result.reason).toBe('Invalid token');
+    // Retryable: the invitation row may simply not have replicated to this machine yet.
+    expect(result.code).toBe('token-unknown');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(result.provisionResult).toBeUndefined();
@@ -211,6 +212,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
     expect(result.approved).toBe(false);
+    expect(result.code).toBe('token-spent');
     expect(result.provisionResult).toBeUndefined();
     expect(await db.countFormationUsage(token)).toBe(0);
   });
@@ -258,7 +260,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const rejected = decodeFirstFrame<FormationResultMessage>(second.sent);
 
     expect(rejected.approved).toBe(false);
-    expect(rejected.reason).toBe('Invalid token');
+    expect(rejected.code).toBe('token-spent');
     expect(rejected.provisionResult).toBeUndefined();
     expect(rejected.partyId).toBeUndefined();
     expect(await db.countFormationUsage(token)).toBe(1);
@@ -300,7 +302,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const rejected = decodeFirstFrame<FormationResultMessage>(second.sent);
 
     expect(rejected.approved).toBe(false);
-    expect(rejected.reason).toBe('Invalid token');
+    expect(rejected.code).toBe('token-spent');
     expect(rejected.provisionResult).toBeUndefined();
     expect(await db.countFormationUsage(token)).toBe(1);
   });
@@ -344,7 +346,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     await invoke(third);
     const r3 = decodeFirstFrame<FormationResultMessage>(third.sent);
     expect(r3.approved).toBe(false);
-    expect(r3.reason).toBe('Invalid token');
+    expect(r3.code).toBe('token-spent');
     expect(await db.countFormationUsage(token)).toBe(2);
   });
 
@@ -671,7 +673,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(await db.countFormationUsage(token)).toBe(2);
   });
 
-  it('(p) an InvitationExhaustedError from the recorder maps to the same "Invalid token" a spent invite gives', async () => {
+  it('(p) an InvitationExhaustedError from the recorder maps to the same "token-spent" a spent invite gives', async () => {
     // Unit-level, not DB-driven (the recorder interface is deliberately "unit-testable with an
     // in-memory fake" — see FormationUsageRecorder's doc comment): a fake recorder that raises
     // InvitationExhaustedError stands in for a real spent-seat-budget redemption
@@ -697,7 +699,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
     expect(result.approved).toBe(false);
-    expect(result.reason).toBe('Invalid token');
+    expect(result.code).toBe('token-spent');
     expect(result.partyId).toBeUndefined();
     expect(result.provisionResult).toBeUndefined();
   });

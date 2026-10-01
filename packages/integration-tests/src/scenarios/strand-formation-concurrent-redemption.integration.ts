@@ -456,13 +456,12 @@ describe('Concurrent invitation redemption across two machines', () => {
 		expect(approved.length, `both redemptions failed: ${settled.map(rejectionMessage).join(' | ')}`).toBeGreaterThanOrEqual(1);
 
 		// A refused joiner is refused TERMINALLY: the seat-count check raises the named
-		// exhaustion, which the responder maps to the same 'Invalid token' a latecomer
+		// exhaustion, which the responder maps to the same 'token-spent' a latecomer
 		// sees — never the retryable conflict, which would send the joiner into a retry
 		// that can only fail again.
 		for (const outcome of refused) {
-			const message = rejectionMessage(outcome);
-			expect(message).toMatch(/Formation rejected: Invalid token/);
-			expect(message).not.toMatch(/retry/i);
+			expect((outcome as PromiseRejectedResult).reason, rejectionMessage(outcome))
+				.toMatchObject({ name: 'FormationRejectedError', code: 'token-spent', retryable: false });
 		}
 
 		for (const result of approved) {
@@ -518,10 +517,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// lands.
 		await expect(
 			J1!.formStrand(invitationVia(token, pair!.A), { purpose: 'case3-via-A' }),
-		).rejects.toThrow(/Formation rejected: Invalid token/);
+		).rejects.toMatchObject({ code: 'token-spent', retryable: false });
 		await expect(
 			J2!.formStrand(invitationVia(token, pair!.B), { purpose: 'case3-via-B' }),
-		).rejects.toThrow(/Formation rejected: Invalid token/);
+		).rejects.toMatchObject({ code: 'token-spent', retryable: false });
 
 		// Read immediately: each node's count is already behind the wait at the top of this
 		// case, and the row a refusal must NOT have written would have been written by the node

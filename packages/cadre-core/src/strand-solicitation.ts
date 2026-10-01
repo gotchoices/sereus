@@ -110,9 +110,11 @@ export interface FormationUsageRecorder {
   isTokenUsed(token: string): Promise<boolean>;
 
   /**
-   * Check if a token is valid and not expired
+   * Check if a token is valid and not expired. An invalid answer says why: `'unknown'` (no
+   * invitation row here — it may not have replicated yet) or `'expired'`. An answer without
+   * a reason is treated as `'unknown'`, the retryable one.
    */
-  isTokenValid(token: string): Promise<{ valid: boolean; invitation?: OpenInvitation }>;
+  isTokenValid(token: string): Promise<{ valid: boolean; reason?: 'unknown' | 'expired'; invitation?: OpenInvitation }>;
 
   /**
    * Resolve the host strand an invite binds to, classifying it as unbound / bound /

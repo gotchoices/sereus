@@ -1290,7 +1290,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   // by supplying a real consent alongside whatever they actually pin.
 
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
-    it('isTokenValid: true for a known unexpired token, false for unknown or expired', async () => {
+    it('isTokenValid: true for a known unexpired token, false (saying which) for unknown or expired', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
       const token = 'invite-rv-' + rand();
@@ -1301,13 +1301,13 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(ok.valid).toBe(true);
       expect(ok.invitation?.sAppId).toBe('sapp-rv');
 
-      expect((await recorder.isTokenValid('nope-' + rand())).valid).toBe(false);
+      expect(await recorder.isTokenValid('nope-' + rand())).toEqual({ valid: false, reason: 'unknown' });
 
       const expired = 'invite-rv-exp-' + rand();
       await db.insertFormationInvite(expired, 'sapp-rv', ownerPublicKey, signMessage, {
         expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
       });
-      expect((await recorder.isTokenValid(expired)).valid).toBe(false);
+      expect(await recorder.isTokenValid(expired)).toEqual({ valid: false, reason: 'expired' });
     });
 
     it('isTokenUsed: respects TotalUses, and recordUsage records consent against a pre-existing strand', async () => {

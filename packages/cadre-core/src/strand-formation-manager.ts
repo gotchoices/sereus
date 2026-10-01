@@ -33,7 +33,9 @@ import {
   isWellFormedMembershipInvite,
   type FormationContactMessage,
   type FormationProvisionResult,
+  type FormationRejection,
   type FormationResultMessage,
+  type FormationTokenCheck,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 import { formationDeadlines } from './strand-formation-deadlines.js';
@@ -84,17 +86,18 @@ export const MEMBERSHIP_INVITE_UNAVAILABLE_REASON = 'Strand membership invitatio
 export const HOST_STRAND_MUST_BE_RECREATED_REASON = 'Host strand must be recreated';
 
 /**
- * Rejection reason a would-be joiner is told for each approval-failure category
+ * The rejection a would-be joiner is told for each approval-failure category
  * (see {@link FormationApprovalFailure}). Distinct per category on purpose: mapping any
- * of these onto the generic 'Formation conflict, retry' would tell an operator to retry
- * what retrying can never fix (e.g. a non-enrolled validation key).
+ * of these onto the generic `'conflict'` would tell a joiner to retry what retrying can
+ * never fix (e.g. a non-enrolled validation key). The three inviter-setup faults share
+ * one code; the reason text still names which one for the operator.
  */
-const APPROVAL_REJECTION_REASONS: Record<FormationApprovalFailure, string> = {
-  refused: 'Formation approval refused',
-  unavailable: 'Formation approval unavailable, retry',
-  malformed: 'Formation approval invalid',
-  unenrolled: 'Formation approval key is not enrolled',
-  misconfigured: 'Formation approval misconfigured'
+const APPROVAL_REJECTIONS: Record<FormationApprovalFailure, FormationRejection> = {
+  refused: { approved: false, code: 'approval-refused', reason: 'Formation approval refused' },
+  unavailable: { approved: false, code: 'approval-unavailable', reason: 'Formation approval unavailable, retry' },
+  malformed: { approved: false, code: 'approval-invalid', reason: 'Formation approval invalid' },
+  unenrolled: { approved: false, code: 'approval-invalid', reason: 'Formation approval key is not enrolled' },
+  misconfigured: { approved: false, code: 'approval-invalid', reason: 'Formation approval misconfigured' }
 };
 
 /**
@@ -383,7 +386,12 @@ export class StrandFormationManager {
 
   // ── Responder-side hooks ─────────────────────────────────────────────────────
 
-  private async validateToken(token: string): Promise<{ valid: boolean }> {
+  /**
+   * An expired or used-up invitation is `'token-spent'` (final); one with no row here is
+   * `'token-unknown'` (retryable — the row may not have replicated to this machine yet), and
+   * so is one from a recorder that does not say why.
+   */
+  private async validateToken(token: string): Promise<FormationTokenCheck> {
     if (!this.formationUsageRecorder) {
       // No recorder configured — accept all tokens.
       return { valid: true };
@@ -391,13 +399,13 @@ export class StrandFormationManager {
 
     const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
     if (!tokenCheck.valid) {
-      log('Token invalid: %s', token);
-      return { valid: false };
+      log('Token invalid (%s): %s', tokenCheck.reason ?? 'unknown', token);
+      return { valid: false, code: tokenCheck.reason === 'expired' ? 'token-spent' : 'token-unknown' };
     }
 
     if (await this.formationUsageRecorder.isTokenUsed(token)) {
       log('Token already used: %s', token);
-      return { valid: false };
+      return { valid: false, code: 'token-spent' };
     }
 
     return { valid: true };
@@ -438,7 +446,7 @@ export class StrandFormationManager {
    * ({@link InvitationExhaustedError}, raised by `ControlDatabase` when the count of recorded
    * uses has reached the invite's seat budget — which is how the loser of a same-node race
    * surfaces, the local write queue having serialized the two writes) is reported as
-   * `'Invalid token'`, because retrying it can never succeed. Concurrent redemptions never
+   * `'token-spent'`, because retrying it can never succeed. Concurrent redemptions never
    * contend for a shared row key — each writes under its own `UsageStampId` — so there is no
    * key collision to surface here at all. The LOG-before-reject keeps this a deliberate
    * internal-error→protocol-rejection conversion (AGENTS.md: don't eat exceptions silently),
@@ -456,7 +464,7 @@ export class StrandFormationManager {
     const disclosureText = canonicalJson(contact.disclosure);
     if (uint8ArrayFromString(disclosureText, 'utf8').byteLength > MAX_DISCLOSURE_BYTES) {
       log('Disclosure over %d bytes; rejecting token %s', MAX_DISCLOSURE_BYTES, token);
-      return { approved: false, reason: 'Disclosure too large' };
+      return { approved: false, code: 'disclosure-too-large', reason: 'Disclosure too large' };
     }
 
     const recorder = this.formationUsageRecorder;
@@ -487,7 +495,7 @@ export class StrandFormationManager {
           // here can atomically un-issue a strand-DB row.
           const issued = await this.issueBoundMembershipInvite(token, resolved.strandId, signal);
           if (!issued.ok) {
-            return { approved: false, reason: issued.reason };
+            return issued.rejection;
           }
           await authorized.record();
           return this.approve({
@@ -501,7 +509,7 @@ export class StrandFormationManager {
         }
         case 'missing': {
           log('Host strand %s not yet available on this responder; rejecting token %s', resolved.strandId, token);
-          return { approved: false, reason: 'Host strand not yet available on this responder' };
+          return { approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' };
         }
         case 'unbound':
           return await this.provisionUnbound(contact, disclosureText, signal);
@@ -514,29 +522,27 @@ export class StrandFormationManager {
       }
       if (err instanceof FormationApprovalError) {
         log('approval failed (%s) for token %s: %o', err.failure, token, err);
-        return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
+        return APPROVAL_REJECTIONS[err.failure];
       }
       if (err instanceof InvitationExhaustedError) {
-        // Shares `INVALID_TOKEN_REASON` with the up-front `validateToken` rejection so the loser
-        // of the race that exposed the spent invite sees exactly what a non-racing latecomer
-        // sees. No wire-visible distinction between "invalid" and "exhausted" — the
-        // operator signal lives in this log line instead.
-        // NOTE: if a joining client ever has to tell "never valid" from "used up" WITHOUT node
-        // logs, that is a new protocol reason string, not a local change here.
+        // Shares `INVALID_TOKEN_REASON` and `'token-spent'` with the up-front `validateToken`
+        // rejection so the loser of the race that exposed the spent invite sees exactly what a
+        // non-racing latecomer sees. How many uses were recorded against the total is for the
+        // operator, in this log line, not for the joiner.
         log(
           'invitation exhausted for token %s: %d of %d use(s) already recorded',
           err.token,
           err.usesRecorded,
           err.totalUses
         );
-        return { approved: false, reason: INVALID_TOKEN_REASON };
+        return { approved: false, code: 'token-spent', reason: INVALID_TOKEN_REASON };
       }
       // An approval is never discarded to a lost key race: each redemption writes under its
       // own `UsageStampId`, so no other writer can take its row key. Reaching this catch-all
       // means the failure was never retryable at the database layer to begin with (or the
       // transient-cluster retry inside `ControlDatabase.lockedWithRetry` ran out).
       log('provisionAsResponder failed for token %s: %o', token, err);
-      return { approved: false, reason: 'Formation conflict, retry' };
+      return { approved: false, code: 'conflict', reason: 'Formation conflict, retry' };
     }
   }
 
@@ -579,7 +585,7 @@ export class StrandFormationManager {
     token: string,
     strandId: string,
     signal?: AbortSignal
-  ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false; reason: string }> {
+  ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false; rejection: FormationRejection }> {
     if (!this.issueMembershipInvite) {
       return { ok: true };
     }
@@ -589,10 +595,16 @@ export class StrandFormationManager {
     } catch (err) {
       if (err instanceof PreSplitStrandIdentityError) {
         log('host strand %s is pre-split (token %s); rejecting — it must be recreated: %o', strandId, token, err);
-        return { ok: false, reason: HOST_STRAND_MUST_BE_RECREATED_REASON };
+        return {
+          ok: false,
+          rejection: { approved: false, code: 'host-strand-must-be-recreated', reason: HOST_STRAND_MUST_BE_RECREATED_REASON }
+        };
       }
       log('membership-invite issue for strand %s failed (token %s); rejecting retryably: %o', strandId, token, err);
-      return { ok: false, reason: MEMBERSHIP_INVITE_UNAVAILABLE_REASON };
+      return {
+        ok: false,
+        rejection: { approved: false, code: 'host-strand-unavailable', reason: MEMBERSHIP_INVITE_UNAVAILABLE_REASON }
+      };
     }
   }
 
