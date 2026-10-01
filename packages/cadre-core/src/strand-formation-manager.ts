@@ -142,6 +142,13 @@ export interface StrandFormationManagerConfig {
 }
 
 /**
+ * A node's own cadre addresses, sent on every formation. A function is read at each
+ * formation, for a node whose addresses change after the manager is built — a
+ * `CadreNode` installs its responder before a relay reservation gives it any.
+ */
+export type CadrePeerAddrsSource = string[] | (() => string[]);
+
+/**
  * Options for creating a StrandFormationManager
  */
 export interface StrandFormationManagerOptions {
@@ -156,7 +163,7 @@ export interface StrandFormationManagerOptions {
   /** This party's ID for identification */
   partyId: string;
   /** This party's cadre peer addresses */
-  cadrePeerAddrs?: string[];
+  cadrePeerAddrs?: CadrePeerAddrsSource;
   /**
    * This node's live STRAND-network multiaddrs for a strand it is running (responder
    * side). Wired by `CadreNode` to its own per-strand address lookup; the manager has no
@@ -216,7 +223,7 @@ export class StrandFormationManager {
   private readonly strandProvisioner?: StrandProvisioner;
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
-  private readonly cadrePeerAddrs: string[];
+  private readonly cadrePeerAddrs: CadrePeerAddrsSource;
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
   private readonly issueMembershipInvite?: MembershipInviteIssuer;
   private readonly config: StrandFormationManagerConfig;
@@ -240,7 +247,7 @@ export class StrandFormationManager {
       validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
       provisionStrand: (contact, signal) =>
         this.provisionAsResponder(contact, signal),
-      getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
+      getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.currentCadrePeerAddrs() }),
       // Forwarded only when wired, so `FormationListenerOptions.resolveStrandAddrs`
       // stays genuinely absent (and the listener short-circuits) for an unwired manager.
       ...(this.resolveStrandAddrs && { resolveStrandAddrs: this.resolveStrandAddrs }),
@@ -252,6 +259,10 @@ export class StrandFormationManager {
     });
 
     log('StrandFormationManager created for party: %s', this.partyId);
+  }
+
+  private currentCadrePeerAddrs(): string[] {
+    return typeof this.cadrePeerAddrs === 'function' ? this.cadrePeerAddrs() : this.cadrePeerAddrs;
   }
 
   /**
@@ -304,7 +315,7 @@ export class StrandFormationManager {
       usageStampId: consent.usageStampId,
       peerSignature: consent.peerSignature,
       disclosure,
-      cadrePeerAddrs: this.cadrePeerAddrs
+      cadrePeerAddrs: this.currentCadrePeerAddrs()
     };
 
     this.dialerSessions++;

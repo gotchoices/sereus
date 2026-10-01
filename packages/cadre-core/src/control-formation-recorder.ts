@@ -39,8 +39,8 @@ const NEVER_EXPIRES = new Date(8640000000000000);
  *   ATOMICALLY (one `FormationUsage` row), closing the single-use hole the older
  *   never-record fallback left open.
  *
- * This replaces the in-memory stubs used by the formation tests so the consent path
- * is exercised against the persisted control network.
+ * Every `CadreNode`'s formation responder uses it unless the embedder passes another
+ * recorder to `initializeStrandSolicitation`.
  *
  * Usage accounting follows the schema's `FormationUsage.Authorized` semantics:
  * a null `TotalUses` means unlimited uses; otherwise the invite is "used up"
@@ -59,10 +59,9 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   private readonly approver: FormationApprover;
 
   /**
-   * `approver` defaults to the real HTTP hook client — deliberately ON: this recorder is
-   * constructed by the reference apps and the integration harness, not by `CadreNode`, so an
-   * opt-in approver would leave every real deployment unable to redeem a
-   * `ValidationUrl`-bearing invite. Tests inject a fake.
+   * `approver` defaults to the real HTTP hook client — deliberately ON: `CadreNode` builds this
+   * recorder for every node's responder with no options, so an opt-in approver would leave
+   * every real deployment unable to redeem a `ValidationUrl`-bearing invite. Tests inject a fake.
    */
   constructor(
     private readonly controlDatabase: ControlDatabase,

@@ -132,10 +132,8 @@ describe('E2E control-network membership connection gater', () => {
 			await makeOwnOwner(Rx, rxKey);
 			await Rx.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString());
 
-			// Responder registered, nothing minted — the old carve-out would have
-			// admitted everyone from here on.
-			await Rx.initializeStrandSolicitation();
-
+			// Responder registered at start, nothing minted — the old carve-out would
+			// have admitted everyone from here on.
 			const rxAddr = Rx.getControlNode()!.getMultiaddrs()[0]!;
 			const rxPeerId = Rx.peerId!.toString();
 

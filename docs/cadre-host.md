@@ -109,6 +109,13 @@ The rest of the provision body is checked at the same boundary and for the same 
 
 The host **never** receives the requester's authority private key: the seed is signed on the requester's device (step 3), and only its signed, public form transits the host (step 4). This is the same trust boundary as [architecture.md § Provider Integration](architecture.md#provider-integration) — "the provider never has access to user keys."
 
+#### Strand formation on a hosted node
+
+Every cadre node the host spawns, donated or its own owner node, answers strand formation for its party ([architecture.md → Who answers formation](architecture.md#who-answers-formation)). It checks a joiner's token against the party's replicated invitation rows, so an invitation can be redeemed there while the requester's phone is offline, and it needs no owner key to do so: the rows it writes are authorized by the joiner's own consent.
+
+- **Reachability.** A joiner dials only the addresses the invitation carries, and an invitation carries the addresses of the machine that minted it.
+- **Closed strands.** An invitation bound to a closed strand also needs that strand running on the answering node, which a `storage`-profile node has; any other node answers `host-strand-unavailable`, which is retryable.
+
 #### Respawn (keeping a donated node up)
 
 A donated node is a child process on someone's home PC — it can crash, get OOM-killed, or die in a reboot. Nothing about the lifecycle above brings it back on its own, so the **`DonationSupervisor`** owns that invariant: *a non-terminal donation is expected to be running.* It supervises every donation record whose status is `awaiting_seed` or `seeded` **and** that already has an orchestrator handle (`dockerId`) — a record still mid-`provision` is left alone, since `provision` itself owns the child until it writes that handle. The supervisor still never touches a `provisioning` record; `error` and `terminated` are terminal and never respawned. But a `provisioning` record can also get stuck with no in-flight `provision` call left to advance it — the host crashed or was killed between writing the row and finishing the spawn — and nothing above reaches that case, so a separate **stuck-`provisioning` reap** (below) handles it.

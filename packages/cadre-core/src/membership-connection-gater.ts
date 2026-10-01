@@ -36,9 +36,9 @@
  *    node has at least one UNEXPIRED, NOT-FULLY-CONSUMED open invitation
  *    outstanding (`StrandSolicitationService.hasOutstandingInvitation` — the
  *    tokens this process minted or published, plus any still-redeemable
- *    `FormationInvite` row the usage recorder can see). Merely registering the
- *    responder (`CadreNode.initializeStrandSolicitation`) does NOT suspend it,
- *    so an app that registers eagerly at node bring-up keeps a live gate. The
+ *    `FormationInvite` row the usage recorder can see). Registering the
+ *    responder does NOT suspend it, so every node — each registers one at
+ *    `CadreNode.start` — keeps a live gate. The
  *    handler's own trust decision remains the per-token check, which is
  *    strictly finer than this one: a peer admitted here can still be rejected
  *    in-protocol for a bogus or spent token.

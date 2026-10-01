@@ -89,7 +89,6 @@ import type { Libp2p } from 'libp2p';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 	strandMemberKeyPair,
 	summarizeConnectionPaths,
@@ -372,9 +371,6 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 		}));
 		await A.start();
 		await makeOwnOwner(A, aKey);
-		await A.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
-		});
 
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });

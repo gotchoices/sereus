@@ -57,7 +57,6 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	StrandAwaitingFirstSyncError,
 	generateStrandMemberKey,
 	strandMemberKeyPair,
@@ -182,9 +181,6 @@ async function bringUpHost(runTag: number): Promise<HostSide> {
 	await host.start();
 	try {
 		await makeOwnOwner(host, hostKey);
-		await host.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-		});
 
 		const founded = await host.foundStrand({
 			strandId,

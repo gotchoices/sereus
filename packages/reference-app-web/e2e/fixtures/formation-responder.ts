@@ -38,7 +38,6 @@ import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	ed25519KeyPairFromLibp2p,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
@@ -174,15 +173,14 @@ async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNod
  *
  * Sequence (each step mirrors the documented production path it is named after):
  *  1. Boot a `CadreNode` with a WS transport + memory storage, listening on an
- *     ephemeral `/ws` port.
+ *     ephemeral `/ws` port. Its start registers the `/sereus/formation/1.0.0`
+ *     responder, which checks tokens against the control database.
  *  2. Genesis-seed its owner (fail-loud).
- *  3. Wire the formation responder (`initializeStrandSolicitation` + a real
- *     `ControlFormationUsageRecorder`) — registers the `/sereus/formation/1.0.0` handler.
- *  4. Found the host CLOSED chat strand as the browser does (`foundStrand` with the
+ *  3. Found the host CLOSED chat strand as the browser does (`foundStrand` with the
  *     SHARED signed `getChatSAppConfig`).
- *  5. Mint + publish the redeemable invitation bound to that strand, PLUS a second
+ *  4. Mint + publish the redeemable invitation bound to that strand, PLUS a second
  *     already-expired invitation for the negative test.
- *  6. Arm seed-on-connect (best-effort) — the deterministic path is the explicit
+ *  5. Arm seed-on-connect (best-effort) — the deterministic path is the explicit
  *     {@link FormationResponderHandle.seedMessage}.
  */
 export async function startFormationResponder(opts?: {
@@ -198,17 +196,10 @@ export async function startFormationResponder(opts?: {
 
 	try {
 		await runOwnerGenesis(node, identityKey);
-
-		// Wire consent + register the responder. The DB-backed recorder makes token
-		// validity + single-use real and threads the bound host strand back
-		// (provision-then-record), exactly like cadre-web.ts `ensureSolicitation`.
 		const controlDb = node.getControlDatabase();
 		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot wire formation responder');
+			throw new Error('control database unavailable after start; cannot read formation usage');
 		}
-		await node.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-		});
 
 		// Host CLOSED chat strand, founded the way the browser's `createClosedChatStrand`
 		// founds its own: one `foundStrand` call with the shared signed config.

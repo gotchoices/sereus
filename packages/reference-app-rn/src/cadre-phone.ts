@@ -13,7 +13,6 @@
 
 import {
   CadreNode,
-  ControlFormationUsageRecorder,
   DEFAULT_IDENTITY_KEY_ID,
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
@@ -353,7 +352,6 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
   // ever hangs again, bound it in cadre-core (so every embedder benefits), not
   // with a per-app deadline here.
   await runOwnerGenesis(built);
-  await initializeFormationResponder(built);
   // Saved only now, so a start that failed — a typo in Settings — never replaces the
   // last configuration that actually came up. The Noise mode is saved resolved, not as
   // "the build default", so a later build's default does not change a device that
@@ -361,40 +359,6 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
   nodeOptions = { ...opts, noiseCryptoMode };
   await saveStartOptions({ options: nodeOptions, autoStart: true });
   return built;
-}
-
-/**
- * Wire this node as a strand-formation **responder** so an invitee's
- * {@link CadreNode.formStrand} dial can be validated against the host's
- * `FormationInvite` rows.
- *
- * `createOpenInvitation`/`formStrand` lazily bring up the solicitation service
- * with NO recorder if it isn't already initialized — which would accept every
- * token blindly. Initializing it here with a {@link ControlFormationUsageRecorder}
- * (backed by the live `CadreControl.FormationInvite`/`FormationUsage` tables)
- * makes token validity + single-use enforcement real: the consent gate of the
- * closed-strand flow.
- *
- * Fail-soft: a wiring failure is logged, not thrown — minting/joining surfaces
- * the real error later. On a successful `formStrand`, the responder now both
- * provisions the bound host strand and writes its `FormationUsage` consent
- * record over libp2p (the recorder threads the redeemed token through to
- * `redeemInvitation`), and returns the host's real strand id + membership key in
- * the `FormStrandResult` — so the invite is a single `OpenInvitation` with no
- * side-channel envelope. See the README "Trust model" section.
- */
-async function initializeFormationResponder(cadre: CadreNode): Promise<void> {
-  try {
-    const controlDb = cadre.getControlDatabase();
-    if (!controlDb) {
-      throw new Error('control database unavailable after start; cannot wire formation responder');
-    }
-    await cadre.initializeStrandSolicitation({
-      formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-    });
-  } catch (err) {
-    console.warn('[cadre-phone] formation responder init failed:', err);
-  }
 }
 
 /**

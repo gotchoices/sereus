@@ -26,7 +26,6 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	ed25519KeyPairFromLibp2p,
 	generateStrandMemberKey,
 	loadOrCreateIdentityKey,
@@ -119,7 +118,6 @@ function discovered(strandId) {
 const handlers = {
 	async found({ strandId, sApp, sAppId }) {
 		await makeOwnOwner();
-		await node.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(node.getControlDatabase()) });
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await node.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const invitation = await node.createOpenInvitation(sAppId, YEAR_MS);

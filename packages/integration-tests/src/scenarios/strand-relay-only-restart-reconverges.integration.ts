@@ -96,7 +96,6 @@ import type { Libp2p } from 'libp2p';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	InMemoryKeyStore,
 	KeyStoreJoinedStrandStore,
 	PersistentStrandNetworkStateStore,
@@ -325,9 +324,6 @@ async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = fa
 		// ── First incarnation: found, invite, form, attach (the blind-relay flow) ──
 		A = await startPartyNode(aHome, relay);
 		await makeOwnOwner(A, aHome.key);
-		await A.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
-		});
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const aStrandPeerId = founded.instance.libp2pNode!.peerId.toString();

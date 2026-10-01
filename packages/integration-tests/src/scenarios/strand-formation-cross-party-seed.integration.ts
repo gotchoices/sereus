@@ -57,7 +57,6 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 	strandFretPeerAddrs,
 	strandMemberKeyPair,
@@ -112,13 +111,6 @@ describe('Cross-party strand seed carried by formation', () => {
 			}));
 			await host.start();
 			await makeOwnOwner(host, hostKey);
-
-			// Real DB-backed responder wiring (the production shape): it is what resolves a
-			// bound invite to its host strand and what holds the connection gate's
-			// outstanding-invitation carve-out open for a stranger's dial.
-			await host.initializeStrandSolicitation({
-				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-			});
 
 			// The host strand is founded BEFORE the invite is published, so it is live and
 			// dialable at redemption time. This is the whole precondition for the feature:
@@ -286,9 +278,6 @@ describe('Cross-party strand seed carried by formation', () => {
 			}));
 			await host.start();
 			await makeOwnOwner(host, hostKey);
-			await host.initializeStrandSolicitation({
-				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-			});
 
 			// Found the CLOSED host strand: the shared read secret gates attach; the
 			// founder's own identity (StrandPartyKey, minted by publish) signs the

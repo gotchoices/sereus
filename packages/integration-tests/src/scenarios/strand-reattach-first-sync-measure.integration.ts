@@ -60,7 +60,6 @@ import type { Database } from '@quereus/quereus';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig, StrandRow } from '@serfab/cadre-core';
@@ -176,9 +175,6 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 		})));
 		await A.start();
 		await makeOwnOwner(A, aKey);
-		await A.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
-		});
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const aStrandPeerId = founded.instance.libp2pNode!.peerId.toString();

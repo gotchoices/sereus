@@ -16,6 +16,7 @@ import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
 import { mintPlaceholderStrandId } from './strand-id.js';
 import {
   StrandFormationManager,
+  type CadrePeerAddrsSource,
   type MembershipInviteIssuer,
   type StrandFormationManagerConfig
 } from './strand-formation-manager.js';
@@ -215,7 +216,7 @@ export interface StrandSolicitationServiceOptions {
   /** Party ID for this node (used in protocol messages) */
   partyId?: string;
   /** Cadre peer addresses for this node */
-  cadrePeerAddrs?: string[];
+  cadrePeerAddrs?: CadrePeerAddrsSource;
   /**
    * This node's live STRAND-network multiaddrs for a strand it is running (responder
    * side), carried back to a validated joiner as its cross-party discovery seed. Wired
@@ -253,7 +254,7 @@ export class StrandSolicitationService {
   private readonly strandProvisioner?: StrandProvisioner;
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
-  private readonly cadrePeerAddrs: string[];
+  private readonly cadrePeerAddrs: CadrePeerAddrsSource;
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
   private readonly issueMembershipInvite?: MembershipInviteIssuer;
   private formationManager?: StrandFormationManager;
@@ -446,6 +447,16 @@ export class StrandSolicitationService {
   registerMintedInvitation(token: string, expiresAtMs: number): void {
     this.mintedInvitations.set(token, expiresAtMs);
     log('Registered minted invitation %s (expires %d)', token, expiresAtMs);
+  }
+
+  /**
+   * Take over every token `previous` minted or published, so a service that replaces it
+   * on a node keeps the connection gate open for invitations already handed out.
+   */
+  adoptMintedInvitations(previous: StrandSolicitationService): void {
+    for (const [token, expiresAtMs] of previous.mintedInvitations) {
+      this.mintedInvitations.set(token, expiresAtMs);
+    }
   }
 
   /**

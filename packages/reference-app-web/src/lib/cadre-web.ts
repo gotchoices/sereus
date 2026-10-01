@@ -31,7 +31,6 @@
 import {
 	CadreNode,
 	ed25519KeyPairFromLibp2p,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
@@ -187,7 +186,6 @@ let ownerError: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
-let solicitationReady: Promise<void> | null = null;
 // NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
 
@@ -496,46 +494,6 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
 
-/**
- * Lazily bring up the strand solicitation service (responder + initiator
- * transport). Idempotent; called by both {@link createInvitation} and
- * {@link joinViaInvitation}.
- *
- * Wires a {@link ControlFormationUsageRecorder} backed by the live control
- * database, mirroring RN's `initializeFormationResponder`
- * (`reference-app-rn/src/cadre-phone.ts`). Without it the responder accepts every
- * token blindly AND never resolves the host's bound strand — so a redeeming
- * `formStrand` would fall through to the responder-provisions placeholder and
- * return no `memberPrivateKey`. The recorder makes token validity + single-use
- * real and threads the bound host strand back (provision-then-record). The
- * control database must exist post-start, so its absence throws rather than
- * silently degrading to the no-recorder path.
- *
- * Memoized as a promise so concurrent callers share one registration (a second
- * would collide with the first's protocol handler); a failure clears it so the
- * next call retries.
- */
-async function ensureSolicitation(): Promise<CadreNode> {
-	if (!node) throw new Error('CadreNode not started');
-	const cadre = node;
-	solicitationReady ??= wireSolicitation(cadre).catch((err: unknown) => {
-		solicitationReady = null;
-		throw err;
-	});
-	await solicitationReady;
-	return cadre;
-}
-
-async function wireSolicitation(cadre: CadreNode): Promise<void> {
-	const controlDb = cadre.getControlDatabase();
-	if (!controlDb) {
-		throw new Error('control database unavailable after start; cannot wire formation responder');
-	}
-	await cadre.initializeStrandSolicitation({
-		formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-	});
-}
-
 /** What {@link createInvitation} returns to the responder UI. */
 export interface CreatedInvitation {
 	/** Base64url-encoded `OpenInvitation` to copy out-of-band to the initiator. */
@@ -616,7 +574,8 @@ async function createClosedChatStrand(
 export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
 ): Promise<CreatedInvitation> {
-	const cadre = await ensureSolicitation();
+	if (!node) throw new Error('CadreNode not started');
+	const cadre = node;
 	// Live read: a reservation lost since start now fails this guard, so the
 	// invitation is refused with a clear message instead of embedding circuit
 	// addresses that no longer route.
@@ -660,7 +619,8 @@ export async function joinViaInvitation(
 	encoded: string,
 	disclosure: StrandFormationDisclosure = {},
 ): Promise<FormedStrand> {
-	const cadre = await ensureSolicitation();
+	if (!node) throw new Error('CadreNode not started');
+	const cadre = node;
 	const invitation: OpenInvitation = cadre.decodeInvitation(encoded.trim());
 	const result: FormStrandResult = await cadre.formStrand(invitation, {
 		partyId: partyId ?? undefined,
@@ -838,7 +798,6 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	ownerState = 'pending';
 	ownerError = null;
-	solicitationReady = null;
 	formedStrands.clear();
 	// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 	// above — drop the references so nothing can write through a closed handle.

@@ -51,6 +51,18 @@ type OpenInvitation = {
 }
 ```
 
+Every node of the inviting party answers: `CadreNode.start()` installs the formation responder,
+which checks the token against the party's replicated `FormationInvite`/`FormationUsage` rows, so
+an embedder calls nothing to enable it. To customize it — an approver, a provisioner, a recorder,
+formation deadlines — call this on the started node; it replaces the installed responder:
+```ts
+initializeStrandSolicitation(options?: StrandSolicitationServiceOptions): Promise<void>;
+```
+
+Without `options.formationUsageRecorder` the replacement still checks tokens against the control
+database. See [architecture.md → Who answers
+formation](architecture.md#who-answers-formation).
+
 Invitee forms:
 ```ts
 formStrand(

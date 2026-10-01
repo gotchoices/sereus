@@ -104,7 +104,6 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Libp2p } from 'libp2p';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 	strandFretPeerAddrs,
 	strandMemberKeyPair,
@@ -276,15 +275,6 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		await A.start();
 		await makeOwnOwner(A, aKey);
 		const aPeerId = A.peerId!.toString();
-
-		// Real DB-backed responder wiring (the production shape): resolves the
-		// bound invite to its host strand, and its usage recorder is what holds
-		// the connection gate's stranger carve-out open for B's dial. Must be
-		// wired BEFORE createOpenInvitation, or the lazy init builds a
-		// recorder-less service.
-		await A.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!),
-		});
 
 		// Every address A has is a circuit address — the relay-only posture.
 		const aControlAddrList = controlAddrs(A);

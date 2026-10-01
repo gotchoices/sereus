@@ -114,6 +114,7 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 import {
   createMembershipConnectionGater,
   DEFAULT_ENROLLMENT_WINDOW_MS,
@@ -378,6 +379,15 @@ export class CadreNode implements SAppIdLookup {
   private enrollmentService: EnrollmentService;
   private seedBootstrapService: SeedBootstrapService | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
+  /**
+   * The service whose formation handler is registered on the control node. Trails
+   * {@link strandSolicitationService} while {@link initializeStrandSolicitation} swaps a new
+   * one in: the field is set at once so concurrent callers reuse it, the handler only when
+   * its queued swap runs.
+   */
+  private registeredSolicitation: StrandSolicitationService | null = null;
+  /** Tail of the queued formation-handler swaps ({@link swapFormationResponder}). */
+  private solicitationSwaps: Promise<void> = Promise.resolve();
   private strandWakeService: StrandWakeService | null = null;
   /**
    * Control-network strand-address responder. Answers a co-cadre sibling's
@@ -1266,6 +1276,12 @@ export class CadreNode implements SAppIdLookup {
       });
       await this.strandAddrService.initialize(this.controlNode);
 
+      // Answer strand formation for this party from now on. Every machine of a party
+      // holds the replicated FormationInvite/FormationUsage rows, so an always-on one can
+      // check a token for an inviter that is offline. After the control database is up,
+      // so the responder never reads a database that cannot answer yet.
+      await this.installDefaultFormationResponder();
+
       // Server-side push-wake fan-out: only when push is configured.
       if (this.config.push) {
         this.pushFanoutService = this.buildPushFanout(this.config.push);
@@ -1991,11 +2007,9 @@ export class CadreNode implements SAppIdLookup {
    *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
    *     initiator is another party's peer by design and its token is only
    *     checkable inside the protocol, so the gate asks the coarser question
-   *     "does this node expect a stranger at all?". Merely REGISTERING the
-   *     responder ({@link initializeStrandSolicitation}) no longer suspends
-   *     stranger denial — eager registration (as `reference-app-rn` does at
-   *     bring-up) and `formStrand`'s lazy initialization both leave the gate
-   *     armed, because neither mints an invitation.
+   *     "does this node expect a stranger at all?". REGISTERING the responder
+   *     does not suspend stranger denial: every node registers one at
+   *     {@link start}, and registering mints no invitation.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
    * checks 1-3 are in-memory, 4/5 share one control-DB read, and only a peer
@@ -2027,6 +2041,11 @@ export class CadreNode implements SAppIdLookup {
    * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
    * read is safe here — unlike the per-stream gate, which must consult the
    * materialized {@link authorizedControlPeers} snapshot instead.
+   * NOTE: check 6 adds a second control read (`hasOutstandingFormationInvite`) for a
+   * stranger with no locally minted invitation in play, on every node now that every
+   * node runs the responder — a relay-enabled storage node included. If stranger
+   * connections to such a node ever arrive fast enough for that read to show, cache
+   * the answer for a few seconds.
    * NOTE: on a relay-DISABLED node, a sibling whose membership row has not yet
    * replicated here is denied until the row converges (typically via the
    * owner); either side's next outbound reconcile dial (outbound is never
@@ -4658,11 +4677,14 @@ export class CadreNode implements SAppIdLookup {
       this.pushFanoutService = null;
     }
 
-    // Unregister strand solicitation service
-    if (this.strandSolicitationService && this.controlNode) {
-      await this.strandSolicitationService.unregisterResponder(this.controlNode);
-      this.strandSolicitationService = null;
+    // Unregister the formation responder once any queued swap has run, so no swap
+    // registers a handler after this. A restarted node installs a fresh one.
+    await this.solicitationSwaps;
+    if (this.registeredSolicitation && this.controlNode) {
+      await this.registeredSolicitation.unregisterResponder(this.controlNode);
     }
+    this.registeredSolicitation = null;
+    this.strandSolicitationService = null;
 
     // Stop strand watcher
     if (this.strandWatcher) {
@@ -7973,20 +7995,33 @@ export class CadreNode implements SAppIdLookup {
   // ============================================================================
 
   /**
-   * Initialize the strand solicitation service.
-   * This enables forming strands with other parties via open invitations.
+   * Replace this node's strand solicitation service — the formation responder every node
+   * installs at {@link start}, and the initiator side of {@link formStrand}. Optional: call it
+   * only to customize the responder (an approver, a provisioner, formation deadlines). The
+   * new service's handler replaces the previous one's on the control node, and invitations
+   * the previous service minted stay outstanding.
+   *
+   * Without `options.formationUsageRecorder`, tokens are checked against this party's
+   * replicated `FormationInvite`/`FormationUsage` rows ({@link ControlFormationUsageRecorder}).
+   * A responder that accepts every token is reachable only by constructing
+   * {@link StrandSolicitationService} directly.
    *
    * @param options - Configuration for the solicitation service
    */
   async initializeStrandSolicitation(options?: StrandSolicitationServiceOptions): Promise<void> {
-    if (!this.controlNode) {
+    const controlNode = this.controlNode;
+    const controlDatabase = this.controlDatabase;
+    if (!controlNode || !controlDatabase) {
       throw new Error('CadreNode must be started before initializing strand solicitation');
     }
 
     const service = new StrandSolicitationService({
       ...options,
+      formationUsageRecorder: options?.formationUsageRecorder ?? new ControlFormationUsageRecorder(controlDatabase),
       partyId: this.config.controlNetwork.partyId,
-      cadrePeerAddrs: this.getMultiaddrs(),
+      // Read per formation: the responder is installed during start, before a relay
+      // reservation gives a relay-only node any address, and addresses change after.
+      cadrePeerAddrs: () => this.getMultiaddrs(),
       // Every formation deadline derives from this node's declared link, like every other
       // dial budget here; a caller's own declaration on the formation config still wins.
       formationConfig: {
@@ -8004,24 +8039,61 @@ export class CadreNode implements SAppIdLookup {
         this.issueStrandMembershipInvite(strandId, signal)
     });
 
-    // Set before the registration is awaited, so a concurrent createOpenInvitation /
-    // formStrand uses this service instead of building a second one whose handler
-    // would collide; a failed registration puts the previous service back.
-    // NOTE: same stray-handler caveat as installSeedBootstrapService — a failed
-    // peer-store merge leaves the formation handler registered, so a retry is a duplicate.
     const previous = this.strandSolicitationService;
-    this.strandSolicitationService = service;
-    try {
-      await service.registerResponder(this.controlNode);
-    } catch (error) {
-      if (this.strandSolicitationService === service) this.strandSolicitationService = previous;
-      throw error;
+    if (previous) {
+      service.adoptMintedInvitations(previous);
     }
+    // Set before the swap is awaited, so a concurrent createOpenInvitation / formStrand
+    // uses this service instead of building another.
+    this.strandSolicitationService = service;
+    const swap = this.solicitationSwaps.then(() => this.swapFormationResponder(service, controlNode));
+    // The queue only orders swaps; a failed one rejects this call's own await below.
+    this.solicitationSwaps = swap.catch(() => undefined);
+    await swap;
     log('Strand solicitation service initialized');
   }
 
   /**
-   * Get the strand solicitation service (for advanced use)
+   * Answer formation from start. Log-and-continue: a node that cannot is still useful, and
+   * {@link createOpenInvitation} / {@link formStrand} install the responder when it is missing.
+   */
+  private async installDefaultFormationResponder(): Promise<void> {
+    try {
+      await this.initializeStrandSolicitation();
+    } catch (error) {
+      log('Formation responder not installed at start; createOpenInvitation/formStrand will retry: %o', error);
+    }
+  }
+
+  /**
+   * Move the control node's formation handler from the registered service to `service`.
+   * Queued by {@link initializeStrandSolicitation} so swaps run one at a time: libp2p allows
+   * one handler per protocol id, and two overlapping swaps would each find the other's
+   * handler in the way. A failed swap registers the previous service again, points
+   * {@link strandSolicitationService} back at it unless a later call has replaced it, and
+   * rethrows.
+   *
+   * NOTE: same stray-handler caveat as {@link installSeedBootstrapService} — a failed
+   * peer-store merge leaves the formation handler registered, so the restore below (and a
+   * retry) rejects as a duplicate.
+   */
+  private async swapFormationResponder(service: StrandSolicitationService, controlNode: Libp2p): Promise<void> {
+    const previous = this.registeredSolicitation;
+    try {
+      await previous?.unregisterResponder(controlNode);
+      await service.registerResponder(controlNode);
+      this.registeredSolicitation = service;
+    } catch (error) {
+      if (this.strandSolicitationService === service) this.strandSolicitationService = previous;
+      await previous?.registerResponder(controlNode).catch((restoreError: unknown) =>
+        log('Re-registering the previous formation responder failed; none answers until the next initializeStrandSolicitation: %o', restoreError));
+      throw error;
+    }
+  }
+
+  /**
+   * Get the strand solicitation service (for advanced use). Non-null on a started node unless
+   * the install at {@link start} failed.
    */
   getStrandSolicitationService(): StrandSolicitationService | null {
     return this.strandSolicitationService;
@@ -8039,7 +8111,7 @@ export class CadreNode implements SAppIdLookup {
     expirationMs: number = 24 * 60 * 60 * 1000 // 24 hours default
   ): Promise<OpenInvitation> {
     if (!this.strandSolicitationService) {
-      // Create a temporary service for creating invitations
+      // Only when the install at start failed.
       await this.initializeStrandSolicitation();
     }
 

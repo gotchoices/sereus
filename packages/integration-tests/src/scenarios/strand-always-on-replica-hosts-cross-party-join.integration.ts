@@ -52,7 +52,6 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	InMemoryKeyStore,
 	KeyStoreJoinedStrandStore,
 } from '@serfab/cadre-core';
@@ -147,9 +146,6 @@ async function startHost(runTag: number, handles: Handles): Promise<Host> {
 	handles.host = node;
 	await node.start();
 	await makeOwnOwner(node, key);
-	await node.initializeStrandSolicitation({
-		formationUsageRecorder: new ControlFormationUsageRecorder(node.getControlDatabase()!),
-	});
 	const strandId = `strand-always-on-cross-party-${runTag}`;
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	// Founded before the invitation is published, so the formation result carries live
@@ -241,13 +237,12 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 			const alwaysOn = await enrollAlwaysOn(phone, alwaysOnCapture, handles);
 			const phoneControl = phone.node.getControlDatabase()!;
 
-			// `formStrand` would register the formation handler itself, and a change to the
-			// node's own protocols can start a reconcile pass that publishes the join before
-			// step 1 reads. Registered and settled here instead.
+			// Registering the formation handler at start changed the node's own protocols,
+			// which can start a reconcile pass that publishes the join before step 1 reads.
+			// Settled here instead.
 			// NOTE: any other `self:peer:update` on the phone's control node between here and
 			// step 1's reads (an address change) would publish early and fail step 1; none
 			// occurs on loopback. If step 1 flakes on "join recorded on the phone", look there.
-			await phone.node.initializeStrandSolicitation();
 			await freshReconcilePass(phone.node);
 
 			// ── Step 1: the phone joins; the join is recorded on the phone only ──

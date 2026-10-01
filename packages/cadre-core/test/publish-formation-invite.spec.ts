@@ -54,10 +54,16 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     // The gate's formation carve-out reads
     // `StrandSolicitationService.hasOutstandingInvitation`. Publishing a token
     // minted elsewhere must open it WITHOUT waiting for the durable row to be
-    // readable, so the service is wired with no recorder here: a `true` answer
-    // can only have come from the in-memory mint registry.
+    // readable, so the service is wired with a recorder that cannot list
+    // invitations: a `true` answer can only have come from the in-memory mint registry.
     ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
-    await node.initializeStrandSolicitation();
+    await node.initializeStrandSolicitation({
+      formationUsageRecorder: {
+        isTokenValid: async () => ({ valid: false }),
+        isTokenUsed: async () => false,
+        recordUsage: async () => {},
+      },
+    });
     const service = node.getStrandSolicitationService()!;
     expect(await service.hasOutstandingInvitation()).toBe(false);
 
@@ -70,7 +76,6 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
 
   it('does not open the gate for an invite published already expired', async () => {
     ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
-    await node.initializeStrandSolicitation();
     const service = node.getStrandSolicitationService()!;
 
     await node.publishFormationInvite('invite-' + rand(), 'sapp-publish-stale', {

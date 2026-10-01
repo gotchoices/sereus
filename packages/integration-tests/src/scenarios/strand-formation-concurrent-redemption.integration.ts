@@ -16,8 +16,8 @@
  *
  * Topology: ONE inviting party with TWO live cadre nodes (A owner/storage, B plain
  * member/transaction — `bootConnectedPair`, which connects and confirms a two-machine
- * control cohort on BOTH sides before the first control write), each registered as a
- * formation responder over its own DB-backed `ControlFormationUsageRecorder`. Two joiner
+ * control cohort on BOTH sides before the first control write), each answering formation
+ * through the responder every node installs at start, over its own control database. Two joiner
  * nodes (separate parties) redeem the SAME token in the same tick, one dialing A, the
  * other dialing B — so the two `FormationUsage` writes race across the distributed
  * control collection, not through one node's serializing write queue (which is why this
@@ -52,7 +52,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	verifyFormationConsent,
 	ed25519PublicKeyB64FromPeerId,
 } from '@serfab/cadre-core';
@@ -181,16 +180,9 @@ describe('Concurrent invitation redemption across two machines', () => {
 	beforeAll(async () => {
 		try {
 			pair = await bootConnectedPair('concurrent-redemption');
-			const { A, B, ownerPublicKey, ownerSign } = pair;
+			const { ownerPublicKey, ownerSign } = pair;
 
 			hook = await startApprovalHook();
-
-			// Both nodes answer formation requests through the REAL DB-backed recorder over
-			// their OWN database instance — the production responder wiring, and what makes
-			// the connection gate's outstanding-invitation carve-out consult the shared
-			// control DB on each node.
-			await A.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!) });
-			await B.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(B.getControlDatabase()!) });
 
 			// One open host strand every invite here binds to (provision-then-record): both
 			// redemptions of a token then write ONLY a FormationUsage row, keeping the race

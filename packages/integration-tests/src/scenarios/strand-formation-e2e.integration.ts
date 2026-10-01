@@ -407,14 +407,17 @@ describe('E2E Strand Formation', () => {
 				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceAddrs }));
 				await bobNode.start();
 
-				// Initialize strand solicitation on Alice (responder)
-				const mockProvisioner = createMockProvisioner('lifecycle');
+				// Replace Alice's responder with mocks: the node's default recorder would refuse
+				// the unpublished token.
+				const mockRecorder = createMockUsageRecorder();
 				await aliceNode.initializeStrandSolicitation({
-					strandProvisioner: mockProvisioner,
+					strandProvisioner: createMockProvisioner('lifecycle'),
+					formationUsageRecorder: mockRecorder,
 				});
 
 				// Alice creates open invitation
 				const invitation = await aliceNode.createOpenInvitation('test-sapp');
+				mockRecorder.knownTokens.add(invitation.token);
 
 				// Bob forms strand using invitation
 				const formResult = await bobNode.formStrand(invitation, {
@@ -528,20 +531,24 @@ describe('E2E Strand Formation', () => {
 				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
 				await bobNode.start();
 
-				// Alice initializes solicitation with a provisioner
-				const mockProvisioner = createMockProvisioner('multi');
+				// Alice replaces her responder with mocks (a provisioner, and a recorder that
+				// accepts the unpublished tokens below)
+				const mockRecorder = createMockUsageRecorder();
 				await aliceNode.initializeStrandSolicitation({
-					strandProvisioner: mockProvisioner,
+					strandProvisioner: createMockProvisioner('multi'),
+					formationUsageRecorder: mockRecorder,
 				});
 
 				// Form strand A
 				const invitationA = await aliceNode.createOpenInvitation('sapp-a');
+				mockRecorder.knownTokens.add(invitationA.token);
 				const resultA = await bobNode.formStrand(invitationA, {
 					partyId: `bob-${partyId}`,
 				});
 
 				// Form strand B
 				const invitationB = await aliceNode.createOpenInvitation('sapp-b');
+				mockRecorder.knownTokens.add(invitationB.token);
 				const resultB = await bobNode.formStrand(invitationB, {
 					partyId: `bob-${partyId}`,
 				});
@@ -651,14 +658,17 @@ describe('E2E Strand Formation', () => {
 				carolNode = new CadreNode(controlNodeConfig({ partyId: `carol-${partyId}`, bootstrapNodes: aliceAddrs }));
 				await carolNode.start();
 
-				// Alice initializes solicitation
-				const mockProvisioner = createMockProvisioner('three');
+				// Alice replaces her responder with mocks (a provisioner, and a recorder that
+				// accepts the unpublished token below)
+				const mockRecorder = createMockUsageRecorder();
 				await aliceNode.initializeStrandSolicitation({
-					strandProvisioner: mockProvisioner,
+					strandProvisioner: createMockProvisioner('three'),
+					formationUsageRecorder: mockRecorder,
 				});
 
 				// Use a single invitation — both Bob and Carol join
 				const invitation = await aliceNode.createOpenInvitation('test-sapp');
+				mockRecorder.knownTokens.add(invitation.token);
 
 				// Bob and Carol form strands independently (same invitation)
 				const bobResult = await bobNode.formStrand(invitation, {
