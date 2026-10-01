@@ -9,6 +9,12 @@ services:
       - "${HOST_BIND_IP:-0.0.0.0}:${HOST_WS_PORT:-4011}:4002/tcp"
     environment:
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
+      # Advertised (public) side of each listener. The ports default to the HOST_* ports
+      # published above; set them apart only when something in front of this host (e.g. a
+      # router port-forward) changes the port clients dial.
+      - PUBLIC_HOST=${PUBLIC_HOST:-}
+      - PUBLIC_TCP_PORT=${PUBLIC_TCP_PORT:-${HOST_PORT:-4001}}
+      - PUBLIC_WS_PORT=${PUBLIC_WS_PORT:-${HOST_WS_PORT:-4011}}
       - LISTEN_ADDRS=${LISTEN_ADDRS:-}
       - RELAY_APPLY_DEFAULT_LIMIT=${RELAY_APPLY_DEFAULT_LIMIT:-}
       - RELAY_MAX_RESERVATIONS=${RELAY_MAX_RESERVATIONS:-}

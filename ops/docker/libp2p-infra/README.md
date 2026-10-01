@@ -14,7 +14,10 @@ replaced kad-DHT with FRET, which no kad-DHT client consumes.)
 | --- | --- | --- |
 | `DATA_DIR` | `/data` | Where the identity key is persisted. `/data` is the container volume; set it to a writable path when running the process directly on a workstation. A stable value means a stable peer id across restarts. |
 | `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. Both TCP and WebSockets are listened on by default: **React Native has no raw-TCP transport**, so a mobile client can only reach this over `/ws` (or `/wss` behind a TLS front). Override to bind one transport only. |
-| `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise instead of the bound listen address (e.g. behind a reverse proxy/DNS front). |
+| `PUBLIC_HOST` | unset | DNS name or IP clients reach this node at. When set (and `ANNOUNCE_ADDRS` is not), the node advertises one address per listener on this host — `/dns4/<host>/tcp/<port>` and `/dns4/<host>/tcp/<port>/ws` for the defaults — instead of the addresses it bound. See [Advertised addresses](#advertised-addresses). |
+| `PUBLIC_TCP_PORT` | bound port | Port advertised for the raw-TCP listener under `PUBLIC_HOST`. |
+| `PUBLIC_WS_PORT` | bound port | Port advertised for the WebSocket listener under `PUBLIC_HOST`. |
+| `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise, verbatim. Overrides `PUBLIC_HOST`, and **replaces** the advertised set — name every transport clients need. For what `PUBLIC_HOST` can't express, e.g. a `/tls/ws` address behind a TLS front. |
 | `RELAY_APPLY_DEFAULT_LIMIT` | `false` | See below. |
 | `RELAY_MAX_RESERVATIONS` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
 
@@ -71,6 +74,24 @@ quietly bound to nothing. Failures name the variable and the offending entry
 (`src/env.ts`). An address that parses but no configured transport can listen on
 fails a moment later inside libp2p, which names it too.
 
+## Advertised addresses
+
+What the node advertises is what clients — and the relay reservations NAT'd clients hold —
+are told to dial, so it has to be reachable from outside. It comes from the first of:
+
+1. **`ANNOUNCE_ADDRS`**, used verbatim.
+2. **`PUBLIC_HOST`**: each bound listener re-expressed on the public host and port. The
+   port is `PUBLIC_TCP_PORT` / `PUBLIC_WS_PORT`, defaulting to the bound port, which is
+   right for a process run directly on the host. Behind Docker or a router port-forward the
+   public port differs from the bound one, so set it (the `../relay/` stack defaults both
+   to its published `HOST_*` ports). Only raw-TCP and plain-WebSocket listeners can be
+   derived; anything else fails at startup and asks for `ANNOUNCE_ADDRS`.
+3. **Neither:** libp2p advertises what it bound. In a container that is `127.0.0.1` and the
+   bridge IP, which no client can dial, so the node logs a warning.
+
+The startup log prints the bound listeners, then the advertised addresses with the
+setting they came from.
+
 ## Setting these on a deployed node
 
 The `../relay/` site-instance stack forwards every image-level variable above from
@@ -113,6 +134,8 @@ process prints its WebSocket addresses separately for that reason.
 
 Further points that matter for a phone:
 
+- **Set `PUBLIC_HOST`.** Without it a containerized relay advertises addresses no phone
+  can dial, and a phone holding a reservation here builds its circuit address on them.
 - **If you set `ANNOUNCE_ADDRS`, put the WebSocket address in it.** A non-empty
   announce set *replaces* the advertised addresses rather than adding to them, so a
   node fronted by a reverse proxy that announces only its TCP address binds

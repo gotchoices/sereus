@@ -84,17 +84,23 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 - `LISTEN_ADDRS`: advanced; leave empty. Overrides the multiaddrs the container binds
   (default: raw TCP on 4001 plus WebSockets on 4002) — changing the ports here means
   changing `HOST_PORT`/`HOST_WS_PORT` and the compose mappings to match
-- `ANNOUNCE_ADDRS`: advanced; leave empty unless troubleshooting reachability. If you
-  do set it, include the WebSocket address: a non-empty announce set replaces the
-  advertised addresses, so announcing only TCP hides the WebSocket listener from
-  phones. The container warns at startup when it is in that state
+- `PUBLIC_HOST`: recommended; the DNS name clients reach the relay at. The relay
+  advertises its TCP and WebSocket listeners on this host and the `HOST_*` ports, instead
+  of container-internal addresses no client can dial. Unset, it warns at startup
+- `PUBLIC_TCP_PORT` / `PUBLIC_WS_PORT`: optional; the ports clients dial when something in
+  front of the host changes them (e.g. a router forwarding 51234). Default: the `HOST_*` ports
+- `ANNOUNCE_ADDRS`: advanced; overrides `PUBLIC_HOST` with an explicit list (e.g. a
+  `/tls/ws` address behind a TLS front). If you set it, include the WebSocket address:
+  a non-empty announce set replaces the advertised addresses, so announcing only TCP
+  hides the WebSocket listener from phones. The container warns at startup when it is
+  in that state
 - `RELAY_APPLY_DEFAULT_LIMIT`: advanced; leave empty. Setting it to `true` re-applies libp2p's per-reservation cap and **breaks relayed cadre traffic** — see `libp2p-infra/README.md`
 - `RELAY_MAX_RESERVATIONS`: advanced; concurrent reservation slots (default `500`)
 
 `coturn` uses a different knob set (`STUN_PUBLIC_HOST`, `LISTENING_PORT=3478`, `TURN_ENABLED`, …) — see `coturn/env.example` and `coturn/README.md`.
 
 ### Image/build note
-The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`LISTEN_ADDRS`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
+The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`LISTEN_ADDRS`, `PUBLIC_*`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
 
 `coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 

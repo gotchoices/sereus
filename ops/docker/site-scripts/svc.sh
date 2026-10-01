@@ -12,7 +12,7 @@ Commands:
   logs        Follow logs
   ps          Show containers
   dns [host]  (relay only) Print the DNSADDR TXT records to publish, computed from
-              the HOST ports in env.local + the running relay's peer id. `host` is the
+              the public ports in env.local + the running relay's peer id. `host` is the
               public hostname; defaults to $PUBLIC_HOST from env.local when set.
 
 Environment:
@@ -107,9 +107,10 @@ envget() {
 #
 # The relay process, inside its container, only knows the addresses it BOUND
 # (container IP + container ports 4001/4002) — not the host-side port mapping. So
-# `svc logs` shows internal addresses that must NOT be published. This command
-# derives the externally-reachable records instead: the public hostname + the HOST
-# ports from env.local (which map to the container ports), + the running peer id.
+# the 'listening on' line in `svc logs` shows addresses that must NOT be published. This command
+# derives the externally-reachable records instead: the public hostname + the public
+# ports (PUBLIC_*_PORT, else the HOST ports that map to the container ports), + the
+# running peer id. These are the same ports the relay advertises from PUBLIC_HOST.
 print_relay_dns() {
   if [[ "$SERVICE_KEY" != "relay" ]]; then
     echo "ERROR: 'dns' is only meaningful for the relay service (this instance is '$SERVICE_KEY')." >&2
@@ -126,8 +127,8 @@ print_relay_dns() {
     exit 2
   fi
 
-  tcp_port="$(envget HOST_PORT)";    tcp_port="${tcp_port:-4001}"
-  ws_port="$(envget HOST_WS_PORT)";  ws_port="${ws_port:-4011}"
+  tcp_port="$(envget PUBLIC_TCP_PORT)"; tcp_port="${tcp_port:-$(envget HOST_PORT)}"; tcp_port="${tcp_port:-4001}"
+  ws_port="$(envget PUBLIC_WS_PORT)";   ws_port="${ws_port:-$(envget HOST_WS_PORT)}";  ws_port="${ws_port:-4011}"
 
   peer="$(dc logs 2>/dev/null | grep -oE 'peerId=[A-Za-z0-9]+' | tail -1 | cut -d= -f2 || true)"
   if [[ -z "$peer" ]]; then
@@ -153,39 +154,22 @@ Publish these TXT records in your DNS zone:
   #dnsaddr=/dns4/$host/tcp/<TLS_PORT>/tls/ws/p2p/$peer
 
 Notes:
-  - Ports above are the HOST ports from env.local ($tcp_port tcp, $ws_port ws) — what is
-    reachable from outside, NOT the container's internal 4001/4002 shown by 'svc logs'.
-  - Make sure your firewall has those host ports open.
+  - Ports above are the public ports from env.local ($tcp_port tcp, $ws_port ws) — what is
+    reachable from outside, NOT the container's internal 4001/4002 ('listening on' in logs).
+  - Make sure your firewall (and any router forward) has those ports open.
   - Verify after DNS propagates:
       node <repo>/ops/test/check-node.mjs --target /dns4/$host/tcp/$ws_port/ws/p2p/$peer --relay
 EOF
 }
 
-# Build the comma-joined announce multiaddrs for the relay from a public host + host ports.
-# Announce addresses carry no /p2p suffix — libp2p appends this node's own peer id.
-relay_build_announce() {
-  echo "/dns4/$1/tcp/$2,/dns4/$1/tcp/$3/ws"
-}
-
 case "$cmd" in
   up)
-    # For the relay, make sure it advertises addresses clients can reach. Without this it
-    # announces the internal addresses libp2p bound (127.0.0.1, the docker bridge IP), which
-    # are useless to clients and poison the /p2p-circuit addresses NAT'd clients build.
-    if [[ "$SERVICE_KEY" == "relay" ]]; then
-      ann="$(envget ANNOUNCE_ADDRS)"
-      pub="$(envget PUBLIC_HOST)"
-      if [[ -z "$ann" && -n "$pub" ]]; then
-        tcp_port="$(envget HOST_PORT)";   tcp_port="${tcp_port:-4001}"
-        ws_port="$(envget HOST_WS_PORT)"; ws_port="${ws_port:-4011}"
-        export ANNOUNCE_ADDRS="$(relay_build_announce "$pub" "$tcp_port" "$ws_port")"
-        echo "relay: advertising $ANNOUNCE_ADDRS (auto-derived from PUBLIC_HOST=$pub)"
-      elif [[ -z "$ann" && -z "$pub" ]]; then
-        echo "WARNING: relay has neither PUBLIC_HOST nor ANNOUNCE_ADDRS set in env.local." >&2
-        echo "         It will advertise container-internal addresses (127.0.0.1 / docker" >&2
-        echo "         bridge IP) that clients cannot use. Set PUBLIC_HOST=<your.dns.name>" >&2
-        echo "         in env.local so it advertises a reachable address." >&2
-      fi
+    # The relay derives its advertised addresses from PUBLIC_HOST itself; flag the
+    # unset case here too, since its own warning only shows up in the logs.
+    if [[ "$SERVICE_KEY" == "relay" && -z "$(envget ANNOUNCE_ADDRS)" && -z "$(envget PUBLIC_HOST)" ]]; then
+      echo "WARNING: neither PUBLIC_HOST nor ANNOUNCE_ADDRS is set in env.local, so the relay" >&2
+      echo "         will advertise container-internal addresses no client can dial." >&2
+      echo "         Set PUBLIC_HOST=<your.dns.name> in env.local." >&2
     fi
     dc up -d --build "$@"
     ;;

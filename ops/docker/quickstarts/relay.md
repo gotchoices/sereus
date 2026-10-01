@@ -12,14 +12,16 @@ From your ops root:
 ```bash
 ./sereus/ops/scripts/install docker relay
 cd docker-relay
-vi env.local
+vi env.local        # set PUBLIC_HOST=relay.sereus.org
 ./svc up
 ./svc logs
 ```
 
-Copy the `peerId=...` value from logs.
+Copy the `peerId=...` value from logs, and check the `advertising (from PUBLIC_HOST)` lines
+show your hostname, not `127.0.0.1` or a `172.x` bridge address.
 
 ### Publish DNSADDR
+`./svc dns` prints the exact records to publish. Or by hand:
 Follow `../../docs/dnsaddr.md` and publish, at `_dnsaddr.relay.sereus.org`, **one TXT
 record per transport the relay listens on** — a `tcp` record *and* a `ws` record (phones
 and browsers can't dial raw TCP). Same `<PEER_ID>` in each; use the **host** ports
