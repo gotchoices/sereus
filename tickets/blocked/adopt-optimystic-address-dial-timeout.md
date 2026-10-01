@@ -42,6 +42,7 @@ Upstream also found two related points:
   - **RPC dial deadline:** max(3000, 11 r) by default. It is set exactly with the new `NodeOptions.rpcDeadlines { dialTimeoutMs?, responseTimeoutMs? }`, with no floor.
   - **Transaction timeout:** the NetworkTransactor timeout that the Quereus plugin uses is now derived as max(30000, 4 × the RPC dial deadline), and it follows an explicit `rpcDeadlines.dialTimeoutMs`.
 - [ ] Pass sereus's totals for all three limits: optimystic's cold open + 2 × `ADMISSION_DECISION_TIMEOUT_MS`. Check that the derived transaction timeout still fits inside sereus's write and cohort budgets.
+  - That check is being worked now in `fix/degraded-cohort-stalled-write-outruns-120s-cap`: at the default declaration the derived budget is 154 s, and two degraded-cohort cases fail their 120 s cap in the linked workspace. A larger dial here raises that budget again (4 × dial).
 - [ ] `MAX_LINK_ROUND_TRIP_MS` drops from about 1.66 days to about 13 h. Update the `types.ts` doc (~501) and say so in the release note.
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
