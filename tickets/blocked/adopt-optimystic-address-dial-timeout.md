@@ -18,7 +18,10 @@ Upstream also found two related points:
 
 ## TODO
 
-- [ ] When optimystic releases the fix, raise the `@optimystic/*` floors to that version and check that sereus's own libp2p range is compatible with ^3.3.11.
+- [ ] When optimystic releases the fix, raise the `@optimystic/*` floors to that version, and raise sereus's own `libp2p` range to ^3.3.11.
+  - Sereus's lockfile resolves libp2p 3.1.3, which has no per-address timeout. Embedders who install from npm get the newest 3.x (kjeib has 3.3.11).
+  - So sereus's own tests and scenarios run on a different libp2p from its users, and cannot see this limit.
+  - `check:published` uses the same lockfile, so it doesn't catch the difference either.
 - [ ] Check whether any libp2p node that sereus builds itself (outside optimystic) should set `addressDialTimeout` too. See `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`.
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
