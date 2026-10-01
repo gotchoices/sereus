@@ -687,7 +687,11 @@ export class FormationListener {
 export interface FormationDialOptions {
   /** The contact message to send (real token, partyId, disclosure, initiator cadre). */
   contact: FormationContactMessage;
-  /** Responder multiaddrs to dial. */
+  /**
+   * Responder multiaddrs to dial, normally the invitation's bootstrap list. Every entry that
+   * parses is tried, in libp2p's order (direct before circuit), until one connects, all under
+   * one dial-connect budget (`dialTimeoutMs`); an entry that does not parse is skipped.
+   */
   responderAddrs: string[];
   /** Validate the responder's result; a false return aborts the formation. */
   validateResponse(response: FormationResultMessage): Promise<boolean>;
@@ -742,10 +746,16 @@ export interface FormationDialResult {
  * `exchangeFrame` (`control-stream.ts`) gives a stream dialed past its deadline. A late
  * rejection is the abort itself, or reaches the caller through the awaited copy, so the
  * handler below only stops it being reported as unhandled.
+ *
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget, so an
+ * address that hangs without answering (a black-holed relay host) spends the whole budget
+ * before the next is tried. A budget per address would overrun the session or shrink the
+ * await-response budget ({@link formationDeadlines}). If joins through a hung first relay are
+ * seen in practice, give each address a sub-budget or dial them in parallel.
  */
-function openFormationStream(node: Libp2p, addr: Multiaddr, protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
-  return withDeadline(dialTimeoutMs, 'Formation dial-connect', (signal) => {
-    const pending = node.dialProtocol(addr, protocolId, { signal });
+function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
+  return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {
+    const pending = node.dialProtocol(addrs, protocolId, { signal });
     void pending.then(
       (stream) => {
         if (signal.aborted) {
@@ -754,8 +764,48 @@ function openFormationStream(node: Libp2p, addr: Multiaddr, protocolId: string, 
       },
       () => { /* surfaced through the awaited copy, or the abort itself */ }
     );
-    return pending as unknown as Promise<ControlStream>;
+    try {
+      return await pending as unknown as ControlStream;
+    } catch (error) {
+      throw describeAllAddressesFailed(error);
+    }
   });
+}
+
+/**
+ * Parse the responder addresses, skipping any entry that does not parse: the list comes from
+ * a stranger's invitation, and one bad entry must not fail an otherwise good list. Entries
+ * naming different peers are left for libp2p to refuse — a real invitation carries one node's
+ * own addresses, so only a tampered one mixes them.
+ */
+function parseResponderAddrs(addrs: string[]): Multiaddr[] {
+  const parsed: Multiaddr[] = [];
+  for (const addr of addrs) {
+    try {
+      parsed.push(multiaddr(addr));
+    } catch (error) {
+      log('responderAddrs: skipping unparsable entry: %o', error);
+    }
+  }
+  if (parsed.length === 0) {
+    throw new Error('No responder addresses available for formation');
+  }
+  return parsed;
+}
+
+/**
+ * libp2p reports a dial in which every address failed as `AggregateError('All multiaddr dials
+ * failed')`, which names none of them; restate it with each address's own error, which names
+ * its host and port. A dial that tried only one address already surfaces that address's own
+ * error, so anything else passes through unchanged.
+ */
+function describeAllAddressesFailed(error: unknown): unknown {
+  if (!(error instanceof AggregateError)) return error;
+  const reasons = error.errors.map((reason: unknown) => reason instanceof Error ? reason.message : String(reason));
+  return new Error(
+    `Formation could not reach the inviter at any of the ${reasons.length} addresses tried: ${reasons.join('; ')}`,
+    { cause: error }
+  );
 }
 
 /**
@@ -765,9 +815,7 @@ function openFormationStream(node: Libp2p, addr: Multiaddr, protocolId: string, 
  * strand-network addresses (see {@link FormationDialResult}).
  */
 export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
-  if (options.responderAddrs.length === 0) {
-    throw new Error('No responder addresses available for formation');
-  }
+  const addrs = parseResponderAddrs(options.responderAddrs);
   const protocolId = options.protocolId ?? FORMATION_PROTOCOL;
   const deadlines = formationDeadlines(options.linkRoundTripMs);
   const sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
@@ -776,10 +824,9 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
     options.provisionTimeoutMs, deadlines.initiatorAwaitResponseMs,
     sessionTimeoutMs, dialTimeoutMs, 'dialFormation'
   );
-  const addr = multiaddr(options.responderAddrs[0]);
 
   return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
-    const stream = await openFormationStream(node, addr, protocolId, dialTimeoutMs);
+    const stream = await openFormationStream(node, addrs, protocolId, dialTimeoutMs);
     try {
       const reader = new FrameReader(stream);
       writeFrame(stream, options.contact);

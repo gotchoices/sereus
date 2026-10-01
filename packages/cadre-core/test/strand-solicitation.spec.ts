@@ -469,6 +469,27 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     await responder.unregisterResponder(nodeA);
   }, 15000);
 
+  it('forms through a later bootstrap address when the first is unreachable', async () => {
+    const goodAddrs = nodeA.getMultiaddrs().map(ma => ma.toString());
+    const deadAddr = `/ip4/127.0.0.1/tcp/1/p2p/${nodeA.peerId.toString()}`;
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: goodAddrs,
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-second-addr' }) }
+    });
+    await responder.registerResponder(nodeA);
+    const invitation = await responder.createOpenInvitation('test-sapp', 60000, [deadAddr, ...goodAddrs]);
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    const result = await initiator.formStrand(invitation, { purpose: 'second-addr' }, nodeB);
+
+    expect(result.strandId).toBe('strand-second-addr');
+    await responder.unregisterResponder(nodeA);
+  }, 15000);
+
   it('rejects a responder that returns an empty strandId', async () => {
     const responder = new StrandSolicitationService({
       partyId: 'responder-party',
