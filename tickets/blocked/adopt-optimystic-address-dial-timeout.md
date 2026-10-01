@@ -46,4 +46,5 @@ Upstream also found two related points:
   - What a larger dial changes: the cancel budget grows with it. At a dial above 42 s, `ceil(dial / 21 s)` becomes 3 cancel rounds, and a failing write becomes about 84 s. `control-write-degraded-cohort-member.integration.ts` derives its stalled bounds from `resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS)`. **Once sereus passes `rpcDeadlines`, pass the same override there** (`LINK_DEADLINES`), or the test derives from the wrong dial.
 - [ ] `MAX_LINK_ROUND_TRIP_MS` drops from about 1.66 days to about 13 h. Update the `types.ts` doc (~501) and say so in the release note.
 - [ ] Add a release note for the floor change.
+- [ ] Run `yarn check:published` after the floor bump; it fails at master today. Sereus tests were adapted to the linked, unreleased optimystic, so they don't typecheck against npm 1.8.1. For example, `cadre-core/test/link-budget.spec.ts:75` uses `inboundUpgradeTimeoutMs`, and `relayed-dial-cost-by-latency.integration.ts:158` uses the same field. Sereus master is not releasable until this ticket lands.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
