@@ -377,6 +377,41 @@ A local record is also forgotten when this party's own control database gains a 
 
 **The records bring the strand back, not the other party's addresses** (gotchoices/sereus#18). Those live in the strand node's saved network state (see "How a restarted machine re-finds its strand's peers" above), so a restarted joiner re-meshes only when that is durable too: an embedder injects `strandNetworkState.store` and a `keyStore` (or `joinedStrands.store`). With the join record in memory a local-only join is not re-offered; with the network state in memory it comes back with nothing to dial. A machine that launches a party-wide join it never formed itself (a replica host, a second phone) has neither a saved table nor formation-carried addresses for it; its launch is seeded through the strand-address RPC by the machines of its own party that run the strand.
 
+#### Joining while the inviter is offline
+
+`CadreNode.requestJoin(invitation, disclosure)` asks to join and keeps asking until the join works, the invitation is used up or expires, or the request is dismissed. It records a `CadreControl.PendingJoin` row in the joining party's control database (one row per invitation, keyed by the sha256 of its token) holding the encoded invitation, the disclosure, and when trying stops: the invitation's own expiration or 30 days from the request (`MAX_PENDING_JOIN_MS`), whichever comes first, since the inviter chose the expiration. It then runs one formation attempt at once and returns the status after it, so a join whose inviter is online is as fast as `formStrand`. `formStrand` stays the one-shot path and writes no row; nothing coordinates the two, so an app uses one of them per invitation.
+
+**Who retries.** Every owner machine of the party runs the retry loop (`pending-join-runner.ts`): the phone while its node runs, and any always-on machine that holds an owner key. Each reads the rows once right after start (and when its owner key is wired) and then every 30 s. Its schedule for a row:
+
+- A row this machine has not tried yet is first tried after a delay between zero and the base delay, fixed by this machine's peer id and the row id, so two machines of the party rarely dial together.
+- After a failure worth retrying it waits the base delay, doubled per failure up to 10 minutes, moved by up to 20 % either way.
+- The base delay is twice the formation dial budget (39 s at the default declared link), so the pace follows `network.linkRoundTripMs`.
+- At most two background attempts run at once on one machine. A `requestJoin` does not wait for a slot.
+
+Every attempt is a fresh `formStrand`, with a fresh consent key and nonce, which the `conflict` rejection needs. The schedule and the `trying`/`waiting` state are memory only: a restarted machine starts over from the row.
+
+**Reading an attempt.**
+
+- Approved: `formStrand` has already recorded the strand addresses, seated the party key, staged the membership invitation and remembered the join, as it always does. The row becomes `joined` with the strand id and, for a closed strand, the membership invitation.
+- No answer (`FormationUnreachableError`), a rejection marked `retryable`, or any unexpected error: retry.
+- A final rejection (`approval-refused`, `approval-invalid`, `consent-invalid`, `disclosure-invalid`, `disclosure-too-large`, `host-strand-must-be-recreated`): `failed` with that code.
+- Approved, then a step on this machine failed (`FormationPostApprovalError`): `failed` with code `local`, because the token is spent and no retry can help.
+- An attempt due at or after the row's expiry is not made; the row becomes `failed` with code `expired`.
+
+**A spent token.** `token-spent` can mean another owner machine of this party has just won the same invitation. The machine re-reads the row and adopts an outcome it finds. Otherwise it tries once more after twice the formation session budget, long enough for the other machine's `joined` row to arrive, and fails the row as `token-spent` only if that attempt is also refused as spent while the row is still pending.
+
+**Two machines writing.** An outcome replaces the row (`ControlDatabase.replacePendingJoin`), which refuses when another write replaced or removed it first; the writer then re-reads. A join always wins: it replaces a `failed` row, and a failure never replaces a join. A row dismissed while an attempt ran is not recreated; a join that attempt made stays on its machine, as any `formStrand` join does.
+
+**Status.** `listPendingJoins()` returns every request not dismissed, and `pendingJoin:changed` reports each change this machine sees. `pending`, `joined` and `failed` come from the row and read the same on every machine; `trying` (an attempt is running here) and `waiting` (this machine's last attempt failed in a way worth retrying, with the next attempt's time and the error) are the machine's own view. A finished row stays until `dismissPendingJoin`, or until an owner machine removes it 7 days after its outcome (`MEMBERSHIP_INVITE_TTL_MS`): the membership invitation it carries is dead by then, and an app that was not running has seen the strand through `strand:discovered`. Dismissing a pending row cancels it everywhere at each machine's next read.
+
+**The membership invitation on other machines.** A closed strand joined in the background on one owner machine may be launched first on another, typically the phone. The invitation the approval carried lives in the finishing machine's memory, so each pass also stages the invitation of every `joined` row younger than 7 days on the machine reading it, when that machine has none staged for the strand. Whichever machine launches the strand then redeems it for the party's `Strand.Member` seat, under the replicated `StrandPartyKey` the finishing machine seated. If two machines redeem it, one `consumeInvite` wins; the other's membership reconciler drops the invitation as already consumed and still writes its own `MemberPeer` binding once the party's member row reaches it.
+
+**While cut off from the party.** A request and its outcomes are written even when the machine has no control connection, because keeping the request across a restart is the point. Such a write reaches no other machine ([Writes made while alone](architecture.md#writes-made-while-alone)), so the machine re-writes it, unchanged under a fresh stamp, when its next control connection opens. A process that stops before that leaves the row to reach the party with its next write.
+
+**Owner machines only.** Every `PendingJoin` write is owner-signed, so a machine without an owner key (a donated cadre-host or cadre-provider node) neither retries nor records outcomes, and `requestJoin` throws there. Whether such a machine may finish a join is [`tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md`](../tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md).
+
+**Stopping during an attempt.** `formStrand` takes no abort signal, so `stop()` does not wait for an attempt in flight. An approval that lands while the node stops can lose its local records; the row stays pending, and the next start's attempt is refused as `token-spent`, which fails the row after its confirming attempt.
+
 ## Who May Administer a Closed Strand
 
 A closed strand's administrators are its **managers** — the rows of the `Strand.Manager`

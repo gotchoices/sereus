@@ -17,6 +17,7 @@ import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { RevocableTable } from './control-authorization.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
+import type { FormationRejectionCode } from './strand-formation-rejection.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -1232,6 +1233,36 @@ export interface PendingJoinRow {
 }
 
 /**
+ * A join this party asked for through `CadreNode.requestJoin`, as one machine sees it.
+ *
+ * `pending`, `joined` and `failed` come from the party-wide `PendingJoin` row and read the same
+ * on every machine. `trying` (an attempt is running on this machine) and `waiting` (this
+ * machine's last attempt failed in a way worth retrying) are this machine's own view of a
+ * pending row, so two machines can report different states for it.
+ */
+export interface PendingJoinStatus {
+  /** `PendingJoin.Id`: the sha256 of the invitation token. */
+  id: string;
+  sAppId: string;
+  /** Epoch ms. */
+  requestedAt: number;
+  /** Epoch ms; no attempt starts at or after it. */
+  expiresAt: number;
+  state: 'pending' | 'trying' | 'waiting' | 'joined' | 'failed';
+  /** `'waiting'`: when this machine tries again, epoch ms. */
+  nextAttemptAt?: number;
+  /**
+   * `'waiting'`: why this machine's last attempt failed. `'unreachable'` means no answer came
+   * back; `'local'` means the attempt failed on this machine before an answer.
+   */
+  lastError?: { code: FormationRejectionCode | 'unrecognized' | 'unreachable' | 'local'; reason: string };
+  /** `'joined'`: the strand the join produced. */
+  strandId?: string;
+  /** `'failed'`: a `FormationRejectionCode`, `'expired'`, or `'local'` (approved, then a step on the joining machine failed). */
+  failure?: { code: string; reason: string };
+}
+
+/**
  * sApp configuration provided by the hosting application when creating a strand.
  * This is what the app developer provides - NOT loaded from the network.
  */
@@ -1644,6 +1675,13 @@ export interface CadreNodeEvents {
    * or connection state change.
    */
   'control:write-abandoned': ControlRetryAbandonment;
+  /**
+   * Emitted when this machine's view of a join asked for with `CadreNode.requestJoin` changes:
+   * its own attempt started or ended, or a pass read an outcome another owner machine wrote.
+   * Owner machines only, since only they run the retry loop. A dismissed join emits nothing
+   * further; `listPendingJoins` no longer names it.
+   */
+  'pendingJoin:changed': PendingJoinStatus;
   /** Emitted when a seed is received via the seed protocol */
   'seed:received': { partyId: string; peerId: string };
   /** Emitted when a seed is successfully applied */

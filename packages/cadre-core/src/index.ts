@@ -543,11 +543,14 @@ export {
 export {
   FormationRejectedError,
   FormationUnreachableError,
+  FormationPostApprovalError,
   FORMATION_REJECTION_RETRYABLE,
   isFormationRejectionCode,
   type FormationRejectionCode
 } from './strand-formation-rejection.js';
 export { formationDeadlines, type FormationDeadlines } from './strand-formation-deadlines.js';
+// The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
+export { PENDING_JOIN_POLL_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
 
 // Strand Formation manager (drives the native transport)
 export {

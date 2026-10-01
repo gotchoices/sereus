@@ -36,7 +36,9 @@ import type {
   CadrePeerVoucherFields,
   CadrePeerRow,
   PeerAddressRecord,
-  ResolveDeviceTokenOpts
+  ResolveDeviceTokenOpts,
+  PendingJoinRow,
+  PendingJoinStatus
 } from './types.js';
 import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
@@ -106,7 +108,15 @@ import {
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, isStrandIdConflict, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, isPendingJoinConflict, isStrandIdConflict, pendingJoinId, type RevokedRowRef } from './control-database.js';
+import { FormationPostApprovalError } from './strand-formation-rejection.js';
+import {
+  PendingJoinRunner,
+  membershipInvitesToStage,
+  parseStoredDisclosure,
+  requestedPendingJoin,
+  type PendingJoinFields
+} from './pending-join-runner.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import { SeedBootstrapService, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
@@ -706,6 +716,22 @@ export class CadreNode implements SAppIdLookup {
    * `unpublishStrand` / `forgetJoinedStrand` as {@link formationStrandAddrs} is.
    */
   private readonly pendingMembershipInvites = new Map<string, StrandMembershipInvite>();
+
+  /**
+   * Invite keys of the membership invitations this process has staged, by
+   * {@link adoptFormationMembershipInvite} or from a `joined` `PendingJoin` row
+   * ({@link stageMembershipInvitesFromPendingJoins}), so one the reconciler has settled is not
+   * staged again by the next pending-join pass. Same lifetime as
+   * {@link pendingMembershipInvites}: a restarted process stages each live one once more, and the
+   * reconciler settles it again (spent, or the party already seated).
+   */
+  private readonly stagedMembershipInviteKeys = new Set<string>();
+
+  /**
+   * The pending-join retry loop (`pending-join-runner.ts`): built by {@link start}, stopped by
+   * {@link cleanup}. It acts only while this machine is an enrolled owner.
+   */
+  private pendingJoinRunner: PendingJoinRunner | null = null;
 
   /**
    * Founder launches refused because the strand was founded before the per-party
@@ -1322,6 +1348,9 @@ export class CadreNode implements SAppIdLookup {
 
       // Schedule self-registration in background
       this.scheduleSelfRegistration();
+
+      // Last: its first pass may dial another party's machines.
+      this.startPendingJoinRunner();
 
     } catch (error) {
       log('Failed to start CadreNode: %o', error);
@@ -3961,6 +3990,9 @@ export class CadreNode implements SAppIdLookup {
 
     // 4. In-session pending owner authorize writes.
     await this.drainPendingPeerWrites();
+
+    // 5. `PendingJoin` rows this process wrote while alone. Their tombstones went out in step 1.
+    await this.pendingJoinRunner?.reissueWritesMadeAlone();
   }
 
   /**
@@ -4640,6 +4672,10 @@ export class CadreNode implements SAppIdLookup {
     // it is stopped here.
     this.relayReserveSupervisor?.stop();
     this.relayReserveSupervisor = null;
+    // Before anything it reads is torn down. An attempt in flight is not awaited (NOTE at
+    // `PendingJoinRunner.stop`).
+    this.pendingJoinRunner?.stop();
+    this.pendingJoinRunner = null;
     // Drop the rest of the relay-reservation posture: a torn-down node holds no
     // reservation, so neither a restarted instance nor a caller inspecting a failed
     // start reports the previous attempt's `reserved`.
@@ -7285,6 +7321,9 @@ export class CadreNode implements SAppIdLookup {
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     }), this.controlNode, this.controlDatabase);
     log('Seed bootstrap service initialized');
+    // Embedders wire the owner key after start(), so the runner's first pass usually found
+    // this machine not yet an owner; without this it would wait a full poll interval.
+    this.pendingJoinRunner?.kick();
   }
 
   /**
@@ -8173,11 +8212,14 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Form a strand with a responder via an open invitation.
+   * Form a strand with a responder via an open invitation: one attempt, from this machine, with
+   * nothing recorded party-wide. {@link requestJoin} is the path that keeps trying.
    *
    * @param invitation - The open invitation received out-of-band
    * @param disclosure - Identity/context information to share with the responder
    * @returns The member key and strand info if successful
+   * @throws `FormationRejectedError` or `FormationUnreachableError` when the formation fails, and
+   *   `FormationPostApprovalError` when it was approved and a step on this machine then failed
    */
   async formStrand(
     invitation: OpenInvitation,
@@ -8209,6 +8251,190 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Ask to join through `invitation` and have the party keep trying until the join works, the
+   * invitation is used up or expires, or the request is dismissed: across restarts, and from
+   * any owner machine of the party (`docs/strands.md` → "Joining while the inviter is
+   * offline"). Records a party-wide `PendingJoin` row, runs one attempt on this machine at
+   * once, and returns the status after it: `'joined'` when the inviter answered yes, `'waiting'`
+   * when it was unreachable or not ready, `'failed'` when it refused for good.
+   *
+   * Asking again for an invitation whose request is still pending adopts that request as it
+   * is; asking again after it finished starts a fresh one. Later changes arrive as
+   * `pendingJoin:changed`. A joined strand is offered through `strand:discovered` like any
+   * {@link formStrand} join. Do not also call {@link formStrand} with the same invitation:
+   * nothing coordinates the two, and one of them gets `token-spent`.
+   *
+   * @throws on a machine that is not an enrolled owner (the row is owner-signed), and on an
+   *   invitation already past its expiration
+   */
+  async requestJoin(invitation: OpenInvitation, disclosure: StrandFormationDisclosure = {}): Promise<PendingJoinStatus> {
+    const { database, runner } = this.requirePendingJoins();
+    const signer = await this.requireOwnerSigner(
+      'requestJoin needs an enrolled owner machine of this party, because the party-wide join request is ' +
+      'owner-signed. formStrand(invitation, disclosure) joins once from this machine, with no retries.'
+    );
+    const now = Date.now();
+    const expiresAt = invitation.expiration.getTime();
+    if (!Number.isFinite(expiresAt)) {
+      throw new Error('The invitation carries no valid expiration');
+    }
+    if (now >= expiresAt) {
+      throw new Error(`The invitation expired at ${invitation.expiration.toISOString()}; ask the inviter for a fresh one`);
+    }
+    const requested = requestedPendingJoin(
+      pendingJoinId(invitation.token), this.encodeInvitation(invitation), disclosure, expiresAt, now);
+    const row = await this.recordJoinRequest(database, requested, signer);
+    log('requestJoin: pending join %s recorded; attempting now', row.Id);
+    return runner.attemptNow(row);
+  }
+
+  /**
+   * Every join asked for with {@link requestJoin} and not dismissed, pending or finished, as this
+   * machine sees it (see `PendingJoinStatus` for which states are machine-local).
+   */
+  async listPendingJoins(): Promise<PendingJoinStatus[]> {
+    const { database, runner } = this.requirePendingJoins();
+    return (await database.queryPendingJoins()).map((row) => runner.statusOf(row));
+  }
+
+  /**
+   * Remove a join request party-wide. On a pending request this cancels it: every owner machine
+   * stops at its next read, and an attempt already running does not record its outcome (a join
+   * it made stays on that machine, as any {@link formStrand} join does). Owner machines only.
+   * Resolves `false` when there was no such request.
+   */
+  async dismissPendingJoin(id: string): Promise<boolean> {
+    const { database, runner } = this.requirePendingJoins();
+    const { ownerKey, signMessage } = await this.requireOwnerSigner(
+      'dismissPendingJoin needs an enrolled owner machine of this party: the removal is owner-signed');
+    const removed = await database.deletePendingJoin(id, ownerKey, signMessage);
+    runner.forgetRow(id);
+    return removed;
+  }
+
+  private requirePendingJoins(): { database: ControlDatabase; runner: PendingJoinRunner } {
+    if (!this._running || !this.controlDatabase || !this.pendingJoinRunner) {
+      throw new Error('CadreNode must be started before using pending joins');
+    }
+    return { database: this.controlDatabase, runner: this.pendingJoinRunner };
+  }
+
+  /** This machine's owner key and signer for an owner-signed control write, or a throw carrying `refusal`. */
+  private async requireOwnerSigner(refusal: string): Promise<{ ownerKey: string; signMessage: (message: Uint8Array) => string }> {
+    const signingKey = await this.enrolledOwnerSigningKey();
+    if (!signingKey) {
+      throw new Error(refusal);
+    }
+    return { ownerKey: signingKey.publicKeyB64, signMessage: signMessageWith(signingKey.privateKeyB64) };
+  }
+
+  /**
+   * Write a join request's row, or adopt the party's existing row for the same invitation: a
+   * pending one as it is, a finished one replaced by `requested` (the user asked again).
+   */
+  private async recordJoinRequest(
+    database: ControlDatabase,
+    requested: PendingJoinFields,
+    { ownerKey, signMessage }: { ownerKey: string; signMessage: (message: Uint8Array) => string }
+  ): Promise<PendingJoinRow> {
+    let written: PendingJoinRow;
+    try {
+      written = await database.insertPendingJoin(requested, ownerKey, signMessage);
+    } catch (error) {
+      if (!isPendingJoinConflict(error)) {
+        throw error;
+      }
+      const existing = await database.queryPendingJoin(requested.Id);
+      if (!existing) {
+        throw new Error(
+          `A removed join request for this invitation (${requested.Id}) is still held on this machine until its ` +
+          'clean-up runs, which needs a connection to the party. Ask again once connected.',
+          { cause: error }
+        );
+      }
+      if (existing.Outcome === null) {
+        return existing;
+      }
+      written = await database.replacePendingJoin(existing.StampId, requested, ownerKey, signMessage);
+    }
+    this.pendingJoinRunner?.noteWritten(written);
+    return written;
+  }
+
+  /** Build and start the pending-join retry loop over this node (see {@link pendingJoinRunner}). */
+  private startPendingJoinRunner(): void {
+    const database = (): ControlDatabase => {
+      if (!this.controlDatabase) {
+        throw new Error('CadreNode is stopped: no control database for pending joins');
+      }
+      return this.controlDatabase;
+    };
+    const outcomeSigner = (): Promise<{ ownerKey: string; signMessage: (message: Uint8Array) => string }> =>
+      this.requireOwnerSigner('Cannot record a pending join outcome: this machine is not an enrolled owner of the party');
+    this.pendingJoinRunner = new PendingJoinRunner({
+      selfId: this.controlNode!.peerId.toString(),
+      linkRoundTripMs: this.config.network?.linkRoundTripMs,
+      isOwner: async () => (await this.enrolledOwnerSigningKey()) !== null,
+      // NOTE: one owner-key read and one `PendingJoin` read per pass (30 s); for a party that never
+      // asked for a join the second reads a never-written block, which consults the cohort. If it
+      // shows up in a device profile, poll more slowly while the table reads empty.
+      readRows: () => database().queryPendingJoins(),
+      readRow: (id) => database().queryPendingJoin(id),
+      attempt: (row) => this.formStrand(this.pendingJoinInvitation(row), parseStoredDisclosure(row)),
+      replace: async (expectedStampId, next) => {
+        const { ownerKey, signMessage } = await outcomeSigner();
+        return database().replacePendingJoin(expectedStampId, next, ownerKey, signMessage);
+      },
+      remove: async (id) => {
+        const { ownerKey, signMessage } = await outcomeSigner();
+        return database().deletePendingJoin(id, ownerKey, signMessage);
+      },
+      isAlone: () => this.committedAlone(),
+      sAppIdOf: (row) => this.pendingJoinSAppId(row),
+      observeRows: (rows) => this.stageMembershipInvitesFromPendingJoins(rows),
+      emit: (status) => this.emit('pendingJoin:changed', status),
+    });
+    this.pendingJoinRunner.start();
+  }
+
+  /** The invitation a `PendingJoin` row stores. A failure names the row, never the invitation, which is a bearer credential. */
+  private pendingJoinInvitation(row: PendingJoinRow): OpenInvitation {
+    try {
+      return this.decodeInvitation(row.Invitation);
+    } catch {
+      throw new Error(`PendingJoin ${row.Id}: the stored invitation does not decode`);
+    }
+  }
+
+  private pendingJoinSAppId(row: PendingJoinRow): string {
+    try {
+      return this.decodeInvitation(row.Invitation).sAppId;
+    } catch {
+      log('PendingJoin %s: the stored invitation does not decode; reporting no sApp', row.Id);
+      return '';
+    }
+  }
+
+  /**
+   * Stage the membership invitation of each `joined` row this process has not staged yet, so a
+   * closed strand joined on another owner machine is seated by whichever machine launches it
+   * first; the party key it admits is the replicated `StrandPartyKey` row the finishing machine
+   * seated. A strand that already has an invitation staged keeps it, for the reconciler to
+   * settle first.
+   */
+  private stageMembershipInvitesFromPendingJoins(rows: readonly PendingJoinRow[]): void {
+    for (const { rowId, strandId, invite } of membershipInvitesToStage(rows, this.stagedMembershipInviteKeys, Date.now())) {
+      this.stagedMembershipInviteKeys.add(invite.inviteKey);
+      if (this.pendingMembershipInvites.has(strandId)) {
+        continue;
+      }
+      this.pendingMembershipInvites.set(strandId, invite);
+      log('pending join %s: staged its membership invitation for strand %s', rowId, strandId);
+      this.strandManager.notifyMembershipInviteStaged(strandId);
+    }
+  }
+
+  /**
    * Remember the strand a formation just joined (see {@link joinedStrandStore}), so it
    * is re-offered after a restart even when the app is killed before its `addStrand`, and
    * published party-wide by the next connected owner reconcile pass. A re-join also
@@ -8228,7 +8454,8 @@ export class CadreNode implements SAppIdLookup {
         joinedAt: Date.now()
       });
     } catch (error) {
-      throw new Error(
+      throw new FormationPostApprovalError(
+        result.strandId,
         `Formation for strand ${result.strandId} was approved (its one-time token is spent), but ` +
         'remembering the join in this node\'s joined-strand store failed, so the strand would not ' +
         'come back after a restart. Fix the store (usually the configured keyStore), then redeem a ' +
@@ -8264,7 +8491,8 @@ export class CadreNode implements SAppIdLookup {
     try {
       await this.ensureStrandPartyKey(strandId);
     } catch (error) {
-      throw new Error(
+      throw new FormationPostApprovalError(
+        strandId,
         `Formation for strand ${strandId} was approved (its one-time token is spent), but ` +
         'persisting this party\'s membership identity (StrandPartyKey) failed — the joiner ' +
         'cannot become a member without it. Fix the underlying cause, then redeem a fresh ' +
@@ -8273,6 +8501,7 @@ export class CadreNode implements SAppIdLookup {
       );
     }
     this.pendingMembershipInvites.set(strandId, invite);
+    this.stagedMembershipInviteKeys.add(invite.inviteKey);
     log('formStrand: staged membership invitation for strand %s (party key persisted)', strandId);
     this.strandManager.notifyMembershipInviteStaged(strandId);
   }

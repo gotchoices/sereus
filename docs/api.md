@@ -109,6 +109,45 @@ When the formation itself fails, `formStrand` throws one of two errors, both exp
   codes](architecture.md#formation-rejection-codes).
 - `FormationUnreachableError` — no answer arrived: no bootstrap address parsed, none could be
   dialed, a deadline passed, or the stream closed early. Always retryable.
+- `FormationPostApprovalError` — the inviter approved, so the invitation's token is spent, and then
+  a step on this machine failed (seating the party's membership key, or remembering the join).
+  `strandId` names the strand. Not retryable: fix the local cause and redeem a fresh invitation.
+
+Joining with retries, on an owner machine:
+```ts
+requestJoin(invitation: OpenInvitation, disclosure?: StrandFormationDisclosure): Promise<PendingJoinStatus>;
+listPendingJoins(): Promise<PendingJoinStatus[]>;
+dismissPendingJoin(id: string): Promise<boolean>;
+on('pendingJoin:changed', (status: PendingJoinStatus) => void);
+
+type PendingJoinStatus = {
+    id: string;              // sha256 of the invitation token
+    sAppId: string;
+    requestedAt: number;
+    expiresAt: number;       // no attempt starts at or after it
+    state: 'pending' | 'trying' | 'waiting' | 'joined' | 'failed';
+    nextAttemptAt?: number;  // 'waiting'
+    lastError?: { code: FormationRejectionCode | 'unrecognized' | 'unreachable' | 'local'; reason: string }; // 'waiting'
+    strandId?: string;       // 'joined'
+    failure?: { code: string; reason: string };  // 'failed': a rejection code, 'expired' or 'local'
+};
+```
+
+`requestJoin` records the request party-wide, tries once at once, and returns the status after that
+attempt: `'joined'`, `'waiting'` (no answer, or a refusal worth retrying) or `'failed'`. Every owner
+machine of the party then keeps trying in the background, across restarts, until the join works or
+the invitation is used up or expires (at most 30 days). A joined strand is offered through
+`strand:discovered` like any other join. Asking again for a request still pending returns that
+request; asking again after it finished starts a fresh one. `requestJoin` throws on a machine that
+is not an enrolled owner (use `formStrand` there) and on an expired invitation. Do not call
+`formStrand` for an invitation already given to `requestJoin`: nothing coordinates the two.
+
+`listPendingJoins` returns every request not dismissed. `pending`, `joined` and `failed` read the same
+on every machine; `trying` and `waiting` are this machine's own view. `dismissPendingJoin` removes a
+request party-wide (owner machines only); on a pending one it cancels the retries. A finished request
+is removed on its own 7 days after its outcome. `pendingJoin:changed` fires on owner machines when
+this machine's view of a request changes. See [strands.md → Joining while the inviter is
+offline](strands.md#joining-while-the-inviter-is-offline).
 
 Leaving a joined strand:
 ```ts

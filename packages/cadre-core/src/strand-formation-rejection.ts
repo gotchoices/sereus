@@ -112,3 +112,18 @@ export class FormationUnreachableError extends Error {
     this.name = 'FormationUnreachableError';
   }
 }
+
+/**
+ * The responder approved the join, so the invitation's one-time token is spent, and then a
+ * step on the joining machine failed: persisting the party's membership identity, or
+ * remembering the join. Never retryable: the same invitation can only answer `token-spent`
+ * from now on, so recovery is fixing the local cause and redeeming a fresh invitation.
+ */
+export class FormationPostApprovalError extends Error {
+  readonly retryable = false;
+
+  constructor(readonly strandId: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'FormationPostApprovalError';
+  }
+}
