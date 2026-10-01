@@ -300,6 +300,35 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   DeviceToken: 'PeerId',
 };
 
+/** A guarded table an owner may remove a row from (no production `OwnerKey` removal path exists yet). */
+type RemovableTable = Exclude<RevocableTable, 'OwnerKey'>;
+
+/**
+ * One row incarnation's owner-signed removal, ready for {@link ControlDatabase.execGuardedRemoval}:
+ * the row's own `'remove'` signature over (key, stamp), and the tombstone's separate
+ * `Revocation` signature over (table, key, stamp). Retiring a stamp is permanent and
+ * party-wide, so the delete's signature deliberately does not cover it; the digests are
+ * domain-separated and neither replays as the other.
+ */
+interface GuardedRemoval {
+  readonly ref: RevokedRowRef & { readonly tableName: RemovableTable };
+  readonly signature: string;
+  readonly revocationSignature: string;
+}
+
+function signGuardedRemoval(
+  tableName: RemovableTable,
+  rowKey: string,
+  stampId: string,
+  signMessage: (message: Uint8Array) => string
+): GuardedRemoval {
+  return {
+    ref: { tableName, rowKey, stampId },
+    signature: signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', [rowKey, stampId])),
+    revocationSignature: signMessage(buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId])),
+  };
+}
+
 /** The control tables keyed by a strand id whose repeat insert a caller may treat as idempotent. */
 type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
 
@@ -1648,13 +1677,10 @@ export class ControlDatabase {
    * one exists — the strand's `StrandPartyKey` delete + tombstone, all in ONE
    * transaction. A two-table sibling of {@link deleteGuardedRow} (see that method for the
    * per-clause security rationale: stamp read inside the locked body, `'remove'`-tagged
-   * digests, mandatory same-transaction tombstones); kept separate rather than
-   * generalizing the shared body because no other guarded table has a companion row.
-   *
-   * NOTE: that duplication is a drift risk, not a correctness one — a future tightening of
-   * {@link deleteGuardedRow}'s discipline (an extra precondition, a different digest shape)
-   * will NOT reach this body. Grep for both when you change either; if a second guarded
-   * table ever gains a companion row, generalize instead of copying this a third time.
+   * digests, mandatory same-transaction tombstones). Both sign through
+   * {@link signGuardedRemoval} and run {@link execGuardedRemoval}, so a change to the digest
+   * shape or the statement pair reaches this body; only the stamp reads and the companion-row
+   * branch are its own, because no other guarded table has a companion row.
    *
    * Not wrapped in {@link withWriteLock} — the caller holds the (non-re-entrant) lock.
    */
@@ -1672,45 +1698,23 @@ export class ControlDatabase {
     }
     const partyKeyStamp = await this.queryStampId('StrandPartyKey', strandId, false);
 
-    const strandSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.Strand', 'remove', [strandId, strandStamp]));
-    const strandRevocationSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['Strand', strandId, strandStamp]));
-    const partyKeySignature = partyKeyStamp === null ? null : signMessage(
-      buildAuthorizationMessage('CadreControl.StrandPartyKey', 'remove', [strandId, partyKeyStamp]));
-    const partyKeyRevocationSignature = partyKeyStamp === null ? null : signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', strandId, partyKeyStamp]));
+    const strandRemoval = signGuardedRemoval('Strand', strandId, strandStamp, signMessage);
+    const partyKeyRemoval = partyKeyStamp === null
+      ? null
+      : signGuardedRemoval('StrandPartyKey', strandId, partyKeyStamp, signMessage);
 
     await this.inTransaction('delete Strand', async () => {
-      await this.db!.exec(`
-        delete from CadreControl.Strand
-          with context OwnerKey = ?, Signature = ?
-          where Id = ?
-      `, [ownerKey, strandSignature, strandId]);
-      await this.db!.exec(`
-        insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
-          with context OwnerKey = ?, Signature = ?
-          values ('Strand', ?, ?, 0)
-      `, [ownerKey, strandRevocationSignature, strandId, strandStamp]);
-      if (partyKeyStamp !== null) {
-        await this.db!.exec(`
-          delete from CadreControl.StrandPartyKey
-            with context OwnerKey = ?, Signature = ?
-            where Id = ?
-        `, [ownerKey, partyKeySignature, strandId]);
-        await this.db!.exec(`
-          insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
-            with context OwnerKey = ?, Signature = ?
-            values ('StrandPartyKey', ?, ?, 0)
-        `, [ownerKey, partyKeyRevocationSignature, strandId, partyKeyStamp]);
+      await this.execGuardedRemoval(strandRemoval, ownerKey);
+      if (partyKeyRemoval !== null) {
+        await this.execGuardedRemoval(partyKeyRemoval, ownerKey);
       }
     });
 
     log('Strand deleted: %s (stamp retired%s)', strandId,
-      partyKeyStamp === null ? '' : '; party key deleted, stamp retired');
-    this.notifyGuardedDelete({ tableName: 'Strand', rowKey: strandId, stampId: strandStamp });
-    if (partyKeyStamp !== null) {
-      this.notifyGuardedDelete({ tableName: 'StrandPartyKey', rowKey: strandId, stampId: partyKeyStamp });
+      partyKeyRemoval === null ? '' : '; party key deleted, stamp retired');
+    this.notifyGuardedDelete(strandRemoval.ref);
+    if (partyKeyRemoval !== null) {
+      this.notifyGuardedDelete(partyKeyRemoval.ref);
     }
     return true;
   }
@@ -1861,9 +1865,11 @@ export class ControlDatabase {
    * or its successor row, collides on a primary key), and the caller re-reads either way.
    *
    * Signatures and the new stamp are minted before the lock, so a retried attempt re-presents
-   * the same signed messages (the contract on {@link withWriteLock}).
+   * the same signed messages (the contract on {@link withWriteLock}). A retry after an attempt
+   * that committed but reported failure throws {@link PendingJoinChangedError} whose
+   * `liveStampId` is the returned row's own stamp, so a caller that re-reads finds its write.
    */
-  replacePendingJoin(
+  async replacePendingJoin(
     expectedStampId: string,
     next: Omit<PendingJoinRow, 'StampId'>,
     ownerKey: string,
@@ -1871,10 +1877,7 @@ export class ControlDatabase {
   ): Promise<PendingJoinRow> {
     this.ensureInitialized();
     const id = next.Id;
-    const removeSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.PendingJoin', 'remove', [id, expectedStampId]));
-    const revocationSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['PendingJoin', id, expectedStampId]));
+    const removal = signGuardedRemoval('PendingJoin', id, expectedStampId, signMessage);
     const { written, params } = this.signPendingJoinInsert(next, ownerKey, signMessage);
 
     return this.lockedWithRetry(async () => {
@@ -1884,22 +1887,11 @@ export class ControlDatabase {
         throw new PendingJoinChangedError(id, expectedStampId, liveStampId);
       }
       await this.inTransaction('replace PendingJoin', async () => {
-        // StampId in the WHERE clause too, so the delete can only ever match the incarnation
-        // the signature names, even if a sibling's replacement lands after the check above.
-        await this.db!.exec(`
-          delete from CadreControl.PendingJoin
-            with context OwnerKey = ?, Signature = ?
-            where Id = ? and StampId = ?
-        `, [ownerKey, removeSignature, id, expectedStampId]);
-        await this.db!.exec(`
-          insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
-            with context OwnerKey = ?, Signature = ?
-            values ('PendingJoin', ?, ?, 0)
-        `, [ownerKey, revocationSignature, id, expectedStampId]);
+        await this.execGuardedRemoval(removal, ownerKey);
         await this.db!.exec(PENDING_JOIN_INSERT_SQL, params);
       });
       log('Pending join replaced: %s (outcome: %s; stamp retired)', id, next.Outcome);
-      this.notifyGuardedDelete({ tableName: 'PendingJoin', rowKey: id, stampId: expectedStampId });
+      this.notifyGuardedDelete(removal.ref);
       return written;
     }, {}, 'pending-join-replace');
   }
@@ -2224,12 +2216,9 @@ export class ControlDatabase {
    *
    * Deliberately NOT wrapped in {@link withWriteLock}: every public entry point already
    * holds the (non-re-entrant) lock, so taking it again here would self-deadlock.
-   *
-   * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
-   * come from closed literal unions — no caller-supplied string reaches the statement.
    */
   private async deleteGuardedRow(
-    table: Exclude<RevocableTable, 'OwnerKey'>,
+    table: RemovableTable,
     keyValue: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
@@ -2242,34 +2231,42 @@ export class ControlDatabase {
       return false;
     }
 
-    const message = buildAuthorizationMessage(`CadreControl.${table}`, 'remove', [keyValue, stampId]);
-    const signature = signMessage(message);
-    // The tombstone carries its OWN owner signature (`Revocation.Authorized`): retiring a
-    // stamp is permanent and party-wide, so the delete's signature deliberately does not
-    // cover it — the digests are domain-separated and neither replays as the other.
-    const revocationSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', [table, keyValue, stampId]),
-    );
-
-    await this.inTransaction(`delete ${table}`, async () => {
-      await this.db!.exec(`
-        delete from CadreControl.${table}
-          with context OwnerKey = ?, Signature = ?
-          where ${GUARDED_KEY_COLUMN[table]} = ?
-      `, [ownerKey, signature, keyValue]);
-      // ReissuedAt named explicitly at 0 (the only value FreshTombstone accepts) rather
-      // than leaning on the column default — the seat-at-zero rule is load-bearing for
-      // reissueRevocations' monotonic bump, so state it at the write site.
-      await this.db!.exec(`
-        insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
-          with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?, 0)
-      `, [ownerKey, revocationSignature, table, keyValue, stampId]);
-    });
+    const removal = signGuardedRemoval(table, keyValue, stampId, signMessage);
+    await this.inTransaction(`delete ${table}`, () => this.execGuardedRemoval(removal, ownerKey));
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
-    this.notifyGuardedDelete({ tableName: table, rowKey: keyValue, stampId });
+    this.notifyGuardedDelete(removal.ref);
     return true;
+  }
+
+  /**
+   * Delete the row incarnation `removal` names and file its tombstone — the statement pair
+   * every owner removal of a guarded row runs ({@link deleteGuardedRow},
+   * {@link deleteStrandAndPartyKey}, {@link replacePendingJoin}). The caller supplies the
+   * transaction: the schema's `RevocationRecorded` check refuses the delete unless the
+   * tombstone commits with it.
+   *
+   * The delete matches the stamp as well as the key, so it can only ever remove the
+   * incarnation the signature names.
+   *
+   * `tableName` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
+   * come from closed literal unions — no caller-supplied string reaches the statement.
+   */
+  private async execGuardedRemoval(removal: GuardedRemoval, ownerKey: string): Promise<void> {
+    const { tableName, rowKey, stampId } = removal.ref;
+    await this.db!.exec(`
+      delete from CadreControl.${tableName}
+        with context OwnerKey = ?, Signature = ?
+        where ${GUARDED_KEY_COLUMN[tableName]} = ? and StampId = ?
+    `, [ownerKey, removal.signature, rowKey, stampId]);
+    // ReissuedAt named explicitly at 0 (the only value FreshTombstone accepts) rather
+    // than leaning on the column default — the seat-at-zero rule is load-bearing for
+    // reissueRevocations' monotonic bump, so state it at the write site.
+    await this.db!.exec(`
+      insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?, 0)
+    `, [ownerKey, removal.revocationSignature, tableName, rowKey, stampId]);
   }
 
   /**
