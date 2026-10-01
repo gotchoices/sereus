@@ -16,6 +16,13 @@ Upstream also found two related points:
 - Its RPC clients' own dials are capped at 6 s per address as well, because libp2p's dial queue combines the per-address timer with the caller's signal.
 - The fix raises optimystic's libp2p range to ^3.3.11.
 
+## Upstream design (optimystic-ec, implemented, not yet released)
+
+- **Default.** `addressDialTimeoutMs = max(6000, 5 × linkRoundTripMs)`, which is 15 s at sereus's 3 s round trip. A relayed open measured about 12.1 s at 1500 ms one-way.
+- **Override.** It can be set through `connectionManager.addressDialTimeout`, which `Libp2pConnectionTimeouts` now includes.
+- **Where it applies.** It takes effect only where libp2p 3.3 or later resolves. Optimystic still resolves 3.1.3. Moving it to 3.3 reopens a type split between @libp2p/interface 3.1 and 3.2 in db-p2p, so that is a separate decision upstream.
+- **Sereus's own move to 3.3.** Sereus's lockfile already holds @libp2p/interface 3.1.0, 3.2.2 and 3.2.3, so moving sereus to libp2p 3.3 will probably meet the same split.
+
 ## TODO
 
 - [ ] When optimystic releases the fix, raise the `@optimystic/*` floors to that version, and raise sereus's own `libp2p` range to ^3.3.11.
