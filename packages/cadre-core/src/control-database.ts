@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
+import type { StrandRow, PendingJoinRow, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
@@ -296,22 +296,26 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   Strand: 'Id',
   StrandPartyKey: 'Id',
   JoinedStrand: 'Id',
+  PendingJoin: 'Id',
   DeviceToken: 'PeerId',
 };
 
 /** The control tables keyed by a strand id whose repeat insert a caller may treat as idempotent. */
 type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
 
+/** The control tables keyed by an `Id` column whose repeat insert a caller may classify. */
+type IdKeyedTable = StrandIdTable | Extract<RevocableTable, 'PendingJoin'>;
+
 /**
- * The rejection a second insert of an already-seated strand id into `table` produces, as
- * the optimystic vtab words it (`uniqueConstraintMessage`, qualified by table name only —
- * no schema prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
+ * The rejection a second insert of an already-seated id into `table` produces, as the
+ * optimystic vtab words it (`uniqueConstraintMessage`, qualified by table name only — no
+ * schema prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
  *
  * Each table's `StampId` is unique too, but a fresh stamp is minted per insert attempt, so
- * only the primary key can collide on a repeat publish. Matching the column explicitly
- * keeps any OTHER uniqueness failure out of the idempotency branch.
+ * only the primary key can collide on a repeat insert. Matching the column explicitly
+ * keeps any OTHER uniqueness failure out of the caller's idempotency branch.
  */
-function strandIdConflictPattern(table: StrandIdTable): RegExp {
+function idConflictPattern(table: IdKeyedTable): RegExp {
   return new RegExp(`UNIQUE constraint failed: ${table}\\.Id\\b`, 'i');
 }
 
@@ -331,7 +335,46 @@ function strandIdConflictPattern(table: StrandIdTable): RegExp {
  * reword reddens there.
  */
 export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolean {
-  return errorChainMatches(error, strandIdConflictPattern(table));
+  return errorChainMatches(error, idConflictPattern(table));
+}
+
+/**
+ * Did {@link ControlDatabase.insertPendingJoin} fail because the party already holds a
+ * `PendingJoin` row for this invitation? The caller adopts the existing row instead.
+ * Text-matched, failing closed, like {@link isStrandIdConflict}.
+ *
+ * NOTE: the existing row may be one {@link ControlDatabase.queryPendingJoin} hides (its stamp
+ * is retired and no reap pass has removed it yet), so an adopting re-read can come back empty
+ * until the next reap pass.
+ */
+export function isPendingJoinConflict(error: unknown): boolean {
+  return errorChainMatches(error, idConflictPattern('PendingJoin'));
+}
+
+/**
+ * The `PendingJoin.Id` of an invitation: the base64url sha256 `digest` of its token. One row
+ * per invitation, and the `Revocation` tombstone that names a removed row carries this, never
+ * the bearer token itself.
+ */
+export function pendingJoinId(token: string): string {
+  return digest([token], 'sha256', 'base64url') as string;
+}
+
+/**
+ * {@link ControlDatabase.replacePendingJoin} found that the live `PendingJoin` row is not the
+ * incarnation the caller read: another write replaced or removed it first (a sibling machine
+ * recorded an outcome, or the user dismissed the join). Nothing was written; the caller
+ * re-reads and decides again. `liveStampId` is null when the row is gone.
+ */
+export class PendingJoinChangedError extends Error {
+  constructor(
+    readonly id: string,
+    readonly expectedStampId: string,
+    readonly liveStampId: string | null,
+  ) {
+    super(`PendingJoin ${id} changed: expected stamp ${expectedStampId}, found ${liveStampId ?? 'no row'}`);
+    this.name = 'PendingJoinChangedError';
+  }
 }
 
 /**
@@ -348,7 +391,7 @@ export const REVOCATION_LEDGER_MARKER = {
 
 /**
  * The rejection a second insert of the ledger marker produces: the optimystic vtab's
- * primary-key wording (see {@link strandIdConflictPattern}), naming both columns of
+ * primary-key wording (see {@link idConflictPattern}), naming both columns of
  * `Revocation`'s composite key. Applied only to the marker's own insert, whose key
  * ('Revocation', 'opened') no row but the marker can hold (`RowIsGone`), and `Revocation`
  * has no other unique constraint.
@@ -373,10 +416,12 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  * secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any
  * future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
  * secret is the joined strand's shared read key, which its founding party and every member
- * hold, so a reaped row is recoverable by re-forming. `OwnerKey` has no production removal
- * path and `MinOneOwner` makes an automated owner-key reap a party-bricking hazard.
+ * hold, so a reaped row is recoverable by re-forming. `PendingJoin` is reapable for the same
+ * reason: the inviting party and the user also hold its invitation. `OwnerKey` has no
+ * production removal path and `MinOneOwner` makes an automated owner-key reap a
+ * party-bricking hazard.
  */
-export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand'] as const satisfies readonly RevocableTable[];
+export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand', 'PendingJoin'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 
 /**
@@ -397,6 +442,53 @@ function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
     Type: row.Type as 'o' | 'c',
     FounderOwnerKey: null,
   };
+}
+
+/** Every `PendingJoin` column, in the schema's order. */
+const PENDING_JOIN_COLUMNS = 'Id, Invitation, Disclosure, RequestedAt, ExpiresAt, Outcome, OutcomeAt, StrandId, MembershipInvite, FailureCode, FailureReason, StampId';
+
+const PENDING_JOIN_INSERT_SQL = `
+  insert into CadreControl.PendingJoin (${PENDING_JOIN_COLUMNS})
+    with context OwnerKey = ?, Signature = ?
+    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+/** A `PendingJoin` row as read; the schema's `KnownOutcome` check backs the `Outcome` cast. */
+function pendingJoinRow(row: Record<string, SqlValue>): PendingJoinRow {
+  return {
+    Id: row.Id as string,
+    Invitation: row.Invitation as string,
+    Disclosure: row.Disclosure as string,
+    RequestedAt: row.RequestedAt as number,
+    ExpiresAt: row.ExpiresAt as number,
+    Outcome: row.Outcome as PendingJoinRow['Outcome'],
+    OutcomeAt: row.OutcomeAt as number | null,
+    StrandId: row.StrandId as string | null,
+    MembershipInvite: row.MembershipInvite as string | null,
+    FailureCode: row.FailureCode as string | null,
+    FailureReason: row.FailureReason as string | null,
+    StampId: row.StampId as string,
+  };
+}
+
+/**
+ * The row fields `PendingJoin.AuthorizedInsert` signs, in the schema's order: a null column
+ * signs as `''` and an integer as its text (`cast(... as text)` on the SQL side).
+ */
+function pendingJoinAddFields(row: PendingJoinRow): string[] {
+  return [
+    row.Id, row.Invitation, row.Disclosure, String(row.RequestedAt), String(row.ExpiresAt),
+    row.Outcome ?? '', row.OutcomeAt === null ? '' : String(row.OutcomeAt), row.StrandId ?? '',
+    row.MembershipInvite ?? '', row.FailureCode ?? '', row.FailureReason ?? '', row.StampId,
+  ];
+}
+
+/** The values of {@link PENDING_JOIN_INSERT_SQL}'s columns, in {@link PENDING_JOIN_COLUMNS} order. */
+function pendingJoinValues(row: PendingJoinRow): SqlValue[] {
+  return [
+    row.Id, row.Invitation, row.Disclosure, row.RequestedAt, row.ExpiresAt, row.Outcome, row.OutcomeAt,
+    row.StrandId, row.MembershipInvite, row.FailureCode, row.FailureReason, row.StampId,
+  ];
 }
 
 /**
@@ -926,6 +1018,31 @@ export class ControlDatabase {
       'joined-strand'
     );
     return rows.length === 0 ? null : joinedStrandRow(rows[0]!);
+  }
+
+  /**
+   * Every join this party asked for and has not dismissed (`CadreControl.PendingJoin`),
+   * pending or finished.
+   *
+   * Rows whose `StampId` is retired in `Revocation` are dropped, as {@link queryCadrePeers}
+   * drops them: such a row is either a replaced or dismissed incarnation this node still
+   * holds until the reap sweep removes it, or one re-seated by a replayed approval on a node
+   * that had not yet seen the tombstone. Either way it must not bring a dismissed join back.
+   */
+  async queryPendingJoins(): Promise<PendingJoinRow[]> {
+    this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('PendingJoin');
+    const rows = await this.readRows(`select ${PENDING_JOIN_COLUMNS} from CadreControl.PendingJoin`, undefined, 'pending-joins');
+    return rows.map(pendingJoinRow).filter(row => !revoked.has(row.StampId));
+  }
+
+  /** Single-row sibling of {@link queryPendingJoins}, with the same retired-stamp filter: the row with this id, or null. */
+  async queryPendingJoin(id: string): Promise<PendingJoinRow | null> {
+    this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('PendingJoin');
+    const rows = await this.readRows(`select ${PENDING_JOIN_COLUMNS} from CadreControl.PendingJoin where Id = ?`, [id], 'pending-join');
+    const row = rows.length === 0 ? null : pendingJoinRow(rows[0]!);
+    return row === null || revoked.has(row.StampId) ? null : row;
   }
 
   /**
@@ -1711,6 +1828,112 @@ export class ControlDatabase {
   }
 
   /**
+   * Record, party-wide, a join this party asked for (`PendingJoin` row), using an owner
+   * signature over every column of the row (see {@link pendingJoinAddFields}). Returns the
+   * row as written, with the fresh `StampId` a later {@link replacePendingJoin} names.
+   *
+   * Fails with a `PendingJoin.Id` uniqueness violation when the party already holds a row for
+   * this invitation; {@link isPendingJoinConflict} identifies that case.
+   */
+  async insertPendingJoin(
+    row: Omit<PendingJoinRow, 'StampId'>,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<PendingJoinRow> {
+    this.ensureInitialized();
+    log('Inserting pending join: %s (outcome: %s)', row.Id, row.Outcome);
+    const { written, params } = this.signPendingJoinInsert(row, ownerKey, signMessage);
+    await this.execWrite(PENDING_JOIN_INSERT_SQL, params, 'pending-join-insert');
+    log('Pending join inserted: %s', row.Id);
+    return written;
+  }
+
+  /**
+   * Replace the live `PendingJoin` row `next.Id` with `next`, under a fresh stamp — the only way
+   * an outcome is written, since the table refuses updates. Returns the row as written.
+   *
+   * One locked transaction deletes the row (owner-signed `'remove'` digest, with its
+   * `Revocation` tombstone) and inserts its successor, so no reader ever sees the id missing in
+   * between. The live row must still be the incarnation the caller read: when its `StampId` is
+   * not `expectedStampId`, or the row is gone, this throws {@link PendingJoinChangedError} and
+   * writes nothing. That check is local; a sibling machine's replacement or removal that lands
+   * between it and the commit fails the transaction instead (its tombstone for the same stamp,
+   * or its successor row, collides on a primary key), and the caller re-reads either way.
+   *
+   * Signatures and the new stamp are minted before the lock, so a retried attempt re-presents
+   * the same signed messages (the contract on {@link withWriteLock}).
+   */
+  replacePendingJoin(
+    expectedStampId: string,
+    next: Omit<PendingJoinRow, 'StampId'>,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<PendingJoinRow> {
+    this.ensureInitialized();
+    const id = next.Id;
+    const removeSignature = signMessage(
+      buildAuthorizationMessage('CadreControl.PendingJoin', 'remove', [id, expectedStampId]));
+    const revocationSignature = signMessage(
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['PendingJoin', id, expectedStampId]));
+    const { written, params } = this.signPendingJoinInsert(next, ownerKey, signMessage);
+
+    return this.lockedWithRetry(async () => {
+      // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
+      const liveStampId = await this.queryStampId('PendingJoin', id, false);
+      if (liveStampId !== expectedStampId) {
+        throw new PendingJoinChangedError(id, expectedStampId, liveStampId);
+      }
+      await this.inTransaction('replace PendingJoin', async () => {
+        // StampId in the WHERE clause too, so the delete can only ever match the incarnation
+        // the signature names, even if a sibling's replacement lands after the check above.
+        await this.db!.exec(`
+          delete from CadreControl.PendingJoin
+            with context OwnerKey = ?, Signature = ?
+            where Id = ? and StampId = ?
+        `, [ownerKey, removeSignature, id, expectedStampId]);
+        await this.db!.exec(`
+          insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+            with context OwnerKey = ?, Signature = ?
+            values ('PendingJoin', ?, ?, 0)
+        `, [ownerKey, revocationSignature, id, expectedStampId]);
+        await this.db!.exec(PENDING_JOIN_INSERT_SQL, params);
+      });
+      log('Pending join replaced: %s (outcome: %s; stamp retired)', id, next.Outcome);
+      this.notifyGuardedDelete({ tableName: 'PendingJoin', rowKey: id, stampId: expectedStampId });
+      return written;
+    }, {}, 'pending-join-replace');
+  }
+
+  /**
+   * Owner-signed removal of one `PendingJoin` row, as {@link deleteJoinedStrand} removes its
+   * row: `'remove'`-tagged digest over (Id, StampId), `Revocation` tombstone in the same
+   * transaction. A no-op (no throw, no tombstone) when the row does not exist — `false` then,
+   * `true` when a row was actually removed.
+   */
+  deletePendingJoin(
+    id: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    return this.lockedWithRetry(() => this.deleteGuardedRow('PendingJoin', id, ownerKey, signMessage), {}, 'pending-join-delete');
+  }
+
+  /**
+   * Mint a fresh stamp for `row` and the owner signature `PendingJoin.AuthorizedInsert`
+   * verifies, returning the row as it will be written and the parameters of
+   * {@link PENDING_JOIN_INSERT_SQL}.
+   */
+  private signPendingJoinInsert(
+    row: Omit<PendingJoinRow, 'StampId'>,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): { written: PendingJoinRow; params: SqlValue[] } {
+    const written: PendingJoinRow = { ...row, StampId: generateStampId(this.config.libp2pNode.peerId.toString()) };
+    const signature = signMessage(buildAuthorizationMessage('CadreControl.PendingJoin', 'add', pendingJoinAddFields(written)));
+    return { written, params: [ownerKey, signature, ...pendingJoinValues(written)] };
+  }
+
+  /**
    * Insert a validation key into the control database using an owner signature.
    *
    * Mirrors {@link insertStrand}: the owner signs the canonical row-bound
@@ -2186,7 +2409,8 @@ export class ControlDatabase {
    *   reads from this node (every other node already filters it by tombstone). A revoked
    *   node therefore keeps its own copy of its own row; "a node that learns it has been
    *   revoked should shut itself down" is a distinct behaviour and its own ticket.
-   *   `ValidationKey` and `JoinedStrand` have no self notion and are not special-cased.
+   *   `ValidationKey`, `JoinedStrand` and `PendingJoin` have no self notion and are not
+   *   special-cased.
    *
    * A per-row failure is logged and skipped rather than aborting the sweep: an abort would
    * starve every tombstone after the failing one on every subsequent pass, and each row is

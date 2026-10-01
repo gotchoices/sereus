@@ -84,6 +84,7 @@ So each pass also stages from the rows. For each `joined` row that carries a `Me
 - **Expiry while waiting.** A scheduled attempt whose time falls after `ExpiresAt` writes `failed: expired` instead of dialling.
 - **Disclosure.** Each attempt runs `formStrand` with the stored disclosure, so each attempt mints its own consent key and stamp, as today. The responder sees a different `memberKey` per attempt. That is expected; the consent covers the stored disclosure text.
 - **Logs** print row ids, codes and strand ids, never the invitation or the membership invitation.
+- **Writing while alone** (noted by `pending-join-control-table`). A control write committed while the machine has no control connection to a party that has other machines is local-only and forks the collection (`docs/architecture.md` → "Delete-while-alone durability"); that is why the `JoinedStrand` publish runs only while connected. `replacePendingJoin` and `deletePendingJoin` queue their tombstone for re-issue on the next connection like every guarded delete, but nothing re-broadcasts the inserted row. Decide where `requestJoin` and the outcome writes stand on this: a phone asking to join while cut off from its own party is the common case the issue describes.
 
 ## Tests
 

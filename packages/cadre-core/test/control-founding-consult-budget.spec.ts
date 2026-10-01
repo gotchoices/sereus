@@ -107,7 +107,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-20';
+const MEASURED_ON = '2026-10-01';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -127,23 +127,30 @@ const MEASURED_ON = '2026-09-20';
  * `e6e84aa1` a commit whose blocks one coordinator covers sends the log tail and the data blocks
  * in one commit, where it used to commit the tail first and then the rest. Cold 2 → 1, genesis
  * 4 → 2, `foundStrand` 6 → 3 on each side, the marker's filing 2 → 1.
+ *
+ * Re-measured whole at `461a01bc` on 2026-10-01 (its working tree then carried uncommitted
+ * dial-deadline edits): no figure moved from `cadcb919` except the cold start, whose growth is
+ * the two control tables Sereus added since (see {@link COLD}).
  */
-const BASELINE_UPSTREAM = 'optimystic cadcb919';
+const BASELINE_UPSTREAM = 'optimystic 461a01bc';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 26 consults over 19 blocks, 1 commit. Every
+ * watcher's first poll it leaves running. 31 consults over 23 blocks, 1 commit. Every
  * control table and index block is consulted once as the schema is applied (all missing),
- * the schema catalog (`optimystic/schema`) 5 times, and three never-written tables once
- * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` by
- * the watcher's `queryStrands`. 15 + 5 + 3×2 = 26. History: 24 over 18 blocks in the trace
- * that motivated this spec (snapshotted at `start()`'s return, before the seed and the poll),
- * 30 on 2026-09-15, 25 over 18 at optimystic `03ffadc4` — the catalog went 7 → 5 and each of
- * the three never-written tables 3 → 2 — and 26 over 19 once Sereus re-declared the
- * `FormationUsageByToken` index (`restore-formation-usage-token-index`), one more block
- * consulted once as the schema is applied.
+ * the schema catalog (`optimystic/schema`) 5 times, and four never-written tables once
+ * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` and
+ * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 18 + 5 + 4×2 = 31.
+ * History: 24 over 18 blocks in the trace that motivated this spec (snapshotted at `start()`'s
+ * return, before the seed and the poll), 30 on 2026-09-15, 25 over 18 at optimystic
+ * `03ffadc4` — the catalog went 7 → 5 and each of the three never-written tables 3 → 2 — 26
+ * over 19 once Sereus re-declared the `FormationUsageByToken` index
+ * (`restore-formation-usage-token-index`), one more block consulted once as the schema is
+ * applied, then 31 over 23 with `JoinedStrand` (its table and stamp index, and the watcher's
+ * read: +3 over 2 blocks) and `PendingJoin` (its table and stamp index, read by nothing at
+ * start: +2 over 2 blocks).
  */
-const COLD: Budget = { consults: 26, blocks: 19, commits: 1, consultBudget: 30, blockBudget: 22, commitBudget: 2 };
+const COLD: Budget = { consults: 31, blocks: 23, commits: 1, consultBudget: 35, blockBudget: 26, commitBudget: 2 };
 /**
  * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 2 commits:
  * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and

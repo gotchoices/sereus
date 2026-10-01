@@ -1199,6 +1199,39 @@ export interface StrandRow {
 }
 
 /**
+ * A `CadreControl.PendingJoin` row: a join this party asked for through another party's
+ * invitation, readable by every machine of the party. Each outcome carries only its own
+ * columns (the schema's `OutcomeShape` check): `'joined'` sets `StrandId` (and, for a
+ * closed strand, `MembershipInvite`), `'failed'` sets `FailureCode`, and a pending row
+ * (`Outcome: null`) sets neither.
+ */
+export interface PendingJoinRow {
+  /** base64url sha256 of the invitation token (`pendingJoinId`). */
+  Id: string;
+  /** `CadreNode.encodeInvitation` of the invitation. A bearer credential. */
+  Invitation: string;
+  /** `canonicalJson` of the disclosure the requester gave. */
+  Disclosure: string;
+  /** Epoch ms. */
+  RequestedAt: number;
+  /** Epoch ms; no attempt starts at or after it. */
+  ExpiresAt: number;
+  Outcome: null | 'joined' | 'failed';
+  /** Epoch ms the outcome was recorded; null while pending. */
+  OutcomeAt: number | null;
+  /** `'joined'`: the strand the formation returned. */
+  StrandId: string | null;
+  /** `'joined'`, closed strand: JSON of the {@link StrandMembershipInvite} the formation delivered. */
+  MembershipInvite: string | null;
+  /** `'failed'`: a `FormationRejectionCode`, `'expired'` or `'local'`. Not constrained by the schema. */
+  FailureCode: string | null;
+  /** `'failed'`: human-readable text. */
+  FailureReason: string | null;
+  /** Single-use nonce of this row incarnation; `ControlDatabase.replacePendingJoin` names it as the row it replaces. */
+  StampId: string;
+}
+
+/**
  * sApp configuration provided by the hosting application when creating a strand.
  * This is what the app developer provides - NOT loaded from the network.
  */
@@ -1400,7 +1433,11 @@ export interface StrandMembershipInvite {
    * The invite ed25519 PRIVATE seed (base64url). A single-use bearer credential:
    * whoever holds it can `consumeInvite` exactly once. Same sensitivity class and
    * handling as `memberPrivateKey` — delivered only inside the validated,
-   * post-approval formation result, never written to either side's control DB.
+   * post-approval formation result. The inviting side never writes it to its control
+   * DB. The joining side may copy it into its own `PendingJoin` row
+   * (`MembershipInvite`), owner-signed and party-private like
+   * `JoinedStrand.MemberPrivateKey`, so a join finished on one machine of the party
+   * can be seated by whichever machine launches the strand first.
    */
   invitePrivateKey: string;
 }

@@ -76,7 +76,7 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-09-28';
+const MEASURED_ON = '2026-10-01';
 /**
  * The `../optimystic` commit these figures were last measured against. The WARM figure fell
  * at optimystic 03ffadc4 on 2026-09-17 (44 ops over 22 blocks to 13 over 3) when that repo
@@ -85,11 +85,11 @@ const MEASURED_ON = '2026-09-28';
  * leaves each table's block for the first read of that table. The COLD figure did not move
  * at all.
  */
-const BASELINE_UPSTREAM = 'optimystic 7f5e8a90';
+const BASELINE_UPSTREAM = 'optimystic 461a01bc';
 /**
- * Cold: first-ever start against empty storage — 10 control tables and 1 index
- * created (JoinedStrand joined the schema with the joined-strand-control-table
- * ticket). 48 operations over 23 blocks: 21 genuine writes over 3 blocks, one
+ * Cold: first-ever start against empty storage — 11 control tables and 1 index
+ * created (PendingJoin joined the schema with the pending-join-control-table
+ * ticket). 50 operations over 25 blocks: 21 genuine writes over 3 blocks, one
  * `getMetadata` per block, and a handful of cold list fills. The 131 writes of
  * earlier measurements went with upstream's `APPLY SCHEMA` batching
  * (`schema-batch-catalog-coalescing` and `schema-batch-index-tree-flush-deferral`
@@ -100,11 +100,13 @@ const BASELINE_UPSTREAM = 'optimystic 7f5e8a90';
  * (2026-09-10), 45 over 20 with schema batching (2026-09-14), 46 over 21 with the
  * same 9 tables at optimystic 7f5e8a90 (2026-09-28; one more `getMetadata` block, not
  * investigated), 48 over 23 with the 10-table schema (2026-09-28; two more
- * `getMetadata` blocks, nothing else moved). The same batched
+ * `getMetadata` blocks, nothing else moved), 50 over 25 with the 11-table schema at
+ * optimystic 461a01bc (2026-10-01; two more `getMetadata` blocks again, nothing else
+ * moved; not re-measured without the new table at that commit). The same batched
  * start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a run
  * near 90 that is mostly `getMetadata` means the cache has left the path.
  */
-const COLD: Budget = { ops: 48, blocks: 23, opBudget: 58, blockBudget: 27 };
+const COLD: Budget = { ops: 50, blocks: 25, opBudget: 60, blockBudget: 29 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
  * hydrates instead of the schema being applied. 13 operations over 3 blocks: a
@@ -115,9 +117,9 @@ const COLD: Budget = { ops: 48, blocks: 23, opBudget: 58, blockBudget: 27 };
  * table's block during the hydrate; the first read of each table pays for it instead, which
  * this phase does not perform. NOTE: the per-table→per-block mapping is NOT one-to-one —
  * adding the ninth control table (`StrandPartyKey`) moved cold DOWN from 172 ops / 21 blocks
- * to 169 / 20, which is packing, not a saving to bank on; the tenth (`JoinedStrand`) moved it
- * UP by 2 ops over 2 blocks and left warm unchanged. Re-measure rather than predict when the
- * schema changes again.
+ * to 169 / 20, which is packing, not a saving to bank on; the tenth (`JoinedStrand`) and the
+ * eleventh (`PendingJoin`) each moved it UP by 2 ops over 2 blocks and left warm unchanged.
+ * Re-measure rather than predict when the schema changes again.
  *
  * The second start deliberately gets a fresh storage IDENTITY over the shared
  * backing store (see the comment at the spec body): cadre-core's cache is memoized
@@ -129,8 +131,9 @@ const COLD: Budget = { ops: 48, blocks: 23, opBudget: 58, blockBudget: 27 };
  * the fresh identity reproduces that. History: 315 uncached (2026-08-12), 463
  * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17),
  * 46 with the 9-table schema (2026-09-10), 44 with schema batching (2026-09-14), 13 at
- * optimystic 03ffadc4 (2026-09-17), still 13 with the 10-table schema at
- * {@link BASELINE_UPSTREAM} (2026-09-28). 13 is still a cold cache: the 3-op signature the
+ * optimystic 03ffadc4 (2026-09-17), still 13 with the 10-table schema at optimystic
+ * 7f5e8a90 (2026-09-28), still 13 with the 11-table schema at {@link BASELINE_UPSTREAM}
+ * (2026-10-01). 13 is still a cold cache: the 3-op signature the
  * tripwire names is a SHARED storage instance, which reads the catalog once and nothing else.
  */
 const WARM: Budget = { ops: 13, blocks: 3, opBudget: 17, blockBudget: 5 };

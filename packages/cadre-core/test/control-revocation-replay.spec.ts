@@ -4,7 +4,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { buildAuthorizationMessage } from '../src/control-database.js';
+import { buildAuthorizationMessage, pendingJoinId } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest } from '../src/peer-authorization.js';
 import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
@@ -1011,6 +1011,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.insertJoinedStrand({ Id: joinedId, Type: 'o', MemberPrivateKey: null }, founder.publicKey, m => signAs(founder, m));
     const joinedStamp = await db.queryJoinedStrandStampId(joinedId);
     await expectConstraintFailure(tombstoneStamp('JoinedStrand', joinedId, joinedStamp!), 'RowIsGone');
+
+    const now = Date.now();
+    const pending = await db.insertPendingJoin({
+      Id: pendingJoinId('token-live-stamp-' + Math.random().toString(36).slice(2)),
+      Invitation: 'invitation', Disclosure: '{}', RequestedAt: now, ExpiresAt: now + 60_000,
+      Outcome: null, OutcomeAt: null, StrandId: null, MembershipInvite: null, FailureCode: null, FailureReason: null,
+    }, founder.publicKey, m => signAs(founder, m));
+    await expectConstraintFailure(tombstoneStamp('PendingJoin', pending.Id, pending.StampId), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a TableName outside the guarded set is refused (every RowIsGone branch false)', async () => {
