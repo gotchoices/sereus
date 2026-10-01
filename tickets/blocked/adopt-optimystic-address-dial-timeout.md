@@ -16,12 +16,13 @@ Upstream also found two related points:
 - Its RPC clients' own dials are capped at 6 s per address as well, because libp2p's dial queue combines the per-address timer with the caller's signal.
 - The fix raises optimystic's libp2p range to ^3.3.11.
 
-## Upstream design (optimystic-ec, implemented, not yet released)
+## Upstream design (optimystic main 8f073cb0, green, not yet released)
 
 - **Default.** `addressDialTimeoutMs = max(6000, 5 × linkRoundTripMs)`, which is 15 s at sereus's 3 s round trip. A relayed open measured about 12.1 s at 1500 ms one-way.
-- **Override.** It can be set through `connectionManager.addressDialTimeout`, which `Libp2pConnectionTimeouts` now includes.
-- **Where it applies.** It takes effect only where libp2p 3.3 or later resolves. Optimystic still resolves 3.1.3. Moving it to 3.3 reopens a type split between @libp2p/interface 3.1 and 3.2 in db-p2p, so that is a separate decision upstream.
-- **Sereus's own move to 3.3.** Sereus's lockfile already holds @libp2p/interface 3.1.0, 3.2.2 and 3.2.3, so moving sereus to libp2p 3.3 will probably meet the same split.
+- **Override.** It can be set through `connectionManager.addressDialTimeout`.
+- **The release moves db-p2p's whole libp2p family to the 3.3 line:** libp2p ^3.3.11, @libp2p/interface ^3.3, uint8arraylist 3, it-length-prefixed 11, circuit-relay-v2 4.2. Adopting it means moving sereus's libp2p family too, not just libp2p.
+- **A pinning test.** A spec pins libp2p's per-address cutoff, so a lockfile that slides back to 3.1 fails it.
+- **Upstream tripwire: a relay the dialer isn't connected to yet.** A relayed dial through such a relay pays both connection opens inside one per-address limit, which can exceed five round trips. Sereus runs this topology: phones keep reservations on several relays, and party-run relays are common. This was reported back upstream; it is the same gap as `backlog/23-bug-relayed-dial-budget-omits-opening-the-relay-connection`.
 
 ## TODO
 
