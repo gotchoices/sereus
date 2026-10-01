@@ -202,8 +202,8 @@ export async function dialPeerAddrs(
  * one address and immediately dialing the next for the same peer therefore
  * joins the dying job, which rejects the new dial with `AbortError` before it
  * touches the network — the next address is never tried. Seen against libp2p
- * 3.1.3; `test/peer-dial.spec.ts` dials real nodes so an upgrade that changes it
- * shows up there. All of the queue's cleanup runs as microtasks, so it has
+ * 3.1.3, and the queue's join is unchanged in 3.3.11; `test/peer-dial.spec.ts`
+ * dials real nodes so an upgrade that changes it shows up there. All of the queue's cleanup runs as microtasks, so it has
  * finished by the time a macrotask runs.
  */
 export async function tryAddrsInTurn<T>(

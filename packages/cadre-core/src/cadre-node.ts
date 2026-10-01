@@ -3593,7 +3593,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * The list may name transports this node cannot dial (a lent node reports TCP
    * and `/ws` addresses to a phone that dials WebSockets only). That needs no
-   * filtering here: libp2p's dial queue (`calculateMultiaddrs`, libp2p 3.1.3)
+   * filtering here: libp2p's dial queue (`calculateMultiaddrs`, libp2p 3.3.11)
    * rejects an address no transport can dial before touching the network, so
    * such an address costs a log line.
    *
