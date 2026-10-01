@@ -2,7 +2,7 @@ description: When an inviter turns a join request down, the joining device now g
 architecture: docs/architecture.md#strand-formation
 files: packages/cadre-core/src/strand-formation-rejection.ts (new), packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core/src/strand-formation-manager.ts, packages/cadre-core/src/strand-solicitation.ts, packages/cadre-core/src/control-formation-recorder.ts, packages/cadre-core/src/index.ts, packages/cadre-core/test/strand-formation-protocol.spec.ts, packages/cadre-core/test/strand-formation-consent.spec.ts, packages/cadre-core/test/control-formation-invite.spec.ts, packages/integration-tests/src/scenarios/strand-formation-concurrent-redemption.integration.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, docs/architecture.md, docs/api.md, .release-notes.pending.md
 ----
-# Typed rejection codes on the formation wire — review handoff
+# Typed rejection codes on the formation wire
 
 Part of gotchoices/sereus#25. Two implement tickets build on this: `invitation-names-every-party-machine` (decides whether to try the next machine) and `pending-join-retry-loop` (decides whether to retry or stop).
 
@@ -91,3 +91,31 @@ Assertions switched from reason text to `code`, with no new tests:
   - `formStrand` throws paragraph: both error types and their `code`/`retryable` fields.
   - The approval-failure table gains a code column.
 - `.release-notes.pending.md`: new section "A failed join says whether to try again".
+
+## Review findings
+
+Reviewed the diff of `ticket(implement): formation-rejection-codes` before the handoff text.
+
+**Checked, no change needed:**
+
+- Every responder rejection site (listener: busy, consent, token, disclosure, provisioning timeout, internal; manager: disclosure size, host strand missing, pre-split host strand, membership-invite issue failure, the five approval categories, `InvitationExhaustedError`, catch-all conflict) carries a code, and `FormationRejection` makes a code-less rejection a type error. The listener copies `code` and `reason` field by field, so a hook's outcome still cannot leak extra fields.
+- Error propagation: `StrandFormationManager.formStrand`, `StrandSolicitationService.formStrand` and `CadreNode.formStrand` all let `dialFormation`'s errors through unwrapped, so `docs/api.md`'s claim that `formStrand` throws the two typed errors holds.
+- `dialFormation` classification: `parseResponderAddrs` and `resolveProvisionTimeoutMs` sit outside the `try`, so a configuration error is not misreported as unreachable; the `answered` flag is set in the continuation right after the frame read, so a session deadline that wins the race is still unreachable, and one that fires during `validateResponse` stays a plain `Error`, as the handoff says.
+- `isFormationRejectionCode` uses an own-key check; the `'constructor'` case is covered by a test.
+- Token split: no recorder reason maps to `token-unknown` (retryable); expired and used-up map to `token-spent`; `InvitationExhaustedError` keeps parity with a latecomer (same code, same text). Existing fakes that return `{ valid: false }` with no reason still compile and behave as `token-unknown`.
+- Callers of rejection text: no source, doc or app still matches the old reason strings except `strand-formation-manager.spec.ts`'s `/Formation rejected: Formation provisioning timed out/`, which still holds because the message text is unchanged. Left as is.
+- Tests: the three new `dialFormation failure classification` tests each pin a named piece of the specification with real branching (the retryable set, the `'unrecognized'` rule, the unreachable class). The retryable list written out in the test duplicates the table on purpose, so a table edit has to be deliberate. Nothing to cut.
+- Behaviour changes listed in the handoff (stream closed before validation, oversized or non-JSON frame classed as unreachable, identical reason text for both token codes, `conflict` retried only through a fresh `formStrand`): weighed and accepted. The last is already reflected in `pending-join-retry-loop`, whose every attempt calls `formStrand` and so mints a fresh nonce.
+
+**Fixed inline (minor):**
+
+- `host-strand-unavailable` is also sent when issuing the joiner's membership invitation fails for a reason other than a pre-split host strand (`MEMBERSHIP_INVITE_UNAVAILABLE_REASON`). The code comment in `strand-formation-rejection.ts` and the code table in `docs/architecture.md#formation-rejection-codes` described only the missing or stopped host strand; both now name the issue failure too.
+
+**Validation:**
+
+- `yarn lint`: exit 0 (after the edit).
+- `yarn workspace @serfab/cadre-core test`: 147 files, 2346 passed, 1 skipped.
+- `tsc -p tsconfig.typecheck.json` in cadre-core: errors in 14 files, all the `@libp2p/interface` 3.1.0 / 3.3.0 type split through `../optimystic/packages/db-p2p/node_modules` (inspected the ones in `src/cadre-node.ts` and `test/strand-solicitation.spec.ts`). None in a file this ticket touched. Already predicted by `blocked/adopt-optimystic-address-dial-timeout`; no pre-existing-error file written.
+- **Integration scenarios `strand-formation-concurrent-redemption` and `strand-formation-e2e`: not run, blocked on the sibling build.** `../optimystic` has uncommitted edits (`packages/db-p2p/src/cohort-topic/host.ts` and several `package.json` files) and its `db-p2p/node_modules` changed as recently as 23:35 today, so it is being worked on. Per the sibling-repo rule these scenarios were not run. Their changed assertions were read: case 2 and case 3 publish the invite to both machines before redeeming, so the refusal there is `token-spent`, not `token-unknown`, which matches what the old `/Invalid token/` match accepted. Whoever next runs the integration suite should confirm these three assertions.
+
+**Tripwires:** none recorded. **Tickets filed:** none; no finding met the filing bar.

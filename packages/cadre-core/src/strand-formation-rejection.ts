@@ -32,7 +32,10 @@ export type FormationRejectionCode =
   | 'approval-unavailable'
   /** The inviter's approval setup is wrong: a malformed answer, an unenrolled key, or a misconfigured hook. */
   | 'approval-invalid'
-  /** The host strand is not running (or not yet replicated) on this responder. */
+  /**
+   * The host strand is not running (or not yet replicated) on this responder, or issuing the
+   * joiner's membership invitation into it failed.
+   */
   | 'host-strand-unavailable'
   /** The host strand predates the per-party identity split and can never admit a joiner. */
   | 'host-strand-must-be-recreated'

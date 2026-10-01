@@ -889,7 +889,7 @@ Every refusal the responder sends carries a fixed `code` beside its human-facing
 | `approval-refused` | no | the invitation's approval hook said no |
 | `approval-unavailable` | yes | the approval hook could not be reached or did not answer in time |
 | `approval-invalid` | no | the approval was malformed, its key is not enrolled, or the hook is misconfigured |
-| `host-strand-unavailable` | yes | the bound host strand is not present, or not running, on this machine |
+| `host-strand-unavailable` | yes | the bound host strand is not present, or not running, on this machine, or issuing the joiner's membership invitation into it failed |
 | `host-strand-must-be-recreated` | no | the host strand predates the per-party identity split |
 | `busy` | yes | the responder is at its cap on concurrent formation sessions |
 | `provisioning-timeout` | yes | provisioning outran its budget, leaving the invitation unspent |
