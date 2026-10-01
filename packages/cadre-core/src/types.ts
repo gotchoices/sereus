@@ -11,7 +11,6 @@ import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
-import type { StrandPeerBookStore } from './strand-peer-book.js';
 import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
@@ -1028,35 +1027,6 @@ export interface CadreNodeConfig {
   joinedStrands?: {
     /** Its `partyId` must match `controlNetwork.partyId`; start() fails closed on a mismatch. */
     store?: JoinedStrandStore;
-  };
-
-  /**
-   * Node-local strand peer book (see `strand-peer-book.ts`): per strand, the strand
-   * peers this node has met — the other parties' strand transport peers a formation
-   * carried back, and every strand peer observed on a live connection — with their
-   * last-known addresses. Read on every launch, hibernation resume and periodic
-   * address refresh, so a restarted machine dials the peers it was talking to before
-   * anything else, instead of coming back up alone (gotchoices/sereus#18). Sibling
-   * of {@link bootstrapPeers} — same NON-replicated, per-party, injected-backend
-   * shape — and, like it, nothing here is trust-bearing: dial hints only, each
-   * bound to its peer id. Entries age out after 14 days (`STRAND_PEER_MAX_AGE_MS`,
-   * overridable per store via `StrandPeerBookOptions.maxAgeMs`).
-   *
-   * Absent ⇒ an in-memory store is created at start() (ephemeral: the book dies
-   * with the process, and a cross-party strand whose only contact was the other
-   * party does not re-mesh after a restart until a fresh formation). Every
-   * reference embedder injects a durable backend over the same slot kind as its
-   * bootstrap-peer store. A new platform needs no new store class: supply a
-   * `DurableSlot` and inject `PersistentStrandPeerBookStore.open(slot, partyId)`.
-   */
-  strandPeers?: {
-    /**
-     * Injected store instance — e.g. a `FileStrandPeerBookStore` from the
-     * Node-only subpath `@serfab/cadre-core/strand-peer-book-file`, persisted in
-     * the node's state directory. Its `partyId` must match
-     * `controlNetwork.partyId`; start() fails closed on a mismatch.
-     */
-    store?: StrandPeerBookStore;
   };
 
   /**

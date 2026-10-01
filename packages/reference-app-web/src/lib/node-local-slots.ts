@@ -3,8 +3,8 @@
  * `kv` IndexedDB object store, for the browser's node-local records: the
  * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
  * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`),
- * the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`), the
- * strand peer book and the strand network state, each under its own key.
+ * the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`) and
+ * the strand network state, each under its own key.
  *
  * Every record goes in the SAME database as the tab's Ed25519 identity and
  * party id (`strand-storage.ts`'s `NODE_LOCAL_STORE_KEY` database, `kv` store) —
@@ -29,13 +29,6 @@ export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
 
 /** `kv` key for the persisted bootstrap-peer (cold-start dial target) snapshot. */
 export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
-
-/**
- * `kv` key for the persisted strand peer book — per strand, the strand peers this
- * tab has met and their last-known addresses, dialed first after a reload. Dial
- * hints only, like the bootstrap peers.
- */
-export const STRAND_PEERS_KV_KEY = 'strand-peers';
 
 /**
  * `kv` key for the persisted strand network state — per strand, the FRET routing

@@ -187,76 +187,28 @@ handshake** — the one moment the two parties are authenticated to each other a
 strand id. An approving formation result now carries the responder's live strand-network
 addresses for the strand it provisioned (`strandAddrs`), disclosed under exactly the same gate
 as its party id and cadre addresses, so a rejected redemption discloses nothing. The joiner
-keeps them per strand and unions them into that strand's discovery seed — behind any fresher
-sibling answer — on launch, on hibernation resume, and on every periodic address refresh.
+keeps them per strand, in memory, and adds them to that strand's discovery seed — behind any
+fresher sibling answer — on launch and on hibernation resume; a strand already running when a
+re-formation arrives has them merged into its address book at once.
 `integration-tests` scenario `strand-formation-cross-party-seed` proves two different parties
 meshing on one strand, and replicating rows across it, with no hand-dial anywhere — over
 loopback addresses; `blind-relay-phone-to-phone-e2e` proves the same handshake carrying a
 RELAY-ROUTED strand address between two relay-only parties, with the closed strand's
 membership secret delivered over the circuit (see the SN–SN use case above).
 
-**How a restarted machine re-finds its strand's peers.** Two node-local records hold addresses across a restart, both in the machine's own storage and never in the strand database.
+**How a restarted machine re-finds its strand's peers.** One node-local record holds addresses across a restart, in the machine's own storage and never in the strand database.
 
 *The strand node's saved network state* (`packages/cadre-core/src/strand-network-state.ts`). Optimystic saves each strand node's FRET routing table, in which every peer entry carries that peer's signed address record, and the node re-imports it when it is next built, so FRET dials the peers the node was talking to. This record alone is enough for two relay-only parties that both restart to re-mesh with no fresh invitation (gotchoices/sereus#18). Unpublishing, leaving or being removed from a strand forgets it; stopping the strand or hibernating keeps it. The store is injected like the other node-local records (`CadreNodeConfig.strandNetworkState.store`; in-memory by default, and every reference embedder injects a durable one). The mechanism, including when the table is saved, is in [architecture.md → Strand-Address Resolution](architecture.md#strand-address-resolution).
 
-*The strand peer book.* The carried addresses do not stay in
-the formation result: the joiner files them in its **strand peer book**
-(`packages/cadre-core/src/strand-peer-book.ts`), a per-machine record in the machine's own
-storage — never in the strand database — of the strand peers it knows, with their last-known
-addresses and when it last held a connection to each. The book fills from three sides: a
-formation writes the responder's peer into the joiner's book; every running strand node
-writes each strand peer it identifies (the peer's announced addresses plus the relayed address
-it was reached on) into its own book, so the host learns the joiner the moment the joiner
-connects; and on every connection between two strand peers the signed book swap below
-exchanges each side's own statement and everything signed it holds. On every launch, hibernation resume and periodic address refresh the book's entries
-go into the strand's seed and address book, freshest peer first, behind any live sibling
-answer — so a restarted machine with a durable book dials the people it was talking to
-before it does anything else. Entries are bounded (16 peers per strand, 16 addresses per peer, each
-address bound to its peer id) and age out 14 days after they were last vouched for; a peer
-that stays in touch keeps refreshing its own entry. Unpublishing, leaving or being removed
-from a strand forgets its entries. The store is injected like the other node-local records
-(`CadreNodeConfig.strandPeers.store`; in-memory by default, and every reference embedder
-injects a durable one). The maintainer ruled an in-strand
-registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out
-for now; nothing needs it, and it stays a possible later step only if a case does.
+*What a formation carried is not saved.* The addresses a formation result carried are held in memory only. They get the joiner its first connection, and from then on the saved network state holds the other party. A machine that restarts between forming a strand and first launching it comes back with no address for the other party and has to re-form (`NOTE:` at `formationStrandAddrs` in `cadre-node.ts`). The maintainer ruled an in-strand registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out for now; nothing needs it, and it stays a possible later step only if a case does.
 
-*The proof* is `integration-tests` scenario `strand-relay-only-restart-reconverges`, the reporter's
-reproduction, run with durable network state and in-memory peer books: two relay-only parties
-sharing a closed strand both restart over the storage they
-kept, each re-claims the strand from `strand:discovered` (the joiner's from its remembered
-join, below), and a write made after the restart crosses both ways. (On a node that hosts
-storage replicas — the default for `profile: 'storage'`, see
-[architecture.md → Strand Filtering](architecture.md#strand-filtering) — the node launches the
-strand as a replica, without the app's schema, right after that announcement, and the app's
-claim then upgrades that running replica in place rather than relaunching it.) Its opt-in negative
-control runs the same journey with the network state in memory too and the strand never
-re-meshes; its opt-in two-process arm repeats the restart across real process exits over
-on-disk stores.
+*The proof* is `integration-tests` scenario `strand-relay-only-restart-reconverges`, the reporter's reproduction, run with durable network state: two relay-only parties sharing a closed strand both restart over the storage they kept, each re-claims the strand from `strand:discovered` (the joiner's from its remembered join, below), and a write made after the restart crosses both ways. (On a node that hosts storage replicas — the default for `profile: 'storage'`, see [architecture.md → Strand Filtering](architecture.md#strand-filtering) — the node launches the strand as a replica, without the app's schema, right after that announcement, and the app's claim then upgrades that running replica in place rather than relaunching it.) A second arm cuts one party out of the other's saved table before the restart, and the write still crosses: one side remembering is enough. Its opt-in negative control runs the same journey with the network state in memory and the strand never re-meshes; its opt-in two-process arm repeats the restart across real process exits over on-disk stores.
 
-**How a member's new address reaches the others, and how a late joiner learns the rest.**
-Two things the book's own writers cannot do: refresh an entry while the two machines are
-apart (a peer whose relay reservation rotates before the other side dials is known by a dead
-address until they happen to reconnect), and name a party neither has met (in a strand of
-three or more, a late joiner holds an address only for the party that invited it). The signed
-**book swap** (`packages/cadre-core/src/strand-peer-book-protocol.ts`, driven per strand by
-`strand-peer-book-swap.ts`; `/sereus/strand-peers/1.0.0` on the strand node) closes both:
-when two strand peers connect, each sends the other its own current addresses, signed with its
-own strand transport key, plus the freshest signed entry it holds for every other member, and
-keeps whichever entry is fresher by the signer's own clock. A machine re-signs its entry
-whenever its addresses change and pushes it to every peer it is connected to, so a rotation
-propagates while connections are up; a member nobody has met is learned from whoever did meet
-it. Only self-signed entries travel and every receiver verifies the signature against the
-peer id, so the book proves "this peer's own claim about where it is" and nothing about
-membership — that is judged at the connection, by the revocation gate on a closed strand.
-The full rules (what is signed and why not with the member key, the throttle, what a receiver
-rejects) are in [`docs/architecture.md`](architecture.md) → "Strand-Address Resolution".
+**How a member's new address reaches the others, and how a late joiner learns the rest.** FRET, the ring library under Optimystic, keeps each strand peer's signed address record on that peer's routing-table entry and forwards the records it holds in the neighbour snapshots strand nodes already exchange. A member whose relay reservation rotated is therefore learned at its new address from any neighbour the two have in common, and in a strand of three or more a late joiner learns the members it never met from the party that invited it. Sereus runs no protocol of its own for this.
 
-What remains is the design boundary stated above, now the only gap: the book is per machine,
-so a member whose address changed while it was connected to nobody — and that nobody else
-holds a fresher signed entry for — is unreachable until it dials someone. An in-strand
-registry (`Strand.MemberPeer` rows carrying addresses, readable by members that are offline)
-would close that; it is deliberately not built, and is revisited only if a case needs
-addresses to reach members that are offline.
+What Sereus adds is on the running node. libp2p's address book hides an address an hour after it was first seen, so every periodic address refresh re-merges the records FRET holds into the strand node's address book, which keeps another party's strand nodes dialable for as long as the node stays up. A record is the peer's own signed claim about where it is and says nothing about membership — that is judged at the connection, by the revocation gate on a closed strand. The mechanism is in [`docs/architecture.md`](architecture.md) → "Strand-Address Resolution".
+
+What remains is the design boundary: addresses are held per machine and never in the strand database, so a member whose address changed while it was connected to nobody is unreachable until it dials someone. In a two-party strand there is no common neighbour to forward a record, so the party that moved has to dial. An in-strand registry (`Strand.MemberPeer` rows carrying addresses, readable by members that are offline) would close that; it is deliberately not built, and is revisited only if a case needs addresses to reach members that are offline.
 
 ## Strand Creation
 
@@ -410,7 +362,7 @@ A strand joined from another party has no `Strand` row in the joiner's control d
 
 **Offering.** On every poll the strand watcher offers, one row per id: the party's own `Strand` rows, then the party-wide joins, then this machine's unpublished joins. A join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the read secret — or relaunched on its own when the app registered its sApp config first, with the same retry ladder and `stopStrand` suppression the party's own strands get. A node that hosts storage replicas launches a party-wide join as a replica, as it does the party's own unclaimed strands, so the party's always-on machine keeps a copy of a strand its phone joined. The party's **other devices** receive `strand:discovered` for each party-wide join too, and the React Native reference app claims such a row as it claims the party's own (an open row, or a closed row that carries its key), so a second phone of the party joins the strand. That row is the product of the formation's consent, so an app may claim it without a second handshake. **Apps keep no list of their own.** A failed read of the party-wide table offers the last list that succeeded (empty at first), so a machine cut off from its party before it ever received that table's block still offers its own strands and its local joins. A local record is forgotten only on a read that succeeded, never on that stand-in list, which may predate a leave the record re-joined after. Leaving and a revocation wait for a publish already in progress on the same machine, so a publish cannot land a row just left.
 
-**Leaving is party-wide.** `forgetJoinedStrand` removes the `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then the local record, the strand peer book entries and the strand's saved network state, then `stopStrand`s the strand here. Every other machine's watcher sees the row gone and detaches the strand (`strand:stopped`), the replica host included; a machine that was offline at the time drops the stale row through the reap branch once the tombstone reaches it. On a machine that is not an owner, `forgetJoinedStrand` of a strand with a party-wide row throws: leaving for the whole party takes an owner machine, and `stopStrand` stops the strand on this machine only. For a join that is still local-only there is no party-wide row, and it forgets the local record and stops the strand, as before. `stopStrand` alone keeps both records, as an own-party strand is rediscovered on restart too. The strand itself is not told: this party's `Strand.Member` row stays, and a later re-formation reuses the same identity.
+**Leaving is party-wide.** `forgetJoinedStrand` removes the `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then the local record, the addresses the strand's formation carried and the strand's saved network state, then `stopStrand`s the strand here. Every other machine's watcher sees the row gone and detaches the strand (`strand:stopped`), the replica host included; a machine that was offline at the time drops the stale row through the reap branch once the tombstone reaches it. On a machine that is not an owner, `forgetJoinedStrand` of a strand with a party-wide row throws: leaving for the whole party takes an owner machine, and `stopStrand` stops the strand on this machine only. For a join that is still local-only there is no party-wide row, and it forgets the local record and stops the strand, as before. `stopStrand` alone keeps both records, as an own-party strand is rediscovered on restart too. The strand itself is not told: this party's `Strand.Member` row stays, and a later re-formation reuses the same identity.
 
 **Removal from the strand** (`strand:revoked`) removes the party-wide record. The machine that observes the revocation keeps offering the strand for the rest of its session, as that event promises, and queues the `JoinedStrand` row for removal by its next connected owner reconcile pass, so the next start of any machine does not re-attach it. The queue is in memory: if the process dies first, the next start relaunches the strand, the revoked-peer gate raises `strand:revoked` again, and the removal is queued again. A `formStrand` or a remembered `addStrand` of the same id cancels a queued removal, so a re-join is never deleted by a stale revocation. Two limits, both accepted:
 
@@ -419,7 +371,7 @@ A strand joined from another party has no `Strand` row in the joiner's control d
 
 A local record is also forgotten when this party's own control database gains a `Strand` row with the same id: the strand is the party's own now.
 
-**The records bring the strand back, not the other party's addresses** (gotchoices/sereus#18). Those live in the strand node's saved network state and in the node's strand peer book (see "How a restarted machine re-finds its strand's peers" above), so a restarted joiner re-meshes only when one of those is durable too: an embedder injects `strandNetworkState.store` and a `keyStore` (or `joinedStrands.store`). With the join record in memory a local-only join is not re-offered; with the network state and the book both in memory it comes back with nothing to dial. A machine that launches a party-wide join it never formed itself (a replica host, a second phone) has neither a saved table nor a peer-book entry for it; its launch is seeded through the strand-address RPC by the machines of its own party that run the strand.
+**The records bring the strand back, not the other party's addresses** (gotchoices/sereus#18). Those live in the strand node's saved network state (see "How a restarted machine re-finds its strand's peers" above), so a restarted joiner re-meshes only when that is durable too: an embedder injects `strandNetworkState.store` and a `keyStore` (or `joinedStrands.store`). With the join record in memory a local-only join is not re-offered; with the network state in memory it comes back with nothing to dial. A machine that launches a party-wide join it never formed itself (a replica host, a second phone) has neither a saved table nor formation-carried addresses for it; its launch is seeded through the strand-address RPC by the machines of its own party that run the strand.
 
 ## Who May Administer a Closed Strand
 

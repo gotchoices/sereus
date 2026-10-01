@@ -7,8 +7,7 @@
  * become a stranger to the cadre that admitted it on every restart. It also
  * needs a stable on-disk home for its node-local stores — `cadre-cli start`
  * opens `FileBootstrapPeerStore` / `FileTrustedOwnerStore` /
- * `FileStrandPeerBookStore` / `FileStrandNetworkStateStore` in the node's state
- * directory, which defaults to
+ * `FileStrandNetworkStateStore` in the node's state directory, which defaults to
  * the directory holding the config file the orchestrator writes into the workdir.
  *
  * So every managed node gets its own `identity.key` inside its workdir, written

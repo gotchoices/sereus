@@ -5080,6 +5080,7 @@ __metadata:
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/logger": "npm:^6.2.2"
     "@libp2p/peer-id": "npm:^6.0.4"
+    "@libp2p/peer-record": "npm:^9.0.5"
     "@libp2p/peer-store": "npm:^12.0.10"
     "@libp2p/tcp": "npm:^11.0.10"
     "@libp2p/webrtc": "npm:6.0.14"

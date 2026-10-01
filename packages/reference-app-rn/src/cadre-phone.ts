@@ -18,7 +18,6 @@ import {
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
   PersistentEnrolledMachineStore,
-  PersistentStrandPeerBookStore,
   PersistentStrandNetworkStateStore,
   loadOrCreateIdentityKey,
   peerKeySigner,
@@ -49,7 +48,6 @@ import {
   anchorSlotKey,
   bootstrapPeersKvKey,
   enrolledMachinesKvKey,
-  strandPeersKvKey,
   strandNetworkKvKey,
   kvStoreSlot,
   secureStoreSlot,
@@ -270,16 +268,9 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
     nodeLocalKvSlot(enrolledMachinesKvKey(opts.partyId)),
     opts.partyId,
   );
-  // The strand peers this phone has met, with their last-known addresses — what it
-  // dials first for each strand after a relaunch, so a chat with another party
-  // re-meshes without a fresh invitation. Same LevelDB as the dial hints, its own
-  // key, and the same non-trust-bearing argument (see `node-local-slots.ts`).
-  const strandPeerBookStore = await PersistentStrandPeerBookStore.open(
-    nodeLocalKvSlot(strandPeersKvKey(opts.partyId)),
-    opts.partyId,
-  );
   // Each strand node's saved network state — the FRET routing table it re-imports
-  // after a relaunch, with every peer's signed address record. Same LevelDB, its own
+  // after a relaunch, with every peer's signed address record, so a chat with another
+  // party re-meshes without a fresh invitation. Same LevelDB as the dial hints, its own
   // key, and not trust-bearing: FRET verifies each record at import.
   const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
     nodeLocalKvSlot(strandNetworkKvKey(opts.partyId)),
@@ -348,7 +339,6 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
     trustedOwnerStore,
     bootstrapPeerStore,
     enrolledMachineStore,
-    strandPeerBookStore,
     strandNetworkStateStore,
   }));
   node = built;

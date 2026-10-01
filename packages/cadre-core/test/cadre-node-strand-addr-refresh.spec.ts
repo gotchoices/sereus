@@ -9,6 +9,7 @@ import type { CadreNodeConfig, SAppConfig, StrandInstance, StrandRow } from '../
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { peerStrandKey } from '../src/delegate-admission.js';
 import { duplexPair } from './wake-stream-helpers.js';
+import { fretEntry, fretService, type FretEntryFake } from './fret-record-helpers.js';
 
 /**
  * Unit coverage for the periodic strand address-book refresh
@@ -123,11 +124,15 @@ interface StrandNodeFake {
 }
 
 /**
- * Strand-node fake with just a peerId and a recording peerStore. `merge` echoes
- * the addresses back as the stored (expiry-filtered) set, which is what makes
- * `mergePeerAddrs` report `'merged'` and skip its restamp `save`.
+ * Strand-node fake with just a peerId, a recording peerStore and — when `fretEntries`
+ * is given — the FRET service whose table the pass reads. `merge` echoes the addresses
+ * back as the stored (expiry-filtered) set, which is what makes `mergePeerAddrs` report
+ * `'merged'` and skip its restamp `save`.
  */
-function fakeStrandNode(peerId: string, opts: { mergeRejects?: boolean; peerIdThrows?: boolean } = {}): StrandNodeFake {
+function fakeStrandNode(
+  peerId: string,
+  opts: { mergeRejects?: boolean; peerIdThrows?: boolean; fretEntries?: FretEntryFake[] } = {}
+): StrandNodeFake {
   const merges: Array<{ peerId: string; addrs: string[] }> = [];
   const node = {
     get peerId(): { toString(): string } {
@@ -136,6 +141,7 @@ function fakeStrandNode(peerId: string, opts: { mergeRejects?: boolean; peerIdTh
       }
       return { toString: () => peerId };
     },
+    ...(opts.fretEntries && { services: fretService(opts.fretEntries) }),
     peerStore: {
       merge: async (id: PeerId, data: { multiaddrs: Array<{ toString(): string }> }) => {
         if (opts.mergeRejects) {
@@ -198,8 +204,6 @@ function injectRefresh(opts: {
     getInstances: () => instances,
     getInstance: (strandId: string) => instances.get(strandId)
   };
-  // The in-memory strand peer book `start()` would build — the refresh pass re-merges it.
-  (privates as { initializeStrandPeerBookStore(): void }).initializeStrandPeerBookStore();
   return { node, connections, instances, asked };
 }
 
@@ -212,11 +216,16 @@ function askDueMap(node: CadreNode): Map<string, number> {
   return (node as unknown as { strandAddrAskDueAt: Map<string, number> }).strandAddrAskDueAt;
 }
 
-/** Record a formation's carried strand addrs into the book, exactly as a successful `formStrand` does. */
-function recordFormation(node: CadreNode, strandId: string, addrs: string[]): void {
-  (node as unknown as {
-    recordFormationStrandPeers(id: string, addrs: readonly string[]): void;
-  }).recordFormationStrandPeers(strandId, addrs);
+/**
+ * Another party's strand peer as the strand node's FRET table holds it: a fresh key, its
+ * signed record at one direct address, and that address as the pass merges it (bound to
+ * the peer).
+ */
+async function crossPartyPeer(): Promise<{ peerId: string; entry: FretEntryFake; merged: string }> {
+  const key = await generateKeyPair('Ed25519');
+  const peerId = peerIdFromPrivateKey(key).toString();
+  const addr = '/ip4/203.0.113.7/tcp/4001/ws';
+  return { peerId, entry: await fretEntry(key, [addr]), merged: `${addr}/p2p/${peerId}` };
 }
 
 const T0 = 1_700_000_000_000;
@@ -303,9 +312,9 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
   it('asks a sibling that connects after a pass on the next tick', async () => {
     // gotchoices/sereus#21: a phone connecting after the party's always-on machines used
     // to wait out a stamp keyed by strand alone — set by the pass that asked the others,
-    // or (1.7.0) by a pass that only merged the peer book and asked nobody.
-    const [self, sibA, sibB, aStrand, bStrand, crossStrand, ownStrand] = await Promise.all(
-      Array.from({ length: 7 }, () => freshPeerId())
+    // or (1.7.0) by a pass that merged another party's addresses and asked nobody.
+    const [self, sibA, sibB, aStrand, bStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 6 }, () => freshPeerId())
     );
     const members = [self, sibA, sibB].map((peerId) => ({ peerId, multiaddr: null }));
     const replies = new Map([
@@ -329,22 +338,22 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       { peerId: sibB, strandId: 's1' }
     ]);
 
-    // After a pass that only merged the peer book — also the first tick after a
-    // restart, before any control connection exists.
-    const bookStrand = fakeStrandNode(ownStrand);
-    const afterBook = injectRefresh({
+    // After a pass that only re-merged FRET's address records — also the first tick
+    // after a restart, before any control connection exists.
+    const cross = await crossPartyPeer();
+    const recordsStrand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
+    const afterRecords = injectRefresh({
       selfPeerId: self,
       members,
       connections: [],
       replies,
-      instances: new Map([['s1', strandInstance('s1', bookStrand.node)]])
+      instances: new Map([['s1', strandInstance('s1', recordsStrand.node)]])
     });
-    recordFormation(afterBook.node, 's1', [`/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`]);
-    await refresh(afterBook.node, T0);
-    expect(bookStrand.merges.map((m) => m.peerId)).toEqual([crossStrand]);
-    afterBook.connections.push(sibB);
-    await refresh(afterBook.node, T0 + 15_000);
-    expect(afterBook.asked).toEqual([{ peerId: sibB, strandId: 's1' }]);
+    await refresh(afterRecords.node, T0);
+    expect(recordsStrand.merges.map((m) => m.peerId)).toEqual([cross.peerId]);
+    afterRecords.connections.push(sibB);
+    await refresh(afterRecords.node, T0 + 15_000);
+    expect(afterRecords.asked).toEqual([{ peerId: sibB, strandId: 's1' }]);
   });
 
   it('retries a sibling that could not answer within STRAND_PEER_ADDR_RETRY_MS, a healthy one only after the full interval', async () => {
@@ -556,8 +565,8 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     const inner = db.queryCadrePeers.bind(db);
     db.queryCadrePeers = async () => { queries++; return inner(); };
 
-    // The pass runs on every 15 s tick to merge the peer book — the unbounded
-    // membership read must not ride along when nobody could answer it.
+    // The pass runs on every 15 s tick to re-merge FRET's address records — the
+    // unbounded membership read must not ride along when nobody could answer it.
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + 1);
 
@@ -565,45 +574,43 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(harness.asked).toEqual([]);
   });
 
-  // ── The strand peer book: re-merged on every pass, with or without a sibling ──
+  // ── FRET's address records: re-merged on every pass, with or without a sibling ──
 
-  it("keeps the book's cross-party addrs alive, merging them on every tick without stamping", async () => {
+  it("keeps another party's addrs alive, re-merging FRET's records on every tick without stamping", async () => {
     // Nothing can RE-RESOLVE a cross-party address — the strand-addr RPC is
-    // membership-gated and answers own-party callers only — so this periodic re-merge is
-    // the only thing standing between the joiner's seed and the peerStore's one-hour
-    // expiry. A two-party joiner has no cohort sibling at all, which is exactly the case
-    // that used to make the pass return before merging anything.
-    const [self, crossStrand, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const strand = fakeStrandNode(ownStrand);
+    // membership-gated and answers own-party callers only — and FRET hands a record to
+    // the peerStore once, so this periodic re-merge is the only thing standing between
+    // the other party's addresses and the peerStore's one-hour expiry. A two-party joiner
+    // has no cohort sibling at all, which is exactly the case that must still merge.
+    const [self, ownStrand] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const cross = await crossPartyPeer();
+    const strand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
     const harness = injectRefresh({
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }],
       connections: [],
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordFormation(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
     expect(harness.asked).toEqual([]);
-    expect(strand.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
+    expect(strand.merges).toEqual([{ peerId: cross.peerId, addrs: [cross.merged] }]);
 
-    // A local merge costs no RPC, so the next tick merges again — which is also how a
-    // re-formation's freshly carried addresses reach a running strand within 15 s — and
-    // nothing is stamped that could hold back a sibling connecting later.
+    // A local merge costs no RPC, so the next tick merges again, and nothing is stamped
+    // that could hold back a sibling connecting later.
     await refresh(harness.node, T0 + 15_000);
     expect(strand.merges).toHaveLength(2);
     expect(askDueMap(harness.node).size).toBe(0);
   });
 
-  it('unions the book\'s addrs with the sibling answers rather than replacing them', async () => {
-    const [self, sib, sibStrand, crossStrand, ownStrand] = await Promise.all(
-      Array.from({ length: 5 }, () => freshPeerId())
+  it("merges FRET's records alongside the sibling answers, each under its own peer", async () => {
+    const [self, sib, sibStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
     );
     const sibAddr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const strand = fakeStrandNode(ownStrand);
+    const cross = await crossPartyPeer();
+    const strand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
     const harness = injectRefresh({
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
@@ -611,41 +618,16 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       replies: new Map([[sib, { 's1': [sibAddr] }]]),
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordFormation(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
     expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
-    // Two peers, one from each source — the cross-party entry is filed under the OTHER
+    // Two peers, one from each source — the cross-party record is filed under the OTHER
     // party's strand transport id, never merged into the sibling's group.
     expect(strand.merges).toEqual([
       { peerId: sibStrand, addrs: [sibAddr] },
-      { peerId: crossStrand, addrs: [crossAddr] }
+      { peerId: cross.peerId, addrs: [cross.merged] }
     ]);
-  });
-
-  it("never merges one strand's book entries into another strand's address book", async () => {
-    const [self, crossStrand, ownStrand1, ownStrand2] = await Promise.all(
-      Array.from({ length: 4 }, () => freshPeerId())
-    );
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const s1 = fakeStrandNode(ownStrand1);
-    const s2 = fakeStrandNode(ownStrand2);
-    const harness = injectRefresh({
-      selfPeerId: self,
-      members: [{ peerId: self, multiaddr: null }],
-      connections: [],
-      instances: new Map([
-        ['s1', strandInstance('s1', s1.node)],
-        ['s2', strandInstance('s2', s2.node)]
-      ])
-    });
-    recordFormation(harness.node, 's1', [crossAddr]);
-
-    await refresh(harness.node, T0);
-
-    expect(s1.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
-    expect(s2.merges).toEqual([]);
   });
 
   it('honours a configured strandAddrRefreshMs override, never retrying a failed sibling later than it', async () => {
@@ -735,5 +717,30 @@ describe('CadreNode strand launch/resume seed merge', () => {
     // Both of the sibling's addresses land under its one strand peer id, with the
     // relay's peer id nowhere in sight.
     expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [relayed, direct] }]);
+  });
+});
+
+/**
+ * A re-formation is the recovery path for a dead cross-party address, and the seed it
+ * feeds is read only at launch and resume — so a strand already running gets the freshly
+ * carried addresses written into its address book by `formStrand` itself.
+ */
+describe('CadreNode re-formation of a running strand', () => {
+  it('merges the carried addresses straight into the running strand node', async () => {
+    const [self, cross, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const carried = `/ip4/203.0.113.7/tcp/4100/ws/p2p/${cross}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+
+    await (harness.node as unknown as {
+      recordFormationStrandAddrs(id: string, addrs: readonly string[]): Promise<void>;
+    }).recordFormationStrandAddrs('s1', [carried]);
+
+    expect(strand.merges).toEqual([{ peerId: cross, addrs: [carried] }]);
   });
 });

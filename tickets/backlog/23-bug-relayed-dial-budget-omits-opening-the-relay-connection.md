@@ -28,7 +28,7 @@ Fresh relayed dial: about 12 094 + 3 037 ≈ 15 130 ms of link time, against a 1
 
 ## Who dials a relay it is not connected to
 
-- A strand node dialing another party's strand node through that party's relay (peer-book circuit addresses). When that relay is party-run, a stranger's hop connection has a separate, tracked problem: `bug-party-run-relay-drops-a-stranger-dialing-through-it`.
+- A strand node dialing another party's strand node through that party's relay (the circuit addresses a formation carried, or the ones in the peer's signed address record). When that relay is party-run, a stranger's hop connection has a separate, tracked problem: `bug-party-run-relay-drops-a-stranger-dialing-through-it`.
 - A control node with a public address dialing a relay-only sibling through a party relay it holds no reservation on.
 
 ## Expected behaviour

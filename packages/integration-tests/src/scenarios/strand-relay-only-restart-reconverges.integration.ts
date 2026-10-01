@@ -14,8 +14,7 @@
  * Optimystic's db-p2p saves the node's FRET routing table, whose entries carry each peer's
  * signed address record, and the rebuilt node re-imports it, so FRET has an address to dial.
  * The joined-strand record (`joined-strand-store.ts`) brings B's join back with no app-side
- * list. The strand peer book is left at its in-memory default in every arm, so it dies with
- * the node and contributes nothing across the restart.
+ * list.
  *
  * ── The topology ──
  *
@@ -39,9 +38,9 @@
  *      it read before (the bimodal re-attach recorded at `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`),
  *      and then it needs A to become writable.
  *   5. Phase 2: A writes, B reads; then B writes, A reads.
- *   6. Each (in-memory) book holds the other side's entry signed AFTER the restart, so the
- *      book swap ran again on the rebuilt nodes, and every A↔B strand connection classifies
- *      `relayed`.
+ *   6. Each rebuilt strand node's FRET table holds the other side's signed address record
+ *      at circuit addresses only (the in-process arms), and every A↔B strand connection
+ *      classifies `relayed`.
  *
  * ── The arms ──
  *
@@ -52,6 +51,14 @@
  *   the default arm depends on the saved table. It fails in either shape a user could see:
  *   both strands `active` and never reconnected, or B stuck `'syncing'` with nobody to sync
  *   from. Opt-in because it costs that whole budget.
+ * - One-sided memory (always runs): once both nodes have stopped, B is cut out of A's saved
+ *   table, so only B's saved table names the other side, and phase 2 must still cross: B
+ *   dials A. That is the state a DELIVERED leave notice leaves behind. A stopping strand
+ *   node sends FRET's leave notice, and a receiver drops the leaver from its routing table,
+ *   so its later saves omit it. The notice races libp2p's own teardown, and lost in every
+ *   run measured, here and over direct connections (the leaver stayed in the other side's
+ *   table, marked dead, with its record) — so the arm builds the state through the store
+ *   instead of waiting for it.
  * - `RESTART_TWO_PROCESS=1`: each party runs in its own `node` child process
  *   (`harness/fixtures/strand-restart-party.mjs`) over a temp directory with real on-disk
  *   stores (`FileRawStorage`, `FileKeyStore`, `FileStrandNetworkStateStore`). The children
@@ -94,9 +101,10 @@ import {
 	KeyStoreJoinedStrandStore,
 	PersistentStrandNetworkStateStore,
 	generateStrandMemberKey,
+	strandFretPeerAddrs,
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
-import type { DurableSlot, SAppConfig, StrandInstance, StrandPeerEntry, StrandRow } from '@serfab/cadre-core';
+import type { DurableSlot, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	controlNodeConfig,
@@ -254,9 +262,29 @@ function savedAddressRecordFor(node: CadreNode, strandId: string, peerId: string
 	return table?.entries.some((entry) => entry.id === peerId && entry.addressRecord !== undefined) ?? false;
 }
 
-/** The signed entry `node`'s book holds for `peerId`, if any. */
-function signedEntryFor(node: CadreNode, strandId: string, peerId: string): StrandPeerEntry | undefined {
-	return node.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === peerId && e.sig !== undefined);
+/**
+ * The addresses `node`'s FRET table records for `peerId`, as the address refresh reads them:
+ * taken from the peer's signed record, each bound to the peer. Empty while FRET holds no
+ * record for it.
+ */
+async function recordedAddrs(node: Libp2p, peerId: string): Promise<string[]> {
+	return ((await strandFretPeerAddrs(node)).peers.get(peerId) ?? []).map(String);
+}
+
+/**
+ * Cut `peerId` out of a STOPPED node's saved network state for the strand: its routing-table
+ * entry and its remembered serving verdict, which is what a save made after the peer left
+ * the table would have written.
+ */
+async function forgetPeerInSavedState(stopped: CadreNode, strandId: string, peerId: string): Promise<void> {
+	const store = stopped.getStrandNetworkStateStore()!;
+	const state = store.load(strandId);
+	if (state?.fretTable === undefined) throw new Error(`no saved routing table for ${strandId}`);
+	await store.save(strandId, {
+		...state,
+		fretTable: { ...state.fretTable, entries: state.fretTable.entries.filter((entry) => entry.id !== peerId) },
+		servingPeers: state.servingPeers?.filter((id) => id !== peerId),
+	});
 }
 
 /** Every connection `node` holds to `peerId` is a relayed circuit path. */
@@ -276,10 +304,12 @@ function connectedTo(node: Libp2p, peerId: string): boolean {
 
 /**
  * The whole in-process journey. `persistentNetworkState` false is the negative control: phase 2
- * is then expected NOT to converge, and everything after it is skipped.
+ * is then expected NOT to converge, and everything after it is skipped. `oneSidedMemory` cuts
+ * B out of A's saved table before the rebuild, so only B's saved table names the other side.
  */
-async function runInProcess(persistentNetworkState: boolean): Promise<void> {
-	const say = (msg: string, ...args: unknown[]): void => { console.log(`[RESTART ${persistentNetworkState ? 'saved-table' : 'no-saved-table'}] ${msg}`, ...args); };
+async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = false): Promise<void> {
+	const arm = !persistentNetworkState ? 'no-saved-table' : oneSidedMemory ? 'one-sided' : 'saved-table';
+	const say = (msg: string, ...args: unknown[]): void => { console.log(`[RESTART ${arm}] ${msg}`, ...args); };
 	let relay: DedicatedRelay | undefined;
 	let A: CadreNode | undefined;
 	let B: CadreNode | undefined;
@@ -346,6 +376,12 @@ async function runInProcess(persistentNetworkState: boolean): Promise<void> {
 		const aStopping = A;
 		A = undefined;
 		await aStopping.stop();
+		if (oneSidedMemory) {
+			await forgetPeerInSavedState(aStopping, strandId, bStrandPeerId);
+			expect(savedAddressRecordFor(aStopping, strandId, bStrandPeerId), "A's saved table still names B").toBe(false);
+			expect(savedAddressRecordFor(bStopping, strandId, aStrandPeerId), "B's saved table lost A's record").toBe(true);
+			say("only B's saved table names the other side");
+		}
 
 		const restartedAt = Date.now();
 		const since = (): number => Date.now() - restartedAt;
@@ -408,25 +444,20 @@ async function runInProcess(persistentNetworkState: boolean): Promise<void> {
 		say("phase 2: A read B's post-restart row at %d ms (%d ms after the write)", since(), since() - bWroteAt);
 		await connected;
 
-		// ── The swap ran again on the rebuilt nodes, and everything is relayed ──
-		// The books are in-memory, so each rebuilt node started with an empty one: an entry
-		// stamped at or after the restart can only have come from a swap between the NEW nodes.
-		// Waited for WITH addresses: a strand node now dials from its saved table before its own
-		// relay reservation lands, so the first entry it swaps can truthfully list none, and the
-		// re-signed one follows once the reservation is in.
-		const reachableSince = (node: CadreNode, peerId: string): boolean => {
-			const entry = signedEntryFor(node, strandId, peerId);
-			return entry !== undefined && entry.issuedAt >= restartedAt && entry.addrs.length > 0;
-		};
+		// ── Each rebuilt node can redial the other, and everything is relayed ──
+		// What the address refresh keeps alive on a node that stays up is the other side's
+		// signed record in its FRET table. The rebuilt nodes hold it (re-imported from the
+		// saved table, or learned again over the new connection), and a relay-only peer's
+		// record lists circuit addresses only.
 		await waitUntil(
-			() => reachableSince(A!, bStrandPeerId) && reachableSince(B!, aStrandPeerId),
-			{ ...GATE, description: "each book holds the other side's entry, with addresses, signed after the restart" },
+			async () => (await recordedAddrs(aStrandNode, bStrandPeerId)).length > 0
+				&& (await recordedAddrs(bStrandNode, aStrandPeerId)).length > 0,
+			{ ...GATE, description: "each rebuilt strand node's FRET table holds the other side's signed address record" },
 		);
-		for (const [node, peerId] of [[A, bStrandPeerId], [B, aStrandPeerId]] as const) {
-			const entry = signedEntryFor(node, strandId, peerId)!;
-			expect(entry.addrs.length).toBeGreaterThan(0);
-			for (const addr of entry.addrs) {
+		for (const [node, peerId] of [[aStrandNode, bStrandPeerId], [bStrandNode, aStrandPeerId]] as const) {
+			for (const addr of await recordedAddrs(node, peerId)) {
 				expect(isCircuit(addr), addr).toBe(true);
+				expect(addr.endsWith(`/p2p/${peerId}`), addr).toBe(true);
 			}
 		}
 		expectAllPathsRelayed(aStrandNode, bStrandPeerId, 'A strand after restart');
@@ -501,11 +532,8 @@ async function runTwoProcess(): Promise<void> {
 		await A.request('waitRow', { strandId, key: 'phase-2-b', val: 'written-on-B-after-restart', timeoutMs: RESTART_GATE.timeoutMs });
 		say('phase 2: A read B\'s post-restart row at %d ms', since());
 
-		// ── The swap ran again, and every A↔B strand connection is relayed ──
+		// ── Every A↔B strand connection is relayed ──
 		for (const [party, peerId] of [[A, bStrandPeerId], [B, aStrandPeerId]] as const) {
-			const { addrs } = await party.request('waitSignedEntry', { strandId, peerId, issuedSince: restartedAt, timeoutMs: GATE.timeoutMs });
-			expect(addrs.length).toBeGreaterThan(0);
-			for (const addr of addrs) expect(isCircuit(addr), addr).toBe(true);
 			const { kinds } = await party.request('pathKinds', { strandId, peerId });
 			expect(kinds.length, `${party.label}: no strand connection to ${peerId}`).toBeGreaterThan(0);
 			for (const kind of kinds) expect(kind, `${party.label} strand connection to ${peerId}`).toBe('relayed');
@@ -523,6 +551,10 @@ async function runTwoProcess(): Promise<void> {
 describe('relay-only restart re-convergence (gotchoices/sereus#18)', () => {
 	it('two relay-only parties restart over kept storage and a post-restart write crosses both ways', async () => {
 		await runInProcess(true);
+	}, 600_000);
+
+	it("only one side's saved table names the other, and a post-restart write still crosses both ways", async () => {
+		await runInProcess(true, true);
 	}, 600_000);
 
 	it.runIf(NEGATIVE_CONTROL)('negative control (RESTART_NEGATIVE_CONTROL=1): with in-memory network state, phase 2 never converges', async () => {

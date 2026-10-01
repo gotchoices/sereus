@@ -72,11 +72,10 @@ const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
  * handful of entries (one per listen transport, plus a circuit-relay reservation), so
  * 16 is generous for the honest case while keeping the result frame bounded against a
  * peer that would pad it — either direction, since both sides run the list through
- * {@link sanitizeStrandAddrs}. Exported because the same bound has to hold on the
- * initiator's stored copy: `CadreNode` accumulates across repeat formations against one
- * strand, so it caps the accumulation rather than only each arriving list.
+ * {@link sanitizeStrandAddrs}. The initiator's kept copy is one arriving list, replaced by
+ * the next formation against the same strand, so the same bound holds there.
  */
-export const MAX_STRAND_ADDRS = 16;
+const MAX_STRAND_ADDRS = 16;
 
 // ── Roles ────────────────────────────────────────────────────────────────────
 

@@ -170,18 +170,6 @@ const handlers = {
 		return {};
 	},
 
-	async waitSignedEntry({ strandId, peerId, issuedSince, timeoutMs }) {
-		const entry = await pollFor(
-			() => node.getStrandPeerBookStore().entries(strandId)
-				// With addresses: a node that dialed before its own relay reservation landed first
-				// swaps an entry listing none, and re-signs once the reservation is in.
-				.find((e) => e.peerId === peerId && e.sig !== undefined && e.issuedAt >= issuedSince && e.addrs.length > 0),
-			timeoutMs,
-			`a signed book entry for ${peerId}, with addresses, issued at or after ${issuedSince}`,
-		);
-		return { addrs: entry.addrs, issuedAt: entry.issuedAt };
-	},
-
 	async pathKinds({ strandId, peerId }) {
 		const libp2p = node.getStrand(strandId)?.libp2pNode;
 		if (!libp2p) throw new Error(`strand ${strandId} has no running node`);

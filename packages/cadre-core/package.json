@@ -36,10 +36,6 @@
       "types": "./dist/enrolled-machine-store-file.d.ts",
       "import": "./dist/enrolled-machine-store-file.js"
     },
-    "./strand-peer-book-file": {
-      "types": "./dist/strand-peer-book-file.d.ts",
-      "import": "./dist/strand-peer-book-file.js"
-    },
     "./strand-network-state-file": {
       "types": "./dist/strand-network-state-file.d.ts",
       "import": "./dist/strand-network-state-file.js"
@@ -95,6 +91,7 @@
     "@libp2p/crypto": "^5.1.13",
     "@libp2p/interface": "^3.1.0",
     "@libp2p/peer-id": "^6.0.4",
+    "@libp2p/peer-record": "^9.0.5",
     "@multiformats/multiaddr": "^12.5.1",
     "@optimystic/db-core": "^1.8.1",
     "@optimystic/db-p2p": "^1.8.1",

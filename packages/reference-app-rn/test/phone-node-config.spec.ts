@@ -5,7 +5,6 @@ import {
 	MemoryBootstrapPeerStore,
 	MemoryEnrolledMachineStore,
 	MemoryStrandNetworkStateStore,
-	MemoryStrandPeerBookStore,
 	MemoryTrustedOwnerStore,
 	RELAY_SEARCH_LISTEN_ADDR,
 	resolveListenAddrs,
@@ -44,7 +43,6 @@ function config(relayAddrs: string[] = []) {
 		trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 		bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 		enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
-		strandPeerBookStore: new MemoryStrandPeerBookStore(partyId),
 		strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
 	});
 }

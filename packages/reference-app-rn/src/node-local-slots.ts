@@ -2,9 +2,8 @@
  * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's
  * **node-local** records: the trusted-owner anchor (`PersistentTrustedOwnerStore`),
  * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`), the
- * enrolled-machine count (`PersistentEnrolledMachineStore`), the strand peer book
- * (`PersistentStrandPeerBookStore`) and the strand network state
- * (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — plus the app's
+ * enrolled-machine count (`PersistentEnrolledMachineStore`) and the strand network
+ * state (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — plus the app's
  * own saved start options (`start-options.ts`). Wired in `cadre-phone.ts`.
  *
  * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
@@ -125,17 +124,6 @@ export function enrolledMachinesKvKey(partyId: string): string {
 }
 
 /**
- * `LevelDBKVStore` key for a party's strand peer book — per strand, the strand
- * peers this phone has met and their last-known addresses, dialed first after a
- * relaunch. Same database and shape as {@link bootstrapPeersKvKey}, its own key;
- * dial hints only, with the same non-trust-bearing argument, and multiaddr
- * snapshots that would not fit secure store either.
- */
-export function strandPeersKvKey(partyId: string): string {
-	return `strand-peers.${partyId}`;
-}
-
-/**
  * `LevelDBKVStore` key for a party's strand network state — per strand, the FRET
  * routing table its strand node saved, re-imported after a relaunch. Same database
  * and shape as {@link bootstrapPeersKvKey}, its own key; not trust-bearing (FRET
@@ -205,8 +193,7 @@ export function secureStoreSlot(
 /**
  * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for every
  * non-trust-bearing record (the bootstrap-peer store, the enrolled-machine count, the
- * strand peer book, the strand network state and the saved start options), each over
- * its own key.
+ * strand network state and the saved start options), each over its own key.
  *
  * A direct pass-through: the KV store already deals in text and already reports
  * an absent key as `undefined`, and a read fault throws out of `get`, which is

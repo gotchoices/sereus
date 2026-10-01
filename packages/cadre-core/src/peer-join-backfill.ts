@@ -148,10 +148,9 @@ export const MAX_BLOCK_MESSAGE_BYTES = 8 * 1024 * 1024;
  * protocol — the one gate that decides whether {@link PeerJoinBackfill} schedules a peer at
  * all. A peer that lacks it (a bare circuit relay, a bootstrap node, a stranger the control
  * network's inbound gate admitted without membership) cannot receive a push no matter how
- * long it is dialed, since the protocol id is namespaced per network. Exported because a
- * later strand peer-address ticket's identify-driven observation needs the identical test.
+ * long it is dialed, since the protocol id is namespaced per network.
  */
-export function speaksBlockTransfer(protocols: readonly string[], protocolPrefix: string): boolean {
+function speaksBlockTransfer(protocols: readonly string[], protocolPrefix: string): boolean {
   return protocols.includes(buildBlockTransferProtocol(protocolPrefix));
 }
 

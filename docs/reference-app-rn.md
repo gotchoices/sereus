@@ -240,7 +240,7 @@ The dial targets the node learned out of band: the owner peers of every seed it 
 
 Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-binds every retained address to the peer id it was recorded under before dialing), and multiaddrs run 80–120 characters each with several per peer and the snapshot growing for the node's whole lifetime — it would cross SecureStore's ~2048-byte value limit and simply fail the write.
 
-Both records are party-scoped, as are the enrolled-machine count and the strand peer book beside them in the same database. They are read back on a relaunch because the party id itself is remembered, below.
+Both records are party-scoped, as are the enrolled-machine count and the strand network state beside them in the same database. They are read back on a relaunch because the party id itself is remembered, below.
 
 ### Start options (app-private LevelDB)
 

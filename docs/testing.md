@@ -687,11 +687,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   side's strand peer with an address record, both machines stop and are rebuilt over the
   identity key, raw stores, strand network state and joined-strand record they kept, each
   re-claims its strand from `strand:discovered`, a write made after the restart must cross
-  both ways, each peer book must hold the other side's entry re-signed after the restart, and
-  every strand connection classifies `relayed`) —
+  both ways, each rebuilt strand node's FRET table must hold the other side's signed address
+  record at circuit addresses only, and every strand connection classifies `relayed`) —
   `strand-relay-only-restart-reconverges.integration.ts`, the reproduction of
-  gotchoices/sereus#18. The strand peer book is the in-memory default in every arm, so what
-  carries the addresses across the restart is the saved FRET table alone. Two opt-in arms:
+  gotchoices/sereus#18. What carries the addresses across the restart is the saved FRET table
+  alone. A second always-on arm cuts one party out of the other's saved table before the
+  rebuild — the state a delivered FRET leave notice would leave — and the write must still
+  cross. Two opt-in arms:
   `RESTART_NEGATIVE_CONTROL=1` runs it with the network state in memory too and passes only if
   the post-restart write never crosses within its 180 s budget, and `RESTART_TWO_PROCESS=1`
   runs each party in its own `node` process over on-disk stores in a temp directory

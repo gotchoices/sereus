@@ -30,7 +30,6 @@ import {
 	anchorSlotKey,
 	bootstrapPeersSlotKey,
 	enrolledMachinesSlotKey,
-	strandPeersSlotKey,
 	strandNetworkSlotKey,
 	type KvStoreApi,
 } from '../src/node-local-slots';
@@ -106,7 +105,6 @@ describe('key-shape helpers', () => {
 		expect(anchorSlotKey('p')).toBe('trusted-owners.p');
 		expect(bootstrapPeersSlotKey('p')).toBe('bootstrap-peers.p');
 		expect(enrolledMachinesSlotKey('p')).toBe('enrolled-machines.p');
-		expect(strandPeersSlotKey('p')).toBe('strand-peers.p');
 		expect(strandNetworkSlotKey('p')).toBe('strand-network.p');
 	});
 
@@ -121,13 +119,12 @@ describe('key-shape helpers', () => {
 		// `cadre-phone.ts`), so a collision would have one record silently overwrite
 		// another rather than land in a separate namespace.
 		const parties = [
-			'p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', 'enrolled-machines.p', 'strand-peers.p', 'strand-network.p', '',
+			'p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', 'enrolled-machines.p', 'strand-network.p', '',
 		];
 		const keys = [
 			...parties.map(anchorSlotKey),
 			...parties.map(bootstrapPeersSlotKey),
 			...parties.map(enrolledMachinesSlotKey),
-			...parties.map(strandPeersSlotKey),
 			...parties.map(strandNetworkSlotKey),
 		];
 

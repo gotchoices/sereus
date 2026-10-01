@@ -270,7 +270,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
    * start` opens the file-backed bootstrap-peer, trusted-owner and strand
-   * peer-book stores in the node's state directory, which defaults to the
+   * network-state stores in the node's state directory, which defaults to the
    * directory holding the `cadre.json` written here — the same workdir.
    * Terminating the loan (`removeContainer`) deletes the workdir, so the key and
    * every store go with it.

@@ -280,8 +280,8 @@ describe('Always-on storage replica', () => {
 				Array.from({ length: ROWS_PER_PHASE }, (_, k) => [rowKey(phase, k + 1), rowVal(phase, k + 1)] as const)));
 			expect(rows).toEqual(expected);
 			// The only strand peer that could have answered is the replica.
-			const strandPeers = replacementStrand.libp2pNode!.getConnections().map((c) => c.remotePeer.toString());
-			expect(new Set(strandPeers)).toEqual(new Set([replicaStrandPeerId]));
+			const connectedStrandPeers = replacementStrand.libp2pNode!.getConnections().map((c) => c.remotePeer.toString());
+			expect(new Set(connectedStrandPeers)).toEqual(new Set([replicaStrandPeerId]));
 		} finally {
 			await stopAll(handles);
 		}

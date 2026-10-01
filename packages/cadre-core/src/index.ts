@@ -128,71 +128,21 @@ export {
   type JoinedStrandRecord
 } from './joined-strand-store.js';
 
-// Node-local strand peer book: per strand, the strand peers this node has met and
-// their last-known addresses, dialed first on every launch so a restarted machine
-// re-finds the other parties. Same cross-platform split as the bootstrap-peer store
-// above — interface + in-memory + slot-backed stores here, Node-only file backend
-// behind the subpath '@serfab/cadre-core/strand-peer-book-file'.
-export {
-  MemoryStrandPeerBookStore,
-  PersistentStrandPeerBookStore,
-  mergeStrandPeerEntry,
-  sanitizeStrandPeerEntry,
-  strandPeerFreshness,
-  MAX_STRAND_PEERS,
-  STRAND_PEER_MAX_AGE_MS,
-  type StrandPeerBookStore,
-  type StrandPeerBookOptions,
-  type StrandPeerEntry
-} from './strand-peer-book.js';
 // Node-local strand network state: per strand, the state Optimystic's db-p2p saves for
 // the strand node (its FRET routing table with each peer's signed address record), so a
 // restarted strand node re-imports the peers it was talking to. Same cross-platform
-// split — Node-only file backend behind '@serfab/cadre-core/strand-network-state-file'.
+// split as the bootstrap-peer store above — interface + in-memory + slot-backed stores
+// here, Node-only file backend behind '@serfab/cadre-core/strand-network-state-file'.
 export {
   MemoryStrandNetworkStateStore,
   PersistentStrandNetworkStateStore,
   strandNetworkStatePersistence,
   type StrandNetworkStateStore
 } from './strand-network-state.js';
-export {
-  StrandPeerObserver,
-  dialableAddrs,
-  connectedIdentifiedPeers,
-  STRAND_PEER_OBSERVE_THROTTLE_MS,
-  type StrandPeerObservation,
-  type StrandPeerObserverDeps,
-  type StrandPeerObserverOptions,
-  type ConnectedIdentifiedPeer
-} from './strand-peer-observer.js';
-// The signed book SWAP between strand peers (`/sereus/strand-peers/1.0.0`): the wire
-// protocol, signing and verification, and the per-strand driver that arms it.
-export {
-  STRAND_PEER_BOOK_PROTOCOL,
-  SIGNED_STRAND_PEER_ENTRY_VERSION,
-  STRAND_PEER_ISSUED_AT_SKEW_MS,
-  MAX_BOOK_FRAME_SIZE,
-  StrandPeerBookService,
-  exchangeStrandPeerBook,
-  signStrandPeerEntry,
-  signedStrandPeerEntryPayload,
-  verifySignedStrandPeerEntry,
-  verifyStrandPeerBookFrame,
-  trimBookFrameToFit,
-  assertBookFrameFits,
-  type SignedStrandPeerEntry,
-  type StrandPeerBookFrame,
-  type StrandPeerEntryVerdict,
-  type StrandPeerBookServiceDeps,
-  type ExchangeStrandPeerBookOptions
-} from './strand-peer-book-protocol.js';
-export {
-  StrandPeerBookSwap,
-  STRAND_PEER_BOOK_SWAP_THROTTLE_MS,
-  OWN_ENTRY_RESIGN_DEBOUNCE_MS,
-  type StrandPeerBookSwapDeps,
-  type StrandPeerBookSwapOptions
-} from './strand-peer-book-swap.js';
+// The signed address records a running strand node's FRET table holds, as per-peer dial
+// addresses: what the periodic refresh re-merges into the node's address book, and a
+// diagnostic for "whom could this strand node redial right now?".
+export { strandFretPeerAddrs, type FretAddrHost, type FretPeerAddrs } from './strand-fret-addrs.js';
 
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,

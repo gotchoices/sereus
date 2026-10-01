@@ -36,23 +36,21 @@
  *
  *   1. `formStrand` returns the host's live STRAND-network addrs (never its control ones).
  *   2. The joiner's strand node connects to the host's strand node with no manual dial,
- *      and the host sees the inbound connection.
+ *      over an address the formation carried, and the host sees the inbound connection.
  *   3. Rows written on the host reach the joiner over that mesh — the mesh is real, not
  *      merely a socket.
- *
- *   4. Both nodes end up with the other's strand peer in their node-local strand peer
- *      book: the joiner's from the formation result, the host's from observing the
- *      joiner's connection — the two writers a restart would later dial from.
- *   5. The first connection also runs the signed book swap (`/sereus/strand-peers/1.0.0`),
- *      so each book ends up holding the other side's SELF-SIGNED entry — the only kind
- *      the book will forward to a third party, and the kind a later rotation refreshes.
+ *   4. Each strand node's FRET routing table ends up holding the other side's signed
+ *      address record, which is what replaces the carried addresses from here on: the
+ *      periodic address refresh re-merges it, and the saved network state carries it
+ *      across a restart.
  *
  * ── Known limit, deliberately not covered here ──
  *
- * The book is in-memory here (no `strandPeers.store` injected), so a restart is not
- * proven by this scenario; `strand-relay-only-restart-reconverges` is that proof. A host
- * relay reservation that rotates while the two are NOT connected still leaves a dead entry
- * until they next meet or a third member forwards a fresher one (see `docs/strands.md`).
+ * The network state is in-memory here (no `strandNetworkState.store` injected), so a
+ * restart is not proven by this scenario; `strand-relay-only-restart-reconverges` is that
+ * proof. A host relay reservation that rotates while the two are NOT connected still
+ * leaves a dead address until the host dials in or a third member's FRET snapshot
+ * forwards the fresher record (see `docs/strands.md`).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -61,9 +59,11 @@ import {
 	CadreNode,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
+	strandFretPeerAddrs,
 	strandMemberKeyPair,
 } from '@serfab/cadre-core';
 import type { OpenInvitation, StrandRow } from '@serfab/cadre-core';
+import type { Libp2p } from 'libp2p';
 import {
 	controlNodeConfig,
 	createSignedSAppConfig,
@@ -84,6 +84,12 @@ const SAPP_ID = 'sapp-cross-party-seed';
 const YEAR_MS = 365 * 24 * 3600_000;
 /** Budget for each mesh/replication wait; the wait's own timeout is the failure. */
 const CONVERGE_MS = 30_000;
+
+/** `addr` without a trailing `/p2p/<peerId>`, so the same address compares equal with or without it. */
+function bareAddr(addr: string, peerId: string): string {
+	const suffix = `/p2p/${peerId}`;
+	return addr.endsWith(suffix) ? addr.slice(0, -suffix.length) : addr;
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -202,51 +208,36 @@ describe('Cross-party strand seed carried by formation', () => {
 			for (const remote of joinerRemotes) {
 				expect(remote).toBe(hostStrandPeerId);
 			}
+			// ...and the joiner reached it at an address the formation carried: with no
+			// sibling to ask and no saved network state, nothing else names the host.
+			const dialedAddrs = joinerStrandNode.getConnections().map((c) => bareAddr(c.remoteAddr.toString(), hostStrandPeerId));
+			const carriedAddrs = formResult.strandAddrs.map((addr) => bareAddr(addr, hostStrandPeerId));
+			expect(dialedAddrs.some((addr) => carriedAddrs.includes(addr)), `dialed ${dialedAddrs.join(', ')}`).toBe(true);
 
-			// ── Subject 4: both strand peer books name the other side ──
-			// The joiner's entry came from the formation result; the host's can only have
-			// come from observing the joiner's inbound connection (identify), since no
-			// formation result reaches the host and the joiner has no sibling to answer for
-			// it. Each entry's addresses are bound to that peer's strand transport id. Each
-			// book also holds the node's OWN self-signed entry (the swap files it under the
-			// node's strand transport id), so the assertions read the entries for OTHERS.
-			const othersIn = (node: CadreNode, selfStrandPeerId: string) =>
-				node.getStrandPeerBookStore()!.entries(strandId).filter((e) => e.peerId !== selfStrandPeerId);
-			const joinerBook = othersIn(joiner, joinerStrandPeerId);
-			expect(joinerBook.map((e) => e.peerId)).toEqual([hostStrandPeerId]);
-			expect(joinerBook[0].addrs.length).toBeGreaterThan(0);
+			// ── Subject 4: each FRET table holds the other side's signed address record ──
+			// The carried addresses got the joiner its first connection. What each node can
+			// redial from afterwards is the other's record in its own FRET table: the host's
+			// can only have arrived over the joiner's inbound connection, since no formation
+			// result reaches the host. Read through the same function the address refresh
+			// uses, so each address is verified and bound to that peer's strand transport id.
+			const recordedAddrs = async (node: Libp2p, peerId: string): Promise<string[]> =>
+				((await strandFretPeerAddrs(node)).peers.get(peerId) ?? []).map(String);
 			await waitUntil(
-				() => othersIn(host!, hostStrandPeerId).some((e) => e.peerId === joinerStrandPeerId),
+				async () => (await recordedAddrs(joinerStrandNode, hostStrandPeerId)).length > 0
+					&& (await recordedAddrs(hostStrandNode, joinerStrandPeerId)).length > 0,
 				{
 					timeoutMs: CONVERGE_MS,
 					intervalMs: 250,
-					description: "host's strand peer book records the joiner's strand peer from its identify",
+					description: "both strand nodes' FRET tables hold the other side's signed address record",
 				},
 			);
-			for (const entry of othersIn(host, hostStrandPeerId)) {
-				expect(entry.peerId).toBe(joinerStrandPeerId);
-				for (const addr of entry.addrs) {
-					expect(addr.endsWith(`/p2p/${joinerStrandPeerId}`)).toBe(true);
-				}
+			for (const addr of await recordedAddrs(hostStrandNode, joinerStrandPeerId)) {
+				expect(addr.endsWith(`/p2p/${joinerStrandPeerId}`), addr).toBe(true);
 			}
-
-			// ── Subject 5: the swap upgrades both entries to the other side's SIGNED statement ──
-			// On the first connection each strand node sends the other its self-signed entry,
-			// which displaces the unsigned formation and identify entries above (a signed
-			// entry never yields to an unsigned one). Only a signed entry is ever forwarded
-			// to a third party, so this is what a late joiner would learn the host from.
-			await waitUntil(
-				() => othersIn(joiner!, joinerStrandPeerId).some((e) => e.peerId === hostStrandPeerId && e.sig !== undefined)
-					&& othersIn(host!, hostStrandPeerId).some((e) => e.peerId === joinerStrandPeerId && e.sig !== undefined),
-				{
-					timeoutMs: CONVERGE_MS,
-					intervalMs: 250,
-					description: "both strand peer books hold the other side's self-signed entry after the swap",
-				},
-			);
-			const hostSelfEntry = host.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === hostStrandPeerId);
-			expect(hostSelfEntry?.sig).toBeDefined();
-			expect(othersIn(joiner, joinerStrandPeerId).find((e) => e.peerId === hostStrandPeerId)?.sig).toBe(hostSelfEntry!.sig);
+			// The host's record names an address the host's strand node really announces.
+			const hostRecorded = (await recordedAddrs(joinerStrandNode, hostStrandPeerId)).map((addr) => bareAddr(addr, hostStrandPeerId));
+			const hostAnnounced = hostStrandAddrs.map((addr) => bareAddr(addr, hostStrandPeerId));
+			expect(hostRecorded.some((addr) => hostAnnounced.includes(addr)), `recorded ${hostRecorded.join(', ')}`).toBe(true);
 
 			// ── Subject 3: the mesh actually carries data ──
 			const hostDb = founded.instance.database!.getDatabase();

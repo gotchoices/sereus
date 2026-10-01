@@ -17,7 +17,6 @@ import type {
 	EnrolledMachineStore,
 	KeyStore,
 	StrandNetworkStateStore,
-	StrandPeerBookStore,
 	TrustedOwnerStore,
 } from '@serfab/cadre-core';
 import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
@@ -81,7 +80,6 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	trustedOwnerStore: TrustedOwnerStore;
 	bootstrapPeerStore: BootstrapPeerStore;
 	enrolledMachineStore: EnrolledMachineStore;
-	strandPeerBookStore: StrandPeerBookStore;
 	strandNetworkStateStore: StrandNetworkStateStore;
 }
 
@@ -175,7 +173,6 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 		trustedOwners: { store: inputs.trustedOwnerStore },
 		bootstrapPeers: { store: inputs.bootstrapPeerStore },
 		enrolledMachines: { store: inputs.enrolledMachineStore },
-		strandPeers: { store: inputs.strandPeerBookStore },
 		strandNetworkState: { store: inputs.strandNetworkStateStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema

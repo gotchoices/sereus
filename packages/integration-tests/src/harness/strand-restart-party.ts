@@ -57,14 +57,6 @@ export interface StrandRestartOps {
 		args: { strandId: string; peerId: string; timeoutMs: number };
 		result: Record<string, never>;
 	};
-	/**
-	 * Poll until the (in-memory) book holds a signed entry for `peerId`, listing at least one
-	 * address, issued at or after `issuedSince`.
-	 */
-	waitSignedEntry: {
-		args: { strandId: string; peerId: string; issuedSince: number; timeoutMs: number };
-		result: { addrs: string[]; issuedAt: number };
-	};
 	/** `summarizeConnectionPaths` kinds of every strand connection to `peerId`. */
 	pathKinds: {
 		args: { strandId: string; peerId: string };

@@ -126,8 +126,8 @@ describe('CadreNode.launchStrand transport-key wiring', () => {
 
   it('passes a fresh random Ed25519 key when no identity key is configured, distinct per launch', async () => {
     // Not `undefined` (which would leave libp2p to generate a key cadre-core never sees):
-    // the strand peer book swap signs this node's own entry with the strand node's key,
-    // so cadre-core has to hold it. Random, because there is no identity to derive from.
+    // the delegate announcement names the strand peer id before the strand node exists,
+    // so cadre-core has to hold the key. Random, because there is no identity to derive from.
     const node = new CadreNode(createConfig());
     const { configs } = injectFakeStrandManager(node);
 

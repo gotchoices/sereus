@@ -49,15 +49,6 @@ export function enrolledMachinesSlotKey(partyId: string): string {
 }
 
 /**
- * `SqliteKVStore` key for a party's strand peer book — per strand, the strand
- * peers this phone has met and their last-known addresses, dialed first after a
- * relaunch. Its own key, dial hints only.
- */
-export function strandPeersSlotKey(partyId: string): string {
-	return `strand-peers.${partyId}`;
-}
-
-/**
  * `SqliteKVStore` key for a party's strand network state — per strand, the FRET
  * routing table its strand node saved, re-imported after a relaunch. Its own key;
  * not trust-bearing (FRET verifies each address record at import).

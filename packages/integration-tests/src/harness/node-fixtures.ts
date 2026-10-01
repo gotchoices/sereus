@@ -24,7 +24,6 @@ import type {
   RawStorageProvider,
   SAppConfig,
   StrandNetworkStateStore,
-  StrandPeerBookStore,
 } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
@@ -157,18 +156,11 @@ export interface ControlNodeOpts {
    */
   bootstrapPeerStore?: BootstrapPeerStore;
   /**
-   * Becomes `strandPeers.store` verbatim — the node-local strand peer book (per strand,
-   * the strand peers this node has met and their last-known addresses). Left unset the
-   * node gets an in-memory book that dies with it. Same restart rule as
-   * {@link bootstrapPeerStore}: a store that must outlive a rebuilt node is opened over
-   * backing state the scenario keeps outside the node.
-   */
-  strandPeerBook?: StrandPeerBookStore;
-  /**
    * Becomes `strandNetworkState.store` verbatim — the node-local strand network state
    * (per strand, the FRET routing table its strand node saves and re-imports). Left
    * unset the node gets an in-memory store that dies with it. Same restart rule as
-   * {@link bootstrapPeerStore}.
+   * {@link bootstrapPeerStore}: a store that must outlive a rebuilt node is opened over
+   * backing state the scenario keeps outside the node.
    */
   strandNetworkStateStore?: StrandNetworkStateStore;
   /**
@@ -255,7 +247,6 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     },
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
-    ...(opts.strandPeerBook ? { strandPeers: { store: opts.strandPeerBook } } : {}),
     ...(opts.strandNetworkStateStore ? { strandNetworkState: { store: opts.strandNetworkStateStore } } : {}),
     ...(opts.joinedStrandStore ? { joinedStrands: { store: opts.joinedStrandStore } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },

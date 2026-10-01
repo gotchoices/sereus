@@ -1,5 +1,5 @@
 description: Should someone with no account be able to read an open workspace, for example a public view of an election? Today the only way to find a workspace's machines is members-only, and strangers are turned away before they can ask. The maintainer needs to decide whether to allow this at all yet, and which approach to take. Requested as gotchoices/sereus#23.
-files: packages/cadre-core/src/strand-addr-protocol.ts, packages/cadre-core/src/membership-connection-gater.ts (STRANGER_OPEN_PROTOCOLS), packages/cadre-core/src/strand-peer-book-protocol.ts
+files: packages/cadre-core/src/strand-addr-protocol.ts, packages/cadre-core/src/membership-connection-gater.ts (STRANGER_OPEN_PROTOCOLS)
 ----
 
 # Decide: public read-only access to open strands
@@ -15,7 +15,7 @@ A browser without an account wants to read an open strand. The only route to a s
 ## Facts found at triage (1.7.0)
 
 - `STRANGER_OPEN_PROTOCOLS` in `membership-connection-gater.ts` is declared, exported and pinned by a test, but the gater never reads it. That is dead code whatever is decided here, and the reporter's question 1 is right about it.
-- The 1.7.0 peer-book swap already answers any connected peer on an open strand, since open strands have no gate. An observer holding one strand address can learn the rest through the swap.
+- In 1.7.0 the peer-book swap answered any connected peer on an open strand, since open strands have no gate, so an observer holding one strand address could learn the rest through it. The swap has since been removed (`remove-strand-peer-book`); members' signed address records now travel between strand nodes in the ring library's (FRET's) neighbour snapshots. Whether those answer any connected peer on an open strand was not re-checked when the swap was removed, and needs checking before this fact is relied on.
 - An "observer" on an open strand is not read-only: nothing stops it writing. `backlog/feat-open-strand-witness-policy` is where open strands' write protection is meant to be settled.
 
 ## Decisions
@@ -30,7 +30,7 @@ Recommendation at triage: (b) now, documented, with (c) replacing it when FRET s
 
 ## Related
 
-`backlog/feat-open-strand-witness-policy`, `backlog/feat-scenario-public-open-strand-network`, `blocked/retire-strand-peer-book-for-fret-address-hints`.
+`backlog/feat-open-strand-witness-policy`, `backlog/feat-scenario-public-open-strand-network`, `remove-strand-peer-book`.
 
 ## Status (2026-09-28)
 

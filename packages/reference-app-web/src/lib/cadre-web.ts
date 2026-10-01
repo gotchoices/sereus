@@ -36,7 +36,6 @@ import {
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
-	PersistentStrandPeerBookStore,
 	PersistentStrandNetworkStateStore,
 	peerKeySigner,
 	controlStorageScope,
@@ -50,7 +49,6 @@ import type {
 	TrustedOwnerStore,
 	BootstrapPeerStore,
 	EnrolledMachineStore,
-	StrandPeerBookStore,
 	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
@@ -80,7 +78,6 @@ import {
 	TRUSTED_OWNERS_KV_KEY,
 	BOOTSTRAP_PEERS_KV_KEY,
 	ENROLLED_MACHINES_KV_KEY,
-	STRAND_PEERS_KV_KEY,
 	STRAND_NETWORK_KV_KEY,
 } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
@@ -190,7 +187,6 @@ let ownerError: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
-let strandPeerBookStore: StrandPeerBookStore | null = null;
 let solicitationReady: Promise<void> | null = null;
 // NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
@@ -270,11 +266,6 @@ export function getTrustedOwnerStore(): TrustedOwnerStore | null {
 /** Node-local bootstrap-peer store — durable across reload once `startCadre` resolves. */
 export function getBootstrapPeerStore(): BootstrapPeerStore | null {
 	return bootstrapPeerStore;
-}
-
-/** Node-local strand peer book — durable across reload once `startCadre` resolves. */
-export function getStrandPeerBookStore(): StrandPeerBookStore | null {
-	return strandPeerBookStore;
 }
 
 /** Strands joined this session via the consent/invitation formation flow. */
@@ -383,13 +374,6 @@ export async function startCadre(): Promise<CadreNode> {
 		kvSlot(nodeLocalHandle, ENROLLED_MACHINES_KV_KEY),
 		partyId,
 	);
-	// The strand peers this tab has met, with their last-known addresses — what it
-	// dials first for each strand after a reload, so a formed strand re-meshes
-	// without a fresh invitation. Same database, its own key, dial hints only.
-	strandPeerBookStore = await PersistentStrandPeerBookStore.open(
-		kvSlot(nodeLocalHandle, STRAND_PEERS_KV_KEY),
-		partyId,
-	);
 	// Each strand node's saved network state — the FRET routing table it re-imports
 	// after a reload, with every peer's signed address record. Same database, its own
 	// key; FRET verifies each record at import.
@@ -456,7 +440,6 @@ export async function startCadre(): Promise<CadreNode> {
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
-		strandPeers: { store: strandPeerBookStore },
 		strandNetworkState: { store: strandNetworkStateStore },
 	};
 

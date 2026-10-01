@@ -106,6 +106,7 @@ import {
 	CadreNode,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
+	strandFretPeerAddrs,
 	strandMemberKeyPair,
 	summarizeConnectionPaths,
 	STRAND_ADDR_PROTOCOL,
@@ -477,23 +478,22 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand');
 		expectAllPathsRelayed(aStrandNode, bStrandPeerId, 'A strand');
 
-		// ── The signed book swap ran over the circuit ────────────────────────
-		// The only path between the two strand nodes is relayed, so the swap protocol
-		// (`/sereus/strand-peers/1.0.0`) opened its stream on a limited connection —
-		// which is what `runOnLimitedConnection` on its handler and dial is for. Each
-		// peer book holds the other side's self-signed entry, every address in it
-		// circuit-routed and bound to that peer's strand transport id.
-		const signedEntryFor = (node: CadreNode, peerId: string) =>
-			node.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === peerId && e.sig !== undefined);
+		// ── Each side's signed address record crossed the circuit ────────────
+		// The only path between the two strand nodes is relayed. Each node's FRET table
+		// must still end up holding the other side's signed address record — what the
+		// address refresh keeps dialable and what a restart re-imports — with every
+		// address in it circuit-routed and bound to that peer's strand transport id.
+		const recordedAddrs = async (node: Libp2p, peerId: string): Promise<string[]> =>
+			((await strandFretPeerAddrs(node)).peers.get(peerId) ?? []).map(String);
 		await waitUntil(
-			() => signedEntryFor(A!, bStrandPeerId) !== undefined && signedEntryFor(B!, aStrandPeerId) !== undefined,
-			{ ...GATE, description: "both strand peer books hold the other side's self-signed entry after the swap over the circuit" },
+			async () => (await recordedAddrs(aStrandNode, bStrandPeerId)).length > 0
+				&& (await recordedAddrs(bStrandNode, aStrandPeerId)).length > 0,
+			{ ...GATE, description: "both strand nodes' FRET tables hold the other side's signed address record, learned over the circuit" },
 		);
-		for (const [entry, peerId] of [[signedEntryFor(A, bStrandPeerId)!, bStrandPeerId], [signedEntryFor(B, aStrandPeerId)!, aStrandPeerId]] as const) {
-			expect(entry.addrs.length).toBeGreaterThan(0);
-			for (const addr of entry.addrs) {
-				expect(isCircuit(addr)).toBe(true);
-				expect(addr.endsWith(`/p2p/${peerId}`)).toBe(true);
+		for (const [node, peerId] of [[aStrandNode, bStrandPeerId], [bStrandNode, aStrandPeerId]] as const) {
+			for (const addr of await recordedAddrs(node, peerId)) {
+				expect(isCircuit(addr), addr).toBe(true);
+				expect(addr.endsWith(`/p2p/${peerId}`), addr).toBe(true);
 			}
 		}
 
@@ -502,7 +502,7 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// per network — every strand a NAT'd node joins costs one extra relay
 		// slot per node, regardless of whose party the other end is. Per relay
 		// in the per-party arm: 2 on each, none on the relay a node only dials
-		// through (the strand mesh and book swap have run by now).
+		// through (the strand mesh has formed by now).
 		tally.check('with the strand meshed');
 		console.log('[blind-relay] reservations with one cross-party strand running (2 control + 2 strand): %s',
 			relays.map((r, i) => `relay ${i + 1}: ${r.reservationCount()}`).join(', '));
