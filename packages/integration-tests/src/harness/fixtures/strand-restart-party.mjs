@@ -10,7 +10,7 @@
  *
  *   - `keys/`     `FileKeyStore` — the identity key, and (as the node's default
  *                 `joinedStrands` store over its `keyStore`) the strands joined from another party;
- *   - `node/`     `FileStrandPeerBookStore` — the strand peer book;
+ *   - `node/`     `FileStrandNetworkStateStore` — each strand node's saved network state;
  *   - `storage/`  one `FileRawStorage` directory per storage scope, cadre-cli's layout.
  *
  * The node config mirrors `harness/node-fixtures.ts` `controlNodeConfig`, which this plain
@@ -33,7 +33,7 @@ import {
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
 import { FileKeyStore } from '@serfab/cadre-core/key-store-file';
-import { FileStrandPeerBookStore } from '@serfab/cadre-core/strand-peer-book-file';
+import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 
 const YEAR_MS = 365 * 24 * 3600_000;
 const POLL_MS = 250;
@@ -52,7 +52,7 @@ const node = new CadreNode({
 	hostUnclaimedStrands: false,
 	storage: { provider: (scope) => new FileRawStorage(join(stateDir, 'storage', scope)) },
 	keyStore,
-	strandPeers: { store: await FileStrandPeerBookStore.open(join(stateDir, 'node'), partyId) },
+	strandNetworkState: { store: await FileStrandNetworkStateStore.open(join(stateDir, 'node'), partyId) },
 	network: {
 		transports: [webSockets(), circuitRelayTransport()],
 		listenAddrs: [],
@@ -160,12 +160,24 @@ const handlers = {
 		return {};
 	},
 
+	async waitSavedAddressRecord({ strandId, peerId, timeoutMs }) {
+		await pollFor(
+			() => (node.getStrandNetworkStateStore().load(strandId)?.fretTable?.entries
+				.some((entry) => entry.id === peerId && entry.addressRecord !== undefined) ? true : undefined),
+			timeoutMs,
+			`the saved network state to hold ${peerId} with an address record (a timeout here is the timing of db-p2p's saves)`,
+		);
+		return {};
+	},
+
 	async waitSignedEntry({ strandId, peerId, issuedSince, timeoutMs }) {
 		const entry = await pollFor(
 			() => node.getStrandPeerBookStore().entries(strandId)
-				.find((e) => e.peerId === peerId && e.sig !== undefined && e.issuedAt >= issuedSince),
+				// With addresses: a node that dialed before its own relay reservation landed first
+				// swaps an entry listing none, and re-signs once the reservation is in.
+				.find((e) => e.peerId === peerId && e.sig !== undefined && e.issuedAt >= issuedSince && e.addrs.length > 0),
 			timeoutMs,
-			`a signed book entry for ${peerId} issued at or after ${issuedSince}`,
+			`a signed book entry for ${peerId}, with addresses, issued at or after ${issuedSince}`,
 		);
 		return { addrs: entry.addrs, issuedAt: entry.issuedAt };
 	},

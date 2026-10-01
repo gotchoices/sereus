@@ -5,9 +5,10 @@
  * drives it over the process's IPC channel.
  *
  * The child keeps everything a phone keeps on disk under `stateDir` — its identity key and
- * joined-strand records (`FileKeyStore`), its strand peer book (`FileStrandPeerBookStore`) and
- * its raw stores (`FileRawStorage`) — so a child that exits and is respawned over the same
- * directory is a real restart: a new process, with no module state carried over.
+ * joined-strand records (`FileKeyStore`), its strand network state
+ * (`FileStrandNetworkStateStore`) and its raw stores (`FileRawStorage`) — so a child that
+ * exits and is respawned over the same directory is a real restart: a new process, with no
+ * module state carried over.
  *
  * The child imports the BUILT `@serfab/cadre-core`, which the suite's stale-build guard
  * (`test/global-setup.ts`) already holds fresh.
@@ -51,7 +52,15 @@ export interface StrandRestartOps {
 		args: { strandId: string; key: string; val: string; timeoutMs: number };
 		result: Record<string, never>;
 	};
-	/** Poll until the book holds a signed entry for `peerId` issued at or after `issuedSince`. */
+	/** Poll until the SAVED network state holds `peerId` with an address record. */
+	waitSavedAddressRecord: {
+		args: { strandId: string; peerId: string; timeoutMs: number };
+		result: Record<string, never>;
+	};
+	/**
+	 * Poll until the (in-memory) book holds a signed entry for `peerId`, listing at least one
+	 * address, issued at or after `issuedSince`.
+	 */
 	waitSignedEntry: {
 		args: { strandId: string; peerId: string; issuedSince: number; timeoutMs: number };
 		result: { addrs: string[]; issuedAt: number };

@@ -37,6 +37,7 @@ import {
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
 	PersistentStrandPeerBookStore,
+	PersistentStrandNetworkStateStore,
 	peerKeySigner,
 	controlStorageScope,
 } from '@serfab/cadre-core';
@@ -80,6 +81,7 @@ import {
 	BOOTSTRAP_PEERS_KV_KEY,
 	ENROLLED_MACHINES_KV_KEY,
 	STRAND_PEERS_KV_KEY,
+	STRAND_NETWORK_KV_KEY,
 } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
@@ -388,6 +390,13 @@ export async function startCadre(): Promise<CadreNode> {
 		kvSlot(nodeLocalHandle, STRAND_PEERS_KV_KEY),
 		partyId,
 	);
+	// Each strand node's saved network state — the FRET routing table it re-imports
+	// after a reload, with every peer's signed address record. Same database, its own
+	// key; FRET verifies each record at import.
+	const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
+		kvSlot(nodeLocalHandle, STRAND_NETWORK_KV_KEY),
+		partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -448,6 +457,7 @@ export async function startCadre(): Promise<CadreNode> {
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
 		strandPeers: { store: strandPeerBookStore },
+		strandNetworkState: { store: strandNetworkStateStore },
 	};
 
 	node = new CadreNode(config);

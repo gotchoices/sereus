@@ -38,6 +38,13 @@ export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
 export const STRAND_PEERS_KV_KEY = 'strand-peers';
 
 /**
+ * `kv` key for the persisted strand network state — per strand, the FRET routing
+ * table its strand node saved, re-imported after a reload. Not trust-bearing: FRET
+ * verifies each address record at import.
+ */
+export const STRAND_NETWORK_KV_KEY = 'strand-network';
+
+/**
  * `kv` key for the tab's last-known enrolled-machine count — the control
  * network's block-repair yardstick, read back at the next launch because the
  * control node is built before the database holding the membership rows exists.

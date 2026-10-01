@@ -4,16 +4,18 @@
  * kept, both re-attach and report `active`, and a write made after the restart must still
  * cross.
  *
- * Before the strand peer book, it never did. A restarted strand node starts with an empty
- * libp2p peer store; a joiner's only record of the other party's strand addresses was the
- * formation reply, held in memory; and the delegate-announce seed pass asks the node's own
- * party's control siblings, which know nothing of a strand another party founded. So each
- * side came back with nothing to dial, the relay could not introduce them, and the strand
- * stayed split for as long as anyone waited (3 of 3 reporter runs, 180 to 600 s budgets,
- * cadre-core 1.5.0 and 1.6.0). What makes it converge now is the book
- * (`strand-peer-book.ts`, filled by formation, by every connection, and by the signed swap
- * in `strand-peer-book-swap.ts`) persisted through `strandPeers.store`, and the joined-strand
- * record (`joined-strand-store.ts`) that brings B's join back with no app-side list.
+ * With nothing saved, it never does. A restarted strand node starts with an empty libp2p
+ * peer store; a joiner's only record of the other party's strand addresses is the formation
+ * reply, held in memory; and the delegate-announce seed pass asks the node's own party's
+ * control siblings, which know nothing of a strand another party founded. So each side
+ * comes back with nothing to dial, the relay cannot introduce them, and the strand stays
+ * split for as long as anyone waits. What makes it converge is each strand node's saved
+ * network state (`strand-network-state.ts`, persisted through `strandNetworkState.store`):
+ * Optimystic's db-p2p saves the node's FRET routing table, whose entries carry each peer's
+ * signed address record, and the rebuilt node re-imports it, so FRET has an address to dial.
+ * The joined-strand record (`joined-strand-store.ts`) brings B's join back with no app-side
+ * list. The strand peer book is left at its in-memory default in every arm, so it dies with
+ * the node and contributes nothing across the restart.
  *
  * ── The topology ──
  *
@@ -27,30 +29,34 @@
  *   1. Phase 1: B reads A's first row.
  *   2. Control: A writes a second row before any restart and B must read it, so a phase 2
  *      failure cannot be a strand that never worked.
- *   3. Restart: B's node stops, then A's; two NEW `CadreNode`s are built over the same
- *      identity keys, raw stores, peer-book backing and joined-strand key store (everything a
- *      phone keeps on disk). Each claims its strand from `strand:discovered` — A's from its
+ *   3. Before anyone stops, each side's SAVED network state must hold the other side's
+ *      strand peer with an address record — the thing the restart depends on.
+ *   4. Restart: B's node stops, then A's; two NEW `CadreNode`s are built over the same
+ *      identity keys, raw stores, network-state backing and joined-strand key store (everything
+ *      a phone keeps on disk). Each claims its strand from `strand:discovered` — A's from its
  *      control database's `Strand` row, B's from the remembered join — and both reach
  *      `active`. B sometimes comes up `'syncing'` first: its kept store can lack a collection
  *      it read before (the bimodal re-attach recorded at `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`),
  *      and then it needs A to become writable.
- *   4. Phase 2: A writes, B reads; then B writes, A reads.
- *   5. Each book holds the other side's entry signed AFTER the restart (so the swap ran again
- *      on the rebuilt nodes), and every A↔B strand connection classifies `relayed`.
+ *   5. Phase 2: A writes, B reads; then B writes, A reads.
+ *   6. Each (in-memory) book holds the other side's entry signed AFTER the restart, so the
+ *      book swap ran again on the rebuilt nodes, and every A↔B strand connection classifies
+ *      `relayed`.
  *
  * ── The arms ──
  *
- * - Default: both books persist, and the scenario must pass.
- * - `RESTART_NEGATIVE_CONTROL=1`: both books are the in-memory default, which dies with the
- *   node — the pre-fix state — while the joined-strand record still persists. Phase 2 must
- *   NOT converge within its budget; the arm passes only when it does not. It has failed in
- *   both shapes the reporter could have seen: both strands `active` and never reconnected, or
- *   B stuck `'syncing'` with nobody to sync from. Opt-in because it costs that whole budget.
+ * - Default: both sides' network state persists, and the scenario must pass.
+ * - `RESTART_NEGATIVE_CONTROL=1`: both sides' network state is the in-memory default, which
+ *   dies with the node, while the joined-strand record still persists. Phase 2 must NOT
+ *   converge within its budget; the arm passes only when it does not, which is what shows
+ *   the default arm depends on the saved table. It fails in either shape a user could see:
+ *   both strands `active` and never reconnected, or B stuck `'syncing'` with nobody to sync
+ *   from. Opt-in because it costs that whole budget.
  * - `RESTART_TWO_PROCESS=1`: each party runs in its own `node` child process
  *   (`harness/fixtures/strand-restart-party.mjs`) over a temp directory with real on-disk
- *   stores (`FileRawStorage`, `FileKeyStore`, `FileStrandPeerBookStore`). The children exit
- *   after the control step and are respawned over the same directories, and the parent drives
- *   phase 2. Opt-in because it runs the whole journey a second time.
+ *   stores (`FileRawStorage`, `FileKeyStore`, `FileStrandNetworkStateStore`). The children
+ *   exit after the control step and are respawned over the same directories, and the parent
+ *   drives phase 2. Opt-in because it runs the whole journey a second time.
  *
  * ── Why the two-process arm exists ──
  *
@@ -86,7 +92,7 @@ import {
 	ControlFormationUsageRecorder,
 	InMemoryKeyStore,
 	KeyStoreJoinedStrandStore,
-	PersistentStrandPeerBookStore,
+	PersistentStrandNetworkStateStore,
 	generateStrandMemberKey,
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
@@ -128,6 +134,15 @@ const GATE = { timeoutMs: 60_000, intervalMs: 250 } as const;
  */
 const RESTART_GATE = { timeoutMs: 180_000, intervalMs: 500 } as const;
 
+/**
+ * The pre-restart gate's description, which is its failure message. db-p2p saves on
+ * `connection:open` and on a changed serving verdict, and FRET learns a peer's address record
+ * after the connection opened, so a save can miss the record; a timeout here is that timing.
+ */
+const SAVED_RECORD_GATE = "each side's SAVED network state to hold the other side's strand peer with an address record "
+	+ "before the restart (a timeout here is the timing of db-p2p's saves, which fire on connection:open and on a changed "
+	+ 'serving verdict rather than when FRET learns the record; it is not FRET failing to learn it)';
+
 const isCircuit = (addr: string): boolean => addr.includes('/p2p-circuit');
 
 /** Every App.Data row visible on one strand DB, via an unfiltered scan. */
@@ -150,7 +165,7 @@ function memorySlot(): DurableSlot {
 
 /**
  * Everything one party keeps across a restart: its identity, its raw stores, and the backing
- * of its two node-local stores. A rebuilt node is handed the same objects, which is what makes
+ * of its node-local stores. A rebuilt node is handed the same objects, which is what makes
  * the rebuild a restart rather than a new machine.
  */
 interface PartyHome {
@@ -159,18 +174,18 @@ interface PartyHome {
 	storage: RawStorageCapture;
 	/** Backs the joined-strand record; a new `KeyStoreJoinedStrandStore` reloads it per node. */
 	joinedKeys: InMemoryKeyStore;
-	/** Backs the strand peer book, reopened per node; undefined = the in-memory default (the negative control). */
-	bookSlot: DurableSlot | undefined;
+	/** Backs the strand network state, reopened per node; undefined = the in-memory default (the negative control). */
+	networkStateSlot: DurableSlot | undefined;
 	profile: 'storage' | 'transaction';
 }
 
-function partyHome(partyId: string, key: PrivateKey, profile: PartyHome['profile'], persistentBook: boolean): PartyHome {
+function partyHome(partyId: string, key: PrivateKey, profile: PartyHome['profile'], persistentNetworkState: boolean): PartyHome {
 	return {
 		partyId,
 		key,
 		storage: captureRawStorage(),
 		joinedKeys: new InMemoryKeyStore(),
-		bookSlot: persistentBook ? memorySlot() : undefined,
+		networkStateSlot: persistentNetworkState ? memorySlot() : undefined,
 		profile,
 	};
 }
@@ -186,8 +201,8 @@ async function startPartyNode(home: PartyHome, relay: DedicatedRelay): Promise<C
 		relayAddrs: [relay.dialAddr],
 		storageProvider: home.storage.provider,
 		joinedStrandStore: new KeyStoreJoinedStrandStore(home.joinedKeys, home.partyId),
-		...(home.bookSlot !== undefined
-			? { strandPeerBook: await PersistentStrandPeerBookStore.open(home.bookSlot, home.partyId) }
+		...(home.networkStateSlot !== undefined
+			? { strandNetworkStateStore: await PersistentStrandNetworkStateStore.open(home.networkStateSlot, home.partyId) }
 			: {}),
 	}));
 	await node.start();
@@ -230,6 +245,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, descriptio
 	}
 }
 
+/**
+ * `node`'s SAVED network state for the strand holds `peerId` with an address record — what a
+ * rebuilt strand node re-imports, and the only thing it can dial the other party from.
+ */
+function savedAddressRecordFor(node: CadreNode, strandId: string, peerId: string): boolean {
+	const table = node.getStrandNetworkStateStore()!.load(strandId)?.fretTable;
+	return table?.entries.some((entry) => entry.id === peerId && entry.addressRecord !== undefined) ?? false;
+}
+
 /** The signed entry `node`'s book holds for `peerId`, if any. */
 function signedEntryFor(node: CadreNode, strandId: string, peerId: string): StrandPeerEntry | undefined {
 	return node.getStrandPeerBookStore()!.entries(strandId).find((e) => e.peerId === peerId && e.sig !== undefined);
@@ -251,11 +275,11 @@ function connectedTo(node: Libp2p, peerId: string): boolean {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * The whole in-process journey. `persistentBook` false is the negative control: phase 2 is
- * then expected NOT to converge, and everything after it is skipped.
+ * The whole in-process journey. `persistentNetworkState` false is the negative control: phase 2
+ * is then expected NOT to converge, and everything after it is skipped.
  */
-async function runInProcess(persistentBook: boolean): Promise<void> {
-	const say = (msg: string, ...args: unknown[]): void => { console.log(`[RESTART ${persistentBook ? 'book' : 'no-book'}] ${msg}`, ...args); };
+async function runInProcess(persistentNetworkState: boolean): Promise<void> {
+	const say = (msg: string, ...args: unknown[]): void => { console.log(`[RESTART ${persistentNetworkState ? 'saved-table' : 'no-saved-table'}] ${msg}`, ...args); };
 	let relay: DedicatedRelay | undefined;
 	let A: CadreNode | undefined;
 	let B: CadreNode | undefined;
@@ -265,8 +289,8 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 		relay = await startDedicatedRelay();
 
-		const aHome = partyHome(`restart-a-${runTag}`, await generateKeyPair('Ed25519'), 'storage', persistentBook);
-		const bHome = partyHome(`restart-b-${runTag}`, await generateKeyPair('Ed25519'), 'transaction', persistentBook);
+		const aHome = partyHome(`restart-a-${runTag}`, await generateKeyPair('Ed25519'), 'storage', persistentNetworkState);
+		const bHome = partyHome(`restart-b-${runTag}`, await generateKeyPair('Ed25519'), 'transaction', persistentNetworkState);
 
 		// ── First incarnation: found, invite, form, attach (the blind-relay flow) ──
 		A = await startPartyNode(aHome, relay);
@@ -304,13 +328,16 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 		await aDb.exec("insert into App.Data (Key, Val) values ('control', 'written-on-A-before-restart')");
 		await waitUntil(async () => (await readDataRows(bDb)).get('control') === 'written-on-A-before-restart',
 			{ ...GATE, description: "control: B reads A's second row before any restart" });
-		// Both books hold the other side's self-signed entry before anyone stops, in BOTH arms,
-		// so the only difference the negative control makes is whether the book outlives the node.
+		// Each side's saved network state holds the other side's strand peer with an address
+		// record before anyone stops, in BOTH arms, so the only difference the negative control
+		// makes is whether that state outlives the node.
+		const savedAt = Date.now();
 		await waitUntil(
-			() => signedEntryFor(A!, strandId, bStrandPeerId) !== undefined && signedEntryFor(B!, strandId, aStrandPeerId) !== undefined,
-			{ ...GATE, description: "both strand peer books hold the other side's signed entry before the restart" },
+			() => savedAddressRecordFor(A!, strandId, bStrandPeerId) && savedAddressRecordFor(B!, strandId, aStrandPeerId),
+			{ ...GATE, description: SAVED_RECORD_GATE },
 		);
-		say('phase 1 and control converged; restarting (B stops first, then A)');
+		say('phase 1 and control converged; saved tables held both records %d ms after the control read; restarting (B stops first, then A)',
+			Date.now() - savedAt);
 
 		// ── Restart: B first, then A, then two NEW nodes over the same kept state ──
 		const bStopping = B;
@@ -349,9 +376,9 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 		const aDb2 = (await A.whenStrandWritable(strandId, { timeoutMs: RESTART_GATE.timeoutMs })).database!.getDatabase();
 		say('A strand writable at %d ms', since());
 
-		if (!persistentBook) {
-			// The negative control: with the book gone neither side has an address to dial, so
-			// B either stays gated (nothing to sync from) or comes up alone and never hears the row.
+		if (!persistentNetworkState) {
+			// The negative control: with the saved table gone neither side has an address to dial,
+			// so B either stays gated (nothing to sync from) or comes up alone and never hears the row.
 			await aDb2.exec("insert into App.Data (Key, Val) values ('phase-2-a', 'written-on-A-after-restart')");
 			await expect(waitUntil(async () => {
 				const bDb = B!.getStrand(strandId)?.database?.getDatabase();
@@ -359,8 +386,8 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 			}, { ...RESTART_GATE, description: 'phase 2: B reads the row A wrote after the restart' }))
 				.rejects.toThrow(/Timeout waiting for phase 2/);
 			await connected;
-			expect(connectedTo(bStrandNode, aStrandPeerId), 'the strand nodes found each other with no book').toBe(false);
-			say('negative control: phase 2 did not converge in %d ms; B strand %s (expected without a persistent book)',
+			expect(connectedTo(bStrandNode, aStrandPeerId), 'the strand nodes found each other with no saved network state').toBe(false);
+			say('negative control: phase 2 did not converge in %d ms; B strand %s (expected without saved network state)',
 				RESTART_GATE.timeoutMs, B.getStrand(strandId)?.status);
 			return;
 		}
@@ -382,13 +409,18 @@ async function runInProcess(persistentBook: boolean): Promise<void> {
 		await connected;
 
 		// ── The swap ran again on the rebuilt nodes, and everything is relayed ──
-		// An own entry is re-signed at every arm with an `issuedAt` past anything it signed
-		// before, so an entry stamped at or after the restart can only have come from a swap
-		// between the NEW nodes.
+		// The books are in-memory, so each rebuilt node started with an empty one: an entry
+		// stamped at or after the restart can only have come from a swap between the NEW nodes.
+		// Waited for WITH addresses: a strand node now dials from its saved table before its own
+		// relay reservation lands, so the first entry it swaps can truthfully list none, and the
+		// re-signed one follows once the reservation is in.
+		const reachableSince = (node: CadreNode, peerId: string): boolean => {
+			const entry = signedEntryFor(node, strandId, peerId);
+			return entry !== undefined && entry.issuedAt >= restartedAt && entry.addrs.length > 0;
+		};
 		await waitUntil(
-			() => (signedEntryFor(A!, strandId, bStrandPeerId)?.issuedAt ?? 0) >= restartedAt
-				&& (signedEntryFor(B!, strandId, aStrandPeerId)?.issuedAt ?? 0) >= restartedAt,
-			{ ...GATE, description: "each book holds the other side's entry signed after the restart" },
+			() => reachableSince(A!, bStrandPeerId) && reachableSince(B!, aStrandPeerId),
+			{ ...GATE, description: "each book holds the other side's entry, with addresses, signed after the restart" },
 		);
 		for (const [node, peerId] of [[A, bStrandPeerId], [B, aStrandPeerId]] as const) {
 			const entry = signedEntryFor(node, strandId, peerId)!;
@@ -436,8 +468,8 @@ async function runTwoProcess(): Promise<void> {
 		await B.request('waitRow', { strandId, key: 'phase-1', val: 'written-on-A', timeoutMs: GATE.timeoutMs });
 		await A.request('write', { strandId, key: 'control', val: 'written-on-A-before-restart' });
 		await B.request('waitRow', { strandId, key: 'control', val: 'written-on-A-before-restart', timeoutMs: GATE.timeoutMs });
-		await A.request('waitSignedEntry', { strandId, peerId: bStrandPeerId, issuedSince: 0, timeoutMs: GATE.timeoutMs });
-		await B.request('waitSignedEntry', { strandId, peerId: aStrandPeerId, issuedSince: 0, timeoutMs: GATE.timeoutMs });
+		await A.request('waitSavedAddressRecord', { strandId, peerId: bStrandPeerId, timeoutMs: GATE.timeoutMs });
+		await B.request('waitSavedAddressRecord', { strandId, peerId: aStrandPeerId, timeoutMs: GATE.timeoutMs });
 		say('phase 1 and control converged; both processes exit (B first, then A)');
 
 		// ── Restart: each process stops its node and exits; new processes over the same dirs ──
@@ -493,7 +525,7 @@ describe('relay-only restart re-convergence (gotchoices/sereus#18)', () => {
 		await runInProcess(true);
 	}, 600_000);
 
-	it.runIf(NEGATIVE_CONTROL)('negative control (RESTART_NEGATIVE_CONTROL=1): with in-memory books, phase 2 never converges', async () => {
+	it.runIf(NEGATIVE_CONTROL)('negative control (RESTART_NEGATIVE_CONTROL=1): with in-memory network state, phase 2 never converges', async () => {
 		await runInProcess(false);
 	}, 600_000);
 

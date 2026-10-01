@@ -8,8 +8,8 @@
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
  * - Stable Ed25519 identity persisted in SQLite (key 'peer-private-key')
  * - Durable node-local records (trusted-owner anchor, cold-start bootstrap
- *   peers, enrolled-machine count, strand peer book) and the saved start
- *   options in that same SQLite db — see node-local-slots.ts
+ *   peers, enrolled-machine count, strand peer book, strand network state) and
+ *   the saved start options in that same SQLite db — see node-local-slots.ts
  *
  * Mirrors packages/reference-app-rn/src/cadre-phone.ts with NS storage/identity.
  */
@@ -20,6 +20,7 @@ import {
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
 	PersistentStrandPeerBookStore,
+	PersistentStrandNetworkStateStore,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -46,6 +47,7 @@ import {
 	bootstrapPeersSlotKey,
 	enrolledMachinesSlotKey,
 	strandPeersSlotKey,
+	strandNetworkSlotKey,
 	kvSlot,
 	START_OPTIONS_SLOT_KEY,
 } from './node-local-slots';
@@ -108,9 +110,10 @@ interface IdentityDb {
 
 /**
  * The open (or opening) {@link PEER_IDENTITY_DB_NAME} SQLite database. It backs
- * things that deliberately share one fate: the Ed25519 identity BLOB, the four
+ * things that deliberately share one fate: the Ed25519 identity BLOB, the five
  * party-scoped node-local records (trusted-owner anchor, bootstrap peers,
- * enrolled-machine count, strand peer book) and the saved start options, each under
+ * enrolled-machine count, strand peer book, strand network state) and the saved start
+ * options, each under
  * its own key of `SqliteKVStore`'s `kv` table. This app has no Keychain/Keystore
  * integration (see the module comment), so the anchor is only as protected as the
  * plaintext identity it qualifies until that hardening lands — moving one without
@@ -242,6 +245,13 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
 		kvSlot(nodeLocalKv, strandPeersSlotKey(opts.partyId)),
 		opts.partyId,
 	);
+	// Each strand node's saved network state — the FRET routing table it re-imports
+	// after a relaunch, with every peer's signed address record. Same store, its own
+	// key; FRET verifies each record at import.
+	const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
+		kvSlot(nodeLocalKv, strandNetworkSlotKey(opts.partyId)),
+		opts.partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -263,6 +273,7 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
 		strandPeers: { store: strandPeerBookStore },
+		strandNetworkState: { store: strandNetworkStateStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.

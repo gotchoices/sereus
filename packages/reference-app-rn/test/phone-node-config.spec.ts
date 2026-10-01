@@ -4,6 +4,7 @@ import {
 	InMemoryKeyStore,
 	MemoryBootstrapPeerStore,
 	MemoryEnrolledMachineStore,
+	MemoryStrandNetworkStateStore,
 	MemoryStrandPeerBookStore,
 	MemoryTrustedOwnerStore,
 	RELAY_SEARCH_LISTEN_ADDR,
@@ -44,6 +45,7 @@ function config(relayAddrs: string[] = []) {
 		bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 		enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
 		strandPeerBookStore: new MemoryStrandPeerBookStore(partyId),
+		strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
 	});
 }
 

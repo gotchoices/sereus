@@ -683,19 +683,23 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   control and strand node), none on the relay a node only dials through — stable over three
   runs on 2026-09-29, 2.8–2.9 s each.
 - Relayed strand plane across parties, RESTARTED over persisted storage (the line above's
-  shape; after a write has crossed, both machines stop and are rebuilt over the identity key,
-  raw stores, strand peer book and joined-strand record they kept, each re-claims its strand
-  from `strand:discovered`, a write made after the restart must cross both ways, each book
-  must hold the other side's entry re-signed after the restart, and every strand connection
-  classifies `relayed`) — `strand-relay-only-restart-reconverges.integration.ts`, the
-  reproduction of gotchoices/sereus#18. Two opt-in arms: `RESTART_NEGATIVE_CONTROL=1` runs it
-  with in-memory peer books and passes only if the post-restart write never crosses within its
-  180 s budget (the behaviour before the book), and `RESTART_TWO_PROCESS=1` runs each party in
-  its own `node` process over on-disk stores in a temp directory
-  (`harness/strand-restart-party.ts`, `harness/fixtures/strand-restart-party.mjs`), because a
-  restart inside one process reopens the same live in-memory stores and keeps module state.
-  The two-process arm takes about 12 s and could run by default; it is opt-in only because the
-  in-process arm already gates the behaviour. Loopback-instant link, one shared relay.
+  shape; after a write has crossed and each side's SAVED strand network state holds the other
+  side's strand peer with an address record, both machines stop and are rebuilt over the
+  identity key, raw stores, strand network state and joined-strand record they kept, each
+  re-claims its strand from `strand:discovered`, a write made after the restart must cross
+  both ways, each peer book must hold the other side's entry re-signed after the restart, and
+  every strand connection classifies `relayed`) —
+  `strand-relay-only-restart-reconverges.integration.ts`, the reproduction of
+  gotchoices/sereus#18. The strand peer book is the in-memory default in every arm, so what
+  carries the addresses across the restart is the saved FRET table alone. Two opt-in arms:
+  `RESTART_NEGATIVE_CONTROL=1` runs it with the network state in memory too and passes only if
+  the post-restart write never crosses within its 180 s budget, and `RESTART_TWO_PROCESS=1`
+  runs each party in its own `node` process over on-disk stores in a temp directory
+  (`FileStrandNetworkStateStore`; `harness/strand-restart-party.ts`,
+  `harness/fixtures/strand-restart-party.mjs`), because a restart inside one process reopens
+  the same live in-memory stores and keeps module state. The two-process arm takes 12–15 s and
+  could run by default; it is opt-in only because the in-process arm already gates the
+  behaviour. Loopback-instant link, one shared relay.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the

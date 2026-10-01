@@ -267,7 +267,7 @@ describe('startPhoneNode identity database', () => {
 		expect(H.state.kvConstructions[0]!.prefix).toBe('');
 	});
 
-	it('reads exactly the four node-local keys during start, and writes only the start options', async () => {
+	it('reads exactly the five node-local keys during start, and writes only the start options', async () => {
 		const { startPhoneNode } = await loadModule();
 		await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
 
@@ -276,6 +276,7 @@ describe('startPhoneNode identity database', () => {
 			`bootstrap-peers.${PARTY}`,
 			`enrolled-machines.${PARTY}`,
 			`strand-peers.${PARTY}`,
+			`strand-network.${PARTY}`,
 		]);
 		// Cold start reads the party-scoped records; it does not write them. A write
 		// there would mean an empty snapshot overwriting a record some other code path

@@ -19,6 +19,7 @@ import {
   PersistentBootstrapPeerStore,
   PersistentEnrolledMachineStore,
   PersistentStrandPeerBookStore,
+  PersistentStrandNetworkStateStore,
   loadOrCreateIdentityKey,
   peerKeySigner,
 } from '@serfab/cadre-core';
@@ -49,6 +50,7 @@ import {
   bootstrapPeersKvKey,
   enrolledMachinesKvKey,
   strandPeersKvKey,
+  strandNetworkKvKey,
   kvStoreSlot,
   secureStoreSlot,
   NODE_LOCAL_DB_NAME,
@@ -276,6 +278,13 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
     nodeLocalKvSlot(strandPeersKvKey(opts.partyId)),
     opts.partyId,
   );
+  // Each strand node's saved network state — the FRET routing table it re-imports
+  // after a relaunch, with every peer's signed address record. Same LevelDB, its own
+  // key, and not trust-bearing: FRET verifies each record at import.
+  const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
+    nodeLocalKvSlot(strandNetworkKvKey(opts.partyId)),
+    opts.partyId,
+  );
 
   // Resolve the identity key HERE, before the manifest fetch, so the request can
   // be signed with the very key the CadreNode below then loads from the same slot
@@ -340,6 +349,7 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
     bootstrapPeerStore,
     enrolledMachineStore,
     strandPeerBookStore,
+    strandNetworkStateStore,
   }));
   node = built;
   nodeNoiseCryptoMode = noiseCryptoMode;

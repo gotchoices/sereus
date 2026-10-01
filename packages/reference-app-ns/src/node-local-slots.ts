@@ -58,6 +58,15 @@ export function strandPeersSlotKey(partyId: string): string {
 }
 
 /**
+ * `SqliteKVStore` key for a party's strand network state — per strand, the FRET
+ * routing table its strand node saved, re-imported after a relaunch. Its own key;
+ * not trust-bearing (FRET verifies each address record at import).
+ */
+export function strandNetworkSlotKey(partyId: string): string {
+	return `strand-network.${partyId}`;
+}
+
+/**
  * The subset of `SqliteKVStore` (`@optimystic/db-p2p-storage-ns`) a slot
  * needs. Declared locally — mirroring `KvStoreApi` in
  * reference-app-rn/src/node-local-slots.ts — so tests can pass an in-memory

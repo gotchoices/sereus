@@ -23,6 +23,7 @@ import type {
   JoinedStrandStore,
   RawStorageProvider,
   SAppConfig,
+  StrandNetworkStateStore,
   StrandPeerBookStore,
 } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
@@ -164,6 +165,13 @@ export interface ControlNodeOpts {
    */
   strandPeerBook?: StrandPeerBookStore;
   /**
+   * Becomes `strandNetworkState.store` verbatim — the node-local strand network state
+   * (per strand, the FRET routing table its strand node saves and re-imports). Left
+   * unset the node gets an in-memory store that dies with it. Same restart rule as
+   * {@link bootstrapPeerStore}.
+   */
+  strandNetworkStateStore?: StrandNetworkStateStore;
+  /**
    * Becomes `joinedStrands.store` verbatim — the record of strands this node joined from
    * ANOTHER party, re-offered as `strand:discovered` on every start. Left unset a node
    * built with `privateKey` (no `keyStore`) remembers joins in memory only.
@@ -248,6 +256,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
     ...(opts.strandPeerBook ? { strandPeers: { store: opts.strandPeerBook } } : {}),
+    ...(opts.strandNetworkStateStore ? { strandNetworkState: { store: opts.strandNetworkStateStore } } : {}),
     ...(opts.joinedStrandStore ? { joinedStrands: { store: opts.joinedStrandStore } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },
   };

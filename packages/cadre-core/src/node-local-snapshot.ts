@@ -7,7 +7,10 @@
  *  - the cold-start bootstrap-peer store (`bootstrap-peer-store.ts`),
  *  - the strand peer book (`strand-peer-book.ts`), whose entries are one map per
  *    strand rather than one value per key — the validation hook below is what
- *    lets it drop a single junk peer without dropping the strand.
+ *    lets it drop a single junk peer without dropping the strand,
+ *  - the strand network state (`strand-network-state.ts`): per strand, the state
+ *    Optimystic's db-p2p saved for the strand node, opaque here past a structural
+ *    check.
  *
  * ANOTHER node-local record — the enrolled-machine count
  * (`enrolled-machine-store.ts`) — reuses {@link DurableSlot} but deliberately
@@ -72,10 +75,10 @@ const ENVELOPE_VERSION = 1;
  *    in full is not an anchor. Trusting a *subset* of the keys a file claims is
  *    a silent, security-relevant downgrade, so the whole record is discarded
  *    and the node trusts no one until re-seeded out of band.
- *  - `'drop-entry'` (the bootstrap-peer store and the strand peer book): the
- *    record is a best-effort dial list and nothing in it is trust-bearing, so one
- *    junk entry must not discard a stranded node's only remaining way back to
- *    its party or its strand's peers.
+ *  - `'drop-entry'` (the bootstrap-peer store, the strand peer book and the
+ *    strand network state): the record is a best-effort dial list and nothing in
+ *    it is trust-bearing, so one junk entry must not discard a stranded node's
+ *    only remaining way back to its party or its strand's peers.
  */
 export type UnusableEntryPolicy = 'discard-all' | 'drop-entry';
 
@@ -147,6 +150,11 @@ export class NodeLocalSnapshot<E> {
 
 	has(key: string): boolean {
 		return this.entries.has(key);
+	}
+
+	/** The entry held for `key`, if any. Needs no copy: {@link put} replaces an entry, never mutates it. */
+	get(key: string): E | undefined {
+		return this.entries.get(key);
 	}
 
 	/** Fresh copy of the keys — a snapshot decoupled from later {@link put} / {@link remove} calls. */

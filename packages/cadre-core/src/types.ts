@@ -12,6 +12,7 @@ import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 import type { StrandPeerBookStore } from './strand-peer-book.js';
+import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
@@ -1056,6 +1057,32 @@ export interface CadreNodeConfig {
      * `controlNetwork.partyId`; start() fails closed on a mismatch.
      */
     store?: StrandPeerBookStore;
+  };
+
+  /**
+   * Node-local strand network state (see `strand-network-state.ts`): per strand, the
+   * state Optimystic's db-p2p saves for the strand's libp2p node — its FRET routing
+   * table, each entry carrying the peer's signed address record. A strand node reads
+   * it back when it is built and re-imports the table, so a restarted machine already
+   * holds addresses for the strand peers it was talking to (gotchoices/sereus#18).
+   * Sibling of {@link bootstrapPeers} — same NON-replicated, per-party,
+   * injected-backend shape — and, like it, nothing here is trust-bearing: FRET
+   * verifies every record at import.
+   *
+   * Absent ⇒ an in-memory store is created at start() (ephemeral: a restarted process
+   * starts every strand with an empty routing table). Every reference embedder
+   * injects a durable backend over the same slot kind as its bootstrap-peer store. A
+   * new platform needs no new store class: supply a `DurableSlot` and inject
+   * `PersistentStrandNetworkStateStore.open(slot, partyId)`.
+   */
+  strandNetworkState?: {
+    /**
+     * Injected store instance — e.g. a `FileStrandNetworkStateStore` from the
+     * Node-only subpath `@serfab/cadre-core/strand-network-state-file`, persisted in
+     * the node's state directory. Its `partyId` must match
+     * `controlNetwork.partyId`; start() fails closed on a mismatch.
+     */
+    store?: StrandNetworkStateStore;
   };
 
   /**

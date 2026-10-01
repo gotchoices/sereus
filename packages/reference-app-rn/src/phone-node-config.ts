@@ -16,6 +16,7 @@ import type {
 	CadreNodeConfig,
 	EnrolledMachineStore,
 	KeyStore,
+	StrandNetworkStateStore,
 	StrandPeerBookStore,
 	TrustedOwnerStore,
 } from '@serfab/cadre-core';
@@ -81,6 +82,7 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	bootstrapPeerStore: BootstrapPeerStore;
 	enrolledMachineStore: EnrolledMachineStore;
 	strandPeerBookStore: StrandPeerBookStore;
+	strandNetworkStateStore: StrandNetworkStateStore;
 }
 
 /**
@@ -174,6 +176,7 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 		bootstrapPeers: { store: inputs.bootstrapPeerStore },
 		enrolledMachines: { store: inputs.enrolledMachineStore },
 		strandPeers: { store: inputs.strandPeerBookStore },
+		strandNetworkState: { store: inputs.strandNetworkStateStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.

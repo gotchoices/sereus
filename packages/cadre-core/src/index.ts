@@ -145,6 +145,16 @@ export {
   type StrandPeerBookOptions,
   type StrandPeerEntry
 } from './strand-peer-book.js';
+// Node-local strand network state: per strand, the state Optimystic's db-p2p saves for
+// the strand node (its FRET routing table with each peer's signed address record), so a
+// restarted strand node re-imports the peers it was talking to. Same cross-platform
+// split — Node-only file backend behind '@serfab/cadre-core/strand-network-state-file'.
+export {
+  MemoryStrandNetworkStateStore,
+  PersistentStrandNetworkStateStore,
+  strandNetworkStatePersistence,
+  type StrandNetworkStateStore
+} from './strand-network-state.js';
 export {
   StrandPeerObserver,
   dialableAddrs,

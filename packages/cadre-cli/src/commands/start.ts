@@ -15,6 +15,7 @@ import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-fi
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandPeerBookStore } from '@serfab/cadre-core/strand-peer-book-file';
+import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import { fromString } from 'uint8arrays';
 import { resolveConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
@@ -214,6 +215,14 @@ export const startCommand = new Command('start')
         config.controlNetwork.partyId,
       );
 
+      // Each strand node's saved network state, kept in the same directory: the FRET
+      // routing table it re-imports after a restart, with every peer's signed address
+      // record. Not trust-bearing either — FRET verifies each record at import.
+      const strandNetworkStateStore = await FileStrandNetworkStateStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
@@ -224,6 +233,7 @@ export const startCommand = new Command('start')
         bootstrapPeers: { store: bootstrapPeerStore },
         enrolledMachines: { store: enrolledMachineStore },
         strandPeers: { store: strandPeerBookStore },
+        strandNetworkState: { store: strandNetworkStateStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile

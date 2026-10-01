@@ -29,6 +29,7 @@ import {
 	bootstrapPeersKvKey,
 	enrolledMachinesKvKey,
 	strandPeersKvKey,
+	strandNetworkKvKey,
 	NODE_LOCAL_DB_NAME,
 	NODE_LOCAL_KV_PREFIX,
 	type KvStoreApi,
@@ -175,10 +176,11 @@ describe('key-shape helpers', () => {
 	});
 
 	it('gives the LevelDB records distinct keys, so no snapshot write clobbers another', () => {
-		const keys = [bootstrapPeersKvKey('p'), enrolledMachinesKvKey('p'), strandPeersKvKey('p')];
+		const keys = [bootstrapPeersKvKey('p'), enrolledMachinesKvKey('p'), strandPeersKvKey('p'), strandNetworkKvKey('p')];
 		expect(new Set(keys).size).toBe(keys.length);
-		// A persistence contract, like the two above: renaming it orphans every phone's book.
+		// Persistence contracts, like the two above: renaming one orphans every phone's record.
 		expect(strandPeersKvKey('p')).toBe('strand-peers.p');
+		expect(strandNetworkKvKey('p')).toBe('strand-network.p');
 	});
 
 	it('pins the database name and kv prefix', () => {

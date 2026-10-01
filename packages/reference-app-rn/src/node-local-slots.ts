@@ -2,9 +2,10 @@
  * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's
  * **node-local** records: the trusted-owner anchor (`PersistentTrustedOwnerStore`),
  * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`), the
- * enrolled-machine count (`PersistentEnrolledMachineStore`) and the strand peer book
- * (`PersistentStrandPeerBookStore`), all from `@serfab/cadre-core` — plus the app's own
- * saved start options (`start-options.ts`). Wired in `cadre-phone.ts`.
+ * enrolled-machine count (`PersistentEnrolledMachineStore`), the strand peer book
+ * (`PersistentStrandPeerBookStore`) and the strand network state
+ * (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — plus the app's
+ * own saved start options (`start-options.ts`). Wired in `cadre-phone.ts`.
  *
  * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
  * different security properties and a different size.
@@ -135,6 +136,17 @@ export function strandPeersKvKey(partyId: string): string {
 }
 
 /**
+ * `LevelDBKVStore` key for a party's strand network state — per strand, the FRET
+ * routing table its strand node saved, re-imported after a relaunch. Same database
+ * and shape as {@link bootstrapPeersKvKey}, its own key; not trust-bearing (FRET
+ * verifies each address record at import), and a routing table would not fit secure
+ * store either.
+ */
+export function strandNetworkKvKey(partyId: string): string {
+	return `strand-network.${partyId}`;
+}
+
+/**
  * The subset of `LevelDBKVStore` (`@optimystic/db-p2p-storage-rn`) a slot needs.
  * Declared locally — mirroring {@link SecureStoreApi} — so tests can pass an
  * in-memory fake and no native module lands in a Node test graph. The real
@@ -193,7 +205,8 @@ export function secureStoreSlot(
 /**
  * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for every
  * non-trust-bearing record (the bootstrap-peer store, the enrolled-machine count, the
- * strand peer book and the saved start options), each over its own key.
+ * strand peer book, the strand network state and the saved start options), each over
+ * its own key.
  *
  * A direct pass-through: the KV store already deals in text and already reports
  * an absent key as `undefined`, and a read fault throws out of `get`, which is

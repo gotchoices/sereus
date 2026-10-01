@@ -57,6 +57,7 @@ import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryStrandPeerBookStore, type StrandPeerBookStore, type StrandPeerEntry } from './strand-peer-book.js';
+import { MemoryStrandNetworkStateStore, type StrandNetworkStateStore } from './strand-network-state.js';
 import type { StrandPeerObservation } from './strand-peer-observer.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
 import {
@@ -647,6 +648,25 @@ export class CadreNode implements SAppIdLookup {
   private strandPeerBookStore: StrandPeerBookStore | null = null;
 
   /**
+   * Node-local strand network state (see `strand-network-state.ts`): per strand, the
+   * state db-p2p saves for the strand's libp2p node — its FRET routing table with each
+   * peer's signed address record. Handed to every strand launch as
+   * `StartStrandConfig.networkState`; the strand node saves into it on every connection
+   * and re-imports it when it is next built, which is what gives a restarted strand
+   * node addresses for the peers it was talking to.
+   *
+   * Constructed (or adopted from `config.strandNetworkState.store`) by
+   * {@link initializeStrandNetworkStateStore} during {@link start}, deliberately NOT
+   * cleared by {@link cleanup}, so it survives a stop()→start() cycle of the same node
+   * instance — same lifecycle as {@link strandPeerBookStore}.
+   *
+   * A strand's state survives a {@link stopStrand} and a hibernation quiesce, and is
+   * forgotten where the peer book's entries are: {@link unpublishStrand},
+   * {@link forgetJoinedStrand} and self-revocation.
+   */
+  private strandNetworkStateStore: StrandNetworkStateStore | null = null;
+
+  /**
    * PENDING strand membership invitations learned at formation, keyed by strandId — the
    * single-use `Strand.Invite` credential a closed-strand formation result carried back
    * ({@link FormStrandResult.membershipInvite}), waiting for this node's strand bring-up
@@ -1117,6 +1137,9 @@ export class CadreNode implements SAppIdLookup {
       // The strand peer book those joins are dialed from. Same placement, same reason.
       this.initializeStrandPeerBookStore();
 
+      // Each strand node's saved network state. Same placement, same reason.
+      this.initializeStrandNetworkStateStore();
+
       // Read the party's enrolled-machine count out of its node-local record and
       // capture it for buildControlNodeOptions below. This MUST precede
       // createControlNode: Optimystic freezes the cluster policy when the node is
@@ -1566,6 +1589,30 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Construct (or adopt) the node-local strand network state (see
+   * {@link strandNetworkStateStore}). Synchronous for the reason
+   * {@link initializeBootstrapPeerStore} is: an injected store has already loaded its
+   * persisted entries by the time it is handed in, and the in-memory fallback has
+   * nothing to load. The instance is kept across stop()→start(). A store scoped to a
+   * different party is a configuration error, fail closed: another party's routing
+   * tables must never be imported into this node's strands.
+   */
+  private initializeStrandNetworkStateStore(): void {
+    const partyId = this.config.controlNetwork.partyId;
+    if (this.strandNetworkStateStore) {
+      return;
+    }
+    const store = this.config.strandNetworkState?.store ?? new MemoryStrandNetworkStateStore(partyId);
+    if (store.partyId !== partyId) {
+      throw new Error(
+        `CadreNodeConfig: strandNetworkState.store is scoped to party ${store.partyId}, ` +
+        `but this node serves party ${partyId} — refusing to mix strand network state`
+      );
+    }
+    this.strandNetworkStateStore = store;
+  }
+
+  /**
    * The node-local enrolled-machine store (null before {@link start}) — what this
    * node last knew about its party's size. Exposed for diagnostics and for a host
    * that wants to show which repair yardstick the next launch will declare.
@@ -1592,6 +1639,16 @@ export class CadreNode implements SAppIdLookup {
    */
   getStrandPeerBookStore(): StrandPeerBookStore | null {
     return this.strandPeerBookStore;
+  }
+
+  /**
+   * The node-local strand network state (null before {@link start}) — per strand, the
+   * state its strand node last saved and will re-import when next built. Exposed for
+   * diagnostics and for a host that wants to show "what routing table would this
+   * strand restart with?".
+   */
+  getStrandNetworkStateStore(): StrandNetworkStateStore | null {
+    return this.strandNetworkStateStore;
   }
 
   /**
@@ -5918,6 +5975,10 @@ export class CadreNode implements SAppIdLookup {
       // the launch config too. `?? undefined`: the field is `null` before start(), and a
       // strand cannot launch before start(), so this is belt and braces.
       strandPeerBook: this.strandPeerBookStore ?? undefined,
+      // Where the strand node saves its network state and what it re-imports when it is
+      // built. Retained with the launch config, so a hibernation wake rebuilds the node
+      // over the table the quiesced node last saved. `?? undefined` as above.
+      networkState: this.strandNetworkStateStore ?? undefined,
       onRejoinBlocked: (blockedStrandId) => this.emit('strand:rejoin-blocked', { strandId: blockedStrandId }),
       // The joiner's first-sync write gate (strand-first-sync-gate.ts): a launch that
       // comes up `'syncing'` announces the moment its database is published.
@@ -6668,13 +6729,17 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Forget a strand's entries in the peer book (see {@link strandPeerBookStore}):
-   * fire-and-log, like every book write — the removal is visible synchronously by the
-   * store's contract, and a failed persist costs restart survival only.
+   * Forget a strand's entries in the peer book (see {@link strandPeerBookStore}) and its
+   * saved network state (see {@link strandNetworkStateStore}): fire-and-log, like every
+   * write to either — the removal is visible synchronously by the stores' contract, and
+   * a failed persist only leaves the entry on disk for the next start.
    */
   private forgetStrandPeers(strandId: string, caller: string): void {
     void this.strandPeerBookStore?.forget(strandId).catch((error: unknown) => {
       log('%s: forgetting strand %s peers failed (continuing): %o', caller, strandId, error);
+    });
+    void this.strandNetworkStateStore?.forget(strandId).catch((error: unknown) => {
+      log('%s: forgetting strand %s network state failed (continuing): %o', caller, strandId, error);
     });
   }
 

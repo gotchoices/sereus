@@ -7,6 +7,7 @@ import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backf
 import { StrandPeerObserver, type StrandPeerObservation } from './strand-peer-observer.js';
 import { StrandPeerBookSwap } from './strand-peer-book-swap.js';
 import type { StrandPeerBookStore } from './strand-peer-book.js';
+import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
@@ -294,6 +295,16 @@ export interface StartStrandConfig {
    * launch config, so a hibernation wake re-arms the swap on the rebuilt node.
    */
   strandPeerBook?: StrandPeerBookStore;
+
+  /**
+   * The node-local strand network state (`strand-network-state.ts`): this strand's
+   * slice of it is handed to db-p2p as `persistence`, so the strand node saves its
+   * FRET routing table (with each peer's signed address record) on every connection
+   * and re-imports it when it is next built. Absent ⇒ nothing is saved and the node
+   * starts with an empty table. `CadreNode` passes its store. Retained with the launch
+   * config, so a hibernation wake rebuilds the node over the same state.
+   */
+  networkState?: StrandNetworkStateStore;
 }
 
 /**
@@ -821,6 +832,18 @@ export class StrandInstanceManager {
           enableRingZulu: config.profile === 'storage'
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
+        // Built per runtime, not per launch: the adapter stops saving once the strand's
+        // state is forgotten, and a rebuilt runtime is what starts it saving again.
+        //
+        // NOTE: the saved state also restores which peers db-p2p saw serving the strand,
+        // and it counts them in the cohort until FRET finds them unreachable. A node built
+        // while every other member is offline therefore fails its first writes ("Failed to
+        // get super-majority") — for 4-6 s on loopback, the window a running node already
+        // sees when a member drops. If apps report failed sends after relaunching alone on
+        // a slow relayed link, retry the write in the app or raise it upstream (db-p2p's
+        // remembered-serving fallback); dropping `persistence` brings back the split
+        // restart.
+        ...(config.networkState && { persistence: strandNetworkStatePersistence(config.networkState, strandId) }),
         ...(config.network?.transports && { transports: config.network.transports }),
         ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
         // Unconditional, and the same default the control node takes: every node of
