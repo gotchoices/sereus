@@ -109,7 +109,7 @@ afterEach(() => {
   current = undefined;
 });
 
-function harness(script: ScriptedAttempt[], row: PendingJoinRow = pendingRow()): Harness {
+function harness(script: ScriptedAttempt[], row: PendingJoinRow = pendingRow(), overrides: Partial<PendingJoinRunnerDeps> = {}): Harness {
   const clock = manualClock();
   const table = new Map<string, PendingJoinRow>([[row.Id, row]]);
   let stamps = 0;
@@ -144,6 +144,7 @@ function harness(script: ScriptedAttempt[], row: PendingJoinRow = pendingRow()):
     now: clock.now,
     random: () => 0.5, // no jitter
     scheduler: clock.scheduler,
+    ...overrides,
   };
   Object.assign(h, {
     runner: new PendingJoinRunner(deps),
@@ -210,6 +211,15 @@ describe('PendingJoinRunner', () => {
       attempts: 1,
       row: { Outcome: 'joined', StrandId: 'strand-mine', FailureCode: null },
     },
+    {
+      name: 'a failure replaces the same request re-issued by another machine while it ran',
+      script: [(h) => {
+        h.siblingWrites({});
+        return Promise.reject(new FormationRejectedError('approval-refused', 'not this one'));
+      }],
+      attempts: 1,
+      row: { Outcome: 'failed', FailureCode: 'approval-refused' },
+    },
   ];
 
   for (const { name, script, attempts, row } of cases) {
@@ -244,5 +254,18 @@ describe('PendingJoinRunner', () => {
     await h.clock.advance(0);
     expect(h.attempts).toBe(0);
     expect(h.row()).toMatchObject({ Outcome: 'failed', FailureCode: 'expired' });
+  });
+
+  it('backs off a failing outcome write on an expired row instead of retrying it at once', async () => {
+    let writes = 0;
+    const h = harness([], pendingRow({ ExpiresAt: T0 - 1 }), {
+      replace: async () => {
+        writes++;
+        throw new Error('store unavailable');
+      },
+    });
+    h.runner.start();
+    await h.clock.advance(1_000);
+    expect(writes).toBe(1);
   });
 });

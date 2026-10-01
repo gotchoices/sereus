@@ -1,8 +1,8 @@
-description: An app can now ask to join through an invitation and have the party keep trying in the background, across restarts and from any of its owner machines, until the join works, the invitation is used up or expires, or the user cancels; the app can read and follow the status. Review the retry policy, the concurrent-writer handling and the "written while cut off" decision.
+description: An app can now ask to join through an invitation and have the party keep trying in the background, across restarts and from any of its owner machines, until the join works, the invitation is used up or expires, or the user cancels; the app can read and follow the status.
 architecture: docs/strands.md#joining-while-the-inviter-is-offline
 files: packages/cadre-core/src/pending-join-runner.ts (new), packages/cadre-core/src/cadre-node.ts (requestJoin / listPendingJoins / dismissPendingJoin / recordJoinRequest / startPendingJoinRunner / stageMembershipInvitesFromPendingJoins after formStrand; runner start at the end of start(), stop in cleanup(), kick in initializeSeedBootstrap, step 5 of runDrainControlReplication; FormationPostApprovalError in rememberFormedStrand and adoptFormationMembershipInvite), packages/cadre-core/src/strand-formation-rejection.ts (FormationPostApprovalError), packages/cadre-core/src/types.ts (PendingJoinStatus, 'pendingJoin:changed'), packages/cadre-core/src/index.ts, packages/cadre-core/test/pending-join-runner.spec.ts (new), packages/integration-tests/src/scenarios/pending-join-survives-restart.integration.ts (new), docs/strands.md, docs/api.md, docs/architecture.md, .release-notes.pending.md
 ----
-# Pending join: request, retry, status — review handoff
+# Pending join: request, retry, status
 
 Part of gotchoices/sereus#25. Builds on `pending-join-control-table` (the `PendingJoin` table and its `ControlDatabase` methods) and `formation-rejection-codes` (typed `FormationRejectedError` / `FormationUnreachableError`).
 
@@ -95,3 +95,36 @@ Part of gotchoices/sereus#25. Builds on `pending-join-control-table` (the `Pendi
 - **Logs.** The runner logs row ids, codes and strand ids. Errors from decoding a stored invitation are replaced by a message that names only the row, because a JSON parse error can quote the input, which includes the token.
 - **Cost of a pass.** Every owner node now reads `PendingJoin` (and the owner key) every 30 s. For a party that never asked for a join, that reads a never-written block, which consults the cohort. The same cost exists for `JoinedStrand`. Recorded as a `NOTE:` at the `readRows` dep.
 - **The reference apps still call `formStrand`.** `backlog/feat-reference-apps-show-pending-joins` owns switching them.
+
+## Review findings
+
+Read the diff of `ticket(implement): pending-join-retry-loop` first, then the handoff. Checked: the runner's scheduling, slot accounting, pass serialisation and stop; each failure classification against `FORMATION_REJECTION_RETRYABLE`; the lost-write settlement against what `replacePendingJoin` can throw (including its committed-but-reported-failure case); `requestJoin`'s adopt/replace path; the re-issue of rows written alone; dismiss during an attempt; the staging from `joined` rows; the docs (`strands.md`, `api.md`, `architecture.md`, release notes) against the code, including the "39 s" base delay (2 × (5 × 3 500 + 2 000)).
+
+**Fixed in this pass:**
+
+- **Zero-delay retry loop on an expired row (defect).** `scheduleAttempt` clamped every retry to `ExpiresAt`. On a row already past it, a failing outcome write (the `expired` failure, or re-writing a held join) was rescheduled at a past time, so it retried at once, forever, with a store write each time. Now a row past its expiry keeps the full backoff. Regression test: `backs off a failing outcome write on an expired row instead of retrying it at once` (spun until the 30 s test timeout before the fix).
+- **A failure lost to a re-issued row (defect).** `resolveLostWrite` adopted any live non-joined row. A live pending row with the same `RequestedAt` can only be another machine's re-issue of a row written alone, with identical content. Adopting it dropped the failure, so the request was attempted again, and a `local` failure then came back as `token-spent`. Now a failure replaces a pending row of the same request; a fresh request (different `RequestedAt`) still wins. Table case added: `a failure replaces the same request re-issued by another machine while it ran`. `docs/strands.md` → "Two machines writing" states the rule.
+
+**Tripwire parked:**
+
+- Only a join is held for re-writing (`joinedHere`). A final failure whose write throws is retried by attempting again, so a `local` failure can end up as `token-spent`. `NOTE:` at `PendingJoinRunner.startAttempt`.
+
+**Ticket filed:**
+
+- `backlog/debt-pending-join-finished-on-another-owner-machine-unscenarioed`: no test covers the cross-machine membership-invitation staging (one owner machine finishes a closed join, another launches the strand). This is the implementer's first known gap. It is on the joining side, so it is not an arm of `debt-join-through-a-sibling-machine-unscenarioed`, which covers the inviting side.
+
+**Considered and left as is:**
+
+- Implementer's decisions: writing while alone with an in-memory re-issue, the `initializeSeedBootstrap` kick, `'local'` in `lastError.code`, and no staging on non-owner machines. All are sound as described. The process-stop case is already a `NOTE:` at `reissueWritesMadeAlone`.
+- The first pass after a start emits `pendingJoin:changed` once for every row, finished ones included, because nothing was emitted before in that process. This is consistent with the event's "this machine's view changed" contract; apps treat the event as a status update, not an edge.
+- Untested branches (age-out, the non-owner pause, `requestJoin`'s adopt/replace, the re-issue). Each is a few lines of straight branching. Left below the test bar.
+- Tests: the existing table cases and the backoff test each pin a policy branch from the specification; none restates the implementation. Kept.
+- Size: `pending-join-runner.ts` is about 735 lines in one cohesive class. The growth of `cadre-node.ts` is already `backlog/debt-cadre-node-single-file-size`.
+- Error handling, resource cleanup and type safety: `stop()` clears every timer, and a stopped runner's in-flight work ends in no-op schedules and emits. No `any`. Every catch logs.
+
+**Validation:**
+
+- `yarn lint`: exit 0.
+- `yarn workspace @serfab/cadre-core test`: 149 files, 2364 passed, 1 skipped.
+- Rebuilt the `@serfab/cadre-core` dist, then ran `pending-join-survives-restart`: green (5.9 s). The build prints the tracked `@libp2p/interface` type errors (`fix/typecheck-fails-on-libp2p-interface-3-1-against-linked-optimystic-3-3`), unchanged by this pass.
+- No sibling repo was built or touched.

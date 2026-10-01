@@ -111,13 +111,15 @@ type LostWriteResolution = 'gone' | 'adopt' | 'rewrite';
 
 /**
  * A `joined` outcome replaces anything still live, since a join that happened cannot be undone
- * by another machine's failure. Any other outcome yields to the live row, and a pending one is
- * then decided again by the loop.
+ * by another machine's failure. A failure replaces a pending row of the same request: only a
+ * re-issue of a row written alone writes one, unchanged, so it decides nothing. Any other live
+ * row wins, and a fresh request is then decided again by the loop.
  */
 function resolveLostWrite(live: PendingJoinRow | null, next: PendingJoinFields): LostWriteResolution {
   if (live === null) return 'gone';
   if (live.Outcome === 'joined') return 'adopt';
-  return next.Outcome === 'joined' ? 'rewrite' : 'adopt';
+  if (next.Outcome === 'joined') return 'rewrite';
+  return live.Outcome === null && live.RequestedAt === next.RequestedAt ? 'rewrite' : 'adopt';
 }
 
 /**
@@ -482,7 +484,10 @@ export class PendingJoinRunner {
   private scheduleAttempt(entry: TrackedJoin, delayMs: number): void {
     if (!this.running) return;
     this.cancelTimer(entry);
-    const at = Math.min(this.now() + delayMs, entry.row.ExpiresAt);
+    const now = this.now();
+    // A row already past its expiry keeps the full delay: its due attempt is an outcome write,
+    // and clamping to a past expiry would retry a failing write with no wait at all.
+    const at = now < entry.row.ExpiresAt ? Math.min(now + delayMs, entry.row.ExpiresAt) : now + delayMs;
     entry.nextAttemptAt = at;
     entry.timer = this.scheduler.setTimeout(() => {
       entry.timer = undefined;
@@ -526,6 +531,9 @@ export class PendingJoinRunner {
       entry.queued = false;
       this.dueQueue.splice(this.dueQueue.indexOf(entry), 1);
     }
+    // NOTE: only a join is held for re-writing (`joinedHere`); a failed write of a final failure is
+    // retried by attempting again, so a `local` failure whose write failed ends up recorded as
+    // `token-spent`. If apps come to branch on that code, hold failures the same way.
     const run = this.attemptOnce(entry)
       .catch((error: unknown) => {
         entry.trying = false;
