@@ -39,5 +39,11 @@ Upstream also found two related points:
     - `fix/1-a-relayed-dial-through-an-unconnected-relay-outruns-its-deadlines`.
     - `fix/1.5-the-rpc-dial-deadline-cannot-be-set-per-node`, which adds the node-level `dialTimeoutMs` override. Until that lands, only optimystic's own code could set it.
     - `addressDialTimeout` and `dialTimeout` are already used as given through `connectionManager`. Do this together with `backlog/23-bug-relayed-dial-budget-omits-opening-the-relay-connection`.
+- [ ] Shape of the upstream release (optimystic main 7da08dc2, green, unreleased). With r = `linkRoundTripMs`:
+  - **Connection limits:** `connectionManager.addressDialTimeout` and `dialTimeout` default to max(6000 or 10000, 10 r). That covers the cold open (relay leg, circuit, relayed upgrade, about 8.6 r over WebSocket) plus a margin. `inboundUpgradeTimeout` is now separate, at max(10000, 5 r).
+  - **RPC dial deadline:** max(3000, 11 r) by default. It is set exactly with the new `NodeOptions.rpcDeadlines { dialTimeoutMs?, responseTimeoutMs? }`, with no floor.
+  - **Transaction timeout:** the NetworkTransactor timeout that the Quereus plugin uses is now derived as max(30000, 4 × the RPC dial deadline), and it follows an explicit `rpcDeadlines.dialTimeoutMs`.
+- [ ] Pass sereus's totals for all three limits: optimystic's cold open + 2 × `ADMISSION_DECISION_TIMEOUT_MS`. Check that the derived transaction timeout still fits inside sereus's write and cohort budgets.
+- [ ] `MAX_LINK_ROUND_TRIP_MS` drops from about 1.66 days to about 13 h. Update the `types.ts` doc (~501) and say so in the release note.
 - [ ] Add a release note for the floor change.
 - [ ] Ask kjeib on #13 to re-run 1500 ms without their `node_modules` patch, and close #13 on a pass.
