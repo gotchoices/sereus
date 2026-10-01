@@ -3,9 +3,9 @@
  * slot on, so it has an address other people can dial.
  *
  * A React Native app cannot open a listener, so without a relay the node has no
- * multiaddr at all: `CadreNode.getMultiaddrs()` is empty, and
- * `createOpenInvitation` — which fills an invitation's bootstrap list from exactly
- * that — refuses to mint one. Handing out an invitation therefore REQUIRES a relay.
+ * multiaddr at all: `CadreNode.getMultiaddrs()` is empty, and the app refuses to
+ * mint an invitation, since the phone runs the strand it invites to and a joiner
+ * must reach it (`use-cadre.ts`). Handing out an invitation therefore REQUIRES a relay.
  * Everything else (founding and reading local strands, dialling out to a drone or a
  * borrowed cadre-host node, joining someone else's invitation) works without one.
  *

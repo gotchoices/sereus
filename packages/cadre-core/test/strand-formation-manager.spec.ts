@@ -19,15 +19,23 @@
  *    derived) await-response timeout — i.e. the initiator is still listening when it arrives,
  *  - the same holds in the CLAMPED regime, where a budget too large for the session forces
  *    both roles down to their ceilings,
- *  - `provisionTimeoutMs` omitted and `0` both fall back to independent per-role defaults.
+ *  - `provisionTimeoutMs` omitted and `0` both fall back to independent per-role defaults,
+ *  - an invitation naming two machines of the inviting party: a retryable refusal from the
+ *    first hands over to the second, a final one ends the formation there.
  */
 import { describe, it, expect } from 'vitest';
+import type { Libp2p } from '@libp2p/interface';
+import type { Multiaddr } from '@multiformats/multiaddr';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import type { StrandFormationManagerConfig } from '../src/strand-formation-manager.js';
+import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
+import { FormationRejectedError } from '../src/strand-formation-rejection.js';
+import { trailingPeerId } from '../src/peer-record.js';
+import type { ControlStream } from '../src/control-stream.js';
 import type { OpenInvitation, StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
-import { captureHandler, bridgingDialer } from './formation-stream-helpers.js';
-import type { StrandProvisioner } from '../src/strand-solicitation.js';
+import { captureHandler, bridgingDialer, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
+import type { FormationUsageRecorder, StrandProvisioner } from '../src/strand-solicitation.js';
 
 const RESPONDER_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/both-roles'];
 
@@ -45,7 +53,7 @@ async function formationArgs(
     token,
     sAppId: `sapp-${purpose}`,
     expiration: new Date(Date.now() + 3600_000),
-    bootstrap: ['/ip4/127.0.0.1/tcp/1']
+    bootstrap: [BRIDGED_RESPONDER_ADDR]
   };
   return { invitation, disclosure, consent };
 }
@@ -130,5 +138,72 @@ describe('StrandFormationManager: one provisionTimeoutMs config drives both role
   it('provisionTimeoutMs: 0 behaves as unset, same as omitting it', async () => {
     const result = await formBothRoles('zero', quickProvisioner('strand-zero-ok'), { provisionTimeoutMs: 0 });
     expect(result.strandId).toBe('strand-zero-ok');
+  });
+});
+
+describe('StrandFormationManager: an invitation naming several machines of the party', () => {
+  const MACHINE_A = '12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
+  const MACHINE_B = '12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU';
+
+  /** A responder machine whose token check gives `tokenCheck`, captured so it can be dialled by peer id. */
+  async function responderMachine(
+    tokenCheck: Awaited<ReturnType<FormationUsageRecorder['isTokenValid']>>
+  ): Promise<(stream: ControlStream) => Promise<void>> {
+    const manager = new StrandFormationManager({
+      partyId: 'inviting-party',
+      cadrePeerAddrs: RESPONDER_CADRE,
+      strandProvisioner: quickProvisioner('strand-from-a-sibling'),
+      formationUsageRecorder: {
+        isTokenValid: async () => tokenCheck,
+        isTokenUsed: async () => false,
+        recordUsage: async () => {}
+      }
+    });
+    const { node, invoke } = captureHandler();
+    await manager.registerResponder(node);
+    return invoke;
+  }
+
+  /** A dialer that bridges each dial to the machine its addresses name, recording the order. */
+  function routingDialer(machines: Record<string, (stream: ControlStream) => Promise<void>>, contacted: string[]): Libp2p {
+    return {
+      dialProtocol: async (addrs: Multiaddr[]) => {
+        const peerId = trailingPeerId(addrs[0])!;
+        contacted.push(peerId);
+        return bridgingDialer(machines[peerId]).dialProtocol(addrs, FORMATION_PROTOCOL);
+      }
+    } as unknown as Libp2p;
+  }
+
+  /** Form against machine A (whose token check gives `tokenCheck`) then B (which approves). */
+  async function formAcrossMachines(
+    tag: string,
+    tokenCheck: Awaited<ReturnType<FormationUsageRecorder['isTokenValid']>>
+  ): Promise<{ contacted: string[]; outcome: unknown }> {
+    const machines = {
+      [MACHINE_A]: await responderMachine(tokenCheck),
+      [MACHINE_B]: await responderMachine({ valid: true })
+    };
+    const joiner = new StrandFormationManager({ partyId: 'joining-party' });
+    const { invitation, disclosure, consent } = await formationArgs(`invite-${tag}`, tag);
+    invitation.bootstrap = [`/ip4/127.0.0.1/tcp/1/p2p/${MACHINE_A}`, `/ip4/127.0.0.1/tcp/2/p2p/${MACHINE_B}`];
+    const contacted: string[] = [];
+    const outcome = await joiner.formStrand(invitation, disclosure, consent, routingDialer(machines, contacted))
+      .then((result) => result.strandId, (error: unknown) => error);
+    return { contacted, outcome };
+  }
+
+  it('asks the next machine after a retryable refusal', async () => {
+    // token-unknown: the invitation row has not replicated to machine A yet.
+    const { contacted, outcome } = await formAcrossMachines('retryable', { valid: false });
+    expect(contacted).toEqual([MACHINE_A, MACHINE_B]);
+    expect(outcome).toBe('strand-from-a-sibling');
+  });
+
+  it('stops at a final refusal, which every machine of the party would repeat', async () => {
+    const { contacted, outcome } = await formAcrossMachines('final', { valid: false, reason: 'expired' });
+    expect(contacted).toEqual([MACHINE_A]);
+    expect(outcome).toBeInstanceOf(FormationRejectedError);
+    expect(outcome).toMatchObject({ code: 'token-spent', retryable: false });
   });
 });

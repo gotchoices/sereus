@@ -1374,7 +1374,13 @@ export interface OpenInvitation {
   sAppId: string;
   /** When this invitation expires */
   expiration: Date;
-  /** Bootstrap addresses to contact the inviter's cadre */
+  /**
+   * Addresses of the inviting party's machines, each ending in `/p2p/<peerId>`: the minting
+   * machine's own first, then up to three of its siblings with up to four addresses each
+   * (`CadreNode.createOpenInvitation`). A joiner tries the machines in order, one formation
+   * session each, so an entry may be dead by the time it is used; one that names no machine
+   * is ignored.
+   */
   bootstrap: string[];
 }
 

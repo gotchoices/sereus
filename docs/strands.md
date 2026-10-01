@@ -248,6 +248,8 @@ Apps address their own tables as `App.<Table>`. Quereus's `schema_path` defaults
 
 A party becomes a member of a closed strand through the signed invite handshake in [architecture.md → Invite → join handshake (closed strands)](architecture.md#invite--join-handshake-closed-strands).
 
+An invitation names the inviting machine and up to three of its party's other machines, and the joiner tries each in turn. An always-on machine of the party (cadre-host, cadre-cli, a donated node) therefore answers the joiner while the inviting phone is offline, provided it holds the replicated invitation; one that does not yet answers `token-unknown`, and the joiner moves on. See [architecture.md → Which machines an invitation names](architecture.md#which-machines-an-invitation-names).
+
 Attaching a human-readable legal agreement to a strand — reviewed before joining, executed
 as a separate in-strand signing act — is a design-stage plan: see
 [`strand-contracts.md`](strand-contracts.md).

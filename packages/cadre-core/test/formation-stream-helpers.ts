@@ -113,6 +113,12 @@ export function captureHandler(): { node: Libp2p; invoke: (stream: ControlStream
   };
 }
 
+/**
+ * An invitation bootstrap address for a {@link bridgingDialer} responder. The bridge ignores
+ * it, but it must name a machine: the joiner drops a bootstrap entry that does not.
+ */
+export const BRIDGED_RESPONDER_ADDR = '/ip4/127.0.0.1/tcp/1/p2p/12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
+
 /** A `Libp2p` double whose `dialProtocol` bridges straight into a responder's own handler. */
 export function bridgingDialer(invoke: (stream: ControlStream) => Promise<void>): Libp2p {
   return {

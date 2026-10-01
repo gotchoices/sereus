@@ -29,6 +29,7 @@ import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import { trailingPeerId } from './peer-record.js';
 import {
   formationDeadlines,
   resolveProvisionTimeoutMs,
@@ -724,6 +725,15 @@ export interface FormationDialOptions {
    * parses is tried, in the order libp2p's default address sorter picks (loopback last, then
    * public before private, then circuit after direct), until one connects, all under one
    * dial-connect budget (`dialTimeoutMs`); an entry that does not parse is skipped.
+   *
+   * {@link dialFormation} dials ONE machine, so every entry must name the same trailing peer
+   * id (or none). An invitation names several machines of the inviting party; hand it to
+   * {@link dialFormationByMachine}, which splits the list by trailing peer id, drops entries
+   * that name no peer, and runs one {@link dialFormation} session per machine, in the order
+   * each machine first appears. Each session keeps its own deadline ladder, so a machine that
+   * cannot be dialled costs one `dialTimeoutMs` and one that accepts the contact and then
+   * stalls costs up to one `sessionTimeoutMs`; `CadreNode.createOpenInvitation` names at most
+   * four machines.
    */
   responderAddrs: string[];
   /** Validate the responder's result; a false return aborts the formation. */
@@ -808,25 +818,85 @@ function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: strin
   });
 }
 
+const NO_RESPONDER_ADDRS = 'No responder addresses available for formation';
+
 /**
  * Parse the responder addresses, skipping any entry that does not parse: the list comes from
  * a stranger's invitation, and one bad entry must not fail an otherwise good list. Entries
- * naming different peers are left for libp2p to refuse — a real invitation carries one node's
- * own addresses, so only a tampered one mixes them.
+ * naming different peers are left for libp2p to refuse; {@link dialFormationByMachine} hands
+ * this one machine's addresses at a time.
  */
 function parseResponderAddrs(addrs: string[]): Multiaddr[] {
   const parsed: Multiaddr[] = [];
   for (const addr of addrs) {
-    try {
-      parsed.push(multiaddr(addr));
-    } catch (error) {
-      log('responderAddrs: skipping unparsable entry: %o', error);
-    }
+    const ma = parseResponderAddr(addr);
+    if (ma) parsed.push(ma);
   }
   if (parsed.length === 0) {
-    throw new FormationUnreachableError('No responder addresses available for formation');
+    throw new FormationUnreachableError(NO_RESPONDER_ADDRS);
   }
   return parsed;
+}
+
+function parseResponderAddr(addr: string): Multiaddr | null {
+  try {
+    return multiaddr(addr);
+  } catch (error) {
+    log('responderAddrs: skipping unparsable entry: %o', error);
+    return null;
+  }
+}
+
+/** One machine of the inviting party, and the invitation's addresses for it. */
+interface ResponderMachine {
+  peerId: string;
+  addrs: string[];
+}
+
+/**
+ * Split the responder addresses by the machine each reaches (its trailing peer id), keeping
+ * the order in which each machine first appears. An entry that does not parse, or names no
+ * peer, is dropped: every address an inviter mints (`getMultiaddrs()`, `resolvePeerAddrs`)
+ * names its machine, and libp2p refuses one dial that mixes named and unnamed addresses.
+ */
+function groupResponderAddrsByMachine(addrs: string[]): ResponderMachine[] {
+  const machines = new Map<string, string[]>();
+  for (const addr of addrs) {
+    const ma = parseResponderAddr(addr);
+    if (!ma) continue;
+    const peerId = trailingPeerId(ma);
+    if (!peerId) {
+      log('responderAddrs: skipping %s — it names no machine', addr);
+      continue;
+    }
+    const group = machines.get(peerId);
+    if (group) group.push(addr);
+    else machines.set(peerId, [addr]);
+  }
+  return [...machines].map(([peerId, group]) => ({ peerId, addrs: group }));
+}
+
+/**
+ * Worth asking the next machine of the inviting party: it could not be reached, or it answered
+ * with a refusal a sibling may not repeat (the invitation not replicated to it yet, the host
+ * strand not running there, …). A final refusal is the party's answer, not one machine's.
+ */
+function shouldTryNextMachine(error: unknown): error is FormationUnreachableError | FormationRejectedError {
+  return error instanceof FormationUnreachableError || (error instanceof FormationRejectedError && error.retryable);
+}
+
+/**
+ * Every machine failed without a refusal. A single machine's error already names each address
+ * it tried, so it is thrown as is; several are restated as one error naming each machine.
+ */
+function noMachineReached(failures: Array<{ peerId: string; error: FormationUnreachableError }>): FormationUnreachableError {
+  if (failures.length === 1) return failures[0].error;
+  const errors = failures.map((failure) => failure.error);
+  return new FormationUnreachableError(
+    `Formation could not reach any of the inviter's ${failures.length} machines: ` +
+      failures.map((failure) => `${failure.peerId}: ${failure.error.message}`).join('; '),
+    { cause: new AggregateError(errors, 'Every inviting machine was unreachable') }
+  );
 }
 
 /**
@@ -923,4 +993,40 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
   } catch (error) {
     throw answered ? error : asUnreachable(error);
   }
+}
+
+/**
+ * Initiator side for a whole invitation: one {@link dialFormation} session per machine of the
+ * inviting party the bootstrap list names (see {@link FormationDialOptions.responderAddrs}), in
+ * order, until one approves.
+ *
+ * A machine that cannot be reached, or that refuses retryably, hands over to the next. A final
+ * refusal, or an approval that fails validation, is thrown at once: another machine of the
+ * same party would answer the same, and an approval may already have spent the invitation.
+ * With no machine left, throws the last retryable refusal when any machine answered (the party
+ * is reachable but not ready, which says more than "unreachable"), otherwise one
+ * {@link FormationUnreachableError} naming each machine's failure.
+ *
+ * Every session sends the SAME contact. `FormationUsage` is keyed by the contact's
+ * `usageStampId`, so at most one machine of the inviting party can record this redemption,
+ * even when one the joiner gave up on was still committing it.
+ */
+export async function dialFormationByMachine(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
+  const machines = groupResponderAddrsByMachine(options.responderAddrs);
+  if (machines.length === 0) {
+    throw new FormationUnreachableError(NO_RESPONDER_ADDRS);
+  }
+  const unreached: Array<{ peerId: string; error: FormationUnreachableError }> = [];
+  let refusal: FormationRejectedError | undefined;
+  for (const machine of machines) {
+    try {
+      return await dialFormation(node, { ...options, responderAddrs: machine.addrs });
+    } catch (error) {
+      if (!shouldTryNextMachine(error)) throw error;
+      log('formation via %s failed (%s), trying the next inviting machine', machine.peerId, error.message);
+      if (error instanceof FormationRejectedError) refusal = error;
+      else unreached.push({ peerId: machine.peerId, error });
+    }
+  }
+  throw refusal ?? noMachineReached(unreached);
 }

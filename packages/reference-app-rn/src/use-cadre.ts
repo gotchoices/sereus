@@ -71,8 +71,8 @@ const RELAY_POSTURE_POLL_MS = 5_000;
 /**
  * Why an invitation cannot be minted, phrased for the person holding the phone and
  * naming the thing they can actually change. The guard itself is `getMultiaddrs()`
- * being empty — the precondition `createOpenInvitation` really has; the posture only
- * explains WHY it is empty.
+ * being empty — this phone runs the strand it invites to, so it must be reachable
+ * itself; the posture only explains WHY it is empty.
  */
 function unreachableInviteMessage(relay: RelayReservationState): string {
   const lead = 'This device has no reachable address yet, so nobody could redeem an invitation.';
@@ -594,10 +594,11 @@ export function useCadreInternal(): UseCadreResult {
   const createClosedStrandWithInvite = useCallback(async (strandId: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    // The invitation's bootstrap is this node's own addresses, so an unreachable
-    // node cannot invite anyone — refuse BEFORE founding, or every attempt leaves an
-    // orphaned closed strand behind. A phone is reachable only through a relay; see
-    // `relay-config.ts` for where that address comes from.
+    // The invitation also names the party's other machines, but only this node runs
+    // the strand it is about to found, so an unreachable node cannot invite anyone —
+    // refuse BEFORE founding, or every attempt leaves an orphaned closed strand behind.
+    // A phone is reachable only through a relay; see `relay-config.ts` for where that
+    // address comes from.
     if (current.getMultiaddrs().length === 0) {
       // Read the posture LIVE rather than off `relayStatus`: a relay that came back
       // seconds ago must not be reported as down, and one lost seconds ago must not be

@@ -521,6 +521,7 @@ export {
 export {
   FormationListener,
   dialFormation,
+  dialFormationByMachine,
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   sanitizeStrandAddrs,

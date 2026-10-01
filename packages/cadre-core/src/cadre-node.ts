@@ -115,6 +115,7 @@ import {
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
+import { selectInvitationSiblingAddrs, type InvitationSibling } from './invitation-bootstrap.js';
 import {
   createMembershipConnectionGater,
   DEFAULT_ENROLLMENT_WINDOW_MS,
@@ -2937,6 +2938,15 @@ export class CadreNode implements SAppIdLookup {
    * handling, is what keeps a mixed list from taking a whole peer offline.
    */
   async resolvePeerAddrs(peerId: string, opts: ResolveOpts = {}): Promise<Multiaddr[]> {
+    return (await this.resolvePeerRecord(peerId, opts))?.addrs ?? [];
+  }
+
+  /**
+   * {@link resolvePeerAddrs} with the record's `UpdatedAt` kept beside the addresses, for a
+   * caller that ranks peers by how recently they published. `null` wherever that returns `[]`
+   * for a failed gate.
+   */
+  private async resolvePeerRecord(peerId: string, opts: ResolveOpts): Promise<{ addrs: Multiaddr[]; updatedAt: number } | null> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before resolving peer addrs');
     }
@@ -2944,14 +2954,14 @@ export class CadreNode implements SAppIdLookup {
     const record = await this.controlDatabase.queryPeerRecord(peerId);
     if (!record) {
       log('resolvePeerAddrs: no record for %s', peerId);
-      return [];
+      return null;
     }
 
     // publicKey <-> peerId binding: the stored key must be the one embedded in
     // the requested Ed25519 peer id (also rejects a non-Ed25519 / missing key).
     if (!record.publicKey || ed25519PublicKeyB64FromPeerId(peerId) !== record.publicKey) {
       log('resolvePeerAddrs: publicKey does not match peerId for %s', peerId);
-      return [];
+      return null;
     }
 
     // Self-signature over (peerId, addrs, updatedAt).
@@ -2962,14 +2972,14 @@ export class CadreNode implements SAppIdLookup {
       log('resolvePeerAddrs: signature verification failed for %s (updatedAt=%d, addrs=%o, sig=%s)',
         peerId, record.updatedAt, record.addrs,
         record.sig ? `${record.sig.slice(0, 16)}…` : '(empty)');
-      return [];
+      return null;
     }
 
     // Freshness: never hand back a dead relay reservation.
     const maxAgeMs = opts.maxAgeMs ?? DEFAULT_PEER_RECORD_MAX_AGE_MS;
     if (!isPeerRecordFresh(record.updatedAt, maxAgeMs, Date.now())) {
       log('resolvePeerAddrs: record for %s is stale (updatedAt=%d, maxAgeMs=%d)', peerId, record.updatedAt, maxAgeMs);
-      return [];
+      return null;
     }
 
     // Pluggable trust gate (defaults to current-member).
@@ -2982,7 +2992,7 @@ export class CadreNode implements SAppIdLookup {
     });
     if (!trusted) {
       log('resolvePeerAddrs: trust policy rejected %s', peerId);
-      return [];
+      return null;
     }
 
     // Order signaling-first (the on-record order was what we verified above),
@@ -2993,7 +3003,7 @@ export class CadreNode implements SAppIdLookup {
     if (opts.signalingOnly) {
       addrs = addrs.filter(isSignalingAddr);
     }
-    return this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId);
+    return { addrs: this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId), updatedAt: record.updatedAt };
   }
 
   /**
@@ -8102,9 +8112,14 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Create an open invitation for others to form strands with this party.
    *
+   * The invitation's bootstrap list names this machine first (it is the one most likely to
+   * run the host strand), then a few of the party's other machines
+   * ({@link siblingInvitationAddrs}), so a joiner can still form while this one is offline.
+   *
    * @param sAppId - The sApp to use for formed strands
    * @param expirationMs - How long the invitation is valid (ms from now)
    * @returns The open invitation to share out-of-band
+   * @throws when neither this machine nor any other machine of the party has an address
    */
   async createOpenInvitation(
     sAppId: string,
@@ -8115,7 +8130,7 @@ export class CadreNode implements SAppIdLookup {
       await this.initializeStrandSolicitation();
     }
 
-    const bootstrap = this.getMultiaddrs();
+    const bootstrap = [...this.getMultiaddrs(), ...await this.siblingInvitationAddrs()];
     if (bootstrap.length === 0) {
       throw new Error('No multiaddrs available for invitation');
     }
@@ -8125,6 +8140,36 @@ export class CadreNode implements SAppIdLookup {
       expirationMs,
       bootstrap
     );
+  }
+
+  /**
+   * Addresses of the party's other machines for an invitation's bootstrap list
+   * ({@link selectInvitationSiblingAddrs} picks which). The source is each authorized
+   * member's signed `CadrePeer` record ({@link resolvePeerRecord}), so a machine whose record
+   * is missing, stale or untrusted is left out; live connections only order them.
+   *
+   * Best-effort: a failed read leaves the invitation naming this machine alone, which is what
+   * it named before siblings were added.
+   */
+  private async siblingInvitationAddrs(): Promise<string[]> {
+    const controlNode = this.controlNode;
+    if (!controlNode || !this.controlDatabase) {
+      return [];
+    }
+    try {
+      const siblings: InvitationSibling[] = [];
+      for (const { peerId } of await this.listAuthorizedMembers()) {
+        const resolved = await this.resolvePeerRecord(peerId, {});
+        if (resolved && resolved.addrs.length > 0) {
+          siblings.push({ peerId, updatedAt: resolved.updatedAt, addrs: resolved.addrs.map(String) });
+        }
+      }
+      const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
+      return selectInvitationSiblingAddrs(siblings, connected);
+    } catch (error) {
+      log('createOpenInvitation: resolving the other machines failed; the invitation names only this one: %o', error);
+      return [];
+    }
   }
 
   /**

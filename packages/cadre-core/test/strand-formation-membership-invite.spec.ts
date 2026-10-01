@@ -41,7 +41,7 @@ import {
 import type { FormationUsageRecorder, ResolvedHostStrand } from '../src/strand-solicitation.js';
 import type { OpenInvitation, StrandFormationDisclosure, StrandMembershipInvite } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
-import { captureHandler, bridgingDialer, MockStream } from './formation-stream-helpers.js';
+import { captureHandler, bridgingDialer, MockStream, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
 
 const HOST_PARTY = 'invite-host-party';
 const HOST_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/invite-host'];
@@ -82,7 +82,7 @@ async function formationArgs(token: string, purpose: string): Promise<{
     token,
     sAppId: `sapp-${purpose}`,
     expiration: new Date(Date.now() + 3600_000),
-    bootstrap: ['/ip4/127.0.0.1/tcp/1']
+    bootstrap: [BRIDGED_RESPONDER_ADDR]
   };
   return { invitation, disclosure, consent };
 }

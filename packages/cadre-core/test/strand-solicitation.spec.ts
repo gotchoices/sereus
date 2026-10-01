@@ -4,6 +4,7 @@ import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   StrandSolicitationService,
   type DisclosureValidator,
@@ -487,6 +488,31 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     const result = await initiator.formStrand(invitation, { purpose: 'second-addr' }, nodeB);
 
     expect(result.strandId).toBe('strand-second-addr');
+    await responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('forms through another machine of the party when the first one named is offline', async () => {
+    // libp2p refuses one dial whose addresses name two peers, so this passes only when the
+    // joiner dials each machine of the invitation in its own session.
+    const offlineMachine = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: nodeA.getMultiaddrs().map(ma => ma.toString()),
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-sibling-machine' }) }
+    });
+    await responder.registerResponder(nodeA);
+    const invitation = await responder.createOpenInvitation('test-sapp', 60000, [
+      `/ip4/127.0.0.1/tcp/1/p2p/${offlineMachine}`,
+      ...nodeA.getMultiaddrs().map(ma => ma.toString())
+    ]);
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    const result = await initiator.formStrand(invitation, { purpose: 'sibling-machine' }, nodeB);
+
+    expect(result.strandId).toBe('strand-sibling-machine');
     await responder.unregisterResponder(nodeA);
   }, 15000);
 

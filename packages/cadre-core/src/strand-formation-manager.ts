@@ -28,7 +28,7 @@ import type {
 import {
   FormationListener,
   INVALID_TOKEN_REASON,
-  dialFormation,
+  dialFormationByMachine,
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   type FormationContactMessage,
@@ -297,8 +297,10 @@ export class StrandFormationManager {
    * Builds a contact message carrying the real token + disclosure + this party's
    * real cadre addresses + the joiner's consent (minted and signed by the
    * solicitation layer — this manager only places it on the contact), dials the
-   * responder over the native protocol, and validates the responder's result
-   * before returning.
+   * inviting party's machines the invitation names, one at a time, over the native
+   * protocol ({@link dialFormationByMachine}), and validates the responder's result
+   * before returning. Every machine gets the same contact, so at most one of them can
+   * record this redemption.
    */
   async formStrand(
     invitation: OpenInvitation,
@@ -320,7 +322,7 @@ export class StrandFormationManager {
 
     this.dialerSessions++;
     try {
-      const dialed = await dialFormation(node, {
+      const dialed = await dialFormationByMachine(node, {
         contact,
         responderAddrs: invitation.bootstrap,
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
