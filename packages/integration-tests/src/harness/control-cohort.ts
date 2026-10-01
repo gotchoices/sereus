@@ -18,11 +18,11 @@
  * almost every scenario.
  *
  * FORCING IS A STOPGAP. `forceFullCohort` in `forced-cluster.ts` substitutes a
- * constant cohort. It buys determinism, and it is the ONLY way to reach a case a wait
- * can never satisfy: drones created by `createTestParty` dial only the owner and never
- * each other, so FRET on a drone can never classify a sibling drone and a
- * drone-coordinated write tops out at a two-member cohort forever. Prefer a wait; reach
- * for a force when the scenario genuinely needs the case a wait cannot produce.
+ * constant cohort. It buys determinism: the selection no longer depends on ring timing.
+ * A wait reaches the whole party from every machine — drones created by
+ * `createTestParty` dial only the owner, but learn each other's addresses from FRET's
+ * neighbour snapshots and dial each other. Prefer a wait; reach for a force when the
+ * scenario needs a selection that cannot vary between runs.
  *
  * WHY ONE PROBE KEY IS ENOUGH. `findCluster` returns the ring's closest-k peers, where
  * k is the node's configured cluster size — `CONTROL_REPLICATION_BREADTH` (16) for

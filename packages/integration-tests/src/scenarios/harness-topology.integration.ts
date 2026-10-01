@@ -143,7 +143,7 @@ describe('Topology builder harness', () => {
 		let topo: Topology | undefined;
 		try {
 			// Asymmetric on purpose: the spec is per-party lists, and a 3-machine party is
-			// the shape TestParty's star-wired drones can never reach (their cohort caps at 2).
+			// the smallest one in which every machine's cohort spans more than a pair.
 			topo = await bootTopology({
 				tag: 'topo-first',
 				parties: [
