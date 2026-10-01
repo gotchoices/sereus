@@ -3,7 +3,7 @@ files: package.json and packages/*/package.json (@optimystic/* ranges), .release
 ----
 # Adopt optimystic's link-sized addressDialTimeout
 
-**Blocked on:** an optimystic release (upstream ticket `fix/1-a-relayed-dial-is-cut-off-by-libp2ps-per-address-timeout`, tended by optimystic-ec, cd174d58).
+**Unblocked:** optimystic 1.9.0 released 2026-10-01 (all three dial changes, libp2p ^3.3.11). Floor becomes `^1.9.0`.
 
 ## Why
 
