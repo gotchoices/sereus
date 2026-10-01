@@ -31,7 +31,7 @@ Found by reading the code while planning `phone-becomes-reachable-through-a-rela
 
 It is the difference between "a party's own machines can be the party's address" and "a party needs third-party relay infrastructure". Concretely: a person with a phone and a machine at home should be able to invite someone into a private chat with the home machine as the address, and the invitee is by definition an outsider to that party. Today the invitee's dial dies five seconds in.
 
-The carve-out that would cover the invitee at the *connection* level does exist — an outstanding formation invitation suspends stranger denial — but it is unreachable on a lent node, which never calls `initializeStrandSolicitation` and so answers the check with "no service". Even where it is reachable it would be the wrong instrument: it admits the connection because a formation handshake might be riding it, not because the peer is using the hop.
+The carve-out that would cover the invitee at the *connection* level does exist — an outstanding formation invitation suspends stranger denial, and since `formation-responder-installed-at-start` every node, a lent one included, runs that check against the party's replicated invitation rows — but it is the wrong instrument: it admits the connection because a formation handshake might be riding it, not because the peer is using the hop.
 
 ## What a fix has to weigh
 
