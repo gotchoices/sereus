@@ -148,6 +148,16 @@ const STRAND_NETWORK_STATE_SNAPSHOT_SPEC: NodeLocalSnapshotSpec<PersistedNetwork
  * persist does — is documented once on `NodeLocalSnapshot`. Writes are serialised
  * in-process by the snapshot's write chain, so several strand nodes saving at once
  * cannot interleave partial snapshots.
+ *
+ * NOTE: an entry leaves only through {@link forget}, and nothing ages one out. A
+ * strand this machine detached because the strand watcher saw its control row gone
+ * (another machine of the party unpublished or left it), or one stopped and never
+ * relaunched, keeps its entry and it is rewritten with every save. The watcher path
+ * (`CadreNode.handleStrandRemoved`) does not forget because its removal is not proof
+ * the strand is gone: its query answers an empty list while the control database is
+ * absent. If snapshots grow on machines that host many short-lived strands, or a
+ * re-published strand id is seen importing its predecessor's table, drop entries at
+ * {@link open} that are older than FRET's own 14-day record age.
  */
 export class PersistentStrandNetworkStateStore implements StrandNetworkStateStore {
 	private readonly generations = new ForgetGenerations();

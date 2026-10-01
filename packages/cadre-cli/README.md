@@ -319,8 +319,10 @@ remotely-mutable surface in the default configuration.
 **Node State** holds the trusted-owner anchor (`trusted-owners.<partyId>.json`)
 and the retained cold-start dial targets (`bootstrap-peers.<partyId>.json`) —
 non-replicated, per-party, and required for the node to keep its out-of-band
-trust and its way back into the party across restarts. It must be writable by
-the node's user, and it belongs in backups alongside the identity key.
+trust and its way back into the party across restarts. It also holds each
+strand's saved routing table (`strand-network.<partyId>.json`), which a
+restarted node uses to reach the strand's other members again. It must be
+writable by the node's user, and it belongs in backups alongside the identity key.
 
 ### Installation Steps
 

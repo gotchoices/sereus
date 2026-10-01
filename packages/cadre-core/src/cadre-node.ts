@@ -662,7 +662,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * A strand's state survives a {@link stopStrand} and a hibernation quiesce, and is
    * forgotten where the peer book's entries are: {@link unpublishStrand},
-   * {@link forgetJoinedStrand} and self-revocation.
+   * {@link forgetJoinedStrand} and self-revocation. A strand detached because the watcher
+   * saw its row gone keeps its state (`NOTE:` on `PersistentStrandNetworkStateStore`).
    */
   private strandNetworkStateStore: StrandNetworkStateStore | null = null;
 
@@ -6644,7 +6645,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Leave a strand joined from another party, for the whole party: remove its party-wide
    * `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then this machine's
-   * unpublished record, its strand peer book entries and any session-kept entry, then
+   * unpublished record, its strand peer book entries, its saved network state and any
+   * session-kept entry, then
    * {@link stopStrand} it here. Every other machine's watcher then sees the row gone and
    * detaches the strand, a storage replica included; a machine offline at the time reaps the
    * row once the tombstone reaches it. The joiner's counterpart of {@link unpublishStrand},
@@ -6702,8 +6704,8 @@ export class CadreNode implements SAppIdLookup {
    * session here — the `strand:revoked` contract is that nothing is torn down for the app —
    * and its party-wide row is queued for removal by the next connected owner reconcile pass
    * (`JoinedStrandSession.forgetAfterThisSession`). A no-op for this party's own strands,
-   * which have neither record; the strand peer book is forgotten either way, since a
-   * removed party must not keep dialing the strand's peers.
+   * which have neither record; the strand peer book and the saved network state are
+   * forgotten either way, since a removed party must not keep dialing the strand's peers.
    *
    * NOTE: accepted tradeoff — a sibling machine that has not raised `strand:revoked` itself
    * detaches the strand (`strand:stopped`) when the party-wide removal reaches it, instead
