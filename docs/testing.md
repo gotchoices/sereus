@@ -611,10 +611,10 @@ Each line names one shape and a scenario that exercises it, not every scenario o
 scenarios whose subject is a protocol or a service rather than a network shape are not listed.
 
 - Single machine, control plane only — `control-write-while-alone-convergence.integration.ts`.
-- Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`,
-  `control-write-degraded-cohort-member.integration.ts`.
+- Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`.
 - Three-machine party, control plane — `control-cohort-three-node-isolation.integration.ts`,
-  `harness-party-control-cohort.integration.ts` (the `TestParty` star world).
+  `harness-party-control-cohort.integration.ts` (the `TestParty` star world),
+  `control-write-degraded-cohort-member.integration.ts` (one member slow or silent).
 - One party, two machines, one strand — `websocket-chat.integration.ts`,
   `convergence-stress.integration.ts`, `strand-addr-seed-convergence.integration.ts`,
   `strand-late-cadre-join.integration.ts` (join-after-founding ordering),

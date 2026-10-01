@@ -234,6 +234,10 @@ const CANCEL_BUDGET_MS = Math.max(5_000, LINK_DEADLINES.dialTimeoutMs);
  * starts another round while its budget has not run out, and each round lasts a whole
  * {@link STALLED_ROUND_MS} however little budget is left, so the last round overruns the
  * budget. 2 at the default declared link.
+ * NOTE: `dischargeCancel` also stops after six rounds (`NetworkTransactor.MAX_CANCEL_ROUNDS`,
+ * private upstream), which this leaves out; it binds only once the cancel budget exceeds six
+ * rounds (a dial deadline above 126 s at the default response deadline), so cap this at six if
+ * a dial ever gets that long.
  */
 const STALLED_CANCEL_ROUNDS = Math.ceil(CANCEL_BUDGET_MS / STALLED_ROUND_MS);
 /**
