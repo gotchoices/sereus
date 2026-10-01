@@ -9,6 +9,7 @@ repro: static
 severity: wrong-result
 likelihood: unusual
 tradeoffs: Counting the relay leg lengthens every dial budget by another link round trip (and possibly another decision), so a peer that is truly gone takes longer still to give up on — per-address 16 s would become about 19.5-21.5 s — for a case that needs both the extreme supported link and a dialer with no open connection to the relay.
+prereq: adopt-optimystic-address-dial-timeout
 ----
 # A relayed dial's budget assumes the relay connection is already open
 
