@@ -790,11 +790,10 @@ export interface FormationDialResult {
  * rejection is the abort itself, or reaches the caller through the awaited copy, so the
  * handler below only stops it being reported as unhandled.
  *
- * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. On
- * libp2p 3.1.3 (sereus's lockfile) an address that hangs without answering (a black-holed relay
- * host) spends the whole budget before the next is tried; libp2p 3.3+ (what embedders install)
- * cuts each address off at its own `addressDialTimeout`, which leaves the rest of the budget to
- * the next address only while that timeout is well under `dialTimeoutMs` (see
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. libp2p
+ * 3.3+ cuts an address that hangs without answering (a black-holed relay host) off at its own
+ * `addressDialTimeout`, which leaves the rest of the budget to the next address only while that
+ * timeout is well under `dialTimeoutMs` (see
  * `blocked/adopt-optimystic-address-dial-timeout`). A budget per address here would overrun the
  * session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
  * hung first relay are seen in practice, give each address a sub-budget or dial them in parallel.

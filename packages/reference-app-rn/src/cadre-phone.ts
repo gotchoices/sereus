@@ -38,7 +38,6 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC } from '@libp2p/webrtc';
-import type { Libp2pTransports } from '@optimystic/db-p2p';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDBRawStorage, LevelDBKVStore, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
@@ -61,17 +60,6 @@ import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-c
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 
 export type { PhoneNodeOptions, SavedStartOptions };
-
-/**
- * db-p2p's transport-factory element type. The `webRTC()` factory from
- * `@libp2p/webrtc` carries a nominally-different `[transportSymbol]` brand than
- * db-p2p's pinned `@libp2p/interface` (the symbol is a global-registry key, so
- * they are runtime-identical). `CadreNodeConfig.network.transports` is exactly
- * this `Libp2pTransports`, so we bridge with `as unknown as TransportFactory` —
- * no `any`, no pinning five transitive packages. Mirrors the same cast in
- * `reference-app-web/src/lib/cadre-web.ts`.
- */
-type TransportFactory = Libp2pTransports[number];
 
 // ── LevelDB helpers ──────────────────────────────────────────────────────────
 // Each strand — and the node-local record store — gets its own LevelDB database
@@ -327,13 +315,12 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
       circuitRelayTransport(),
       // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
       // hole-punches to a direct `/webrtc` data path, dropping the drone out of
-      // the data path (relay stays signalling-only). Brand-skew bridge —
-      // runtime-safe, see TransportFactory above. The permissive dial gater the
+      // the data path (relay stays signalling-only). The permissive dial gater the
       // phone needs lives in `buildPhoneNodeConfig` (`phone-node-config.ts`),
       // which explains why: a node borrowed from a cadre-host on the same Wi-Fi
       // is a private `ws://` address, which libp2p's browser-build gater refuses
       // by default.
-      webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
+      webRTC({ rtcConfiguration: { iceServers } }),
     ],
     trustedOwnerStore,
     bootstrapPeerStore,

@@ -632,15 +632,11 @@ export interface NetworkConfig {
  *
  * WHY THE DEADLINE IS PINNED rather than given room to adapt. `pingTimeout` is an
  * adaptive-timeout init, and equal `minTimeout`/`maxTimeout` clamp it to one value on
- * every libp2p version. Under libp2p 3.1.3, which sereus resolves today, it is already
- * flat at `minTimeout`: `ConnectionMonitor` asks its `AdaptiveTimeout` for a deadline but
- * never calls `cleanUp` to report how long the ping took, so the moving average the
- * deadline derives from stays at zero. libp2p 3.3 does report ping durations back, and a
- * ceiling above `pingInterval` would then let the deadline grow past the interval and put
- * the overlapping-ping abort above straight back. Pinning both ends keeps the interval's
- * margin true on the version bump instead of making it something to remember. It also
- * sidesteps 3.3's other surprise: the monitor keeps one `AdaptiveTimeout` for all of a
- * node's connections, so one slow peer would otherwise lengthen the deadline for every
+ * every libp2p version. libp2p 3.3 reports each ping's duration back to the monitor's
+ * `AdaptiveTimeout`, so a ceiling above `pingInterval` would let the deadline grow past the
+ * interval and put the overlapping-ping abort above straight back. Pinning both ends keeps
+ * the interval's margin true. It also sidesteps the monitor keeping one `AdaptiveTimeout`
+ * for all of a node's connections, so one slow peer cannot lengthen the deadline for every
  * connection on that node.
  */
 export const DEFAULT_CONNECTION_MONITOR = Object.freeze({

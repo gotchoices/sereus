@@ -262,17 +262,6 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 const WEBRTC_CERTHASH = 'uEiDriKKtLzKrTdlDsdqSFqCGZ5uV1Sy4rDeYcTNTNKgpJQ';
 
 /**
- * db-p2p's transport-factory element type. The WebRTC factories need the same
- * brand-skew bridge the browser app uses — see the `TransportFactory` comment in
- * `reference-app-web/src/lib/cadre-web.ts` for the full explanation:
- * `@libp2p/webrtc` nests its own physical copy of `@libp2p/interface`, and
- * `transportSymbol` is a `unique symbol`, so the two brands differ by identity
- * while being runtime-identical. `webSockets()` and `circuitRelayTransport()`
- * need no bridge — they resolve to the hoisted copy.
- */
-type TransportFactory = NonNullable<NetworkConfig['transports']>[number];
-
-/**
  * The browser reference app's transport list
  * (`reference-app-web/src/lib/cadre-web.ts`). No `rtcConfiguration`: the app
  * passes ICE servers from its runtime manifest, but a test must never reach a
@@ -291,15 +280,15 @@ type TransportFactory = NonNullable<NetworkConfig['transports']>[number];
 const browserTransports = (): NetworkConfig['transports'] => [
 	webSockets(),
 	circuitRelayTransport(),
-	webRTC() as unknown as TransportFactory,
-	webRTCDirect() as unknown as TransportFactory
+	webRTC(),
+	webRTCDirect()
 ];
 
 /** The phone reference app's transport list (`reference-app-rn/src/cadre-phone.ts`) — no `webRTCDirect`. */
 const phoneTransports = (): NetworkConfig['transports'] => [
 	webSockets(),
 	circuitRelayTransport(),
-	webRTC() as unknown as TransportFactory
+	webRTC()
 ];
 
 /**

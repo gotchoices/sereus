@@ -53,10 +53,10 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
-    "@libp2p/crypto": "^5.1.13",
-    "@libp2p/interface": "^3.1.0",
-    "@libp2p/peer-id": "^6.0.4",
-    "@multiformats/multiaddr": "^12.5.1",
+    "@libp2p/crypto": "^5.1.23",
+    "@libp2p/interface": "^3.3.0",
+    "@libp2p/peer-id": "^6.0.15",
+    "@multiformats/multiaddr": "^13.0.3",
     "@optimystic/db-p2p": "^1.8.1",
     "@optimystic/db-p2p-storage-fs": "^1.8.1",
     "@serfab/cadre-core": "workspace:^",
@@ -64,6 +64,6 @@
     "commander": "^14.0.2",
     "debug": "^4.4.3",
     "js-yaml": "^4.1.1",
-    "uint8arrays": "^5.1.0"
+    "uint8arrays": "^6.1.1"
   }
 }

@@ -92,7 +92,7 @@
   },
   "devDependencies": {
     "@craftzdog/react-native-buffer": "^6.1.2",
-    "@libp2p/websockets": "^10.1.3",
+    "@libp2p/websockets": "^10.1.21",
     "@types/node": "^25.0.10",
     "abort-controller": "3.0.0",
     "metro-resolver": "0.82.5",

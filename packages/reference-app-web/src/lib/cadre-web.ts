@@ -51,7 +51,7 @@ import type {
 	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Database } from '@quereus/quereus';
 import {
@@ -81,16 +81,6 @@ import {
 } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
-
-/**
- * db-p2p's transport-factory element type. The WebRTC factories from
- * `@libp2p/webrtc` carry a nominally-different `[transportSymbol]` brand than
- * db-p2p's pinned `@libp2p/interface` (the symbol is a global registry key, so
- * they are runtime-identical). `CadreNodeConfig.network.transports` is exactly
- * this `Libp2pTransports`, so we bridge with the same cast the bare-libp2p
- * wiring used — no `any`, no pinning five transitive packages.
- */
-type TransportFactory = Libp2pTransports[number];
 
 /** Outcome of the solo owner self-genesis step. */
 export type OwnerState = 'pending' | 'genesis' | 'existing' | 'error';
@@ -320,12 +310,7 @@ export async function startCadre(): Promise<CadreNode> {
 
 	partyId = await loadOrCreatePartyId(nodeLocalHandle);
 	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
-	// `loadOrCreateBrowserPeerKey` returns db-p2p-storage-web's pinned
-	// `@libp2p/interface` `PrivateKey`, whose `Uint8ArrayList` brand is newer than
-	// this app's `@libp2p/interface` (same global symbol → runtime-identical).
-	// Bridge to the local `PrivateKey` type — the same brand-skew cast the
-	// transport factories use above; cadre-core consumes the local brand.
-	const privateKey = (await loadOrCreateBrowserPeerKey(nodeLocalHandle)) as unknown as PrivateKey;
+	const privateKey = await loadOrCreateBrowserPeerKey(nodeLocalHandle);
 
 	// Now the party id is known, pre-open the party-scoped control block store — the key
 	// cadre-core's synchronous provider will ask for during `node.start()` below.
@@ -392,9 +377,8 @@ export async function startCadre(): Promise<CadreNode> {
 			transports: [
 				webSockets(),
 				circuitRelayTransport(),
-				// Brand-skew bridge — runtime-safe, see TransportFactory above.
-				webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
-				webRTCDirect() as unknown as TransportFactory,
+				webRTC({ rtcConfiguration: { iceServers } }),
+				webRTCDirect(),
 			],
 			// Dialable side of formation listens via circuit relay + WebRTC; solo
 			// tabs (no relay configured) keep the Phase-1 no-listen posture.

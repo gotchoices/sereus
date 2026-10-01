@@ -2,12 +2,14 @@
  * Dialing one peer from a list of candidate addresses, so that an address that
  * never answers cannot use up the time the others needed.
  *
- * libp2p's own multi-address dial (`libp2p.dial(addrs)`, libp2p 3.1.3's
- * `DialQueue.dialPeer`) tries the addresses ONE AT A TIME under ONE signal, with
- * no time limit per address. An address whose connection attempt is silently
- * dropped — a firewall, a subnet the dialer cannot route to, a virtual adapter's
- * address a Windows host reports alongside its real ones — holds that dial until
- * the whole signal expires, and every address sorted after it is never tried. It
+ * libp2p's own multi-address dial (`libp2p.dial(addrs)`, `DialQueue.dialPeer`)
+ * tries the addresses ONE AT A TIME under ONE signal. Its only per-address limit
+ * is the connection manager's `addressDialTimeout` (libp2p 3.3+), which
+ * optimystic sizes for a cold relayed open: at least 6 s, or ten link round
+ * trips. An address whose connection attempt is silently dropped — a firewall, a
+ * subnet the dialer cannot route to, a virtual adapter's address a Windows host
+ * reports alongside its real ones — holds that dial for that long or until the
+ * whole signal expires, and the addresses sorted after it get what is left. It
  * also sorts the list itself (`defaultAddressSorter`), putting loopback addresses
  * last, behind exactly the LAN addresses most likely to be dropped. A phone
  * borrowing a node from a cadre-host whose only reachable address was the
