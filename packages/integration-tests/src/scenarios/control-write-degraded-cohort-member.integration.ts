@@ -15,20 +15,30 @@
  * bare `Promise.all` with no phase deadline) but the per-RPC response deadline
  * in `ClusterClient` (three link round trips at the link cadre-core declares,
  * 10.5 s at the default; 10 s on a node that declares none; two attempts per
- * remote peer), under the transactor's 30 s transaction budget. The measured
- * outcomes (single machine, localhost websockets; the wall-clock is logged on
- * every run, and the bounds in "Deadlines" below are sized off these):
+ * remote peer), so one consensus round against a silent member costs two
+ * response deadlines, ~21 s. A failing write pays one such PEND round, which
+ * ends with the coordinator's answer (the shortfall) rather than a timeout, so
+ * the transactor's overall budget (154 s at the default) never comes into it.
+ * It then pays a cancel discharge, which keeps starting ~21 s rounds until its
+ * own budget (`abortOrCancelTimeoutMs`, 38.5 s at the default) has passed: two
+ * rounds. The measured outcomes (single machine, localhost websockets; the
+ * wall-clock is logged on every run, and the bounds in "Deadlines" below are
+ * derived from these):
  *
  *  - no degradation            → commits, ~1 s;
- *  - 2 s delay (< 10.5 s bar)  → commits, ~55 s — the delay is paid serially
- *    across the ~27 inbound cluster RPCs one control write makes, so a small
- *    per-RPC delay becomes a large per-WRITE one;
- *  - never answers (> 10.5 s bar)→ clean failure at ~21 s per pend round (two
- *    response-deadline attempts). Measured 2026-09-30: a remove 42.2 s, and an
- *    authorize 84.3 s because it queued behind a background control write
- *    (`revocation-ledger-open`) that spent its own 42 s first; 40.2 and 80.2 s
- *    with no link declared. Naming
+ *  - 2 s delay (< 10.5 s bar)  → commits, ~8 s — the delay is paid serially
+ *    across the inbound cluster RPCs one control write makes, so a small
+ *    per-RPC delay becomes a larger per-WRITE one;
+ *  - never answers (> 10.5 s bar)→ clean failure at ~63 s per write (one pend
+ *    round plus two cancel rounds). Measured 2026-10-01: a remove 63.3 s, and
+ *    an authorize 126.3 s because it queued behind a background control write
+ *    (`revocation-ledger-open`) that spent its own 63 s first. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
+ *
+ * Control writes run one at a time under the node's write lock, so while a
+ * member stalls each failing write holds every other control write on the node
+ * for those ~63 s (`docs/cadre-consistency.md` → "Deadlines Over Optimystic's
+ * Reads and Commits").
  *
  * One case here was a standing EXPECTED FAILURE (`it.fails`) until 2026-08-25:
  * control reads on the writing node blocked behind an in-flight stalled write
@@ -50,7 +60,7 @@
  * itself, the writer reaches it over the (healthy) repo protocol, its own
  * cluster vote is in-process, and its degraded INBOUND cluster handler never
  * sees a stream — so the write COMMITS fast (~0.25–0.5 s in an exploratory run)
- * instead of failing (~42 s). That branch is real availability, not a defect.
+ * instead of failing (~63 s). That branch is real availability, not a defect.
  * It is NOT covered here and cannot be, for the reason in the next paragraph:
  * pinning the coordinator to C makes every case fail with `Missing block`
  * before any degradation is reached, writes included (the write path reads
@@ -81,8 +91,9 @@ import { format } from 'node:util';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
+import { resolveLinkDeadlines } from '@optimystic/db-p2p';
 import {
-	CadreNode, isRetriableControlWriteFailure, signPeerRecord, ed25519KeyPairFromLibp2p
+	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, signPeerRecord, ed25519KeyPairFromLibp2p
 } from '@serfab/cadre-core';
 import type { Ed25519KeyPair } from '@serfab/cadre-core';
 import {
@@ -95,16 +106,20 @@ const log = debug('sereus:integration:degraded-cohort');
 
 // ── Deadlines ─────────────────────────────────────────────────────────────────
 //
-// Every bound below is sized off MEASURED single-machine (localhost websockets)
-// runs under the forced cohort + pinned coordinator, with ~2–3× headroom so a
-// slower CI box does not flake while a real regression still trips the bound
-// (re-measured 2026-08-12 with the control-write retry live under every case):
+// The healthy, delayed and reset bounds below are sized off MEASURED
+// single-machine (localhost websockets) runs under the forced cohort + pinned
+// coordinator, with ~2–3× headroom so a slower CI box does not flake while a
+// real regression still trips the bound. The never-answering bounds are
+// DERIVED from Optimystic's deadlines at the declared link instead, because
+// they are made of those deadlines and move whenever Optimystic re-derives them
+// (see `STALLED_ROUND_MS` and the constants after it). Last measured 2026-10-01:
 //
-//   healthy authorize+remove ......... ~1.2–2.2 s (both writes, combined)
-//   2 s-delayed authorize / remove ... ~55 s      each
-//   never-answering member ........... ~20 s or ~40 s to the named failure
-//   recovery after a failed write .... ~1.1–1.8 s
-//   transient-reset absorb ........... ~1.6 s     (commits on attempt 3)
+//   healthy authorize+remove ......... ~0.6–2.2 s (both writes, combined)
+//   2 s-delayed authorize / remove ... ~8 s       each
+//   never-answering member ........... ~63 s per failing write; ~126 s when the
+//                                      write queued behind a failing background one
+//   recovery after a failed write .... ~0.7–1.8 s
+//   transient-reset absorb ........... ~0.9–1.6 s (commits on attempt 3)
 //
 // The absorb row was ~0.7 s on attempt 2 when this table was first measured
 // (2026-08-12). Re-measured 2026-09-17 over three isolated rounds
@@ -113,12 +128,11 @@ const log = debug('sereus:integration:degraded-cohort');
 // now fail SEPARATE attempts rather than both landing on the first — see
 // {@link TRANSIENT_RESET_COUNT}.
 //
-// The ~55 s delayed commit is the 2 s handler delay paid serially across the
-// ~27 inbound cluster RPCs a control write makes: a small per-RPC delay becomes
-// a large per-WRITE one. The failure is ~21 s per pend round — two 10.5 s
-// `ClusterClient` response-deadline attempts against the silent member — and
-// the number of rounds is NOT deterministic even with the coordinator pinned
-// (one round in some runs, two in others; see the failure case's assertions).
+// The ~8 s delayed commit is the 2 s handler delay paid serially across the
+// inbound cluster RPCs a control write makes: a small per-RPC delay becomes a
+// larger per-WRITE one. The failure is one ~21 s pend round — two 10.5 s
+// `ClusterClient` response-deadline attempts against the silent member — plus
+// the cancel discharge's rounds of the same length (see the header).
 //
 // RESOLVED (historical, not live): before 2026-08-12 the healthy and delayed
 // cases sometimes failed with `Failed to get super-majority: 0/3 approvals
@@ -145,7 +159,7 @@ const log = debug('sereus:integration:degraded-cohort');
 //    case with `SyncRetryExhaustedError: … exhausted 10 retries: Conflict race
 //    lost: 1/3 member(s) hold a conflicting winner (2/3 approvals)` — not a
 //    failure. That case holds every request to C for 2 s, so A's write takes
-//    ~55 s and C's own refresh loses the race to it until its sync budget
+//    several seconds and C's own refresh loses the race to it until its sync budget
 //    (~16 s) runs out; A's write then commits. Seen in 2 of 5 runs on
 //    2026-09-17, always labelled "inside a deliberately degraded window". Outside
 //    one, or with `pending conflict` wording, it is a finding.
@@ -185,38 +199,90 @@ const log = debug('sereus:integration:degraded-cohort');
 const READ_TIMEOUT_MS = 15_000;
 /** Healthy writes (~0.3 s each measured); only catches a hang. */
 const WRITE_TIMEOUT_MS = 30_000;
-/** The 2 s-delayed writes: ~2× the ~55 s measurement. */
-const DELAYED_WRITE_TIMEOUT_MS = 120_000;
 /**
- * A write against a never-answering member: above the slowest measured settle
- * (84.3 s, an authorize queued behind a failing background write; see the header). A write that has not settled by here is the hang this
- * scenario exists to catch.
+ * The 2 s-delayed writes. NOTE: sized when each took ~55 s; they take ~8 s now, so this only
+ * catches a hang. Left loose deliberately: an escalation into the response-deadline path fails
+ * the case's `error` assertion long before it reaches here. Tighten it if the delayed case is
+ * ever wanted as a latency guard.
  */
-const STALLED_WRITE_TIMEOUT_MS = 120_000;
+const DELAYED_WRITE_TIMEOUT_MS = 120_000;
+
 /**
- * Assertion bounds for the named-failure case (distinct from the deadline
- * above, which only catches hangs). Floor: an INSTANT failure means the
- * response-deadline path was never exercised — an admission rejection or an
- * addressless dial wearing the same error, which would pass the error-text
- * assertion for the wrong reason. Ceiling: above the slowest measured settlement
- * (84.3 s, see the header) and below `STALLED_WRITE_TIMEOUT_MS`, which is what
- * catches a genuinely unbounded stall.
+ * The deadlines every node in the trio runs under: cadre-core states
+ * `DECLARED_LINK_ROUND_TRIP_MS` to Optimystic when the config declares no link (the harness
+ * declares none), and sets no RPC deadline override. The never-answering bounds below are
+ * derived from it, so they move with Optimystic's derivation instead of going stale.
+ * NOTE: if cadre-core starts passing `rpcDeadlines` to Optimystic, pass the same values here,
+ * or these bounds are derived from a dial deadline no node uses.
+ */
+const LINK_DEADLINES = resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS);
+/**
+ * One consensus round against the never-answering member: `ClusterClient` makes two attempts
+ * at it, each ending at the response deadline. 21 s at the default declared link.
+ */
+const STALLED_ROUND_MS = 2 * LINK_DEADLINES.responseTimeoutMs;
+/**
+ * The cancel discharge's budget (`abortOrCancelTimeoutMs`), as `quereus-plugin-optimystic`'s
+ * `collection-factory.ts` sets it on every collection's `NetworkTransactor`:
+ * `max(5 s, dial deadline)`, 38.5 s at the default declared link. Restated here because the
+ * plugin computes it inline and exports nothing for it; if a red run's cancel rounds stop
+ * matching {@link STALLED_CANCEL_ROUNDS}, check that expression first.
+ */
+const CANCEL_BUDGET_MS = Math.max(5_000, LINK_DEADLINES.dialTimeoutMs);
+/**
+ * Cancel rounds a failed write runs against the never-answering member. `dischargeCancel`
+ * starts another round while its budget has not run out, and each round lasts a whole
+ * {@link STALLED_ROUND_MS} however little budget is left, so the last round overruns the
+ * budget. 2 at the default declared link.
+ */
+const STALLED_CANCEL_ROUNDS = Math.ceil(CANCEL_BUDGET_MS / STALLED_ROUND_MS);
+/**
+ * One control write that fails against the never-answering member: one pend round, then the
+ * cancel rounds. The pend is not re-tried: its round ends with the coordinator's answer (the
+ * shortfall), not a timeout, so the transactor's overall budget
+ * (`LINK_DEADLINES.transactionTimeoutMs`, 154 s) is never what ends it. 63 s at the default
+ * declared link; measured 63.1–63.3 s on 2026-10-01.
+ */
+const STALLED_WRITE_FAILURE_MS = (1 + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
+/**
+ * How long a write against the never-answering member takes to settle, measured from the call.
+ * Control writes run one at a time under the node's write lock, so the write can queue behind
+ * ONE background control write failing the same way: A's `revocation-ledger-open`, which A
+ * files while it is connected and which fails in every stalled window. 126 s at the default
+ * declared link; measured 126.3 s on 2026-10-01 in both cases that awaited an authorize.
+ */
+const STALLED_SETTLE_MS = 2 * STALLED_WRITE_FAILURE_MS;
+/**
+ * Assertion bounds for the named-failure case (distinct from the deadline below, which only
+ * catches hangs). Floor: an INSTANT failure means the response-deadline path was never
+ * exercised — an admission rejection or an addressless dial wearing the same error, which
+ * would pass the error-text assertion for the wrong reason. Ceiling: the transaction budget
+ * held, meaning the failure took the path {@link STALLED_SETTLE_MS} describes. One extra
+ * {@link STALLED_ROUND_MS} of headroom: a slower box adds overhead per exchange, while a whole
+ * extra round means a re-tried pend or a third cancel round, which is the regression this
+ * bound exists to report.
  */
 const FAILURE_FLOOR_MS = 15_000;
-const FAILURE_CEILING_MS = 110_000;
+const FAILURE_CEILING_MS = STALLED_SETTLE_MS + STALLED_ROUND_MS;
 /**
- * Ceiling for the 2 s-delayed COMMIT case, ~1.8× the ~55 s measurement. Each
- * cluster-transaction phase pays the delay once per inbound RPC to the degraded
- * member and a control write runs pend + commit, so many delayed rounds are
- * legitimate; a silent escalation into the response-deadline path would show up
- * as a MUCH larger number, not a smaller one.
+ * A write against a never-answering member that has not settled by here is the hang this
+ * scenario exists to catch. One more {@link STALLED_ROUND_MS} above {@link FAILURE_CEILING_MS},
+ * so a write that settled late is reported by that assertion, with its measured time, rather
+ * than as a hang. 168 s at the default declared link.
+ */
+const STALLED_WRITE_TIMEOUT_MS = FAILURE_CEILING_MS + STALLED_ROUND_MS;
+/**
+ * Ceiling for the 2 s-delayed COMMIT case. NOTE: sized at ~1.8× a ~55 s measurement; the case
+ * takes ~8 s now and the bound is left loose for the reason on {@link DELAYED_WRITE_TIMEOUT_MS}.
+ * Each cluster-transaction phase pays the delay once per inbound RPC to the degraded member and
+ * a control write runs pend + commit, so several delayed rounds are legitimate.
  */
 const DELAYED_COMMIT_CEILING_MS = 100_000;
 
 // Each case's per-`it` timeout is set ABOVE the sum of the labelled deadlines it
 // can pay, so that on a hang the labelled error — which names the operation —
 // wins over vitest's anonymous test timeout. They are ceilings that never fire
-// on a green run (slowest measured case: ~110 s).
+// on a green run (slowest measured case: ~126 s, a stalled authorize).
 
 /** The delay matrix: under the 10.5 s response deadline, and past it forever. */
 const UNDER_DEADLINE_DELAY_MS = 2_000;
@@ -792,8 +858,9 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		forced?.restore();
 		// Newest first; a stop() failure is logged and the rest still stop —
 		// throwing here would leak the other nodes' listeners AND mask the test
-		// failure that sent us into teardown. A failed write's background
-		// cancelBatch (5 s budget) may still be in flight; stop() must not wait on it.
+		// failure that sent us into teardown. A failed write's cancel discharge
+		// (CANCEL_BUDGET_MS, plus one overrunning round) may still be in flight;
+		// stop() must not wait on it.
 		for (const node of [C, B, A]) {
 			await node?.stop().catch((error: unknown) =>
 				console.warn('afterAll: node stop failed during teardown:', error));
@@ -880,7 +947,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expect(await within('isMember (post-remove, delayed)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
 
 			// The delay was paid as latency, NOT escalated into the response-deadline
-			// path (whose floor is ~20 s per transaction).
+			// path (whose floor is one ~21 s round per transaction).
 			expect(authorize.elapsedMs).toBeLessThan(DELAYED_COMMIT_CEILING_MS);
 			expect(remove.elapsedMs).toBeLessThan(DELAYED_COMMIT_CEILING_MS);
 			expect(activeDegradation.interceptedStreams(), 'the delay wrapper never saw a stream — nothing was degraded').toBeGreaterThan(0);
@@ -890,7 +957,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			retryLog.restore();
 			await releaseDegradation();
 		}
-		// Two ~55 s delayed writes plus setup: ~110 s measured.
+		// Two ~8 s delayed writes plus setup: ~16 s measured.
 	}, 300_000);
 
 	it('fails with a named super-majority error when a member stalls past the response deadline', async () => {
@@ -908,13 +975,11 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			const chain = errorChainText(outcome.error);
 			// The cohort size (3), the unanimity bar (needed 3) and the ZERO rejections
 			// are the claim: the write failed on SILENCE, not on anyone voting no. The
-			// approval COUNT floats because the number of pend rounds does — measured
-			// `2/3` when the write fails on its first round (~20 s) and `0/3` when a
-			// second round ran under the pre-2026-08-12 abandoned-pend bug (below).
-			// Both 2026-09-17 rounds settled at ~40 s (40161 ms, 40110 ms) and both
-			// reported `2/3`, so a second round no longer implies `0/3`. Pinning the
-			// literal to one variant makes this case flake, so it is deliberately
-			// `\d+`.
+			// approval COUNT has floated with the number of pend rounds — `2/3` on a
+			// first round and `0/3` when a second round ran under the pre-2026-08-12
+			// abandoned-pend bug (below). Every run since has reported `2/3` (both
+			// 2026-10-01 stalled writes included), but pinning the literal to one
+			// variant made this case flake, so it is deliberately `\d+`.
 			// NOTE: before 2026-08-12, a second pend round could report 0 approvals
 			// AND 0 rejections even with A and B healthy — a retried write heard
 			// nothing from the healthy members either. Cause: an abandoned pend won
@@ -934,24 +999,25 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// The LIVE error object must classify as retriable — this is what the
 			// retry would re-present, and a reworded upstream message now fails this
 			// scenario instead of silently disabling the retry. (The retry still did
-			// not RUN here: the ~20 s first attempt exhausts the 10 s budget, which
+			// not RUN here: the ~63 s first attempt exhausts the 10 s budget, which
 			// the log assertions below pin.)
 			expect(isRetriableControlWriteFailure(outcome.error),
 				'the live degraded-cohort failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
 			expectAggregateCarriesBatchToken(chain);
 
 			// Lower bound: an instant failure means the response-deadline path was
-			// never exercised. Upper bound: the transaction budget held.
+			// never exercised. Upper bound: the transaction budget held (see
+			// FAILURE_CEILING_MS for what that means in rounds).
 			expect(outcome.elapsedMs).toBeGreaterThanOrEqual(FAILURE_FLOOR_MS);
 			expect(outcome.elapsedMs).toBeLessThanOrEqual(FAILURE_CEILING_MS);
 			expect(activeDegradation.interceptedStreams()).toBeGreaterThan(0);
 			expectThreePeerCohortConsulted(baseline);
 
 			// The retry budget's whole rationale: a genuinely silent member fails in
-			// the SAME ~20-40 s it failed in before the retry existed, because the
-			// ~20 s first attempt exhausts the 10 s budget before any sleep. Wall
-			// clock cannot pin this (a one-round failure retried once lands at ~40 s,
-			// indistinguishable from a legitimate two-round settle), so the funnel's
+			// one attempt's time, as it would with no retry, because the ~63 s first
+			// attempt exhausts the 10 s budget before any sleep. Wall clock cannot pin
+			// this (a write queued behind a failing background write lands at ~126 s,
+			// the same as one retried once), so the funnel's
 			// own log is the assertion surface — scoped by the `peer-insert` label to
 			// THIS write, because background writes are NOT all stall victims:
 			// measured 2026-08-12 (run 1), a background write fast-failed 3/3 inside
@@ -959,7 +1025,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// an unscoped "nothing retried" assertion false-fails.
 			const insertLines = retryLog.lines().filter((l) => l.includes('[peer-insert]'));
 			expect(insertLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
-				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~20 s degraded-member failure').toBe(false);
+				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~63 s degraded-member failure').toBe(false);
 			// Anti-vacuity for the line above: the stalled write's single attempt
 			// must itself be visible in the capture — otherwise the negative
 			// assertion passes because the capture is dead or the failure bypassed
@@ -974,7 +1040,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		expect(await within('isMember (post-failure)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
 		// And a FAILED write must not sit in the committed-alone re-replication queue.
 		expect(pendingPeerWrites(A).has(target)).toBe(false);
-	}, 180_000);
+	}, STALLED_WRITE_TIMEOUT_MS + 60_000);
 
 	/**
 	 * This was the standing reproducer for `complete/control-reads-blocked-by-stalled-write`
@@ -1026,7 +1092,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			await releaseDegradation();
 			await settled;
 		}
-	}, 240_000);
+	}, STALLED_WRITE_TIMEOUT_MS + 120_000);
 
 	it('recovers: a write commits normally once the degraded member is restored', async () => {
 		// Every earlier case restored its degradation in `finally`; this case proves
@@ -1073,7 +1139,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// authorize case (background writes can fail fast inside this window).
 			const removeLines = retryLog.lines().filter((l) => l.includes('[peer-remove]'));
 			expect(removeLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
-				'the stalled DELETE ran a SECOND attempt — the 10 s retry budget no longer expires before the ~20 s degraded-member failure').toBe(false);
+				'the stalled DELETE ran a SECOND attempt — the 10 s retry budget no longer expires before the ~63 s degraded-member failure').toBe(false);
 			expect(removeLines.some((l) => /failed after 1\/\d+ attempt\(s\)/.test(l)),
 				'the stalled DELETE\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {
@@ -1084,7 +1150,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		expect(pendingPeerWrites(A).has(target)).toBe(false);
 		// …and must have rolled back: the victim is still a member.
 		expect(await within('isMember (post-failed-remove)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
-	}, 240_000);
+	}, STALLED_WRITE_TIMEOUT_MS + 120_000);
 
 	it('absorbs an injected transient stream reset: the write commits on a retry attempt', async () => {
 		// The case the retry was BUILT for, and the first observation of its
@@ -1175,7 +1241,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 				'the refresh never committed on a retry attempt — the retry engaged but did not rescue the write').toBe(true);
 
 			// The absorption stayed inside the retry budget: resets fail instantly,
-			// so a settle near the response-deadline path's ~20 s floor means the
+			// so a settle near the response-deadline path's ~21 s round means the
 			// failure escalated instead of being absorbed.
 			expect(outcome.elapsedMs).toBeLessThan(TRANSIENT_RESET_COMMIT_CEILING_MS);
 		} finally {
