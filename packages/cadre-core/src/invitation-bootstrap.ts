@@ -11,6 +11,9 @@
  *
  * NOTE: if invitations are ever carried in a QR code, lower these caps or name the machines by
  * peer id only.
+ * NOTE: the per-machine cap keeps the record's order (relay first, then direct addresses as the
+ * machine published them, loopback included). If a sibling with many interfaces is seen to have
+ * its reachable address cut, rank loopback and private addresses last before slicing.
  */
 export const INVITATION_SIBLING_MACHINES = 3;
 export const INVITATION_ADDRS_PER_SIBLING = 4;
