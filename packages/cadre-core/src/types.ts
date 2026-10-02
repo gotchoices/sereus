@@ -479,8 +479,9 @@ export interface NetworkConfig {
    * reservation drive, the control-cohort dial budgets, and the per-peer cohort read deadline
    * ({@link cohortQueryTimeoutMs}, unless set explicitly). It is also handed to Optimystic
    * (`NodeOptions.linkRoundTripMs`), default included, which derives its own deadlines from it:
-   * its request dials and responses, its block pushes, and libp2p's `dialTimeout` and
-   * `inboundUpgradeTimeout` on every node. Reaching another machine through a
+   * its request dials and responses, its block pushes, and libp2p's `addressDialTimeout`,
+   * `dialTimeout` and `inboundUpgradeTimeout` on every node, cadre adding its admission decisions
+   * to the three that open a connection. Reaching another machine through a
    * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
    * speed above which it can never open a connection — which is the defect this declaration
    * exists to make impossible to reintroduce one budget at a time. The counts, the measurement behind them,
@@ -497,8 +498,12 @@ export interface NetworkConfig {
    * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
    * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
    * zero, because every consumer multiplies it into a deadline where a zero means "give up at
-   * once" and a `NaN` means "never". Optimystic refuses, in the same place, a value above its
-   * `MAX_LINK_ROUND_TRIP_MS` (about 1.66 days).
+   * once" and a `NaN` means "never". A value above about 10.8 hours is refused in the same place,
+   * by Optimystic: the request dial cadre states from it (eleven round trips plus two admission
+   * decisions, `optimysticDialLimits` in `link-budget.ts`) then exceeds its
+   * `MAX_RPC_DIAL_TIMEOUT_MS` (about 4.97 days), and its error names `rpcDeadlines.dialTimeoutMs`.
+   * That is below Optimystic's own `MAX_LINK_ROUND_TRIP_MS` (about 13.3 hours) and far above any
+   * real link, so cadre adds no check of its own.
    */
   linkRoundTripMs?: number;
   /**

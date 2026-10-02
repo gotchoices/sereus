@@ -496,7 +496,10 @@ export {
   circuitRequestBudgetMs,
   relayedRequestBudgetMs,
   peerJoinPushBudget,
-  type PeerJoinPushBudget
+  type PeerJoinPushBudget,
+  DIAL_ADMISSION_DECISIONS,
+  optimysticDialLimits,
+  type OptimysticDialLimits
 } from './link-budget.js';
 
 // Seed trust policy (trust anchor for incoming seeds)

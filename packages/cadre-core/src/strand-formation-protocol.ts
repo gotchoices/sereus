@@ -792,13 +792,16 @@ export interface FormationDialResult {
  * rejection is the abort itself, or reaches the caller through the awaited copy, so the
  * handler below only stops it being reported as unhandled.
  *
- * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. libp2p
- * 3.3+ cuts an address that hangs without answering (a black-holed relay host) off at its own
- * `addressDialTimeout`, which leaves the rest of the budget to the next address only while that
- * timeout is well under `dialTimeoutMs` (see
- * `blocked/adopt-optimystic-address-dial-timeout`). A budget per address here would overrun the
- * session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
- * hung first relay are seen in practice, give each address a sub-budget or dial them in parallel.
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. Its
+ * per-address limit (`addressDialTimeout`: ten link round trips plus two admission decisions, as
+ * `optimysticDialLimits` states it) is longer than `dialTimeoutMs` (`formationDeadlines().dialMs`:
+ * five round trips plus one decision) at every declaration, so it never cuts off an address
+ * inside this dial. An address that hangs without answering (a black-holed relay host) uses the
+ * whole budget, and the join moves on to the party's next machine
+ * ({@link dialFormationByMachine}) rather than to this machine's next address; an address that is
+ * refused fails fast and still hands over to the next. A budget per address here would overrun
+ * the session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
+ * hung first address are seen in practice, give each address a sub-budget or dial them in parallel.
  */
 function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
   return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {

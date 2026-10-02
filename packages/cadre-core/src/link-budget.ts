@@ -106,18 +106,30 @@
  * ── Optimystic's deadlines, from the same declaration ──
  *
  * cadre states its declared link to Optimystic on the control node and every strand node
- * (`@optimystic/db-p2p`'s `NodeOptions.linkRoundTripMs`, from 1.8.0), and Optimystic derives
- * its network deadlines from it (`resolveLinkDeadlines` in its `rpc-deadline.ts`), each never
- * below the LAN value it replaced. At the default declaration:
+ * (`@optimystic/db-p2p`'s `NodeOptions.linkRoundTripMs`), and Optimystic derives its network
+ * deadlines from it (`resolveLinkDeadlines` in its `rpc-deadline.ts`), each never below the LAN
+ * value it replaced. Optimystic's derivation is link time only, so cadre states the three limits
+ * that cover opening a connection itself ({@link optimysticDialLimits}): Optimystic's value plus
+ * {@link DIAL_ADMISSION_DECISIONS} admission decisions. At the default declaration:
  *
- * | Optimystic deadline                                  | link round trips | at the default | undeclared |
- * | ---------------------------------------------------- | ---------------- | -------------- | ---------- |
- * | libp2p `dialTimeout` and `inboundUpgradeTimeout`     | 5                | 17 500 ms      | 10 000 ms  |
- * | one request's dial, stream negotiation included      | 6                | 21 000 ms      | 3 000 ms   |
- * | one request's response                               | 3                | 10 500 ms      | 10 000 ms  |
- * | a rebalance transfer's dial, and again its reply     | 6, floor 30 000  | 30 000 ms      | 30 000 ms  |
+ * | deadline                                                | link round trips      | at the default | undeclared |
+ * | ------------------------------------------------------- | --------------------- | -------------- | ---------- |
+ * | libp2p `addressDialTimeout`, one address of a dial      | 10, + 2 decisions     | 39 000 ms      | 6 000 ms   |
+ * | libp2p `dialTimeout`, a dial that carries no signal     | 10, + 2 decisions     | 39 000 ms      | 10 000 ms  |
+ * | libp2p `inboundUpgradeTimeout`, the listener's side     | 5                     | 17 500 ms      | 10 000 ms  |
+ * | one request's dial, stream negotiation included         | 11, + 2 decisions     | 42 500 ms      | 3 000 ms   |
+ * | one request's response                                  | 3                     | 10 500 ms      | 10 000 ms  |
+ * | a rebalance transfer's dial, and again its reply        | request dial, ≥ 30 000 | 42 500 ms     | 30 000 ms  |
  *
- * Its churn and under-replication pushes take the request rows' values. The undeclared column
+ * Ten round trips is Optimystic's count for opening a relayed connection through a relay the
+ * dialer is not yet connected to, which opens that connection first (about 8.6 round trips over
+ * WebSocket, 9.6 over `wss`), with a margin. The two decisions are the gates that open runs
+ * through on the dialer's clock: a party-run relay's, on the dialer's connection to it, then the
+ * called machine's. Each may take {@link ADMISSION_DECISION_TIMEOUT_MS}.
+ *
+ * Its churn and under-replication pushes take the request rows' values, and the Quereus plugin
+ * derives a write's budgets from the request dial: four of them for the transaction (170 000 ms)
+ * and one for cancelling it (42 500 ms). The undeclared column
  * is why cadre always states the value, default included. A fixed 3 000 ms request dial cannot
  * open a relayed connection above 375 ms one-way, and it also bounded the protocol negotiation
  * on a connection that was already open, which is one link round trip: at the supported link
@@ -128,29 +140,28 @@
  * ({@link cohortReadDeadlineMs} says why).
  *
  * NOTE: the longer deadlines are paid against a machine that is gone. An Optimystic request
- * to a peer that never completes a connection now waits up to the 21 000 ms dial deadline where
- * it waited 3 000, and one that connects and never answers waits 10 500 where it waited 10 000.
- * Measured 2026-09-30 (`control-write-degraded-cohort-member.integration.ts`): a control write
- * against a connected, silent member failed at 42.2 s, against 40.2 s with no link declared.
- * The dial case was not measured. cadre's cut-off budgets (`CONTROL_WRITE_RETRY_BUDGET_MS`,
- * `CONTROL_READ_RETRY_BUDGET_MS`) are checked between attempts, so one attempt can outlast
- * them by that much. If writes on a fast link are seen waiting out the dial deadline against an
- * unreachable machine, declare that deployment's real round trip instead of the default.
+ * to a peer that never completes a connection waits up to the 42 500 ms dial deadline, each of
+ * that peer's addresses up to 39 000 ms inside it, and one that connects and never answers
+ * waits 10 500. A control write against a connected, silent member fails after about 84 s
+ * (one pend round and three cancel rounds; `docs/cadre-consistency.md` → "Deadlines Over
+ * Optimystic's Reads and Commits"). The dial case was not measured. cadre's cut-off budgets
+ * (`CONTROL_WRITE_RETRY_BUDGET_MS`, `CONTROL_READ_RETRY_BUDGET_MS`) are checked between
+ * attempts, so one attempt can outlast them by that much. If writes on a fast link are seen
+ * waiting out the dial deadline against an unreachable machine, declare that deployment's real
+ * round trip instead of the default.
  *
- * libp2p's two limits bound the same relayed dial as cadre's budgets do: the DIALER's
- * `dialTimeout`, which bounds every dial that carries no abort signal of its own, and the
- * LISTENER's `inboundUpgradeTimeout`, which is how long the machine being called lets a
- * half-built connection finish its handshakes. At libp2p's 10 000 ms, no relayed connection
- * could be opened above about 1 250 ms one-way (a 2.5-second link round trip) whatever cadre
- * declared, and the listener's limit is the one that makes that failure silent: at 1 500 ms
- * one-way the dialer's own 12 094 ms dial RESOLVED while the listener had already thrown the
- * connection away at 10 s, so the first stream over it died with `Unexpected EOF - stream
- * closed while reading 0/1 bytes` and the listener reported no peer at all. Optimystic's
- * derivation contains {@link relayedDialBudgetMs} at every declaration: five round trips are at
- * least four plus the {@link ADMISSION_DECISION_TIMEOUT_MS} allowance once the round trip
- * reaches 2 000 ms, and the 10 000 ms floor covers every shorter one. `link-budget.spec.ts` pins
- * that against Optimystic's own derivation, so a change on either side that breaks it fails
- * there rather than silently on a slow link.
+ * The LISTENER's `inboundUpgradeTimeout` is how long the machine being called lets a half-built
+ * connection finish its handshakes, and it is the limit that makes a dial outlasting it silent:
+ * at libp2p's 10 000 ms and 1 500 ms one-way, the dialer's own 12 094 ms dial RESOLVED while
+ * the listener had already thrown the connection away at 10 s, so the first stream over it died
+ * with `Unexpected EOF - stream closed while reading 0/1 bytes` and the listener reported no
+ * peer at all. cadre leaves it to Optimystic, with no decisions added: its timer runs over the
+ * listener's own upgrade and the listener's own decision, never over a relay connection the
+ * dialer opened first. Optimystic's derivation contains {@link relayedDialBudgetMs} at every
+ * declaration: five round trips are at least four plus the {@link ADMISSION_DECISION_TIMEOUT_MS}
+ * allowance once the round trip reaches 2 000 ms, and the 10 000 ms floor covers every shorter
+ * one. `link-budget.spec.ts` pins that against Optimystic's own derivation, so a change on
+ * either side that breaks it fails there rather than silently on a slow link.
  *
  * NOTE: derived from the declaration alone, so a per-field override that raises a cadre dial
  * budget above it (`controlCohort.perAddressDialTimeoutMs`, `strandBackfill.dialTimeoutMs`)
@@ -173,6 +184,8 @@
  *   declaring a faster link than a client closes that client's connection before its request
  *   arrives.
  */
+
+import { resolveLinkDeadlines, type Libp2pConnectionTimeouts, type RpcDeadlineDefaults } from '@optimystic/db-p2p';
 
 /**
  * The link round trip cadre assumes when a host declares none, in milliseconds. A deployment
@@ -352,9 +365,11 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  *   waiting on (`libp2p/dist/src/upgrader.js`), and the listener's own
  *   `inboundUpgradeTimeout` is already running while it does. So
  *   {@link relayedDialBudgetMs}, and every budget built on it, adds this
- *   deadline once per decision the called machine may make, and the two libp2p
- *   limits Optimystic derives from the same declaration contain it (the module
- *   doc's "Optimystic's deadlines, from the same declaration").
+ *   deadline once per decision the called machine may make, the dial limits
+ *   cadre states to Optimystic add it for the relay's decision and the called
+ *   machine's ({@link optimysticDialLimits}), and the listener's limit
+ *   Optimystic derives contains it (the module doc's "Optimystic's deadlines,
+ *   from the same declaration").
  *   Raising it therefore lengthens every dial budget with it: a slow decision
  *   still fits, and a dial to a peer that is gone takes that much longer to
  *   give up.
@@ -579,5 +594,49 @@ export function peerJoinPushBudget(linkRoundTripMs?: number): PeerJoinPushBudget
 	return {
 		dialTimeoutMs: relayedDialBudgetMs(linkRoundTripMs),
 		responseTimeoutMs: circuitRequestBudgetMs(linkRoundTripMs)
+	};
+}
+
+/**
+ * Admission decisions a relayed dial may wait on, each on the dialer's clock: a party-run relay's,
+ * on the dialer's connection to it (`denyInboundEncryptedConnection`), then the called machine's.
+ */
+export const DIAL_ADMISSION_DECISIONS = 2;
+
+/** The connection limits cadre states to Optimystic on every node it builds, beside the declared link. */
+export interface OptimysticDialLimits {
+	/** `NodeOptions.connectionManager`: libp2p's limit on one address of a dial, and on a dial that carries no signal. */
+	connectionManager: Required<Pick<Libp2pConnectionTimeouts, 'addressDialTimeout' | 'dialTimeout'>>;
+	/** `NodeOptions.rpcDeadlines`: the dial deadline of every Optimystic request. */
+	rpcDeadlines: Pick<RpcDeadlineDefaults, 'dialTimeoutMs'>;
+}
+
+/**
+ * The three limits that cover opening a connection, as cadre states them to Optimystic on the
+ * control node and every strand node: Optimystic's own derivation from the declared link
+ * (`resolveLinkDeadlines`), which is link time only, plus one {@link ADMISSION_DECISION_TIMEOUT_MS}
+ * for each of the {@link DIAL_ADMISSION_DECISIONS} gates the open runs through. 39 000 ms per
+ * address, 39 000 ms per dial and a 42 500 ms request dial at the default declaration.
+ *
+ * Built on Optimystic's derivation rather than restating its round-trip counts, so a change to
+ * them reaches every node without an edit here. `dialTimeout` stays at least `addressDialTimeout`,
+ * as Optimystic's derivation has it, because both take the same addition.
+ *
+ * The listener's `inboundUpgradeTimeout` and the request response deadline are left to Optimystic:
+ * the listener's timer runs over its own upgrade and its own decision only (the module doc's
+ * "Optimystic's deadlines, from the same declaration"), and a response waits on no gate.
+ *
+ * The declaration is resolved first, so an invalid one fails with cadre's message. A round trip
+ * above Optimystic's `MAX_LINK_ROUND_TRIP_MS` throws from Optimystic, here.
+ */
+export function optimysticDialLimits(linkRoundTripMs?: number): OptimysticDialLimits {
+	const derived = resolveLinkDeadlines(resolveLinkRoundTripMs(linkRoundTripMs));
+	const decisionsMs = DIAL_ADMISSION_DECISIONS * ADMISSION_DECISION_TIMEOUT_MS;
+	return {
+		connectionManager: {
+			addressDialTimeout: derived.addressDialTimeoutMs + decisionsMs,
+			dialTimeout: derived.libp2pDialTimeoutMs + decisionsMs
+		},
+		rpcDeadlines: { dialTimeoutMs: derived.dialTimeoutMs + decisionsMs }
 	};
 }

@@ -43,7 +43,7 @@ import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPoli
 import { strandNodeAddrs } from './strand-network-config.js';
 import { resolveRelayServer } from './relay-server.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
-import { declaredCohortReadDeadlineMs, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -812,6 +812,9 @@ export class StrandInstanceManager {
         // node is also the listener for every other member's strand node, and Optimystic
         // derives that listener's limit from this (`link-budget.ts`).
         linkRoundTripMs: resolveLinkRoundTripMs(config.network?.linkRoundTripMs),
+        // The same dial limits as the control node: a strand node dials the same machines,
+        // through the same relays and gates.
+        ...optimysticDialLimits(config.network?.linkRoundTripMs),
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the

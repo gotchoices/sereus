@@ -105,7 +105,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, isPendingJoinConflict, isStrandIdConflict, pendingJoinId, type RevokedRowRef } from './control-database.js';
@@ -1950,11 +1950,15 @@ export class CadreNode implements SAppIdLookup {
       // replaces the default whole (see DEFAULT_CONNECTION_MONITOR).
       connectionMonitor: network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
       // The declared link every cadre budget is derived from, stated to Optimystic too so it
-      // derives its own deadlines from the same number: its request dials and responses, its
-      // block pushes, and libp2p's `dialTimeout` and `inboundUpgradeTimeout`. Always stated,
-      // default included: undeclared, Optimystic keeps LAN deadlines that cannot open a
-      // relayed connection at the link sereus supports (`link-budget.ts`).
+      // derives its own deadlines from the same number: its request responses, its block
+      // pushes, and libp2p's `inboundUpgradeTimeout`. Always stated, default included:
+      // undeclared, Optimystic keeps LAN deadlines that cannot open a relayed connection at the
+      // link sereus supports (`link-budget.ts`).
       linkRoundTripMs: resolveLinkRoundTripMs(network?.linkRoundTripMs),
+      // The three limits on opening a connection (libp2p's per-address and whole-dial limits,
+      // and Optimystic's request dial): Optimystic's derivation from the same link plus the
+      // relay's and the called machine's admission decisions, which run on this dial's clock.
+      ...optimysticDialLimits(network?.linkRoundTripMs),
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question.
@@ -3601,8 +3605,9 @@ export class CadreNode implements SAppIdLookup {
    * addresses one after another under a single deadline, and sorts loopback
    * addresses last — so one or two addresses that never answer use up most of
    * the deadline before the address that works is tried. libp2p 3.3's
-   * per-address `addressDialTimeout` does not prevent that: optimystic sizes it
-   * for a cold relayed open (at least 6 s, or ten link round trips).
+   * per-address `addressDialTimeout` does not prevent that: cadre sizes it for a
+   * cold relayed open through two admission decisions (`optimysticDialLimits`,
+   * 39 s at the default declared link).
    * {@link dialPeerAddrs} dials each address on its own time limit instead.
    */
   private async resolveControlDialAddrs(peerId: string, resolved: Multiaddr[]): Promise<Multiaddr[]> {

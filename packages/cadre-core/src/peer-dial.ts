@@ -4,9 +4,10 @@
  *
  * libp2p's own multi-address dial (`libp2p.dial(addrs)`, `DialQueue.dialPeer`)
  * tries the addresses ONE AT A TIME under ONE signal. Its only per-address limit
- * is the connection manager's `addressDialTimeout` (libp2p 3.3+), which
- * optimystic sizes for a cold relayed open: at least 6 s, or ten link round
- * trips. An address whose connection attempt is silently dropped — a firewall, a
+ * is the connection manager's `addressDialTimeout` (libp2p 3.3+), which cadre
+ * sizes for a cold relayed open through two admission decisions
+ * (`optimysticDialLimits` in `link-budget.ts`: 39 s at the default declared
+ * link). An address whose connection attempt is silently dropped — a firewall, a
  * subnet the dialer cannot route to, a virtual adapter's address a Windows host
  * reports alongside its real ones — holds that dial for that long or until the
  * whole signal expires, and the addresses sorted after it get what is left. It
