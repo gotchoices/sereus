@@ -6,7 +6,7 @@
  * it after every successful start (`autoStart: true`) and on Disconnect
  * (`autoStart: false`); app launch (`use-cadre.ts`) and a push wake into a killed
  * process (`push-wake-native.ts`) read it to start the node unattended. The storage
- * key and backend are in `node-local-slots.ts`.
+ * key and backend are in `cadre-phone.ts`.
  *
  * No native imports, so the parser is Node-tested (`test/start-options.spec.ts`).
  */

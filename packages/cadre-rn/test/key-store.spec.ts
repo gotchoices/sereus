@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
-import { SecureStoreKeyStore, type SecureStoreKeyStoreOptions } from '../src/secure-key-store';
-import { FakeSecureStore, INDEX_KEY } from './fake-secure-store';
+import { SecureStoreKeyStore, type SecureStoreKeyStoreOptions } from '../src/key-store.js';
+import { FakeSecureStore, INDEX_KEY } from './fake-secure-store.js';
 
 function makeStore(options?: SecureStoreKeyStoreOptions): { store: SecureStoreKeyStore; fake: FakeSecureStore } {
 	const fake = new FakeSecureStore();

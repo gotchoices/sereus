@@ -2,7 +2,7 @@
   "name": "@serfab/cadre-rn",
   "version": "1.11.0",
   "type": "module",
-  "description": "React Native kit for Sereus apps - native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
+  "description": "React Native kit for Sereus apps - secure key storage and node-local record slots, native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
   "files": [
     "src",
     "dist",
@@ -14,6 +14,14 @@
     "README.md"
   ],
   "exports": {
+    "./key-store": {
+      "types": "./dist/key-store.d.ts",
+      "import": "./dist/key-store.js"
+    },
+    "./node-local": {
+      "types": "./dist/node-local.d.ts",
+      "import": "./dist/node-local.js"
+    },
     "./noise-crypto": {
       "types": "./dist/noise-crypto.d.ts",
       "import": "./dist/noise-crypto.js"
@@ -56,10 +64,12 @@
     "buffer": "^6.0.3",
     "event-target-polyfill": "^0.0.4",
     "readable-stream": "^4.7.0",
+    "uint8arrays": "^6.1.1",
     "web-streams-polyfill": "^4.1.0"
   },
   "peerDependencies": {
     "@craftzdog/react-native-buffer": "^6.1.2",
+    "@serfab/cadre-core": "workspace:^",
     "react-native": ">=0.79.0",
     "react-native-get-random-values": "^1.11.0",
     "react-native-nitro-modules": ">=0.31.2",
@@ -69,6 +79,9 @@
   },
   "peerDependenciesMeta": {
     "@craftzdog/react-native-buffer": {
+      "optional": true
+    },
+    "@serfab/cadre-core": {
       "optional": true
     },
     "react-native": {
@@ -93,6 +106,7 @@
   "devDependencies": {
     "@craftzdog/react-native-buffer": "^6.1.2",
     "@libp2p/websockets": "^10.1.21",
+    "@serfab/cadre-core": "workspace:^",
     "@types/node": "^25.0.10",
     "abort-controller": "3.0.0",
     "metro-resolver": "0.82.5",

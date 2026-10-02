@@ -1,6 +1,6 @@
 ----
 description: The React Native phone app's start-up and shut-down routine has no automated test at all, even though its sibling NativeScript app has a thorough one. Several rules the code's own comments call essential are checked by nobody.
-files: packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-rn/test/, packages/reference-app-ns/test/cadre-phone.spec.ts, packages/reference-app-rn/src/node-local-slots.ts
+files: packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-rn/test/, packages/reference-app-ns/test/cadre-phone.spec.ts, packages/cadre-rn/src/node-local.ts
 difficulty: medium
 tradeoffs: The module reaches straight for `expo-secure-store` and `rn-leveldb` with no injection seam, so a test has to mock native modules and reset the module registry per test — a real chunk of scaffolding for a file that changes only a few times a year, and the NativeScript suite already proves the shared cadre-core half of the behaviour.
 ----

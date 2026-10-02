@@ -1,6 +1,7 @@
 /**
- * In-memory `expo-secure-store` double, shared by every spec that exercises a
- * SecureStore-backed seam (`secure-key-store.spec.ts`, `node-local-slots.spec.ts`).
+ * In-memory secure-store double (the shape of `expo-secure-store`), shared by every
+ * spec that exercises a secure-store-backed seam (`key-store.spec.ts`,
+ * `node-local.spec.ts`).
  *
  * Stands in for the native `getItemAsync` / `setItemAsync` / `deleteItemAsync`,
  * records the options each call received (so a spec can assert exactly what was
@@ -9,8 +10,7 @@
  * {@link FakeSecureStore.setError}) — to simulate an access-denied / cancelled
  * biometric prompt or a failed enclave write.
  */
-import type { SecureStoreOptions } from 'expo-secure-store';
-import type { SecureStoreApi } from '../src/secure-key-store';
+import type { SecureStoreApi, SecureStoreOptions } from '../src/key-store.js';
 
 /** The reserved index entry `SecureStoreKeyStore` keeps its keyId list under. */
 export const INDEX_KEY = 'sereus.ks.__index';

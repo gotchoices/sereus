@@ -353,7 +353,7 @@ The browser, React Native and NativeScript reference apps each inject slots, so 
 
 **Browser.** The browser's slot is one key of the `kv` store of its node-local IndexedDB database (`reference-app-web/src/lib/node-local-slots.ts`) — the database that also holds the tab's identity and its persisted party id, and deliberately NOT the control block store, which cadre-core names after the party id these records are read to obtain.
 
-**React Native.** React Native splits the records across two backends by security property (`reference-app-rn/src/node-local-slots.ts`) — the trust-bearing owner anchor into the platform secure enclave (`expo-secure-store`, the same store the identity key lives in, ungated so the node comes up headless), and the non-trust-bearing records (the dial hints, the enrolled-machine count and the strand network state) into an app-private LevelDB database of their own under keys of their own, because multiaddr snapshots grow past SecureStore's ~2048-byte value limit while granting no authority.
+**React Native.** React Native splits the records across two backends by security property (`@serfab/cadre-rn/node-local`) — the trust-bearing owner anchor into the platform secure enclave (`expo-secure-store`, the same store the identity key lives in, ungated so the node comes up headless), and the non-trust-bearing records (the dial hints, the enrolled-machine count and the strand network state) into an app-private LevelDB database of their own under keys of their own, because multiaddr snapshots grow past SecureStore's ~2048-byte value limit while granting no authority.
 
 **NativeScript.** All the records share one `SqliteKVStore` (empty key prefix, one key each) over the `sereus-peer-identity` SQLite database that already holds the plaintext identity BLOB (`reference-app-ns/src/node-local-slots.ts`, wired in `cadre-phone.ts`); that app has no Keychain/Keystore integration, so splitting the anchor into a more tamper-resistant store must wait for the same hardening that moves the identity key.
 
@@ -1784,7 +1784,8 @@ than cadre-core silently running genesis. A future separate-owner slot
 #### Mobile secure backend (`SecureStoreKeyStore`)
 
 The React Native reference app (`reference-app-rn`) backs the seam with
-**`expo-secure-store`** (`src/secure-key-store.ts`): iOS **Keychain**
+**`expo-secure-store`** through the kit's `SecureStoreKeyStore`
+(`@serfab/cadre-rn/key-store`): iOS **Keychain**
 (`kSecClassGenericPassword`) and Android **Keystore**-encrypted SharedPreferences.
 The phone node's identity (and the owner key derived from it) therefore lives
 in the platform enclave rather than the plaintext LevelDB the app used before.
