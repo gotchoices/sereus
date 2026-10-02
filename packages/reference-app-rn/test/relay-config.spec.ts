@@ -2,8 +2,7 @@
  * `relay-config.ts` — how the phone decides which circuit relay it reserves a slot
  * on, which is the only thing that gives it an address other people can dial.
  *
- * Mirrors `ice-config.spec.ts`'s treatment of `resolveIceConfigUrl` and the web
- * copy's resolution order (`reference-app-web/src/lib/relay-config.ts`): explicit
+ * Mirrors the web copy's resolution order (`reference-app-web/src/lib/relay-config.ts`): explicit
  * argument wins, then the build-time env var, then nothing. The web copy has a
  * third source (`localStorage`) that React Native has no equivalent for — the
  * per-device seam here is the Settings field, which arrives as `explicit`.

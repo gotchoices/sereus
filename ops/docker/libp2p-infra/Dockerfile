@@ -14,7 +14,8 @@ COPY --from=build /app/dist ./dist
 VOLUME ["/data"]
 # 4001 raw TCP, 4002 WebSockets - the default LISTEN_ADDRS pair. A client without a raw
 # TCP transport (React Native) can only reach this over 4002, so both must be published.
-EXPOSE 4001/tcp 4002/tcp
+# 3478/udp is the STUN responder (STUN_PORT).
+EXPOSE 4001/tcp 4002/tcp 3478/udp
 CMD ["node", "dist/main.js"]
 
 

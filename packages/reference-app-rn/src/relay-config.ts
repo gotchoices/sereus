@@ -15,15 +15,14 @@
  * node. cadre-core turns it into a bare `/p2p-circuit` search listener plus a
  * reservation supervisor per relay (`cadre-core/src/relay-addrs.ts`).
  *
- * React Native port of `reference-app-web/src/lib/relay-config.ts`, and the sibling
- * of `ice-config.ts` in this package — both resolve deployment-specific
- * infrastructure at runtime rather than baking it into the bundle. Three platform
- * touch-points differ from the web copy:
+ * React Native port of `reference-app-web/src/lib/relay-config.ts`: it resolves
+ * deployment-specific infrastructure at runtime rather than baking it into the
+ * bundle. Three platform touch-points differ from the web copy:
  *
  *  - Build-time env var: `EXPO_PUBLIC_RELAY_ADDR` (Expo inlines `EXPO_PUBLIC_`-prefixed
  *    vars into the Hermes bundle at build time). The Vite counterpart is `VITE_RELAY_ADDR`.
  *  - `localStorage` is absent in RN, so the web copy's per-device override branch is
- *    omitted — the same omission `ice-config.ts` documents. The per-device seam here
+ *    omitted. The per-device seam here
  *    is the Settings screen's "Relay" field, which passes its value as `explicit`.
  *  - The list a node started with is saved with the other start options
  *    (`start-options.ts`) and is what the next launch starts with and prefills. It is

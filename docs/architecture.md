@@ -1770,14 +1770,9 @@ any libp2p/network bring-up, into a private resolved field):
 
 Step 2 lives in `identity-key.ts` and is a **package-root export**
 (`loadOrCreateIdentityKey`), not private to `CadreNode`, because an embedding app
-may need the identity key *before* the node is constructed — `reference-app-rn`
-resolves it to sign its ICE-manifest request with the very key the node then loads
-from the same slot. One copy of the rule is load-bearing: a second copy that
-drifted could generate a fresh key and orphan the real identity. The same module
-exports `peerKeySigner(privateKey)`, a generic proof-of-possession signer
-(`peerId` / `publicKeyB64` / `sign`) for out-of-band HTTP services that want to
-attribute a request to a peer id; its one consumer today is the reference apps'
-`loadIceConfig` (see `ops/docs/ice-servers.md` → "Client side").
+may need the identity key *before* the node is constructed. One copy of the rule
+is load-bearing: a second copy that drifted could generate a fresh key and orphan
+the real identity.
 
 Owner genesis stays **app-controlled**: cadre-core resolves and protects the
 identity, then exposes the derived owner pair via
@@ -2127,7 +2122,7 @@ Maestro Studio, with Appium as the documented fallback.
 - **StrandInstanceManager**: Per-strand libp2p node creation with isolated storage paths, sApp schema application, and ed25519 schema signature verification on strand start
 - **Schema Verification**: `signSchema()`, `verifySchema()`, `assertSchemaSignature()` — ed25519 signature verification of sApp schemas gating strand join. **Enforced by default (fail-closed)**: the `requireSignedSchemas` node policy defaults to `true`, so an unsigned schema is rejected (`'missing signature'`, distinct from `'invalid signature'`) before any libp2p node or schema DDL is brought up. The policy may be relaxed only by explicit opt-out (`requireSignedSchemas: false`) for dev/test with unsigned demo schemas (e.g. `reference-app-rn`).
 - **EnrollmentService**: `createCadrePeer()` for Ed25519 keypair generation
-- **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived owner pair via `getIdentityOwnerKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The load-or-create rule itself is exported as `loadOrCreateIdentityKey` (with `peerKeySigner`, the proof-of-possession signer built on it) so an embedding app can resolve the identity before the node exists. The platform-secure (`expo-secure-store`) mobile backend ships in `reference-app-rn` as `SecureStoreKeyStore`.
+- **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived owner pair via `getIdentityOwnerKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The load-or-create rule itself is exported as `loadOrCreateIdentityKey` so an embedding app can resolve the identity before the node exists. The platform-secure (`expo-secure-store`) mobile backend ships in `reference-app-rn` as `SecureStoreKeyStore`.
 - **Seed Bootstrap API**: `createSeed()`, `applySeed()`, `deliverSeed()`, `encodeSeed()`/`decodeSeed()`, helper functions (`addDrone`, `createInvite`, `acceptPhone`, `addPhoneWithRelay`)
 - **Member Registration API**: `registerMember()`, `validateMemberRegistration()` with pluggable verifier/registry interfaces
 - **Strand Solicitation API**: `createOpenInvitation()`, `formStrand()` with full `StrandFormationManager` integration over the native formation transport; outside approval of a redemption (an invite's `ValidationUrl`) lives in the formation-approval client (`createHttpFormationApprover()`), not in the solicitation service, and is called from `ControlFormationUsageRecorder` — the component that performs the write, so the nonce that is signed is the nonce that is inserted — see [`docs/api.md`](api.md)

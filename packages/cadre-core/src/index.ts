@@ -64,13 +64,8 @@ export {
 } from './key-store.js';
 
 // The KeyStore-backed identity rule, shared with embedding apps that need the
-// node key BEFORE `CadreNode` exists (RN resolves it to sign its ICE-manifest
-// request), plus the generic "prove you hold this node key" signer built on it.
-export {
-  loadOrCreateIdentityKey,
-  peerKeySigner,
-  type PeerKeySigner
-} from './identity-key.js';
+// node key BEFORE `CadreNode` exists.
+export { loadOrCreateIdentityKey } from './identity-key.js';
 
 // Node-local trusted-owner anchor: the NON-replicated, per-party record of
 // out-of-band-established owner keys (the trust anchor the replicated OwnerKey
@@ -603,6 +598,9 @@ export {
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';
+// STUN for an embedder's WebRTC transport, derived from the relays it already uses: each
+// Sereus relay also answers STUN (`ops/docs/ice-servers.md`).
+export { RELAY_STUN_PORT, relayStunUrl, resolveStunServers, type StunServer } from './relay-stun.js';
 // The circuit-relay SERVER a node runs, and with which init — one resolution shared by the
 // control node and every strand node. Exported alongside the listen derivations above for the
 // same reason: an embedder can assert on what its `network` block resolves to.
@@ -635,7 +633,6 @@ export {
 // Connection-path diagnostics (relayed vs direct classification + summary)
 export {
   classifyTransport,
-  classifyConnectionPath,
   summarizeConnectionPaths,
   emptyConnectionPathSummary,
   DEFAULT_SETTLE_WINDOW_MS,

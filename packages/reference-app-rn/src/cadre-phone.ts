@@ -13,13 +13,11 @@
 
 import {
   CadreNode,
-  DEFAULT_IDENTITY_KEY_ID,
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
   PersistentEnrolledMachineStore,
   PersistentStrandNetworkStateStore,
-  loadOrCreateIdentityKey,
-  peerKeySigner,
+  resolveStunServers,
 } from '@serfab/cadre-core';
 import type {
   ControlNetworkSeed,
@@ -54,7 +52,6 @@ import {
   START_OPTIONS_KV_KEY,
 } from './node-local-slots';
 import { parseSavedStartOptions, serializeSavedStartOptions, type SavedStartOptions } from './start-options';
-import { loadIceConfig } from './ice-config';
 import { buildPhoneNodeConfig, runOwnerGenesis, type PhoneNodeOptions } from './phone-node-config';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
@@ -264,43 +261,9 @@ async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
     opts.partyId,
   );
 
-  // Resolve the identity key HERE, before the manifest fetch, so the request can
-  // be signed with the very key the CadreNode below then loads from the same slot
-  // (we keep passing `keyStore` + `identityKeyId`, NOT `config.privateKey`, which
-  // is mutually exclusive with `keyStore` and would take the identity out of the
-  // secure-enclave path).
-  //
-  // Ordering is load-bearing: this must run before `loadIceConfig` below, whose
-  // manifest request is signed with the node identity resolved here.
-  //
-  // Idempotent across a cold-start re-entry (`use-cadre`'s resume hook re-runs
-  // startPhoneNode): it is a `get` then return, and unlike `nodeLocalDbHandle` it
-  // opens no native handle. A rejected `get` — a cancelled biometric/unlock prompt
-  // — PROPAGATES and fails the start rather than degrading to "no signer", exactly
-  // as CadreNode itself behaves: generating a replacement key would silently
-  // orphan the real identity.
-  const identityKey = await loadOrCreateIdentityKey(keyStore, DEFAULT_IDENTITY_KEY_ID);
-
-  // ICE servers (STUN/TURN) from the runtime manifest, for the WebRTC transport's
-  // RTCPeerConnection. Never throws; `[]` when no manifest is configured (the
-  // relay-signalled WebRTC upgrade still works on host/LAN candidates). Awaited
-  // inside startPhoneNode (not hoisted to module scope) so each cold-start /
-  // foreground-resume re-fetches — ICE servers may rotate. The 5 s deadline in
-  // loadIceConfig bounds a hung manifest host so it cannot wedge a resume.
-  //
-  // The signer proves to a peer-bound TURN credential issuer that this device owns
-  // the node key, so the issued credential can be attributed (and revoked) per peer
-  // id. A rejected assertion degrades to an unauthenticated retry inside
-  // `loadIceConfig` — it never costs us STUN.
-  //
-  // NOTE: one signed fetch per cold start / foreground resume, each burning a
-  // nonce in the issuer's replay cache and a slot in its per-peer bucket
-  // (RATE_LIMIT_PER_PEER_PER_MIN, default 10). A phone that resumed more than ten
-  // times in a minute would take a 429, which is deliberately NOT in the
-  // unauthenticated-retry list, so that resume would run STUN-less. If resume
-  // churn ever gets that high, cache the manifest for the credential TTL instead
-  // of re-fetching per resume.
-  const iceServers = await loadIceConfig({ signer: peerKeySigner(identityKey) });
+  // STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
+  // relay configured and no override (host/LAN candidates still work).
+  const iceServers = resolveStunServers(opts.relayAddrs, process.env.EXPO_PUBLIC_STUN_URLS);
 
   const noiseCryptoMode = opts.noiseCryptoMode ?? defaultNoiseCryptoMode();
   const built = new CadreNode(buildPhoneNodeConfig({

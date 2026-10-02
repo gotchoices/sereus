@@ -1,13 +1,14 @@
 import dgram from 'node:dgram'
 import { randomBytes } from 'node:crypto'
 
-// check-stun.mjs — send a STUN Binding request to a coturn (or any STUN) server
+// check-stun.mjs — send a STUN Binding request to the relay's (or any) STUN server
 // and print the mapped server-reflexive address it sees us coming from. This is
 // the address-discovery step a WebRTC peer relies on to attempt a DIRECT
 // connection. Dependency-free (node dgram), mirrors check-node.mjs ergonomics.
 //
-// REQUIRES a deployed, publicly reachable STUN server — NOT agent-runnable in CI
-// (there is no local STUN server to bind against). Run it manually after deploy.
+// Point it at a relay (`ops/docker/relay/`, STUN on udp 3478) from another machine: run on
+// the relay host itself, Docker's userland proxy rewrites the source and you see the
+// bridge gateway, not your own address.
 
 const STUN_BINDING_REQUEST = 0x0001
 const STUN_BINDING_SUCCESS = 0x0101

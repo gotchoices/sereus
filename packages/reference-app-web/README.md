@@ -141,8 +141,8 @@ copy/paste:
 
 A browser tab can't open a listener, so to be **dialable** for formation it must
 hold a circuit-relay-v2 **reservation** and advertise a `/p2p-circuit` address.
-The relay is deployment infrastructure (see `ops/`); unlike the ICE servers, its
-multiaddr is not fetched from a manifest but read from, in order:
+The relay is deployment infrastructure (see `ops/`), so its multiaddr is resolved
+at runtime:
 
 - `VITE_RELAY_ADDR` (build-time, comma-separated), then
 - `localStorage["relay-addr"]` (per-browser, read only when the build sets none).
@@ -154,6 +154,11 @@ It then leaves a **supervisor** running that re-drives the reservation whenever 
 is later lost, on a backoff that starts at 2 s and doubles up to 60 s. The dial,
 the retries, and the status all live in cadre-core (`relay-reservation.ts`); this
 app only supplies the addresses and renders the result.
+
+Each relay is also the tab's **STUN** server, for upgrading a relayed connection to a
+direct WebRTC one: cadre-core's `resolveStunServers` turns each relay address into
+`stun:<relay host>:3478`. `VITE_STUN_URLS` (comma-separated `stun:` URLs) replaces
+that, for a relay whose STUN is published elsewhere. See `ops/docs/ice-servers.md`.
 
 The status is **recomputed on every read** from the node's live `/p2p-circuit`
 addresses, so a reservation lost after startup (relay restarted, connection
@@ -296,7 +301,6 @@ src/
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
-    ice-config.ts            # ICE servers from a runtime manifest
     Copyable.svelte          # copy-to-clipboard chip used in /diag
   shims/
     empty.ts             # vite alias target for node:os / node:net / node:tls

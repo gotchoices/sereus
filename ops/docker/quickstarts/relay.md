@@ -1,10 +1,11 @@
 ## Quickstart: Run a public relay
 
-Goal: run a **libp2p relay (Circuit Relay v2 hop)** on a public server, publish a stable `/dnsaddr/...` multiaddr, and keep the Peer ID stable across restarts.
+Goal: run a **libp2p relay (Circuit Relay v2 hop)** with its built-in **STUN** responder on a public server, publish a stable `/dnsaddr/...` multiaddr, and keep the Peer ID stable across restarts.
 
 ### Prereqs
 - Docker + Docker Compose v2 installed (see `../README.md` → “Installing Docker (optional)”).
 - A DNS name you control (example: `relay.sereus.org`).
+- Firewall open for the relay's ports: TCP `4001` and `4011` (WebSockets), UDP `3478` (STUN).
 
 ### Steps
 From your ops root:
@@ -33,6 +34,13 @@ From your ops root (one-time: `npm --prefix sereus/ops/test install`):
 
 ```bash
 node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
+```
+
+STUN, from a machine **other than** the relay host (the mapped address should be that
+machine's public IP; see `../../docs/ice-servers.md`):
+
+```bash
+node sereus/ops/test/check-stun.mjs --host relay.sereus.org --port 3478
 ```
 
 ### Key / Peer ID stability

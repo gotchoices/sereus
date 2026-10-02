@@ -7,10 +7,8 @@ Docker-related operational resources for Sereus.
 - If you don’t have Docker installed: see **Installing Docker (optional)** at the bottom
 
 ### Contents
-- `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal). This is the one shared libp2p infra service worth operating — Sereus has no global DHT to seed, so there is no standalone "bootstrap" node (a former kad-DHT `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET).
+- `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal) with a built-in **STUN responder**, so the same relay both carries relayed traffic and helps WebRTC peers upgrade to a direct connection (see `../docs/ice-servers.md`). This is the one shared libp2p infra service worth operating — Sereus has no global DHT to seed, so there is no standalone "bootstrap" node (a former kad-DHT `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET).
 - `sereus-node/`: **Pointer only** (see `sereus-node/README.md`). A headless cadre node belongs to one user's cadre rather than being shared infrastructure, so unlike the other folders here it has no `env.example`/`docker-compose.yml` and is not installable via `../scripts/install`. Its canonical Docker template ships with `@serfab/cadre-cli` at `../../packages/cadre-cli/docker/`.
-- `coturn/`: A **STUN server** (optionally TURN) for WebRTC ICE assistance — lets browser/mobile peers form **direct** connections instead of relaying. Distinct purpose and distinct upstream image (`coturn/coturn`), not the shared `sereus-libp2p-infra:local` image. See `../docs/ice-servers.md`.
-- `turn-credential-issuer/`: A tiny HTTP service that serves the **dynamic ICE-config manifest** (`/ice-servers.json`) — STUN-only when TURN is off, or STUN **plus** a freshly-minted short-lived coturn credential when TURN is on. Co-locate with `coturn/` (shares its `TURN_SECRET`). Builds its own local image (`sereus-turn-credential-issuer:local`). See `../docs/ice-servers.md`.
 
 ### Recommended production layout (site directories)
 
@@ -18,8 +16,6 @@ Docker-related operational resources for Sereus.
 <sereus-ops>/
   <repo>/               # git clone of ser (name is up to you)
   relay/                # site instance
-  coturn/               # site instance (STUN/TURN — ICE assistance)
-  turn-credential-issuer/  # site instance (dynamic ICE manifest — co-located with coturn)
 ```
 
 Each site instance folder typically contains:
@@ -42,8 +38,6 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
 ```bash
 ./sereus/ops/scripts/install docker relay
-./sereus/ops/scripts/install docker coturn
-./sereus/ops/scripts/install docker turn-credential-issuer
 ```
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `svc`, and `data/`.
@@ -77,8 +71,10 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 - `HOST_PORT`: host port for raw TCP (container listens on 4001). Default `4001`.
 - `HOST_WS_PORT`: host port for WebSockets (container listens on 4002). Phones have
   no raw-TCP transport and can only reach a node here, so this is published by
-  default too. Default `4011` (kept out of the `400x` block so a host running the
-  relay alongside coturn/turn stacks does not collide).
+  default too. Default `4011`.
+- `HOST_STUN_PORT`: host UDP port for the STUN responder (container listens on 3478).
+  Default `3478`; apps derive `stun:<relay host>:3478` from their relay address, so
+  change it only if your apps are configured with an explicit STUN URL
 - `HOST_BIND_IP`: optional bind IP (default `0.0.0.0`)
 - `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
 - `LISTEN_ADDRS`: advanced; leave empty. Overrides the multiaddrs the container binds
@@ -96,15 +92,10 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
   in that state
 - `RELAY_APPLY_DEFAULT_LIMIT`: advanced; leave empty. Setting it to `true` re-applies libp2p's per-reservation cap and **breaks relayed cadre traffic** — see `libp2p-infra/README.md`
 - `RELAY_MAX_RESERVATIONS`: advanced; concurrent reservation slots (default `500`)
-
-`coturn` uses a different knob set (`STUN_PUBLIC_HOST`, `LISTENING_PORT=3478`, `TURN_ENABLED`, …) — see `coturn/env.example` and `coturn/README.md`.
+- `STUN_ENABLED`: set `false` to turn off the STUN responder (default on)
 
 ### Image/build note
-The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`LISTEN_ADDRS`, `PUBLIC_*`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
-
-`coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
-
-`turn-credential-issuer` builds its **own** local image (`sereus-turn-credential-issuer:local`) from `turn-credential-issuer/` — a tiny Node service (Node built-ins plus `@libp2p/crypto`, used to verify peer assertions). `./svc up` builds and runs it. It listens plain HTTP; front it with a TLS reverse proxy. See `turn-credential-issuer/README.md`.
+The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`LISTEN_ADDRS`, `PUBLIC_*`, `ANNOUNCE_ADDRS`, `DATA_DIR`, the two `RELAY_*` knobs, the `STUN_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container. `DATA_DIR` is the one image-level variable the stacks deliberately do not forward: it must stay at `/data`, which is where `HOST_DATA_DIR` is mounted.
 
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.
@@ -116,9 +107,7 @@ The `relay` runs the `sereus-libp2p-infra:local` image built from `ops/docker/li
 See `../test/README.md`.
 
 ### Quickstarts
-- `quickstarts/relay.md`: run a **public relay**
-- `quickstarts/coturn.md`: run a **public STUN server** (coturn) for WebRTC ICE assistance
-- `quickstarts/turn-credential-issuer.md`: serve the **dynamic ICE manifest** + mint short-lived TURN credentials
+- `quickstarts/relay.md`: run a **public relay** (includes STUN)
 
 ### Installing Docker (optional)
 If you already have Docker + Compose installed and working, you can skip this section.

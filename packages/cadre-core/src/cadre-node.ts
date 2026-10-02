@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
+import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
@@ -156,22 +156,12 @@ import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
   summarizeConnectionPaths,
-  classifyTransport,
-  type ConnectionPathSummary,
-  type ConnectionLike
+  type ConnectionPathSummary
 } from './diagnostics/connection-path.js';
-import { TurnRelayTracker } from './diagnostics/webrtc-turn-tracker.js';
 import { timedStep } from './timed-step.js';
 
 const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
-
-/**
- * Window (ms) within which a queued TURN-relay settlement is correlated to a
- * `connection:open`. Generous relative to the tight async gap between an
- * `RTCPeerConnection` reaching `connected` and libp2p surfacing the connection.
- */
-const TURN_CONSUME_WINDOW_MS = 1000;
 
 /**
  * How often a running strand re-asks each connected sibling that last ANSWERED
@@ -949,25 +939,6 @@ export class CadreNode implements SAppIdLookup {
   /** `connection:close` listener re-arming the growth edge (teardown in {@link stopRecordRefresh}). */
   private controlConnectionCloseHandler: (() => void) | null = null;
 
-  // ── WebRTC TURN-relay detection (turn-relayed-path-metrics) ─────────────────
-  /**
-   * Hooks `globalThis.RTCPeerConnection` to observe whether ICE selected a TURN
-   * relay candidate for each WebRTC session. Installed in {@link start}, disposed
-   * in {@link cleanup}; inert on Node.js (no `RTCPeerConnection`).
-   */
-  private readonly turnTracker = new TurnRelayTracker();
-  /**
-   * Peer IDs whose current WebRTC connection was observed to be TURN-relayed.
-   * Populated by {@link handleTurnConnectionOpen} (drains the tracker queue on a
-   * `/webrtc` `connection:open`), cleared per-peer on `connection:close`. Read by
-   * {@link getConnectionPaths} to promote `webrtc` → `webrtc-turn` (relayed).
-   */
-  private turnRelayedPeers: Set<string> = new Set();
-  /** `connection:open` listener feeding TURN detection (teardown in {@link stopRecordRefresh}). */
-  private turnConnectionOpenHandler: ((evt: CustomEvent<Connection>) => void) | null = null;
-  /** `connection:close` listener clearing a peer's TURN flag (teardown in {@link stopRecordRefresh}). */
-  private turnConnectionCloseHandler: ((evt: CustomEvent<Connection>) => void) | null = null;
-
   constructor(config: CadreNodeConfig) {
     this.config = config;
     this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.profile === 'storage';
@@ -1063,18 +1034,7 @@ export class CadreNode implements SAppIdLookup {
    *   direct sibling is considered stuck (default 10_000ms)
    */
   getConnectionPaths(settleWindowMs?: number): ConnectionPathSummary {
-    const conns = this.controlNode?.getConnections() ?? [];
-    // Annotate each connection with the TURN-relay hint so a WebRTC session whose
-    // ICE selected a TURN candidate classifies as relayed/webrtc-turn rather than
-    // direct/webrtc (the multiaddr alone cannot reveal it).
-    const annotated: ConnectionLike[] = conns.map((c) => ({
-      remotePeer: c.remotePeer,
-      remoteAddr: c.remoteAddr,
-      direction: c.direction,
-      timeline: c.timeline,
-      turnRelayed: this.turnRelayedPeers.has(c.remotePeer.toString()),
-    }));
-    return summarizeConnectionPaths(annotated, settleWindowMs);
+    return summarizeConnectionPaths(this.controlNode?.getConnections(), settleWindowMs);
   }
 
   /**
@@ -1142,11 +1102,6 @@ export class CadreNode implements SAppIdLookup {
       // yet), so a node with a zero or NaN declaration would otherwise boot and fail later
       // inside a best-effort path that logs and carries on. `link-budget.ts`.
       resolveLinkRoundTripMs(this.config.network?.linkRoundTripMs);
-
-      // Install the WebRTC TURN-relay tracker BEFORE any libp2p bring-up, so it
-      // wraps globalThis.RTCPeerConnection before the control node can create one.
-      // Inert on Node.js (no RTCPeerConnection); disposed in cleanup().
-      this.turnTracker.install();
 
       // Resolve the node identity (keyStore | privateKey | ephemeral) BEFORE any
       // libp2p/network bring-up, so a misconfiguration or an access-denied secure
@@ -2914,18 +2869,10 @@ export class CadreNode implements SAppIdLookup {
       if (this.controlConnectionCloseHandler) {
         this.controlNode.removeEventListener('connection:close', this.controlConnectionCloseHandler);
       }
-      if (this.turnConnectionOpenHandler) {
-        this.controlNode.removeEventListener('connection:open', this.turnConnectionOpenHandler);
-      }
-      if (this.turnConnectionCloseHandler) {
-        this.controlNode.removeEventListener('connection:close', this.turnConnectionCloseHandler);
-      }
     }
     this.selfPeerUpdateHandler = null;
     this.controlConnectionOpenHandler = null;
     this.controlConnectionCloseHandler = null;
-    this.turnConnectionOpenHandler = null;
-    this.turnConnectionCloseHandler = null;
 
     // Reset the write-while-alone re-replication state so a stop()→start() cycle
     // re-arms the growth edge and re-runs BOTH one-shot passes. Any queued
@@ -4266,48 +4213,6 @@ export class CadreNode implements SAppIdLookup {
     this.controlConnectionCloseHandler = () => this.handleControlConnectionClose();
     this.controlNode.addEventListener('connection:open', this.controlConnectionOpenHandler);
     this.controlNode.addEventListener('connection:close', this.controlConnectionCloseHandler);
-
-    // TURN-relay detection: tag/untag peers whose WebRTC ICE used a TURN candidate.
-    this.turnConnectionOpenHandler = (evt) => this.handleTurnConnectionOpen(evt.detail);
-    this.turnConnectionCloseHandler = (evt) => this.handleTurnConnectionClose(evt.detail);
-    this.controlNode.addEventListener('connection:open', this.turnConnectionOpenHandler);
-    this.controlNode.addEventListener('connection:close', this.turnConnectionCloseHandler);
-  }
-
-  /**
-   * On a control connection opening: if it is a WebRTC connection, drain the TURN
-   * tracker for the just-settled ICE verdict and, when it relayed, mark the peer
-   * so {@link getConnectionPaths} classifies it `webrtc-turn` (relayed). The
-   * settlement↔open correlation is timing-based and best-effort; an unknown
-   * verdict degrades to not-relayed. Never throws to the event loop.
-   */
-  private handleTurnConnectionOpen(conn: Connection): void {
-    try {
-      const addr = conn.remoteAddr?.toString() ?? '';
-      // Only a genuine `/webrtc` (ICE) session can be TURN-relayed and promoted to
-      // webrtc-turn. Use the classifier (which checks `/webrtc-direct` first) rather
-      // than a bare substring — `'/webrtc-direct'.includes('/webrtc')` is true, and a
-      // webrtc-direct open must not drain a settlement meant for a real webrtc dial.
-      if (classifyTransport(addr).transport !== 'webrtc') {
-        return;
-      }
-      if (this.turnTracker.consume(TURN_CONSUME_WINDOW_MS) === true) {
-        const peerId = conn.remotePeer.toString();
-        this.turnRelayedPeers.add(peerId);
-        log('TURN-relayed WebRTC connection detected for peer %s', peerId);
-      }
-    } catch (error) {
-      log('handleTurnConnectionOpen failed: %o', error);
-    }
-  }
-
-  /** On a control connection closing, drop any TURN-relayed flag for its peer. */
-  private handleTurnConnectionClose(conn: Connection): void {
-    try {
-      this.turnRelayedPeers.delete(conn.remotePeer.toString());
-    } catch (error) {
-      log('handleTurnConnectionClose failed: %o', error);
-    }
   }
 
   // ============================================================================
@@ -4697,10 +4602,6 @@ export class CadreNode implements SAppIdLookup {
     // Stop self-record refresh timers + address-change listener (before the
     // control node is torn down, so removeEventListener has a live target).
     this.stopRecordRefresh();
-
-    // Restore the wrapped globalThis.RTCPeerConnection and drop TURN-relay state.
-    this.turnTracker.dispose();
-    this.turnRelayedPeers.clear();
 
     // Stop hibernation manager
     this.hibernationManager.stop();

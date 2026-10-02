@@ -17,12 +17,14 @@ import { ping } from '@libp2p/ping'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
-import { isWebSocketAddr, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv, resolveAnnounce } from './env.js'
+import { isWebSocketAddr, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv, parseStunPort, resolveAnnounce } from './env.js'
+import { startStunServer } from './stun.js'
 
-// This image runs a single role: a libp2p Circuit Relay v2 hop. Sereus has no global DHT to
-// bootstrap — each strand is its own FRET ring, and nodes are reached by dialing a known
-// participating node directly or through a relay like this one. (The former kad-DHT
-// `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET.)
+// This image runs a libp2p Circuit Relay v2 hop plus a STUN responder (`stun.ts`), so one
+// process both relays traffic and helps peers upgrade to a direct WebRTC connection.
+// Sereus has no global DHT to bootstrap — each strand is its own FRET ring, and nodes are
+// reached by dialing a known participating node directly or through a relay like this one.
+// (The former kad-DHT `bootstrap` role was removed once cadre-core replaced kad-DHT with FRET.)
 
 // `/data` is the container volume; override when running the process directly on a
 // workstation. The identity key is stored here, so a stable DATA_DIR means a stable peer
@@ -69,6 +71,7 @@ async function readKeyFile () {
 
 const listen = parseListenAddrs()
 const { addrs: announce, source: announceSource } = resolveAnnounce(listen)
+const stunPort = parseStunPort()
 
 // @libp2p/circuit-relay-v2 defaults to applyDefaultLimit: true, which stamps every
 // reservation with a ~128 KiB / 2 min cap and marks the resulting connection "limited" -
@@ -173,8 +176,19 @@ const node = await createLibp2p({
 
 await node.start()
 
+// All interfaces: the docker stack narrows exposure with HOST_BIND_IP at the port mapping.
+const STUN_BIND_IP = '0.0.0.0'
+if (stunPort !== undefined) {
+  try {
+    await startStunServer(stunPort, STUN_BIND_IP)
+  } catch (err) {
+    throw new Error(`STUN could not bind udp ${STUN_BIND_IP}:${stunPort}: ${err?.message ?? err}. Free the port, set STUN_PORT, or set STUN_ENABLED=false.`, { cause: err })
+  }
+}
+
 console.log(`relay peerId=${node.peerId.toString()}`)
 console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
+console.log(stunPort === undefined ? 'stun: disabled (STUN_ENABLED=false)' : `stun: answering Binding requests on udp ${STUN_BIND_IP}:${stunPort}`)
 console.log(`listening on: ${listen.join(', ')}`)
 console.log(`advertising (from ${announceSource}):`)
 const addrs = node.getMultiaddrs().map(ma => ma.toString())

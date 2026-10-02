@@ -5,8 +5,7 @@
   "type": "module",
   "scripts": {
     "check-node": "node check-node.mjs",
-    "check-stun": "node check-stun.mjs",
-    "check-turn-creds": "node check-turn-creds.mjs"
+    "check-stun": "node check-stun.mjs"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^16.1.4",

@@ -135,6 +135,15 @@ function parsePortEnv (name: string): number | undefined {
   return n
 }
 
+/** The STUN port when `STUN_PORT` is unset — the IANA-registered STUN port. */
+export const DEFAULT_STUN_PORT = 3478
+
+/** The STUN responder's UDP port, or `undefined` when `STUN_ENABLED=false`. */
+export function parseStunPort (): number | undefined {
+  if (!parseBooleanEnv('STUN_ENABLED', true)) return undefined
+  return parsePortEnv('STUN_PORT') ?? DEFAULT_STUN_PORT
+}
+
 export function parseBooleanEnv (name: string, defaultValue: boolean): boolean {
   const raw = (process.env[name] ?? '').trim()
   if (!raw) return defaultValue

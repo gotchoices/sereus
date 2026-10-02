@@ -9,8 +9,7 @@
  * holds a circuit-relay-v2 **reservation** against a known relay. That relay is
  * deployment-specific infrastructure (see `ops/`), so its address is a build
  * setting (`VITE_RELAY_ADDR`), falling back to a per-browser `localStorage`
- * entry when that is unset. Unlike the ICE servers (`ice-config.ts`), it is not
- * fetched from a manifest.
+ * entry when that is unset.
  *
  * Framework-free and self-contained (no `@serfab/cadre-core` / node deps): the
  * only platform touch-points are `localStorage` and `import.meta.env`, each

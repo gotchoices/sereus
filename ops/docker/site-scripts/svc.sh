@@ -114,7 +114,6 @@ envget() {
 print_relay_dns() {
   if [[ "$SERVICE_KEY" != "relay" ]]; then
     echo "ERROR: 'dns' is only meaningful for the relay service (this instance is '$SERVICE_KEY')." >&2
-    echo "coturn/turn advertise stun:/turn: URLs, not libp2p multiaddrs." >&2
     exit 2
   fi
 
