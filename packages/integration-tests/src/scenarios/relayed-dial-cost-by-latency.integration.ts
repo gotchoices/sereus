@@ -128,7 +128,8 @@
  * **Measured** 2026-10-01, same machine, libp2p 3.3.11, `@optimystic/*` 1.9.0,
  * `RELAY_DIAL_COST_DELAYS=1500`: a third node that had never connected to the relay dialed the
  * listener's circuit address (step 4), so libp2p's circuit transport opened the relay connection
- * on that same dial. In the `cadre-core declared` arm it took **15 113 ms**, against 3 029 ms for
+ * on that same dial. In the `cadre-core declared` arm it took **15 113 ms** (15 108 ms on a re-run
+ * the same day, once cadre-core budgeted it and the arm's assertions pinned it), against 3 029 ms for
  * the dialer's own dial to the relay and 12 072-12 094 ms for the relayed dials over it: ten
  * one-way delays, five link round trips, which is what `link-budget.ts` budgets every relayed
  * dial for (`RELAYED_DIAL_ROUND_TRIPS`). The `db-p2p fallback` arm's fresh dial stopped at its
