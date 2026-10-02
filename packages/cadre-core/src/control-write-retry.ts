@@ -79,7 +79,7 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * surfaces in well under a second, so it is retried and the loop adds at most ~2.2 s. A
  * genuinely silent cohort member costs ~21 s per consensus round (two `ClusterClient`
  * response-deadline attempts, 10.5 s each at the default declared link): one pend round plus
- * the cancel discharge's rounds, measured 63 s for one write in
+ * the cancel discharge's three rounds, about 84 s for one write in
  * `control-write-degraded-cohort-member.integration.ts`, which already exceeds this budget
  * when attempt 1 returns — so that case is surfaced immediately and retry adds ZERO latency
  * to the case where it cannot help.
@@ -96,8 +96,9 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * NOTE: a failed commit attempt also pays a cancel discharge before its error returns
  * (optimystic `TransactorSource.transact`'s catch) — bounded by six rounds and
  * `abortOrCancelTimeoutMs`, which every collection this repo opens sets to the larger of 5 s
- * and the RPC dial deadline: 38.5 s at the default declared link
- * (`../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`).
+ * and the RPC dial deadline: 42.5 s at the default declared link (`optimysticDialLimits` in
+ * `link-budget.ts`;
+ * `../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`).
  * One cancel that runs its full budget therefore ends the retries on its own, cutting the
  * three-attempt policy to however many attempts came before it. A cancel only runs that long
  * when a peer stays silent, and that attempt has already spent its pend round past this
