@@ -17,7 +17,7 @@ import { ping } from '@libp2p/ping'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
-import { isWebSocketAddr, parseAnnounceAddrs, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv } from './env.js'
+import { isWebSocketAddr, parseBooleanEnv, parseListenAddrs, parsePositiveIntEnv, resolveAnnounce } from './env.js'
 
 // This image runs a single role: a libp2p Circuit Relay v2 hop. Sereus has no global DHT to
 // bootstrap — each strand is its own FRET ring, and nodes are reached by dialing a known
@@ -67,8 +67,8 @@ async function readKeyFile () {
   }
 }
 
-const announce = parseAnnounceAddrs()
 const listen = parseListenAddrs()
+const { addrs: announce, source: announceSource } = resolveAnnounce(listen)
 
 // @libp2p/circuit-relay-v2 defaults to applyDefaultLimit: true, which stamps every
 // reservation with a ~128 KiB / 2 min cap and marks the resulting connection "limited" -
@@ -175,9 +175,22 @@ await node.start()
 
 console.log(`relay peerId=${node.peerId.toString()}`)
 console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
-console.log('listening/advertising on:')
+console.log(`listening on: ${listen.join(', ')}`)
+console.log(`advertising (from ${announceSource}):`)
 const addrs = node.getMultiaddrs().map(ma => ma.toString())
 addrs.forEach(ma => console.log(`  ${ma}`))
+
+if (announceSource === 'bound') {
+  // Without PUBLIC_HOST or ANNOUNCE_ADDRS libp2p advertises what it bound. In a container that
+  // is loopback and the bridge IP. Clients cannot dial them, and a NAT'd client that reserves a
+  // slot here advertises a /p2p-circuit address on each of them, so its peers spend dials on
+  // addresses that lead nowhere — or, for 127.0.0.1, to their own machine.
+  console.warn([
+    '',
+    'WARNING: advertising the bound addresses above. Behind Docker or NAT no client can dial',
+    'them. Set PUBLIC_HOST to the name clients reach this relay at (or ANNOUNCE_ADDRS).'
+  ].join('\n'))
+}
 
 // Phones dial WebSockets, so surface those separately — this is the address a
 // mobile client needs in its relay configuration.
