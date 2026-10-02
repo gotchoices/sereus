@@ -69,8 +69,8 @@ describe('link budgets', () => {
 		// the dialer's limits (`optimysticDialLimits`), so the listener's `inboundUpgradeTimeout`
 		// is Optimystic's derivation: five round trips with a 10 000 ms floor, against cadre's
 		// four plus a flat admission allowance. A listener limit below the dial budget discards
-		// connections the dialer still accepts, silently. The two formulas meet at 2 000 ms, where Optimystic's
-		// floor hands over to its multiple, so the declarations straddle it.
+		// connections the dialer still accepts, silently. The two formulas meet at 2 000 ms, where
+		// Optimystic's floor hands over to its multiple, so the declarations straddle it.
 		for (const linkRoundTripMs of [1, 500, 1999, 2000, 2001, DECLARED_LINK_ROUND_TRIP_MS, 10_000, 100_000]) {
 			expect(resolveLinkDeadlines(linkRoundTripMs).inboundUpgradeTimeoutMs).toBeGreaterThanOrEqual(relayedDialBudgetMs(linkRoundTripMs));
 		}
