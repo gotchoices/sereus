@@ -16,9 +16,10 @@
  * cost being measured is the transport's, so a cadre stack on top of it could only hide the
  * signal. The two arms differ ONLY in the deadlines a node gets, which are what the
  * measurement is ABOUT: the `db-p2p fallback` arm takes what `@optimystic/db-p2p` gives a node
- * that declares no link round trip, and the `cadre-core declared` arm what it derives from
- * cadre-core's default declared link, which cadre-core states on every node. Both are read from
- * Optimystic's own `resolveLinkDeadlines`, so neither can drift from what a node really gets.
+ * that declares no link round trip, and the `cadre-core declared` arm what a cadre node gets at
+ * cadre-core's default declared link: Optimystic's derivation, with the dial limits cadre-core
+ * states on top of it. Both are read from Optimystic's own `resolveLinkDeadlines` and
+ * cadre-core's own `optimysticDialLimits`, so neither can drift from what a node really gets.
  *
  * ── Running it ──
  *
@@ -60,9 +61,10 @@
  * | budget | value | relayed dial impossible above |
  * | --- | --- | --- |
  * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 16 s at the default declared link: 4 round trips plus a flat 2 s for the called machine's admission decision | 1750 ms one-way when that decision takes its whole 2 s (2000 ms to a machine that runs no gate), and moves with `NetworkConfig.linkRoundTripMs` |
- * | libp2p `connectionManager.dialTimeout` and `inboundUpgradeTimeout` on every cadre node, which Optimystic derives from the declared link cadre-core states (5 round trips, `resolveLinkDeadlines`) | 17.5 s at the default declared link | 2187 ms one-way |
- * | the same two on a node that declares no link (db-p2p's floor, libp2p's own default) | 10 s | 1250 ms one-way (2.5 s round trip) |
- * | Optimystic's request dial deadline on every cadre node, derived the same way (6 round trips) | 21 s at the default declared link | 2625 ms one-way |
+ * | libp2p `connectionManager.addressDialTimeout` and `dialTimeout` on every cadre node: Optimystic's derivation from the declared link (10 round trips, `resolveLinkDeadlines`) plus two admission decisions (`optimysticDialLimits`) | 39 s at the default declared link | 4375 ms one-way when both decisions take their whole 2 s (4875 ms through no gate) |
+ * | libp2p `connectionManager.inboundUpgradeTimeout` on every cadre node, Optimystic's derivation alone (5 round trips) | 17.5 s at the default declared link | 2187 ms one-way |
+ * | the three on a node that declares no link (db-p2p's floors, libp2p's own defaults) | 6 s per address; 10 s per dial and for the listener | 750 ms one-way (1.5 s round trip), at the per-address limit |
+ * | Optimystic's request dial deadline on every cadre node: its derivation (11 round trips) plus two admission decisions | 42.5 s at the default declared link | the per-address limit above binds first |
  * | the same on a node that declares no link (`DEFAULT_DIAL_TIMEOUT_MS`) | 3 s | 375 ms one-way (0.75 s round trip) |
  *
  * The first two rows are what this measurement is FOR: cadre-core no longer types dial budgets
