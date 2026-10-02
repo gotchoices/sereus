@@ -575,8 +575,8 @@ export interface NetworkConfig {
      * so an address that never answers cannot use up the time the peer's other
      * addresses needed. Defaults to
      * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}. A value given
-     * here replaces that whole derived budget, including its allowance for the
-     * called machine's admission decision (`relayedDialBudgetMs`).
+     * here replaces that whole derived budget, including its allowances for the
+     * relay's and the called machine's admission decisions (`relayedDialBudgetMs`).
      */
     perAddressDialTimeoutMs?: number;
     /**

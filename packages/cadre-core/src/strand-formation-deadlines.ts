@@ -62,14 +62,14 @@ export interface FormationDeadlines {
  * cohort read at that link (`cohortReadDeadlineMs`, 2L: one request and its answer over an
  * open circuit) and `K` one commit (`commitBudgetMs`, 20L, measured):
  *
- *   dialMs                   = a relayed dial plus one protocol negotiation    (5L + 2 000)
+ *   dialMs                   = a relayed dial plus one protocol negotiation    (6L + 4 000)
  *   awaitContactMs           = one request over the open stream               (2L)
  *   validationMs             = 2R                                             (4L)
  *   provisionWorkMs          = approval hook (10 000, flat) + 2R + K           (10 000 + 24L)
  *   provisionGraceMs         = R + K                                          (22L)
  *   responseTravelMarginMs   = L + validationMs                               (5L)
  *   initiatorAwaitResponseMs = work + grace + margin                          (10 000 + 51L)
- *   sessionMs                = dialMs + initiatorAwaitResponseMs              (12 000 + 56L)
+ *   sessionMs                = dialMs + initiatorAwaitResponseMs              (14 000 + 57L)
  *
  * Why each term:
  *
@@ -120,10 +120,10 @@ export interface FormationDeadlines {
  * **What this costs.** At the default declaration (3 500 ms) a joiner whose responder
  * accepts the contact and then hangs waits up to 188.5 s, about three minutes, before it is
  * told, where the fixed ladder this replaced told it after 15 s; the whole session is
- * bounded at 208 s. A responder that is unreachable still fails at the dial, 19.5 s. A host
+ * bounded at 213.5 s. A responder that is unreachable still fails at the dial, 25 s. A host
  * that knows its party is on a fast link lowers `linkRoundTripMs` and gets roughly the old
- * numbers back (at L = 100: dial 2.5 s, provisioning 14.6 s, await-response 15.1 s, session
- * 17.6 s). Before this derivation, the fixed 5 s dial could not open a relayed connection
+ * numbers back (at L = 100: dial 4.6 s, provisioning 14.6 s, await-response 15.1 s, session
+ * 19.7 s). Before this derivation, the fixed 5 s dial could not open a relayed connection
  * above a 1.25-second round trip, and the fixed 2 s grace could not contain one commit at the
  * supported link, so a joiner could be told 'timed out' over an invite that was in fact
  * spent.

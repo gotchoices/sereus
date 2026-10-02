@@ -6333,9 +6333,9 @@ export class CadreNode implements SAppIdLookup {
    * caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
-   * timeouts (dial by peer id, then by addr; 23 s each at the default declared link round trip)
+   * timeouts (dial by peer id, then by addr; 28.5 s each at the default declared link round trip)
    * before the reservation drive even starts, so one failed re-drive holds the supervisor
-   * `driving` for those 46 s plus the drive's own deadline — 64 s at the default, and longer on
+   * `driving` for those 57 s plus the drive's own deadline — 75 s at the default, and longer on
    * a host that declared a slower one (`link-budget.ts`).
    * Bounded and harmless while the relay is unreachable anyway; if recovery
    * latency after a relay comes back ever matters, skip the announce when the

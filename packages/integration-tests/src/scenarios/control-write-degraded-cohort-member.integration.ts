@@ -162,8 +162,14 @@ const log = debug('sereus:integration:degraded-cohort');
 //    failure. That case holds every request to C for 2 s, so A's write takes
 //    several seconds and C's own refresh loses the race to it until its sync budget
 //    (~16 s) runs out; A's write then commits. Seen in 2 of 5 runs on
-//    2026-09-17, always labelled "inside a deliberately degraded window". Outside
-//    one, or with `pending conflict` wording, it is a finding.
+//    2026-09-17, always labelled "inside a deliberately degraded window". The
+//    same race can end `pending conflict: block(s) held by unresolved rival
+//    action(s) tx:<id>` instead: whichever vote C's LAST attempt meets decides
+//    the wording — `conflict` from a member that promised A's transaction,
+//    `held` from one that only stored A's pend. The wording alone is not the
+//    closed wedge below. It is a finding outside a degraded window, or when the
+//    named rival is still named after the delayed case's writes report
+//    `error: none`.
 //
 // CLOSED 2026-09-17 (closing): a control write abandoned to a DEAD pending record,
 // `SyncRetryExhaustedError: … pending conflict: block(s) held by unresolved rival

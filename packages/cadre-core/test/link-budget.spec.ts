@@ -3,9 +3,11 @@ import { resolveLinkDeadlines } from '@optimystic/db-p2p';
 import { COHORT_READ_DEADLINE_MS } from '@serfab/quereus-plugin-sereus';
 import {
 	ADMISSION_DECISION_TIMEOUT_MS,
+	CIRCUIT_DIAL_ROUND_TRIPS,
 	CIRCUIT_REQUEST_ROUND_TRIPS,
 	COMMIT_ROUND_TRIPS,
 	DECLARED_LINK_ROUND_TRIP_MS,
+	DIAL_ADMISSION_DECISIONS,
 	PROTOCOL_NEGOTIATION_ROUND_TRIPS,
 	PUSH_TRANSFER_ALLOWANCE_MS,
 	RELAYED_DIAL_ROUND_TRIPS,
@@ -26,7 +28,7 @@ import {
 
 /**
  * The derivation itself — a measured round-trip count times one declared round trip, plus a flat
- * allowance per admission decision the called machine may make, and a host's own declaration
+ * allowance per admission decision the operation may wait on, and a host's own declaration
  * winning over the default. The COUNTS are not asserted against literal
  * milliseconds here on purpose: the point of the module is that the numbers move together, so a
  * case that re-spelled 8000 would have to be edited by the very change it is supposed to guard.
@@ -36,10 +38,11 @@ import {
  */
 describe('link budgets', () => {
 	it('multiplies each operation\'s round-trip count by the declared link round trip, plus its admission decisions', () => {
-		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
+		const dialDecisionsMs = DIAL_ADMISSION_DECISIONS * ADMISSION_DECISION_TIMEOUT_MS;
+		expect(relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + dialDecisionsMs);
 		expect(relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + 2 * ADMISSION_DECISION_TIMEOUT_MS);
-		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
-		expect(relayedStreamOpenBudgetMs()).toBe((RELAYED_DIAL_ROUND_TRIPS + PROTOCOL_NEGOTIATION_ROUND_TRIPS) * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
+		expect(relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + dialDecisionsMs);
+		expect(relayedStreamOpenBudgetMs()).toBe((RELAYED_DIAL_ROUND_TRIPS + PROTOCOL_NEGOTIATION_ROUND_TRIPS) * DECLARED_LINK_ROUND_TRIP_MS + dialDecisionsMs);
 		expect(commitBudgetMs()).toBe(COMMIT_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 		expect(relayAdmissionReserveDeadlineMs()).toBe(RELAY_RESERVE_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + ADMISSION_DECISION_TIMEOUT_MS);
 
@@ -64,15 +67,18 @@ describe('link budgets', () => {
 		expect(atDouble - atDefault).toBe(CIRCUIT_REQUEST_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 	});
 
-	it('gets a listener limit from Optimystic that outlasts cadre\'s relayed dial at every declared link', () => {
+	it('gets a listener limit from Optimystic that outlasts the part of a relayed dial its clock covers, at every declared link', () => {
 		// cadre states its declared link to Optimystic and adds its admission decisions only to
 		// the dialer's limits (`optimysticDialLimits`), so the listener's `inboundUpgradeTimeout`
-		// is Optimystic's derivation: five round trips with a 10 000 ms floor, against cadre's
-		// four plus a flat admission allowance. A listener limit below the dial budget discards
-		// connections the dialer still accepts, silently. The two formulas meet at 2 000 ms, where
-		// Optimystic's floor hands over to its multiple, so the declarations straddle it.
+		// is Optimystic's derivation: five round trips with a 10 000 ms floor. Its timer starts
+		// when the relay hands it the inbound circuit, so it never runs over the dialer's relay
+		// connection or the relay's decision: it must contain the circuit leg and its own
+		// decision, not the whole of `relayedDialBudgetMs`. A listener limit below that discards
+		// connections the dialer still accepts, silently. The two formulas meet at 2 000 ms,
+		// where Optimystic's floor hands over to its multiple, so the declarations straddle it.
 		for (const linkRoundTripMs of [1, 500, 1999, 2000, 2001, DECLARED_LINK_ROUND_TRIP_MS, 10_000, 100_000]) {
-			expect(resolveLinkDeadlines(linkRoundTripMs).inboundUpgradeTimeoutMs).toBeGreaterThanOrEqual(relayedDialBudgetMs(linkRoundTripMs));
+			const listenerClockMs = CIRCUIT_DIAL_ROUND_TRIPS * linkRoundTripMs + ADMISSION_DECISION_TIMEOUT_MS;
+			expect(resolveLinkDeadlines(linkRoundTripMs).inboundUpgradeTimeoutMs).toBeGreaterThanOrEqual(listenerClockMs);
 		}
 	});
 

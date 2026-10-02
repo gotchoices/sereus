@@ -484,6 +484,8 @@ export {
 // one declared assumption about the link moves them all — see `NetworkConfig.linkRoundTripMs`.
 export {
   DECLARED_LINK_ROUND_TRIP_MS,
+  CIRCUIT_DIAL_ROUND_TRIPS,
+  RELAY_DIAL_ROUND_TRIPS,
   RELAYED_DIAL_ROUND_TRIPS,
   RELAY_RESERVATION_ROUND_TRIPS,
   CIRCUIT_REQUEST_ROUND_TRIPS,

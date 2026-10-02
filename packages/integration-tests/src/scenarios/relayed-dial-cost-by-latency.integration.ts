@@ -60,12 +60,18 @@
  *
  * | budget | value | relayed dial impossible above |
  * | --- | --- | --- |
- * | cadre's own dial budgets, DERIVED from this count (`cadre-core/src/link-budget.ts`) | 16 s at the default declared link: 4 round trips plus a flat 2 s for the called machine's admission decision | 1750 ms one-way when that decision takes its whole 2 s (2000 ms to a machine that runs no gate), and moves with `NetworkConfig.linkRoundTripMs` |
+ * | cadre's own dial budgets, DERIVED from these counts (`cadre-core/src/link-budget.ts`) | 21.5 s at the default declared link: 5 round trips, opening the relay connection included, plus a flat 2 s for each of two admission decisions (a party-run relay's and the called machine's) | 1750 ms one-way when both decisions take their whole 2 s (2150 ms through no gate), for a dialer that opens its relay connection on the same dial; moves with `NetworkConfig.linkRoundTripMs` |
  * | libp2p `connectionManager.addressDialTimeout` and `dialTimeout` on every cadre node: Optimystic's derivation from the declared link (10 round trips, `resolveLinkDeadlines`) plus two admission decisions (`optimysticDialLimits`) | 39 s at the default declared link | 4375 ms one-way when both decisions take their whole 2 s (4875 ms through no gate) |
  * | libp2p `connectionManager.inboundUpgradeTimeout` on every cadre node, Optimystic's derivation alone (5 round trips) | 17.5 s at the default declared link | 2187 ms one-way |
  * | the three on a node that declares no link (db-p2p's floors, libp2p's own defaults) | 6 s per address; 10 s per dial and for the listener | 750 ms one-way (1.5 s round trip), at the per-address limit |
  * | Optimystic's request dial deadline on every cadre node: its derivation (11 round trips) plus two admission decisions | 42.5 s at the default declared link | the per-address limit above binds first |
  * | the same on a node that declares no link (`DEFAULT_DIAL_TIMEOUT_MS`) | 3 s | 375 ms one-way (0.75 s round trip) |
+ *
+ * The first row's ceiling counts the ten one-way delays of a dial that opens its relay
+ * connection first (the 2026-10-01 measurement below). The other rows' ceilings are for a dial
+ * over a relay connection the dialer already holds (eight); for a dialer that opens that
+ * connection on the same dial, the dialer-side ceilings are four fifths of those. The listener's
+ * row does not move: its clock starts after the relay leg.
  *
  * The first two rows are what this measurement is FOR: cadre-core no longer types dial budgets
  * as milliseconds. `link-budget.ts` holds one round-trip count per operation, taken from the
@@ -119,6 +125,15 @@
  * 6 004-6 007 ms. That is the cut-off reported on gotchoices/sereus#13, and it is why that arm
  * no longer shows the listener's silent failure.
  *
+ * **Measured** 2026-10-01, same machine, libp2p 3.3.11, `@optimystic/*` 1.9.0,
+ * `RELAY_DIAL_COST_DELAYS=1500`: a third node that had never connected to the relay dialed the
+ * listener's circuit address (step 4), so libp2p's circuit transport opened the relay connection
+ * on that same dial. In the `cadre-core declared` arm it took **15 113 ms**, against 3 029 ms for
+ * the dialer's own dial to the relay and 12 072-12 094 ms for the relayed dials over it: ten
+ * one-way delays, five link round trips, which is what `link-budget.ts` budgets every relayed
+ * dial for (`RELAYED_DIAL_ROUND_TRIPS`). The `db-p2p fallback` arm's fresh dial stopped at its
+ * 6 000 ms per-address limit, like every other dial in that arm.
+ *
  * Read the listener's count AFTER the stream, not the one right after the dial. That earlier
  * one is 0 at every delay, healthy links included — the dialer's `dial()` resolves a moment
  * before the listener finishes registering its own side — so it says nothing on its own. It is
@@ -135,7 +150,7 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { resolveLinkDeadlines, type Libp2pConnectionTimeouts, type LinkDeadlines } from '@optimystic/db-p2p';
-import { DECLARED_LINK_ROUND_TRIP_MS, optimysticDialLimits } from '@serfab/cadre-core';
+import { DECLARED_LINK_ROUND_TRIP_MS, RELAYED_DIAL_ROUND_TRIPS, optimysticDialLimits } from '@serfab/cadre-core';
 import { installWsLatency, startDedicatedRelay } from '../harness/index.js';
 
 const MEASURE = process.env.RELAY_DIAL_COST === '1';
@@ -349,7 +364,8 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 						underBudget(arm.requestDialTimeoutMs, (signal) => dialer!.dial(target, { signal })));
 
 					// 4. A relayed dial from a node that holds NO connection to the relay, so the
-					//    circuit transport opens that connection on the same dial.
+					//    circuit transport opens that connection on the same dial: the case cadre's
+					//    relayed dial budget is sized for.
 					freshDialer = await makeNode(arm.limits);
 					await timed(measured, FRESH_RELAYED_DIAL, () =>
 						underBudget(UNBOUNDED_MS, (signal) => freshDialer!.dial(target, { signal })));
@@ -360,7 +376,10 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 						// every failure under the fallback arm is a limit, not the link), opens a
 						// connection the LISTENER holds, and a stream works on it; and a dial with no
 						// signal of its own completes inside the node's own `dialTimeout`, as does one
-						// under an Optimystic request's dial deadline. Not claimed for the fallback
+						// under an Optimystic request's dial deadline. A dial that first opens its
+						// relay connection completes inside the link part of cadre's relayed dial
+						// budget, so a libp2p change that adds a round trip to it fails here at the
+						// supported link rather than as an absent peer. Not claimed for the fallback
 						// arm: its 6 s per-address limit cuts the first dial off above about 750 ms
 						// one-way, whatever the caller's budget (see UNBOUNDED_MS).
 						expect(typeof measured['relayed dial (300 s budget)']).toBe('number');
@@ -368,6 +387,8 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 						expect(typeof measured['newStream over that circuit']).toBe('number');
 						expect(typeof measured[OWN_DIAL_TIMEOUT]).toBe('number');
 						expect(typeof measured[REQUEST_DIAL_TIMEOUT]).toBe('number');
+						expect(typeof measured[FRESH_RELAYED_DIAL]).toBe('number');
+						expect(measured[FRESH_RELAYED_DIAL]).toBeLessThan(RELAYED_DIAL_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
 					}
 				} finally {
 					console.log(

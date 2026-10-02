@@ -37,17 +37,17 @@ const log = debug('sereus:cadre:peer-dial');
 
 /**
  * Default limit on ONE address's dial attempt, in ms, at the DEFAULT declared link round trip:
- * `RELAYED_DIAL_ROUND_TRIPS` (4) x `DECLARED_LINK_ROUND_TRIP_MS` (3500 ms) plus the called
- * machine's `ADMISSION_DECISION_TIMEOUT_MS` (2000 ms) = 16 000 ms (`relayedDialBudgetMs`). It
- * was a fixed 8000 ms before it was derived.
+ * `RELAYED_DIAL_ROUND_TRIPS` (5) x `DECLARED_LINK_ROUND_TRIP_MS` (3500 ms) plus
+ * `DIAL_ADMISSION_DECISIONS` (2) x `ADMISSION_DECISION_TIMEOUT_MS` (2000 ms) = 21 500 ms
+ * (`relayedDialBudgetMs`). It was a fixed 8000 ms before it was derived.
  *
  * It has to cover the slowest address that should succeed, because an attempt
  * that needs longer fails the same way on every retry. That is a relayed dial on
  * a mobile link: connect to the relay (transport, encryption and multiplexer
  * handshakes, when no relay connection is open yet), open the circuit, then run
  * both handshakes again end to end through the relay. `link-budget.ts` is where that
- * reasoning is now a measured count instead of an estimate — four link round trips, measured at
- * 12 094 ms on a link whose round trip is 3 s — so the value MOVES with a host's
+ * reasoning is now a measured count instead of an estimate — five link round trips, measured at
+ * 15 113 ms on a link whose round trip is 3 s — so the value MOVES with a host's
  * `NetworkConfig.linkRoundTripMs` rather than pinning the band this node can reach to whatever
  * number was typed here. A direct dial that works is far quicker — a phone's WebSocket dial to
  * a node forwarded over `adb reverse` measured 1.6 s end to end.
