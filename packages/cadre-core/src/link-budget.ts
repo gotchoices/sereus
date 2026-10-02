@@ -112,14 +112,14 @@
  * that cover opening a connection itself ({@link optimysticDialLimits}): Optimystic's value plus
  * {@link DIAL_ADMISSION_DECISIONS} admission decisions. At the default declaration:
  *
- * | deadline                                                | link round trips      | at the default | undeclared |
- * | ------------------------------------------------------- | --------------------- | -------------- | ---------- |
- * | libp2p `addressDialTimeout`, one address of a dial      | 10, + 2 decisions     | 39 000 ms      | 6 000 ms   |
- * | libp2p `dialTimeout`, a dial that carries no signal     | 10, + 2 decisions     | 39 000 ms      | 10 000 ms  |
- * | libp2p `inboundUpgradeTimeout`, the listener's side     | 5                     | 17 500 ms      | 10 000 ms  |
- * | one request's dial, stream negotiation included         | 11, + 2 decisions     | 42 500 ms      | 3 000 ms   |
- * | one request's response                                  | 3                     | 10 500 ms      | 10 000 ms  |
- * | a rebalance transfer's dial, and again its reply        | request dial, ≥ 30 000 | 42 500 ms     | 30 000 ms  |
+ * | deadline                                                | link round trips       | at the default | undeclared |
+ * | ------------------------------------------------------- | ---------------------- | -------------- | ---------- |
+ * | libp2p `addressDialTimeout`, one address of a dial      | 10, + 2 decisions      | 39 000 ms      | 6 000 ms   |
+ * | libp2p `dialTimeout`, a dial that carries no signal     | 10, + 2 decisions      | 39 000 ms      | 10 000 ms  |
+ * | libp2p `inboundUpgradeTimeout`, the listener's side     | 5                      | 17 500 ms      | 10 000 ms  |
+ * | one request's dial, stream negotiation included         | 11, + 2 decisions      | 42 500 ms      | 3 000 ms   |
+ * | one request's response                                  | 3                      | 10 500 ms      | 10 000 ms  |
+ * | a rebalance transfer's dial, and again its reply        | request dial, ≥ 30 000 | 42 500 ms      | 30 000 ms  |
  *
  * Ten round trips is Optimystic's count for opening a relayed connection through a relay the
  * dialer is not yet connected to, which opens that connection first (about 8.6 round trips over

@@ -262,8 +262,8 @@ const STALLED_SETTLE_MS = 2 * STALLED_WRITE_FAILURE_MS;
  * would pass the error-text assertion for the wrong reason. Ceiling: the transaction budget
  * held, meaning the failure took the path {@link STALLED_SETTLE_MS} describes. One extra
  * {@link STALLED_ROUND_MS} of headroom: a slower box adds overhead per exchange, while a whole
- * extra round means a re-tried pend or a third cancel round, which is the regression this
- * bound exists to report.
+ * extra round means a re-tried pend or one cancel round past {@link STALLED_CANCEL_ROUNDS},
+ * which is the regression this bound exists to report.
  */
 const FAILURE_FLOOR_MS = 15_000;
 const FAILURE_CEILING_MS = STALLED_SETTLE_MS + STALLED_ROUND_MS;
