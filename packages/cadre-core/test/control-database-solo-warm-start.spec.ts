@@ -138,7 +138,7 @@ async function foundCohort(node: CadreNode, siblingCount: number): Promise<{
 	const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
 	const db = node.getControlDatabase()!;
 	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64))).toBe(true);
-	node.initializeSeedBootstrap(privateKeyB64);
+	await node.initializeSeedBootstrap(privateKeyB64);
 	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => node.registerSelf())).toBe('inserted');
 
 	const siblings: OfflinePeer[] = [];
@@ -370,7 +370,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
 				expect(await within('ensureOwnerKey() (post-addStrand)', OP_TIMEOUT_MS,
 					() => db.ensureOwnerKey(publicKeyB64))).toBe(true);
-				node.initializeSeedBootstrap(privateKeyB64);
+				await node.initializeSeedBootstrap(privateKeyB64);
 				expect(await within('registerSelf() (post-addStrand)', OP_TIMEOUT_MS, () => node.registerSelf()))
 					.toBe('inserted');
 			} finally {

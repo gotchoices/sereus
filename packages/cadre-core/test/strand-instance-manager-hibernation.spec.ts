@@ -27,10 +27,18 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
+// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
+    resolveLinkDeadlines: actual.resolveLinkDeadlines
+  };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
-const testSchema = 'create table Test (id text primary key);';
+const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
 
 let authorPrivateKey: string;
@@ -84,6 +92,7 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
 
     // Instance is still tracked, but its resources have been released.
     expect(manager.hasStrand('q-strand')).toBe(true);
+    expect(instance.status).toBe('hibernating');
     expect(instance.libp2pNode).toBeUndefined();
     expect(instance.database).toBeUndefined();
     expect(instance.connectedPeers).toBe(0);
@@ -144,6 +153,108 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(result).toBe(instance);
     // No rebuild happened — createLibp2pNode still only called once (the start).
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlapping resumes share one runtime build (a wake landing during a check-in)', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('overlap-strand'));
+    await manager.quiesceStrand('overlap-strand');
+    mocks.createLibp2pNode.mockClear();
+    mocks.stop.mockClear();
+
+    // Hold the build between attaching the libp2p node and initializing the database.
+    let releaseInitialize!: () => void;
+    const initializeReached = new Promise<void>((reached) => {
+      mocks.initialize.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((release) => { releaseInitialize = release; });
+      });
+    });
+
+    const first = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
+    const second = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] });
+    await initializeReached;
+    expect(instance.libp2pNode).toBeDefined();
+    // Mid-build, with the node attached: must wait for the database, not read "already live".
+    let midBuildSettled = false;
+    const midBuild = manager.resumeStrand('overlap-strand', { bootstrapNodes: [] })
+      .finally(() => { midBuildSettled = true; });
+    await new Promise<void>((tick) => { setTimeout(tick, 0); });
+    expect(midBuildSettled).toBe(false);
+
+    releaseInitialize();
+    const results = await Promise.all([first, second, midBuild]);
+
+    for (const result of results) {
+      expect(result).toBe(instance);
+    }
+    expect(instance.database).toBeDefined();
+    // One build, and no node orphaned by a second build overwriting the first.
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
+    await manager.quiesceStrand('overlap-strand');
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('a resume requested while a quiesce is releasing the runtime rebuilds it once the quiesce ends', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('quiesce-then-resume'));
+
+    // Hold the release at the database close, with both handles still attached.
+    let releaseClose!: () => void;
+    const closeReached = new Promise<void>((reached) => {
+      mocks.close.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((release) => { releaseClose = release; });
+      });
+    });
+
+    const quiesce = manager.quiesceStrand('quiesce-then-resume');
+    await closeReached;
+    expect(manager.isQuiescing('quiesce-then-resume')).toBe(true);
+    const resume = manager.resumeStrand('quiesce-then-resume', { bootstrapNodes: [] });
+
+    releaseClose();
+    await Promise.all([quiesce, resume]);
+
+    expect(instance.status).toBe('active');
+    expect(instance.libp2pNode).toBeDefined();
+    expect(instance.database).toBeDefined();
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+  });
+
+  it('a quiesce requested mid-rebuild waits for it, and a resume requested after that quiesce rebuilds again', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('resume-quiesce-resume'));
+    await manager.quiesceStrand('resume-quiesce-resume');
+    mocks.createLibp2pNode.mockClear();
+    mocks.stop.mockClear();
+
+    // Hold the rebuild between attaching the libp2p node and initializing the database.
+    let releaseInitialize!: () => void;
+    const initializeReached = new Promise<void>((reached) => {
+      mocks.initialize.mockImplementationOnce(() => {
+        reached();
+        return new Promise<void>((release) => { releaseInitialize = release; });
+      });
+    });
+
+    const first = manager.resumeStrand('resume-quiesce-resume', { bootstrapNodes: [] });
+    await initializeReached;
+    const quiesce = manager.quiesceStrand('resume-quiesce-resume');
+    const second = manager.resumeStrand('resume-quiesce-resume', { bootstrapNodes: [] });
+    await new Promise<void>((tick) => { setTimeout(tick, 0); });
+    // Not torn down under the rebuild still wiring it.
+    expect(mocks.stop).not.toHaveBeenCalled();
+
+    releaseInitialize();
+    await Promise.all([first, quiesce, second]);
+
+    // The quiesce stopped the node the first rebuild finished; the second resume did not
+    // join the first (that would leave the strand quiesced) but built again after the quiesce.
+    expect(mocks.stop).toHaveBeenCalledTimes(1);
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+    expect(instance.status).toBe('active');
+    expect(instance.database).toBeDefined();
   });
 
   it('resume that fails to rebuild rolls back the partial runtime, so a later resume retries', async () => {

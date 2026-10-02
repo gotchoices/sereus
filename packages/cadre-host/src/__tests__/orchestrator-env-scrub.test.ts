@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 // Writes the vars under test (as seen in the child env) next to the startup token.
 const FAKE_CLI = `
@@ -42,7 +43,9 @@ if (tokenPath) {
     CADRE_LISTEN_ADDRS: process.env.CADRE_LISTEN_ADDRS ?? null,
     DEBUG: process.env.DEBUG ?? null,
   };
-  try { fs.writeFileSync(path.join(dir, 'env-seen.json'), JSON.stringify(record), 'utf8'); } catch (e) { console.error(e); }
+  // Write then rename: the test polls for the file's existence, and must never read it half-written.
+  const seenPath = path.join(dir, 'env-seen.json');
+  try { fs.writeFileSync(seenPath + '.tmp', JSON.stringify(record), 'utf8'); fs.renameSync(seenPath + '.tmp', seenPath); } catch (e) { console.error(e); }
   if (token) { try { fs.writeFileSync(tokenPath, token, 'utf8'); } catch (e) { console.error(e); } }
 }
 process.on('SIGTERM', () => process.exit(0));
@@ -67,17 +70,15 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    for (const n of orch.listNodes()) {
-      try { await orch.removeContainer(n.dockerId); } catch { /* ignore */ }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
-  }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
-  for (const [key, value] of Object.entries(savedEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
   }
 });
 

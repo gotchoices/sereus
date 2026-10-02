@@ -38,6 +38,14 @@ export interface Grant {
   revokedAt?: string;
 }
 
+/** One grant as the admin list reports it: the grant plus what is running under it. */
+export interface GrantListing extends Grant {
+  /** Donations counting against `maxNodes` (provisioning / awaiting_seed / seeded). */
+  liveNodes: number;
+  /** Every donation under this grant that is not `terminated` — what revoke would tear down. */
+  donations: Array<{ id: string; status: DonationStatus }>;
+}
+
 /** Why a presented grant token was denied. */
 export type GrantDenyReason =
   | 'unknown_token'     // no such grant
@@ -93,17 +101,25 @@ export interface GrantFile {
 /**
  * Typed handlers exposed to the loopback management server for the **admin**
  * grant surface (`/grants-admin`). Distinct from the grantee-facing `/grants`
- * provisioning surface (`2-donation-service`): the admin surface is loopback,
- * no bearer — same-machine admin, matching cadre-host's local-UI "no login"
- * posture.
+ * provisioning surface: the admin surface is loopback, no bearer — same-machine
+ * admin, matching cadre-host's local-UI "no login" posture.
  *
- * Handlers throw a `GrantError` whose `.code` the server maps to an HTTP
- * status (see `server/error-handler.ts`).
+ * Handlers throw a `GrantError` (or, for donation teardown, a `DonationError`)
+ * whose `.code` the server maps to an HTTP status (see `server/error-handler.ts`).
  */
 export interface GrantAdminHandlers {
   postGrant(body: { label: string; maxNodes?: number; ttlMs?: number }): Promise<{ grant: Grant }>;
-  listGrants(): Promise<{ grants: Grant[] }>;
-  deleteGrant(token: string): Promise<void>;
+  listGrants(): Promise<{ grants: GrantListing[] }>;
+  /**
+   * Revoke a grant and, unless `keepNodes`, terminate every donated node under
+   * it. Resolves with the ids of the donations terminated.
+   */
+  deleteGrant(token: string, opts: { keepNodes: boolean }): Promise<{ terminated: string[] }>;
+  /**
+   * Terminate one donated node by id, whatever state its grant is in. Absent
+   * when no donation service is wired — there are then no donated nodes to end.
+   */
+  terminateDonation?(id: string): Promise<void>;
 }
 
 /* ──────────────── donation lifecycle (2-donation-service) ──────────────── */

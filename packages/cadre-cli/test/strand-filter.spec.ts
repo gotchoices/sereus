@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { StrandFilter } from '@serfab/cadre-core';
-import { applyEnvironmentOverrides, parseStrandFilter } from '../src/config/loader.js';
+import { applyEnvironmentOverrides, parseStrandFilter, validateConfig } from '../src/config/index.js';
 import type { CliConfigFile } from '../src/config/types.js';
 
 const baseConfig: CliConfigFile = {
@@ -10,20 +10,19 @@ const baseConfig: CliConfigFile = {
 
 /**
  * Round-trip a raw env value through the real startup path:
- * `applyEnvironmentOverrides` (env → merged config) then `parseStrandFilter`
- * (merged config → StrandFilter). This mirrors what `resolveConfig` does and is
- * the path the container/systemd deployment exercises.
+ * `applyEnvironmentOverrides` (env → merged tree), `validateConfig` (merged tree
+ * → checked config) then `parseStrandFilter` (config → StrandFilter). This
+ * mirrors what `resolveConfig` does and is the path the container/systemd
+ * deployment exercises.
  */
 function resolveFromEnv(value: string): StrandFilter {
-  process.env.CADRE_STRAND_FILTER = value;
-  const merged = applyEnvironmentOverrides({ ...baseConfig });
-  return parseStrandFilter(merged.strandFilter);
+  const { tree, provenance } = applyEnvironmentOverrides({ ...baseConfig }, { CADRE_STRAND_FILTER: value });
+  return parseStrandFilter(validateConfig(tree, provenance, 'cadre.yaml').strandFilter);
 }
 
 describe('parseStrandFilter', () => {
-  it('treats undefined / null / "all" as mode all', () => {
+  it('treats an absent key and "all" as mode all', () => {
     expect(parseStrandFilter(undefined)).toEqual({ mode: 'all' });
-    expect(parseStrandFilter(null)).toEqual({ mode: 'all' });
     expect(parseStrandFilter('all')).toEqual({ mode: 'all' });
   });
 
@@ -43,8 +42,10 @@ describe('parseStrandFilter', () => {
     expect(() => parseStrandFilter('garbage')).toThrow(/Invalid strandFilter/);
   });
 
-  it('throws on an empty-string filter', () => {
+  // `strandFilter:` with no value parses to null — an empty leaf, not "unset".
+  it('throws on an empty-string or null filter', () => {
     expect(() => parseStrandFilter('')).toThrow(/Invalid strandFilter/);
+    expect(() => parseStrandFilter(null)).toThrow(/Invalid strandFilter/);
   });
 
   it('throws when the discriminant is missing', () => {
@@ -57,16 +58,14 @@ describe('parseStrandFilter', () => {
     expect(() => parseStrandFilter({ strandId: 42 })).toThrow(/Invalid strandFilter/);
   });
 
-  it('rejects an object carrying both sAppId and strandId', () => {
+  // An extra key beside the discriminant is a setting that would be silently ignored.
+  it('rejects an object carrying more than the one discriminant', () => {
     expect(() => parseStrandFilter({ sAppId: 'a', strandId: 'b' })).toThrow(/Invalid strandFilter/);
+    expect(() => parseStrandFilter({ sAppId: 'a', extra: 1 })).toThrow(/Invalid strandFilter/);
   });
 });
 
 describe('CADRE_STRAND_FILTER env override', () => {
-  afterEach(() => {
-    delete process.env.CADRE_STRAND_FILTER;
-  });
-
   it('keeps bare "all" / "none" scalars (case-insensitive)', () => {
     expect(resolveFromEnv('all')).toEqual({ mode: 'all' });
     expect(resolveFromEnv('none')).toEqual({ mode: 'none' });

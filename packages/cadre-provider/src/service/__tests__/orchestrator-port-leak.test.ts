@@ -1,9 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import type Docker from 'dockerode';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
+import type { PortAllocator } from '../port-allocator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
-import { volumeStubs } from './fake-docker.js';
+import { daemonStubs } from './fake-docker.js';
 
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
@@ -14,7 +15,7 @@ const request: OrchestratorCreateRequest = {
 
 /** Private surface we read to prove ports were freed back to the allocator. */
 type OrchestratorInternal = {
-  allocatePorts(count: number): number[];
+  portAllocator: PortAllocator;
 };
 
 /** DockerConfig with a tiny port range so a single leak exhausts the pool. */
@@ -37,7 +38,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         return { id: 'cid-ok', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
       }),
       getContainer: vi.fn(),
-      ...volumeStubs(),
+      ...daemonStubs(),
     } as unknown as Docker;
 
     // Exactly 3 ports: a leak from the first attempt would exhaust the range.
@@ -63,7 +64,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         remove: removeSpy,
       })),
       getContainer: vi.fn(),
-      ...volumeStubs(),
+      ...daemonStubs(),
     } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
@@ -80,7 +81,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
 
   it('releases partially-allocated ports when the range cannot satisfy the request', async () => {
     const createSpy = vi.fn();
-    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...volumeStubs() } as unknown as Docker;
+    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...daemonStubs() } as unknown as Docker;
 
     // Only 2 ports available, but createContainer needs 3.
     const orch = new DockerOrchestrator(config(10000, 10001), fakeDocker);
@@ -89,8 +90,10 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     // Allocation failed before reaching Docker.
     expect(createSpy).not.toHaveBeenCalled();
 
-    // Both briefly-taken ports are back: a fresh 2-port allocation succeeds.
-    expect(() => (orch as unknown as OrchestratorInternal).allocatePorts(2)).not.toThrow();
+    // Both briefly-taken ports are back.
+    const { portAllocator } = orch as unknown as OrchestratorInternal;
+    expect(portAllocator.has(10000)).toBe(false);
+    expect(portAllocator.has(10001)).toBe(false);
   });
 
   it('records ports and returns endpoints on success without any cleanup', async () => {
@@ -102,7 +105,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         remove: removeSpy,
       })),
       getContainer: vi.fn(),
-      ...volumeStubs(),
+      ...daemonStubs(),
     } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
@@ -123,7 +126,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
       start: vi.fn(async () => {}),
       remove: vi.fn(async () => {}),
     }));
-    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...volumeStubs() } as unknown as Docker;
+    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...daemonStubs() } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
     const result = await orch.createContainer(request);
@@ -143,5 +146,76 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     expect(bindings['8080/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['9090/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['4001/tcp']![0]!.HostIp).toBeUndefined();
+  });
+});
+
+/** A container an earlier provider process created; running or stopped, it holds 10000–10002. */
+const survivorInfo = {
+  Id: 'old-1',
+  Config: { Labels: { 'sereus.container-id': 'ctr_old' } },
+  Mounts: [],
+  HostConfig: {
+    PortBindings: {
+      '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: '10000' }],
+      '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: '10001' }],
+      '4001/tcp': [{ HostPort: '10002' }],
+    },
+  },
+};
+
+/** A freshly started orchestrator over a daemon that still holds `survivor` as `old-1`. */
+function restartedOver(survivor: { inspect: unknown }) {
+  const createSpy = vi.fn(async (_opts: CreateOpts) => ({
+    id: 'cid-new',
+    start: vi.fn(async () => {}),
+    remove: vi.fn(async () => {}),
+  }));
+  const listContainers = vi.fn(async () => [{ Id: 'old-1' }]);
+  const fakeDocker = {
+    createContainer: createSpy,
+    getContainer: vi.fn(() => ({ ...survivor, remove: vi.fn(async () => {}) })),
+    ...daemonStubs(),
+    listContainers,
+  } as unknown as Docker;
+  const orch = new DockerOrchestrator(config(10000, 10005), fakeDocker);
+  const { portAllocator } = orch as unknown as OrchestratorInternal;
+  const survivorPortsHeld = () => [10000, 10001, 10002].map(port => portAllocator.has(port));
+  return { orch, createSpy, listContainers, survivorPortsHeld };
+}
+
+describe('DockerOrchestrator port bookkeeping after a provider restart', () => {
+  it("reserves a surviving container's ports before allocating, and frees them when it is removed", async () => {
+    const { orch, createSpy, listContainers, survivorPortsHeld } =
+      restartedOver({ inspect: vi.fn(async () => survivorInfo) });
+
+    await orch.createContainer(request);
+
+    const bindings = createSpy.mock.calls[0]![0].HostConfig.PortBindings;
+    expect(['8080/tcp', '9090/tcp', '4001/tcp'].map(port => bindings[port]![0]!.HostPort))
+      .toEqual(['10003', '10004', '10005']);
+    // `all: true` — a stopped container gets its bindings back when Docker restarts it.
+    expect(listContainers).toHaveBeenCalledWith({ all: true, filters: { label: ['sereus.container-id'] } });
+
+    await orch.removeContainer('old-1');
+    expect(survivorPortsHeld()).toEqual([false, false, false]);
+  });
+
+  // The pass listed `old-1` before the removal and records its ports after it:
+  // releasing without waiting for the pass would find nothing and strand them.
+  it("frees a removed container's ports that a pass in flight records after the removal", async () => {
+    let finishPassInspect!: () => void;
+    const passInspectGate = new Promise<void>(resolve => { finishPassInspect = resolve; });
+    const inspect = vi.fn(async () => survivorInfo)
+      .mockImplementationOnce(async () => { await passInspectGate; return survivorInfo; });
+    const { orch, survivorPortsHeld } = restartedOver({ inspect });
+
+    const created = orch.createContainer(request);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    const removed = orch.removeContainer('old-1');
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    finishPassInspect();
+    await Promise.all([created, removed]);
+
+    expect(survivorPortsHeld()).toEqual([false, false, false]);
   });
 });

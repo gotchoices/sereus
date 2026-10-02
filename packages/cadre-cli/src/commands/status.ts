@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadConfigFile } from '../config/loader.js';
+import { loadValidatedConfig } from '../config/loader.js';
+import { commandEnv } from '../config/env.js';
 import {
   queryRuntime,
   buildStatusReport,
@@ -26,7 +27,7 @@ export const statusCommand = new Command('status')
     const configSummary = await loadConfigSummary(options.config, Boolean(options.json));
 
     // Resolve the health endpoint (mirrors start.ts's CADRE_HEALTH_PORT env).
-    const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
+    const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? options.healthPort, 10);
     const url = `http://${options.healthHost}:${healthPort}/status`;
     const timeoutMs = parseInt(options.timeout, 10);
 
@@ -47,9 +48,9 @@ export const statusCommand = new Command('status')
   });
 
 /**
- * Load the static config summary, tolerating a missing or unreadable file.
+ * Load the static config summary, tolerating a missing, unreadable or invalid file.
  * Returns null (and warns on stderr, unless `json`) rather than exiting, so the
- * live query always runs.
+ * live query always runs; an invalid file shows its validation message in that warning.
  */
 async function loadConfigSummary(configPath: string, json: boolean): Promise<ConfigSummary | null> {
   const resolved = path.resolve(configPath);
@@ -61,7 +62,7 @@ async function loadConfigSummary(configPath: string, json: boolean): Promise<Con
   }
 
   try {
-    const config = await loadConfigFile(configPath);
+    const config = await loadValidatedConfig(configPath);
     return {
       config: configPath,
       partyId: config.controlNetwork.partyId,

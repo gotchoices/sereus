@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import type { Database } from '@quereus/quereus';
 import {
   addMemberByManager,
   revokeMember,
@@ -10,12 +9,13 @@ import {
   signStrandApproval,
   generateStrandStampId,
 } from '../src/strand-membership-writer.js';
-import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import {
   freshKeyPair,
   tableCount,
   openStrand,
   inTransaction,
+  memberPeerStamp,
+  fileTombstone,
 } from './strand-spec-helpers.js';
 
 /**
@@ -31,37 +31,6 @@ import {
  * is gated to INSERTs in the founding state — and genuinely exercises signature
  * verification.
  */
-
-/** The live StampId of one MemberPeer row, via unfiltered scan + JS filter. */
-async function memberPeerStamp(db: Database, memberKey: string, peerId: string): Promise<string> {
-  for await (const row of db.eval('select MemberKey, PeerId, StampId from Strand.MemberPeer')) {
-    if (row.MemberKey === memberKey && row.PeerId === peerId) return row.StampId as string;
-  }
-  throw new Error(`no MemberPeer row for (${memberKey}, ${peerId})`);
-}
-
-/**
- * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
- * Raw deletes that pin `/Authorized/` pair with one of these in the same
- * transaction — otherwise `RevocationRecorded` fires too and the reported
- * constraint becomes engine evaluation order. A retiree that is not a committed
- * member fails `Revocation.Authorized`, which shares the `Authorized` name, so
- * an attacker-signed tombstone keeps that pin truthful either way.
- */
-async function fileTombstone(
-  db: Database,
-  tableName: 'Member' | 'Manager' | 'MemberPeer',
-  stampId: string,
-  retiree: Ed25519KeyPair,
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
-  );
-}
 
 describe('registerMemberPeer', () => {
   it('the founder member registers a peer → exactly one MemberPeer row bound to its key', async () => {

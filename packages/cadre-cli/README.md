@@ -107,8 +107,8 @@ mean to re-key.
 
 Verify an owner's signature over a peer ID. This is an **offline check**:
 it confirms the signature is valid but does **not** contact the control network
-or register the peer. Membership is granted by the running owner node
-(`cadre start --owner`), which self-registers and authorizes peers.
+or register the peer. Membership is granted by the running owner node — see
+[Add a Machine to the Cadre](#add-a-machine-to-the-cadre).
 
 ```bash
 cadre enroll register \
@@ -117,6 +117,36 @@ cadre enroll register \
   --owner-key <public-key> \
   --signature <signature>
 ```
+
+### Add a Machine to the Cadre
+
+A new machine joins in three steps: it makes an identity, the owner admits it and prints a seed, and it starts with that seed.
+
+```bash
+# 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
+cadre enroll create --output . --name node-b
+
+# 2. On the owner machine A, which is already running as:
+#      CADRE_STARTUP_TOKEN=<token> cadre start --owner --admin-port 7070 -c cadre.yaml
+CADRE_STARTUP_TOKEN=<token> cadre enroll add "$(cat node-b.id)" --admin-port 7070 > node-b.seed
+
+# 3. On machine B, whose config names the same controlNetwork.partyId as A's
+cadre start -c cadre.yaml --identity-file node-b.key --pin-owner-key <owner key> --seed "$(cat node-b.seed)"
+```
+
+`cadre enroll add` asks the running owner node, over its loopback admin channel, to authorize the new machine and mint a seed for it. The owner therefore has to be running with `--owner --admin-port <port>` and `CADRE_STARTUP_TOKEN` set; `enroll add` takes the same port (`--admin-port` or `CADRE_ADMIN_PORT`) and the same token (`--token-file <path>`, the file `cadre start --startup-token-file` writes, or `CADRE_STARTUP_TOKEN`). The token is never accepted as a flag value, since it would show in the process list.
+
+Only the seed goes to stdout, so `>` and `$(…)` capture exactly what `--seed` takes. Stderr names the party ID the new machine's config must carry, the owner key it pins with `--pin-owner-key`, and the owner addresses the seed carries. `--json` prints `{ peerId, partyId, signerKey, ownerAddrs, encodedSeed, warnings }` on stdout instead. Every failure exits 1 with a message that names the fix: no admin channel on that port, a token that does not match the owner's, or a node not started with `--owner`. On the new machine, `cadre start` refuses to start when the seed does not decode or was minted for a different party than its config names.
+
+The seed carries whatever addresses the owner advertises; `enroll add` does not choose them. Which setup works depends on the network between the machines:
+
+- **Same LAN:** the owner's listen addresses are enough.
+- **Owner behind NAT:** set `network.appendAnnounceAddrs` on the owner to a forwarded public address, or give it a relay (`network.relayAddrs`), and restart it before running `enroll add`.
+- **New machine reachable, owner not:** pass `--addr <the new machine's multiaddr>` (repeatable) and the owner dials out to it instead, from its control-cohort reconcile pass (every 15 s by default; a pass already under way when the machine was added does not include it, so allow up to two passes).
+
+When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized leaves its authorization as it is and mints a fresh seed, so it is the way to pick up changed owner addresses; any `--addr` given on the re-run replaces the address the owner dials.
+
+[docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this flow with the other ways to add a machine to a cadre, by which machine opens the connection.
 
 ### Strands
 
@@ -150,8 +180,8 @@ exits 0.
 One caveat the CLI cannot paper over: a removal that commits while this node has **no**
 control-network connections is local-only, and a physical delete cannot be re-issued the way
 an insert can, so siblings may keep running the strand when they come back. Remove while the
-node is connected. See "Delete-while-alone durability" in
-[`docs/architecture.md`](../../docs/architecture.md).
+node is connected. See "Deletes made while alone" in
+[`docs/architecture.md`](../../docs/architecture.md#deletes-made-while-alone).
 
 ### Approver Keys
 
@@ -177,6 +207,16 @@ removed key stay valid.
 
 See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration example.
 
+Every key in the file is checked at start, after the environment variables below have been
+applied. An unknown or misspelled key (`network.listenAddr` — the error suggests
+`listenAddrs`), a retired key (`identity.protobufKeyFile`), a value of the wrong type
+(`hibernation.enabled: "yes"`, `storage.type: fs`), or a missing required key
+(`controlNetwork.partyId`) stops the node with an error naming the key and its source — the
+config file, or the `CADRE_*` variable that supplied the value. Every problem in the file is
+reported in one run, one per line, so a hand-edited file is fixed in one pass. There is no
+warn-only mode: a setting the node does not recognise was never doing anything, and the node
+says so rather than starting without it.
+
 ### Environment Variables
 
 | Variable | Config Path | Description |
@@ -187,16 +227,23 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create` and by cadre-host's installer as `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
+| `CADRE_STORAGE_QUOTA` | `storage.quotaBytes` | Storage quota in bytes (a whole number) |
 | `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on. An entry naming a relay (`<relay addr>/p2p-circuit`) fails startup — use `CADRE_RELAY_ADDRS`, which reserves the slot after the control database is up. Only the **control node** binds these as written: a machine also runs one node per strand, and each of those binds the same entries with the port rewritten to `0`, since one port cannot be held twice. A port forwarded through NAT therefore reaches the control node only. Only TCP, WebSocket (`/ws`, `/wss`) and circuit-relay entries are bindable from config — anything else (`/quic-v1`, `/webrtc`, `/webtransport`) fails startup naming the address and the libp2p package it would need, since a config file cannot supply a transport factory |
 | `CADRE_ANNOUNCE_ADDRS` | `network.announceAddrs` | Comma-separated multiaddrs to advertise **instead of** `listenAddrs`. A non-empty value replaces everything the node advertises, including the `/p2p-circuit` address a `relayAddrs` reservation earns it — the node warns at start when both are set. **Control node only**: any entry names a port, and that port is the control node's, so strand nodes drop it rather than advertise an address that reaches the wrong node. A malformed entry fails startup |
 | `CADRE_APPEND_ANNOUNCE_ADDRS` | `network.appendAnnounceAddrs` | Comma-separated multiaddrs to advertise **in addition to** `listenAddrs` — the usual way to publish a reachable address without discarding the rest. Ignored while `announceAddrs` is non-empty. **Control node only**, on the same terms as `CADRE_ANNOUNCE_ADDRS`. A malformed entry fails startup |
-| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server. Unset ⇒ profile default (on for storage, off for transaction) |
+| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server, `false`/`0` disables it; any other value fails startup. Unset ⇒ profile default (on for storage, off for transaction) |
 | `CADRE_STRAND_FILTER` | `strandFilter` | `all`, `none`, or a JSON object — `{"sAppId":"myapp"}` / `{"strandId":"<id>"}`. A malformed value fails startup rather than degrading to `all` |
 | `CADRE_PUSH` | `push` | FCM/APNs credentials as a JSON object (e.g. `{"fcm":{…},"apns":{…}}`), injected per node by an orchestrator. A malformed or partial value fails startup |
 | `CADRE_RELAY_ADDRS` | `network.relayAddrs` | Comma-separated circuit-relay dial multiaddrs (each ending in the relay's peer id) to reserve a slot on, so peers can reach this node from behind NAT. The node listens on a bare `/p2p-circuit` alongside `listenAddrs` and reserves at the end of startup, once its control database is up. A malformed entry fails startup, and so does a relay that grants no reservation on the first attempt (~10 s) — naming a relay means the node does not come up without one |
-| `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
+| `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
+| `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
+| `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
+| `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
+| `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
+| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` presents it (or reads it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
+| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` connects to when it is not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
 
 Environment variables override config file values. A variable that is **set but
@@ -205,6 +252,15 @@ empty** (or whitespace-only) counts as unspecified and is ignored — this is wh
 optional variable the operator never set, and it must not clobber what the
 config file says. To force a value off, set it explicitly (e.g.
 `CADRE_ENABLE_RELAY=false`).
+
+A set `CADRE_*` variable the node does not recognise **fails startup**, naming it
+and suggesting the nearest known name — a misspelled variable is otherwise a
+setting silently not applied. Recognised are the variables in the table above,
+plus three read by the launchers around the CLI rather than by the CLI itself:
+`CADRE_CONFIG` (the systemd unit's config path), and `CADRE_CONFIG_FILE` and
+`CADRE_DEBUG` (the Docker entrypoint's). Names beginning `CADRE_HOST_` belong to
+cadre-host and are skipped. The retired `CADRE_IDENTITY_PROTOBUF` fails startup
+with a pointer to `CADRE_KEY_FILE`.
 
 ## Linux Server Deployment
 
@@ -263,8 +319,10 @@ remotely-mutable surface in the default configuration.
 **Node State** holds the trusted-owner anchor (`trusted-owners.<partyId>.json`)
 and the retained cold-start dial targets (`bootstrap-peers.<partyId>.json`) —
 non-replicated, per-party, and required for the node to keep its out-of-band
-trust and its way back into the party across restarts. It must be writable by
-the node's user, and it belongs in backups alongside the identity key.
+trust and its way back into the party across restarts. It also holds each
+strand's saved routing table (`strand-network.<partyId>.json`), which a
+restarted node uses to reach the strand's other members again. It must be
+writable by the node's user, and it belongs in backups alongside the identity key.
 
 ### Installation Steps
 

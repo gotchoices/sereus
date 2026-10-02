@@ -56,7 +56,7 @@ A cadre could conceptually take on one of the following shapes (showing only the
 A user with only a phone wants to connect to another such user.
 
 - The parties will need a **relay** somewhere neither can accept inbound connections directly.
-- At a minimum, one party must reserve a slot on the relay and disclose a full relay-routed multiaddr.
+- At a minimum, one party must reserve a slot on the relay and disclose a full relay-routed multiaddr. Of the reference apps, the web and React Native apps can be that party today; the NativeScript app cannot (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
 - The other party can reach the first via the relay if it has that relay-routed multiaddr.
 - If the first party intends to roam (connect via more than one relay), it will need a discovery mechanism:
   - join a DHT overlay (via one or more bootstrap peers)
@@ -64,7 +64,7 @@ A user with only a phone wants to connect to another such user.
 - This allows the second party to discover a current dial address using only the Peer ID plus bootstrap information.
 - If a party loses its phone, it should be able to rejoin the cadre with a new phone only if its identity key material can be recovered/rotated safely.
 
-**The use case itself is proven end to end (one shared relay).** Two DIFFERENT parties,
+**The use case itself is proven end to end (one shared relay, and one relay per party).** Two DIFFERENT parties,
 each a single node that cannot listen (`listenAddrs: []`), form a closed strand and
 replicate rows both ways with every byte crossing one dedicated ungated relay:
 `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`.
@@ -76,15 +76,25 @@ reservation on the same relay — reaches the host's strand node from that seed 
 hand-dial. Every A↔B connection classifies `relayed`. Cost, measured there: 4 relay
 reservations for the pair sharing one strand (2 control + 2 strand) — one slot per node
 per network, so every strand a NAT'd node joins costs one extra relay slot per node. The
+same scenario runs the journey a second way, with each party reserved on its OWN relay —
+the ordinary case once each phone picks its own relay. Every address the host publishes
+names the host's relay, so the joiner forms, and its strand node dials, THROUGH a relay it
+holds no reservation on (a client of that relay's hop only), and the host reaches the
+joiner through the joiner's relay. That works with nothing added to cadre-core, and the
+cost stays per relay: 2 slots on each (that party's control and strand node), none taken on
+the relay a node only dials through, checked after rows have crossed both ways. The
 same-party sibling
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
 (one party's two machines over the same fixture) additionally pins reservation-loss
 recovery on every node (control and strand alike re-reserve after the relay restarts) —
-see [architecture.md → Relay Integration](architecture.md#relay-integration).
-Still open, and NOT covered by that scenario: TWO relays (the parties reserved on
-different relays, so the path between them crosses relay boundaries — the ordinary case
-once each phone picks its own relay) is untested
-(`backlog/feat-scenario-two-relay-circuit`); discovery and roaming remain unsolved — a
+see [architecture.md → Relay Integration](architecture.md#relay-integration). The
+peer-join whole-store block catch-up (`peer-join-backfill.ts`) that makes a late joiner's
+node physically hold blocks committed before it joined never targets the relay itself: it
+schedules a peer only once its libp2p identify names the strand's own block-transfer
+protocol, which a relay never does (gotchoices/sereus#18 — before this, the relay was
+scheduled anyway, every push to it failed, and it was eventually named in a misleading
+`console.warn`).
+Still open, and NOT covered by that scenario: discovery and roaming remain unsolved — a
 party that moves to a different relay after formation has no way to say so, and no way to
 be found; and the last bullet above (rejoining with a new phone after losing the old one)
 has no mechanism and no test.
@@ -158,9 +168,12 @@ relays, and is never locked out of its first address by replication ordering.
 
 That resolution is not one-shot. The launch/resume seed is also merged straight into the
 new strand node's libp2p **address book** (its peerStore), and every running strand
-re-resolves its siblings' strand addresses over the control mesh on a ~10-minute cadence,
-re-merging each answer under the sibling's *strand* transport peerId
-(`CadreNode.refreshStrandPeerAddrs`, riding the control-cohort reconcile pass). Both matter
+re-resolves its siblings' strand addresses over the control mesh, re-merging each answer
+under the sibling's *strand* transport peerId (`CadreNode.refreshStrandPeerAddrs`, riding
+the control-cohort reconcile pass). Each connected sibling is asked on its own schedule: at
+once when it first connects, again ~10 minutes after it answers, or one minute after it
+fails to answer or refuses (the phone-joins-late case: its membership row may not have
+replicated to the sibling yet). Both matter
 because everything below cadre-core dials a strand peer by **bare peer id** — Optimystic's
 cluster and repo clients, FRET ping/announce — and a bootstrap address list alone does not
 put anything in the address book that outlives the initial discovery. Without the refresh, a
@@ -168,38 +181,40 @@ sibling that restarts its strand node or rotates its relay reservation stays unr
 until this node restarts or resumes the strand, and even the original seed addresses expire
 out of the peerStore after an hour.
 
-**Cross-party answer (implemented, one-shot).** The RPC above is membership-gated, so it can
+**Cross-party answer (implemented).** The RPC above is membership-gated, so it can
 never answer for another party's strand nodes. The address instead travels on the **formation
 handshake** — the one moment the two parties are authenticated to each other and agreeing on a
 strand id. An approving formation result now carries the responder's live strand-network
 addresses for the strand it provisioned (`strandAddrs`), disclosed under exactly the same gate
 as its party id and cadre addresses, so a rejected redemption discloses nothing. The joiner
-keeps them per strand and unions them into that strand's discovery seed — behind any fresher
-sibling answer — on launch, on hibernation resume, and on every periodic address refresh.
+keeps them per strand, in memory, and adds them to that strand's discovery seed — behind any
+fresher sibling answer — on launch and on hibernation resume, and re-merges them into the
+running strand's address book on every periodic refresh until the strand node has met the
+responder; a strand already running when a re-formation arrives has them merged into its
+address book at once.
 `integration-tests` scenario `strand-formation-cross-party-seed` proves two different parties
 meshing on one strand, and replicating rows across it, with no hand-dial anywhere — over
 loopback addresses; `blind-relay-phone-to-phone-e2e` proves the same handshake carrying a
 RELAY-ROUTED strand address between two relay-only parties, with the closed strand's
 membership secret delivered over the circuit (see the SN–SN use case above).
 
-Two limits are real and are **not** solved by that work:
+**How a restarted machine re-finds its strand's peers.** One node-local record holds addresses across a restart, in the machine's own storage and never in the strand database.
 
-- **In-memory, so one-shot.** The carried addresses die with the joiner's process. A restarted
-  joiner with no sibling of its own running the strand is back to an empty seed, and the
-  cross-party mesh does not re-form until it redeems a fresh invitation. Durability —
-  persisting the contact, or re-resolving it — is `backlog/feat-cross-party-strand-addr-durability`.
-- **Never refreshed.** They are the responder's addresses at the instant of formation. If its
-  relay reservation rotates before the joiner dials, the entry is dead and nothing re-resolves
-  it; recovery today is a fresh invitation.
+*The strand node's saved network state* (`packages/cadre-core/src/strand-network-state.ts`). Optimystic saves each strand node's FRET routing table, in which every peer entry carries that peer's signed address record, and the node re-imports it when it is next built, so FRET dials the peers the node was talking to. This record alone is enough for two relay-only parties that both restart to re-mesh with no fresh invitation (gotchoices/sereus#18). Unpublishing, leaving or being removed from a strand forgets it; stopping the strand or hibernating keeps it. The store is injected like the other node-local records (`CadreNodeConfig.strandNetworkState.store`; in-memory by default, and every reference embedder injects a durable one). The mechanism, including when the table is saved, is in [architecture.md → Strand-Address Resolution](architecture.md#strand-address-resolution).
 
-So the remaining open question is narrower than it was: not "how does one party find another
-party's strand at all", but "how does a party that has already joined **re-find** the other
-side after it moves" — still expected to want a strand-overlay DHT and/or the strand's own
-`MemberPeer` records rather than the control network.
+*What a formation carried is not saved.* The addresses a formation result carried are held in memory only. They get the joiner its first connection, and from then on the saved network state holds the other party. A machine that restarts between forming a strand and first launching it comes back with no address for the other party and has to re-form (`NOTE:` at `formationStrandAddrs` in `cadre-node.ts`). The maintainer ruled an in-strand registry — `MemberPeer` rows carrying addresses, reachable by members that are offline — out for now; nothing needs it, and it stays a possible later step only if a case does.
+
+*The proof* is `integration-tests` scenario `strand-relay-only-restart-reconverges`, the reporter's reproduction, run with durable network state: two relay-only parties sharing a closed strand both restart over the storage they kept, each re-claims the strand from `strand:discovered` (the joiner's from its remembered join, below), and a write made after the restart crosses both ways. (On a node that hosts storage replicas — the default for `profile: 'storage'`, see [architecture.md → Strand Filtering](architecture.md#strand-filtering) — the node launches the strand as a replica, without the app's schema, right after that announcement, and the app's claim then upgrades that running replica in place rather than relaunching it.) A second arm cuts one party out of the other's saved table before the restart, and the write still crosses: one side remembering is enough. Its opt-in negative control runs the same journey with the network state in memory and the strand never re-meshes; its opt-in two-process arm repeats the restart across real process exits over on-disk stores.
+
+**How a member's new address reaches the others, and how a late joiner learns the rest.** FRET, the ring library under Optimystic, keeps each strand peer's signed address record on that peer's routing-table entry and forwards the records it holds in the neighbour snapshots strand nodes already exchange. A member whose relay reservation rotated is therefore learned at its new address from any neighbour the two have in common, and in a strand of three or more a late joiner learns the members it never met from the party that invited it. Sereus runs no protocol of its own for this.
+
+What Sereus adds is on the running node. libp2p's address book hides an address an hour after it was first seen, so every periodic address refresh re-merges the records FRET holds into the strand node's address book, which keeps another party's strand nodes dialable for as long as the node stays up. A record is the peer's own signed claim about where it is and says nothing about membership — that is judged at the connection, by the revocation gate on a closed strand. The mechanism is in [`docs/architecture.md`](architecture.md) → "Strand-Address Resolution".
+
+What remains is the design boundary: addresses are held per machine and never in the strand database, so a member whose address changed while it was connected to nobody is unreachable until it dials someone. In a two-party strand there is no common neighbour to forward a record, so the party that moved has to dial. An in-strand registry (`Strand.MemberPeer` rows carrying addresses, readable by members that are offline) would close that; it is deliberately not built, and is revisited only if a case needs addresses to reach members that are offline.
 
 ## Strand Creation
 
-_(TODO: not yet documented here. See the strand-formation and seed-bootstrap coverage in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+Two parties form a strand over the formation protocol in [architecture.md → Strand Formation](architecture.md#strand-formation), and its first members are seated as described in [Strand Membership Bootstrap](architecture.md#strand-membership-bootstrap).
 
 ## Joining: no writes before the first sync
 
@@ -209,10 +224,10 @@ Why: with no strand peer connected, optimystic's cohort for every block is the m
 
 What the runtime does (`packages/cadre-core/src/strand-first-sync-gate.ts`, wired in `StrandInstanceManager.buildStrandRuntime`):
 
-- A **non-founder launch** brings its strand libp2p node, membership reconciler, revocation enforcer and peer-join backfill up as before, then probes once: a read of `Strand.Header`, and — only once that row is held — a `select count(1)` of every table the sApp declared in `App`. If the Header is held and every table read settles, the database is published at once — a restart or a hibernation resume over a store that has synced before is never gated, so offline-first writes on such a machine keep working. Otherwise the instance comes up **`'syncing'`** with `StrandInstance.database` unset, and re-probes every `strandFirstSync.pollIntervalMs` (500 ms). Reads never invent a collection (optimystic's `Collection.open` resolves undefined on an authoritatively absent header and throws on an unreachable one), so the probe is safe to repeat; a throwing read is "not yet", and an empty table is a settled read. The background loops read `instance.database` lazily, so they wait with it — the reconciler cannot seat a `Strand.Member` row into a forked table either.
+- A **non-founder launch** brings its strand libp2p node, membership reconciler, revocation enforcer and peer-join backfill up as before, then probes once: a read of `Strand.Header`, and — only once that row is held — a `select count(1)` of every table the sApp declared in `App`. If the Header is held and every table read settles, the database is published at once — a founder, and normally a restart or a hibernation resume over a store that has synced before, is never gated, so offline-first writes on such a machine keep working. "Has synced before" is decided by what the local store actually holds, not by whether the machine once read the strand: a machine that left soon after its first sync can hold less than it read, and is then gated like a joiner. The re-attach measurement recorded on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` saw a machine come back over the store it kept without the `Strand.Header` collection it had read before it left. Gating it is right, since writing into a collection the machine does not hold would fork it. Otherwise the instance comes up **`'syncing'`** with `StrandInstance.database` unset, and re-probes every `strandFirstSync.pollIntervalMs` (500 ms). Reads never invent a collection (optimystic's `Collection.open` resolves undefined on an authoritatively absent header and throws on an unreachable one), so the probe is safe to repeat; a throwing read is "not yet", and an empty table is a settled read. The background loops read `instance.database` lazily, so they wait with it — the reconciler cannot seat a `Strand.Member` row into a forked table either.
 - The moment the probe passes, the database is published, the status flips to **`'active'`**, and `CadreNode` emits **`strand:writable`** — also when the hibernation manager's idle timer had already relabelled the still-gated joiner `'idle'`; the publish counts as activity, so its idle timer re-arms. A founder request against a still-gated instance (`foundStrand` after a joiner-shaped attach) runs the bootstrap through the gate and opens it: writing the Header locally is the one legitimate way to become writable without a peer.
 - **The joiner's membership rows land WITH the strand, not a poll interval later.** On a closed strand every machine also has to finish its party's join: seat the party's `Strand.Member` row (redeeming the single-use invitation the formation staged) and write its own machine→party `Strand.MemberPeer` binding, the two rows revocation enforcement and future admission control key on. The loop that does this (`strand-membership-reconciler.ts`) is armed at bring-up, so on a gated launch its first pass runs while the database is still withheld, finds none, and does nothing. `StrandInstanceManager.publishDatabase` therefore kicks it as it hands the database over: both rows are written about a second after the strand goes `'active'`. A pass that leaves the join unfinished — the host's `Strand.Invite` row has not replicated to this machine yet, or the cohort is briefly unwritable — retries on a short doubling ladder (1 s, 2 s, 4 s, … capped at the reconciler's poll interval); the flat 30 s poll interval is reserved for the different state of a machine nobody has admitted at all, where there is nothing this machine can do faster. Measured before the kick existed: the two writes sat idle for 29 s after `addStrand` resolved, then ran as one 45-stream burst (2026-09-17, two parties over direct loopback connections). `blind-relay-phone-to-phone-e2e.integration.ts` gates the timing end to end at the production cadence. The app receives the same `Database` in the same tick, so its first writes run alongside the loop's. Every membership writer (`strand-membership-writer.ts`) therefore issues its whole transaction as one atomic `exec` batch, which Quereus begins, runs and commits — or rolls back — without ever letting another caller's statement in, so an app write made meanwhile is not swept into a membership transaction and lost when that transaction fails. That holds for every failure shape, a membership statement that fails before `commit` (a primary-key collision, say) as much as the usual join failures that fail at `commit` (the `Invite` not replicated yet, expired, cancelled, sealed, a refused optimystic commit). The loop also never joins a transaction the app has open: its writes refuse with `StrandTransactionBusyError`, having written nothing, and the pass retries on the ladder. On a networked strand the redemption's two tables commit separately, and optimystic can report that only one was saved; the reconciler recognises that error by type, prints one `console.warn` naming the saved and unsaved halves, and drops the invitation — when `ConsumedInvite` was saved and `Member` was not, the invitation is spent and the party stays outside the strand until a manager admits it directly (`addMemberByManager`), after which the loop's next pass writes the binding (automatic repair is an open decision, `blocked/strand-half-committed-join-recovery`).
-- **`CadreNode.addStrand` resolves only once the strand is writable**, bounded by `strandFirstSync.timeoutMs` — **120 s**, sized for a machine joining through a relay on a slow link, where the first sync takes tens of seconds rather than the second or two a direct connection takes, and where the earlier 30 s default sat inside the run-to-run spread and so rejected about half of those joins while their sync was progressing normally and went on to complete. `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`'s doc comment is the one place that carries the measurement behind the number, the link it was taken over, and what the larger budget costs; don't copy those figures here. On timeout it rejects with `StrandAwaitingFirstSyncError` ("no member of this strand has been reachable since this machine joined") and leaves the launch up, still probing; the same call made again later completes the attach, as does awaiting `CadreNode.whenStrandWritable(strandId)` or the event. `addStrand({ awaitFirstSync: false })` returns the `'syncing'` instance immediately for a caller that wires its own peers first (the integration harness). There is deliberately no way to disable the gate.
+- **`CadreNode.addStrand` resolves only once the strand is writable**, bounded by `strandFirstSync.timeoutMs`. Its default, `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, is sized for the slowest attach measured, which is not a first join: a machine re-attaching through a relay on a slow link, over a store that kept only part of what it had read. Through a relay on such a link a first sync takes tens of seconds and that re-attach longer, where a direct connection takes a second or two; each earlier default fell short of a case it had not been sized for, and so refused attaches whose sync was progressing normally and went on to complete. That constant's doc comment is the one place that carries the number, the measurements behind it, the link they were taken over, and what the budget costs; don't copy those figures here. On timeout it rejects with `StrandAwaitingFirstSyncError` ("this machine has not yet received the strand's data from another member" — either no other member is reachable, or the link to one is slow and the sync is still in progress; the gate cannot tell which) and leaves the launch up, still probing; the same call made again later completes the attach, as does awaiting `CadreNode.whenStrandWritable(strandId)` or the `strand:writable` event, which are the ways to keep waiting past the budget. `addStrand({ awaitFirstSync: false })` returns the `'syncing'` instance immediately for a caller that wires its own peers first (the integration harness). There is deliberately no way to disable the gate.
 - A strand the watcher auto-launches (a self-configured strand after a restart) is reported by `strand:started` in whatever state it came up; an app that hangs a "waiting for the other member" screen on `'syncing'` takes it down on `strand:writable`. The hibernation manager treats a `'syncing'` strand like any other: no activity lands on it, so it idles and hibernates on the usual timers, and every check-in resume re-probes.
 - The reference apps rely on this: the RN and NativeScript chat screens register the local participant only once `strand.database` is set, and the closed-strand join helpers write the member role after `addStrand`, which is now safe.
 
@@ -231,7 +246,9 @@ Apps address their own tables as `App.<Table>`. Quereus's `schema_path` defaults
 
 ## Inviting Parties
 
-_(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+A party becomes a member of a closed strand through the signed invite handshake in [architecture.md → Invite → join handshake (closed strands)](architecture.md#invite--join-handshake-closed-strands).
+
+An invitation names the inviting machine and up to three of its party's other machines, and the joiner tries each in turn. An always-on machine of the party (cadre-host, cadre-cli, a donated node) therefore answers the joiner while the inviting phone is offline, provided it holds the replicated invitation; one that does not yet answers `token-unknown`, and the joiner moves on. See [architecture.md → Which machines an invitation names](architecture.md#which-machines-an-invitation-names).
 
 Attaching a human-readable legal agreement to a strand — reviewed before joining, executed
 as a separate in-strand signing act — is a design-stage plan: see
@@ -246,7 +263,12 @@ database, which Optimystic replicates to **every node the party owns**:
 - **The strand-wide read secret** — the control-layer `Strand.MemberPrivateKey`.
   Formation delivers it to *every* joining party
   (`FormationProvisionResult.memberPrivateKey`, disclosed only after token +
-  disclosure validation), and the initiator records it into its own control DB. It
+  disclosure validation). The `Strand` row itself lives only in the founding party's
+  control DB; the joining party records the join party-wide in its own `JoinedStrand`
+  table (see [What a joiner's node remembers](#what-a-joiners-node-remembers)), so the
+  read secret replicates in plaintext to every machine of the joining party too, under
+  the same accepted risk this section states for `Strand.MemberPrivateKey`. Until an
+  owner machine publishes the join, the joining machine keeps it in its `KeyStore`. It
   gates reads; it deliberately derives **nobody's identity**.
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
@@ -257,9 +279,10 @@ database, which Optimystic replicates to **every node the party owns**:
   single-use strand membership invitation
   (`FormationProvisionResult.membershipInvite` — a `Strand.Invite` keypair the
   responder's live strand runtime issues under its party identity, disclosed on the
-  same terms as the read secret; issuance failing rejects the redemption retryably
-  *before* the formation token is spent, so a joiner is never admitted as an
-  unmemberable half-member). The joiner's node stages the invitation in memory
+  same terms as the read secret; it is issued only after the invite's outside approval
+  (when it names one) and a seat check pass, so a refused join writes nothing into the
+  strand, and before the formation token is spent, so issuance failing rejects the
+  redemption retryably and a joiner is never admitted as an unmemberable half-member). The joiner's node stages the invitation in memory
   (`getPendingMembershipInvite`), and strand bring-up redeems it automatically: a
   background membership reconciler on every machine of the party (launch and
   hibernation wake alike) consumes the invitation — seating the `Strand.Member`
@@ -331,6 +354,63 @@ Android reinstall), mixed-platform cadres (Node `FileKeyStore` + RN secure store
 and migrating existing plaintext rows.
 
 Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Seam](architecture.md#node-key-material--the-keystore-seam).
+
+### What a joiner's node remembers
+
+A strand joined from another party has no `Strand` row in the joiner's control database — that row lives in the founding party's — so the control database cannot bring it back the way it brings back the party's own strands. cadre-core keeps two records of such a join instead (`joined-strand-store.ts`):
+
+- **The party-wide record** is a `CadreControl.JoinedStrand` row in the joining party's control database: id, `Type`, and for a closed strand the read secret the formation delivered. Once it exists it is the authority. Every machine of the party offers it, a storage replica host launches it, and removing it is how the party leaves.
+- **The machine-local record** is a queue of joins this machine made that the party does not know about yet. `CadreNode.formStrand` records the strand it just joined, and so does an `addStrand` that joins (no `founder: true`) a row this party's control database names neither as its own strand nor as a party-wide join. A local record is forgotten as soon as the party-wide row for its id is visible, so it always means "joined here, not yet published". It lives in the node's `KeyStore`, one slot per strand under `cadre/joined-strand/<base64url party id>/<strand id>`: the read secret is secret-grade, and the KeyStore is where every platform already keeps secrets (the platform enclave on React Native). The party segment keeps two parties sharing one KeyStore apart. A node configured with `privateKey` and no `keyStore` falls back to memory and warns once; such an embedder injects `joinedStrands: { store: new KeyStoreJoinedStrandStore(new FileKeyStore(dir), partyId) }` or its own `JoinedStrandStore`.
+
+**Publication.** The periodic control-cohort reconcile pass (every 15 s) publishes each local record as a `JoinedStrand` row, then forgets the local record. It runs only while the machine holds a control connection, because a control write committed alone is local-only and forks the collection, and only on an **owner machine**: one whose seed bootstrap holds an owner key that the party's `OwnerKey` table enrolls. A join therefore reaches the party within one pass of its machine being connected. If another machine of the party published the same join first (both phones redeemed invitations to the same strand), the id conflict counts as published and the party-wide row wins. A machine that is not an owner never publishes: its joins stay machine-local, offered on that machine only, exactly as before the party-wide table existed.
+
+**Offering.** On every poll the strand watcher offers, one row per id: the party's own `Strand` rows, then the party-wide joins, then this machine's unpublished joins. A join is offered as `strand:discovered` — a row with `FounderOwnerKey: null` carrying the read secret — or relaunched on its own when the app registered its sApp config first, with the same retry ladder and `stopStrand` suppression the party's own strands get. A node that hosts storage replicas launches a party-wide join as a replica, as it does the party's own unclaimed strands, so the party's always-on machine keeps a copy of a strand its phone joined. The party's **other devices** receive `strand:discovered` for each party-wide join too, and the React Native reference app claims such a row as it claims the party's own (an open row, or a closed row that carries its key), so a second phone of the party joins the strand. That row is the product of the formation's consent, so an app may claim it without a second handshake. **Apps keep no list of their own.** A failed read of the party-wide table offers the last list that succeeded (empty at first), so a machine cut off from its party before it ever received that table's block still offers its own strands and its local joins. A local record is forgotten only on a read that succeeded, never on that stand-in list, which may predate a leave the record re-joined after. Leaving and a revocation wait for a publish already in progress on the same machine, so a publish cannot land a row just left.
+
+**Leaving is party-wide.** `forgetJoinedStrand` removes the `JoinedStrand` row (owner-signed, with a `Revocation` tombstone), then the local record, the addresses the strand's formation carried and the strand's saved network state, then `stopStrand`s the strand here. Every other machine's watcher sees the row gone and detaches the strand (`strand:stopped`), the replica host included; a machine that was offline at the time drops the stale row through the reap branch once the tombstone reaches it. On a machine that is not an owner, `forgetJoinedStrand` of a strand with a party-wide row throws: leaving for the whole party takes an owner machine, and `stopStrand` stops the strand on this machine only. For a join that is still local-only there is no party-wide row, and it forgets the local record and stops the strand, as before. `stopStrand` alone keeps both records, as an own-party strand is rediscovered on restart too. The strand itself is not told: this party's `Strand.Member` row stays, and a later re-formation reuses the same identity.
+
+**Removal from the strand** (`strand:revoked`) removes the party-wide record. The machine that observes the revocation keeps offering the strand for the rest of its session, as that event promises, and queues the `JoinedStrand` row for removal by its next connected owner reconcile pass, so the next start of any machine does not re-attach it. The queue is in memory: if the process dies first, the next start relaunches the strand, the revoked-peer gate raises `strand:revoked` again, and the removal is queued again. A `formStrand` or a remembered `addStrand` of the same id cancels a queued removal, so a re-join is never deleted by a stale revocation. Two limits, both accepted:
+
+- A **sibling** machine that has not raised `strand:revoked` itself detaches the strand (`strand:stopped`) when the removal reaches it, instead of keeping it for the session. So "nothing is stopped on the removed machine's behalf" (see [What the app has to call, and what the removed party is told](#what-the-app-has-to-call-and-what-the-removed-party-is-told)) holds for the machine that observed the revocation, not for its siblings. The alternative was a party-wide record that brings a revoked strand back on every start of every machine. If apps need the "you were removed" screen on every device, the sibling could re-check its own revocation state before detaching a vanished joined row.
+- A machine that is not an owner cannot remove the row. A revoked strand whose row no owner machine observes stays party-wide until an owner leaves it.
+
+A local record is also forgotten when this party's own control database gains a `Strand` row with the same id: the strand is the party's own now.
+
+**The records bring the strand back, not the other party's addresses** (gotchoices/sereus#18). Those live in the strand node's saved network state (see "How a restarted machine re-finds its strand's peers" above), so a restarted joiner re-meshes only when that is durable too: an embedder injects `strandNetworkState.store` and a `keyStore` (or `joinedStrands.store`). With the join record in memory a local-only join is not re-offered; with the network state in memory it comes back with nothing to dial. A machine that launches a party-wide join it never formed itself (a replica host, a second phone) has neither a saved table nor formation-carried addresses for it; its launch is seeded through the strand-address RPC by the machines of its own party that run the strand.
+
+#### Joining while the inviter is offline
+
+`CadreNode.requestJoin(invitation, disclosure)` asks to join and keeps asking until the join works, the invitation is used up or expires, or the request is dismissed. It records a `CadreControl.PendingJoin` row in the joining party's control database (one row per invitation, keyed by the sha256 of its token) holding the encoded invitation, the disclosure, and when trying stops: the invitation's own expiration or 30 days from the request (`MAX_PENDING_JOIN_MS`), whichever comes first, since the inviter chose the expiration. It then runs one formation attempt at once and returns the status after it, so a join whose inviter is online is as fast as `formStrand`. `formStrand` stays the one-shot path and writes no row; nothing coordinates the two, so an app uses one of them per invitation.
+
+**Who retries.** Every owner machine of the party runs the retry loop (`pending-join-runner.ts`): the phone while its node runs, and any always-on machine that holds an owner key. Each reads the rows once right after start (and when its owner key is wired) and then every 30 s. Its schedule for a row:
+
+- A row this machine has not tried yet is first tried after a delay between zero and the base delay, fixed by this machine's peer id and the row id, so two machines of the party rarely dial together.
+- After a failure worth retrying it waits the base delay, doubled per failure up to 10 minutes, moved by up to 20 % either way.
+- The base delay is twice the formation dial budget (39 s at the default declared link), so the pace follows `network.linkRoundTripMs`.
+- At most two background attempts run at once on one machine. A `requestJoin` does not wait for a slot.
+
+Every attempt is a fresh `formStrand`, with a fresh consent key and nonce, which the `conflict` rejection needs. The schedule and the `trying`/`waiting` state are memory only: a restarted machine starts over from the row.
+
+**Reading an attempt.**
+
+- Approved: `formStrand` has already recorded the strand addresses, seated the party key, staged the membership invitation and remembered the join, as it always does. The row becomes `joined` with the strand id and, for a closed strand, the membership invitation.
+- No answer (`FormationUnreachableError`), a rejection marked `retryable`, or any unexpected error: retry.
+- A final rejection (`approval-refused`, `approval-invalid`, `consent-invalid`, `disclosure-invalid`, `disclosure-too-large`, `host-strand-must-be-recreated`): `failed` with that code.
+- Approved, then a step on this machine failed (`FormationPostApprovalError`): `failed` with code `local`, because the token is spent and no retry can help.
+- An attempt due at or after the row's expiry is not made; the row becomes `failed` with code `expired`.
+
+**A spent token.** `token-spent` can mean another owner machine of this party has just won the same invitation. The machine re-reads the row and adopts an outcome it finds. Otherwise it tries once more after twice the formation session budget, long enough for the other machine's `joined` row to arrive, and fails the row as `token-spent` only if that attempt is also refused as spent while the row is still pending.
+
+**Two machines writing.** An outcome replaces the row (`ControlDatabase.replacePendingJoin`), which refuses when another write replaced or removed it first; the writer then re-reads. A join always wins: it replaces a `failed` row, and a failure never replaces a join. A failure does replace a pending row of the same request, since only the re-issue of a row written alone (below) writes one, unchanged. A row dismissed while an attempt ran is not recreated; a join that attempt made stays on its machine, as any `formStrand` join does.
+
+**Status.** `listPendingJoins()` returns every request not dismissed, and `pendingJoin:changed` reports each change this machine sees. `pending`, `joined` and `failed` come from the row and read the same on every machine; `trying` (an attempt is running here) and `waiting` (this machine's last attempt failed in a way worth retrying, with the next attempt's time and the error) are the machine's own view. A finished row stays until `dismissPendingJoin`, or until an owner machine removes it 7 days after its outcome (`MEMBERSHIP_INVITE_TTL_MS`): the membership invitation it carries is dead by then, and an app that was not running has seen the strand through `strand:discovered`. Dismissing a pending row cancels it everywhere at each machine's next read.
+
+**The membership invitation on other machines.** A closed strand joined in the background on one owner machine may be launched first on another, typically the phone. The invitation the approval carried lives in the finishing machine's memory, so each pass also stages the invitation of every `joined` row younger than 7 days on the machine reading it, when that machine has none staged for the strand. Whichever machine launches the strand then redeems it for the party's `Strand.Member` seat, under the replicated `StrandPartyKey` the finishing machine seated. If two machines redeem it, one `consumeInvite` wins; the other's membership reconciler drops the invitation as already consumed and still writes its own `MemberPeer` binding once the party's member row reaches it.
+
+**While cut off from the party.** A request and its outcomes are written even when the machine has no control connection, because keeping the request across a restart is the point. Such a write reaches no other machine ([Writes made while alone](architecture.md#writes-made-while-alone)), so the machine re-writes it, unchanged under a fresh stamp, when its next control connection opens. A process that stops before that leaves the row to reach the party with its next write.
+
+**Owner machines only.** Every `PendingJoin` write is owner-signed, so a machine without an owner key (a donated cadre-host or cadre-provider node) neither retries nor records outcomes, and `requestJoin` throws there. Whether such a machine may finish a join is [`tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md`](../tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md).
+
+**Stopping during an attempt.** `formStrand` takes no abort signal, so `stop()` does not wait for an attempt in flight. An approval that lands while the node stops can lose its local records; the row stays pending, and the next start's attempt is refused as `token-spent`, which fails the row after its confirming attempt.
 
 ## Who May Administer a Closed Strand
 

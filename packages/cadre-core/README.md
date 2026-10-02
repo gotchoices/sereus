@@ -232,13 +232,15 @@ The `storage.provider` option accepts either:
 - **A factory function** `(scope: string) => IRawStorage` - Creates isolated storage per scope (recommended)
 
 A **scope key** is what the factory receives. It is the strand id for each strand, and
-`controlStorageScope(partyId)` — `control-<base64url party id>` — for the control database,
-which holds one party's own records and must not be shared between parties. Every key is
-opaque and already safe as a file, directory or database name (always within
-`[A-Za-z0-9._-]`): use it verbatim, do not parse it. `isControlStorageScope(scope)` tells
-the two kinds apart. The control key holds the charset by base64url encoding; a strand
+`controlStorageScope(partyId)` — `control-<lowercase hex of the party id>` — for the control
+database, which holds one party's own records and must not be shared between parties. Every
+key is opaque and already safe as a file, directory or database name (always within
+`[a-z0-9._-]`), and two different keys are two different names even on a filesystem that
+ignores case (Windows, macOS): use it verbatim, do not parse it. `isControlStorageScope(scope)`
+tells the two kinds apart. The control key holds the charset by lowercase hex encoding; a strand
 id holds it by check — `assertStrandScopeKey` runs on every strand launch, so a strand
-whose row replicated in from another node with an unusable id is refused rather than
+whose row replicated in from another node with an unusable id (including one with an
+uppercase letter) is refused rather than
 handed to the factory, and on `publishStrand`, so this node never writes such an id into
 the party's control database to begin with.
 

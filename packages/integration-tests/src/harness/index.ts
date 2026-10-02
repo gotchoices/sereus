@@ -31,6 +31,8 @@ export * from './stream-counter.js';
 // or one of its environment variables is set, and those are process-wide by intent.
 export * from './ws-latency.js';
 export * from './provider-process-orchestrator.js';
+// One party of a restart scenario in its own `node` process (IPC-driven; spawns nothing until called).
+export * from './strand-restart-party.js';
 export * from './fixtures/loopback-http-server.js';
 export * from './fixtures/approval-hook-server.js';
 // build-freshness moved to the repo-root `test-harness/`, shared with other

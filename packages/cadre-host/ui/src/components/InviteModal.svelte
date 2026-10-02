@@ -2,8 +2,7 @@
 	import { apiPost, ApiError } from '../lib/api.js';
 	import { pushToast, refreshTrustCircle } from '../lib/state.svelte.js';
 
-	import QrCode from './QrCode.svelte';
-	import CopyIcon from './icons/CopyIcon.svelte';
+	import TokenShare from './TokenShare.svelte';
 
 	interface Props {
 		open: boolean;
@@ -64,15 +63,6 @@
 		}
 	}
 
-	async function copy(text: string): Promise<void> {
-		try {
-			await navigator.clipboard.writeText(text);
-			pushToast('success', 'Copied to clipboard');
-		} catch (err) {
-			pushToast('error', `Copy failed: ${(err as Error).message}`);
-		}
-	}
-
 	function onKey(event: KeyboardEvent): void {
 		if (event.key === 'Escape') close();
 	}
@@ -120,15 +110,7 @@
 			</form>
 		{:else}
 			<p class="muted">Share this invite with the new device. It can be scanned as a QR or pasted as text.</p>
-			<div class="qr-wrap">
-				<QrCode value={result.encodedInvite} size={224} />
-			</div>
-			<div class="token">
-				<textarea readonly rows="3">{result.encodedInvite}</textarea>
-				<button class="ghost" type="button" onclick={() => copy(result!.encodedInvite)} aria-label="Copy invite">
-					<CopyIcon /> Copy
-				</button>
-			</div>
+			<TokenShare value={result.encodedInvite} copyLabel="Copy invite" />
 			{#if result.expiresAt}
 				<p class="muted small">Expires {new Date(result.expiresAt).toLocaleString()}</p>
 			{/if}
@@ -167,28 +149,6 @@
 		justify-content: flex-end;
 		gap: 0.5rem;
 		margin-top: var(--space-4);
-	}
-	.qr-wrap {
-		display: flex;
-		justify-content: center;
-		margin: var(--space-3) 0;
-	}
-	.token {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-	.token textarea {
-		font-family: var(--font-mono);
-		font-size: 0.78rem;
-		word-break: break-all;
-		resize: vertical;
-	}
-	.token button {
-		align-self: flex-end;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.375rem;
 	}
 	.small { font-size: 0.85rem; }
 </style>

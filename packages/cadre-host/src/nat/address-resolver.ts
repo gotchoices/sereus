@@ -4,8 +4,9 @@
  * Inputs are the host's currently-best understanding of its dialable surface:
  *   - DDNS hostname (`/dns4/<hostname>/...`) when configured AND reachable.
  *   - Raw external IP (`/ip4/<ip>/...`) when no DDNS but reachable.
- *   - Whatever libp2p reports otherwise — including any `/p2p-circuit/`
- *     addresses, once relay-client wiring lands (see follow-up tickets).
+ *   - Whatever libp2p reports otherwise — which would include a `/p2p-circuit/`
+ *     address once cadre-host passes a relay to its owner node; it passes none
+ *     yet (docs/cadre-host.md → "NAT and DDNS", item 2).
  *
  * This is intentionally a pure function so it's trivial to unit-test, and so
  * the NatService can be the only place that knows about settings → multiaddrs.

@@ -36,26 +36,33 @@
  *
  *   1. `formStrand` returns the host's live STRAND-network addrs (never its control ones).
  *   2. The joiner's strand node connects to the host's strand node with no manual dial,
- *      and the host sees the inbound connection.
+ *      over an address the formation carried, and the host sees the inbound connection.
  *   3. Rows written on the host reach the joiner over that mesh — the mesh is real, not
  *      merely a socket.
+ *   4. Each strand node's FRET routing table ends up holding the other side's signed
+ *      address record, which is what replaces the carried addresses from here on: the
+ *      periodic address refresh re-merges it, and the saved network state carries it
+ *      across a restart.
  *
  * ── Known limit, deliberately not covered here ──
  *
- * The carried addresses are held IN MEMORY and never re-resolved (see `docs/strands.md`).
- * A joiner restart loses them; a host relay reservation that rotates before the joiner
- * dials leaves a dead entry. Durability is `backlog/feat-cross-party-strand-addr-durability`.
+ * The network state is in-memory here (no `strandNetworkState.store` injected), so a
+ * restart is not proven by this scenario; `strand-relay-only-restart-reconverges` is that
+ * proof. A host relay reservation that rotates while the two are NOT connected still
+ * leaves a dead address until the host dials in or a third member's FRET snapshot
+ * forwards the fresher record (see `docs/strands.md`).
  */
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
+	strandFretPeerAddrs,
 	strandMemberKeyPair,
 } from '@serfab/cadre-core';
 import type { OpenInvitation, StrandRow } from '@serfab/cadre-core';
+import type { Libp2p } from 'libp2p';
 import {
 	controlNodeConfig,
 	createSignedSAppConfig,
@@ -76,6 +83,12 @@ const SAPP_ID = 'sapp-cross-party-seed';
 const YEAR_MS = 365 * 24 * 3600_000;
 /** Budget for each mesh/replication wait; the wait's own timeout is the failure. */
 const CONVERGE_MS = 30_000;
+
+/** `addr` without a trailing `/p2p/<peerId>`, so the same address compares equal with or without it. */
+function bareAddr(addr: string, peerId: string): string {
+	const suffix = `/p2p/${peerId}`;
+	return addr.endsWith(suffix) ? addr.slice(0, -suffix.length) : addr;
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -98,13 +111,6 @@ describe('Cross-party strand seed carried by formation', () => {
 			}));
 			await host.start();
 			await makeOwnOwner(host, hostKey);
-
-			// Real DB-backed responder wiring (the production shape): it is what resolves a
-			// bound invite to its host strand and what holds the connection gate's
-			// outstanding-invitation carve-out open for a stranger's dial.
-			host.initializeStrandSolicitation({
-				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-			});
 
 			// The host strand is founded BEFORE the invite is published, so it is live and
 			// dialable at redemption time. This is the whole precondition for the feature:
@@ -194,6 +200,36 @@ describe('Cross-party strand seed carried by formation', () => {
 			for (const remote of joinerRemotes) {
 				expect(remote).toBe(hostStrandPeerId);
 			}
+			// ...and the joiner reached it at an address the formation carried: with no
+			// sibling to ask and no saved network state, nothing else names the host.
+			const dialedAddrs = joinerStrandNode.getConnections().map((c) => bareAddr(c.remoteAddr.toString(), hostStrandPeerId));
+			const carriedAddrs = formResult.strandAddrs.map((addr) => bareAddr(addr, hostStrandPeerId));
+			expect(dialedAddrs.some((addr) => carriedAddrs.includes(addr)), `dialed ${dialedAddrs.join(', ')}`).toBe(true);
+
+			// ── Subject 4: each FRET table holds the other side's signed address record ──
+			// The carried addresses got the joiner its first connection. What each node can
+			// redial from afterwards is the other's record in its own FRET table: the host's
+			// can only have arrived over the joiner's inbound connection, since no formation
+			// result reaches the host. Read through the same function the address refresh
+			// uses, so each address is verified and bound to that peer's strand transport id.
+			const recordedAddrs = async (node: Libp2p, peerId: string): Promise<string[]> =>
+				((await strandFretPeerAddrs(node)).peers.get(peerId) ?? []).map(String);
+			await waitUntil(
+				async () => (await recordedAddrs(joinerStrandNode, hostStrandPeerId)).length > 0
+					&& (await recordedAddrs(hostStrandNode, joinerStrandPeerId)).length > 0,
+				{
+					timeoutMs: CONVERGE_MS,
+					intervalMs: 250,
+					description: "both strand nodes' FRET tables hold the other side's signed address record",
+				},
+			);
+			for (const addr of await recordedAddrs(hostStrandNode, joinerStrandPeerId)) {
+				expect(addr.endsWith(`/p2p/${joinerStrandPeerId}`), addr).toBe(true);
+			}
+			// The host's record names an address the host's strand node really announces.
+			const hostRecorded = (await recordedAddrs(joinerStrandNode, hostStrandPeerId)).map((addr) => bareAddr(addr, hostStrandPeerId));
+			const hostAnnounced = hostStrandAddrs.map((addr) => bareAddr(addr, hostStrandPeerId));
+			expect(hostRecorded.some((addr) => hostAnnounced.includes(addr)), `recorded ${hostRecorded.join(', ')}`).toBe(true);
 
 			// ── Subject 3: the mesh actually carries data ──
 			const hostDb = founded.instance.database!.getDatabase();
@@ -242,9 +278,6 @@ describe('Cross-party strand seed carried by formation', () => {
 			}));
 			await host.start();
 			await makeOwnOwner(host, hostKey);
-			host.initializeStrandSolicitation({
-				formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-			});
 
 			// Found the CLOSED host strand: the shared read secret gates attach; the
 			// founder's own identity (StrandPartyKey, minted by publish) signs the

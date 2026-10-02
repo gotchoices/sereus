@@ -10,6 +10,10 @@ export const TEST_IDS = {
 		bootstrapAddrInput: 'input-bootstrap-addr',
 		/** Circuit-relay multiaddr(s) this phone reserves through — what makes it invitable. */
 		relayAddrInput: 'input-relay-addr',
+		/** One option of the "Connection encryption" choice; pass the mode (`symmetric`, `full`, `off`). */
+		noiseCryptoOption: (mode: string) => `option-noise-crypto-${mode}`,
+		/** Connected Node card row naming the mode the running node was built with. */
+		noiseCryptoRow: 'row-noise-crypto',
 		connectBtn: 'btn-connect',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',

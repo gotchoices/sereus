@@ -3,9 +3,9 @@
  * slot on, so it has an address other people can dial.
  *
  * A React Native app cannot open a listener, so without a relay the node has no
- * multiaddr at all: `CadreNode.getMultiaddrs()` is empty, and
- * `createOpenInvitation` — which fills an invitation's bootstrap list from exactly
- * that — refuses to mint one. Handing out an invitation therefore REQUIRES a relay.
+ * multiaddr at all: `CadreNode.getMultiaddrs()` is empty, and the app refuses to
+ * mint an invitation, since the phone runs the strand it invites to and a joiner
+ * must reach it (`use-cadre.ts`). Handing out an invitation therefore REQUIRES a relay.
  * Everything else (founding and reading local strands, dialling out to a drone or a
  * borrowed cadre-host node, joining someone else's invitation) works without one.
  *
@@ -15,20 +15,21 @@
  * node. cadre-core turns it into a bare `/p2p-circuit` search listener plus a
  * reservation supervisor per relay (`cadre-core/src/relay-addrs.ts`).
  *
- * React Native port of `reference-app-web/src/lib/relay-config.ts`, and the sibling
- * of `ice-config.ts` in this package — both resolve deployment-specific
- * infrastructure at runtime rather than baking it into the bundle. Three platform
- * touch-points differ from the web copy:
+ * React Native port of `reference-app-web/src/lib/relay-config.ts`: it resolves
+ * deployment-specific infrastructure at runtime rather than baking it into the
+ * bundle. Three platform touch-points differ from the web copy:
  *
  *  - Build-time env var: `EXPO_PUBLIC_RELAY_ADDR` (Expo inlines `EXPO_PUBLIC_`-prefixed
  *    vars into the Hermes bundle at build time). The Vite counterpart is `VITE_RELAY_ADDR`.
  *  - `localStorage` is absent in RN, so the web copy's per-device override branch is
- *    omitted — the same omission `ice-config.ts` documents. The per-device seam here
+ *    omitted. The per-device seam here
  *    is the Settings screen's "Relay" field, which passes its value as `explicit`.
- *  - Nothing persists the typed value between launches (`PhoneNodeOptions` is retyped
- *    into Settings on every launch — see the backlog ticket
- *    `feat-rn-persist-node-start-options`), so the env var is what makes a build work
- *    with no typing.
+ *  - The list a node started with is saved with the other start options
+ *    (`start-options.ts`) and is what the next launch starts with and prefills. It is
+ *    saved RESOLVED, so a remembered list wins over a later build's
+ *    `EXPO_PUBLIC_RELAY_ADDR`: to pick up a new build default, Disconnect, clear the
+ *    Relay field (empty means "build default", below) and Connect. The env var is what
+ *    makes a fresh install work with no typing.
  *
  * Framework-free by design: no `@serfab/cadre-core`, no native imports, no
  * validation. A malformed entry is cadre-core's to reject — `relayCircuitAddrs`
@@ -45,9 +46,10 @@ function envRelayAddrs(): string[] {
 
 /**
  * Split a comma-separated list into trimmed, non-empty multiaddrs. Exported because
- * the Settings screen parses its "Relay" text field with exactly this rule — one
- * spelling of "what counts as a list", so a typed value and a build-time default
- * cannot disagree about blanks or spacing.
+ * the Settings screen parses its "Relay" and "Bootstrap addr" text fields with exactly
+ * this rule — one spelling of "what counts as a list", so a typed value, a saved list
+ * and a build-time default cannot disagree about blanks or spacing. A multiaddr never
+ * contains a comma.
  */
 export function splitRelayAddrs(raw: string): string[] {
 	return raw

@@ -9,8 +9,14 @@ import { formationVouchMessage } from './control-database.js';
 
 const log = debug('sereus:cadre:formation-approval');
 
-/** Abort an unanswered approval request after this long when no `timeoutMs` is supplied. */
-const DEFAULT_TIMEOUT_MS = 10_000;
+/**
+ * Abort an unanswered approval request after this long when no `timeoutMs` is supplied.
+ * Exported because the formation responder's provisioning budget has to contain it:
+ * `formationDeadlines` (`strand-formation-deadlines.ts`) adds it as a flat term, since an HTTP
+ * call to the hook does not cross the link between the two parties' machines.
+ */
+// eslint-disable-next-line no-restricted-syntax -- link-independent: an outbound HTTP call to the approval hook, not the libp2p link between machines
+export const DEFAULT_APPROVAL_TIMEOUT_MS = 10_000;
 
 /**
  * Largest approval response body this client will read (64 KiB). An approval is two short
@@ -542,7 +548,7 @@ export function createHttpFormationApprover(options?: {
   /** Injectable for tests / non-standard runtimes. Defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
 }): FormationApprover {
-  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS;
   // A non-positive or non-finite budget would abort every request before it left, turning a
   // config typo into a hook that appears permanently down. Fail where the mistake was made.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {

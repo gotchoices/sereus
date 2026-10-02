@@ -23,7 +23,7 @@ import { describe, it, expect } from 'vitest';
 import { CadreNode } from '@serfab/cadre-core';
 import type { StrandRow } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, controlNodeConfig, createMockProvisioner, createSignedSAppConfig } from '../harness/index.js';
+import { waitUntil, controlNodeConfig, createMockProvisioner, createMockUsageRecorder, createSignedSAppConfig } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
 // ── sApp member identities + signing ─────────────────────────────────────────
@@ -88,8 +88,15 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
 			await bobNode.start();
 
-			aliceNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner('rbac') });
+			// Mock recorder + provisioner: the formation only has to yield a strand id, and an
+			// unpublished token would be refused by the node's default recorder.
+			const recorder = createMockUsageRecorder();
+			await aliceNode.initializeStrandSolicitation({
+				strandProvisioner: createMockProvisioner('rbac'),
+				formationUsageRecorder: recorder,
+			});
 			const invitation = await aliceNode.createOpenInvitation('rbac-sapp');
+			recorder.knownTokens.add(invitation.token);
 			const formResult = await bobNode.formStrand(invitation, {
 				partyId: `bob-${partyId}`,
 				purpose: 'sApp signed-write RBAC test',

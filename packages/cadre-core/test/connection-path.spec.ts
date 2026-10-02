@@ -10,10 +10,7 @@ import {
 } from '../src/diagnostics/connection-path.js';
 
 // ── Classifier table ──────────────────────────────────────────────────────────
-// The same table is mirrored in the web parity spec
-// (reference-app-web/e2e/solo/connection-path-parity.spec.ts) to guard the two
-// copies against drift.
-export const CLASSIFIER_TABLE: Array<{
+const CLASSIFIER_TABLE: Array<{
   addr: string;
   kind: ConnectionPathKind;
   transport: ConnectionTransport;

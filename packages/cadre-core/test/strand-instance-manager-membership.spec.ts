@@ -104,7 +104,7 @@ vi.mock(import('../src/strand-membership-writer.js'), async (importOriginal) => 
   return { ...actual, removeMemberPeer: mocks.removeMemberPeer as unknown as typeof actual.removeMemberPeer };
 });
 
-const testSchema = 'create table Test (id text primary key);';
+const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
 
 let authorPrivateKey: string;

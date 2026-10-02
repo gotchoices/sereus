@@ -37,12 +37,23 @@ import { registerNatRoutes } from './routes/nat.js';
 import { registerTrustCircleRoutes } from './routes/trust-circle.js';
 import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
-import { registerStatusRoute } from './routes/status.js';
+import { registerStatusRoute, type HostRole } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
 import { registerGrantsRoutes } from './routes/grants.js';
 import { HostSettingsStore } from './settings-store.js';
+
+/**
+ * The host's own-cadre services. All three or none: they share the owner node,
+ * and grouping them makes the role `/api/status` reports impossible to disagree
+ * with the surfaces actually mounted.
+ */
+export interface FounderServices {
+  trustCircle: TrustCircleService;
+  nat: NatService;
+  strands: StrandService;
+}
 
 export interface LocalUiServerOptions {
   /** Configured UI port from host.config.json. May be re-bound on collision. */
@@ -52,29 +63,19 @@ export interface LocalUiServerOptions {
   /** Wired dependencies — all owned by the caller. */
   orchestrator: HostProcessOrchestrator;
   /**
-   * Trust-circle service — present only when the host runs its own personal
-   * cadre (`ownCadre.enabled`). Absent in donor-only mode, where `/auth/*`
-   * stays unmounted and 404s.
+   * The host's own-cadre services — present iff `ownCadre.enabled` (the
+   * founder role). Absent in donor-only mode, where `/auth/*`, `/nat/*` and
+   * `/api/strands` stay unmounted and 404 through the static handler, and
+   * `/api/status` reports `role: 'donor'`.
    */
-  trustCircle?: TrustCircleService;
-  /**
-   * NAT service — present only when the host runs its own personal cadre.
-   * Absent in donor-only mode (loopback-only in v1), where `/nat/*` stays
-   * unmounted and 404s.
-   */
-  nat?: NatService;
-  /**
-   * Strand service — present only when the host runs its own personal cadre.
-   * Absent in donor-only mode, where there is no owner node to ask, so
-   * `/api/strands` stays unmounted and 404s through the static handler.
-   */
-  strands?: StrandService;
+  founder?: FounderServices;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
   /**
    * Donation grant layer. When present, mounts the loopback admin surface at
-   * `/grants-admin` (issue/list/revoke). Optional so existing callers/tests
-   * that don't exercise donations need not wire it.
+   * `/grants-admin` (issue/list/revoke, plus donated-node teardown when
+   * `donations` is wired too). Optional so existing callers/tests that don't
+   * exercise donations need not wire it.
    */
   grants?: GrantService;
   /**
@@ -117,6 +118,8 @@ export interface LocalUiServer {
 const UPDATE_OBSERVER_INTERVAL_MS = 60_000;
 
 export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
+  const { founder } = opts;
+  const role: HostRole = founder ? 'founder' : 'donor';
   const events = opts.events ?? new EventBus();
   const settingsStore = opts.settingsStore ?? new HostSettingsStore({ dataDir: opts.dataDir });
 
@@ -135,31 +138,27 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
 
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
-    ...(opts.trustCircle ? { trustCircle: opts.trustCircle } : {}),
-    ...(opts.nat ? { nat: opts.nat } : {}),
+    role,
+    ...(founder ? { trustCircle: founder.trustCircle, nat: founder.nat } : {}),
     ...(opts.update ? { update: opts.update } : {}),
   });
-  registerNodesRoutes(app, { orchestrator: opts.orchestrator });
-  registerSettingsRoutes(app, { settingsStore, ...(opts.nat ? { nat: opts.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
+  registerNodesRoutes(app, { orchestrator: opts.orchestrator, role });
+  registerSettingsRoutes(app, { settingsStore, ...(founder ? { nat: founder.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
 
   // Trust-circle + NAT + strand surfaces exist only when the host runs its own
   // personal cadre. In donor-only mode they're left unmounted, so `/auth/*`,
   // `/nat/*` and `/api/strands` fall through to the static not-found handler and
   // 404 (see static.ts).
-  if (opts.trustCircle) {
-    registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(opts.trustCircle), events });
-  }
-  if (opts.nat) {
-    registerNatRoutes(app, { handlers: createNatHandlers(opts.nat), events });
-  }
-  if (opts.strands) {
-    registerStrandRoutes(app, { handlers: createStrandHandlers(opts.strands), events });
+  if (founder) {
+    registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(founder.trustCircle), events });
+    registerNatRoutes(app, { handlers: createNatHandlers(founder.nat), events });
+    registerStrandRoutes(app, { handlers: createStrandHandlers(founder.strands), events });
   }
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
   if (opts.grants) {
-    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants) });
+    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants, opts.donations), events });
     // Grantee-facing provisioning surface needs both the donation service and a
     // grant validator (the GrantService doubles as the validator).
     if (opts.donations) {
@@ -204,9 +203,9 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
       // One-shot connectivity publish — the SPA will get a sane initial
       // signal even if no settings have changed yet this session. Skipped in
       // donor-only mode, where there is no NatService.
-      if (opts.nat) {
+      if (founder) {
         try {
-          const snap = opts.nat.getStatus();
+          const snap = founder.nat.getStatus();
           events.publish({
             type: 'connectivity-changed',
             portMode: snap.portMode,
@@ -265,3 +264,4 @@ export { EventBus } from './events/bus.js';
 export type { LocalUiEventListener } from './events/bus.js';
 export type { LocalUiEvent, LocalUiEventType } from './events/types.js';
 export { HostSettingsStore } from './settings-store.js';
+export type { HostRole } from './routes/status.js';

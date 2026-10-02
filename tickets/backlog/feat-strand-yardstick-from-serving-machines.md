@@ -89,3 +89,11 @@ Two arms found reviewing that fix, both resolving at the same site this ticket a
   can legitimately fail (a strand whose member rows became unreadable), because the node would
   then keep declaring a stale count over a serving set it can no longer see. A `NOTE:` marks
   the merge site.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+"MemberPeer is never written" is no longer true: `strand-membership-reconciler.ts` writes it. The upstream fix this waited on won't come. The always-on-nodes decision (`blocked/always-on-nodes-host-strands-of-apps-they-do-not-run`) changes which machines serve a strand, so settle that first.
+
+## Always-on decision settled (2026-09-28)
+
+The maintainer chose storage replicas: a storage-profile node now runs every strand its filter admits even with no sApp config (`implement/always-on-node-hosts-unclaimed-strands`). Its replica keeps the `Strand` membership schema and the membership reconciler, so on a closed strand it writes its own `MemberPeer` binding like any other serving machine — `MemberPeer` therefore counts replica hosts too, which is what this ticket needs. The serving set is still not the party (phones serve only strands their app claims), so the party count remains the wrong source. Open strands still have no census.

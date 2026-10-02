@@ -1,16 +1,17 @@
 /**
- * The pure port-set logic behind `HostProcessOrchestrator`: the allocator, the
- * helpers that allocate, hold, release and reuse one node's set of ports, and the
- * listen addresses a child is started with. No child processes — the behaviour these
+ * The pure port-set logic behind `HostProcessOrchestrator`: the helpers that
+ * allocate, hold, release and reuse one node's set of ports, and the listen
+ * addresses a child is started with. No child processes — the behaviour these
  * feed is exercised against a stub child in `orchestrator.test.ts`.
  */
 
 import { describe, expect, it } from 'vitest';
 
+import { PortAllocator } from '@serfab/cadre-provider';
+
 import { childListenAddrs } from '../orchestrator/host-process-orchestrator.js';
 import {
   allocateNodePorts,
-  PortAllocator,
   releaseNodePorts,
   reserveNodePorts,
   reusedNodePorts,
@@ -24,36 +25,6 @@ import type { NodePorts } from '../orchestrator/types.js';
 function portsWithoutWs(ports: Omit<NodePorts, 'ws'>): NodePorts {
   return ports as NodePorts;
 }
-
-describe('PortAllocator', () => {
-  it('allocates sequentially, releases, and reuses', () => {
-    const a = new PortAllocator(100, 102);
-    expect(a.allocate()).toBe(100);
-    expect(a.allocate()).toBe(101);
-    expect(a.allocate()).toBe(102);
-    expect(() => a.allocate()).toThrow(/No available ports/);
-    a.release(101);
-    expect(a.allocate()).toBe(101);
-  });
-
-  it('markUsed reserves ports without allocating', () => {
-    const a = new PortAllocator(100, 102);
-    a.markUsed(101);
-    expect(a.allocate()).toBe(100);
-    expect(a.allocate()).toBe(102);
-    expect(() => a.allocate()).toThrow();
-  });
-
-  // Without the integer check, `undefined` and NaN pass both range comparisons (each
-  // is false) and land in the used-set, as would an in-range fraction.
-  it('markUsed ignores a non-integer', () => {
-    const a = new PortAllocator(100, 101);
-    for (const junk of [undefined as unknown as number, Number.NaN, 100.5]) {
-      a.markUsed(junk);
-      expect(a.has(junk)).toBe(false);
-    }
-  });
-});
 
 describe('allocateNodePorts', () => {
   it('allocates the five ports in a fixed order, the newest key last', () => {

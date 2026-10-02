@@ -1,5 +1,5 @@
 description: In development builds of the React Native reference app, cadre-core's debug log lines print their placeholders (`%d`, `%s`) unfilled, with the values tacked on at the end, because React Native's console does not fill them in the way a browser console does. The information is all there, but the lines are hard to read and to search.
-files: packages/reference-app-rn/polyfills/hermes.js (where DEBUG is already enabled before any `debug` copy loads), packages/reference-app-rn/index.js (polyfill order), packages/cadre-core/src/strand-instance-manager.ts and packages/cadre-core/src/cadre-node.ts (placeholder-style `timing(...)` calls; `timedStep` in cadre-node.ts already works around it), node_modules/debug/src/browser.js (`formatArgs`, `exports.log`)
+files: packages/cadre-rn/polyfills/hermes.js (where DEBUG is already enabled before any `debug` copy loads), packages/cadre-rn/polyfills/index.js (polyfill order), packages/cadre-core/src/strand-instance-manager.ts and packages/cadre-core/src/cadre-node.ts (placeholder-style `timing(...)` calls; `timedStep` in cadre-node.ts already works around it), node_modules/debug/src/browser.js (`formatArgs`, `exports.log`)
 repro: verified
 severity: cosmetic
 likelihood: normal-use
@@ -31,5 +31,5 @@ Development-build log lines read on the device as they do in Node, for every nam
 
 ## Constraints known so far
 
-- The class fix has one site: give `console.debug` browser-style substitution of format specifiers (the WHATWG Console Standard's Formatter: `%s %d %i %f %o %O %c %%`) before any `debug` copy loads, which is the top of `polyfills/hermes.js`, where `DEBUG` is set. Each copy then captures the substituting function, so no call site changes. Rewriting each call to build its own text instead is many sites, and the next placeholder-style call regresses.
+- The class fix has one site: give `console.debug` browser-style substitution of format specifiers (the WHATWG Console Standard's Formatter: `%s %d %i %f %o %O %c %%`) before any `debug` copy loads, which is the top of `packages/cadre-rn/polyfills/hermes.js`, where `DEBUG` is set. Each copy then captures the substituting function, so no call site changes. Rewriting each call to build its own text instead is many sites, and the next placeholder-style call regresses.
 - The NativeScript reference app may have the same gap. Not checked.

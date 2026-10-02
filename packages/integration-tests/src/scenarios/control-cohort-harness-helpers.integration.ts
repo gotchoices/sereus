@@ -117,14 +117,15 @@ describe('control-cohort harness helpers', () => {
 	}, 30_000);
 
 	it('names the party and the observed size when the wait times out', async () => {
-		// A DRONE's view, deliberately: drones dial only the owner and never each
-		// other, so a drone's cohort caps at 2 (self + owner) permanently. That makes
-		// this timeout a property of the topology rather than a race against ring
-		// warm-up — the alternative (a 1 ms budget on a fresh party) would flake the
-		// day the ring warms faster than the assertion.
-		const drone = trio.droneNodes[0]!;
-		await expect(waitForControlCohort(trio, 3, { node: drone, timeoutMs: 2_000, intervalMs: 250 }))
-			.rejects.toThrow(/party cohort-helpers-trio node .* saw a cohort of \d+ .* needed 3/s);
+		// The trio listed with a fourth member that serves another party's control
+		// network: `findCluster` admits only peers serving THIS network's protocol, so
+		// the trio's cohort can never include it and a cohort of four can never form.
+		// That makes this timeout a property of protocol isolation rather than a race
+		// against ring warm-up — the alternative (a 1 ms budget on a fresh party) would
+		// flake the day the ring warms faster than the assertion.
+		const trioPlusForeign: TestParty = { ...trio, droneNodes: [...trio.droneNodes, solo.ownerNode] };
+		await expect(waitForControlCohort(trioPlusForeign, 4, { timeoutMs: 2_000, intervalMs: 250 }))
+			.rejects.toThrow(/party cohort-helpers-trio node .* saw a cohort of \d+ .* needed 4/s);
 	}, 30_000);
 
 	it('observes real findCluster calls and restores idempotently', async () => {

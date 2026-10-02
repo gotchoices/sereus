@@ -13,6 +13,9 @@
  *  - bound + hook throws (runtime absent / no party key / strand-DB reject) → clean
  *    retryable rejection with `MEMBERSHIP_INVITE_UNAVAILABLE_REASON`, NO usage
  *    recorded (the formation token stays unspent), NO responder disclosure,
+ *  - bound + approval refused (recorder's `authorizeUsage` throws) → rejected with the
+ *    approval reason BEFORE the hook is consulted: a refused join writes nothing into the
+ *    host strand, and NO usage is recorded,
  *  - bound + hook throws `PreSplitStrandIdentityError` → the NON-retryable
  *    `HOST_STRAND_MUST_BE_RECREATED_REASON`, token likewise unspent,
  *  - bound + hook returns null (open host strand) → approved, no invitation,
@@ -30,6 +33,7 @@ import {
   HOST_STRAND_MUST_BE_RECREATED_REASON
 } from '../src/strand-formation-manager.js';
 import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
+import { FormationApprovalError } from '../src/formation-approval.js';
 import {
   isWellFormedMembershipInvite,
   type FormationResultMessage
@@ -37,7 +41,7 @@ import {
 import type { FormationUsageRecorder, ResolvedHostStrand } from '../src/strand-solicitation.js';
 import type { OpenInvitation, StrandFormationDisclosure, StrandMembershipInvite } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
-import { captureHandler, bridgingDialer, MockStream } from './formation-stream-helpers.js';
+import { captureHandler, bridgingDialer, MockStream, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
 
 const HOST_PARTY = 'invite-host-party';
 const HOST_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/invite-host'];
@@ -78,7 +82,7 @@ async function formationArgs(token: string, purpose: string): Promise<{
     token,
     sAppId: `sapp-${purpose}`,
     expiration: new Date(Date.now() + 3600_000),
-    bootstrap: ['/ip4/127.0.0.1/tcp/1']
+    bootstrap: [BRIDGED_RESPONDER_ADDR]
   };
   return { invitation, disclosure, consent };
 }
@@ -107,7 +111,7 @@ async function formBothRoles(
     ...(hook ? { issueMembershipInvite: hook(hookCalls) } : {})
   });
   const { node, invoke } = captureHandler();
-  manager.registerResponder(node);
+  await manager.registerResponder(node);
   const { invitation, disclosure, consent } = await formationArgs(`invite-${purpose}`, purpose);
   const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
   return { setup: { recorder, hookCalls }, result };
@@ -138,7 +142,7 @@ async function respondOnce(
   token: string
 ): Promise<FormationResultMessage> {
   const { node, invoke } = captureHandler();
-  manager.registerResponder(node);
+  await manager.registerResponder(node);
   const joiner = await mintContactJoiner();
   const disclosure: StrandFormationDisclosure = { partyId: joiner.partyId, purpose: 'frame-check' };
   const contact = {
@@ -192,6 +196,28 @@ describe('formation membership invitation (bound closed path)', () => {
     expect(reply.partyId).toBeUndefined();
     expect(reply.cadrePeerAddrs).toBeUndefined();
     expect(reply.provisionResult).toBeUndefined();
+  });
+
+  it('approval refused → rejected before the hook is consulted, nothing recorded', async () => {
+    const recorder = fakeRecorder(BOUND);
+    recorder.authorizeUsage = async () => {
+      throw new FormationApprovalError('refused', 'the approval hook turned this joiner down');
+    };
+    const hookCalls: string[] = [];
+    const manager = new StrandFormationManager({
+      formationUsageRecorder: recorder,
+      partyId: HOST_PARTY,
+      cadrePeerAddrs: HOST_CADRE,
+      issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
+    });
+
+    const reply = await respondOnce(manager, 'invite-approval-refused');
+
+    expect(reply.approved).toBe(false);
+    expect(reply.reason).toBe('Formation approval refused');
+    // A refused join must write nothing into the host strand: no membership pass issued.
+    expect(hookCalls).toHaveLength(0);
+    expect(recorder.usageRecorded).toHaveLength(0);
   });
 
   it('hook throws PreSplitStrandIdentityError → non-retryable "must be recreated", token unspent', async () => {
@@ -258,7 +284,7 @@ describe('formation membership invitation (paths that never issue one)', () => {
       issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-unbound', 'unbound');
 
     const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
@@ -302,7 +328,7 @@ describe('formation membership invitation (initiator floor)', () => {
       issueMembershipInvite: async () => malformed as unknown as StrandMembershipInvite
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-malformed', 'malformed');
 
     await expect(
@@ -324,7 +350,7 @@ describe('formation membership invitation (initiator floor)', () => {
       issueMembershipInvite: async () => malformed as unknown as StrandMembershipInvite
     });
     const { node, invoke } = captureHandler();
-    manager.registerResponder(node);
+    await manager.registerResponder(node);
     const { invitation, disclosure, consent } = await formationArgs('invite-permissive', 'permissive');
 
     const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));

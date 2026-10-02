@@ -323,7 +323,7 @@ async function restartAndReRead() {
 //     seed's `queryCadrePeers()` is the control DB's first awaited operation.
 // --------------------------------------------------------------------------
 
-const SCHEMA = 'create table Note (Id text primary key);';
+const SCHEMA = 'table Note (Id text primary key);';
 const VERSION = '1.0.0';
 
 const strandId = (tag) => `warm-${tag}-${Math.random().toString(36).slice(2)}`;

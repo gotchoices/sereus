@@ -16,10 +16,13 @@ relay, on **UDP 3478** by default. There is no separate STUN service to deploy.
   The docker stack publishes it as `HOST_STUN_PORT` (default `3478`).
 
 ### How clients find it
-The reference apps derive one STUN server per configured relay: a relay address
-`/dns4/relay.example.org/tcp/4011/ws/p2p/…` gives `stun:relay.example.org:3478`. The port
-is always 3478, so a relay whose STUN is published on another port needs the apps to be
-told explicitly:
+The reference apps derive one STUN server per configured relay host, using cadre-core's
+`resolveStunServers` (`packages/cadre-core/src/relay-stun.ts`): a relay address
+`/dns4/relay.example.org/tcp/4011/ws/p2p/…` gives `stun:relay.example.org:3478`, and
+`/dnsaddr/relay.example.org/p2p/…` gives the same, so the name DNSADDR records are
+published under must resolve to the relay (for a pool, to one of its relays; see
+`dnsaddr.md`). The port is always 3478, so a relay whose STUN is published on another port
+needs the apps to be told explicitly:
 
 | App | Override (comma-separated `stun:` URLs) |
 | --- | --- |

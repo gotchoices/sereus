@@ -27,6 +27,11 @@ export interface UseChatOptions {
   participantName?: string;
   /** Polling interval in ms (default 2000) */
   pollIntervalMs?: number;
+  /**
+   * Called with the draft's text when a poll shows that a send which reported failure did land:
+   * drop the "not confirmed" state, and clear the composer if it still holds that text.
+   */
+  onDraftSettled?: (text: string) => void;
 }
 
 export interface UseChatResult {
@@ -40,6 +45,8 @@ export interface UseChatResult {
   error: string | null;
   /** Send a text message */
   send: (content: string) => Promise<void>;
+  /** Report every change to the composer's text, trimmed as `send` is given it */
+  composerChanged: (text: string) => void;
   /** Re-read now; resolves immediately if a read for the active strand is already running */
   refresh: () => Promise<void>;
 }
@@ -60,6 +67,16 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   const participantIdRef = useRef(participantId);
   participantIdRef.current = participantId;
+
+  const onDraftSettledRef = useRef(opts.onDraftSettled);
+  onDraftSettledRef.current = opts.onDraftSettled;
+
+  // One sender for the life of the hook: it holds the id minted for the draft in the
+  // composer, so pressing Send again after a failed send re-presents that same primary key
+  // rather than storing the message a second time. See `chat-send.ts`.
+  const senderRef = useRef<ChatSender | null>(null);
+  if (!senderRef.current) senderRef.current = new ChatSender();
+  const sender = senderRef.current;
 
   // ── Register local participant on first attach ─────────────────────────
 
@@ -129,6 +146,8 @@ export function useChat(opts: UseChatOptions): UseChatResult {
       setMessages(msgs);
       setParticipants(parts);
       setError(null);
+      const settled = sender.settle(msgs);
+      if (settled !== null) onDraftSettledRef.current?.(settled);
     } catch (err) {
       if (strandRef.current !== s) return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -137,7 +156,7 @@ export function useChat(opts: UseChatOptions): UseChatResult {
       inFlightRef.current.delete(s);
       if (strandRef.current === s) setLoading(false);
     }
-  }, []);
+  }, [sender]);
 
   // ── Polling loop ───────────────────────────────────────────────────────
 
@@ -156,13 +175,6 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   // ── Send ───────────────────────────────────────────────────────────────
 
-  // One sender for the life of the hook: it holds the id minted for the draft in the
-  // composer, so pressing Send again after a failed send re-presents that same primary key
-  // rather than storing the message a second time. See `chat-send.ts`.
-  const senderRef = useRef<ChatSender | null>(null);
-  if (!senderRef.current) senderRef.current = new ChatSender();
-  const sender = senderRef.current;
-
   const send = useCallback(async (content: string) => {
     const s = strandRef.current;
     const pid = participantIdRef.current;
@@ -170,6 +182,9 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     if (!pid) throw new Error('No participant ID');
 
     const { message } = await sender.send(s, pid, content);
+    // A switch may have landed while the insert ran; the row belongs to the strand it was
+    // stored in, not to the list now showing another one.
+    if (strandRef.current !== s) return;
     if (message) {
       // Optimistic update — append immediately, next poll will reconcile
       setMessages(prev => [...prev, message]);
@@ -181,6 +196,8 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     setError(null);
   }, [sender, refresh]);
 
-  return { messages, participants, loading, error, send, refresh };
+  const composerChanged = useCallback((text: string) => sender.composerChanged(text), [sender]);
+
+  return { messages, participants, loading, error, send, composerChanged, refresh };
 }
 

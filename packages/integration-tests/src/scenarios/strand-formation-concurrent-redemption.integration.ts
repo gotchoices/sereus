@@ -16,8 +16,8 @@
  *
  * Topology: ONE inviting party with TWO live cadre nodes (A owner/storage, B plain
  * member/transaction — `bootConnectedPair`, which connects and confirms a two-machine
- * control cohort on BOTH sides before the first control write), each registered as a
- * formation responder over its own DB-backed `ControlFormationUsageRecorder`. Two joiner
+ * control cohort on BOTH sides before the first control write), each answering formation
+ * through the responder every node installs at start, over its own control database. Two joiner
  * nodes (separate parties) redeem the SAME token in the same tick, one dialing A, the
  * other dialing B — so the two `FormationUsage` writes race across the distributed
  * control collection, not through one node's serializing write queue (which is why this
@@ -52,7 +52,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	verifyFormationConsent,
 	ed25519PublicKeyB64FromPeerId,
 } from '@serfab/cadre-core';
@@ -181,16 +180,9 @@ describe('Concurrent invitation redemption across two machines', () => {
 	beforeAll(async () => {
 		try {
 			pair = await bootConnectedPair('concurrent-redemption');
-			const { A, B, ownerPublicKey, ownerSign } = pair;
+			const { ownerPublicKey, ownerSign } = pair;
 
 			hook = await startApprovalHook();
-
-			// Both nodes answer formation requests through the REAL DB-backed recorder over
-			// their OWN database instance — the production responder wiring, and what makes
-			// the connection gate's outstanding-invitation carve-out consult the shared
-			// control DB on each node.
-			A.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(A.getControlDatabase()!) });
-			B.initializeStrandSolicitation({ formationUsageRecorder: new ControlFormationUsageRecorder(B.getControlDatabase()!) });
 
 			// One open host strand every invite here binds to (provision-then-record): both
 			// redemptions of a token then write ONLY a FormationUsage row, keeping the race
@@ -456,13 +448,12 @@ describe('Concurrent invitation redemption across two machines', () => {
 		expect(approved.length, `both redemptions failed: ${settled.map(rejectionMessage).join(' | ')}`).toBeGreaterThanOrEqual(1);
 
 		// A refused joiner is refused TERMINALLY: the seat-count check raises the named
-		// exhaustion, which the responder maps to the same 'Invalid token' a latecomer
+		// exhaustion, which the responder maps to the same 'token-spent' a latecomer
 		// sees — never the retryable conflict, which would send the joiner into a retry
 		// that can only fail again.
 		for (const outcome of refused) {
-			const message = rejectionMessage(outcome);
-			expect(message).toMatch(/Formation rejected: Invalid token/);
-			expect(message).not.toMatch(/retry/i);
+			expect((outcome as PromiseRejectedResult).reason, rejectionMessage(outcome))
+				.toMatchObject({ name: 'FormationRejectedError', code: 'token-spent', retryable: false });
 		}
 
 		for (const result of approved) {
@@ -518,10 +509,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// lands.
 		await expect(
 			J1!.formStrand(invitationVia(token, pair!.A), { purpose: 'case3-via-A' }),
-		).rejects.toThrow(/Formation rejected: Invalid token/);
+		).rejects.toMatchObject({ code: 'token-spent', retryable: false });
 		await expect(
 			J2!.formStrand(invitationVia(token, pair!.B), { purpose: 'case3-via-B' }),
-		).rejects.toThrow(/Formation rejected: Invalid token/);
+		).rejects.toMatchObject({ code: 'token-spent', retryable: false });
 
 		// Read immediately: each node's count is already behind the wait at the top of this
 		// case, and the row a refusal must NOT have written would have been written by the node

@@ -19,6 +19,11 @@ const LIVE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
   'seeded',
 ]);
 
+/** Whether a donation in `status` counts against its grant's `maxNodes` quota. */
+export function isLiveDonationStatus(status: DonationStatus): boolean {
+  return LIVE_STATUSES.has(status);
+}
+
 /**
  * Atomic JSON store for `donations.json` — one row per donated node. Modelled on
  * `grant-store.ts`: a single file written to `<path>.tmp` then renamed, with an
@@ -153,7 +158,7 @@ export class DonationStore {
    */
   liveNodeCount(grantToken: string): number {
     return this.list().filter(
-      (d) => d.grantToken === grantToken && LIVE_STATUSES.has(d.status),
+      (d) => d.grantToken === grantToken && isLiveDonationStatus(d.status),
     ).length;
   }
 }

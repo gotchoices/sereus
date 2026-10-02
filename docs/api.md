@@ -51,6 +51,18 @@ type OpenInvitation = {
 }
 ```
 
+Every node of the inviting party answers: `CadreNode.start()` installs the formation responder,
+which checks the token against the party's replicated `FormationInvite`/`FormationUsage` rows, so
+an embedder calls nothing to enable it. To customize it — an approver, a provisioner, a recorder,
+formation deadlines — call this on the started node; it replaces the installed responder:
+```ts
+initializeStrandSolicitation(options?: StrandSolicitationServiceOptions): Promise<void>;
+```
+
+Without `options.formationUsageRecorder` the replacement still checks tokens against the control
+database. See [architecture.md → Who answers
+formation](architecture.md#who-answers-formation).
+
 Invitee forms:
 ```ts
 formStrand(
@@ -76,6 +88,84 @@ gets seeded automatically and can ignore the field; it is returned for an app th
 the strand up somewhere else. See [architecture.md → Strand-Address
 Resolution](architecture.md#strand-address-resolution).
 
+The node **remembers the join** — strand id, type and, for a closed strand, `memberPrivateKey` —
+in its `KeyStore`, and an owner machine of the party publishes it to the party's control database
+(`JoinedStrand`) at its next connected reconcile pass. From then on every machine of the party
+offers it as `strand:discovered` (and a storage replica host keeps a copy), on every later start
+too, so the app keeps no list of joined strands (see [strands.md → What a joiner's node
+remembers](strands.md#what-a-joiners-node-remembers)). A join made on a machine that is not an owner
+stays on that machine. A node with no `keyStore` remembers unpublished joins in memory only unless
+it is given `joinedStrands.store`. If the join cannot be recorded, `formStrand` throws: the
+invitation's token is spent, so fix the store and redeem a fresh invitation.
+
+When the formation itself fails, `formStrand` throws one of two errors, both exported from
+`@serfab/cadre-core`, so a joiner can decide whether to try again without reading the message:
+
+- `FormationRejectedError` — the inviter answered no. `code` names why (for example
+  `'token-spent'` for an expired or used-up invitation, `'host-strand-unavailable'` for a host
+  strand not running there yet), `reason` is the inviter's human-facing text, and `retryable` says
+  whether the same invitation can succeed later. A code this build does not know reads as
+  `'unrecognized'`, retryable. The full list is in [architecture.md → Formation rejection
+  codes](architecture.md#formation-rejection-codes).
+- `FormationUnreachableError` — no answer arrived: no bootstrap address parsed, none could be
+  dialed, a deadline passed, or the stream closed early. Always retryable.
+- `FormationPostApprovalError` — the inviter approved, so the invitation's token is spent, and then
+  a step on this machine failed (seating the party's membership key, or remembering the join).
+  `strandId` names the strand. Not retryable: fix the local cause and redeem a fresh invitation.
+
+Joining with retries, on an owner machine:
+```ts
+requestJoin(invitation: OpenInvitation, disclosure?: StrandFormationDisclosure): Promise<PendingJoinStatus>;
+listPendingJoins(): Promise<PendingJoinStatus[]>;
+dismissPendingJoin(id: string): Promise<boolean>;
+on('pendingJoin:changed', (status: PendingJoinStatus) => void);
+
+type PendingJoinStatus = {
+    id: string;              // sha256 of the invitation token
+    sAppId: string;
+    requestedAt: number;
+    expiresAt: number;       // no attempt starts at or after it
+    state: 'pending' | 'trying' | 'waiting' | 'joined' | 'failed';
+    nextAttemptAt?: number;  // 'waiting'
+    lastError?: { code: FormationRejectionCode | 'unrecognized' | 'unreachable' | 'local'; reason: string }; // 'waiting'
+    strandId?: string;       // 'joined'
+    failure?: { code: string; reason: string };  // 'failed': a rejection code, 'expired' or 'local'
+};
+```
+
+`requestJoin` records the request party-wide, tries once at once, and returns the status after that
+attempt: `'joined'`, `'waiting'` (no answer, or a refusal worth retrying) or `'failed'`. Every owner
+machine of the party then keeps trying in the background, across restarts, until the join works or
+the invitation is used up or expires (at most 30 days). A joined strand is offered through
+`strand:discovered` like any other join. Asking again for a request still pending returns that
+request; asking again after it finished starts a fresh one. `requestJoin` throws on a machine that
+is not an enrolled owner (use `formStrand` there) and on an expired invitation. Do not call
+`formStrand` for an invitation already given to `requestJoin`: nothing coordinates the two.
+
+`listPendingJoins` returns every request not dismissed. `pending`, `joined` and `failed` read the same
+on every machine; `trying` and `waiting` are this machine's own view. `dismissPendingJoin` removes a
+request party-wide (owner machines only); on a pending one it cancels the retries. A finished request
+is removed on its own 7 days after its outcome. `pendingJoin:changed` fires on owner machines when
+this machine's view of a request changes. See [strands.md → Joining while the inviter is
+offline](strands.md#joining-while-the-inviter-is-offline).
+
+Leaving a joined strand:
+```ts
+forgetJoinedStrand(strandId: string): Promise<void>;
+```
+
+Leaves the strand for the whole party: removes the party-wide `JoinedStrand` row (owner-signed,
+with a tombstone), forgets this machine's record, then `stopStrand`s it here. Every other machine of
+the party, a storage replica host included, detaches the strand (`strand:stopped`) when the removal
+reaches it. It is the joiner's counterpart of `unpublishStrand`, which only works on a row the
+party's own `Strand` table holds. On a machine that is not an owner it throws when a party-wide row
+exists, since removing it takes an owner machine; `stopStrand` is the per-machine stop. It also
+throws when the party-wide table cannot be read (a machine cut off from its party), since it cannot
+tell whether a party-wide row exists; retry once connected. A join
+still local to this machine has no party-wide row and is simply forgotten and stopped. It tells no
+other member of the strand anything, and this party's membership row in the strand stays.
+`stopStrand` on its own keeps the join, and the strand comes back on the next start.
+
 ## Validate Strand Formation (approval hook)
 
 An invitation may carry a `ValidationUrl`: a web hook an outside approver operates, which is
@@ -100,9 +190,9 @@ Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the trans
 'unenrolled' | 'misconfigured'`.
 
 `ControlFormationUsageRecorder` contacts the hook automatically on both redemption paths
-(`recordUsage` against an existing host strand, and `provisionAndRecord` for an unbound invite):
-it reads the invite's `ValidationUrl`, calls the approver with the nonce and peer key the joiner
-supplied, and writes the sign-off with the usage row — alongside the joiner's own consent
+(`authorizeUsage` then its `record()` against an existing host strand, and `provisionAndRecord`
+for an unbound invite): it reads the invite's `ValidationUrl`, calls the approver with the nonce
+and peer key the joiner supplied, and writes the sign-off with the usage row — alongside the joiner's own consent
 signature, which the schema re-verifies on that same insert.
 
 ### Wire contract
@@ -150,15 +240,15 @@ Answer with `200` and:
 | `ValidationUrl` is not `http:`/`https:`, or the runtime has no `fetch` | `misconfigured` |
 
 The joiner never sees the failure category itself — the responder maps it to one of these
-rejection reasons on the formation result:
+rejection codes and reasons on the formation result:
 
-| `failure` | Reason the joiner receives |
-| --- | --- |
-| `refused` | `Formation approval refused` |
-| `unavailable` | `Formation approval unavailable, retry` |
-| `malformed` | `Formation approval invalid` |
-| `unenrolled` | `Formation approval key is not enrolled` |
-| `misconfigured` | `Formation approval misconfigured` |
+| `failure` | Code the joiner receives | Reason text |
+| --- | --- | --- |
+| `refused` | `approval-refused` | `Formation approval refused` |
+| `unavailable` | `approval-unavailable` (retryable) | `Formation approval unavailable, retry` |
+| `malformed` | `approval-invalid` | `Formation approval invalid` |
+| `unenrolled` | `approval-invalid` | `Formation approval key is not enrolled` |
+| `misconfigured` | `approval-invalid` | `Formation approval misconfigured` |
 
 None of these write a `FormationUsage` row, so a rejected redemption does not consume the
 invitation — the same token can be presented again.

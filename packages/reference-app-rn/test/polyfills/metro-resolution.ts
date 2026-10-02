@@ -1,14 +1,14 @@
 /**
- * Locates installed packages the way Metro will at bundle time, for the two specs in
- * this directory.
+ * Locates installed packages the way Metro will at bundle time, for
+ * dependency-globals.spec.ts.
  *
- * Both need to read files out of dependencies that this package does not declare
+ * It reads files out of dependencies that this package does not declare
  * (`libp2p`, `@libp2p/utils`, …) and whose `exports` maps do not list the deep paths
  * involved, so neither `require.resolve` nor a bare import can reach them. Metro finds
  * them by walking `resolver.nodeModulesPaths` from `metro.config.js` — five roots,
  * because this package sets `installConfig.hoistingLimits: "workspaces"` and three
  * sibling checkouts are portaled in. Reading that list from the app's own config is
- * what keeps these specs pointed at the same installs the phone gets.
+ * what keeps the spec pointed at the same installs the phone gets.
  *
  * NOTE: this is the `nodeModulesPaths` half of Metro's algorithm only. Metro first
  * looks in the `node_modules` directories above the importing file, so a copy
@@ -23,9 +23,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** This package's root — two levels up from test/polyfills. */
-export const appDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const appDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-/** The fields of the app's Metro config these specs read. */
+/** The fields of the app's Metro config the spec reads. */
 interface AppMetroConfig {
 	resolver: { nodeModulesPaths: readonly string[] };
 }

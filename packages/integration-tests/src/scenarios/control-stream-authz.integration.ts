@@ -252,14 +252,15 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			).rejects.toThrow();
 
 			// Strand-addr: the responder's own isAuthorizedMember gate refuses a
-			// non-member (the grant buys the connection, not the RPC) — refusal is
-			// an empty address list by protocol design.
+			// non-member (the grant buys the connection, not the RPC) — a `refused`
+			// reply carrying no addresses.
 			const refused = await collectStrandAddrs(
 				D.getControlNode()!,
 				[{ peerId: aPeerId, addrs: [multiaddr(aAddr.toString())] }],
 				strandId
 			);
-			expect(refused).toEqual([]);
+			expect(refused.addrs).toEqual([]);
+			expect(refused.outcomes.get(aPeerId)).toBe('refused');
 
 			// The refused streams did not cost the delegate its connection — the
 			// circuit-relay reservation riding it would survive.

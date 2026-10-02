@@ -22,6 +22,7 @@
  */
 
 import type { ContainerResources, CreateContainerRequest } from '../types.js';
+import { parseCpuLimit, parseMemoryLimit } from '../service/resource-limits.js';
 import { validateBootstrapNodes } from './bootstrap-node-validation.js';
 import { validatePinnedOwnerKeys } from './owner-key-validation.js';
 
@@ -52,11 +53,10 @@ function validateStrandFilter(value: unknown): { strandFilter?: string } | { err
 }
 
 /**
- * Resource limits, type-checked only: `memoryLimit` / `cpuLimit` are parsed by
- * `DockerOrchestrator` (which has its own opinion about `"512M"` vs `"2G"`) and
- * `storageQuotaBytes` becomes `CADRE_STORAGE_QUOTA`. What is rejected here is a
- * value of the wrong *kind* — the thing that would otherwise reach Docker or the
- * env as `[object Object]`.
+ * Resource limits. `memoryLimit` / `cpuLimit` must be text the orchestrator can turn into a
+ * Docker limit (`service/resource-limits.ts`, the same rule the config's defaults are held to):
+ * text it cannot read used to pass through and start the container with *no* limit at all.
+ * `storageQuotaBytes` becomes `CADRE_STORAGE_QUOTA`, so only its kind is checked.
  */
 function validateResources(value: unknown): { resources?: ContainerResources } | { error: string } {
   if (value === undefined) return {};
@@ -65,11 +65,11 @@ function validateResources(value: unknown): { resources?: ContainerResources } |
   }
 
   const { memoryLimit, cpuLimit, storageQuotaBytes } = value as Record<string, unknown>;
-  if (memoryLimit !== undefined && typeof memoryLimit !== 'string') {
-    return { error: 'resources.memoryLimit must be a string' };
+  if (memoryLimit !== undefined && (typeof memoryLimit !== 'string' || parseMemoryLimit(memoryLimit) === undefined)) {
+    return { error: 'resources.memoryLimit must be a size like "512M" or "2G"' };
   }
-  if (cpuLimit !== undefined && typeof cpuLimit !== 'string') {
-    return { error: 'resources.cpuLimit must be a string' };
+  if (cpuLimit !== undefined && (typeof cpuLimit !== 'string' || parseCpuLimit(cpuLimit) === undefined)) {
+    return { error: 'resources.cpuLimit must be a number of CPUs written as a string, like "0.5" or "2"' };
   }
   if (storageQuotaBytes !== undefined && (typeof storageQuotaBytes !== 'number' || !Number.isFinite(storageQuotaBytes))) {
     return { error: 'resources.storageQuotaBytes must be a finite number' };

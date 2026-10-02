@@ -248,10 +248,11 @@ export async function composeStrand(
 			} else {
 				// NOTE: this path takes the frozen policy whole, so it takes COHORT_READ_DEADLINE_MS
 				// with no way to override it — `StrandConnectionOptions` has no counterpart to
-				// cadre-core's `NetworkConfig.cohortQueryTimeoutMs`. Fine today: every production
-				// strand comes up through cadre-core, which does thread the field, and this path is
-				// the plugin's own connect/e2e route where 5000 ms is the right answer anyway. If a
-				// plugin embedder ever needs a different deadline,
+				// cadre-core's `NetworkConfig.cohortQueryTimeoutMs` or `linkRoundTripMs`. Fine
+				// today: every production strand comes up through cadre-core, which does thread
+				// both, and this path is the plugin's own connect/e2e route, where the constant —
+				// two link round trips at cadre's default declared link — is the right answer
+				// anyway. If a plugin embedder ever needs a different deadline,
 				// `strandClusterPolicy(clusterSize, { cohortQueryTimeoutMs: <ms> })` is the call to
 				// reach for here.
 				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, clusterPolicy: STRAND_CLUSTER_POLICY, storage });
@@ -328,12 +329,7 @@ export async function composeStrand(
 		// is a note for whoever first ships a migration that does.
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
-			await db.exec(`
-				declare schema App {
-					${schema}
-				}
-				apply schema App;
-			`);
+			await applyAppSchema(db, schema);
 			log('sApp schema applied');
 		}
 	} catch (err) {
@@ -370,6 +366,53 @@ export async function composeStrand(
 			log('Strand connection %s shut down', strandId);
 		},
 	};
+}
+
+/**
+ * Step 7 of {@link composeStrand}: declare the sApp's schema as `App` and apply it — a
+ * declarative diff against the catalog, so re-applying a schema that is already in place
+ * emits nothing. The one site that applies an `App` schema: `composeStrand` calls it at
+ * bring-up, and cadre-core's `StrandDatabase.attachAppSchema` calls it on a live storage
+ * replica when an app claims the strand. The database must already be composed (optimystic
+ * set as the default vtab), or the tables land in memory instead of the strand.
+ *
+ * Refuses a schema holding an item the Quereus parser skipped: it keeps any item whose leading
+ * keyword it does not model (`create unique index …`, a misspelled `tabel`, `domain`) as an
+ * opaque placeholder that apply ignores, so the app would otherwise run without that item.
+ *
+ * Refuses a schema holding a `seed` item: the apply runs on every node of the strand at every
+ * connect, so seed inserts would put a network write on each bring-up and two nodes inserting
+ * the same key at once would collide. Rows an app needs at birth are the founding app's to write.
+ */
+export async function applyAppSchema(db: Database, schema: string): Promise<void> {
+	await db.exec(`
+		declare schema App {
+			${schema}
+		}
+	`);
+	assertNoIgnoredItems(db);
+	assertNoSeedItems(db);
+	await db.exec('apply schema App;');
+}
+
+function declaredAppItems(db: Database) {
+	return db.declaredSchemaManager.getDeclaredSchema('App')?.items ?? [];
+}
+
+function assertNoIgnoredItems(db: Database): void {
+	const ignored = declaredAppItems(db).filter(item => item.type === 'declareIgnored').length;
+	if (ignored > 0) {
+		// Only a count: Quereus leaves an ignored item's source text empty.
+		throw new Error(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\` and \`assertion\``);
+	}
+}
+
+function assertNoSeedItems(db: Database): void {
+	// Quereus refuses a second seed for one table at declare, so these names are distinct.
+	const tables = declaredAppItems(db).flatMap(item => item.type === 'declaredSeed' ? [item.tableName] : []);
+	if (tables.length > 0) {
+		throw new Error(`sApp schema has seed item(s) for table(s) ${tables.join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
+	}
 }
 
 /**

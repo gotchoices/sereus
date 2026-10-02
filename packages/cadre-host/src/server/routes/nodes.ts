@@ -6,29 +6,38 @@
  * `onStateChange` (forwarded by `createLocalUiServer.start`) — the route
  * handlers don't re-publish.
  *
- * start/restart are real for the admin's owner node (re-spawned from the
- * persisted `OwnerSpawnConfig`). Generic node lifecycle is owned by the
- * grantee-facing donation surface (`/grants`) — this route no longer spawns
- * generic nodes; start/restart of a known non-owner node points the caller
- * there. Stop works for any running node.
+ * start/stop/restart are real for the admin's owner node only (start/restart
+ * re-spawn it from the persisted `OwnerSpawnConfig`). Every other node this
+ * route can see is a donated node, whose lifecycle belongs to the donation
+ * surface — this route no longer spawns generic nodes, and a stop here would
+ * be undone at once by the donation supervisor's respawn. So all three verbs
+ * answer a known non-owner node with 501, pointing at the donation teardown.
+ *
+ * Owner start/restart are founder-only: a donor-only host that once ran as a
+ * founder still holds the owner handle and saved config (so re-enabling
+ * `ownCadre` can resume it), but spawning it here would bring the owner node
+ * back without its trust circle, NAT or strand services — so those answer 409.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import { defaultLogPath } from '../../orchestrator/log-rotator.js';
+
+import type { HostRole } from './status.js';
 
 const DEFAULT_LOG_LINES = 200;
 const MAX_LOG_LINES = 2000;
 
 export interface NodesRoutesOptions {
   orchestrator: HostProcessOrchestrator;
+  role: HostRole;
 }
 
 export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptions): void {
-  const { orchestrator } = opts;
+  const { orchestrator, role } = opts;
 
   app.get('/api/nodes', async () => {
     return { ok: true, data: { nodes: orchestrator.listNodes() } };
@@ -36,12 +45,7 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
 
   app.get<{ Params: { id: string } }>('/api/nodes/:id', async (request, reply) => {
     const node = orchestrator.getNode(request.params.id);
-    if (!node) {
-      return reply.code(404).send({
-        ok: false,
-        error: { code: 'not_found', message: `Unknown node: ${request.params.id}` },
-      });
-    }
+    if (!node) return notFound(reply, request.params.id);
     let stats = null;
     try {
       stats = await orchestrator.getStats(node.dockerId);
@@ -55,12 +59,7 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
     '/api/nodes/:id/logs',
     async (request, reply) => {
       const node = orchestrator.getNode(request.params.id);
-      if (!node) {
-        return reply.code(404).send({
-          ok: false,
-          error: { code: 'not_found', message: `Unknown node: ${request.params.id}` },
-        });
-      }
+      if (!node) return notFound(reply, request.params.id);
       const requested = Number(request.query.lines ?? DEFAULT_LOG_LINES);
       const tail = Number.isFinite(requested)
         ? Math.max(1, Math.min(MAX_LOG_LINES, Math.floor(requested)))
@@ -70,70 +69,89 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
     },
   );
 
+  // start / stop / restart: real for the admin's owner node (started from the
+  // persisted OwnerSpawnConfig). Donated-node lifecycle belongs to the donation
+  // surface — those ids return a clear not_implemented that points there;
+  // unknown ids 404.
   app.post<{ Params: { id: string } }>('/api/nodes/:id/stop', async (request, reply) => {
-    const dockerId = orchestrator.resolveDockerId(request.params.id);
-    if (!dockerId) {
-      return reply.code(404).send({
-        ok: false,
-        error: { code: 'not_found', message: `Unknown node: ${request.params.id}` },
-      });
+    const { id } = request.params;
+    if (!orchestrator.isOwnerNode(id)) {
+      return ownerOnlyFallback(reply, orchestrator, id, 'stop');
     }
+    const dockerId = orchestrator.resolveDockerId(id);
+    if (!dockerId) return notFound(reply, id);
     await orchestrator.stopContainer(dockerId);
     // The orchestrator emits its own onStateChange — createLocalUiServer
     // forwards that to the bus. Don't double-publish here.
     return { ok: true };
   });
 
-  // start / restart: real for the admin's owner node (spawned from the
-  // persisted OwnerSpawnConfig). Generic node lifecycle now belongs to the
-  // donation surface (/grants) — those ids return a clear not_implemented that
-  // points there; unknown ids 404.
   app.post<{ Params: { id: string } }>('/api/nodes/:id/start', async (request, reply) => {
     const { id } = request.params;
     if (orchestrator.isOwnerNode(id)) {
+      if (role === 'donor') return ownCadreDisabled(reply, 'start');
       if (!orchestrator.hasOwnerConfig()) {
         return notImplemented(reply, `start ${id}: owner node has no saved spawn config.`);
       }
       const node = await orchestrator.ensureOwnerNode();
       return { ok: true, data: { node } };
     }
-    return startRestartFallback(reply, orchestrator, id, 'start');
+    return ownerOnlyFallback(reply, orchestrator, id, 'start');
   });
 
   app.post<{ Params: { id: string } }>('/api/nodes/:id/restart', async (request, reply) => {
     const { id } = request.params;
     if (orchestrator.isOwnerNode(id)) {
+      if (role === 'donor') return ownCadreDisabled(reply, 'restart');
       if (!orchestrator.hasOwnerConfig()) {
         return notImplemented(reply, `restart ${id}: owner node has no saved spawn config.`);
       }
       const node = await orchestrator.restartOwnerNode();
       return { ok: true, data: { node } };
     }
-    return startRestartFallback(reply, orchestrator, id, 'restart');
+    return ownerOnlyFallback(reply, orchestrator, id, 'restart');
   });
 }
 
-/** 404 for unknown ids; 501 not_implemented for known non-owner nodes. */
-function startRestartFallback(
-  reply: import('fastify').FastifyReply,
+/**
+ * 404 for unknown ids; 501 not_implemented for known non-owner nodes — all of
+ * them donated. A donated node's containerId is its donation id, so the
+ * message names `node.id` rather than the route param, which may be the
+ * opaque dockerId — only the donation id is what the terminate command takes.
+ */
+function ownerOnlyFallback(
+  reply: FastifyReply,
   orchestrator: HostProcessOrchestrator,
   id: string,
-  verb: string,
+  verb: 'start' | 'stop' | 'restart',
 ) {
-  if (!orchestrator.getNode(id)) {
-    return reply.code(404).send({
-      ok: false,
-      error: { code: 'not_found', message: `Unknown node: ${id}` },
-    });
-  }
+  const node = orchestrator.getNode(id);
+  if (!node) return notFound(reply, id);
   return notImplemented(
     reply,
-    `${verb} ${id}: only the owner node is start/restart-able here; generic donated-node lifecycle is owned by the donation surface — use POST /grants to provision and DELETE /grants/:id to terminate.`,
+    `${verb} ${id}: only the owner node can be started, stopped or restarted here; a donated node's lifecycle is owned by the donation surface — end it with 'cadre-host grant terminate ${node.id}' (DELETE /grants-admin/donations/${node.id}).`,
   );
 }
 
-function notImplemented(reply: import('fastify').FastifyReply, message: string) {
+function notFound(reply: FastifyReply, id: string) {
+  return reply.code(404).send({
+    ok: false,
+    error: { code: 'not_found', message: `Unknown node: ${id}` },
+  });
+}
+
+function notImplemented(reply: FastifyReply, message: string) {
   return reply.code(501).send({ ok: false, error: { code: 'not_implemented', message } });
+}
+
+function ownCadreDisabled(reply: FastifyReply, verb: 'start' | 'restart') {
+  return reply.code(409).send({
+    ok: false,
+    error: {
+      code: 'own_cadre_disabled',
+      message: `${verb} owner: this host's own cadre is turned off (donor-only mode). Set ownCadre.enabled in host.config.json and restart cadre-host to run it again.`,
+    },
+  });
 }
 
 /**

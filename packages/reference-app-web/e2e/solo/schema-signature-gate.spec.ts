@@ -6,8 +6,8 @@ import { getChatSAppConfig, getTamperedChatSAppConfig } from '../../src/lib/chat
  * sApp schema-signature gate. This is the exact check `StrandInstanceManager`
  * runs on strand start (`assertSchemaSignature(sAppConfig)`), so it directly
  * verifies the gate the browser reference is meant to exercise. Pure Node-side
- * assertion — no browser — like `connection-path-parity.spec.ts`, because the
- * web package ships no separate unit runner.
+ * assertion — no browser — because the web package ships no separate unit
+ * runner.
  *
  * The browser always launches the strand with the *valid* signed config; a
  * tampered config (valid signature over the canonical schema, schema mutated

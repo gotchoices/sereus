@@ -55,18 +55,23 @@ This is the same topology as the RN app — see
 | **Phone** | NativeScript Core (V8/JSC) | WebSocket + circuit relay | SQLite (`db-p2p-storage-ns`) | `transaction` |
 | **Drone** | Node.js (`cadre-cli` / test-fixture) | TCP + WebSocket listener | File system / in-memory | `storage` |
 
+The circuit-relay transport is for dialing out only: unlike the RN app, the NS app never names a relay to reserve a slot on, so it holds no `/p2p-circuit` address and cannot be reached through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
+
 ### Storage
 
 The phone uses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`,
 `openOptimysticNSDb`, `loadOrCreateNSPeerKey`) over the
 `@nativescript-community/sqlite` native plugin. One database per cadre-core storage
-scope: `sereus-<strandId>` for each strand, and `sereus-control-<base64url party id>`
+scope: `sereus-<strandId>` for each strand, and `sereus-control-<hex party id>`
 for the party's control database — the control key carries the party id, so switching
 parties on one device lands on a different database rather than sharing one. The peer
 identity (Ed25519 key, producing a stable PeerId across cold launches) lives in
 `sereus-peer-identity`. Because `openOptimysticNSDb` is async but
 `CadreNodeConfig.storage.provider` is a sync factory, `src/ns-storage.ts` returns a
-lazy `IRawStorage` proxy that awaits a cached open before delegating each call.
+lazy `IRawStorage` proxy that awaits a cached open before delegating each call. The
+cache holds one open per database name. An open that fails is dropped from it, so the
+operations awaiting that open fail with its error and the next operation opens again;
+the identity database in `src/cadre-phone.ts` follows the same rule.
 
 A device that ran a build predating the party scoping still has an unscoped
 `sereus-control` database. Nothing opens or deletes it: its rows belong to whichever
@@ -81,8 +86,9 @@ through `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore` over a
 `SqliteKVStore` with an *empty* key prefix over the same
 `sereus-peer-identity` database, under the literal keys
 `trusted-owners.<partyId>` and `bootstrap-peers.<partyId>`. `cadre-phone.ts`
-holds that database handle open for the node's whole life (`identityDb`) and
-closes it in `stopPhoneNode`.
+holds that database handle open for the node's whole life (`identityDbOpening`,
+which caches the in-flight open so overlapping callers share one native handle)
+and closes it in `stopPhoneNode`.
 
 One database, one fate: the identity BLOB and both node-local records are wiped
 together. This app has no Keychain/Keystore integration, so the anchor is only as
@@ -113,10 +119,34 @@ via an invite. (An owner private key would also land in the same plaintext SQLit
 blob as the identity key; see the Keychain/Keystore caveat above.) The
 bootstrap-peer record fills in from `applySeed`.
 
-⚠️ Both records are party-scoped and the party id is typed into Settings each
-launch, so a relaunch with a fresh id loads empty slots — a pin survives a
-relaunch only if the user retypes the same party id. Closed by
-`feat-rn-persist-node-start-options` (which carries an NS arm).
+Every record above is filed under the party id, so they are read back on a
+relaunch only because the party id itself is remembered: the **start options**
+(party id and bootstrap addresses, plus `autoStart`) sit under the one key
+`start-options` of the same `kv` table — deliberately *not* party-scoped, since
+this is what selects the party. [`src/start-options.ts`](../packages/reference-app-ns/src/start-options.ts)
+parses it with the same rules as React Native's copy (see
+[`reference-app-rn.md` § Start options](reference-app-rn.md#start-options-app-private-leveldb)):
+unparseable, unknown version or no party id counts as no record (logged); a
+malformed bootstrap list becomes `[]`.
+
+- **Written** only by `cadre-phone.ts`: after every successful start
+  (`autoStart: true`) and on Settings → **Disconnect** (`autoStart: false`, same
+  options). A failed start writes nothing. Both writes are best-effort — a
+  failure is logged and the node carries on. `startSolo` (`solo-smoke.ts`) is a
+  start like any other and writes it too.
+- **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()`
+  first creates the shared view model). With `autoStart` true and nothing started
+  yet, the app connects by itself with those options, exactly as a Connect tap
+  would — so a pasted invite's pin is read back and a later seed from that owner
+  is accepted with the invite field blank. Either way the Settings Party ID and
+  Bootstrap fields prefill from them (the bootstrap field is comma-separated so a
+  list round-trips). A read fault shows "Could not read the saved connection
+  settings" and starts nothing.
+- **Overlapping starts** (the launch auto-start and a Connect tap) share one start
+  in flight; Disconnect during a start waits for it, then stops that node.
+- **Reinstall** deletes the SQLite database with the app, identity included, so a
+  reinstalled phone is a new peer in a new party. Nothing on this app lives in the
+  Keychain to outlive it.
 
 ## App Structure
 
@@ -133,8 +163,9 @@ app/
   settings/         settings screen: connect/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
-  ns-storage.ts     makeLazyNsStorage(strandId) — lazy IRawStorage proxy over async openOptimysticNSDb
+  ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
+  start-options.ts  the last start options + autoStart, remembered between launches
   cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands  (← RN use-cadre + cadre-context)
   chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN src/test-ids.ts)
@@ -151,7 +182,7 @@ nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
 |---|---|
 | `src/use-cadre.ts` + `src/cadre-context.tsx` | `src/cadre-vm.ts` (`CadreViewModel`, `getCadreVm()` singleton) |
 | `src/use-chat.ts` | `src/chat-vm.ts` (`ChatViewModel`, `getChatVm()` singleton) |
-| `src/chat-send.ts` (`ChatSender` — extracted so the send rule is testable without React) | folded into `ChatViewModel.send`, which holds the pending draft itself (untestable under Node — `debt-ns-chat-vm-unit-tests`) |
+| `src/chat-send.ts` (`ChatSender` — extracted so the send rule is testable without React) | folded into `ChatViewModel.send`, which holds the pending draft itself (tested in `test/chat-vm.spec.ts`) |
 | `src/test-ids.ts` (`testID`) | `src/test-ids.ts` (same strings, surfaced via `automationText`) |
 | `app/settings.tsx` | `app/settings/settings-page.{xml,ts}` + `settings-view-model.ts` |
 | `app/index.tsx` | `app/chat/chat-page.{xml,ts}` |
@@ -163,7 +194,10 @@ libp2p and its dependencies reference Web/Node globals **at import time**, so th
 entry point (`app/app.ts`) loads polyfills and the WebSocket global before any
 cadre/libp2p code. The heavy cadre/db-p2p/Quereus graph is pulled in lazily by the
 Chat / Settings pages (via `cadre-vm` → `cadre-phone`) on navigation, after the
-audit runs.
+audit runs. The Chat page (the default page) creates the shared `CadreViewModel`,
+which reads the saved start options and reconnects when the last session ended
+connected — Settings → Connect is the other way the node starts (see
+[Node-local records](#node-local-records)).
 
 ```ts
 // app/app.ts
@@ -235,7 +269,7 @@ natively than Hermes does**, so several Hermes polyfills become no-ops here.
 ## Webpack Resolver Config
 
 `webpack.config.js` reproduces the RN Metro resolver behaviour
-(`reference-app-rn/metro.config.js`) so the same import graph bundles under
+(`@serfab/cadre-rn/metro`, which `reference-app-rn/metro.config.js` calls) so the same import graph bundles under
 NativeScript. The NS build is webpack 5 via `@nativescript/webpack`, configured
 through `webpack.chainWebpack`.
 
@@ -333,7 +367,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, and the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen. Guarded by the shared stale-build check (`test/global-setup.ts`). `src/chat-vm.ts`, `src/ns-storage.ts` and the pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -342,11 +376,15 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 
 `vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`.
 
-Two groups are targeted. The first reaches no NativeScript API at all:
-`src/node-local-slots.ts` and `src/cadre-phone.ts`, the latter with
-`@optimystic/db-p2p-storage-ns` (SQLite, identity) and `src/ns-storage.ts`
-mocked, and cadre-core mocked **only** in its `CadreNode` export so the two
-node-local store classes stay real.
+Three groups are targeted. The first reaches no NativeScript API at all:
+`src/node-local-slots.ts`, `src/cadre-phone.ts` and `src/ns-storage.ts`.
+`cadre-phone.ts` runs with `@optimystic/db-p2p-storage-ns` (SQLite, identity) and
+`src/ns-storage.ts` mocked, and cadre-core mocked **only** in its `CadreNode`
+export so the two node-local store classes stay real. `ns-storage.ts` has its own
+suite (`test/ns-storage.spec.ts`) over a mocked `@optimystic/db-p2p-storage-ns`,
+covering the open cache — one open per database name, a failed open retried by the
+next operation — and the proxy staying unopened until a listing is iterated; its
+one-line delegating methods are left to the `IRawStorage` types.
 
 The second is the two `Observable` view models behind the Settings screen —
 `src/cadre-vm.ts` and `app/settings/settings-view-model.ts`. They import
@@ -354,8 +392,9 @@ The second is the two `Observable` view models behind the Settings screen —
 `@nativescript/core/globals` as a *directory* import, which Node's ESM loader
 refuses). `resolve.alias` therefore redirects that exact specifier — anchored
 regex, so the subpaths are untouched — to `test/stubs/nativescript-core.ts`,
-which re-exports the **real** `Observable` from the one submodule that does load
-(`data/observable`). Both suites drive one shared fake `CadreNode`
+which re-exports the **real** `Observable` and `ObservableArray` from the
+submodules that do load (`data/observable`, `data/observable-array`). Both suites
+drive one shared fake `CadreNode`
 (`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
 array, because the behaviour under test is an ordering: an enrollment invite's
 owner keys must be anchored via `trustOwnerKeys` strictly *before* the seed is
@@ -364,10 +403,21 @@ methods it stands in for, so a cadre-core signature change fails `typecheck`
 instead of leaving the suites green while the app breaks on device — a `vi.mock`
 factory is not otherwise checked against the module it replaces.
 
-Still uncovered here: `src/chat-vm.ts` (it needs `ObservableArray`, which the
-same directory-import rule puts out of reach by this route —
-`tickets/backlog/debt-ns-chat-vm-unit-tests.md`), `src/ns-storage.ts`, and the
-pages. They need the device harness below.
+The third is the chat screen's view model, `src/chat-vm.ts`
+(`test/chat-vm.spec.ts`): the poll's one-read-at-a-time guard, dropping a late
+read of a strand it has switched away from and clearing the list on the switch,
+registering the
+local participant once the strand is writable, and the send rule with its retry
+key (the NativeScript counterpart of `reference-app-rn`'s `chat-send.spec.ts`). It
+drives the same fake node, but `src/chat-operations.ts` runs unmocked against a
+real in-memory Quereus `Database` carrying the app's own chat schema, so
+primary-key and foreign-key refusals are real and a query that stops matching the
+schema fails here. The strand hands out a thin decorator over that database
+which records each statement by the table it touches and lets a test hold one
+open, refuse it, or apply it and then throw ("stored, then the outcome was
+lost"). Only the poll's `setInterval` is faked.
+
+Still uncovered here: the pages. They need the device harness below.
 
 `test/global-setup.ts` runs the shared stale-build guard
 (`test-harness/build-freshness.ts`) first, because those specs execute real
@@ -381,7 +431,7 @@ that hand-written target list against the package's actual dependencies.
 `scripts/bundle-check.js` runs the webpack compile and asserts the whole graph
 resolves with 0 errors **and 0 warnings** (see `exportsPresence: 'warn'` above for
 why warnings are fatal). It is the only gate without an Android device that reaches
-the *whole* import graph — the unit suite above touches two modules and mocks the
+the *whole* import graph — the unit suite above loads a few modules and mocks the
 native seams — and everything that requires the native SQLite / WebSocket plugins
 stays device-only. A green bundle proves resolution and parse, **not** execution.
 

@@ -1,6 +1,6 @@
 /**
  * Drift guard: catches the NEXT missing global, rather than the three
- * `polyfills/hermes.js` already covers.
+ * `@serfab/cadre-rn`'s `polyfills/hermes.js` already covers.
  *
  * Every API in that file was found the same way — by hitting it on a phone, usually as
  * a timeout or an undefined somewhere unrelated. A dependency upgrade can introduce the
@@ -34,7 +34,7 @@
  *    does not, and only the allowlist entry below records which one the phone gets.
  *
  * It narrows the window; it does not close it. The on-device boot audit
- * (`polyfills/audit.js`) is what checks the real runtime.
+ * (`@serfab/cadre-rn/boot-check`) is what checks the real runtime.
  *
  * Bundled `*.min.js` builds and `dist/test` trees are skipped — Metro loads neither, and
  * a package's own minified bundle contains every name in the package at once, which
@@ -44,7 +44,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { appDir, resolvePackageDir } from './metro-resolution';
+import { resolvePackageDir } from './metro-resolution';
 
 /**
  * The dependency trees worth watching: the libp2p stack the polyfills exist to serve,
@@ -82,7 +82,7 @@ const SCANNED_PACKAGES = [
 type Provision =
 	/** React Native's own startup installs it (Libraries/Core/*). */
 	| { by: 'react-native'; why: string }
-	/** One of `polyfills/*.js` installs it, and marks the given registry key. */
+	/** One of `@serfab/cadre-rn`'s `polyfills/*.js` installs it, and marks the given registry key. */
 	| { by: 'polyfill'; file: string; key: string }
 	/** Neither, and that is fine — with the reason it is fine. */
 	| { by: 'allowlist'; why: string };
@@ -105,6 +105,7 @@ const PROVIDED: Record<string, Provision> = {
 	'Symbol.asyncIterator': { by: 'polyfill', file: 'hermes.js', key: 'Symbol.asyncIterator' },
 	ReadableStream: { by: 'polyfill', file: 'hermes.js', key: 'ReadableStream' },
 	DOMException: { by: 'polyfill', file: 'hermes.js', key: 'DOMException' },
+	EventTarget: { by: 'polyfill', file: 'event.js', key: 'EventTarget' },
 	CustomEvent: { by: 'polyfill', file: 'event.js', key: 'CustomEvent' },
 	'Intl.PluralRules': { by: 'polyfill', file: 'intl-pluralrules.js', key: 'Intl.PluralRules' },
 	RTCPeerConnection: { by: 'polyfill', file: 'webrtc.js', key: 'RTCPeerConnection' },
@@ -113,7 +114,6 @@ const PROVIDED: Record<string, Provision> = {
 	'performance.now': { by: 'react-native', why: 'installed by Libraries/Core/setUpPerformance.js' },
 	WebSocket: { by: 'react-native', why: 'installed by Libraries/Core/setUpXHR.js' },
 	Blob: { by: 'react-native', why: 'installed by Libraries/Core/setUpXHR.js' },
-	EventTarget: { by: 'react-native', why: 'Hermes provides it; polyfills/event.js backfills older engines' },
 	TextEncoder: { by: 'react-native', why: 'Hermes ships TextEncoder (it is TextDecoder that is missing)' },
 	'crypto.getRandomValues': { by: 'react-native', why: 'installed by the react-native-get-random-values native module' },
 	AggregateError: {
@@ -234,8 +234,11 @@ function scan(names: readonly string[]): ScanResult {
 
 describe('globals our dependencies read', () => {
 	let result: ScanResult;
+	/** The polyfills ship in @serfab/cadre-rn; this is the copy Metro bundles for this app. */
+	let polyfillsDir: string;
 
 	beforeAll(() => {
+		polyfillsDir = join(resolvePackageDir('@serfab/cadre-rn'), 'polyfills');
 		result = scan([...Object.keys(PROVIDED), ...Object.keys(WATCHED), ...SENTINELS]);
 	});
 
@@ -260,8 +263,8 @@ describe('globals our dependencies read', () => {
 			'A dependency now mentions a global Hermes does not provide:\n'
 			+ `${appeared.join('\n')}\n`
 			+ 'Check whether the mention is real code or just a comment or string — this is a substring '
-			+ 'search. If it is real, either polyfill it in polyfills/hermes.js and move it to PROVIDED, '
-			+ 'or move it to PROVIDED as an allowlist entry saying why the phone never reaches it.'
+			+ 'search. If it is real, either polyfill it in polyfills/hermes.js of @serfab/cadre-rn and move it '
+			+ 'to PROVIDED, or move it to PROVIDED as an allowlist entry saying why the phone never reaches it.'
 		)).toEqual([]);
 	});
 
@@ -270,8 +273,8 @@ describe('globals our dependencies read', () => {
 		// the global, and nothing else in the repo notices it stopped being installed.
 		for (const [name, provision] of Object.entries(PROVIDED)) {
 			if (provision.by !== 'polyfill') continue;
-			const source = readFileSync(join(appDir, 'polyfills', provision.file), 'utf8');
-			expect(source, `${name} is listed as installed by polyfills/${provision.file}, but that file no `
+			const source = readFileSync(join(polyfillsDir, provision.file), 'utf8');
+			expect(source, `${name} is listed as installed by @serfab/cadre-rn polyfills/${provision.file}, but that file no `
 				+ `longer marks '${provision.key}'`).toContain(`markPolyfilled('${provision.key}')`);
 		}
 	});
@@ -279,20 +282,20 @@ describe('globals our dependencies read', () => {
 	it('gives the boot audit registry keys that something actually marks', () => {
 		// A typo in a `key:` in audit.js silently downgrades that row from `polyfilled` to
 		// `native`, which is the one distinction the audit exists to make.
-		const auditSource = readFileSync(join(appDir, 'polyfills', 'audit.js'), 'utf8');
+		const auditSource = readFileSync(join(polyfillsDir, 'audit.js'), 'utf8');
 		const auditKeys = [...auditSource.matchAll(/key: '([^']+)'/g)].map((match) => match[1]);
 		expect(auditKeys.length).toBeGreaterThan(0);
 
 		const marks = new Set(
-			readdirSync(join(appDir, 'polyfills'))
+			readdirSync(polyfillsDir)
 				.filter((name) => name.endsWith('.js'))
 				.flatMap((name) => [
-					...readFileSync(join(appDir, 'polyfills', name), 'utf8').matchAll(/markPolyfilled\('([^']+)'\)/g),
+					...readFileSync(join(polyfillsDir, name), 'utf8').matchAll(/markPolyfilled\('([^']+)'\)/g),
 				])
 				.map((match) => match[1]),
 		);
 		for (const key of auditKeys) {
-			expect(marks, `polyfills/audit.js probes registry key '${key}', which no polyfill marks`)
+			expect(marks, `@serfab/cadre-rn polyfills/audit.js probes registry key '${key}', which no polyfill marks`)
 				.toContain(key);
 		}
 	});

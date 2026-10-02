@@ -6,8 +6,9 @@
  * identity, so a node that generated a fresh libp2p keypair per process would
  * become a stranger to the cadre that admitted it on every restart. It also
  * needs a stable on-disk home for its node-local stores — `cadre-cli start`
- * opens `FileBootstrapPeerStore` / `FileTrustedOwnerStore` only when a protobuf
- * identity key file is configured.
+ * opens `FileBootstrapPeerStore` / `FileTrustedOwnerStore` /
+ * `FileStrandNetworkStateStore` in the node's state directory, which defaults to
+ * the directory holding the config file the orchestrator writes into the workdir.
  *
  * So every managed node gets its own `identity.key` inside its workdir, written
  * once and reused thereafter. The workdir is removed when the loan is

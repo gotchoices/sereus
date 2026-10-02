@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
 import { loadIdentity } from '../installer/identity.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 // Writes the --identity-file argument (as seen on its own command line) next
 // to the startup token, then behaves like a minimal long-lived node.
@@ -49,14 +50,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    for (const n of orch.listNodes()) {
-      try { await orch.removeContainer(n.dockerId); } catch { /* ignore */ }
-    }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function makeOrchestrator(

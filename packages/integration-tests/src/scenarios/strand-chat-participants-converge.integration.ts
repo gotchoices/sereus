@@ -57,7 +57,6 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode,
-	ControlFormationUsageRecorder,
 	StrandAwaitingFirstSyncError,
 	generateStrandMemberKey,
 	strandMemberKeyPair,
@@ -182,9 +181,6 @@ async function bringUpHost(runTag: number): Promise<HostSide> {
 	await host.start();
 	try {
 		await makeOwnOwner(host, hostKey);
-		host.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-		});
 
 		const founded = await host.foundStrand({
 			strandId,
@@ -395,7 +391,7 @@ describe('Chat participants on a closed cross-party strand', () => {
 			// ── Subject 4a: a named, retryable rejection inside the budget ──
 			expect(rejection).toBeInstanceOf(StrandAwaitingFirstSyncError);
 			expect((rejection as StrandAwaitingFirstSyncError).strandId).toBe(side.strandId);
-			expect((rejection as Error).message).toMatch(/no member of this strand has been reachable/);
+			expect((rejection as Error).message).toMatch(/has not yet received the strand's data from another member/);
 			// Bounded by the budget, with slack for bring-up (the strand's libp2p node and
 			// database come up before the wait starts).
 			expect(elapsedMs).toBeLessThan(UNREACHABLE_FIRST_SYNC_MS + 20_000);

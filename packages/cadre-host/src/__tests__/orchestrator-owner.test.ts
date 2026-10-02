@@ -17,6 +17,7 @@ import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { decodeDockerId } from '../orchestrator/types.js';
 import { OwnerNodeClient } from '../owner/owner-node-client.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 const FAKE_OWNER_CLI = `
 import fs from 'node:fs';
@@ -70,15 +71,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  for (const orch of orchestrators) {
-    try { await orch.stopOwnerNode(); } catch { /* ignore */ }
-    for (const dockerId of listDockerIds(orch)) {
-      try { await orch.removeContainer(dockerId); } catch { /* ignore */ }
-    }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function makeOrchestrator(rootDir: string): HostProcessOrchestrator {
@@ -91,11 +89,6 @@ function makeOrchestrator(rootDir: string): HostProcessOrchestrator {
   });
   orchestrators.push(orch);
   return orch;
-}
-
-function listDockerIds(orch: HostProcessOrchestrator): string[] {
-  const state = new StateStore((orch as unknown as { rootDir: string }).rootDir);
-  return state.load().handles.map((h) => h.dockerId);
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 4000, intervalMs = 50): Promise<void> {

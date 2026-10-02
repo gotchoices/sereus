@@ -1,10 +1,11 @@
 /**
  * `cadre-phone.ts` — the NativeScript app's `CadreNode` lifecycle: one SQLite
- * handle held open for the node's life, the three node-local records read out of
- * that same handle's `kv` table, and the start/stop rules around them.
+ * handle held open for the node's life, the node-local records and the saved
+ * start options read out of that same handle's `kv` table, and the start/stop
+ * rules around them.
  *
- * The module keeps two pieces of state private to itself (the `CadreNode`
- * singleton and the `OptimysticNSDBHandle`) with no injection seam, so this
+ * The module keeps its state private to itself (the `CadreNode` singleton, the
+ * started options and the `OptimysticNSDBHandle`) with no injection seam, so this
  * suite drives it through its real exports and calls `loadModule()` in every
  * test: that helper does `vi.resetModules()` before a dynamic import, which is
  * what keeps one test's "running" node from leaking into the next and making
@@ -266,7 +267,7 @@ describe('startPhoneNode identity database', () => {
 		expect(H.state.kvConstructions[0]!.prefix).toBe('');
 	});
 
-	it('reads exactly the three node-local keys during start', async () => {
+	it('reads exactly the four node-local keys during start, and writes only the start options', async () => {
 		const { startPhoneNode } = await loadModule();
 		await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
 
@@ -274,10 +275,12 @@ describe('startPhoneNode identity database', () => {
 			`trusted-owners.${PARTY}`,
 			`bootstrap-peers.${PARTY}`,
 			`enrolled-machines.${PARTY}`,
+			`strand-network.${PARTY}`,
 		]);
-		// Cold start reads; it does not write. A write here would mean an empty
-		// snapshot overwriting a record some other code path had just put there.
-		expect(H.state.keysWritten).toEqual([]);
+		// Cold start reads the party-scoped records; it does not write them. A write
+		// there would mean an empty snapshot overwriting a record some other code path
+		// had just put there. The one write is the start options, once the node is up.
+		expect(H.state.keysWritten).toEqual(['start-options']);
 	});
 
 	it('surfaces a trusted-owner envelope pre-seeded under the literal key', async () => {
@@ -433,11 +436,11 @@ describe('startPhoneNode / stopPhoneNode lifecycle', () => {
 	});
 
 	it('retries a failed start over the handle that start already opened', async () => {
-		// The `??=`. A failed start leaves `identityDb` open (nothing closes it until
-		// `stopPhoneNode`), and the node it left behind is not running — so the retry
-		// falls straight through the `node?.isRunning` early-return to the open call.
-		// A plain open there would strand the first native handle, which then blocks
-		// every later open of the same file.
+		// The cached open. A failed start leaves the identity database open (nothing
+		// closes it until `stopPhoneNode`), and the node it left behind is not running —
+		// so the retry falls straight through the `node?.isRunning` early-return to the
+		// open call. A plain open there would strand the first native handle, which then
+		// blocks every later open of the same file.
 		const { startPhoneNode, getPhoneNode } = await loadModule();
 		H.state.startError = new Error('control network unreachable');
 		await expect(startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] })).rejects.toThrow(
@@ -472,6 +475,48 @@ describe('startPhoneNode / stopPhoneNode lifecycle', () => {
 	});
 });
 
+// ── Saved start options ───────────────────────────────────────────────────────
+
+describe('the saved start options', () => {
+	it('survive a relaunch, and Disconnect turns off the auto-start without forgetting them', async () => {
+		// What keeps a relaunched phone in its party: every node-local record is filed
+		// under the party id, so this record is what lets them be read back at all.
+		const addrs = ['/ip4/10.0.0.1/tcp/4001/ws', '/ip4/10.0.0.2/tcp/4001/ws'];
+		const first = await loadModule();
+		await first.startPhoneNode({ partyId: PARTY, bootstrapAddrs: addrs });
+
+		// A relaunch: fresh module state over the same `kv` table.
+		const relaunched = await loadModule();
+		const saved = await relaunched.loadSavedStartOptions();
+		expect(saved).toEqual({ options: { partyId: PARTY, bootstrapAddrs: addrs }, autoStart: true });
+
+		await relaunched.startPhoneNode(saved!.options);
+		await relaunched.stopPhoneNode();
+
+		expect(await relaunched.loadSavedStartOptions()).toEqual({
+			options: { partyId: PARTY, bootstrapAddrs: addrs },
+			autoStart: false,
+		});
+	});
+
+	it('shares one database open and one node between the launch read and overlapping starts', async () => {
+		// The launch auto-start and a Connect tap can overlap. Two opens of the same
+		// file would leak a native handle, which blocks every later open of it.
+		const { loadSavedStartOptions, startPhoneNode } = await loadModule();
+		const opts = { partyId: PARTY, bootstrapAddrs: [] };
+
+		const [, first, second] = await Promise.all([
+			loadSavedStartOptions(),
+			startPhoneNode(opts),
+			startPhoneNode(opts),
+		]);
+
+		expect(H.state.opens).toEqual(['sereus-peer-identity']);
+		expect(H.state.nodes).toHaveLength(1);
+		expect(second).toBe(first);
+	});
+});
+
 // ── The helpers that delegate to the running node ─────────────────────────────
 // Everything past `stopPhoneNode` in `cadre-phone.ts` is the same two lines: a
 // "started?" guard, then a forward to the node. Cheap to get wrong (a guard that
@@ -486,7 +531,7 @@ const SEED: ControlNetworkSeed = {
 
 const STRAND: StrandConfig = {
 	strandRow: { Id: 'strand-1', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
-	sAppConfig: { id: 'chat', version: '1', schema: 'create table Message (Id text primary key)' },
+	sAppConfig: { id: 'chat', version: '1', schema: 'table Message (Id text primary key)' },
 };
 
 describe('the helpers that require a started node', () => {

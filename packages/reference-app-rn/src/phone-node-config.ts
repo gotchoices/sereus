@@ -16,9 +16,13 @@ import type {
 	CadreNodeConfig,
 	EnrolledMachineStore,
 	KeyStore,
+	StrandNetworkStateStore,
 	TrustedOwnerStore,
 } from '@serfab/cadre-core';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+// Type-only: the module itself loads react-native-quick-crypto, which this file's
+// Node tests cannot. `cadre-phone.ts` does the runtime import.
+import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 
 export interface PhoneNodeOptions {
 	/** Party ID — identifies this cadre. Generated on first run. */
@@ -31,14 +35,38 @@ export interface PhoneNodeOptions {
 	 * works, but it has no address anyone can dial, so it cannot mint an invitation
 	 * (`use-cadre.ts` → `createClosedStrandWithInvite` refuses, naming the reason).
 	 *
-	 * Typed into Settings on every launch alongside `partyId` and `bootstrapAddrs` —
-	 * nothing persists start options yet (backlog `feat-rn-persist-node-start-options`).
+	 * Remembered with the other start options after a successful start
+	 * (`start-options.ts`), as the resolved list the node ran with — so a later build's
+	 * `EXPO_PUBLIC_RELAY_ADDR` does not replace it until the user clears the field.
 	 */
 	relayAddrs: string[];
+	/**
+	 * How much of Noise's crypto runs natively. Absent means the build's default
+	 * (`noise-crypto-config.ts`). Like `relayAddrs`, read only when the node is built,
+	 * so changing it means stopping the node and starting a new one.
+	 */
+	noiseCryptoMode?: NoiseCryptoMode;
+}
+
+/**
+ * Every Noise crypto mode, in the order the Settings screen lists them. Here rather
+ * than beside the build default in `noise-crypto-config.ts`, which loads the native
+ * kit, so the saved-start-options parser (`start-options.ts`) can validate a stored
+ * mode in a Node test.
+ */
+export const NOISE_CRYPTO_MODES: readonly NoiseCryptoMode[] = ['symmetric', 'full', 'off'];
+
+export function isNoiseCryptoMode(value: unknown): value is NoiseCryptoMode {
+	return (NOISE_CRYPTO_MODES as readonly unknown[]).includes(value);
 }
 
 /** What {@link buildPhoneNodeConfig} takes from the platform wiring. */
 export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
+	/**
+	 * The Noise crypto implementation `cadre-phone.ts` resolved from `noiseCryptoMode`.
+	 * `undefined` keeps libp2p-noise's pure-JavaScript default.
+	 */
+	noiseCrypto?: NoiseCryptoInterface;
 	/** Holds the node identity; the node loads it on start, generating it on first run. */
 	keyStore: KeyStore;
 	/**
@@ -52,6 +80,7 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	trustedOwnerStore: TrustedOwnerStore;
 	bootstrapPeerStore: BootstrapPeerStore;
 	enrolledMachineStore: EnrolledMachineStore;
+	strandNetworkStateStore: StrandNetworkStateStore;
 }
 
 /**
@@ -112,6 +141,12 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// node goes to `status: 'error'` with the message under the Node card) so the
 			// field can be corrected and Connect retried.
 			requireRelay: false,
+			// Native SHA-256 / ChaCha20-Poly1305 (and X25519 in `full` mode) for Noise, in
+			// place of the pure-JavaScript crypto Metro's browser build of libp2p-noise
+			// carries. cadre-core hands it to the control node and every strand node. Only
+			// local primitives change, not the wire protocol, so the phone still talks to
+			// nodes without it.
+			noiseCrypto: inputs.noiseCrypto,
 			// Permissive dial gater, for the same reason the web reference app sets one
 			// (`reference-app-web/src/lib/cadre-web.ts`). libp2p's `connection-gater`
 			// package points its `react-native` field at the BROWSER build, which refuses
@@ -138,6 +173,7 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 		trustedOwners: { store: inputs.trustedOwnerStore },
 		bootstrapPeers: { store: inputs.bootstrapPeerStore },
 		enrolledMachines: { store: inputs.enrolledMachineStore },
+		strandNetworkState: { store: inputs.strandNetworkStateStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.
@@ -175,7 +211,7 @@ export async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 			throw new Error('control database unavailable after start; cannot run owner genesis');
 		}
 		await controlDb.ensureOwnerKey(publicKeyB64);
-		cadre.initializeSeedBootstrap(privateKeyB64);
+		await cadre.initializeSeedBootstrap(privateKeyB64);
 	} catch (err) {
 		console.warn('[phone-node-config] owner self-genesis failed:', err);
 	}

@@ -27,13 +27,13 @@
  *
  * A third detail is what makes the FORCED refusal reachable at all: A passes
  * `enableRelay: false`, and must keep passing it. Relay is NOT off by default
- * here — `CadreNode.relayServerEnabled` defaults it to `profile === 'storage'`,
+ * here — `resolveRelayServer` (`relay-server.ts`) defaults it to `profile === 'storage'`,
  * and A is a storage node — so omitting the flag leaves the relay server ON. On
  * a node running it the gater answers an unplaceable peer with
  * `'admit-for-relay'` rather than a deny (see `membership-connection-gater.ts` →
  * "The relay-reservation seam"): B's dial is ADMITTED and only dropped at the
- * 5 s not-reserving deadline, so B holds a live connection to A for those five
- * seconds. Step 3 below then never observes the refusal it exists to pin, and
+ * not-reserving deadline (5.5 s at the default declared link), so B holds a live
+ * connection to A for that long. Step 3 below then never observes the refusal it exists to pin, and
  * step 5 would be satisfied by the seed dial's own still-live connection rather
  * than by a re-dial, proving nothing. A relay-less owner is
  * also the sharper model of the failure this scenario is about: an owner that
@@ -74,8 +74,8 @@
  *
  * ABOUT THE FEATURE, not the test: in a live deployment the cold-start branch
  * overlaps with FRET's probes rather than standing alone — which cases each one
- * actually covers is written up in `docs/architecture.md` (control-cohort
- * reconcile → "Cold-start bootstrap retries"), not repeated here.
+ * actually covers is written up in `docs/architecture.md` (Control Network
+ * Convergence → "Cold-start retry"), not repeated here.
  */
 
 import { describe, it, expect } from 'vitest';

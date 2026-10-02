@@ -18,7 +18,8 @@ import { generateStrandMemberKey } from '@serfab/cadre-core';
 import { insertParticipant, participantDisplayName, type ChatRole } from './chat-operations';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
-// Matches schemas/chat-simple.qsql.  Embedded as a string constant so the RN
+// Matches schemas/chat-simple.qsql (comments aside), enforced by
+// test/chat-schema-drift.spec.ts.  Embedded as a string constant so the RN
 // bundler doesn't need filesystem access.
 //
 // `Participant.Role` is an APP-LEVEL role (`owner` | `member`). Sereus's control
@@ -27,7 +28,7 @@ import { insertParticipant, participantDisplayName, type ChatRole } from './chat
 // the chat schema, and is assigned on create/join. See the README "Trust model"
 // section for where this boundary sits.
 
-const CHAT_SCHEMA = `
+export const CHAT_SCHEMA = `
 table Participant (
     Id text primary key,
     Name text not null check (length(Name) between 1 and 100),
@@ -99,10 +100,13 @@ export async function createChatStrand(
 }
 
 /**
- * Join an existing chat strand that was advertised via the control network.
+ * Attach a chat strand the node offered as `strand:discovered` — a row from this party's
+ * control database, or a join the node remembered from another party — passing the row
+ * through unchanged, so founder-ness still derives from its `FounderOwnerKey`. Serves a
+ * closed row too when it carries its `MemberPrivateKey`; writes no chat role.
  *
  * @param cadreNode  Running CadreNode
- * @param strandRow  Strand row obtained from the control database
+ * @param strandRow  The offered strand row
  * @returns          The active StrandInstance
  */
 export async function joinChatStrand(
@@ -174,10 +178,10 @@ export async function createClosedChatStrand(
  * The role write below is safe ONLY because `addStrand` resolves once the strand is
  * writable: a joining machine's database is withheld until it has received the
  * strand's data from the host, since a write before that forks the table it touches
- * (the joiner's own rows silently vanish). If no host is reachable within the node's
- * `strandFirstSync.timeoutMs`, `addStrand` rejects with the retryable
- * `StrandAwaitingFirstSyncError` and the strand stays launched — call this again once
- * the host is reachable.
+ * (the joiner's own rows silently vanish). If that data has not arrived within the node's
+ * `strandFirstSync.timeoutMs` (no host reachable, or a slow link still syncing), `addStrand`
+ * rejects with the retryable `StrandAwaitingFirstSyncError` and the strand stays launched —
+ * call this again to keep waiting.
  *
  * @param cadreNode         Running CadreNode
  * @param strandId          The closed strand's id

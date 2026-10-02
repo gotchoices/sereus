@@ -19,12 +19,16 @@
 import { signSchema } from '@serfab/cadre-core';
 import type { SAppConfig } from '@serfab/cadre-core';
 
-// ── Embedded schema (matches schemas/chat-simple.qsql + the RN reference) ─────
+// ── Embedded schema ──────────────────────────────────────────────────────────
+// Matches schemas/chat-simple.qsql (comments aside) and so the RN reference,
+// enforced by test/chat-schema-drift.spec.ts.  This app never reads or assigns
+// `Participant.Role`; every participant it inserts takes the default.
 
-const CHAT_SCHEMA = `
+export const CHAT_SCHEMA = `
 table Participant (
     Id text primary key,
-    Name text not null check (length(Name) between 1 and 100)
+    Name text not null check (length(Name) between 1 and 100),
+    Role text not null default 'member' check (Role in ('owner', 'member'))
 );
 
 table Message (

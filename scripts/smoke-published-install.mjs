@@ -18,7 +18,8 @@
  *      (`scripts/lib/published-smoke-scenario.mjs`, a port of
  *      `packages/cadre-core/test/control-database-solo.spec.ts` plus two cases from
  *      `packages/cadre-core/test/control-database-solo-warm-start.spec.ts`),
- *   4. report the resolved version *and path* of every dependency that matters.
+ *   4. report the resolved version *and path* of every dependency that matters, and
+ *      fail if any installed package's `exports` names a file its tarball lacks.
  *
  * Deliberately NOT wired into `yarn test`: it needs the network and takes tens of
  * seconds. Run it as a release step — `yarn smoke:published`.
@@ -46,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	declaredRange,
 	hoistedVersions,
+	missingExportTargets,
 	nestedCopies,
 	parseFlags,
 	publishableWorkspaces,
@@ -144,6 +146,24 @@ function reportProvenance(projectDir, workspaces) {
 }
 
 /**
+ * Fail loudly if an installed package exports a path its tarball does not carry. The
+ * scenario imports only a few entry points, so a broken one elsewhere would pass it.
+ */
+function reportExportTargets(projectDir, workspaces) {
+	const missing = missingExportTargets(projectDir, workspaces);
+	if (missing.length === 0) {
+		console.log('\nevery `exports` target of the installed packages is present.');
+		return true;
+	}
+	console.error('\nsmoke-published-install: these `exports` targets are missing from the installed packages:');
+	for (const { name, key, target } of missing) {
+		console.error(`  ${name}: ${key} → ${target}`);
+	}
+	console.error('Add the directory to the package\'s `files`, or fix the path in `exports`.');
+	return false;
+}
+
+/**
  * Refuse `--skip-build` when `dist` is missing or older than `src`. `pack` does not
  * build, so the tarballs would carry the previous build and a pass would mean nothing.
  */
@@ -234,7 +254,7 @@ function main(flags) {
 
 		// Printed before any case runs, so it survives a crash in the scenario.
 		reportResolved(projectDir, workspaces);
-		if (!reportProvenance(projectDir, workspaces)) {
+		if (!reportProvenance(projectDir, workspaces) || !reportExportTargets(projectDir, workspaces)) {
 			return 1;
 		}
 

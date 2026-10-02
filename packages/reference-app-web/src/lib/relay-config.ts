@@ -7,9 +7,9 @@
  * formation needs the dialable side (the responder, and the initiator's return
  * path) to advertise a `/p2p-circuit` address, which only exists once the tab
  * holds a circuit-relay-v2 **reservation** against a known relay. That relay is
- * deployment-specific infrastructure (see `ops/`), so — exactly like the ICE
- * manifest (`ice-config.ts`) — its address is resolved at runtime rather than
- * baked into the bundle.
+ * deployment-specific infrastructure (see `ops/`), so its address is a build
+ * setting (`VITE_RELAY_ADDR`), falling back to a per-browser `localStorage`
+ * entry when that is unset.
  *
  * Framework-free and self-contained (no `@serfab/cadre-core` / node deps): the
  * only platform touch-points are `localStorage` and `import.meta.env`, each
@@ -21,7 +21,7 @@
 
 const LOG_PREFIX = '[reference-app-web] relay-config:';
 
-/** localStorage key for a runtime relay-multiaddr override (debug / per-device). */
+/** localStorage key for a per-browser relay multiaddr, read when `VITE_RELAY_ADDR` is unset (debug / per-device). */
 export const RELAY_ADDR_STORAGE_KEY = 'relay-addr';
 
 /** Read the build-time relay addrs (`VITE_RELAY_ADDR`, comma-separated). */
@@ -30,7 +30,7 @@ function envRelayAddrs(): string[] {
 	return typeof raw === 'string' ? splitAddrs(raw) : [];
 }
 
-/** Read the runtime override from localStorage, guarded for non-DOM hosts. */
+/** Read the per-browser fallback from localStorage, guarded for non-DOM hosts. */
 function storedRelayAddrs(): string[] {
 	try {
 		if (typeof localStorage === 'undefined') return [];

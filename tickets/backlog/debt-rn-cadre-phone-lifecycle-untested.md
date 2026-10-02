@@ -64,3 +64,13 @@ better.
 ## Related (2026-09-15)
 
 `implement/rn-create-strand-progress-and-founding-trace` moves the `CadreNodeConfig` assembly and `runOwnerGenesis` out of `cadre-phone.ts` into a native-free `src/phone-node-config.ts`, so a Node test can build the app's real config. That is half of the injection seam this ticket needs; the lifecycle-ordering tests described here are still unclaimed.
+
+## More rules, added by `rn-persist-node-start-options` (2026-09-28)
+
+That ticket made `cadre-phone.ts` remember the node's start options in the `sereus-node-local` LevelDB and gave start/stop more ordering rules, all verified only by reading the code:
+
+- **Overlapping starts build one node.** `startPhoneNode` returns the start in flight (`starting`) instead of beginning a second; a launch auto-start, a push-wake cold start, the runner's resume and a Connect tap can now all overlap.
+- **Stop waits for an in-flight start**, then stops the node it produced.
+- **Only a successful start saves** (`autoStart: true`); a failed start writes nothing, and a stop after a start that never came up writes nothing either.
+- **Stop saves `autoStart: false` before it drops the node and closes the handle.**
+- The `??=` handle guard named above now lives in `nodeLocalDbHandle()`, and the launch-time `loadSavedStartOptions()` is a second path that opens the handle before any start.

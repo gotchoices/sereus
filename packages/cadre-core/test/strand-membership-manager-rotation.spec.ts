@@ -21,6 +21,8 @@ import {
   insertHeader,
   rawInsertMember,
   inTransaction,
+  managerStamp,
+  fileTombstone,
 } from './strand-spec-helpers.js';
 
 /**
@@ -43,37 +45,6 @@ async function rawInsertFoundingManager(db: Database, memberKey: string): Promis
        with context ManagerKey = null, Signature = null
        values (?, 0, ?)`,
     [memberKey, generateStrandStampId()],
-  );
-}
-
-/** The live StampId of one Manager row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
-async function managerStamp(db: Database, key: string): Promise<string> {
-  for await (const row of db.eval('select MemberKey, StampId from Strand.Manager')) {
-    if (row.MemberKey === key) return row.StampId as string;
-  }
-  throw new Error(`no Manager row for ${key}`);
-}
-
-/**
- * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
- * Raw deletes that pin `/Authorized/` pair with one of these in the same
- * transaction — otherwise `RevocationRecorded` fires too and the reported
- * constraint becomes engine evaluation order. A retiree that is not a committed
- * member fails `Revocation.Authorized`, which shares the `Authorized` name, so
- * an attacker-signed tombstone keeps that pin truthful either way.
- */
-async function fileTombstone(
-  db: Database,
-  tableName: 'Member' | 'Manager' | 'MemberPeer',
-  stampId: string,
-  retiree: Ed25519KeyPair,
-): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Revocation (TableName, StampId)
-       with context MemberKey = ?, Signature = ?
-       values (?, ?)`,
-    [retiree.publicKeyB64, signature, tableName, stampId],
   );
 }
 

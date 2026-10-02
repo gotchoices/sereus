@@ -87,7 +87,7 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 		expect(controlDatabase).not.toBeNull();
 		db = controlDatabase!;
 		await db.insertOwnerKey(ownerPublicKey);
-		node.initializeSeedBootstrap(ownerPrivateKey);
+		await node.initializeSeedBootstrap(ownerPrivateKey);
 		const seedService = node.getSeedBootstrapService();
 		expect(seedService).not.toBeNull();
 		service = seedService!;

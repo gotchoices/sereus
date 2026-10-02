@@ -21,7 +21,15 @@ const mocks = vi.hoisted(() => {
   return { stop, createLibp2pNode, StrandDatabase };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
+// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
+    resolveLinkDeadlines: actual.resolveLinkDeadlines
+  };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
 /**
@@ -36,7 +44,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
   let authorPrivateKey: string;
   let authorPublicKey: string;
 
-  const testSchema = 'create table Test (id text primary key);';
+  const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
 
   beforeEach(() => {
@@ -151,7 +159,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
 
     // Declared, not left to Optimystic's 1000 ms LAN default, which reads every peer on a
-    // relayed link as silent. Why 5000, and that it exceeds the upstream default, are pinned on
+    // relayed link as silent. Why 7000, and that it exceeds the upstream default, are pinned on
     // the constant in `quereus-plugin-sereus/test/plugin.spec.ts`.
     expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
   });
@@ -176,7 +184,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // too, not only the control node. The builder's own contract is pinned on the builder, in
     // `quereus-plugin-sereus/test/plugin.spec.ts`.
     //
-    // 12000, not 5000: an override equal to the declared default would also pass against a
+    // 12000, not 7000: an override equal to the declared default would also pass against a
     // manager that dropped `config.network` on the floor. Deep equality against the builder's
     // own output — the idiom the serving-machine test below uses — pins the deadline AND the
     // absence of a repair yardstick in one assertion.
@@ -188,6 +196,24 @@ describe('StrandInstanceManager cluster size wiring', () => {
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({
         clusterPolicy: strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, { cohortQueryTimeoutMs: 12_000 })
+      })
+    );
+  });
+
+  it('runs a strand node\'s relay server uncapped too, with the caller\'s init merged in', async () => {
+    // A strand node runs its own relay server, and a strand peer that reserves on it forwards
+    // strand traffic through it, so libp2p's 128 KiB / 2 min per-connection cap must be lifted
+    // on this build site as well (#19). `maxReservations: 20` shows the configured init reaches
+    // the strand node merged over the defaults rather than dropped.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-relay-init', {
+      network: { enableRelay: true, relayServerInit: { reservations: { maxReservations: 20 } } }
+    }));
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relay: true,
+        relayServerInit: { reservations: expect.objectContaining({ applyDefaultLimit: false, maxReservations: 20 }) }
       })
     );
   });

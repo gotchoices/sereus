@@ -3,7 +3,7 @@ import type Docker from 'dockerode';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
-import { volumeStubs } from './fake-docker.js';
+import { daemonStubs } from './fake-docker.js';
 
 const PUSH = {
   fcm: { projectId: 'proj', clientEmail: 'svc@proj.iam', privateKey: '-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----' },
@@ -23,7 +23,7 @@ function captureDocker(): { docker: Docker; lastEnv: () => string[] } {
       return { id: 'cid', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
     }),
     getContainer: vi.fn(),
-    ...volumeStubs(),
+    ...daemonStubs(),
   } as unknown as Docker;
   return { docker, lastEnv: () => env };
 }

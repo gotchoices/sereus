@@ -227,14 +227,16 @@ export class DonationService {
 
   /**
    * Per-grant-token serialization tail. `provision` chains onto the prior
-   * provision for the same token so the quota check and record-create are
+   * operation for the same token so the quota check and record-create are
    * atomic — two concurrent requests at `count = maxNodes - 1` can't both pass.
+   * `terminateGrant` chains onto it too, so a revoke's teardown cannot miss a
+   * record that a provision already queued for the grant is about to write.
    *
    * NOTE: one entry per distinct token, never evicted. Fine at household scale
    * (a handful of grants); if grant counts ever grow large, evict the tail once
    * it resolves.
    */
-  private readonly provisionTail = new Map<string, Promise<void>>();
+  private readonly grantTail = new Map<string, Promise<void>>();
 
   constructor(opts: DonationServiceOptions) {
     this.orchestrator = opts.orchestrator;
@@ -694,6 +696,46 @@ export class DonationService {
   }
 
   /**
+   * Terminate every donation under one grant that is not already `terminated` —
+   * the teardown behind an admin revoke. Returns the ids it terminated.
+   *
+   * Includes `error` records on purpose: the supervisor's give-up keeps such a
+   * record's workdir (its identity key) for a later `terminate`, and once the
+   * grant is revoked the grantee can no longer make that call, so this is the
+   * last thing that can reclaim it.
+   *
+   * Serialized with `provision` on the same per-grant queue. The caller revokes
+   * the grant first, and `provisionLocked` re-validates the grant inside that
+   * queue, so a provision queued ahead of this call finishes and is then
+   * terminated here, while one queued behind it is refused as revoked.
+   *
+   * Idempotent, and best-effort per record like the reap sweeps: a failed
+   * terminate is logged and the loop continues, and running it again terminates
+   * whatever is still left.
+   */
+  async terminateGrant(token: string): Promise<string[]> {
+    return this.serializeByGrant(token, () => this.terminateGrantLocked(token));
+  }
+
+  private async terminateGrantLocked(token: string): Promise<string[]> {
+    const candidates = this.store.listByGrant(token).filter(isUnterminated);
+    const terminated: string[] = [];
+    for (const donation of candidates) {
+      try {
+        // Re-read: every `terminate` awaits, so from the second record on the
+        // candidate list is a stale snapshot (see `reapStaleAwaitingSeed`).
+        if (!isUnterminated(this.store.get(donation.id))) continue;
+        await this.terminate(donation.id);
+        terminated.push(donation.id);
+      } catch (err) {
+        log('failed to terminate donation %s of grant %s: %s', donation.id, token, errorMessage(err));
+      }
+    }
+    log('terminated %d donation(s) under grant %s', terminated.length, token);
+    return terminated;
+  }
+
+  /**
    * Auto-terminate donations still `awaiting_seed` past `ttlMs` — a requester
    * that provisioned a node but never presented a seed leaves an orphaned child
    * holding host ports. Run on a periodic sweep and once at startup for records
@@ -884,15 +926,16 @@ export class DonationService {
   }
 
   /**
-   * Run `fn` after any in-flight provision for the same grant token, so the
-   * quota check + record-create pair is atomic per grant.
+   * Run `fn` after any in-flight provision or grant teardown for the same grant
+   * token, so the quota check + record-create pair is atomic per grant and a
+   * teardown sees every record a queued provision writes.
    */
   private async serializeByGrant<T>(token: string, fn: () => Promise<T>): Promise<T> {
-    const prior = this.provisionTail.get(token) ?? Promise.resolve();
+    const prior = this.grantTail.get(token) ?? Promise.resolve();
     const run = prior.then(fn, fn);
     // The stored tail swallows outcomes — a rejected provision must not reject
     // the next caller's wait, only defer it.
-    this.provisionTail.set(token, run.then(() => undefined, () => undefined));
+    this.grantTail.set(token, run.then(() => undefined, () => undefined));
     return run;
   }
 }
@@ -948,6 +991,15 @@ function denialToError(reason: GrantDenyReason | undefined): DonationError {
     default:
       return new DonationError('unauthorized', 'Unknown or missing grant token');
   }
+}
+
+/**
+ * Whether a record still needs a grant teardown. Stated once and applied twice
+ * in {@link DonationService.terminateGrant} — on the candidate list, and again
+ * per record before terminating it.
+ */
+function isUnterminated(donation: Donation | undefined): boolean {
+  return donation !== undefined && donation.status !== 'terminated';
 }
 
 /**

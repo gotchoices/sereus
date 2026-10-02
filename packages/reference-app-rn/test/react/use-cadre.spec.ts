@@ -14,7 +14,8 @@
  *  - cold-start re-sync (foreground return after an OS kill re-runs
  *    `startPhoneNode` and re-syncs node/peerId), incl. the runner being recreated
  *    by the `node`-dep change mid-resume without leaving `resuming` stuck;
- *  - a degraded resume propagating out to the status banner.
+ *  - a degraded resume propagating out to the status banner;
+ *  - launch resuming the last session from the saved start options.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -24,7 +25,14 @@ import type { RelayReservationState } from '@serfab/cadre-core';
 import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useCadreInternal, type UseCadreResult } from '../../src/use-cadre';
 import { connectionBanner } from '../../src/connection-status';
-import { createOpenInvitation, getRelayState, type PhoneNodeOptions } from '../../src/cadre-phone';
+import {
+  createOpenInvitation,
+  getRelayState,
+  loadSavedStartOptions,
+  startPhoneNode,
+  type PhoneNodeOptions,
+  type SavedStartOptions,
+} from '../../src/cadre-phone';
 import { createClosedChatStrand, joinChatStrand } from '../../src/chat-strand';
 import { requestHostNode } from '../../src/host-node-request';
 
@@ -136,9 +144,11 @@ const h = vi.hoisted(() => {
     nodeCounter: number;
     lastOpts: unknown;
     relay: RelayReservationState;
+    /** What `loadSavedStartOptions()` resolves to: the record a previous session left. */
+    saved: unknown;
   } = {
     node: null, appState: new FakeAppState(), startCount: 0, nodeCounter: 0, lastOpts: null,
-    relay: noRelay(),
+    relay: noRelay(), saved: undefined,
   };
 
   return { FakeAppState, MockNode, ctl, noRelay };
@@ -165,9 +175,11 @@ vi.mock('../../src/cadre-phone', () => ({
     h.ctl.node = null;
   }),
   getOwnerPublicKey: () => (h.ctl.node ? `authpub-${h.ctl.node.id}` : null),
+  getNoiseCryptoMode: () => (h.ctl.node ? 'symmetric' : null),
   // Live read in production; here, whatever the test set. `vi.fn` so a test can also
   // assert the guard read it at the moment of the tap rather than off cached state.
   getRelayState: vi.fn(() => h.ctl.relay),
+  loadSavedStartOptions: vi.fn(async () => h.ctl.saved),
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),
@@ -238,7 +250,24 @@ function mountCadre(): { sink: Sink; renderer: ReactTestRenderer } {
   return { sink, renderer };
 }
 
+/** Mount, then let the launch read of the saved start options and anything it starts settle. */
+async function mountLaunched(): Promise<Sink> {
+  const sink: Sink = { current: null, resumingHistory: [] };
+  await act(async () => {
+    create(React.createElement(CadreHarness, { sink }));
+    await tick();
+  });
+  return sink;
+}
+
 const OPTS: PhoneNodeOptions = { partyId: 'demo', bootstrapAddrs: [], relayAddrs: [] };
+/** What a previous session saved — distinct from {@link OPTS}, so a test can tell whose options a start used. */
+const SAVED_OPTS: PhoneNodeOptions = {
+  partyId: 'saved-party',
+  bootstrapAddrs: ['/ip4/10.0.0.5/tcp/4002/ws/p2p/12D3KooWSavedBootstrapPeer'],
+  relayAddrs: [],
+  noiseCryptoMode: 'symmetric',
+};
 
 /** Drain queued microtasks (the hook + runner chain several awaits). */
 async function tick(): Promise<void> {
@@ -267,6 +296,7 @@ function resetHarness(): void {
   h.ctl.nodeCounter = 0;
   h.ctl.lastOpts = null;
   h.ctl.relay = h.noRelay();
+  h.ctl.saved = undefined;
   vi.clearAllMocks();
 }
 
@@ -360,7 +390,8 @@ describe('useCadreInternal — discovered-strand backlog', () => {
   beforeEach(resetHarness);
 
   /** An unclaimed row as the control network advertises it. */
-  const strandRow = (id: string, type: 'o' | 'c') => ({ Id: id, Type: type, MemberPrivateKey: null, FounderOwnerKey: null });
+  const strandRow = (id: string, type: 'o' | 'c', memberPrivateKey: string | null = null) =>
+    ({ Id: id, Type: type, MemberPrivateKey: memberPrivateKey, FounderOwnerKey: null });
 
   /**
    * A node that is ALREADY up with `backlog` unclaimed — the restart shape. The real
@@ -387,12 +418,16 @@ describe('useCadreInternal — discovered-strand backlog', () => {
     expect(joinChatStrand).toHaveBeenCalledWith(node, row);
   });
 
-  it('leaves a CLOSED strand unclaimed — it still requires the explicit invite handshake', async () => {
-    nodeWithBacklog(strandRow('closed-stored', 'c'));
+  it('joins a CLOSED strand only when its row carries the read secret', async () => {
+    // With the key: a join the node remembered from an earlier invite, or our own party's
+    // closed strand. Without it, the explicit invite handshake is still the only way in.
+    const keyed = strandRow('closed-remembered', 'c', 'read-secret');
+    const node = nodeWithBacklog(strandRow('closed-keyless', 'c'), keyed);
 
     await mountStarted();
 
-    expect(joinChatStrand).not.toHaveBeenCalled();
+    expect(joinChatStrand).toHaveBeenCalledTimes(1);
+    expect(joinChatStrand).toHaveBeenCalledWith(node, keyed);
   });
 
   it('joins once when the event re-offers a strand the drain is still claiming', async () => {
@@ -577,34 +612,46 @@ describe('useCadreInternal — BackgroundRunner wiring', () => {
     expect(h.ctl.appState.removeCount).toBe(1);
     expect(n1.listenerCount('control:disconnected')).toBe(0);
   });
+});
 
-  // ── Documented limitation (latent edge from the ticket) ─────────────────────
-  // If the node singleton is already running at mount but `start()` was never
-  // called this session, `optsRef` stays null and a later cold-start cannot
-  // re-run `startPhoneNode` — the dead node is never recovered. This is only
-  // reachable when the module singleton survives a remount (dev Fast Refresh); a
-  // production fresh JS context starts with a null singleton, so `start()` always
-  // runs first and populates `optsRef`. Test pins the current behavior so a
-  // future fix (persisting opts) is a deliberate, visible change.
-  it('documents: a warm node at mount (no start()) cannot cold-start after an OS kill', async () => {
-    // Simulate a surviving singleton: node present at mount, start() never called.
-    h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
-    const warm = h.ctl.node;
+describe('useCadreInternal — resuming the last session at launch', () => {
+  beforeEach(resetHarness);
 
-    const { sink } = mountCadre();
-    expect(sink.current!.node).toBe(warm as unknown as UseCadreResult['node']);
-    expect(sink.current!.runnerState).toBe('foreground');
+  it('starts with the saved options when the last session ended connected', async () => {
+    h.ctl.saved = { options: SAVED_OPTS, autoStart: true } satisfies SavedStartOptions;
 
-    await actFlush(() => h.ctl.appState.fire('background'));
-    h.ctl.node = null; // OS kills it
+    const sink = await mountLaunched();
 
-    await actFlush(() => h.ctl.appState.fire('active'));
+    expect(startPhoneNode).toHaveBeenCalledTimes(1);
+    expect(startPhoneNode).toHaveBeenCalledWith(SAVED_OPTS);
+    expect(sink.current!.status).toBe('connected');
+    expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
+  });
 
-    // ensureNode no-ops (optsRef null) → no re-start, and the hook keeps a stale
-    // handle to the dead node rather than recovering it. This is the gap.
-    expect(h.ctl.startCount).toBe(0);
-    expect(h.ctl.node).toBeNull();
-    expect(sink.current!.node).toBe(warm as unknown as UseCadreResult['node']);
+  // A push wake's cold start in this JS runtime finished after the first render (which
+  // saw no node) but before the launch read resolved. The hook must adopt that node.
+  it('adopts a node a push wake started while the saved options were being read', async () => {
+    h.ctl.saved = { options: SAVED_OPTS, autoStart: true } satisfies SavedStartOptions;
+    vi.mocked(loadSavedStartOptions).mockImplementationOnce(async () => {
+      h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
+      return h.ctl.saved as SavedStartOptions;
+    });
+
+    const sink = await mountLaunched();
+
+    expect(h.ctl.nodeCounter).toBe(1);
+    expect(sink.current!.node).toBe(h.ctl.node as unknown as UseCadreResult['node']);
+    expect(sink.current!.status).toBe('connected');
+  });
+
+  it('starts nothing after a Disconnect, but still offers the options to Settings', async () => {
+    h.ctl.saved = { options: SAVED_OPTS, autoStart: false } satisfies SavedStartOptions;
+
+    const sink = await mountLaunched();
+
+    expect(startPhoneNode).not.toHaveBeenCalled();
+    expect(sink.current!.status).toBe('idle');
+    expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
   });
 });
 

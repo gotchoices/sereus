@@ -4,7 +4,7 @@ import { buildNodeEnv } from '../container-env.js';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
-import { volumeStubs } from './fake-docker.js';
+import { daemonStubs } from './fake-docker.js';
 
 const base: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
@@ -68,7 +68,7 @@ async function captureOrchestratorEnv(
       return { id: 'cid', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
     }),
     getContainer: vi.fn(),
-    ...volumeStubs(),
+    ...daemonStubs(),
   } as unknown as Docker;
 
   const result = await new DockerOrchestrator(config, fakeDocker).createContainer(request);

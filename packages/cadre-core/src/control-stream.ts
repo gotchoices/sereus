@@ -13,7 +13,8 @@
  * deadline, write one frame, half-close, read one response, reset the stream on
  * any failure — so that shape lives here too, as {@link withDeadline} +
  * {@link exchangeFrame}; each protocol supplies only its dial options, its
- * request object, and its response decoder.
+ * request object, and its response decoder. The receiver's half — one reply
+ * frame, then close — is {@link replyAndClose}.
  *
  * Dependency-free by design: it imports nothing from the protocol modules, so
  * the import graph stays acyclic (`control-stream` ← `seed-bootstrap` ←
@@ -21,6 +22,10 @@
  * {@link readStreamToEnd} rather than decoding a frame — callers own the
  * `decodeLengthPrefixedFrame` guard.
  */
+
+import debug from 'debug';
+
+const log = debug('sereus:cadre:control-stream');
 
 /**
  * Minimal libp2p 3.x stream surface: AsyncIterable for reads, `send()` for
@@ -39,6 +44,25 @@ export function writeFrame(stream: ControlStream, obj: unknown): void {
   new DataView(prefix.buffer).setUint32(0, body.length, false);
   stream.send(prefix);
   stream.send(body);
+}
+
+/**
+ * Receiver side: write one reply frame and close the stream, best-effort on both and never
+ * throwing. A peer that has already gone away cannot be answered, and nothing the receiver
+ * decided depends on whether it heard. The close is what releases the sender, which reads the
+ * reply to end-of-stream ({@link exchangeFrame}).
+ */
+export async function replyAndClose(stream: ControlStream, reply: unknown, label: string): Promise<void> {
+  try {
+    writeFrame(stream, reply);
+  } catch (error) {
+    log('%s: failed to write reply: %o', label, error);
+  }
+  try {
+    await stream.close();
+  } catch (error) {
+    log('%s: failed to close stream: %o', label, error);
+  }
 }
 
 /**

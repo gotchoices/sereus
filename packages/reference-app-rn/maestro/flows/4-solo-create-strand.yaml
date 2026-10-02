@@ -20,7 +20,13 @@ appId: ${MAESTRO_APP_ID}
 
 # ── Connect alone ─────────────────────────────────────────────────────────
 # Party id and bootstrap address stay empty: Settings generates a party id and the
-# node starts as a cadre of one.
+# node starts as a cadre of one. The Connect button can sit below the fold on a
+# short screen (the reference app's Node form has a Relay field and an encryption
+# choice above it); scrolling to an element already on screen does nothing.
+- scrollUntilVisible:
+    element:
+      id: "btn-connect"
+    direction: DOWN
 - tapOn:
     id: "btn-connect"
 - extendedWaitUntil:

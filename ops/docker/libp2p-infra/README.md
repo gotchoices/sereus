@@ -131,7 +131,7 @@ process prints its WebSocket addresses separately for that reason.
 >
 > The client needs a `bufferedAmount` polyfill before any libp2p code loads — see
 > [#11](https://github.com/gotchoices/sereus/issues/11) for the full mechanism,
-> `packages/reference-app-rn/polyfills` for working implementations, and the React Native
+> `packages/cadre-rn/polyfills` for working implementations, and the React Native
 > polyfill table in [`@optimystic/db-p2p`'s readme](https://github.com/gotchoices/Optimystic/blob/main/packages/db-p2p/readme.md)
 > for the canonical list.
 

@@ -16,14 +16,14 @@ const TAG_SHAPE = /^[a-z0-9][a-z0-9._-]*$/i;
 /**
  * `--tag <name>` on this invocation's own argv beats `SEREUS_DIST_TAG` in the
  * environment, which beats nothing (npm's own `latest` default applies). Both forms
- * are needed: `yarn pub` is five `&&`-ed publishes, so an argv flag appended to the
- * `yarn pub` invocation reaches only the last one. The env var is the only form that
- * tags the whole chain: `SEREUS_DIST_TAG=alpha yarn pub`.
+ * are needed: `yarn pub` is a chain of `&&`-ed per-package publishes, so an argv flag
+ * appended to the `yarn pub` invocation reaches only the last one. The env var is the
+ * only form that tags the whole chain: `SEREUS_DIST_TAG=alpha yarn pub`.
  *
- * NOTE: `yarn pub --tag alpha` therefore tags only `cadre-host`. Today that mis-invocation fails
- * loudly on the first package whenever it matters (a prerelease with no tag trips
- * `assertDistTagForPrerelease`); if the `pub` chain ever stops being a flat `&&` list of
- * per-package scripts, re-check that this is still true.
+ * NOTE: `yarn pub --tag alpha` therefore tags only the last package in the chain
+ * (`cadre-rn`). Today that mis-invocation fails loudly on the first package whenever it
+ * matters (a prerelease with no tag trips `assertDistTagForPrerelease`); if the `pub` chain
+ * ever stops being a flat `&&` list of per-package scripts, re-check that this is still true.
  */
 export function resolveDistTag(argv, env) {
 	let tagFromArgv;
@@ -151,13 +151,13 @@ async function main() {
 	const manifest = readManifest(packageDir);
 	const tag = resolveDistTag(process.argv.slice(3), process.env);
 
-	// Fire before `yarn clean && yarn build`: `yarn pub` is five sequential publishes,
+	// Fire before `yarn clean && yarn build`: `yarn pub` is a chain of sequential publishes,
 	// so a refusal here costs seconds, while one caught after the build of package
 	// four (with one..three already on npm under the resolved tag) costs a full
 	// rebuild and cannot undo what already published.
 	assertDistTagForPrerelease(manifest.name, manifest.version, tag);
 
-	// Resumability. `yarn pub` is five sequential publishes; if the third one fails its build, the
+	// Resumability. `yarn pub` is a chain of sequential publishes; if the third one fails its build, the
 	// first two are already on npm and npm refuses to publish over an existing version, so a naive
 	// re-run dies on package one and the release can never be finished. Skipping what is already
 	// there makes `yarn pub` pick up exactly where it stopped.

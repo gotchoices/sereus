@@ -2,11 +2,11 @@ Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for 
 
 ## Repo orientation
 
-- `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT, trust-circle), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Reference apps: `reference-app-rn`, `reference-app-web`. Cross-package real-network tests: `integration-tests`.
+- `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT, trust-circle), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Strict config-file checking shared across those programs, with no dependencies: `@serfab/config-check`. React Native kit (native Noise crypto; subpath imports only): `@serfab/cadre-rn`. Reference apps: `reference-app-rn`, `reference-app-web`. Cross-package real-network tests: `integration-tests`.
 - `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not app code.
 - `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/testing.md`](docs/testing.md) cover subsystems; [`docs/push-network.md`](docs/push-network.md) and [`docs/strand-contracts.md`](docs/strand-contracts.md) are design-stage (decentralized push; human contracts on strands). Current work state lives in [`tickets/`](tickets/), not in docs.
 - `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
-- `test-harness/` — test infrastructure shared across packages (stale-build guard). Not a workspace, never built; imported by relative path from packages' vitest `globalSetup`.
+- `test-harness/` — test infrastructure shared across packages (stale-build guard, schema-text comparison, reporter for tests a failed setup kept from running). Not a workspace, never built; imported by relative path from packages' vitest `globalSetup` and specs.
 - `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
 
 ## General
@@ -19,6 +19,9 @@ machine-checkable, human-review-only (see [`docs/testing.md`](docs/testing.md) �
 - Lowercase SQL reserved words (e.g., `select * from Table`)
 - No inline `import()` unless dynamically loading
 - Don't create summary docs; update existing docs
+- Docs describe the system as it is now. A problem that was found and fixed is history: name the ticket slug (or the upstream commit) and stop. Do not retell the diagnosis, the dates, or the before-state. Keep a past fact only when it is the reason the current design is the way it is, and then state it as a constraint, not a story.
+- One list item, one claim plus its reason. When an item needs a second topic, give it a labelled sub-paragraph; when it describes a mechanism with several parts, make it a headed section and leave a one-sentence item linking to it.
+- Extending a doc: add to the section that owns the topic, or add a section. Do not append to the nearest bullet.
 - Stay DRY
 - No lengthy summaries
 - No backwards compat yet

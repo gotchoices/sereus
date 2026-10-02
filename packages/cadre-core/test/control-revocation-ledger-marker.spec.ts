@@ -37,7 +37,7 @@ import {
  */
 
 /** Every table whose stamps `Revocation` retires — the `TableName` values a reader may ask about. */
-const REVOCABLE_TABLES: readonly RevocableTable[] = ['OwnerKey', 'CadrePeer', 'ValidationKey', 'Strand', 'StrandPartyKey', 'DeviceToken'];
+const REVOCABLE_TABLES: readonly RevocableTable[] = ['OwnerKey', 'CadrePeer', 'ValidationKey', 'Strand', 'StrandPartyKey', 'JoinedStrand', 'PendingJoin', 'DeviceToken'];
 
 const { tableName: MARKER_TABLE, rowKey: MARKER_ROW_KEY, stampId: MARKER_STAMP } = REVOCATION_LEDGER_MARKER;
 
@@ -155,7 +155,7 @@ describe('Revocation ledger marker', () => {
   }, 60_000);
 
   it('SeedBootstrapService.openRevocationLedger files it under the configured owner key', async () => {
-    node.initializeSeedBootstrap(founder.privateKey);
+    await node.initializeSeedBootstrap(founder.privateKey);
     const service = node.getSeedBootstrapService();
     expect(service).not.toBeNull();
 
@@ -165,7 +165,7 @@ describe('Revocation ledger marker', () => {
   }, 60_000);
 
   it('SeedBootstrapService.openRevocationLedger on a keyless (seed-listener) service throws before any write', async () => {
-    node.enableSeedListener();
+    await node.enableSeedListener();
     const service = node.getSeedBootstrapService();
     expect(service?.canAuthorize()).toBe(false);
 
@@ -282,7 +282,7 @@ describe('Revocation ledger marker', () => {
   }, 60_000);
 
   it('the first-growth re-issue sweep re-signs nothing when only the marker is held', async () => {
-    node.initializeSeedBootstrap(founder.privateKey);
+    await node.initializeSeedBootstrap(founder.privateKey);
     const service = node.getSeedBootstrapService()!;
     expect(await service.openRevocationLedger()).toBe('opened');
 

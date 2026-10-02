@@ -1105,7 +1105,7 @@ describe('SeedBootstrapService Helper Methods', () => {
         expect(db).not.toBeNull();
         await db!.insertOwnerKey(ownerPublicKey);
 
-        node.initializeSeedBootstrap(ownerPrivateKey);
+        await node.initializeSeedBootstrap(ownerPrivateKey);
 
         // Use a real Ed25519-derived peerId so the value is shape-valid,
         // though the constraint actually only cares about the owner voucher
@@ -1187,7 +1187,7 @@ describe('SeedBootstrapService Helper Methods', () => {
         expect(db).not.toBeNull();
 
         // Owner path: initializeSeedBootstrap genesis-anchors this node's own key.
-        node.initializeSeedBootstrap(ownerPrivateKey);
+        await node.initializeSeedBootstrap(ownerPrivateKey);
         expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
 
         // The attacker's key reaches the REPLICATED table (a genesis insert that
@@ -1358,7 +1358,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
       cadreNodeInternals(node).selfRegistrationTimer = null;
 
-      node.initializeSeedBootstrap(privateKeyB64);
+      await node.initializeSeedBootstrap(privateKeyB64);
 
       // Before self-registration the owner is not a CadrePeer, so the seed
       // it mints omits its own peer.
@@ -1426,7 +1426,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
       cadreNodeInternals(node).selfRegistrationTimer = null;
 
-      node.initializeSeedBootstrap(privateKeyB64);
+      await node.initializeSeedBootstrap(privateKeyB64);
       const db = node.getControlDatabase();
       await db!.insertOwnerKey(publicKeyB64);
 
@@ -1491,11 +1491,11 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     return { dialProtocol: async () => stream };
   }
 
-  /** A signed seed with an empty peer list — enough for a framing round trip. */
-  function makeSignedSeed(partyId: string): { seed: ControlNetworkSeed; ownerPublicKey: string } {
+  /** A signed seed, by default with an empty peer list — enough for a framing round trip. */
+  function makeSignedSeed(partyId: string, peers: SeedPeer[] = []): { seed: ControlNetworkSeed; ownerPublicKey: string } {
     const privateKey = generatePrivateKey('ed25519', 'base64url') as string;
     const ownerPublicKey = getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string;
-    const seedData = { partyId, peers: [] as SeedPeer[] };
+    const seedData = { partyId, peers };
     const signature = sign(
       digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string,
       privateKey,
@@ -1588,6 +1588,55 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
 
     const ack = await sender.deliverSeed(targetAddr, seed);
     expect(ack.accepted).toBe(true);
+  });
+
+  it('gets the ack while the receiver is still dialing the seed owners', async () => {
+    // The sender's delivery deadline counts link round trips only, and an unreachable owner
+    // can hold the receiver's dial for its whole per-peer budget. Pre-fix the ack waited for
+    // the owner dials, so a dial the test holds open made the delivery time out.
+    const ownerPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const ownerAddr = '/ip4/5.6.7.8/tcp/4001';
+    const { seed, ownerPublicKey } = makeSignedSeed('ack-first-party', [
+      { peerId: ownerPeerId, multiaddrs: [ownerAddr], isOwner: true },
+    ]);
+
+    let releaseOwnerDial = (): void => {};
+    const ownerDialHeld = new Promise<void>((resolve) => { releaseOwnerDial = resolve; });
+    const ownerDials: string[] = [];
+    const applied: number[] = [];
+    const receiver = new SeedBootstrapService({
+      partyId: 'ack-first-party',
+      trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
+    });
+    receiver.setEventCallbacks({ onSeedApplied: (_partyId, peersAdded) => { applied.push(peersAdded); } });
+    serviceInternals(receiver).libp2pNode = {
+      peerId: { toString: () => 'receiver-peer' },
+      peerStore: { merge: async () => {} },
+      dial: async (addr: { toString(): string }) => {
+        ownerDials.push(addr.toString());
+        await ownerDialHeld;
+        return {};
+      },
+    };
+
+    let handled: Promise<void> = Promise.resolve();
+    const sender = new SeedBootstrapService({ partyId: 'ack-first-party', seedDeliverTimeoutMs: 1_000 });
+    serviceInternals(sender).libp2pNode = {
+      dialProtocol: async () => {
+        const { clientStream, serverStream } = duplexPair();
+        handled = runHandleSeedStream(receiver, serverStream, 'target-peer');
+        return clientStream;
+      },
+    };
+
+    const ack = await sender.deliverSeed(targetAddr, seed);
+    expect(ack.accepted).toBe(true);
+    expect(applied).toEqual([]);
+
+    releaseOwnerDial();
+    await handled;
+    expect(ownerDials).toEqual([ownerAddr]);
+    expect(applied).toEqual([1]);
   });
 
   it('dials the seed protocol with the deadline signal, then frames and half-closes', async () => {

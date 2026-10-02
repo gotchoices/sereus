@@ -14,8 +14,10 @@ import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
+import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import { fromString } from 'uint8arrays';
 import { resolveConfig } from '../config/index.js';
+import { commandEnv } from '../config/env.js';
 import { resolveStorageConfig } from './node-session.js';
 import { HealthServer } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
@@ -23,12 +25,34 @@ import { AdminServer } from '../server/admin-server.js';
 const log = debug('cadre:cli:start');
 
 /**
- * Decode a base64url-encoded seed
+ * Decode `--seed` and check that it belongs to this node's party, throwing when either fails.
+ *
+ * `applySeed` never compares the two (see the NOTE in cadre-core's `SeedBootstrapService.applySeed`),
+ * so a seed copied onto a machine whose config names another party would otherwise be applied
+ * while the node went on serving the configured party. Both are configuration errors caught
+ * before anything starts, so they stop start-up rather than leave the node running unseeded.
  */
-function decodeSeed(encoded: string): ControlNetworkSeed {
-  const bytes = fromString(encoded, 'base64url');
-  const json = new TextDecoder().decode(bytes);
-  return JSON.parse(json) as ControlNetworkSeed;
+export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkSeed {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder().decode(fromString(encoded, 'base64url')));
+  } catch (err) {
+    throw new Error(
+      `--seed does not decode as a control network seed: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  const seedPartyId = (decoded as Partial<ControlNetworkSeed> | null)?.partyId;
+  if (typeof seedPartyId !== 'string') {
+    throw new Error('--seed does not decode as a control network seed: it names no party');
+  }
+  if (seedPartyId !== partyId) {
+    throw new Error(
+      `--seed was minted for party ${seedPartyId}, but this node's config names party ${partyId} `
+      + '(controlNetwork.partyId). Use a seed minted by this party\'s owner, or correct the config.'
+    );
+  }
+  return decoded as ControlNetworkSeed;
 }
 
 /** Commander collector for the repeatable `--pin-owner-key` option. */
@@ -77,7 +101,7 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * those same ports.
  */
 function writeStartupToken(path: string | undefined): void {
-  const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+  const token = commandEnv('CADRE_STARTUP_TOKEN') ?? '';
   if (!path || token.length === 0) return;
   writeFileSync(path, token, { encoding: 'utf8' });
   log('Wrote startup token to %s', path);
@@ -90,7 +114,10 @@ export const startCommand = new Command('start')
   .option('--health-port <port>', 'Health check server port', '8080')
   .option('--metrics-port <port>', 'Prometheus metrics server port', '9090')
   .option('--no-health-server', 'Disable health check and metrics servers')
-  .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup')
+  // NOTE: the seed rides the command line, and Windows caps a command line near 32K characters.
+  // Each seed peer is a few hundred bytes of JSON before base64. If cadres grow to dozens of
+  // machines, add a --seed-file.
+  .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup — what `cadre enroll add` prints on the owner machine. Start-up fails if it does not decode or names a party other than the config\'s controlNetwork.partyId')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
@@ -135,11 +162,13 @@ export const startCommand = new Command('start')
         }
       }
 
+      const seed = options.seed ? decodeSeedFor(options.seed, config.controlNetwork.partyId) : undefined;
+
       // Operator-pinned owner keys anchor cold-start seed trust. Build the
       // policy BEFORE constructing CadreNode so every later service-construction
       // site (seed listener, temp-service for applySeed / POST /seed) captures
       // it as the node-wide default — it is read at construction time.
-      const pinnedKeys = validatePinnedOwnerKeys(collectPinnedOwnerKeys(options.pinOwnerKey, process.env.CADRE_OWNER_KEYS));
+      const pinnedKeys = validatePinnedOwnerKeys(collectPinnedOwnerKeys(options.pinOwnerKey, commandEnv('CADRE_OWNER_KEYS')));
       const seedTrustPolicy: SeedTrustPolicy | undefined =
         pinnedKeys.length > 0 ? pinnedKeyTrustPolicy(pinnedKeys) : undefined;
       if (pinnedKeys.length > 0) {
@@ -176,6 +205,15 @@ export const startCommand = new Command('start')
         config.controlNetwork.partyId,
       );
 
+      // Each strand node's saved network state, kept in the same directory: the FRET
+      // routing table it re-imports after a restart, with every peer's signed address
+      // record, so a cross-party strand re-meshes without a fresh invitation. Dial hints
+      // only, like the bootstrap peers — FRET verifies each record at import.
+      const strandNetworkStateStore = await FileStrandNetworkStateStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
@@ -185,8 +223,13 @@ export const startCommand = new Command('start')
         },
         bootstrapPeers: { store: bootstrapPeerStore },
         enrolledMachines: { store: enrolledMachineStore },
+        strandNetworkState: { store: strandNetworkStateStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
+        // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
+        // CLI node (every cadre-host donated node included) hosts a replica of every strand its
+        // party publishes; the only opt-out here is `strandFilter`. If an operator needs
+        // announce-only on an always-on node, surface the field in the CLI config.
         strandFilter: config.strandFilter,
         storage: resolveStorageConfig(config.storage),
         network: config.network,
@@ -269,13 +312,13 @@ export const startCommand = new Command('start')
       // Start health/metrics servers if enabled
       let healthServer: HealthServer | null = null;
       if (options.healthServer !== false) {
-        const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
-        const metricsPort = parseInt(process.env.CADRE_METRICS_PORT ?? options.metricsPort, 10);
+        const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? options.healthPort, 10);
+        const metricsPort = parseInt(commandEnv('CADRE_METRICS_PORT') ?? options.metricsPort, 10);
 
         // POST /seed is registered only when CADRE_SEED_TOKEN is set; otherwise
         // the health port serves read-only liveness/readiness probes. Keep this
         // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
-        const seedToken = process.env.CADRE_SEED_TOKEN ?? '';
+        const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
 
         healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile, seedToken });
         healthServer.attach(node);
@@ -330,7 +373,7 @@ export const startCommand = new Command('start')
           ? '✓ Genesis: inserted founding owner key'
           : '• Owner key already present; skipping genesis');
 
-        node.initializeSeedBootstrap(privateKeyB64);
+        await node.initializeSeedBootstrap(privateKeyB64);
         console.log('✓ Owner seed-bootstrap initialized');
 
         // Write the owner's own signed CadrePeer row up-front, before any
@@ -350,13 +393,13 @@ export const startCommand = new Command('start')
 
       // Bind the loopback admin channel if requested. The startup token doubles
       // as the bearer secret, so refuse to expose the surface without it.
-      const adminPortRaw = process.env.CADRE_ADMIN_PORT ?? options.adminPort;
+      const adminPortRaw = commandEnv('CADRE_ADMIN_PORT') ?? options.adminPort;
       if (adminPortRaw) {
         const adminPort = parseInt(adminPortRaw, 10);
         if (isNaN(adminPort) || adminPort < 0 || adminPort > 65535) {
           throw new Error(`Invalid admin port: ${adminPortRaw}`);
         }
-        const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+        const token = commandEnv('CADRE_STARTUP_TOKEN') ?? '';
         if (token.length === 0) {
           throw new Error('--admin-port requires CADRE_STARTUP_TOKEN in env (used as the admin bearer token)');
         }
@@ -368,14 +411,13 @@ export const startCommand = new Command('start')
 
       // Enable seed listener if requested
       if (options.listenForSeeds) {
-        node.enableSeedListener();
+        await node.enableSeedListener();
         console.log('✓ Seed protocol listener enabled');
       }
 
       // Apply seed if provided
-      if (options.seed) {
+      if (seed) {
         try {
-          const seed = decodeSeed(options.seed);
           log('Applying seed for party: %s', seed.partyId);
           // Pass the pinned policy as the per-call override too: self-documenting,
           // and covers the cold path where neither --owner nor
@@ -388,7 +430,7 @@ export const startCommand = new Command('start')
             console.error(`✗ Failed to apply seed: ${result.error}`);
           }
         } catch (err) {
-          console.error('✗ Failed to decode/apply seed:', err instanceof Error ? err.message : err);
+          console.error('✗ Failed to apply seed:', err instanceof Error ? err.message : err);
         }
       }
 

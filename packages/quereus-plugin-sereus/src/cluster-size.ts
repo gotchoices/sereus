@@ -16,18 +16,35 @@ export const MIN_CLUSTER_SIZE = 2;
  * 1000 ms, a LAN-shaped budget, and it deliberately left that default alone — choosing the
  * value for a deployment of phones is the embedder's job.
  *
- * **Why 5000.** Optimystic GitHub #22, reported by a sereus-based chat app: two parties that
- * reach each other only through a public circuit relay have a round trip near 1.8 s, and a
- * fresh stream (dial or reuse, protocol select, send, receive) cannot finish inside a second.
- * At a cohort of two there is exactly one peer to ask, so one late answer leaves the read with
- * nothing to corroborate against and it is declined. 5000 covers 1.8 s with room for the Noise
- * handshake, the relay hops and a phone's pure-JS crypto (cadre-core's
- * `NetworkConfig.noiseCrypto`), and it is the value Optimystic's own note advises for that
- * link. The whole-pass reconcile bound Optimystic derives from it (`max(5000, 5 x this)`)
- * becomes 25 s.
+ * **Why 7000: it is a derivation, written out.** One read-path request opens a fresh protocol
+ * stream over a connection that is already open, which costs the protocol negotiation plus the
+ * request and its answer: two link round trips, `CIRCUIT_REQUEST_ROUND_TRIPS` in cadre-core's
+ * `link-budget.ts`. At the link round trip cadre declares by default,
+ * `DECLARED_LINK_ROUND_TRIP_MS` (3 500 ms, covering the 3-second relayed round trip sereus
+ * supports), that is 2 x 3 500 = 7 000 ms — `cohortReadDeadlineMs()` in that module. This
+ * constant must equal it, and `cadre-core/test/link-budget.spec.ts` pins the two equal; it is
+ * spelled as a number here only because this package cannot import cadre-core (the dependency
+ * runs the other way). A host that declares its own link (`NetworkConfig.linkRoundTripMs`)
+ * gets the derivation at that link instead of this constant, and a host that sets
+ * `NetworkConfig.cohortQueryTimeoutMs` gets exactly what it set. No admission allowance is
+ * added: a read runs over an open connection and opens none. The whole-pass reconcile bound
+ * Optimystic derives from it (`max(5000, 5 x this)`) becomes 35 s.
  *
- * **Measured** 2026-09-26, one Windows developer machine, two relay-only `CadreNode`s on one
- * shared loopback dedicated relay, the one-way outbound frame delay raised to 900 ms
+ * **History: why 5000 before, and why it was not enough.** Optimystic GitHub #22, reported by
+ * a sereus-based chat app: two parties that reach each other only through a public circuit
+ * relay have a round trip near 1.8 s, and a fresh stream (dial or reuse, protocol select, send,
+ * receive) cannot finish inside a second. At a cohort of two there is exactly one peer to ask,
+ * so one late answer leaves the read with nothing to corroborate against and it is declined.
+ * 5000 was chosen to cover 1.8 s with room for the Noise handshake, the relay hops and a
+ * phone's pure-JS crypto (cadre-core's `NetworkConfig.noiseCrypto`), and it is the value
+ * Optimystic's own note advises for that link. But sereus supports a 3 s round trip, and two
+ * round trips of pure delay at that link is 6 s: above 5 000, so at the supported link every
+ * consult timed out and every read had nothing to corroborate against — the #22 failure again,
+ * one band up. The derivation ends that class: the next person to widen the link changes one
+ * declaration.
+ *
+ * **Measured at 5000**, 2026-09-26, one Windows developer machine, two relay-only `CadreNode`s
+ * on one shared loopback dedicated relay, the one-way outbound frame delay raised to 900 ms
  * (`pipelined` mode — see `docs/testing.md` → "Where measurements live") AFTER the strand had
  * formed and first synced, for a round trip near 1.8 s. A machine that had joined, gone away
  * while the other wrote, then re-attached over its own stale store and read the row written
@@ -36,52 +53,55 @@ export const MIN_CLUSTER_SIZE = 2;
  * `cluster-fetch:peers-silent { silent: 1, consulted: 2 }` followed by
  * `cluster-fetch:no-quorum`, retried about a second later until one lands; at 5000 the
  * corroboration succeeded instead (`cluster-fetch:local-current`). Both journeys COMPLETED at
- * either value, which is why no committed scenario gates this — 900 ms is not where it breaks,
- * and above it a run breaks on redialling instead. The recipe for re-measuring is in
- * `docs/testing.md` → "Where measurements live".
+ * either value, which is why no committed scenario gates this — 900 ms is not where it breaks.
+ * The recipe for re-measuring is in `docs/testing.md` → "Where measurements live".
+ *
+ * **Measured at 7000 against 5000**, 2026-09-29, same machine and shape, at 1 500 ms one-way
+ * (the supported 3 s round trip), fresh-join arm, one run each under
+ * `DEBUG=optimystic:db-p2p:coordinator-repo*`, on `@optimystic/*` 1.7.0: **39 declined reads at
+ * 5000, 32 at 7000**, both runs completing (writable at 70.2 s and 63.6 s). That difference
+ * was noise, not the deadline at work: in both runs every consult on the joiner ended
+ * 3.00-3.02 s after the one before it, the signature of Optimystic's then-fixed 3 000 ms
+ * request dial deadline, which also bounded the protocol negotiation on an ALREADY-OPEN
+ * connection, where the negotiation alone costs one link round trip — 3 s at this delay.
+ *
+ * **Measured at 7000 on 1.8.0**, the same day and shape, once a consult ran under this deadline
+ * alone and cadre-core stated its declared link to Optimystic: **no declined read** during the
+ * measured attach, over two fresh joins and three re-attaches, and every consult on the joiner
+ * completed 6.03-6.05 s after the one before it — the two round trips this deadline is derived
+ * from, with about 0.95 s to spare. The first-sync figures from those runs are on
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`.
  *
  * **What it costs**, in the terms Optimystic's own field doc uses: a peer that is truly gone
- * now holds a read of a block missing locally for up to 5 s before the read is declined
- * instead of 1 s. A joining machine's first sync runs several such consults, so it is the cost
- * that binds — and the first-sync band measured at BOTH deadlines, against the 120 s budget it
- * has to fit, is recorded once, on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` in cadre-core's
- * `strand-first-sync-gate.ts`. At 5000 against the 30 s budget that preceded 120 s, this change
- * would have turned a slow-but-working join into the very `StrandAwaitingFirstSyncError` the
- * report named. 3000 is the fallback if that margin ever goes — still 1.7x the reported round
- * trip, and a doomed consult costs 40% less.
+ * now holds a read of a block missing locally for up to 7 s before the read is declined
+ * instead of 5 s (1 s at Optimystic's default). A joining machine's first sync runs several
+ * such consults, so it is the cost that binds — and the first-sync band measured at each
+ * deadline, against the budget it has to fit, is recorded once, on
+ * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` in cadre-core's `strand-first-sync-gate.ts`. At 5000
+ * against the 30 s budget that once preceded it, that change alone would have turned a
+ * slow-but-working join into the very `StrandAwaitingFirstSyncError` the report named.
  *
- * **What else it lengthens, which the first-sync budget is only the largest case of.** Every
- * cadre-core deadline that wraps an Optimystic read or commit was sized when one silent peer
- * cost 1 s and a whole reconcile pass cost 5 s; those are now 5 s and 25 s. Two consequences
- * are already true rather than hypothetical:
- *
- *  - The inbound membership admission gate reads the control database uncached and FAILS OPEN
- *    after 2 s (`ADMISSION_DECISION_TIMEOUT_MS`, cadre-core's
- *    `membership-connection-gater.ts`), so a decision whose read consults a silent peer can no
- *    longer settle inside that deadline at all: an unplaced peer is admitted at the connection
- *    layer for the whole 5 s instead of roughly 1 s. It is admitted to nothing more than a
- *    connection — the per-protocol stream gates still decide, and unplaced relay reservations
- *    stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`) — which is why this is a widened cost
- *    and not a hole. `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds` owns
- *    the audit of the rest.
- *  - `CONTROL_READ_RETRY_BUDGET_MS` (1500 ms) now terminates the control-read retry loop after
- *    the FIRST attempt whenever that attempt burned this deadline, so a read failing that way
- *    gets no second presentation. Its own doc carries the coupling.
+ * **What else it lengthens.** Every cadre-core deadline that waits on an Optimystic read or
+ * commit waits on this one too; which of them cut the read off on purpose and which must
+ * outlast it is listed in `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and
+ * Commits".
  *
  * **One value for both networks, not two.** The reason to widen is the link, and a phone's
  * control node and its strand nodes share it; nothing about control traffic or strand traffic
  * argues for different numbers. A host that needs another value moves both at once —
- * cadre-core's `NetworkConfig.cohortQueryTimeoutMs`, threaded to {@link controlClusterPolicy}
- * and {@link strandClusterPolicy}.
+ * cadre-core's `NetworkConfig.cohortQueryTimeoutMs` or `NetworkConfig.linkRoundTripMs`,
+ * threaded to {@link controlClusterPolicy} and {@link strandClusterPolicy} through one helper
+ * (`declaredCohortReadDeadlineMs` in cadre-core's `link-budget.ts`).
  *
- * NOTE: this number and the first-sync budget are coupled, and the margin between them is about
- * 2.6x today. Re-measure the first-sync band before raising this again, or when a deployment's
- * first sync grows more collections than the two-table scenario measured above —
- * `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` carries the result and `docs/testing.md` the recipe.
+ * NOTE: this number and the first-sync budget are coupled; the margin between that budget and
+ * the slowest first sync measured is stated on it. Re-measure the first-sync band before
+ * raising the declared link round trip, or when a deployment's first sync grows more
+ * collections than the two-table scenario measured above — `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`
+ * carries the result and `docs/testing.md` the recipe.
  * Nothing warns when the margin goes; the symptom is `StrandAwaitingFirstSyncError` on a join
  * that was progressing normally, which is the failure this pair of numbers exists to end.
  */
-export const COHORT_READ_DEADLINE_MS = 5000;
+export const COHORT_READ_DEADLINE_MS = 7000;
 
 /**
  * How many nodes each block of the **control** (cadre membership) database is replicated
@@ -252,7 +272,9 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * The control network derives one from the party's enrolled machines
  * ({@link controlClusterPolicy}), which is exact there because every enrolled machine runs the
  * control node. A strand has no equivalent count: it launches only on machines whose embedder
- * registered its sApp config, and reusing the party count over-declares — which is worse than
+ * registered its sApp config, plus storage-profile machines that host unclaimed strands as
+ * storage replicas (cadre-core's `CadreNodeConfig.hostUnclaimedStrands`) and whose strand filter
+ * admits it. Phones serve only what their app claims, so reusing the party count over-declares, which is worse than
  * declaring nothing, because at a yardstick of three or more the corroboration floor is pinned
  * at two peers and a strand that can field only one could then never repair at all. So every
  * strand runs {@link STRAND_CLUSTER_POLICY} unchanged and takes the single-voter exposure
@@ -458,8 +480,10 @@ export function resolveStrandClusterSize(configured?: number): number {
  * machine runs the control node by construction: there, enrolled IS serving
  * ({@link controlClusterPolicy}, fed by cadre-core's `enrolled-machine-store.ts`). A STRAND does
  * not — it launches only on machines whose embedder registered its sApp config
- * (`CadreNode.addStrand`), so a closed strand shared by two machines of a three-machine party is
- * served by two, and declaring three would be exactly the unsafe over-declaration above. No
+ * (`CadreNode.addStrand`), plus storage-profile machines hosting it as a storage replica
+ * (`CadreNodeConfig.hostUnclaimedStrands`) whose strand filter admits it. A closed strand
+ * claimed by two phones of a three-phone party is served by two, and declaring three would be
+ * exactly the unsafe over-declaration above. No
  * authenticated per-strand serving count exists yet, so strand nodes declare NOTHING and run the
  * frozen {@link STRAND_CLUSTER_POLICY} — keeping the known, upstream-tracked single-voter
  * exposure (`backlog/debt-read-repair-single-voter-corroboration`) rather than risking the

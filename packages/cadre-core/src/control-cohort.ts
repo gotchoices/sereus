@@ -28,6 +28,12 @@ import type { CohortPeerRow } from './strand-cohort.js';
  * Default recurring cadence for {@link CadreNode.reconcileControlCohort} (ms).
  * In the same spirit as the 5s strand-watch poll but lighter, since a control
  * cohort changes far less often than strand activity.
+ *
+ * An interval between pass starts, not a deadline on a pass. Passes are
+ * single-flight, so a pass that runs longer than this is joined rather than
+ * stacked, and the effective cadence becomes the pass length: one unreachable
+ * sibling's dial alone can take the whole per-peer dial budget (86 s at the
+ * default declared link).
  */
 export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 15_000;
 

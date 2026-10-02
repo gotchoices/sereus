@@ -212,7 +212,7 @@ async function seedStrands(
     const db = node.getControlDatabase();
     expect(db).not.toBeNull();
     expect(await db!.ensureOwnerKey(owner.publicKeyB64)).toBe(true);
-    node.initializeSeedBootstrap(owner.privateKeyB64);
+    await node.initializeSeedBootstrap(owner.privateKeyB64);
 
     for (const strand of strands) {
       await node.publishStrand(strand.id, strand.type, strand.type === 'c' ? MEMBER_PRIVATE_KEY : undefined);
@@ -383,7 +383,8 @@ describe('one-shot command config failures', () => {
       const result = await runCli(['strand', 'list', '-c', configPath], dir);
 
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain('Storage path is required for file storage type');
+      // The config validator reaches this before `resolveStorageConfig`'s own check, and names the file.
+      expect(result.stderr).toContain("storage.path is required when storage.type is 'file'");
     });
   }, CONFIG_TEST_TIMEOUT_MS);
 });

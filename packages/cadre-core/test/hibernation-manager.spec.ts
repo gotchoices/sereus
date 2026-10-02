@@ -34,7 +34,8 @@ describe('HibernationManager', () => {
       onIdle: vi.fn(async (strandId: string) => { callbacks.idleCalls.push(strandId); }),
       onHibernate: vi.fn(async (strandId: string) => { callbacks.hibernateCalls.push(strandId); }),
       onWake: vi.fn(async (strandId: string) => { callbacks.wakeCalls.push(strandId); }),
-      onCheckIn: vi.fn(async (strandId: string) => { callbacks.checkInCalls.push(strandId); })
+      onCheckIn: vi.fn(async (strandId: string) => { callbacks.checkInCalls.push(strandId); }),
+      isQuiescing: vi.fn((_strandId: string) => false)
     };
     return callbacks;
   }
@@ -262,7 +263,7 @@ describe('HibernationManager', () => {
 
       // Kick off an activity-driven wake, then force-wake before it settles.
       manager.recordActivity(instance);
-      await manager.wakeStrand('strand-hib');
+      await manager.wakeStrand(instance);
 
       expect(callbacks.onWake).toHaveBeenCalledTimes(1);
 
@@ -314,6 +315,42 @@ describe('HibernationManager', () => {
       // no second hibernate, no check-in resurrecting the strand.
       await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
       expect(callbacks.onHibernate).toHaveBeenCalledTimes(1);
+      expect(callbacks.onCheckIn).not.toHaveBeenCalled();
+      expect(instance.status).toBe('hibernating');
+
+      manager.stop();
+    });
+
+    it('a force-hibernate during a wake\'s rebuild leaves no idle countdown when the wake settles', async () => {
+      const instance = createInstance('strand-forced-mid-wake', 'interactive');
+      instance.status = 'hibernating';
+      const callbacks = createCallbacks();
+      let finishRebuild!: () => void;
+      const rebuild = new Promise<void>((resolve) => { finishRebuild = resolve; })
+        .then(() => { instance.status = 'active'; });
+      callbacks.onWake.mockImplementation(async () => rebuild);
+      // As StrandInstanceManager orders it: the quiesce waits for the rebuild and then
+      // releases it, so the wake settles 'active' while the quiesce is still pending.
+      let quiescing = false;
+      callbacks.isQuiescing.mockImplementation(() => quiescing);
+      callbacks.onHibernate.mockImplementation(async () => {
+        quiescing = true;
+        await rebuild;
+        await new Promise<void>((released) => { setTimeout(released, 50); });
+        instance.status = 'hibernating';
+        quiescing = false;
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      const wake = manager.wakeStrand(instance);
+      const forced = manager.forceHibernate(instance);
+      finishRebuild();
+      await wake;
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await forced;
+      expect(callbacks.onIdle).not.toHaveBeenCalled();
       expect(callbacks.onCheckIn).not.toHaveBeenCalled();
       expect(instance.status).toBe('hibernating');
 
@@ -461,7 +498,8 @@ describe('HibernationManager', () => {
             instance.status = 'active';
             manager.recordActivity(instance);
           }
-        })
+        }),
+        isQuiescing: () => false
       };
 
       const manager = new HibernationManager(FAST_BACKOFF, callbacks);
@@ -519,6 +557,216 @@ describe('HibernationManager', () => {
       // so the strand can hibernate → check-in afresh rather than staying active.
       await vi.advanceTimersByTimeAsync(1000 + 10);
       expect(callbacks.idleCalls).toContain('strand-rearm');
+
+      manager.stop();
+    });
+
+    it('a check-in that leaves the strand live restarts its idle countdown even when nothing re-armed it', async () => {
+      const instance = createInstance('strand-checkin-live', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => {
+        callbacks.hibernateCalls.push(id);
+        instance.status = 'hibernating';
+      });
+      // Activity that landed while CadreNode's check-in was still rebuilding keeps the strand
+      // up, but found it `'starting'`, so recordActivity armed no idle timer.
+      callbacks.onCheckIn.mockImplementation(async () => { instance.status = 'active'; });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // idle @1000, hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 leaves it active
+      expect(callbacks.idleCalls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1000 + 10); // idle again @3100
+      expect(callbacks.idleCalls).toHaveLength(2);
+
+      manager.stop();
+    });
+
+    it('a failed wake restores the check-in chain it cancelled, and starts none for a strand without one', async () => {
+      const instance = createInstance('strand-wake-fail', 'interactive');
+      // Force-hibernated (the mobile background path): deliberately no check-in chain.
+      const chainless = createInstance('strand-chainless', 'interactive');
+      const byId = (id: string) => (id === instance.strandId ? instance : chainless);
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => { byId(id).status = 'hibernating'; });
+      // As CadreNode.handleStrandWake does on a failed rebuild: re-hibernate, then rethrow.
+      callbacks.onWake.mockImplementation(async (id: string) => {
+        byId(id).status = 'hibernating';
+        throw new Error('wake boom');
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating(); // hibernated @2000, first check-in armed @2100
+      await manager.forceHibernate(chainless);
+
+      await expect(manager.wakeStrand(instance)).rejects.toThrow(/wake boom/);
+      await expect(manager.wakeStrand(chainless)).rejects.toThrow(/wake boom/);
+
+      // Re-armed at base delay from the failure (@2050), not left with nothing scheduled.
+      expect(instance.nextCheckIn?.getTime()).toBe(2150);
+      expect(chainless.nextCheckIn).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(callbacks.checkInCalls).toContain('strand-wake-fail');
+      expect(callbacks.checkInCalls).not.toContain('strand-chainless');
+
+      manager.stop();
+    });
+
+    it('an explicit wake leaves the idle countdown running, for a hibernating strand and an already-live one', async () => {
+      const hibernated = createInstance('strand-woken', 'interactive');
+      const live = createInstance('strand-live', 'interactive');
+      const byId = (id: string) => (id === hibernated.strandId ? hibernated : live);
+      const callbacks = createCallbacks();
+      callbacks.onIdle.mockImplementation(async (id: string) => {
+        callbacks.idleCalls.push(id);
+        byId(id).status = 'idle';
+      });
+      callbacks.onHibernate.mockImplementation(async (id: string) => { byId(id).status = 'hibernating'; });
+      callbacks.onWake.mockImplementation(async (id: string) => { byId(id).status = 'active'; });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(hibernated);
+      await driveToHibernating(); // idle @1000, hibernated @2000
+      manager.trackStrand(live);  // idle countdown armed @2050, which the wake cancels
+
+      await manager.wakeStrand(hibernated);
+      await manager.wakeStrand(live);
+
+      await vi.advanceTimersByTimeAsync(1000 + 10); // both idle @3050
+      expect([...callbacks.idleCalls].sort()).toEqual(['strand-live', 'strand-woken', 'strand-woken']);
+
+      manager.stop();
+    });
+
+    it('a probe that ends hibernating restores the check-in chain it interrupted, and arms nothing else', async () => {
+      const instance = createInstance('strand-probed', 'interactive');
+      // Force-hibernated (the mobile background path): deliberately no check-in chain.
+      const chainless = createInstance('strand-probed-chainless', 'interactive');
+      const byId = (id: string) => (id === instance.strandId ? instance : chainless);
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => { byId(id).status = 'hibernating'; });
+      callbacks.onWake.mockImplementation(async (id: string) => { byId(id).status = 'active'; });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating(); // idle @1000, hibernated @2000, first check-in armed @2100
+      await manager.forceHibernate(chainless);
+
+      await manager.probeWake(instance);
+      await manager.probeWake(chainless);
+      // The wakes' settles arm no idle countdown while the probes hold the strands: one
+      // shorter than the window would flip a probed strand to idle mid-window.
+      await vi.advanceTimersByTimeAsync(1000 + 10);
+      expect(callbacks.idleCalls).toEqual(['strand-probed']); // only the pre-probe idle @1000
+
+      for (const probed of [instance, chainless]) {
+        manager.recordActivity(probed); // an idle countdown armed mid-probe must not outlive its end
+        probed.status = 'hibernating';  // as CadreNode's window (or its failure path) leaves it
+        manager.endProbe(probed);
+      }
+
+      // Re-armed at base delay from the probe's end (@3060); the chainless strand gains none.
+      expect(instance.nextCheckIn?.getTime()).toBe(3160);
+      expect(chainless.nextCheckIn).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(callbacks.checkInCalls).toContain('strand-probed');
+      expect(callbacks.checkInCalls).not.toContain('strand-probed-chainless');
+      expect(callbacks.idleCalls).toEqual(['strand-probed']); // the mid-probe countdown never fired
+
+      manager.stop();
+    });
+
+    it('a check-in that returns while a wake is rebuilding the strand hands its chain to that wake', async () => {
+      const instance = createInstance('strand-handoff', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async () => { instance.status = 'hibernating'; });
+      let failWake!: () => void;
+      // As CadreNode.handleStrandWake: the rebuild holds the strand `'starting'`; a failed one
+      // re-hibernates it and rethrows.
+      callbacks.onWake.mockImplementation(async () => {
+        instance.status = 'starting';
+        await new Promise<void>((resolve) => { failWake = resolve; });
+        instance.status = 'hibernating';
+        throw new Error('wake boom');
+      });
+      // A wake begins while the check-in reads the cohort seed; the read then fails, and the
+      // check-in leaves the wake's mid-build strand alone.
+      let wake!: Promise<void>;
+      callbacks.onCheckIn.mockImplementationOnce(async () => { wake = manager.wakeStrand(instance); });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 returns with the strand 'starting'
+      expect(instance.status).toBe('starting');
+
+      failWake();
+      await expect(wake).rejects.toThrow(/wake boom/);
+
+      // The wake's failure restored the chain at base delay from @2150.
+      expect(instance.nextCheckIn?.getTime()).toBe(2250);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(callbacks.onCheckIn).toHaveBeenCalledTimes(2);
+
+      manager.stop();
+    });
+
+    it('a force-hibernate during a running check-in ends its chain, even with a probe holding the strand', async () => {
+      const instance = createInstance('strand-forced-mid-check-in', 'interactive');
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async () => { instance.status = 'hibernating'; });
+      callbacks.onWake.mockImplementation(async () => { instance.status = 'active'; });
+      // Mid-window, the app backgrounds (force-hibernate), then a push-wake probe starts.
+      callbacks.onCheckIn.mockImplementationOnce(async () => {
+        instance.status = 'active';
+        await manager.forceHibernate(instance);
+        await manager.probeWake(instance);
+      });
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating();             // hibernated @2000, check-in armed @2100
+      await vi.advanceTimersByTimeAsync(100); // check-in @2100 returns during the probe
+
+      instance.status = 'hibernating';        // the probe's window re-quiesced it
+      manager.endProbe(instance);
+      expect(instance.nextCheckIn).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(callbacks.onCheckIn).toHaveBeenCalledTimes(1);
+
+      manager.stop();
+    });
+
+    it('a force-hibernate during a timer-driven hibernate leaves the strand with no check-in chain', async () => {
+      const instance = createInstance('strand-forced-mid-hibernate', 'interactive');
+      const callbacks = createCallbacks();
+      let finishQuiesce!: () => void;
+      // The timer's quiesce is still releasing when the app backgrounds; the force-hibernate
+      // joins it (as CadreNode's does), and both mark the strand once it ends.
+      const quiesce = new Promise<void>((resolve) => { finishQuiesce = resolve; })
+        .then(() => { instance.status = 'hibernating'; });
+      callbacks.onHibernate.mockImplementation(async () => quiesce);
+
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      manager.start();
+      manager.trackStrand(instance);
+      await driveToHibernating(); // idle @1000, hibernate timer fires @2000, its quiesce held
+      const forced = manager.forceHibernate(instance);
+      finishQuiesce();
+      await forced;
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(instance.nextCheckIn).toBeUndefined();
+      expect(callbacks.onCheckIn).not.toHaveBeenCalled();
 
       manager.stop();
     });

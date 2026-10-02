@@ -19,16 +19,28 @@
  */
 
 import debug from 'debug';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
 import type { StrandFormationDisclosure, StrandMembershipInvite } from './types.js';
-import { type ControlStream, writeFrame, withTimeout } from './control-stream.js';
+import { type ControlStream, writeFrame, withDeadline, withTimeout } from './control-stream.js';
 import { canonicalJson } from './canonical-json.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import { trailingPeerId } from './peer-record.js';
+import {
+  formationDeadlines,
+  resolveProvisionTimeoutMs,
+  responderClampReserveMs,
+  splitProvisionBudget
+} from './strand-formation-deadlines.js';
+import {
+  FormationRejectedError,
+  FormationUnreachableError,
+  type FormationRejectionCode
+} from './strand-formation-rejection.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -36,77 +48,28 @@ const log = debug('sereus:cadre:formation-proto');
 export const FORMATION_PROTOCOL = '/sereus/formation/1.0.0';
 
 /**
- * Rejection reason for an invitation that cannot be redeemed at all — unknown, expired, or
- * fully spent. Shared with `StrandFormationManager`, which reports an
- * `InvitationExhaustedError` (an invite spent out from under a redemption already in flight)
- * with this SAME wording on purpose: a joiner that lost the race must be indistinguishable
- * from a non-racing latecomer, so the two sites must never drift apart.
+ * Rejection reason for an invitation that cannot be redeemed — unknown here
+ * (`'token-unknown'`), or expired or fully spent (`'token-spent'`); the code tells them
+ * apart. Shared with `StrandFormationManager`, which reports an `InvitationExhaustedError`
+ * (an invite spent out from under a redemption already in flight) with this SAME wording and
+ * code on purpose: a joiner that lost the race must be indistinguishable from a non-racing
+ * latecomer, so the two sites must never drift apart.
  */
 export const INVALID_TOKEN_REASON = 'Invalid token';
 
 /** Maximum formation message size (1MB). */
 const MAX_FORMATION_MSG_SIZE = 1024 * 1024;
 
-/** Default whole-session timeout (ms). */
-const DEFAULT_SESSION_TIMEOUT_MS = 30_000;
-/** Default per-step (single read/write) timeout (ms). */
-const DEFAULT_STEP_TIMEOUT_MS = 5_000;
-/**
- * Default provisioning budget (ms) — distinct from {@link DEFAULT_STEP_TIMEOUT_MS} because
- * `provisionStrand` is real work (DB writes, and an outbound approval-hook HTTP call when
- * the invite carries a `ValidationUrl`), not a bare wire read/write.
- *
- * Ordering is deliberate — each layer must be able to fail and report before the layer above
- * it gives up:
- *
- *   approval hook (10 s, `formation-approval.ts`)
- *     < responder provisioning (12 s)
- *     < initiator await-response (15 s)
- *     < session (30 s)
- *
- * The 3 s margin between responder provisioning and initiator await-response is the wire
- * latency budget for the result frame to travel back.
- *
- * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is a settle grace, so the default
- * WORK budget (12 s − 2 s = 10 s) EQUALS the hook's own 10 s: a dead hook races 'Formation
- * approval unavailable, retry' against 'Formation provisioning timed out'. Both are retryable
- * and both leave the invite unspent, so the race is benign.
- */
-const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
-/**
- * Settle grace (ms), carved OUT of `provisionTimeoutMs` — never added on top, so the budget
- * ladder above is untouched. The listener aborts the provisioning hook when the work budget
- * ({@link splitProvisionBudget}) expires, then waits up to this grace for the work to settle
- * anyway: once the `FormationUsage` insert has been issued nothing can un-spend it (the table
- * is append-only), so a provisioning that lands late is ADOPTED and reported as a real
- * approval rather than lying "timed out" over a spent invite. A hook that observes the
- * abort before writing leaves the invite unspent.
- */
-const PROVISION_SETTLE_GRACE_MS = 2_000;
-/**
- * Wire-latency margin (ms) added to the responder's provisioning budget to get the
- * initiator's await-response budget — the travel time for the result frame to come back
- * after the responder finishes (see {@link DEFAULT_PROVISION_TIMEOUT_MS}).
- * `StrandFormationManager` reuses this constant so a CONFIGURED budget preserves the same
- * margin the defaults do, instead of applying the same number to both sides and racing the
- * initiator's own timeout against the responder's clean rejection reply. The responder's
- * clamp ({@link provisionCeilingMs}) holds the same margin back, so the ordering survives a
- * budget large enough that BOTH roles get clamped.
- *
- * NOTE: 3 s is a fixed assumption about how long the result frame takes to travel back. If
- * formation ever runs over paths where that frame can take longer (a slow circuit relay, a
- * congested mobile link), the margin is too thin and the initiator's timeout races the
- * responder's reply again — raise it, or derive it from an observed round-trip.
- */
-export const PROVISION_RESPONSE_TRAVEL_MARGIN_MS = 3_000;
-/** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
-const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = DEFAULT_PROVISION_TIMEOUT_MS + PROVISION_RESPONSE_TRAVEL_MARGIN_MS;
 /**
  * Default cap on concurrent inbound formation sessions.
- * NOTE: a longer provisioning budget holds a session's slot longer, so a slow hook can
- * exhaust this cap and make the listener reject fresh joiners with 'Too many concurrent
- * formation sessions'. Fine at the current default; revisit if `provisionTimeoutMs` is
- * raised well above its default or this cap is lowered.
+ *
+ * NOTE: a session holds its slot for its whole provisioning budget, 171 s at the default
+ * declared link ({@link formationDeadlines}), so a slow hook or commit holds slots for
+ * minutes. Only a caller holding a valid token AND a valid consent signature reaches
+ * provisioning — a stranger is cut at the contact wait (7 s at the default) or at the first
+ * validation read — so the exposure is one invitee opening many sessions with one token. If
+ * invitation tokens are ever published where untrusted parties can read them, cap in-flight
+ * sessions per token rather than lowering this.
  */
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
 
@@ -116,11 +79,10 @@ const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
  * handful of entries (one per listen transport, plus a circuit-relay reservation), so
  * 16 is generous for the honest case while keeping the result frame bounded against a
  * peer that would pad it — either direction, since both sides run the list through
- * {@link sanitizeStrandAddrs}. Exported because the same bound has to hold on the
- * initiator's stored copy: `CadreNode` accumulates across repeat formations against one
- * strand, so it caps the accumulation rather than only each arriving list.
+ * {@link sanitizeStrandAddrs}. The initiator's kept copy is one arriving list, replaced by
+ * the next formation against the same strand, so the same bound holds there.
  */
-export const MAX_STRAND_ADDRS = 16;
+const MAX_STRAND_ADDRS = 16;
 
 // ── Roles ────────────────────────────────────────────────────────────────────
 
@@ -172,7 +134,23 @@ export interface FormationProvisionResult {
  */
 export type ResponderProvisionOutcome =
   | { approved: true; result: FormationProvisionResult }
-  | { approved: false; reason: string };
+  | FormationRejection;
+
+/**
+ * A refusal as the responder sends it: never without a code. Carries nothing else — no
+ * identity, addresses or keys — so a rejection discloses nothing about the responder.
+ */
+export interface FormationRejection {
+  approved: false;
+  code: FormationRejectionCode;
+  /** Human-facing text for logs; joiners branch on `code`. */
+  reason: string;
+}
+
+/** What the responder's token check yields; an invalid token names which way it failed. */
+export type FormationTokenCheck =
+  | { valid: true }
+  | { valid: false; code: Extract<FormationRejectionCode, 'token-unknown' | 'token-spent'> };
 
 /** Initiator → Responder: carries the real token + disclosure + initiator cadre. */
 export interface FormationContactMessage {
@@ -201,7 +179,13 @@ export interface FormationContactMessage {
 /** Responder → Initiator: responder identity/cadre disclosed only after validation. */
 export interface FormationResultMessage {
   approved: boolean;
-  /** Present iff `approved === false`. */
+  /**
+   * Why the responder refused; present iff `approved === false`. Optional on this wire type
+   * only because a frame from another version may omit it — the responder always sends one
+   * ({@link FormationRejection}), and the joiner reads a missing one as `'unrecognized'`.
+   */
+  code?: FormationRejectionCode;
+  /** Human-facing text; present iff `approved === false`. */
   reason?: string;
   /** Responder's real party id (disclosed only after validation). */
   partyId?: string;
@@ -224,6 +208,9 @@ export interface FormationResultMessage {
   /** The provisioned strand/db result (always present on approval). */
   provisionResult?: FormationProvisionResult;
 }
+
+/** An approving result frame as the responder builds it. */
+type ApprovedResultMessage = FormationResultMessage & { approved: true };
 
 /**
  * Normalize a strand-address list arriving from — or heading to — the wire: keep only
@@ -380,67 +367,11 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
   return true;
 }
 
-/**
- * Ceiling for a resolved provisioning budget.
- *
- * The session budget also has to cover the wire step that PRECEDES provisioning (the
- * responder's contact read, the initiator's dial-connect), so a whole step is held back
- * rather than triggering only on a literal overrun.
- *
- * `reserveMs` is the EXTRA room only the responder holds back, so its own budget still
- * lands strictly before the initiator's larger await-response budget even when both are
- * clamped — without it, any configured budget at or above `sessionTimeoutMs -
- * stepTimeoutMs` clamps both roles onto the same number and the responder's clean
- * rejection races the initiator's timeout again. Capped at half the remaining room (like
- * {@link splitProvisionBudget}) so a small session config still spends most of it working.
- */
-function provisionCeilingMs(sessionTimeoutMs: number, stepTimeoutMs: number, reserveMs: number): number {
-  const roomMs = sessionTimeoutMs - stepTimeoutMs;
-  return Math.max(1, roomMs - Math.min(reserveMs, Math.floor(roomMs / 2)));
-}
-
-/**
- * Resolve a caller-supplied provisioning budget: `0`/negative means "unset" (use
- * `defaultMs`). If the result would let provisioning outlive the session — no result
- * frame is ever sent, exactly the failure this budget exists to prevent — clamp it to
- * {@link provisionCeilingMs} and log a warning.
- */
-function resolveProvisionTimeoutMs(
-  configured: number | undefined,
-  defaultMs: number,
-  sessionTimeoutMs: number,
-  stepTimeoutMs: number,
-  role: string,
-  reserveMs = 0
-): number {
-  const requested = configured && configured > 0 ? configured : defaultMs;
-  const ceilingMs = provisionCeilingMs(sessionTimeoutMs, stepTimeoutMs, reserveMs);
-  if (requested >= ceilingMs) {
-    log(
-      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (step %dms, reserve %dms); clamping to %dms',
-      role, requested, sessionTimeoutMs, stepTimeoutMs, reserveMs, ceilingMs
-    );
-    return ceilingMs;
-  }
-  return requested;
-}
-
-/**
- * Split a resolved provisioning budget into the WORK budget and the trailing settle grace.
- *
- * The grace is carved OUT of the budget (see {@link PROVISION_SETTLE_GRACE_MS}), and capped at
- * half of it so a small configured budget still spends at least half its time doing work.
- */
-function splitProvisionBudget(provisionTimeoutMs: number): { workMs: number; graceMs: number } {
-  const graceMs = Math.min(PROVISION_SETTLE_GRACE_MS, Math.floor(provisionTimeoutMs / 2));
-  return { workMs: provisionTimeoutMs - graceMs, graceMs };
-}
-
 // ── Responder (listener) ─────────────────────────────────────────────────────
 
 export interface FormationListenerOptions {
-  /** Validate the invitation token; returns whether it is valid. */
-  validateToken(token: string): Promise<{ valid: boolean }>;
+  /** Validate the invitation token; an invalid one says whether it is unknown here or spent. */
+  validateToken(token: string): Promise<FormationTokenCheck>;
   /** Validate the initiator's disclosure with the REAL token + disclosure. */
   validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean>;
   /**
@@ -471,14 +402,22 @@ export interface FormationListenerOptions {
    * per-strand address lookup.
    */
   resolveStrandAddrs?(strandId: string): string[];
+  /**
+   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * every deadline below takes its default ({@link formationDeadlines}). The default
+   * declaration when omitted.
+   */
+  linkRoundTripMs?: number;
+  /** Whole-session budget; default `sessionMs` of the derived ladder. */
   sessionTimeoutMs?: number;
+  /** Budget for the contact-frame read; default `awaitContactMs` of the derived ladder. */
   stepTimeoutMs?: number;
   /**
-   * Budget for the `provisionStrand` hook call — distinct from `stepTimeoutMs` because
-   * provisioning is real work, not a bare wire read/write. Default 12 s; `0`/unset uses
-   * the default; a value that would outlive the session is clamped ({@link
-   * provisionCeilingMs}). See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering
-   * rationale.
+   * Budget for the `provisionStrand` hook call, work plus settle grace — distinct from
+   * `stepTimeoutMs` because provisioning is real work, not a bare wire read. Default
+   * `provisionWorkMs + provisionGraceMs` of the derived ladder (171 s at the default
+   * declaration); `0`/unset uses the default; a value that would outlive the session is
+   * clamped ({@link resolveProvisionTimeoutMs}). See {@link formationDeadlines} for the ordering.
    */
   provisionTimeoutMs?: number;
   maxConcurrentSessions?: number;
@@ -493,7 +432,7 @@ export interface FormationListenerOptions {
 export class FormationListener {
   private readonly options: FormationListenerOptions;
   private readonly sessionTimeoutMs: number;
-  private readonly stepTimeoutMs: number;
+  private readonly awaitContactMs: number;
   private readonly provisionWorkMs: number;
   private readonly provisionGraceMs: number;
   private readonly maxConcurrentSessions: number;
@@ -503,13 +442,14 @@ export class FormationListener {
 
   constructor(options: FormationListenerOptions) {
     this.options = options;
-    this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
-    this.stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+    const deadlines = formationDeadlines(options.linkRoundTripMs);
+    this.sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
+    this.awaitContactMs = options.stepTimeoutMs ?? deadlines.awaitContactMs;
     const split = splitProvisionBudget(resolveProvisionTimeoutMs(
-      options.provisionTimeoutMs, DEFAULT_PROVISION_TIMEOUT_MS,
-      this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener',
-      PROVISION_RESPONSE_TRAVEL_MARGIN_MS
-    ));
+      options.provisionTimeoutMs, deadlines.provisionWorkMs + deadlines.provisionGraceMs,
+      this.sessionTimeoutMs, this.awaitContactMs + deadlines.validationMs, 'FormationListener',
+      responderClampReserveMs(deadlines, this.awaitContactMs)
+    ), deadlines.provisionGraceMs);
     this.provisionWorkMs = split.workMs;
     this.provisionGraceMs = split.graceMs;
     this.maxConcurrentSessions = options.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
@@ -520,28 +460,29 @@ export class FormationListener {
     return this.activeSessions;
   }
 
-  register(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): void {
+  /** Register the formation handler on `node`. Rejects when libp2p refuses the registration. */
+  async register(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): Promise<void> {
     if (this.registered.has(node)) {
       log('node already registered');
       return;
     }
-    void node.handle(protocolId, async (rawStream: unknown, _connection: unknown) => {
+    await node.handle(protocolId, async (rawStream: unknown, _connection: unknown) => {
       await this.handleStream(rawStream as ControlStream);
     });
     this.registered.add(node);
     log('formation listener registered (%s)', protocolId);
   }
 
-  unregister(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): void {
+  async unregister(node: Libp2p, protocolId: string = FORMATION_PROTOCOL): Promise<void> {
     if (!this.registered.has(node)) return;
-    void node.unhandle(protocolId);
+    await node.unhandle(protocolId);
     this.registered.delete(node);
     log('formation listener unregistered (%s)', protocolId);
   }
 
   private async handleStream(stream: ControlStream): Promise<void> {
     if (this.activeSessions >= this.maxConcurrentSessions) {
-      const rejection: FormationResultMessage = { approved: false, reason: 'Too many concurrent formation sessions' };
+      const rejection: FormationRejection = { approved: false, code: 'busy', reason: 'Too many concurrent formation sessions' };
       try { writeFrame(stream, rejection); } catch { /* best effort */ }
       try { await stream.close(); } catch { /* ignore */ }
       return;
@@ -559,8 +500,8 @@ export class FormationListener {
   }
 
   /**
-   * Run the provisioning hook under its WORK budget — the configured provisioning budget minus
-   * the trailing settle grace ({@link splitProvisionBudget}, {@link PROVISION_SETTLE_GRACE_MS}).
+   * Run the provisioning hook under its WORK budget — the provisioning budget minus the
+   * trailing settle grace ({@link splitProvisionBudget}).
    *
    * When the work budget expires the hook's signal is aborted, then
    * {@link settleWithinGrace} waits out the grace for the aborted work to settle anyway.
@@ -600,11 +541,18 @@ export class FormationListener {
    * inside the grace its outcome is ADOPTED — the joiner is told the truth (approved, or the
    * hook's own rejection reason) rather than "timed out" over a spent invite.
    *
-   * NOTE: one window stays open — a work budget that expires after the `FormationUsage`
-   * insert was issued AND a commit that outlasts the grace. The joiner is told 'timed out'
-   * while its one-time invite is in fact spent, and since every retry mints a fresh keypair
-   * no recovery path can match it. Nothing can un-spend an append-only row, so the late-settle
-   * logging below is the observability for it; widen the grace only if it is seen in the wild.
+   * The grace is derived to contain one seat read plus one commit at the declared link
+   * ({@link formationDeadlines}), which is exactly what runs after the insert attempt passes
+   * its abort check, so at that link the late outcome lands inside it.
+   *
+   * NOTE: a commit that outlasts even the derived grace (a link slower than declared, a
+   * configured `provisionTimeoutMs` whose half-cap shrank the grace, or a commit phase that
+   * re-picks an unanswering coordinator, which Optimystic lets run to its transaction budget,
+   * 170 s at the default declared link) still tells the joiner
+   * 'timed out' while its one-time invite is in fact spent, and since every retry mints a
+   * fresh keypair no recovery path can match it. Nothing can un-spend an append-only row, so
+   * the late-settle logging below is the observability for it; if it is seen in the wild,
+   * raise the declared link rather than this grace.
    */
   private async settleWithinGrace(
     id: number,
@@ -699,30 +647,30 @@ export class FormationListener {
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
     // gone out yet. This closes the "stream closed with no result frame" class of bug.
     let wroteFrame = false;
-    const send = (msg: FormationResultMessage): void => {
+    const send = (msg: FormationRejection | ApprovedResultMessage): void => {
       writeFrame(stream, msg);
       wroteFrame = true;
     };
 
     try {
       const reader = new FrameReader(stream);
-      const contact = await withTimeout(this.stepTimeoutMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
+      const contact = await withTimeout(this.awaitContactMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
       log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
 
       if (!this.isJoinerConsentValid(id, contact)) {
-        send({ approved: false, reason: 'Invalid joiner consent' });
+        send({ approved: false, code: 'consent-invalid', reason: 'Invalid joiner consent' });
         return;
       }
 
       const tokenResult = await this.options.validateToken(contact.token);
       if (!tokenResult.valid) {
-        send({ approved: false, reason: INVALID_TOKEN_REASON });
+        send({ approved: false, code: tokenResult.code, reason: INVALID_TOKEN_REASON });
         return;
       }
 
       const disclosureOk = await this.options.validateDisclosure(contact.token, contact.disclosure);
       if (!disclosureOk) {
-        send({ approved: false, reason: 'Invalid disclosure' });
+        send({ approved: false, code: 'disclosure-invalid', reason: 'Invalid disclosure' });
         return;
       }
 
@@ -730,13 +678,14 @@ export class FormationListener {
       if (!outcome) {
         // Reported as its own retryable reason rather than falling through to the generic
         // catch below, which would report the misleading 'Internal formation error'.
-        send({ approved: false, reason: 'Formation provisioning timed out' });
+        send({ approved: false, code: 'provisioning-timeout', reason: 'Formation provisioning timed out' });
         return;
       }
       if (!outcome.approved) {
-        // A post-validation rejection still discloses NEITHER identity NOR cadre,
-        // exactly like the token/disclosure rejections above.
-        send({ approved: false, reason: outcome.reason });
+        // A post-validation rejection still discloses NEITHER identity NOR cadre, exactly
+        // like the token/disclosure rejections above — copied field by field so nothing else
+        // a hook put on its outcome reaches the wire.
+        send({ approved: false, code: outcome.code, reason: outcome.reason });
         return;
       }
       // Validation + provisioning passed → safe to disclose responder identity/cadre.
@@ -760,7 +709,7 @@ export class FormationListener {
       // log + close. Re-throw either way so the failure is still recorded — this is a
       // deliberate, logged conversion, not silent.
       if (!wroteFrame) {
-        const internalError: FormationResultMessage = { approved: false, reason: 'Internal formation error' };
+        const internalError: FormationRejection = { approved: false, code: 'internal', reason: 'Internal formation error' };
         try { writeFrame(stream, internalError); } catch { /* stream already broken */ }
       }
       throw err;
@@ -773,16 +722,42 @@ export class FormationListener {
 export interface FormationDialOptions {
   /** The contact message to send (real token, partyId, disclosure, initiator cadre). */
   contact: FormationContactMessage;
-  /** Responder multiaddrs to dial. */
+  /**
+   * Responder multiaddrs to dial, normally the invitation's bootstrap list. Every entry that
+   * parses is tried, in the order libp2p's default address sorter picks (loopback last, then
+   * public before private, then circuit after direct), until one connects, all under one
+   * dial-connect budget (`dialTimeoutMs`); an entry that does not parse is skipped.
+   *
+   * {@link dialFormation} dials ONE machine, so every entry must name the same trailing peer
+   * id (or none). An invitation names several machines of the inviting party; hand it to
+   * {@link dialFormationByMachine}, which splits the list by trailing peer id, drops entries
+   * that name no peer, and runs one {@link dialFormation} session per machine, in the order
+   * each machine first appears. Each session keeps its own deadline ladder, so a machine that
+   * cannot be dialled costs one `dialTimeoutMs` and one that accepts the contact and then
+   * stalls costs up to one `sessionTimeoutMs`; `CadreNode.createOpenInvitation` names at most
+   * four machines.
+   */
   responderAddrs: string[];
   /** Validate the responder's result; a false return aborts the formation. */
   validateResponse(response: FormationResultMessage): Promise<boolean>;
-  sessionTimeoutMs?: number;
-  stepTimeoutMs?: number;
   /**
-   * Budget for the `await-response` read only (the responder's provisioning + reply travel
-   * time) — `dial-connect` keeps using `stepTimeoutMs`. Default 15 s; `0`/unset uses the
-   * default. See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering rationale.
+   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
+   * every deadline below takes its default ({@link formationDeadlines}). The default
+   * declaration when omitted.
+   */
+  linkRoundTripMs?: number;
+  /** Whole-session budget; default `sessionMs` of the derived ladder. */
+  sessionTimeoutMs?: number;
+  /**
+   * Budget for `dial-connect`: opening the connection, through a relay if need be, and
+   * negotiating the formation protocol. Default `dialMs` of the derived ladder.
+   */
+  dialTimeoutMs?: number;
+  /**
+   * Budget for the `await-response` read only (the responder's provisioning plus the reply's
+   * travel time). Default `initiatorAwaitResponseMs` of the derived ladder; `0`/unset uses
+   * the default; a value that would outlive the session is clamped. See
+   * {@link formationDeadlines} for the ordering.
    */
   provisionTimeoutMs?: number;
   protocolId?: string;
@@ -807,44 +782,255 @@ export interface FormationDialResult {
 }
 
 /**
+ * Open the formation stream under the dial deadline, cancelling the dial when it expires.
+ *
+ * The deadline's signal goes into `dialProtocol`, so an expired dial is abandoned by libp2p
+ * rather than left running. A dial that settles in the same tick the deadline fires loses
+ * the race to the timeout rejection and would leave its stream open with nobody to close
+ * it, so a stream that arrives after the signal aborted is reset here — the same treatment
+ * `exchangeFrame` (`control-stream.ts`) gives a stream dialed past its deadline. A late
+ * rejection is the abort itself, or reaches the caller through the awaited copy, so the
+ * handler below only stops it being reported as unhandled.
+ *
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. Its
+ * per-address limit (`addressDialTimeout`: ten link round trips plus two admission decisions, as
+ * `optimysticDialLimits` states it) is longer than `dialTimeoutMs` (`formationDeadlines().dialMs`:
+ * five round trips plus one decision) at every declaration, so it never cuts off an address
+ * inside this dial. An address that hangs without answering (a black-holed relay host) uses the
+ * whole budget, and the join moves on to the party's next machine
+ * ({@link dialFormationByMachine}) rather than to this machine's next address; an address that is
+ * refused fails fast and still hands over to the next. A budget per address here would overrun
+ * the session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
+ * hung first address are seen in practice, give each address a sub-budget or dial them in parallel.
+ */
+function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
+  return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {
+    const pending = node.dialProtocol(addrs, protocolId, { signal });
+    void pending.then(
+      (stream) => {
+        if (signal.aborted) {
+          (stream as unknown as ControlStream).abort(new Error('Formation dial-connect resolved after its deadline'));
+        }
+      },
+      () => { /* surfaced through the awaited copy, or the abort itself */ }
+    );
+    try {
+      return await pending as unknown as ControlStream;
+    } catch (error) {
+      throw describeAllAddressesFailed(error);
+    }
+  });
+}
+
+const NO_RESPONDER_ADDRS = 'No responder addresses available for formation';
+
+/**
+ * Parse the responder addresses, skipping any entry that does not parse: the list comes from
+ * a stranger's invitation, and one bad entry must not fail an otherwise good list. Entries
+ * naming different peers are left for libp2p to refuse; {@link dialFormationByMachine} hands
+ * this one machine's addresses at a time.
+ */
+function parseResponderAddrs(addrs: string[]): Multiaddr[] {
+  const parsed: Multiaddr[] = [];
+  for (const addr of addrs) {
+    const ma = parseResponderAddr(addr);
+    if (ma) parsed.push(ma);
+  }
+  if (parsed.length === 0) {
+    throw new FormationUnreachableError(NO_RESPONDER_ADDRS);
+  }
+  return parsed;
+}
+
+function parseResponderAddr(addr: string): Multiaddr | null {
+  try {
+    return multiaddr(addr);
+  } catch (error) {
+    log('responderAddrs: skipping unparsable entry: %o', error);
+    return null;
+  }
+}
+
+/** One machine of the inviting party, and the invitation's addresses for it. */
+interface ResponderMachine {
+  peerId: string;
+  addrs: string[];
+}
+
+/**
+ * Split the responder addresses by the machine each reaches (its trailing peer id), keeping
+ * the order in which each machine first appears. An entry that does not parse, or names no
+ * peer, is dropped: every address an inviter mints (`getMultiaddrs()`, `resolvePeerAddrs`)
+ * names its machine, and libp2p refuses one dial that mixes named and unnamed addresses.
+ */
+function groupResponderAddrsByMachine(addrs: string[]): ResponderMachine[] {
+  const machines = new Map<string, string[]>();
+  for (const addr of addrs) {
+    const ma = parseResponderAddr(addr);
+    if (!ma) continue;
+    const peerId = trailingPeerId(ma);
+    if (!peerId) {
+      log('responderAddrs: skipping %s — it names no machine', addr);
+      continue;
+    }
+    const group = machines.get(peerId);
+    if (group) group.push(addr);
+    else machines.set(peerId, [addr]);
+  }
+  return [...machines].map(([peerId, group]) => ({ peerId, addrs: group }));
+}
+
+/**
+ * Worth asking the next machine of the inviting party: it could not be reached, or it answered
+ * with a refusal a sibling may not repeat (the invitation not replicated to it yet, the host
+ * strand not running there, …). A final refusal is the party's answer, not one machine's.
+ */
+function shouldTryNextMachine(error: unknown): error is FormationUnreachableError | FormationRejectedError {
+  return error instanceof FormationUnreachableError || (error instanceof FormationRejectedError && error.retryable);
+}
+
+/**
+ * Every machine failed without a refusal. A single machine's error already names each address
+ * it tried, so it is thrown as is; several are restated as one error naming each machine.
+ */
+function noMachineReached(failures: Array<{ peerId: string; error: FormationUnreachableError }>): FormationUnreachableError {
+  if (failures.length === 1) return failures[0].error;
+  const errors = failures.map((failure) => failure.error);
+  return new FormationUnreachableError(
+    `Formation could not reach any of the inviter's ${failures.length} machines: ` +
+      failures.map((failure) => `${failure.peerId}: ${failure.error.message}`).join('; '),
+    { cause: new AggregateError(errors, 'Every inviting machine was unreachable') }
+  );
+}
+
+/**
+ * libp2p reports a dial in which every address failed as `AggregateError('All multiaddr dials
+ * failed')`, which names none of them; restate it with each address's own error, which names
+ * its host and port. A dial that tried only one address already surfaces that address's own
+ * error, so anything else passes through unchanged.
+ */
+function describeAllAddressesFailed(error: unknown): unknown {
+  if (!(error instanceof AggregateError)) return error;
+  const reasons = error.errors.map((reason: unknown) => reason instanceof Error ? reason.message : String(reason));
+  return new FormationUnreachableError(
+    `Formation could not reach the inviter at any of the ${reasons.length} addresses tried: ${reasons.join('; ')}`,
+    { cause: error }
+  );
+}
+
+/** Report a failure that came before any answer as {@link FormationUnreachableError}, keeping its message. */
+function asUnreachable(error: unknown): FormationUnreachableError {
+  if (error instanceof FormationUnreachableError) return error;
+  return new FormationUnreachableError(error instanceof Error ? error.message : String(error), { cause: error });
+}
+
+/**
+ * Open the formation stream, send the contact, and read back the one result frame, closing
+ * the stream either way. Nothing here has an answer from the responder yet, so the caller
+ * reports any failure as {@link FormationUnreachableError} — a frame too large or not JSON
+ * included, since it is not an answer either.
+ */
+async function exchangeContact(
+  node: Libp2p,
+  addrs: Multiaddr[],
+  contact: FormationContactMessage,
+  budgets: { protocolId: string; dialTimeoutMs: number; awaitResponseMs: number }
+): Promise<FormationResultMessage> {
+  const stream = await openFormationStream(node, addrs, budgets.protocolId, budgets.dialTimeoutMs);
+  try {
+    const reader = new FrameReader(stream);
+    writeFrame(stream, contact);
+    return await withTimeout(budgets.awaitResponseMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
+  } finally {
+    try { await stream.close(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Turn the responder's answer into the dial's result. A refusal throws
+ * {@link FormationRejectedError}; an approval that fails validation throws a plain `Error`,
+ * since that is a misbehaving responder rather than a refusal.
+ */
+async function acceptResult(
+  response: FormationResultMessage,
+  validateResponse: FormationDialOptions['validateResponse']
+): Promise<FormationDialResult> {
+  if (!response.approved) {
+    throw new FormationRejectedError(response.code, response.reason);
+  }
+  if (!(await validateResponse(response))) throw new Error('Responder result failed validation');
+
+  if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
+  // Sanitized HERE — the wire boundary — so nothing above this call ever handles an
+  // unvalidated, unbounded address list from a remote peer.
+  return { provision: response.provisionResult, strandAddrs: sanitizeStrandAddrs(response.strandAddrs) };
+}
+
+/**
  * Initiator side of the native formation protocol. Dials the responder, sends the
  * contact (carrying the real disclosure/token/cadre), validates the responder's
  * result, and returns the strand the responder provisioned plus the responder's
  * strand-network addresses (see {@link FormationDialResult}).
+ *
+ * Throws {@link FormationUnreachableError} for every failure before a result frame is read
+ * (including the session deadline passing first), {@link FormationRejectedError} when the
+ * responder refuses, and a plain `Error` for an approval that fails validation.
  */
 export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
-  if (options.responderAddrs.length === 0) {
-    throw new Error('No responder addresses available for formation');
-  }
+  const addrs = parseResponderAddrs(options.responderAddrs);
   const protocolId = options.protocolId ?? FORMATION_PROTOCOL;
-  const sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
-  const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
-  const provisionTimeoutMs = resolveProvisionTimeoutMs(
-    options.provisionTimeoutMs, DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS,
-    sessionTimeoutMs, stepTimeoutMs, 'dialFormation'
+  const deadlines = formationDeadlines(options.linkRoundTripMs);
+  const sessionTimeoutMs = options.sessionTimeoutMs ?? deadlines.sessionMs;
+  const dialTimeoutMs = options.dialTimeoutMs ?? deadlines.dialMs;
+  const awaitResponseMs = resolveProvisionTimeoutMs(
+    options.provisionTimeoutMs, deadlines.initiatorAwaitResponseMs,
+    sessionTimeoutMs, dialTimeoutMs, 'dialFormation'
   );
-  const addr = multiaddr(options.responderAddrs[0]);
 
-  return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
-    const rawStream = await withTimeout(stepTimeoutMs, 'Formation dial-connect', async () => node.dialProtocol(addr, protocolId));
-    const stream = rawStream as unknown as ControlStream;
+  let answered = false;
+  try {
+    return await withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
+      const response = await exchangeContact(node, addrs, options.contact, { protocolId, dialTimeoutMs, awaitResponseMs });
+      answered = true;
+      return await acceptResult(response, options.validateResponse);
+    });
+  } catch (error) {
+    throw answered ? error : asUnreachable(error);
+  }
+}
+
+/**
+ * Initiator side for a whole invitation: one {@link dialFormation} session per machine of the
+ * inviting party the bootstrap list names (see {@link FormationDialOptions.responderAddrs}), in
+ * order, until one approves.
+ *
+ * A machine that cannot be reached, or that refuses retryably, hands over to the next. A final
+ * refusal, or an approval that fails validation, is thrown at once: another machine of the
+ * same party would answer the same, and an approval may already have spent the invitation.
+ * With no machine left, throws the last retryable refusal when any machine answered (the party
+ * is reachable but not ready, which says more than "unreachable"), otherwise one
+ * {@link FormationUnreachableError} naming each machine's failure.
+ *
+ * Every session sends the SAME contact. `FormationUsage` is keyed by the contact's
+ * `usageStampId`, so at most one machine of the inviting party can record this redemption,
+ * even when one the joiner gave up on was still committing it.
+ */
+export async function dialFormationByMachine(node: Libp2p, options: FormationDialOptions): Promise<FormationDialResult> {
+  const machines = groupResponderAddrsByMachine(options.responderAddrs);
+  if (machines.length === 0) {
+    throw new FormationUnreachableError(NO_RESPONDER_ADDRS);
+  }
+  const unreached: Array<{ peerId: string; error: FormationUnreachableError }> = [];
+  let refusal: FormationRejectedError | undefined;
+  for (const machine of machines) {
     try {
-      const reader = new FrameReader(stream);
-      writeFrame(stream, options.contact);
-
-      const response = await withTimeout(provisionTimeoutMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
-      if (!response.approved) {
-        throw new Error(`Formation rejected: ${response.reason ?? 'no reason provided'}`);
-      }
-      const ok = await options.validateResponse(response);
-      if (!ok) throw new Error('Responder result failed validation');
-
-      if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
-      // Sanitized HERE — the wire boundary — so nothing above this call ever handles an
-      // unvalidated, unbounded address list from a remote peer.
-      return { provision: response.provisionResult, strandAddrs: sanitizeStrandAddrs(response.strandAddrs) };
-    } finally {
-      try { await stream.close(); } catch { /* ignore */ }
+      return await dialFormation(node, { ...options, responderAddrs: machine.addrs });
+    } catch (error) {
+      if (!shouldTryNextMachine(error)) throw error;
+      log('formation via %s failed (%s), trying the next inviting machine', machine.peerId, error.message);
+      if (error instanceof FormationRejectedError) refusal = error;
+      else unreached.push({ peerId: machine.peerId, error });
     }
-  });
+  }
+  throw refusal ?? noMachineReached(unreached);
 }

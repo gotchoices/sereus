@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import type { RelayReservationStatus } from '@serfab/cadre-core';
+import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { useCadre } from '../src/cadre-context';
 import {
   foundingDetail,
@@ -24,6 +25,8 @@ import {
   type PendingFounding,
 } from '../src/founding-progress';
 import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
+import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
+import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '../src/phone-node-config';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
@@ -41,6 +44,16 @@ const RELAY_STATUS_LABEL: Record<RelayReservationStatus, string> = {
   none: 'No — no relay configured',
 };
 
+/**
+ * Plain-language label for each Noise crypto mode: the options of the "Connection
+ * encryption" choice, and the connected Node card's readout of the running node's mode.
+ */
+const NOISE_CRYPTO_LABEL: Record<NoiseCryptoMode, string> = {
+  symmetric: 'Native, symmetric only',
+  full: 'Native, including key exchange',
+  off: 'Pure JavaScript',
+};
+
 /** Plain-language label for each stage of a host-node request, for the progress line. */
 const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
   requesting: 'Asking the host for a node…',
@@ -51,15 +64,51 @@ const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
   connected: 'Connected.',
 };
 
+/** What the disconnected Node form shows for each field. */
+interface ConnectForm {
+  partyId: string;
+  bootstrapAddr: string;
+  relayAddr: string;
+  noiseCryptoMode: NoiseCryptoMode;
+}
+
+/**
+ * The Node form's starting values: the options the node last started with when the app
+ * remembered them, else the build defaults — `EXPO_PUBLIC_RELAY_ADDR` so a build that
+ * ships a relay needs no typing, and `EXPO_PUBLIC_NOISE_CRYPTO`, else the kit's
+ * `symmetric` (a misspelt env value throws here, naming the three allowed values).
+ * A saved empty relay list shows the build default, which is what Connect would use.
+ */
+function connectFormFrom(saved: PhoneNodeOptions | null): ConnectForm {
+  return {
+    partyId: saved?.partyId ?? '',
+    bootstrapAddr: saved?.bootstrapAddrs.join(', ') ?? '',
+    relayAddr: resolveRelayAddrs(saved?.relayAddrs).join(', '),
+    noiseCryptoMode: saved?.noiseCryptoMode ?? defaultNoiseCryptoMode(),
+  };
+}
+
 export default function SettingsScreen() {
   const cadre = useCadre();
 
-  const [partyId, setPartyId] = useState('');
-  const [bootstrapAddr, setBootstrapAddr] = useState('');
-  // Prefilled from the build-time default (`EXPO_PUBLIC_RELAY_ADDR`) so a build that
-  // ships one needs no typing, and editable so a device can be pointed elsewhere.
   // Computed once on mount — re-resolving per render would fight the user's edits.
-  const [relayAddr, setRelayAddr] = useState(() => resolveRelayAddrs().join(', '));
+  const [initialForm] = useState(() => connectFormFrom(cadre.savedStartOptions));
+  const [partyId, setPartyId] = useState(initialForm.partyId);
+  const [bootstrapAddr, setBootstrapAddr] = useState(initialForm.bootstrapAddr);
+  const [relayAddr, setRelayAddr] = useState(initialForm.relayAddr);
+  const [noiseCryptoMode, setNoiseCryptoMode] = useState(initialForm.noiseCryptoMode);
+  // The saved options are read once at launch, and that read can resolve after this
+  // screen mounted; apply them when it does. The hook sets them exactly once, so this
+  // never overwrites an edit made afterwards.
+  const { savedStartOptions } = cadre;
+  useEffect(() => {
+    if (!savedStartOptions) return;
+    const form = connectFormFrom(savedStartOptions);
+    setPartyId(form.partyId);
+    setBootstrapAddr(form.bootstrapAddr);
+    setRelayAddr(form.relayAddr);
+    setNoiseCryptoMode(form.noiseCryptoMode);
+  }, [savedStartOptions]);
   const [seedInput, setSeedInput] = useState('');
   const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
@@ -92,7 +141,8 @@ export default function SettingsScreen() {
   const handleConnect = async () => {
     const pid = partyId.trim() || uuid();
     setPartyId(pid);
-    const addrs = bootstrapAddr.trim() ? [bootstrapAddr.trim()] : [];
+    // Comma-separated, like Relay, so a remembered list of several round-trips.
+    const addrs = splitRelayAddrs(bootstrapAddr);
     // The typed value wins over the build-time default. Emptying the field asks for
     // that default BACK rather than for "no relay" — `resolveRelayAddrs` falls through
     // to `EXPO_PUBLIC_RELAY_ADDR` — so a build that ships none is the only way to run
@@ -102,7 +152,7 @@ export default function SettingsScreen() {
     // without a restart.
     const relayAddrs = resolveRelayAddrs(splitRelayAddrs(relayAddr));
     try {
-      await cadre.start({ partyId: pid, bootstrapAddrs: addrs, relayAddrs });
+      await cadre.start({ partyId: pid, bootstrapAddrs: addrs, relayAddrs, noiseCryptoMode });
     } catch (err) {
       showAlert('Connection failed', String(err));
     }
@@ -277,6 +327,11 @@ export default function SettingsScreen() {
               testID={TEST_IDS.settings.ownerKeyRow}
             />
             <InfoRow label="Strands" value={String(cadre.strands.size)} />
+            <InfoRow
+              label="Encryption"
+              value={cadre.noiseCryptoMode ? NOISE_CRYPTO_LABEL[cadre.noiseCryptoMode] : '—'}
+              testID={TEST_IDS.settings.noiseCryptoRow}
+            />
             <InfoRow label="Reachable" value={RELAY_STATUS_LABEL[cadre.relayStatus]} color={cadre.relayStatus === 'reserved' ? '#4caf50' : '#ff9800'} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
@@ -291,6 +346,7 @@ export default function SettingsScreen() {
               people can dial it at is one a relay forwards. Without a relay this app
               still works — it just cannot invite anyone into a private chat.
             </Text>
+            <NoiseCryptoChoice value={noiseCryptoMode} onChange={setNoiseCryptoMode} />
             <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
           </>
         )}
@@ -415,7 +471,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function InfoRow({ label, value, color, onPress, testID }: { label: string; value: string; color?: string; onPress?: () => void; testID?: string }) {
   const valueText = (
-    <Text style={[styles.value, color ? { color } : null]} numberOfLines={1}>{value}</Text>
+    <Text style={[styles.value, color ? { color } : null]} numberOfLines={1} testID={onPress ? undefined : testID}>{value}</Text>
   );
   return (
     <View style={styles.row}>
@@ -423,6 +479,38 @@ function InfoRow({ label, value, color, onPress, testID }: { label: string; valu
       {onPress ? (
         <Pressable style={styles.valuePress} onPress={onPress} testID={testID}>{valueText}</Pressable>
       ) : valueText}
+    </View>
+  );
+}
+
+/**
+ * The "Connection encryption" choice. The node reads the mode when it is built, and
+ * this form shows only while disconnected, so switching is Disconnect → choose →
+ * Connect.
+ */
+function NoiseCryptoChoice({ value, onChange }: { value: NoiseCryptoMode; onChange: (mode: NoiseCryptoMode) => void }) {
+  return (
+    <View style={{ marginBottom: 8 }}>
+      <Text style={styles.label}>Connection encryption</Text>
+      {NOISE_CRYPTO_MODES.map((mode) => (
+        <Pressable
+          key={mode}
+          style={[styles.option, mode === value && styles.optionSelected]}
+          onPress={() => onChange(mode)}
+          accessibilityRole="radio"
+          accessibilityState={{ selected: mode === value }}
+          testID={TEST_IDS.settings.noiseCryptoOption(mode)}
+        >
+          <Text style={styles.optionText}>{NOISE_CRYPTO_LABEL[mode]}</Text>
+        </Pressable>
+      ))}
+      <Text style={styles.hint}>
+        Native runs the connection&apos;s encryption in compiled code: symmetric only
+        covers the cost paid on every message, and including key exchange also moves
+        the connection handshake. Pure JavaScript is the old, slow path, kept to
+        reproduce the dropped connections it caused. The node reads this choice when it
+        starts; to change it later, Disconnect, choose again, and Connect.
+      </Text>
     </View>
   );
 }
@@ -488,6 +576,9 @@ const styles = StyleSheet.create({
   hint: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
   value: { color: '#fff', fontSize: 13, flexShrink: 1, textAlign: 'right' },
   valuePress: { flexShrink: 1, flexDirection: 'row', justifyContent: 'flex-end' },
+  option: { backgroundColor: '#2a2a3e', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a3e', paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
+  optionSelected: { borderColor: '#6c63ff' },
+  optionText: { color: '#fff', fontSize: 14 },
   input: { backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14 },
   btn: { borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
   btnDisabled: { opacity: 0.4 },

@@ -17,10 +17,18 @@
  *  - no invitation (open strand / unbound) → no party key minted, nothing staged,
  *  - party-key persistence failure (unenrolled owner) → `formStrand` throws naming
  *    the spent token, and no invitation is staged (no silent half-member).
+ *
+ * The last case is the responder side of the same node: an explicit
+ * `initializeStrandSolicitation` replaces the responder `start()` installed.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createLibp2p } from 'libp2p';
+import { tcp } from '@libp2p/tcp';
+import { noise } from '@chainsafe/libp2p-noise';
+import { yamux } from '@chainsafe/libp2p-yamux';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { CadreNode } from '../src/cadre-node.js';
-import type { StrandSolicitationService } from '../src/strand-solicitation.js';
+import { StrandSolicitationService, type FormationUsageRecorder } from '../src/strand-solicitation.js';
 import type { FormStrandResult, OpenInvitation, StrandMembershipInvite } from '../src/types.js';
 import { strandMemberKeyPair } from '../src/strand-member-key.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
@@ -40,18 +48,9 @@ function invitePair(tag: string): StrandMembershipInvite {
   return { inviteKey: `invite-key-${tag}`, invitePrivateKey: `invite-secret-${tag}` };
 }
 
-/**
- * Stub the service's dial with a canned result. Initializes solicitation only once per
- * node — a repeat `initializeStrandSolicitation` would re-register the formation
- * protocol handler on the same libp2p node and throw.
- */
-function stubFormation(node: CadreNode, result: FormStrandResult): StrandSolicitationService {
-  if (!node.getStrandSolicitationService()) {
-    node.initializeStrandSolicitation();
-  }
-  const service = node.getStrandSolicitationService()!;
-  service.formStrand = async () => result;
-  return service;
+/** Stub the dial of the solicitation service the node installed at start with a canned result. */
+function stubFormation(node: CadreNode, result: FormStrandResult): void {
+  node.getStrandSolicitationService()!.formStrand = async () => result;
 }
 
 function formedResult(strandId: string, membershipInvite?: StrandMembershipInvite): FormStrandResult {
@@ -138,6 +137,47 @@ describe('CadreNode.formStrand: joiner membership adoption', () => {
       expect(await unenrolled.getControlDatabase()!.queryStrandPartyKey(strandId)).toBeNull();
     } finally {
       await unenrolled.stop();
+    }
+  }, 60_000);
+});
+
+describe('CadreNode.initializeStrandSolicitation on a started node', () => {
+  it('replaces the responder installed at start, and the replacement answers formation', async () => {
+    const { node } = await startSelfOwnerNode('formation-replace-');
+    const joiner = await createLibp2p({
+      privateKey: await generateKeyPair('Ed25519'),
+      addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+      transports: [tcp()],
+      connectionEncrypters: [noise()],
+      streamMuxers: [yamux()]
+    });
+    try {
+      // The token is never published, so the default recorder would refuse it as
+      // unknown: an approval proves the custom recorder answered.
+      const checkedTokens: string[] = [];
+      const recorder: FormationUsageRecorder = {
+        isTokenValid: async (token) => {
+          checkedTokens.push(token);
+          return { valid: true };
+        },
+        isTokenUsed: async () => false,
+        recordUsage: async () => {}
+      };
+      const strandId = 'strand-replaced-' + rand();
+      await node.initializeStrandSolicitation({
+        formationUsageRecorder: recorder,
+        strandProvisioner: { provisionStrand: async () => ({ strandId }) }
+      });
+
+      const invitation = await node.createOpenInvitation('sapp-replace', 60_000);
+      const result = await new StrandSolicitationService({ partyId: 'joiner-party' })
+        .formStrand(invitation, { partyId: 'joiner-party' }, joiner);
+
+      expect(checkedTokens).toContain(invitation.token);
+      expect(result.strandId).toBe(strandId);
+    } finally {
+      await joiner.stop();
+      await node.stop();
     }
   }, 60_000);
 });

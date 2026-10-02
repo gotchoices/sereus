@@ -13,10 +13,11 @@
 
 import {
   CadreNode,
-  ControlFormationUsageRecorder,
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
   PersistentEnrolledMachineStore,
+  PersistentStrandNetworkStateStore,
+  resolveStunServers,
 } from '@serfab/cadre-core';
 import type {
   ControlNetworkSeed,
@@ -29,12 +30,12 @@ import type {
   RelayReservationState,
   StrandFormationDisclosure,
   KeyStore,
+  DurableSlot,
 } from '@serfab/cadre-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC } from '@libp2p/webrtc';
-import type { Libp2pTransports } from '@optimystic/db-p2p';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDBRawStorage, LevelDBKVStore, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
@@ -43,26 +44,19 @@ import {
   anchorSlotKey,
   bootstrapPeersKvKey,
   enrolledMachinesKvKey,
+  strandNetworkKvKey,
   kvStoreSlot,
   secureStoreSlot,
   NODE_LOCAL_DB_NAME,
   NODE_LOCAL_KV_PREFIX,
+  START_OPTIONS_KV_KEY,
 } from './node-local-slots';
-import { resolveIceServers } from './ice-config';
+import { parseSavedStartOptions, serializeSavedStartOptions, type SavedStartOptions } from './start-options';
 import { buildPhoneNodeConfig, runOwnerGenesis, type PhoneNodeOptions } from './phone-node-config';
+import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
+import { defaultNoiseCryptoMode } from './noise-crypto-config';
 
-export type { PhoneNodeOptions };
-
-/**
- * db-p2p's transport-factory element type. The `webRTC()` factory from
- * `@libp2p/webrtc` carries a nominally-different `[transportSymbol]` brand than
- * db-p2p's pinned `@libp2p/interface` (the symbol is a global-registry key, so
- * they are runtime-identical). `CadreNodeConfig.network.transports` is exactly
- * this `Libp2pTransports`, so we bridge with `as unknown as TransportFactory` —
- * no `any`, no pinning five transitive packages. Mirrors the same cast in
- * `reference-app-web/src/lib/cadre-web.ts`.
- */
-type TransportFactory = Libp2pTransports[number];
+export type { PhoneNodeOptions, SavedStartOptions };
 
 // ── LevelDB helpers ──────────────────────────────────────────────────────────
 // Each strand — and the node-local record store — gets its own LevelDB database
@@ -79,10 +73,10 @@ function openLevelDb(name: string) {
 // ── Storage factory ──────────────────────────────────────────────────────────
 //
 // One LevelDB database per cadre-core storage SCOPE. cadre-core guarantees every
-// scope key is already within `[A-Za-z0-9._-]`, so it goes straight into the
+// scope key is already within `[a-z0-9._-]`, so it goes straight into the
 // filename with no escaping. The control scope carries the party id
 // (`controlStorageScope`), so switching parties in Settings now lands on a
-// different database — `sereus-control-<base64url party id>` — instead of every
+// different database — `sereus-control-<hex party id>` — instead of every
 // party sharing one `sereus-control`.
 //
 // NOTE: a dev device that ran a build predating the party scoping still has that
@@ -135,12 +129,52 @@ const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, SECURE_STORE_OPT
 let node: CadreNode | null = null;
 
 /**
- * The {@link NODE_LOCAL_DB_NAME} LevelDB handle backing the bootstrap-peer
- * store. Opened at most once per process (a native handle — a leaked one blocks
- * the next open of the same database) and kept open for the node's whole life;
- * {@link stopPhoneNode} closes it.
+ * The Noise crypto mode {@link node} was built with, recorded here rather than read
+ * back out of cadre-core, which keeps only the implementation. Set before
+ * `node.start()`, so a failed start leaves it set; {@link getNoiseCryptoMode} gates on
+ * `isRunning`.
+ */
+let nodeNoiseCryptoMode: NoiseCryptoMode | null = null;
+
+/**
+ * The options {@link node} was built with, with the Noise mode resolved — recorded
+ * only once a start SUCCEEDS, so {@link stopPhoneNode} can mark exactly that
+ * configuration as no longer auto-starting, and a start that failed has nothing for it
+ * to write.
+ */
+let nodeOptions: PhoneNodeOptions | null = null;
+
+/**
+ * The start in flight, if any. A launch auto-start, a push-wake cold start, the
+ * background runner's resume and a Connect tap can all overlap; each gets this one
+ * promise rather than building a second `CadreNode`.
+ */
+let starting: Promise<CadreNode> | null = null;
+
+/**
+ * The {@link NODE_LOCAL_DB_NAME} LevelDB handle backing the non-trust-bearing
+ * node-local records and the saved start options. Opened at most once per process
+ * (a native handle — a leaked one blocks the next open of the same database) by
+ * {@link nodeLocalDbHandle}, and kept open until {@link stopPhoneNode} closes it.
  */
 let nodeLocalDb: ReturnType<typeof openLevelDb> | null = null;
+
+/**
+ * The open {@link nodeLocalDb}, opening it on first use. Reuse, not a fresh open:
+ * `use-cadre`'s cold-start hook re-runs startPhoneNode after the OS killed the node
+ * WITHOUT calling stopPhoneNode, and the launch-time read of the saved start options
+ * opens it before any start, so an unconditional open would leak a native handle. The
+ * open is synchronous, so two callers cannot both find it unset.
+ */
+function nodeLocalDbHandle(): ReturnType<typeof openLevelDb> {
+  nodeLocalDb ??= openLevelDb(NODE_LOCAL_DB_NAME);
+  return nodeLocalDb;
+}
+
+/** A {@link DurableSlot} over one key of the node-local LevelDB. */
+function nodeLocalKvSlot(key: string): DurableSlot {
+  return kvStoreSlot(new LevelDBKVStore(nodeLocalDbHandle(), NODE_LOCAL_KV_PREFIX), key);
+}
 
 /**
  * Get or create the CadreNode singleton.
@@ -150,12 +184,40 @@ export function getPhoneNode(): CadreNode | null {
 }
 
 /**
+ * The options the node last started with, and whether it should start again
+ * unattended (see `start-options.ts`); `undefined` when none are saved or the record
+ * is unusable. A read FAULT propagates, so the caller can say the settings could not
+ * be read rather than behave as if there were none.
+ */
+export async function loadSavedStartOptions(): Promise<SavedStartOptions | undefined> {
+  return parseSavedStartOptions(await nodeLocalKvSlot(START_OPTIONS_KV_KEY).load());
+}
+
+/** Best-effort: a failed write is logged and changes nothing about the node. */
+async function saveStartOptions(saved: SavedStartOptions): Promise<void> {
+  try {
+    await nodeLocalKvSlot(START_OPTIONS_KV_KEY).save(serializeSavedStartOptions(saved));
+  } catch (err) {
+    console.warn('[cadre-phone] could not save the start options:', err);
+  }
+}
+
+/**
  * Start the phone CadreNode.
- * Idempotent — returns the existing node if already running.
+ * Idempotent — returns the start in flight if there is one, else the existing node if
+ * it is running. A caller whose options differ gets that node anyway: whatever is
+ * running wins, and only the call that did the work saves its options.
  */
 export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode> {
+  if (starting) return starting;
   if (node?.isRunning) return node;
+  starting = buildAndStartNode(opts).finally(() => {
+    starting = null;
+  });
+  return starting;
+}
 
+async function buildAndStartNode(opts: PhoneNodeOptions): Promise<CadreNode> {
   // Durable node-local records: the trusted-owner anchor in the secure enclave,
   // the cold-start dial hints in app-private LevelDB. `node-local-slots.ts` has
   // the why-they-differ; cadre-core's `node-local-snapshot.ts` has the load and
@@ -169,25 +231,16 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // a refusal to start, not a silent downgrade to trusting nobody — and cold-
   // starting empty there would let the next snapshot write destroy an intact one.
   //
-  // NOTE: all three records are party-scoped and this app does not persist
-  // `opts.partyId` (it is typed into Settings each launch — see the comment in
-  // `push-wake-native.ts`). With a fresh party id per launch every slot loads empty
-  // every time, so survival across a relaunch is gated on the backlog ticket
-  // `feat-rn-persist-node-start-options`. For the enrolled-machine count that means
-  // this app declares no repair yardstick today no matter what it records — the
-  // wiring is here so it starts working the moment the party id persists.
-  //
-  // `??=`, not a plain open: `use-cadre`'s cold-start hook re-runs startPhoneNode
-  // after the OS killed the node WITHOUT calling stopPhoneNode, so an
-  // unconditional open would leak one native handle per resume. The
-  // `node?.isRunning` early-return above keeps a healthy node from reaching here.
-  nodeLocalDb ??= openLevelDb(NODE_LOCAL_DB_NAME);
+  // Every record is party-scoped. They survive a relaunch because the party id does:
+  // it is saved with the other start options below, and app launch starts from them.
+  // A party id this phone has not started with before — a blank Party ID field mints
+  // one — starts every slot empty.
   const trustedOwnerStore = await PersistentTrustedOwnerStore.open(
     secureStoreSlot(SecureStore, anchorSlotKey(opts.partyId), SECURE_STORE_OPTIONS),
     opts.partyId,
   );
   const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
-    kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), bootstrapPeersKvKey(opts.partyId)),
+    nodeLocalKvSlot(bootstrapPeersKvKey(opts.partyId)),
     opts.partyId,
   );
   // The party's enrolled-machine count, from which the control node declares its
@@ -196,16 +249,27 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // two records above, an unreadable slot here does NOT fail the start: the count is
   // a repair hint, so `open` cold-starts and the node declares nothing.
   const enrolledMachineStore = await PersistentEnrolledMachineStore.open(
-    kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), enrolledMachinesKvKey(opts.partyId)),
+    nodeLocalKvSlot(enrolledMachinesKvKey(opts.partyId)),
+    opts.partyId,
+  );
+  // Each strand node's saved network state — the FRET routing table it re-imports
+  // after a relaunch, with every peer's signed address record, so a chat with another
+  // party re-meshes without a fresh invitation. Same LevelDB as the dial hints, its own
+  // key, and not trust-bearing: FRET verifies each record at import.
+  const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
+    nodeLocalKvSlot(strandNetworkKvKey(opts.partyId)),
     opts.partyId,
   );
 
   // STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
-  // relay configured (host/LAN candidates still work).
-  const iceServers = resolveIceServers(opts.relayAddrs);
+  // relay configured and no override (host/LAN candidates still work).
+  const iceServers = resolveStunServers(opts.relayAddrs, process.env.EXPO_PUBLIC_STUN_URLS);
 
-  node = new CadreNode(buildPhoneNodeConfig({
+  const noiseCryptoMode = opts.noiseCryptoMode ?? defaultNoiseCryptoMode();
+  const built = new CadreNode(buildPhoneNodeConfig({
     ...opts,
+    // `undefined` for 'off', which leaves libp2p-noise's stock pure-JS crypto.
+    noiseCrypto: buildNoiseCrypto(noiseCryptoMode),
     // Identity comes from the secure enclave (see `keyStore` above).
     keyStore,
     storageProvider: createStorage,
@@ -214,19 +278,21 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
       circuitRelayTransport(),
       // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
       // hole-punches to a direct `/webrtc` data path, dropping the drone out of
-      // the data path (relay stays signalling-only). Brand-skew bridge —
-      // runtime-safe, see TransportFactory above. The permissive dial gater the
+      // the data path (relay stays signalling-only). The permissive dial gater the
       // phone needs lives in `buildPhoneNodeConfig` (`phone-node-config.ts`),
       // which explains why: a node borrowed from a cadre-host on the same Wi-Fi
       // is a private `ws://` address, which libp2p's browser-build gater refuses
       // by default.
-      webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
+      webRTC({ rtcConfiguration: { iceServers } }),
     ],
     trustedOwnerStore,
     bootstrapPeerStore,
     enrolledMachineStore,
+    strandNetworkStateStore,
   }));
-  await node.start();
+  node = built;
+  nodeNoiseCryptoMode = noiseCryptoMode;
+  await built.start();
   // NOTE: this await is unbounded — runOwnerGenesis is fail-SOFT (it catches
   // errors) but a control call that never settles would wedge startPhoneNode
   // forever, with no error to report. The solo (cadre-of-one) control path this
@@ -235,43 +301,22 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // milliseconds, so there is nothing to time-box today. If a control operation
   // ever hangs again, bound it in cadre-core (so every embedder benefits), not
   // with a per-app deadline here.
-  await runOwnerGenesis(node);
-  initializeFormationResponder(node);
-  return node;
+  await runOwnerGenesis(built);
+  // Saved only now, so a start that failed — a typo in Settings — never replaces the
+  // last configuration that actually came up. The Noise mode is saved resolved, not as
+  // "the build default", so a later build's default does not change a device that
+  // already ran (`relay-config.ts` says the same of the relays).
+  nodeOptions = { ...opts, noiseCryptoMode };
+  await saveStartOptions({ options: nodeOptions, autoStart: true });
+  return built;
 }
 
 /**
- * Wire this node as a strand-formation **responder** so an invitee's
- * {@link CadreNode.formStrand} dial can be validated against the host's
- * `FormationInvite` rows.
- *
- * `createOpenInvitation`/`formStrand` lazily bring up the solicitation service
- * with NO recorder if it isn't already initialized — which would accept every
- * token blindly. Initializing it here with a {@link ControlFormationUsageRecorder}
- * (backed by the live `CadreControl.FormationInvite`/`FormationUsage` tables)
- * makes token validity + single-use enforcement real: the consent gate of the
- * closed-strand flow.
- *
- * Fail-soft: a wiring failure is logged, not thrown — minting/joining surfaces
- * the real error later. On a successful `formStrand`, the responder now both
- * provisions the bound host strand and writes its `FormationUsage` consent
- * record over libp2p (the recorder threads the redeemed token through to
- * `redeemInvitation`), and returns the host's real strand id + membership key in
- * the `FormStrandResult` — so the invite is a single `OpenInvitation` with no
- * side-channel envelope. See the README "Trust model" section.
+ * The Noise crypto mode the running node was built with, for the Settings Node card
+ * to show what a device run is measuring. Null before start and after stop.
  */
-function initializeFormationResponder(cadre: CadreNode): void {
-  try {
-    const controlDb = cadre.getControlDatabase();
-    if (!controlDb) {
-      throw new Error('control database unavailable after start; cannot wire formation responder');
-    }
-    cadre.initializeStrandSolicitation({
-      formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-    });
-  } catch (err) {
-    console.warn('[cadre-phone] formation responder init failed:', err);
-  }
+export function getNoiseCryptoMode(): NoiseCryptoMode | null {
+  return node?.isRunning ? nodeNoiseCryptoMode : null;
 }
 
 /**
@@ -296,13 +341,35 @@ export function getOwnerPublicKey(): string | null {
  * Stop the phone CadreNode and release resources.
  */
 export async function stopPhoneNode(): Promise<void> {
+  // Disconnect tapped during a start (a launch auto-start, a push wake) stops the node
+  // that start produces rather than racing it. The start's failure is reported to its
+  // own caller; here it only means there may be less to tear down.
+  if (starting) {
+    await starting.catch(() => undefined);
+  }
+  // Stopping is the user logging out (Settings → Disconnect is the only caller), so
+  // the next launch or push wake must not start the node again by itself. Written
+  // while the node is still the singleton and the handle still open; an OS kill runs
+  // none of this, which is why `autoStart` survives one.
+  if (nodeOptions) {
+    await saveStartOptions({ options: nodeOptions, autoStart: false });
+  }
   // Cleared BEFORE the stop, for the same reason `nodeLocalDb` is below: a
   // throwing `node.stop()` must not leave a module-level reference to a node
   // whose node-local LevelDB handle the `finally` has just closed — the
   // `node?.isRunning` early-return in `startPhoneNode` would hand that node back
   // and its next bootstrap-peer write would fail on a closed handle.
+  //
+  // NOTE: a `startPhoneNode` that arrives after this point and before the `finally`
+  // builds a node on the handle the `finally` then closes, and saves `autoStart: true`
+  // over the Disconnect. `use-cadre`'s `stop` clears the runner's options first, so the
+  // only caller left that can land here is a push wake that read the record just before
+  // the save above; if a new unattended caller of `startPhoneNode` appears, make a start
+  // wait for an in-flight stop and re-check `autoStart`.
   const stopping = node;
   node = null;
+  nodeNoiseCryptoMode = null;
+  nodeOptions = null;
   try {
     if (stopping) await stopping.stop();
   } finally {

@@ -104,7 +104,7 @@ describe('CadreNode strand unpublish', () => {
   function createStrandConfig(strandId: string): StrandConfig {
     const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-    const schema = 'create table Test (id text primary key);';
+    const schema = 'table Test (id text primary key);';
     const version = '1.0.0';
     return {
       strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },

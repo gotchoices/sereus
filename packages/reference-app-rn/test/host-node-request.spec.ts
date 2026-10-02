@@ -20,15 +20,13 @@ import {
  *   from the host's `{ ok:false, error:{ code, message } }` envelope to a message
  *   a person can act on.
  * - **NOT covered:** the real host. `FakeHost` knows only the server rules copied
- *   into it (see {@link parserRefusal}); no test runs this client against the
- *   real `/grants` server, which is
- *   `tickets/backlog/debt-phone-host-client-against-real-grants-server.md`. That a
- *   real lent node comes up, that the seed is accepted, and that a listener-less
- *   phone can actually dial it are proved by
+ *   into it (see {@link parserRefusal}). The real `/grants` server is exercised by
  *   `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`,
- *   which runs a real `cadre-cli` child but calls `DonationService` directly
- *   rather than over HTTP. A green file here says the phone drives the protocol
- *   correctly, not that the protocol works.
+ *   which runs this client against it and a real `cadre-cli` child — but only for
+ *   the success path, a 401 and the cleanup `DELETE` after a cancel. For the
+ *   retry loops, the other error mappings and every other cleanup branch, this
+ *   file is the only coverage, and a green run of it says the phone drives the
+ *   protocol as `FakeHost` describes it, not that the real host agrees.
  *
  * Budgets are overridden to milliseconds throughout (see {@link FAST}), so the
  * deadline tests finish in real time instead of the app's 30–90 second waits.

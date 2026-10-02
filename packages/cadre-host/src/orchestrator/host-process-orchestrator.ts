@@ -15,18 +15,18 @@ import {
 import { join, resolve as resolvePath, sep } from 'node:path';
 import debug from 'debug';
 import pidusage from 'pidusage';
-import type {
-  Orchestrator,
-  OrchestratorCreateRequest,
-  OrchestratorCreateResult,
-  OrchestratorStats,
+import {
+  PortAllocator,
+  type Orchestrator,
+  type OrchestratorCreateRequest,
+  type OrchestratorCreateResult,
+  type OrchestratorStats,
 } from '@serfab/cadre-provider';
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
 import {
   allocateNodePorts,
-  PortAllocator,
   releaseNodePorts,
   reserveNodePorts,
   reusedNodePorts,
@@ -35,6 +35,9 @@ import { StateStore, type PersistedHandle, type PersistedState } from './state-s
 import { isPidAlive } from './pid-liveness.js';
 import { assertPortFree, type PortBinding } from './port-probe.js';
 import type { PushCredentials } from '@serfab/cadre-core';
+// The child's `cadre.json` is typed against the CLI's own config schema, so a key the CLI stops
+// accepting (or starts requiring) is a compile error here rather than a child that fails to start.
+import { strandFilterConfigFromText, type CliConfig } from '@serfab/cadre-cli';
 import {
   encodeDockerId,
   type OwnerSpawnConfig,
@@ -266,10 +269,11 @@ export class HostProcessOrchestrator implements Orchestrator {
    * identity key inside its workdir (`ensureNodeIdentity`, reused across
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
-   * start` opens the file-backed bootstrap-peer and trusted-owner stores only
-   * when a protobuf identity key file is configured, and puts them beside it.
+   * start` opens the file-backed bootstrap-peer, trusted-owner and strand
+   * network-state stores in the node's state directory, which defaults to the
+   * directory holding the `cadre.json` written here — the same workdir.
    * Terminating the loan (`removeContainer`) deletes the workdir, so the key and
-   * both stores go with it.
+   * every store go with it.
    */
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     const workdir = this.workdirFor(request.containerId);
@@ -565,7 +569,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     profile: 'storage' | 'transaction';
     ports: NodePorts;
     owner: boolean;
-    buildConfig: (workdir: string) => Record<string, unknown>;
+    buildConfig: (workdir: string) => CliConfig;
     extraArgs: string[];
     /** Extra env vars merged into the child's environment (e.g. CADRE_OWNER_KEYS). */
     extraEnv?: Record<string, string>;
@@ -611,15 +615,16 @@ export class HostProcessOrchestrator implements Orchestrator {
       // NOTE: the scrub above drops every CADRE_* var and `extraEnv` is built only from
       // pinnedOwnerKeys, so a managed child advertises only the ports assigned to it here
       // — `CADRE_ANNOUNCE_ADDRS`/`CADRE_APPEND_ANNOUNCE_ADDRS` cannot reach it. Fine while
-      // children are reached at those ports or through a relay; if a host is ever fronted
-      // by a proxy or DNS name, plumb an announce var through from host config. The TCP
+      // children are reached at those ports; if a host is ever fronted by a proxy or DNS
+      // name, plumb an announce var through from host config. The TCP
       // and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand node the
       // child runs binds the same two entries with OS-assigned ports instead, since one
       // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). A NAT
       // forward (the owner node's, via `NatService`) covers the TCP port only, so it
       // reaches the control node over TCP alone; a phone outside the LAN, which needs the
-      // WebSocket port, and every strand node are reached through observed addresses or
-      // a relay.
+      // WebSocket port, and every strand node are reached through observed addresses only,
+      // since no `CADRE_RELAY_ADDRS` is set here and a child therefore holds no relay
+      // reservation.
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
@@ -1010,24 +1015,29 @@ export class HostProcessOrchestrator implements Orchestrator {
     req: OrchestratorCreateRequest,
     workdir: string,
     push?: PushCredentials,
-  ): Record<string, unknown> {
-    const cfg: Record<string, unknown> = {
+  ): CliConfig {
+    const cfg: CliConfig = {
       controlNetwork: {
         partyId: req.partyId,
         bootstrapNodes: req.bootstrapNodes,
       },
       profile: req.profile,
-      strandFilter: req.strandFilter ?? 'all',
+      // The request carries the filter as text (the provider hands the same text to
+      // CADRE_STRAND_FILTER); the file form is `all`/`none` or the parsed JSON object, and a
+      // filter the node would refuse fails here, before anything is spawned.
+      // NOTE: an empty string is refused here, where cadre-provider's container-env treats it as
+      // unset. Nothing in cadre-host populates `req.strandFilter` today; if the provision route
+      // starts accepting one, pick one rule for both.
+      strandFilter: req.strandFilter === undefined ? 'all' : strandFilterConfigFromText(req.strandFilter),
     };
     if (req.profile === 'storage') {
-      const storage: Record<string, unknown> = {
+      cfg.storage = {
         type: 'file',
         path: join(workdir, 'storage'),
+        ...(req.resources?.storageQuotaBytes !== undefined
+          ? { quotaBytes: req.resources.storageQuotaBytes }
+          : {}),
       };
-      if (req.resources?.storageQuotaBytes !== undefined) {
-        storage.quotaBytes = req.resources.storageQuotaBytes;
-      }
-      cfg.storage = storage;
     }
     // Push credentials land in the child's cadre.json on the host filesystem —
     // the same trust boundary as the control-DB storage in this workdir. The
@@ -1054,8 +1064,8 @@ export class HostProcessOrchestrator implements Orchestrator {
     profile: 'storage' | 'transaction',
     workdir: string,
     push?: PushCredentials,
-  ): Record<string, unknown> {
-    const config: Record<string, unknown> = {
+  ): CliConfig {
+    const config: CliConfig = {
       controlNetwork: {
         partyId: cfg.partyId,
         bootstrapNodes: [],

@@ -22,7 +22,7 @@ import { AppState } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import type { CadreNode } from '@serfab/cadre-core';
-import { getPhoneNode } from './cadre-phone';
+import { getPhoneNode, loadSavedStartOptions, startPhoneNode } from './cadre-phone';
 import {
   createPushWakeHandler,
   createDeviceTokenRegistrar,
@@ -39,15 +39,26 @@ function isForeground(): boolean {
   return AppState.currentState === 'active';
 }
 
-// The handler is constructed once. `ensureNode` is intentionally omitted: the
-// node's start options (partyId / bootstrap addrs) are entered in Settings and
-// not yet persisted, so a wake into a fully OS-killed process cannot cold-start
-// and degrades to a `no-node` no-op (the check-in wake is the backstop). The
-// common case — backgrounded-but-alive with hibernated strands — is fully served
-// by the live singleton. Persisting start options for true cold-start is a
-// follow-up (see the review handoff).
+/**
+ * Cold start for a wake into a process the OS killed: bring the node up with the
+ * options it last started with — but only when the last session ended connected. A
+ * user who tapped Disconnect has logged out (the device token was cleared then too),
+ * so a wake stays a `no-node` no-op rather than logging them back in. A throw is
+ * caught and logged by the handler.
+ */
+async function startFromSavedOptions(): Promise<void> {
+  const saved = await loadSavedStartOptions();
+  if (!saved?.autoStart) return;
+  await startPhoneNode(saved.options);
+}
+
+// The handler is constructed once, in module scope, because `expo-task-manager`
+// re-runs this module in a fresh JS runtime before invoking the task — the case
+// `ensureNode` exists for. A backgrounded-but-alive process with hibernated strands
+// is served by the live singleton and never reaches it.
 const handler = createPushWakeHandler({
   getNode: () => getPhoneNode(),
+  ensureNode: startFromSavedOptions,
   isForeground,
 });
 

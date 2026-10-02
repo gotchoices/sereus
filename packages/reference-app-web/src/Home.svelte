@@ -75,7 +75,7 @@
 		<span class="label">Chat strand</span>
 		<span class="value strand-{node.strandStatus}" data-testid="home-strand-status">
 			{node.strandStatus ?? '—'}
-			{#if node.strandPeers != null}<span class="muted"> · {node.strandPeers} peers</span>{/if}
+			{#if node.strandConnectedPeers != null}<span class="muted"> · {node.strandConnectedPeers} peers</span>{/if}
 		</span>
 	</div>
 	<div class="row">

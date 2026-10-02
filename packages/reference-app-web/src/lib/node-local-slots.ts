@@ -2,11 +2,11 @@
  * node-local-slots.ts — `DurableSlot` factory over the node-local database's
  * `kv` IndexedDB object store, for the browser's node-local records: the
  * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
- * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`)
- * and the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`),
- * each under its own key.
+ * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`),
+ * the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`) and
+ * the strand network state, each under its own key.
  *
- * All three records go in the SAME database as the tab's Ed25519 identity and
+ * Every record goes in the SAME database as the tab's Ed25519 identity and
  * party id (`strand-storage.ts`'s `NODE_LOCAL_STORE_KEY` database, `kv` store) —
  * not a separate one. The decisive property is shared fate: "Clear site data"
  * must wipe identity, anchor, and dial targets together so the tab cold-starts
@@ -29,6 +29,13 @@ export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
 
 /** `kv` key for the persisted bootstrap-peer (cold-start dial target) snapshot. */
 export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
+
+/**
+ * `kv` key for the persisted strand network state — per strand, the FRET routing
+ * table its strand node saved, re-imported after a reload. Not trust-bearing: FRET
+ * verifies each address record at import.
+ */
+export const STRAND_NETWORK_KV_KEY = 'strand-network';
 
 /**
  * `kv` key for the tab's last-known enrolled-machine count — the control

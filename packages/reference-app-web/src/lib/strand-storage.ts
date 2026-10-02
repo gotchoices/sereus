@@ -12,7 +12,7 @@
  *   - each strand calls `provider(strandId)` (see
  *     `cadre-core/src/strand-instance-manager.ts` → `resolveStrandStorage`).
  *
- * Every key cadre-core mints is already within `[A-Za-z0-9._-]`, so this module
+ * Every key cadre-core mints is already within `[a-z0-9._-]`, so this module
  * concatenates it into a database name without escaping.
  *
  * But `IndexedDBRawStorage` wraps an **already-open** `OptimysticWebDBHandle`

@@ -3,7 +3,7 @@ import type Docker from 'dockerode';
 import { DockerOrchestrator, volumeNameFor } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
-import { volumeStubs, type VolumeStubs } from './fake-docker.js';
+import { daemonStubs, type DaemonStubs } from './fake-docker.js';
 
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_vol',
@@ -44,7 +44,7 @@ function createdContainer(id: string) {
 
 /** Orchestrator over a fake daemon carrying `vol`'s volume surface plus the given container calls. */
 function orchestratorOver(
-  vol: VolumeStubs,
+  vol: DaemonStubs,
   calls: { createContainer?: unknown; getContainer?: unknown } = {}
 ): DockerOrchestrator {
   const docker = {
@@ -59,7 +59,7 @@ const createFails = () => vi.fn(async () => { throw new Error('boom'); });
 
 describe('DockerOrchestrator durable volume wiring', () => {
   it('mounts a fresh named volume at /data and labels it on create', async () => {
-    const vol = volumeStubs();
+    const vol = daemonStubs();
     const createContainer = vi.fn(async (spec: {
       HostConfig: { Mounts: Array<{ Type: string; Source: string; Target: string }> };
     }) => {
@@ -79,7 +79,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('reuses a pre-existing volume instead of creating one', async () => {
-    const vol = volumeStubs([volumeName]);
+    const vol = daemonStubs([volumeName]);
     const createContainer = vi.fn(async () => createdContainer('cid-2'));
 
     await orchestratorOver(vol, { createContainer }).createContainer(request);
@@ -92,7 +92,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   // path below, would destroy a tenant's identity. Failing the provision is the
   // cheap outcome, so the error propagates untouched.
   it('aborts the provision when the volume inspect fails for a non-404 reason', async () => {
-    const vol = volumeStubs([volumeName]);
+    const vol = daemonStubs([volumeName]);
     vol.getVolume.mockImplementation(() => ({
       inspect: async () => { throw Object.assign(new Error('daemon unreachable'), { statusCode: 500 }); },
     }));
@@ -108,7 +108,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('removes the volume it created when the create attempt fails', async () => {
-    const vol = volumeStubs();
+    const vol = daemonStubs();
 
     await expect(orchestratorOver(vol, { createContainer: createFails() }).createContainer(request))
       .rejects.toThrow('boom');
@@ -118,7 +118,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('leaves a pre-existing volume alone when a recreate attempt fails (image-upgrade case)', async () => {
-    const vol = volumeStubs([volumeName]);
+    const vol = daemonStubs([volumeName]);
 
     await expect(orchestratorOver(vol, { createContainer: createFails() }).createContainer(request))
       .rejects.toThrow('boom');
@@ -128,7 +128,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('removeContainer reads Mounts via inspect, force-removes, then removes the named volume', async () => {
-    const vol = volumeStubs([volumeName]);
+    const vol = daemonStubs([volumeName]);
     const removeSpy = vi.fn(async () => {});
     const handle = fakeContainerHandle({
       labels: { 'sereus.container-id': request.containerId },
@@ -144,7 +144,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('terminates cleanly when the volume is already gone', async () => {
-    const vol = volumeStubs(); // not seeded — getVolume().remove() throws a 404
+    const vol = daemonStubs(); // not seeded — getVolume().remove() throws a 404
     const handle = fakeContainerHandle({
       labels: { 'sereus.container-id': request.containerId },
       mounts: [{ Type: 'volume', Name: volumeName, Destination: '/data' }],
@@ -155,7 +155,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   });
 
   it('removes no named volume for a legacy container with no matching label/mount', async () => {
-    const vol = volumeStubs();
+    const vol = daemonStubs();
     const handle = fakeContainerHandle({ labels: {}, mounts: [] });
 
     await orchestratorOver(vol, { getContainer: vi.fn(() => handle) }).removeContainer('docker-id-3');
@@ -166,7 +166,7 @@ describe('DockerOrchestrator durable volume wiring', () => {
   // An unreadable container must still be reaped: the volume name is unknown, so it
   // is left behind rather than guessed at, but the container removal proceeds.
   it('still force-removes the container when the pre-removal inspect fails', async () => {
-    const vol = volumeStubs([volumeName]);
+    const vol = daemonStubs([volumeName]);
     const removeSpy = vi.fn(async () => {});
     const handle = fakeContainerHandle({
       inspect: vi.fn(async () => { throw new Error('no such container'); }),

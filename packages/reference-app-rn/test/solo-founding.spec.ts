@@ -8,6 +8,7 @@ import {
 	InMemoryKeyStore,
 	MemoryBootstrapPeerStore,
 	MemoryEnrolledMachineStore,
+	MemoryStrandNetworkStateStore,
 	MemoryTrustedOwnerStore,
 } from '@serfab/cadre-core';
 import { createChatStrand, createClosedChatStrand } from '../src/chat-strand.js';
@@ -42,11 +43,11 @@ const FOUNDING_DEADLINE_MS = 10_000;
 const LIFECYCLE_DEADLINE_MS = 30_000;
 /**
  * The same two bounds for a node whose relay is configured but unreachable. Each adds
- * roughly one relay drive — `DEFAULT_RELAY_RESERVE_TIMEOUT_MS` (10 s), which a refused
+ * roughly one relay drive — `DEFAULT_RELAY_RESERVE_TIMEOUT_MS` (18 s), which a refused
  * dial spends polling in case libp2p's own discovery lands a reservation anyway.
  * `start()` waits out the control node's first attempt, and every strand launch waits
  * out its own supervisors' (`strand-instance-manager.ts` → `awaitFirstRelayAttempts`).
- * That ~10 s per strand launch is a real, accepted regression in founding latency on a
+ * That ~18 s per strand launch is a real, accepted regression in founding latency on a
  * phone whose relay is down; the deadlines here are sized for it rather than hiding it.
  */
 const RELAY_LIFECYCLE_DEADLINE_MS = 45_000;
@@ -91,6 +92,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 			enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
+			strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
 		}));
 		node = cadre;
 		await within('node.start()', LIFECYCLE_DEADLINE_MS, () => cadre.start());
@@ -184,6 +186,7 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
 			enrolledMachineStore: new MemoryEnrolledMachineStore(partyId),
+			strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
 		}));
 		node = cadre;
 		await within('node.start() with a dead relay', RELAY_LIFECYCLE_DEADLINE_MS, () => cadre.start());

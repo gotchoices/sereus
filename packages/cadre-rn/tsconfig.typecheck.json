@@ -1,0 +1,19 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		// rootDir reaches the repo root because test/global-setup.ts imports
+		// test-harness/build-freshness.ts by relative path (TS6059 otherwise). Nothing is
+		// emitted from this config; tsconfig.build.json does that, from src only.
+		"rootDir": "../..",
+		"noEmit": true,
+		// test/polyfills/reload-reason.spec.ts imports polyfills/reload-reason.js, which ships
+		// as plain JavaScript. The file joins the program so the import resolves; with
+		// checkJs off it is not type-checked.
+		"allowJs": true
+	},
+	"include": [
+		"src",
+		"test",
+		"vitest.config.ts"
+	]
+}

@@ -40,7 +40,7 @@ interface NodeState {
 	error: string | null;
 	controlConnected: boolean;
 	strandStatus: StrandStatus | null;
-	strandPeers: number | null;
+	strandConnectedPeers: number | null;
 	strandError: string | null;
 	owner: OwnerState;
 	relay: RelayState;
@@ -63,7 +63,7 @@ const state = $state<NodeState>({
 	error: null,
 	controlConnected: false,
 	strandStatus: null,
-	strandPeers: null,
+	strandConnectedPeers: null,
 	strandError: null,
 	owner: 'pending',
 	relay: noRelayState(),
@@ -131,7 +131,7 @@ function subscribe(node: CadreNode): void {
 function syncStrand(): void {
 	const strand = getChatStrand();
 	state.strandStatus = strand?.status ?? null;
-	state.strandPeers = strand?.connectedPeers ?? null;
+	state.strandConnectedPeers = strand?.connectedPeers ?? null;
 	state.strandError = strand?.error ?? state.strandError;
 }
 
@@ -220,7 +220,7 @@ export async function stop(): Promise<void> {
 		state.partyId = null;
 		state.controlConnected = false;
 		state.strandStatus = null;
-		state.strandPeers = null;
+		state.strandConnectedPeers = null;
 		state.strandError = null;
 		state.owner = 'pending';
 		state.relay = noRelayState();

@@ -64,13 +64,8 @@ export {
 } from './key-store.js';
 
 // The KeyStore-backed identity rule, shared with embedding apps that need the
-// node key BEFORE `CadreNode` exists (RN resolves it to sign its ICE-manifest
-// request), plus the generic "prove you hold this node key" signer built on it.
-export {
-  loadOrCreateIdentityKey,
-  peerKeySigner,
-  type PeerKeySigner
-} from './identity-key.js';
+// node key BEFORE `CadreNode` exists.
+export { loadOrCreateIdentityKey } from './identity-key.js';
 
 // Node-local trusted-owner anchor: the NON-replicated, per-party record of
 // out-of-band-established owner keys (the trust anchor the replicated OwnerKey
@@ -117,10 +112,38 @@ export {
   type EnrolledMachineStore
 } from './enrolled-machine-store.js';
 
+// Node-local record of the strands this node joined from ANOTHER party and has not yet
+// published party-wide, re-offered on every start as `strand:discovered`.
+// Cross-platform: its durable form rides the KeyStore seam above (the record carries a
+// closed strand's read secret), so there is no file-backed subpath.
+export {
+  MemoryJoinedStrandStore,
+  KeyStoreJoinedStrandStore,
+  type JoinedStrandStore,
+  type JoinedStrandRecord
+} from './joined-strand-store.js';
+
+// Node-local strand network state: per strand, the state Optimystic's db-p2p saves for
+// the strand node (its FRET routing table with each peer's signed address record), so a
+// restarted strand node re-imports the peers it was talking to. Same cross-platform
+// split as the bootstrap-peer store above — interface + in-memory + slot-backed stores
+// here, Node-only file backend behind '@serfab/cadre-core/strand-network-state-file'.
+export {
+  MemoryStrandNetworkStateStore,
+  PersistentStrandNetworkStateStore,
+  strandNetworkStatePersistence,
+  type StrandNetworkStateStore
+} from './strand-network-state.js';
+// The signed address records a running strand node's FRET table holds, as per-peer dial
+// addresses: what the periodic refresh re-merges into the node's address book, and a
+// diagnostic for "whom could this strand node redial right now?".
+export { strandFretPeerAddrs, type FretAddrHost, type FretPeerAddrs } from './strand-fret-addrs.js';
+
 // Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
 // so two parties on one device never share a control store. Every key stays within
-// `[A-Za-z0-9._-]`: the control key by base64url encoding, a strand's by
+// `[a-z0-9._-]` — lowercase, so distinct keys stay distinct on a case-insensitive
+// filesystem: the control key by lowercase hex encoding, a strand's by
 // `assertStrandScopeKey`, which every strand launch runs.
 export {
   controlStorageScope,
@@ -238,6 +261,8 @@ export {
   createDefaultFormationResponseValidator,
   type DisclosureValidator,
   type FormationUsageRecorder,
+  type FormationUsageParams,
+  type AuthorizedFormationUsage,
   type ResolvedHostStrand,
   type StrandProvisioner,
   type FormationResponseValidator,
@@ -363,14 +388,16 @@ export {
 } from './strand-wake-protocol.js';
 
 // Strand Address (control-network strand-address RPC) — wire types come via
-// `export * from './types.js'` (StrandAddrRequest / StrandAddrResponse).
+// `export * from './types.js'` (StrandAddrRequest / StrandAddrResponse / StrandAddrStatus).
 export {
   StrandAddrService,
   collectStrandAddrs,
   STRAND_ADDR_PROTOCOL,
   type StrandAddrServiceOptions,
   type StrandAddrPeer,
-  type CollectStrandAddrsOptions
+  type CollectStrandAddrsOptions,
+  type StrandAddrOutcome,
+  type StrandAddrCollection
 } from './strand-addr-protocol.js';
 
 // Peer-address record (self-published, signed, freshness-stamped CadrePeer row)
@@ -437,6 +464,7 @@ export {
 // limit, so an address that never answers cannot starve the rest.
 export {
   dialPeerAddrs,
+  SelfRelayOnlyError,
   tryAddrsInTurn,
   directBeforeRelayed,
   DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
@@ -451,16 +479,24 @@ export {
 // one declared assumption about the link moves them all — see `NetworkConfig.linkRoundTripMs`.
 export {
   DECLARED_LINK_ROUND_TRIP_MS,
+  CIRCUIT_DIAL_ROUND_TRIPS,
+  RELAY_DIAL_ROUND_TRIPS,
   RELAYED_DIAL_ROUND_TRIPS,
   RELAY_RESERVATION_ROUND_TRIPS,
   CIRCUIT_REQUEST_ROUND_TRIPS,
+  RELAYED_REQUEST_ROUND_TRIPS,
   PUSH_TRANSFER_ALLOWANCE_MS,
+  ADMISSION_DECISION_TIMEOUT_MS,
   resolveLinkRoundTripMs,
   relayedDialBudgetMs,
   relayReservationBudgetMs,
   circuitRequestBudgetMs,
+  relayedRequestBudgetMs,
   peerJoinPushBudget,
-  type PeerJoinPushBudget
+  type PeerJoinPushBudget,
+  DIAL_ADMISSION_DECISIONS,
+  optimysticDialLimits,
+  type OptimysticDialLimits
 } from './link-budget.js';
 
 // Seed trust policy (trust anchor for incoming seeds)
@@ -485,6 +521,7 @@ export {
 export {
   FormationListener,
   dialFormation,
+  dialFormationByMachine,
   isValidResponderCreatesResult,
   isWellFormedMembershipInvite,
   sanitizeStrandAddrs,
@@ -498,8 +535,22 @@ export {
   type FormationListenerOptions,
   type FormationDialOptions,
   type FormationDialResult,
+  type FormationRejection,
+  type FormationTokenCheck,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
+// How a formation dial fails: a typed refusal (with a fixed code) or no answer at all
+export {
+  FormationRejectedError,
+  FormationUnreachableError,
+  FormationPostApprovalError,
+  FORMATION_REJECTION_RETRYABLE,
+  isFormationRejectionCode,
+  type FormationRejectionCode
+} from './strand-formation-rejection.js';
+export { formationDeadlines, type FormationDeadlines } from './strand-formation-deadlines.js';
+// The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
+export { PENDING_JOIN_POLL_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
 
 // Strand Formation manager (drives the native transport)
 export {
@@ -508,6 +559,8 @@ export {
   MEMBERSHIP_INVITE_TTL_MS,
   MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
   HOST_STRAND_MUST_BE_RECREATED_REASON,
+  type CadrePeerAddrsSource,
+  type MembershipInviteIssuer,
   type StrandFormationManagerConfig,
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';
@@ -517,11 +570,9 @@ export {
   createMembershipConnectionGater,
   STRANGER_OPEN_PROTOCOLS,
   DEFAULT_ENROLLMENT_WINDOW_MS,
-  ADMISSION_DECISION_TIMEOUT_MS,
   RELAY_ADMISSION_RESERVE_DEADLINE_MS,
   RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
   MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
-  UNAUTHORIZED_RESERVATION_TTL_MS,
   UnauthorizedReservationBudget,
   type InboundAdmissionPolicy,
   type InboundConnectionVerdict
@@ -547,6 +598,19 @@ export {
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';
+// STUN for an embedder's WebRTC transport, derived from the relays it already uses: each
+// Sereus relay also answers STUN (`ops/docs/ice-servers.md`).
+export { RELAY_STUN_PORT, relayStunUrl, resolveStunServers, type StunServer } from './relay-stun.js';
+// The circuit-relay SERVER a node runs, and with which init — one resolution shared by the
+// control node and every strand node. Exported alongside the listen derivations above for the
+// same reason: an embedder can assert on what its `network` block resolves to.
+export {
+  resolveRelayServer,
+  PARTY_RELAY_MAX_RESERVATIONS,
+  PARTY_RELAY_RESERVATION_TTL_MS,
+  type ResolvedRelayServer,
+  type ResolvedRelayReservations
+} from './relay-server.js';
 
 // Relay reservation via the bare `/p2p-circuit` search listener — the one route
 // every control node takes; `network.relayAddrs` is its fail-fast posture

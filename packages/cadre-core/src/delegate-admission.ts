@@ -35,7 +35,7 @@
  * The receiver side is {@link DelegateAdmissionStore}. The announcer side keeps
  * its own throttle state (a "last announced at" map that `CadreNode` owns) and
  * decides from it, per reconcile pass, which relays are due a re-announce —
- * {@link dueRelayAnnounces} and {@link pruneStoppedStrandAnnounces} are that
+ * {@link dueRelayAnnounces} and {@link prunePeerStrandKeys} are that
  * decision, pure and testable, kept here beside the TTL they are derived from.
  */
 
@@ -71,12 +71,18 @@ interface DelegateGrant {
 }
 
 /**
- * Composite map key for the per-(peer, strand) state on both sides: the
- * receiver's replace-per-(announcer, strand) grant, and the announcer's
- * per-(target, strand) throttle timestamp.
+ * Composite map key for per-(peer, strand) state: the receiver's
+ * replace-per-(announcer, strand) grant, the announcer's per-(target, strand)
+ * throttle timestamp, and `CadreNode`'s per-(sibling, strand) strand-addr ask
+ * due time.
  */
 export function peerStrandKey(peerId: string, strandId: string): string {
   return `${peerId}\n${strandId}`;
+}
+
+/** The `peerId` half of a {@link peerStrandKey} (a peer id never contains a newline). */
+function peerIdOfKey(key: string): string {
+  return key.slice(0, key.indexOf('\n'));
 }
 
 /** The `strandId` half of a {@link peerStrandKey}. */
@@ -233,17 +239,21 @@ export function dueRelayAnnounces(
 }
 
 /**
- * Drop `announceAt` entries whose strand is no longer running — a stopped
- * strand needs no refresh, and without this the map grows for the node's
- * lifetime. Mutates in place.
+ * Drop the entries of a {@link peerStrandKey}-keyed map whose strand is no longer
+ * running, and — when `livePeerIds` is given — whose peer is not among them. A
+ * stopped strand needs no refresh, a departed peer is owed a fresh start when it
+ * returns, and without this the map grows for the node's lifetime. Mutates in
+ * place.
  */
-export function pruneStoppedStrandAnnounces(
-  announceAt: Map<string, number>,
-  runningStrandIds: ReadonlySet<string>
+export function prunePeerStrandKeys(
+  byKey: Map<string, number>,
+  runningStrandIds: ReadonlySet<string>,
+  livePeerIds?: ReadonlySet<string>
 ): void {
-  for (const key of announceAt.keys()) {
-    if (!runningStrandIds.has(strandIdOfKey(key))) {
-      announceAt.delete(key);
+  for (const key of byKey.keys()) {
+    const peerGone = livePeerIds !== undefined && !livePeerIds.has(peerIdOfKey(key));
+    if (peerGone || !runningStrandIds.has(strandIdOfKey(key))) {
+      byKey.delete(key);
     }
   }
 }

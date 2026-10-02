@@ -1,5 +1,9 @@
 # Example Cadre Node Configuration
 # Copy this file to cadre.yaml and customize for your deployment
+#
+# Every key in this file is checked at start. An unknown or misspelled key, a retired
+# key, or a value of the wrong type stops the node with an error naming the key and
+# this file (or the CADRE_* environment variable that supplied the value).
 
 # Node identity (optional - generates a throwaway identity if not specified, so a node
 # that must keep its peer id across restarts has to set this).
@@ -8,7 +12,8 @@ identity:
   # written by 'cadre enroll create' (and by cadre-host's installer as identity.key).
   # This is the only accepted format — a file in any other shape fails startup with a
   # clear error rather than being guessed at. 'keyFile' is the only key this block
-  # accepts; a retired or misspelled name fails startup too.
+  # accepts, and it must have a value: a 'keyFile:' line left empty would otherwise
+  # start the node under a new peer id, so it fails startup instead.
   keyFile: ./cadre-peer.key
 
 # Control network connection

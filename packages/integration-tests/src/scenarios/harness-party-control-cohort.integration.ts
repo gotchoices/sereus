@@ -26,11 +26,12 @@
  * Do NOT shorten that wait to make this file feel faster: a too-tight budget turns a
  * real convergence into a flake.
  *
- * THE ONE THING WAITING CANNOT FIX. `createTestParty`'s drone nodes dial only the
- * owner, never each other. FRET can classify only a peer it can reach, so a DRONE's
- * cohort tops out at two members (itself + the owner) forever — no amount of waiting
- * makes a drone see a sibling drone. That cap is asserted directly in case 1, and it
- * is why case 3 forces a cohort rather than waiting for one.
+ * DRONES REACH EACH OTHER THROUGH THE OWNER. `createTestParty`'s drone nodes dial only
+ * the owner, but FRET's neighbour snapshots carry each peer's signed address record, so
+ * a drone learns its sibling's address from the owner and dials it. Every machine's
+ * cohort therefore converges to the whole party, the drones' as well as the owner's;
+ * case 1 asserts that for each machine. Case 3 still forces its cohort, for a
+ * selection that does not depend on ring timing and a coordinator pinned to the owner.
  *
  * WHY `happy-path.integration.ts` WAS NOT RETROFITTED INSTEAD. It is the suite's
  * broad smoke test. Binding its writes to a three-machine cohort would bind the canary
@@ -43,8 +44,7 @@
  * MEASURED OUTCOMES (single machine, localhost websockets; several consecutive runs of
  * this file alone, recorded so a future change of behaviour shows up as a change of
  * these numbers — treat them as the observed spread, not as bounds anything asserts):
- *   - case 1, drone cap ........... as described every run, ~8.4–8.7 s (the failing
- *     probe's own 8 s budget dominates; the two waits before it resolve well under 1 s)
+ *   - case 1, every machine's view  REACHED 3 every run, ~0.4–1.7 s
  *   - case 2, waited real cohort .. COMMITTED every run, ~0.7–1.0 s
  *   - case 3, forced cohort ....... COMMITTED every run, ~0.2–0.4 s
  *   - whole file .................. ~23–25 s
@@ -61,7 +61,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import debug from 'debug';
 import {
 	TestCadreNetwork, waitForControlCohort, observeControlCohorts, forceFullCohort, pinCoordinator, errorChainText
 } from '../harness/index.js';
@@ -70,8 +69,6 @@ import type {
 } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
-const log = debug('sereus:integration:party-cohort');
-
 // ── Deadlines ─────────────────────────────────────────────────────────────────
 //
 // A control write that fails on the unanimity bar settles at roughly 20–40 s: two
@@ -79,13 +76,6 @@ const log = debug('sereus:integration:party-cohort');
 // rounds is not deterministic. Each `it` timeout below is sized above the sum of the
 // deadlines its body can pay, so a genuine hang is reported by the named assertion
 // rather than by vitest's anonymous test timeout.
-
-/**
- * Budget for the probe that must FAIL — a drone asked for a three-member cohort.
- * Deliberately short: the cap is permanent (see the header), so waiting the helper's
- * 15 s default would only make the file slower without making the case any more true.
- */
-const DRONE_CAP_PROBE_TIMEOUT_MS = 8_000;
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
 
@@ -125,7 +115,7 @@ function allPartyPeerIds(party: TestParty): string[] {
 describe('control writes into a real multi-machine cohort (harness party)', () => {
 	let network: TestCadreNetwork;
 	/** Case 1 — cohort shape only, no writes. */
-	let capParty: TestParty;
+	let reachParty: TestParty;
 	/** Case 2 — the waited, unforced write. Its own party so a failed write cannot bleed. */
 	let waitedParty: TestParty;
 	/** Case 3 — the forced write. Same reason for its own party. */
@@ -142,7 +132,7 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 		// All three parties up front: the later cases' rings converge while case 1 runs,
 		// so no case pays the ~5 s warm-up twice. Three parties x three machines = nine
 		// nodes, which is the whole port budget this file takes.
-		capParty = await network.createParty({ name: 'cohort-cap', droneCount: 2 });
+		reachParty = await network.createParty({ name: 'cohort-reach', droneCount: 2 });
 		waitedParty = await network.createParty({ name: 'cohort-waited-write', droneCount: 2 });
 		forcedParty = await network.createParty({ name: 'cohort-forced-write', droneCount: 2 });
 	}, 180_000);
@@ -164,33 +154,18 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 
 	// ── Case 1 ────────────────────────────────────────────────────────────────────
 
-	it('reaches all three machines from the owner, and caps at two from a drone', async () => {
-		// The owner is the only machine that can see the whole party, and it does — this
-		// is the wait every writing case depends on.
-		const ownerView = await waitForControlCohort(capParty, 3);
-		expect([...ownerView].sort()).toEqual([...allPartyPeerIds(capParty)].sort());
+	it('reaches all three machines from the owner and from every drone', async () => {
+		// The owner's view is the wait every writing case depends on.
+		const ownerView = await waitForControlCohort(reachParty, 3);
+		expect([...ownerView].sort()).toEqual([...allPartyPeerIds(reachParty)].sort());
 
-		const drone = capParty.droneNodes[0]!;
-		// A drone does see the owner, so its two-member cohort is a real cohort, not a
-		// node that failed to converge at all.
-		const droneView = await waitForControlCohort(capParty, 2, { node: drone });
-		expect([...droneView].sort()).toEqual([drone.peerId, capParty.ownerNode.peerId].sort());
-
-		// …and it never sees the third machine. Asserted on the OBSERVED SIZE in the
-		// message, not merely on "it threw": a wiring fault (no attached key network, an
-		// unsatisfiable `minPeers`) also throws, and would pass a bare `rejects.toThrow`.
-		const capped = await settle(() =>
-			waitForControlCohort(capParty, 3, { node: drone, timeoutMs: DRONE_CAP_PROBE_TIMEOUT_MS }));
-		log('drone cap probe settled in %dms: %s', capped.elapsedMs,
-			capped.error === null ? 'RESOLVED (unexpected)' : errorChainText(capped.error));
-		expect(capped.error, "a drone reached a three-member cohort — the sibling-drone cap is gone, "
-			+ 'and this file\'s reason for forcing case 3 with it').not.toBeNull();
-		// `[12]`, not a literal 2: the drone's converged view is 2 and that is what every
-		// run has reported, but FRET can transiently drop a classification, and a probe
-		// that happened to time out at 1 would still be the cap this case asserts. What
-		// must never match is a 3 — and that the two-member view is a REAL cohort rather
-		// than a node that never converged is already established by the wait above.
-		expect(errorChainText(capped.error)).toMatch(/saw a cohort of [12] .*needed 3/s);
+		// Each drone reaches its sibling as well as the owner (see the header), so a
+		// drone-coordinated control write has the whole party available to it too.
+		for (const drone of reachParty.droneNodes) {
+			const droneView = await waitForControlCohort(reachParty, 3, { node: drone });
+			expect([...droneView].sort(), `drone ${drone.peerId} did not reach the whole party`)
+				.toEqual([...allPartyPeerIds(reachParty)].sort());
+		}
 	}, 90_000);
 
 	// ── Case 2 ────────────────────────────────────────────────────────────────────
@@ -232,9 +207,10 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 
 		// ANTI-VACUITY — and the subtlety that makes this different from case 3.
 		// `observeControlCohorts` patches the PROTOTYPE, so it records selections made by
-		// EVERY node in this vitest worker, drones included — and a drone legitimately sees
-		// two (the header's permanent cap). Asserting that every recorded size is three is
-		// therefore WRONG here and would fail against a perfectly correct system. The
+		// EVERY node in this vitest worker, drones included — and a drone's ring can lag the
+		// owner's, and other parties in this worker select their own cohorts too. Asserting
+		// that every recorded size is three is therefore WRONG here and would fail against a
+		// perfectly correct system. The
 		// honest claim is that at least one selection during the write spanned the whole
 		// party. Do not "tighten" this to `.every`.
 		expect(sizesDuringWrite.some((n) => n >= 3),

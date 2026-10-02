@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PushCredentials } from '@serfab/cadre-core';
-import { applyEnvironmentOverrides, resolveConfig } from '../src/config/loader.js';
+import { applyEnvironmentOverrides, resolveConfig, validateConfig } from '../src/config/index.js';
 import type { CliConfigFile } from '../src/config/types.js';
 
 const baseConfig: CliConfigFile = {
@@ -14,20 +14,21 @@ const baseConfig: CliConfigFile = {
 const FCM = { projectId: 'proj', clientEmail: 'svc@proj.iam', privateKey: 'PEMKEY' };
 const APNS = { keyId: 'KID', teamId: 'TEAM', bundleId: 'com.example', privateKey: 'P8KEY', production: false };
 
+/** The startup merge: `env` written over `file`, validated, and the push block handed back. */
+function mergePush(file: CliConfigFile, env: NodeJS.ProcessEnv): PushCredentials | undefined {
+  const { tree, provenance } = applyEnvironmentOverrides(file, env);
+  return validateConfig(tree, provenance, 'cadre.yaml').push;
+}
+
 /** Round-trip a raw CADRE_PUSH env value through the merge path. */
 function resolveFromEnv(value: string): PushCredentials | undefined {
-  process.env.CADRE_PUSH = value;
-  return applyEnvironmentOverrides({ ...baseConfig }).push;
+  return mergePush({ ...baseConfig }, { CADRE_PUSH: value });
 }
 
 describe('push config', () => {
-  afterEach(() => {
-    delete process.env.CADRE_PUSH;
-  });
-
   it('passes a file-config push block through unchanged', () => {
-    const merged = applyEnvironmentOverrides({ ...baseConfig, push: { fcm: FCM, apns: APNS, cooldownMs: 1000 } });
-    expect(merged.push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
+    const merged = mergePush({ ...baseConfig, push: { fcm: FCM, apns: APNS, cooldownMs: 1000 } }, {});
+    expect(merged).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
   });
 
   it('parses a JSON CADRE_PUSH env var into the push block', () => {
@@ -36,9 +37,8 @@ describe('push config', () => {
   });
 
   it('lets CADRE_PUSH override a file-config push block', () => {
-    process.env.CADRE_PUSH = JSON.stringify({ apns: APNS });
-    const merged = applyEnvironmentOverrides({ ...baseConfig, push: { fcm: FCM } });
-    expect(merged.push).toEqual({ apns: APNS });
+    const merged = mergePush({ ...baseConfig, push: { fcm: FCM } }, { CADRE_PUSH: JSON.stringify({ apns: APNS }) });
+    expect(merged).toEqual({ apns: APNS });
   });
 
   it('leaves push unset when CADRE_PUSH is empty (compose default) and the file sets none', () => {
@@ -59,11 +59,11 @@ describe('push config', () => {
 describe('resolveConfig push validation', () => {
   let dir: string;
 
-  /** Write a cadre.json and resolve it. */
-  async function resolveWith(push: unknown): Promise<PushCredentials | undefined> {
+  /** Write a cadre.json carrying `push` and resolve it under `env`. */
+  async function resolveWith(push: unknown, env: NodeJS.ProcessEnv = {}): Promise<PushCredentials | undefined> {
     const cfgPath = join(dir, 'cadre.json');
     writeFileSync(cfgPath, JSON.stringify({ ...baseConfig, push }), 'utf8');
-    return (await resolveConfig(cfgPath)).push;
+    return (await resolveConfig(cfgPath, env)).push;
   }
 
   beforeEach(() => {
@@ -71,7 +71,6 @@ describe('resolveConfig push validation', () => {
   });
 
   afterEach(() => {
-    delete process.env.CADRE_PUSH;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -88,7 +87,7 @@ describe('resolveConfig push validation', () => {
   });
 
   it('rejects a partial block injected via CADRE_PUSH', async () => {
-    process.env.CADRE_PUSH = JSON.stringify({ apns: { keyId: 'KID', teamId: 'TEAM', bundleId: '', privateKey: 'P8' } });
-    await expect(resolveWith(undefined)).rejects.toThrow(/push\.apns\.bundleId/);
+    const partial = JSON.stringify({ apns: { keyId: 'KID', teamId: 'TEAM', bundleId: '', privateKey: 'P8' } });
+    await expect(resolveWith(undefined, { CADRE_PUSH: partial })).rejects.toThrow(/push\.apns\.bundleId/);
   });
 });

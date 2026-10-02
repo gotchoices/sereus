@@ -52,7 +52,7 @@ vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 vi.mock('../src/peer-join-backfill.js', () => ({ PeerJoinBackfill: mocks.PeerJoinBackfill }));
 
-const testSchema = 'create table Test (id text primary key);';
+const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
 
 let authorPrivateKey: string;

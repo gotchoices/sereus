@@ -4,6 +4,7 @@ import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   StrandSolicitationService,
   type DisclosureValidator,
@@ -260,7 +261,7 @@ describe('StrandFormationManager Integration', () => {
       strandProvisioner: mockProvisioner,
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     // Create an invitation
     const invitation = await responderService.createOpenInvitation(
@@ -288,7 +289,7 @@ describe('StrandFormationManager Integration', () => {
     expect(result.strandId.startsWith('strand-')).toBe(true);
 
     // Cleanup
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 15000);
 
   it('should handle multiple concurrent formations', async () => {
@@ -310,7 +311,7 @@ describe('StrandFormationManager Integration', () => {
       strandProvisioner: mockProvisioner,
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     const invitation = await responderService.createOpenInvitation(
       'test-sapp',
@@ -336,7 +337,7 @@ describe('StrandFormationManager Integration', () => {
     const uniqueIds = new Set(strandIds);
     expect(uniqueIds.size).toBe(3); // Each formation should get a unique strand
 
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 20000);
 
   it('should reject invalid tokens', async () => {
@@ -350,7 +351,7 @@ describe('StrandFormationManager Integration', () => {
       partyId: 'responder-party',
       formationUsageRecorder: mockRecorder
     });
-    responderService.registerResponder(nodeA);
+    await responderService.registerResponder(nodeA);
 
     // Create invitation with invalid token
     const invitation: OpenInvitation = {
@@ -368,7 +369,7 @@ describe('StrandFormationManager Integration', () => {
       initiatorService.formStrand(invitation, {}, nodeB)
     ).rejects.toThrow();
 
-    responderService.unregisterResponder(nodeA);
+    await responderService.unregisterResponder(nodeA);
   }, 10000);
 });
 
@@ -407,7 +408,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-real-1' }) },
       disclosureValidator: capturingValidator
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -432,7 +433,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     expect(captured!.disclosure.purpose).toBe('real-purpose');
     expect(captured!.disclosure.partyId).toBe(result.memberKey);
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('delivers the responder real cadre addresses to the initiator (no placeholders)', async () => {
@@ -450,7 +451,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       cadrePeerAddrs: responderAddrs,
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-addr-1' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation('test-sapp', 60000, responderAddrs);
 
@@ -466,7 +467,53 @@ describe('StrandFormationManager transport: real disclosure + result validation'
     expect(receivedAddrs?.length).toBeGreaterThan(0);
     expect(receivedAddrs?.some(a => a.includes('.local'))).toBe(false);
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('forms through a later bootstrap address when the first is unreachable', async () => {
+    const goodAddrs = nodeA.getMultiaddrs().map(ma => ma.toString());
+    const deadAddr = `/ip4/127.0.0.1/tcp/1/p2p/${nodeA.peerId.toString()}`;
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: goodAddrs,
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-second-addr' }) }
+    });
+    await responder.registerResponder(nodeA);
+    const invitation = await responder.createOpenInvitation('test-sapp', 60000, [deadAddr, ...goodAddrs]);
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    const result = await initiator.formStrand(invitation, { purpose: 'second-addr' }, nodeB);
+
+    expect(result.strandId).toBe('strand-second-addr');
+    await responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('forms through another machine of the party when the first one named is offline', async () => {
+    // libp2p refuses one dial whose addresses name two peers, so this passes only when the
+    // joiner dials each machine of the invitation in its own session.
+    const offlineMachine = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: nodeA.getMultiaddrs().map(ma => ma.toString()),
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-sibling-machine' }) }
+    });
+    await responder.registerResponder(nodeA);
+    const invitation = await responder.createOpenInvitation('test-sapp', 60000, [
+      `/ip4/127.0.0.1/tcp/1/p2p/${offlineMachine}`,
+      ...nodeA.getMultiaddrs().map(ma => ma.toString())
+    ]);
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    const result = await initiator.formStrand(invitation, { purpose: 'sibling-machine' }, nodeB);
+
+    expect(result.strandId).toBe('strand-sibling-machine');
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('rejects a responder that returns an empty strandId', async () => {
@@ -476,7 +523,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       // Malicious/stub responder: provisions an empty strand id.
       strandProvisioner: { provisionStrand: async () => ({ strandId: '' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -493,7 +540,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       initiator.formStrand(invitation, { purpose: 'reject-empty-strand' }, nodeB)
     ).rejects.toThrow();
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 
   it('rejects a responder that discloses no cadre addresses', async () => {
@@ -503,7 +550,7 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       cadrePeerAddrs: [],
       strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-nocadre-1' }) }
     });
-    responder.registerResponder(nodeA);
+    await responder.registerResponder(nodeA);
 
     const invitation = await responder.createOpenInvitation(
       'test-sapp',
@@ -520,6 +567,6 @@ describe('StrandFormationManager transport: real disclosure + result validation'
       initiator.formStrand(invitation, { purpose: 'reject-no-cadre' }, nodeB)
     ).rejects.toThrow();
 
-    responder.unregisterResponder(nodeA);
+    await responder.unregisterResponder(nodeA);
   }, 15000);
 });

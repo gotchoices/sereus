@@ -145,12 +145,12 @@ describe('CadreNode control-network node options', () => {
     it('routes network.cohortQueryTimeoutMs into the control node\'s read deadline', () => {
       // What this file owns is the WIRING: that the host's field reaches `clusterPolicy` at all.
       // The builder's own contract — the frozen base by identity when nothing is declared, a
-      // count and a deadline not shadowing each other, and that 5000 exceeds Optimystic's
-      // 1000 ms LAN default — is pinned on the builder itself, in
+      // count and a deadline not shadowing each other, and that the declared deadline exceeds
+      // Optimystic's 1000 ms LAN default — is pinned on the builder itself, in
       // `quereus-plugin-sereus/test/plugin.spec.ts`.
       //
-      // 12000, not 5000: an override equal to the declared default would also pass against a
-      // node that dropped `network` on the floor.
+      // 12000, not the 7000 default: an override equal to the declared default would also pass
+      // against a node that dropped `network` on the floor.
       const options = controlOptions(new CadreNode(createConfig({
         network: { cohortQueryTimeoutMs: 12_000 }
       })));
@@ -441,6 +441,16 @@ describe('CadreNode control-network node options', () => {
       const options = controlOptions(new CadreNode(createConfig({ profile: 'transaction', network: { enableRelay: true } })));
 
       expect(options.relay).toBe(true);
+    });
+
+    it('runs the server without libp2p\'s per-connection data/duration cap, and hands a disabled one no init', () => {
+      // libp2p's default init caps every relayed connection at 128 KiB or 2 min, which
+      // cut off every sync forwarded through a party's own always-on machine (#19).
+      const on = controlOptions(new CadreNode(createConfig({ profile: 'storage' })));
+      const off = controlOptions(new CadreNode(createConfig({ profile: 'transaction' })));
+
+      expect(on.relayServerInit?.reservations?.applyDefaultLimit).toBe(false);
+      expect(off).not.toHaveProperty('relayServerInit');
     });
   });
 

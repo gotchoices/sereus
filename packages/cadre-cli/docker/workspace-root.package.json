@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "yarn@4.12.0",
   "workspaces": [
+    "packages/config-check",
     "packages/cadre-core",
     "packages/cadre-cli"
   ]

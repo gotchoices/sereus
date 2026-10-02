@@ -24,14 +24,25 @@ export default function ChatScreen() {
   const cadre = useCadre();
   const activeStrand = cadre.activeStrand;
 
+  const [draft, setDraft] = useState('');
+  const [sendError, setSendError] = useState<string | null>(null);
+
   const chat = useChat({
     strand: activeStrand,
     participantId: cadre.peerId,
     participantName: cadre.peerId ? participantDisplayName(cadre.peerId) : undefined,
+    // A send that reported failure did land. Leave text the user has since typed alone.
+    onDraftSettled: (text) => {
+      setSendError(null);
+      setDraft((d) => (d.trim() === text ? '' : d));
+    },
   });
 
-  const [draft, setDraft] = useState('');
-  const [sendError, setSendError] = useState<string | null>(null);
+  const handleChangeText = (text: string) => {
+    setDraft(text);
+    chat.composerChanged(text.trim());
+  };
+
   const listRef = useRef<FlatList<ChatMessage>>(null);
   // Because the box keeps its text until the write resolves (below), the Send control stays
   // live for the whole commit — seconds, on a slow strand. A second tap in that window is the
@@ -129,7 +140,7 @@ export default function ChatScreen() {
           style={styles.input}
           testID={TEST_IDS.chat.messageInput}
           value={draft}
-          onChangeText={setDraft}
+          onChangeText={handleChangeText}
           placeholder="Message…"
           placeholderTextColor="#666"
           onSubmitEditing={handleSend}

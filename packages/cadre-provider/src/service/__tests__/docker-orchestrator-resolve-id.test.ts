@@ -2,7 +2,8 @@
  * `DockerOrchestrator.resolveDockerId` is how the reap finds a container the
  * provider lost the id for — a provider that died mid-provision never wrote one.
  * It must ask the daemon (labels survive a provider restart; the in-memory port
- * map does not) and must not report a daemon failure as "nothing there".
+ * map is not rebuilt until a create) and must not report a daemon failure as
+ * "nothing there".
  */
 
 import { describe, it, expect, vi } from 'vitest';

@@ -99,7 +99,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-	ControlFormationUsageRecorder,
 	DEFAULT_STRAND_CLUSTER_SIZE,
 	MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
 	addMemberByManager,
@@ -385,19 +384,6 @@ const MACHINE_SPEC = {
 	membershipReconciliation: { pollIntervalMs: RECONCILE_POLL_MS },
 } as const;
 
-/**
- * Turn a started `CadreNode` into a formation RESPONDER — the production wiring a host app
- * does. The DB-backed usage recorder is what resolves a bound invitation to its host
- * strand, holds the connection gate's outstanding-invitation carve-out open for a
- * stranger's dial, and records the consent; `initializeStrandSolicitation` force-wires the
- * strand-addr disclosure and the membership-invitation issuer behind it.
- */
-function armResponder(host: CadreNode): void {
-	host.initializeStrandSolicitation({
-		formationUsageRecorder: new ControlFormationUsageRecorder(host.getControlDatabase()!),
-	});
-}
-
 /** Mint a fresh open invitation and publish it BOUND to `strandId`, the reference apps'
  *  release flow: redeeming it records consent against the existing host strand rather than
  *  minting a new one — which is what makes the responder issue a membership invitation. */
@@ -566,11 +552,10 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			const strandId = `strand-removal-formation-${Date.now()}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 
-			// ── The host founds a CLOSED strand and becomes a formation responder ────
+			// ── The host founds a CLOSED strand (it answers formation from start) ────
 			// `foundStrand` publishes the row cadre-wide AND attaches as founder: the
 			// publish mints this party's own membership identity (StrandPartyKey), and
 			// the founder bootstrap seats it as the strand's first Member and Manager.
-			armResponder(hostOwner.node);
 			const founded = await hostOwner.node.foundStrand({
 				strandId,
 				type: 'c',
@@ -814,7 +799,6 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			const strandId = `strand-removal-rejoin-${Date.now()}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 
-			armResponder(hostOwner.node);
 			const founded = await hostOwner.node.foundStrand({
 				strandId,
 				type: 'c',

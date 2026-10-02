@@ -124,14 +124,21 @@ describe('CadreNode.launchStrand transport-key wiring', () => {
     expect(peerIdFromPrivateKey(keyA).toString()).not.toBe(peerIdFromPrivateKey(keyB).toString());
   });
 
-  it('passes no private key when no identity key is configured (libp2p generates its own)', async () => {
+  it('passes a fresh random Ed25519 key when no identity key is configured, distinct per launch', async () => {
+    // Not `undefined` (which would leave libp2p to generate a key cadre-core never sees):
+    // the delegate announcement names the strand peer id before the strand node exists,
+    // so cadre-core has to hold the key. Random, because there is no identity to derive from.
     const node = new CadreNode(createConfig());
     const { configs } = injectFakeStrandManager(node);
 
     await launchStrand(node, 'strand-a');
+    await launchStrand(node, 'strand-b');
 
-    expect(configs).toHaveLength(1);
-    expect(configs[0]!.privateKey).toBeUndefined();
+    expect(configs).toHaveLength(2);
+    const [keyA, keyB] = configs.map((c) => c.privateKey!);
+    expect(keyA?.type).toBe('Ed25519');
+    expect(keyB?.type).toBe('Ed25519');
+    expect(peerIdFromPrivateKey(keyA).toString()).not.toBe(peerIdFromPrivateKey(keyB).toString());
   });
 
   it('announces the derived transport peerId as the delegate, not the control identity', async () => {
@@ -148,14 +155,16 @@ describe('CadreNode.launchStrand transport-key wiring', () => {
     expect(delegates[0]).not.toBe(peerIdFromPrivateKey(identity).toString());
   });
 
-  it('announces no delegate when no identity key is configured', async () => {
+  it('announces the random key\'s peerId as the delegate when no identity key is configured', async () => {
+    // The strand node runs under the random key above, so THAT is the peer id a
+    // party-run relay has to admit; announcing nothing would deny its reservation.
     const node = new CadreNode(createConfig());
-    injectFakeStrandManager(node);
+    const { configs } = injectFakeStrandManager(node);
     const delegates = captureDelegatePeerIds(node);
 
     await launchStrand(node, 'strand-a');
 
-    expect(delegates).toEqual([undefined]);
+    expect(delegates).toEqual([peerIdFromPrivateKey(configs[0]!.privateKey!).toString()]);
   });
 
   it('rejects the launch when the identity key is not Ed25519, without starting the strand', async () => {

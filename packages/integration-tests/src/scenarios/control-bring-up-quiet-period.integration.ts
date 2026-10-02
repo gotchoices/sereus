@@ -82,9 +82,9 @@ const BOOTSTRAP_DISCOVERY_TIMEOUT_MS = 1_000;
  *
  * So the delay is chosen against the FLOOR of the operation count rather than
  * today's measurement. `control-start-storage-op-budget.spec.ts` pins cold start at
- * 45 operations and fails below half that, so 23 is the lowest count that can reach
- * here without something else going red first. At 50 ms: 23 × 50 ms = 1150 ms at
- * that floor, 45 × 50 ms = 2250 ms as measured today — past the fuse either way, and
+ * 48 operations and fails below half that, so 24 is the lowest count that can reach
+ * here without something else going red first. At 50 ms: 24 × 50 ms = 1200 ms at
+ * that floor, 48 × 50 ms = 2400 ms as measured today — past the fuse either way, and
  * about 1.5 s of added wall clock for one node.
  *
  * If optimystic cuts the operation count again, this fails loudly rather than going

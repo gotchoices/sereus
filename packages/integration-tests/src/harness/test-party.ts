@@ -122,10 +122,9 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   const bootstrapAddrs = ownerNode.multiaddrs;
   
   // Create drone nodes if requested
-  // NOTE: drones only ever dial the owner (bootstrapAddrs), never each other, so a
-  // drone never gains an address or connection to a sibling drone. FRET can only
-  // classify a peer it can reach, so a drone's cohort stabilizes at 2 (self + owner)
-  // permanently — not a convergence delay. Only the owner sees all party members.
+  // NOTE: drones bootstrap only to the owner (bootstrapAddrs). Each learns its siblings'
+  // addresses from the signed address records in FRET's neighbour snapshots and dials
+  // them, so every member's cohort converges to the whole party.
   const droneNodes: TestCadreNode[] = [];
   for (let i = 0; i < droneCount; i++) {
     log('Creating drone node %d/%d for party %s', i + 1, droneCount, name);

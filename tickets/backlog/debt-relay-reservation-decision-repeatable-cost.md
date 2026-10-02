@@ -26,8 +26,8 @@ hop streams (the circuit-relay server leaves `maxInboundHopStreams` at the regis
 default), not the request rate, so one connection can drive reservation decisions back to
 back for as long as it is open:
 
-- a peer that never gets a reservation still has ~5 s before the not-reserving deadline
-  aborts it — but it may re-dial and repeat;
+- a peer that never gets a reservation still has ~5.5 s (at the default declared link) before the not-reserving deadline
+  closes it — but it may re-dial and repeat;
 - a peer that DID take a budget slot keeps its connection indefinitely and can repeat
   without limit.
 

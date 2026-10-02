@@ -99,7 +99,7 @@
  * reachability).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
@@ -175,6 +175,14 @@ async function seedReceiverRecord(
  * network). Asserts `active` then `hibernating` so a silent hibernate no-op
  * (e.g. a realtime latency hint) fails loudly.
  */
+/**
+ * Wait for a pushed wake to bring the strand up. The receiver acks at acceptance and resumes
+ * the strand afterwards, so the ack alone does not mean the strand is active yet.
+ */
+async function awaitPushedWake(Rx: CadreNode, strandId: string): Promise<void> {
+	await vi.waitFor(() => expect(Rx.getStrand(strandId)?.status).toBe('active'), { timeout: 30_000, interval: 100 });
+}
+
 async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promise<void> {
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 	// `founder: true`: a solo strand is a FOUNDED strand — a joiner launched alone comes
@@ -255,8 +263,8 @@ describe('E2E push-wake over the control network', () => {
 
 			// Real handle/dialProtocol/half-close/framing + pushWake→resolvePeerAddrs→dialWake.
 			const ack: WakeAck = await S.pushWake(rxPeerId, strandId, 'test wake');
-			expect(ack).toEqual({ accepted: true, status: 'active' });
-			expect(Rx.getStrand(strandId)?.status).toBe('active');
+			expect(ack).toEqual({ accepted: true, status: 'hibernating' });
+			await awaitPushedWake(Rx, strandId);
 		} finally {
 			await Rx?.stop();
 			await S?.stop();
@@ -469,7 +477,7 @@ describe('E2E push-wake over the control network', () => {
 			// replicated-schema constraint. Nothing here touches Rx's node-local anchor.
 			await Rx.getControlDatabase()!.insertOwnerKey(oOwnerPub);
 			const pollution = new SeedBootstrapService({ partyId, ownerPrivateKey: oOwnerPriv, ownerPublicKey: oOwnerPub });
-			pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
+			await pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
 			await pollution.authorizePeer({ peerId: oPeerId, multiaddrs: controlAddrs(O) });
 
 			// The hole, made visible: O IS addressable on Rx (row present) — and still
@@ -493,7 +501,8 @@ describe('E2E push-wake over the control network', () => {
 			expect(Rx.getStrand(strandId)?.status).toBe('active');
 			const rxDialTargets = [{ peerId: rxPeerId, addrs: rxAddrs.map((a) => multiaddr(a)) }];
 			const refused = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
-			expect(refused).toEqual([]);
+			expect(refused.addrs).toEqual([]);
+			expect(refused.outcomes.get(rxPeerId)).toBe('refused');
 
 			// POSITIVE CONTROL — same replicated state, one anchor pin: once Rx's
 			// operator pins O's owner key, the identical rows flip to authorized and the
@@ -503,7 +512,7 @@ describe('E2E push-wake over the control network', () => {
 			await Rx.trustOwnerKeys([oOwnerPub], 'operator');
 			expect(await Rx.isAuthorizedMember(oPeerId)).toBe(true);
 			const granted = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
-			expect(granted.length).toBeGreaterThan(0);
+			expect(granted.addrs.length).toBeGreaterThan(0);
 		} finally {
 			await O?.stop();
 			await Rx?.stop();
@@ -683,8 +692,8 @@ describe('E2E push-wake over the control network', () => {
 			// The real wake: pushWake → resolvePeerAddrs (replicated record) → dialWake, and the
 			// receiver's `isMember` gate passes on the REPLICATED membership row. Strand wakes.
 			const ack: WakeAck = await S.pushWake(rxPeerId, strandId, 'replication-backed wake');
-			expect(ack).toEqual({ accepted: true, status: 'active' });
-			expect(Rx.getStrand(strandId)?.status).toBe('active');
+			expect(ack).toEqual({ accepted: true, status: 'hibernating' });
+			await awaitPushedWake(Rx, strandId);
 		} finally {
 			await Rx?.stop();
 			await S?.stop();

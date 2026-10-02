@@ -31,12 +31,13 @@
 import {
 	CadreNode,
 	ed25519KeyPairFromLibp2p,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
+	PersistentStrandNetworkStateStore,
 	controlStorageScope,
+	resolveStunServers,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -50,7 +51,7 @@ import type {
 	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
-import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRawStorage } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Database } from '@quereus/quereus';
 import {
@@ -61,7 +62,6 @@ import {
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC, webRTCDirect } from '@libp2p/webrtc';
-import { resolveIceServers } from './ice-config.js';
 import { resolveRelayAddrs } from './relay-config.js';
 import {
 	openStores,
@@ -71,19 +71,15 @@ import {
 	getStoreStorage,
 	NODE_LOCAL_STORE_KEY,
 } from './strand-storage.js';
-import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY } from './node-local-slots.js';
+import {
+	kvSlot,
+	TRUSTED_OWNERS_KV_KEY,
+	BOOTSTRAP_PEERS_KV_KEY,
+	ENROLLED_MACHINES_KV_KEY,
+	STRAND_NETWORK_KV_KEY,
+} from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
-
-/**
- * db-p2p's transport-factory element type. The WebRTC factories from
- * `@libp2p/webrtc` carry a nominally-different `[transportSymbol]` brand than
- * db-p2p's pinned `@libp2p/interface` (the symbol is a global registry key, so
- * they are runtime-identical). `CadreNodeConfig.network.transports` is exactly
- * this `Libp2pTransports`, so we bridge with the same cast the bare-libp2p
- * wiring used — no `any`, no pinning five transitive packages.
- */
-type TransportFactory = Libp2pTransports[number];
 
 /** Outcome of the solo owner self-genesis step. */
 export type OwnerState = 'pending' | 'genesis' | 'existing' | 'error';
@@ -179,7 +175,7 @@ let ownerError: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
-let solicitationReady = false;
+// NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
 
 // ── Getters (read by the store + diagnostics) ─────────────────────────────────
@@ -313,12 +309,7 @@ export async function startCadre(): Promise<CadreNode> {
 
 	partyId = await loadOrCreatePartyId(nodeLocalHandle);
 	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
-	// `loadOrCreateBrowserPeerKey` returns db-p2p-storage-web's pinned
-	// `@libp2p/interface` `PrivateKey`, whose `Uint8ArrayList` brand is newer than
-	// this app's `@libp2p/interface` (same global symbol → runtime-identical).
-	// Bridge to the local `PrivateKey` type — the same brand-skew cast the
-	// transport factories use above; cadre-core consumes the local brand.
-	const privateKey = (await loadOrCreateBrowserPeerKey(nodeLocalHandle)) as unknown as PrivateKey;
+	const privateKey = await loadOrCreateBrowserPeerKey(nodeLocalHandle);
 
 	// Now the party id is known, pre-open the party-scoped control block store — the key
 	// cadre-core's synchronous provider will ask for during `node.start()` below.
@@ -332,8 +323,8 @@ export async function startCadre(): Promise<CadreNode> {
 	const relayAddrs = resolveRelayAddrs();
 
 	// STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
-	// relay configured (host/LAN candidates still work).
-	const iceServers = resolveIceServers(relayAddrs);
+	// relay configured and no override (host/LAN candidates still work).
+	const iceServers = resolveStunServers(relayAddrs, import.meta.env.VITE_STUN_URLS);
 
 	// Durable node-local records, in the same node-local IndexedDB database as the
 	// identity/party-id above (shared fate — see `node-local-slots.ts`). No
@@ -360,6 +351,13 @@ export async function startCadre(): Promise<CadreNode> {
 		kvSlot(nodeLocalHandle, ENROLLED_MACHINES_KV_KEY),
 		partyId,
 	);
+	// Each strand node's saved network state — the FRET routing table it re-imports
+	// after a reload, with every peer's signed address record. Same database, its own
+	// key; FRET verifies each record at import.
+	const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
+		kvSlot(nodeLocalHandle, STRAND_NETWORK_KV_KEY),
+		partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -373,9 +371,8 @@ export async function startCadre(): Promise<CadreNode> {
 			transports: [
 				webSockets(),
 				circuitRelayTransport(),
-				// Brand-skew bridge — runtime-safe, see TransportFactory above.
-				webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
-				webRTCDirect() as unknown as TransportFactory,
+				webRTC({ rtcConfiguration: { iceServers } }),
+				webRTCDirect(),
 			],
 			// Dialable side of formation listens via circuit relay + WebRTC; solo
 			// tabs (no relay configured) keep the Phase-1 no-listen posture.
@@ -419,6 +416,7 @@ export async function startCadre(): Promise<CadreNode> {
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
 		enrolledMachines: { store: enrolledMachineStore },
+		strandNetworkState: { store: strandNetworkStateStore },
 	};
 
 	node = new CadreNode(config);
@@ -462,7 +460,7 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
 			throw new Error('control database unavailable after start; cannot run owner genesis');
 		}
 		const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
-		cadre.initializeSeedBootstrap(privateKeyB64);
+		await cadre.initializeSeedBootstrap(privateKeyB64);
 		ownerState = inserted ? 'genesis' : 'existing';
 		ownerError = null;
 	} catch (err) {
@@ -473,36 +471,6 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
-
-/**
- * Lazily bring up the strand solicitation service (responder + initiator
- * transport). Idempotent; called by both {@link createInvitation} and
- * {@link joinViaInvitation}.
- *
- * Wires a {@link ControlFormationUsageRecorder} backed by the live control
- * database, mirroring RN's `initializeFormationResponder`
- * (`reference-app-rn/src/cadre-phone.ts`). Without it the responder accepts every
- * token blindly AND never resolves the host's bound strand — so a redeeming
- * `formStrand` would fall through to the responder-provisions placeholder and
- * return no `memberPrivateKey`. The recorder makes token validity + single-use
- * real and threads the bound host strand back (provision-then-record). The
- * control database must exist post-start, so its absence throws rather than
- * silently degrading to the no-recorder path.
- */
-function ensureSolicitation(): CadreNode {
-	if (!node) throw new Error('CadreNode not started');
-	if (!solicitationReady) {
-		const controlDb = node.getControlDatabase();
-		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot wire formation responder');
-		}
-		node.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-		});
-		solicitationReady = true;
-	}
-	return node;
-}
 
 /** What {@link createInvitation} returns to the responder UI. */
 export interface CreatedInvitation {
@@ -523,9 +491,9 @@ export interface CreatedInvitation {
  * Host side of closed-strand formation: mint a membership key, publish the
  * `Strand` row (`Type:'c'`) under this node's owner, and attach the local
  * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
- * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no participant
- * `Role` column, so unlike RN there is no owner/member role assignment to mirror —
- * bring-up is one `foundStrand` call.
+ * (`reference-app-rn/src/chat-strand.ts`), except that the web app assigns no
+ * owner/member role: the chat schema's `Participant.Role` column is left at its
+ * `'member'` default, so bring-up is one `foundStrand` call.
  *
  * `foundStrand` does both control-plane steps (publish + attach as founder, which
  * runs the one-time genesis bootstrap seating Header/Member/Owner from this party's
@@ -584,7 +552,8 @@ async function createClosedChatStrand(
 export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
 ): Promise<CreatedInvitation> {
-	const cadre = ensureSolicitation();
+	if (!node) throw new Error('CadreNode not started');
+	const cadre = node;
 	// Live read: a reservation lost since start now fails this guard, so the
 	// invitation is refused with a clear message instead of embedding circuit
 	// addresses that no longer route.
@@ -628,7 +597,8 @@ export async function joinViaInvitation(
 	encoded: string,
 	disclosure: StrandFormationDisclosure = {},
 ): Promise<FormedStrand> {
-	const cadre = ensureSolicitation();
+	if (!node) throw new Error('CadreNode not started');
+	const cadre = node;
 	const invitation: OpenInvitation = cadre.decodeInvitation(encoded.trim());
 	const result: FormStrandResult = await cadre.formStrand(invitation, {
 		partyId: partyId ?? undefined,
@@ -806,7 +776,6 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	ownerState = 'pending';
 	ownerError = null;
-	solicitationReady = false;
 	formedStrands.clear();
 	// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 	// above — drop the references so nothing can write through a closed handle.

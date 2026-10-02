@@ -24,15 +24,13 @@ import { defineConfig } from 'vitest/config';
  *    Hermes bundle (Node runs that syntax natively). It loads no compiled output
  *    from other packages, so it carries no stale-build guard.
  *
- *  - **polyfills** — guards `polyfills/hermes.js`: evaluates it in a controlled
- *    scope against a fake Hermes + React Native global surface (so it patches that
- *    object instead of the test runner's own globals) and asserts the behaviour the
- *    phone depends on, plus a drift guard over the globals our dependencies read.
- *    Its own project for the same reason as `metro-babel`: it runs none of the
- *    `node` project's stale-build guard over sibling `dist` output, so
- *    `vitest run --project polyfills` stays runnable while a sibling is unbuilt.
- *    It does read dependency `dist` trees, but only as text. It also holds the spec
- *    for `polyfills/reload-reason.js`, which runs against a mocked `react-native`.
+ *  - **polyfills** — a drift guard over the globals this app's installed
+ *    dependencies read, checked against the polyfills in `@serfab/cadre-rn` (whose
+ *    own `polyfills` project tests their behaviour). The dependency graph is this
+ *    app's, so the guard lives here. Its own project for the same reason as
+ *    `metro-babel`: it runs none of the `node` project's stale-build guard over
+ *    sibling `dist` output, so `vitest run --project polyfills` stays runnable while
+ *    a sibling is unbuilt. It does read dependency `dist` trees, but only as text.
  *
  * RN-coupled production modules (`app-state.ts`, screens) are not unit-targeted
  * by any project; they run under the Expo e2e harness (`scripts/run-e2e.mjs`).

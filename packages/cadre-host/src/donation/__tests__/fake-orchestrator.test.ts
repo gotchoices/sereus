@@ -3,14 +3,21 @@
  * from `HostProcessOrchestrator`. The donation suites lean on these semantics to
  * express races that only exist because the real class drops and rejects
  * handles, so this file exists to stop a later relaxation of the fake from
- * quietly turning one of those tests green. Each case names the real behaviour
- * it mirrors.
+ * quietly turning one of those tests green.
+ *
+ * The rules the fake shares with the real class live in
+ * `src/__tests__/orchestrator-handle-contract.ts` and run against both — here
+ * and in `src/__tests__/orchestrator.test.ts` — so a disagreement between the
+ * two fails a test. The cases in this file add what only the fake has: its
+ * recording arrays (`stopped`, `removed`, `reclaimedWorkdirs`) and its hooks.
+ * Each names the real behaviour it mirrors.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import type { OrchestratorCreateRequest } from '@serfab/cadre-provider';
 
+import { describeHandleContract } from '../../__tests__/orchestrator-handle-contract.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
 
 const request = (containerId: string): OrchestratorCreateRequest => ({
@@ -20,10 +27,19 @@ const request = (containerId: string): OrchestratorCreateRequest => ({
   profile: 'storage',
 });
 
+describeHandleContract<FakeOrchestrator>('FakeOrchestrator', {
+  make: () => new FakeOrchestrator(),
+  request,
+  // No process to wait for: a fake child is running as soon as it exists.
+  started: () => Promise.resolve(),
+  failNextCreate: (orch) => { orch.failCreate = true; },
+});
+
 describe('FakeOrchestrator handle lifecycle', () => {
   it('drops the prior handle when a re-spawn succeeds (mirrors dropStaleHandle)', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));
+    orch.crash(first.dockerId);
     const second = await orch.createContainer(request('grn_1'));
 
     await expect(orch.stopContainer(first.dockerId)).rejects.toThrow(
@@ -37,18 +53,6 @@ describe('FakeOrchestrator handle lifecycle', () => {
 
     await orch.stopContainer(second.dockerId);
     expect(orch.stopped).toEqual([second.dockerId]);
-  });
-
-  it('drops only the re-spawned container, leaving another container untouched', async () => {
-    const orch = new FakeOrchestrator();
-    const other = await orch.createContainer(request('grn_2'));
-    await orch.createContainer(request('grn_1'));
-    await orch.createContainer(request('grn_1'));
-
-    // The real drop filters on containerId; a fake that cleared the whole map
-    // would still pass every same-container case above.
-    await expect(orch.stopContainer(other.dockerId)).resolves.toBeUndefined();
-    expect(orch.resolveDockerId('grn_2')).toBe(other.dockerId);
   });
 
   it('keeps the prior handle live across the whole pre-drop await window', async () => {
@@ -153,6 +157,7 @@ describe('FakeOrchestrator handle lifecycle', () => {
   it('fires onSpawned after the drop, with the new handle live and the old one gone', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));
+    orch.crash(first.dockerId);
 
     let observed: { spawned: string; resolves: string | undefined } | undefined;
     orch.onSpawned = (dockerId) => {

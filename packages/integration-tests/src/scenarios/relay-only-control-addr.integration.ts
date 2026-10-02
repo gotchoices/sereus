@@ -64,6 +64,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p } from 'libp2p';
 import { RepoClient } from '@optimystic/db-p2p';
@@ -165,6 +166,18 @@ describe('E2E relay-only control node circuit address', () => {
 				intervalMs: 500,
 				description: 'third-party member learns the relay-only node\'s circuit address',
 			});
+
+			// ── Wire: A forwards B→C without libp2p's per-connection cap ────────────
+			// A is a party-run relay. With libp2p's default server init every circuit
+			// through it is "limited" (128 KiB / 2 min, then reset), and db-p2p's database
+			// protocols refuse a limited connection outright (gotchoices/sereus#19).
+			// `force` opens a fresh circuit rather than handing back whatever B already
+			// holds to C — C dials B directly once it reads B's row, and libp2p skips a
+			// limited connection when it returns an existing one, so without `force` a
+			// capped relay would pass by returning that direct connection instead.
+			const cCircuitAddr = controlAddrs(C).find(isCircuit)!;
+			const relayed = await B.getControlNode()!.dial(multiaddr(cCircuitAddr), { force: true });
+			expect(relayed.limits, 'relayed connection B→C through party-run relay A is flagged limited').toBeUndefined();
 		} finally {
 			await Promise.allSettled([C?.stop(), B?.stop(), A?.stop()]);
 		}
@@ -297,7 +310,7 @@ describe('E2E relay-only control node circuit address', () => {
 		// control-DB surface (extending what control-stream-authz.integration.ts
 		// proves for enrollment-window and delegate admissions) — and a connection
 		// that takes no reservation is closed at the not-reserving deadline
-		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5 s).
+		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5.5 s at the default declaration).
 		const partyId = `relay-stranger-${Date.now()}`;
 		let A: CadreNode | undefined;
 		let S: CadreNode | undefined;
@@ -346,7 +359,7 @@ describe('E2E relay-only control node circuit address', () => {
 
 			// No reservation was ever admitted for S, so the not-reserving deadline
 			// closes the connection, which both ends then let go of. The wait is
-			// generous against the 5 s deadline — the close itself lands within a
+			// generous against the 5.5 s deadline — the close itself lands within a
 			// few hundred milliseconds of it.
 			await waitUntil(
 				() => !sNode.getConnections().some(

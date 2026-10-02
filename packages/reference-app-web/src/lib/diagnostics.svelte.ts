@@ -38,12 +38,12 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import { IndexedDBRawStorage, type OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import {
-	summarizeConnectionPaths,
 	emptyConnectionPathSummary,
+	type CadreNode,
 	type ConnectionPathSummary,
 	type ConnectionPathKind,
 	type ConnectionTransport,
-} from './connection-path.js';
+} from '@serfab/cadre-core';
 
 const ERROR_BUFFER_LIMIT = 10;
 const POLL_INTERVAL_MS = 2_000;
@@ -273,11 +273,14 @@ export async function refreshDiagnostics(): Promise<void> {
 	if (refreshInFlight) return;
 	refreshInFlight = true;
 	try {
-		const node = getControlNode();
 		snapshot.cadre = await collectCadre();
 		snapshot.authorization = await collectAuthorization();
+		// Read after the awaits above, and once, so a restart during them cannot
+		// leave the synchronous collectors below describing two different nodes.
+		const cadre = getCadreNode();
+		const node = cadre?.getControlNode() ?? null;
 		snapshot.identity = collectIdentity(node);
-		snapshot.connectivity = collectConnectivity(node);
+		snapshot.connectivity = collectConnectivity(cadre);
 		snapshot.transports = collectTransports(node);
 		snapshot.fret = collectFret(node);
 		snapshot.storage = await collectStorage();
@@ -502,8 +505,9 @@ function collectIdentity(node: Libp2p | null): IdentityInfo {
 	};
 }
 
-function collectConnectivity(node: Libp2p | null): ConnectivityInfo {
-	if (!node) {
+function collectConnectivity(cadre: CadreNode | null): ConnectivityInfo {
+	const control = cadre?.getControlNode() ?? null;
+	if (!cadre || !control) {
 		return {
 			status: null,
 			listenAddrs: [],
@@ -511,12 +515,12 @@ function collectConnectivity(node: Libp2p | null): ConnectivityInfo {
 			paths: emptyConnectionPathSummary(),
 		};
 	}
-	const status = typeof node.status === 'string' ? node.status : 'unknown';
-	const listenAddrs = (node.getMultiaddrs?.() ?? []).map((ma) => ma.toString());
-	const conns = node.getConnections?.() ?? [];
-	// Classify all connections in one pass — `paths[i]` lines up with `conns[i]`,
-	// so we can zip the per-connection path facts back onto the table rows.
-	const paths = summarizeConnectionPaths(conns);
+	const status = typeof control.status === 'string' ? control.status : 'unknown';
+	const listenAddrs = (control.getMultiaddrs?.() ?? []).map((ma) => ma.toString());
+	// `paths.paths[i]` lines up with `conns[i]` only because both reads are synchronous
+	// and from the same node: `getConnectionPaths()` reads this same connection list.
+	const conns = control.getConnections?.() ?? [];
+	const paths = cadre.getConnectionPaths();
 	const connections = conns.map((c: Connection, i: number) => {
 		const peerId = c.remotePeer.toString();
 		const remoteAddr = c.remoteAddr?.toString?.() ?? '';

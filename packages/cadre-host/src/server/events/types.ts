@@ -13,6 +13,7 @@ export type LocalUiEvent =
   | { type: 'node-state-changed'; nodeId: string; status: ContainerStatus }
   | { type: 'trust-circle-changed'; kind: 'invited' | 'redeemed' | 'revoked' }
   | { type: 'strands-changed'; kind: 'removed' }
+  | { type: 'grants-changed'; kind: 'issued' | 'revoked' | 'terminated' }
   | {
       type: 'connectivity-changed';
       portMode: PortForwardMode;

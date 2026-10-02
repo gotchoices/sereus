@@ -3,7 +3,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { SAppConfig } from '../src/types.js';
 
 /** The one-table sApp schema the strand specs launch with. */
-const SCHEMA = 'create table Note (Id text primary key);';
+const SCHEMA = 'table Note (Id text primary key);';
 const VERSION = '1.0.0';
 
 /**

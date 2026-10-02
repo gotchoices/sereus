@@ -40,7 +40,7 @@ async function bootOwnerNode(): Promise<BootedNode> {
   const db = node.getControlDatabase();
   expect(db).not.toBeNull();
   await db!.insertOwnerKey(publicKeyB64);
-  node.initializeSeedBootstrap(privateKeyB64);
+  await node.initializeSeedBootstrap(privateKeyB64);
   // The owner node must have its own CadrePeer row (PublicKey) before any
   // DeviceToken it publishes can be resolved (membership + self-sig binding).
   await node.registerSelf();

@@ -35,14 +35,14 @@ function extractPrivateKeyBase64(privateKey: Uint8Array): string {
 	return uint8ArrayToString(rawKey, 'base64url');
 }
 
-function createSeedService(party: TestParty): SeedBootstrapService {
+async function createSeedService(party: TestParty): Promise<SeedBootstrapService> {
 	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
 		ownerPrivateKey: privateKeyBase64,
 		ownerPublicKey: party.ownerPublicKey,
 	});
-	service.initialize(party.ownerNode.libp2p, party.controlDatabase);
+	await service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
 }
 
@@ -177,7 +177,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 	// =========================================================================
 	it('fix: correct v3.x handler with length-prefixed seed roundtrip', async () => {
 		const owner = await network.createParty({ name: 'auth-fix' });
-		const authService = createSeedService(owner);
+		const authService = await createSeedService(owner);
 		await registerOwnerPeer(authService, owner);
 
 		const sender = await createPlainNode();
@@ -278,7 +278,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 	// =========================================================================
 	it('fix: cross-network delivery works with correct handler signature', async () => {
 		const owner = await network.createParty({ name: 'auth-cross-fix' });
-		const authService = createSeedService(owner);
+		const authService = await createSeedService(owner);
 		await registerOwnerPeer(authService, owner);
 
 		// Plain receiver (different "network")
@@ -368,7 +368,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 	it('e2e: deliverSeed round-trips through service handler on both sides', async () => {
 		// Sender party (owner that creates + delivers seed)
 		const senderParty = await network.createParty({ name: 'auth-e2e-sender' });
-		const senderService = createSeedService(senderParty);
+		const senderService = await createSeedService(senderParty);
 		await registerOwnerPeer(senderService, senderParty);
 
 		// Receiver party (has its own SeedBootstrapService with registered handler).
@@ -385,7 +385,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 			ownerPublicKey: receiverParty.ownerPublicKey,
 			trustPolicy: pinnedKeyTrustPolicy([senderParty.ownerPublicKey]),
 		});
-		receiverService.initialize(receiverParty.ownerNode.libp2p, receiverParty.controlDatabase);
+		await receiverService.initialize(receiverParty.ownerNode.libp2p, receiverParty.controlDatabase);
 		// Register the receiver's own handler + peer entry.
 		await registerOwnerPeer(receiverService, receiverParty);
 

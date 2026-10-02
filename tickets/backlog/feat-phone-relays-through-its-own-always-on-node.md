@@ -32,7 +32,7 @@ Beyond those, this ticket has its own design questions:
 - **A phone with no always-on node of its own.** It must fall back cleanly to a configured relay, or say plainly that it is not reachable yet.
 - **More than one always-on node.** Which one, or all of them? A second relay is a second reservation per node per strand.
 - **The home machine's reachability.** It has to be dialable from the wider internet for an outsider to hop through it; today only its own TCP port is mapped (`backlog/feat-cadre-host-wan-grant-reachability`), and a machine reachable only on a home network makes this work on that network and nowhere else.
-- **Two parties, two relays.** Once each side relays through its own machine, the two ends are on different relays — the shape nothing has ever tested (`backlog/feat-scenario-two-relay-circuit`).
+- **Two parties, two relays.** Once each side relays through its own machine, the two ends are on different relays. That shape is covered with two dedicated ungated relays (`blind-relay-phone-to-phone-e2e.integration.ts`, per-party arm: each phone dials the other through the other's relay without reserving there); through each party's own membership-gated cadre node it is not, and the outsider's hop through a gated node is exactly what this ticket has to make work.
 
 ## Expected behaviour
 
@@ -42,6 +42,6 @@ Beyond those, this ticket has its own design questions:
 
 ## Related
 
-- `backlog/feat-scenario-two-relay-circuit` — the two-relay shape this makes ordinary.
+- `blind-relay-phone-to-phone-e2e.integration.ts` (per-party arm) — the two-relay shape this makes ordinary, proven over dedicated relays.
 - `backlog/feat-cadre-host-wan-grant-reachability` — reaching the home machine from outside the home.
 - `backlog/debt-strand-relay-redrive-on-party-run-relay-unscenarioed` — recovery after a party-run relay restarts, which this would put on a data path.

@@ -45,6 +45,7 @@ import {
   DONATION_AWAITING_SEED_TTL_MS,
   DONATION_PROVISIONING_TTL_MS,
   DONATION_REAP_SWEEP_MS,
+  type GrantListing,
 } from '../donation/index.js';
 import { NatService } from '../nat/index.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
@@ -57,7 +58,7 @@ import {
 } from '../push/index.js';
 import { StrandService } from '../strands/index.js';
 import { OwnerNodeClient } from '../owner/index.js';
-import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
+import { createLocalUiServer, HostSettingsStore, type FounderServices } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
@@ -353,9 +354,7 @@ program
       // (they 404). Per-donated-node WAN reachability is deferred to
       // backlog/feat-cadre-host-wan-grant-reachability, so v1 donor mode is
       // loopback-only — nothing for NatService to map without an owner node.
-      let trustCircle: TrustCircleService | undefined;
-      let natService: NatService | undefined;
-      let strandService: StrandService | undefined;
+      let founder: FounderServices | undefined;
       if (hostOwnsCadre(cfg)) {
         // Spawn the owner node. Best-effort: a spawn failure leaves the
         // management API up (trust-circle listing degrades to local labels,
@@ -376,19 +375,19 @@ program
         const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
         const trustCircleStore = new TrustCircleStore(cfg.dataDir);
-        trustCircle = new TrustCircleService({
+        const trustCircle = new TrustCircleService({
           cadreNode: owner,
           store: trustCircleStore,
         });
 
-        natService = new NatService({
+        const natService = new NatService({
           rootDir: cfg.dataDir,
           cadreNode: owner,
         });
 
         // Strand management is founder-only for the same reason as the trust
         // circle: it asks the owner node, and donor-only mode has none.
-        strandService = new StrandService({ cadreNode: owner });
+        const strandService = new StrandService({ cadreNode: owner });
 
         // Push NAT-resolved invite addresses to the node on every NAT change.
         // NatService.start() also fires this once as an initial push, retried
@@ -422,6 +421,8 @@ program
         } catch (err) {
           console.error(`self trust-circle label failed: ${(err as Error).message}`);
         }
+
+        founder = { trustCircle, nat: natService, strands: strandService };
       } else {
         // Donor-only. If ownCadre was toggled off after a prior founder run,
         // orchestrator.init() re-attaches the still-running owner child (it would
@@ -442,9 +443,7 @@ program
         uiPort: cfg.uiPort,
         dataDir: cfg.dataDir,
         orchestrator,
-        ...(trustCircle ? { trustCircle } : {}),
-        ...(natService ? { nat: natService } : {}),
-        ...(strandService ? { strands: strandService } : {}),
+        ...(founder ? { founder } : {}),
         update: updateService,
         grants: grantService,
         donations: donationService,
@@ -460,7 +459,7 @@ program
       clearInterval(reapTimer);
       donationSupervisor.stop();
       try { await server.stop(); } catch { /* ignore */ }
-      try { await natService?.stop(); } catch { /* ignore */ }
+      try { await founder?.nat.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');
@@ -730,8 +729,7 @@ trust
 // A grant token lets one grantee (friend/family) present a Bearer credential to
 // ask this host to donate cadre nodes, up to a per-grantee cap. These commands
 // are thin HTTP clients of the loopback `/grants-admin` admin surface — no
-// bearer (same-machine admin), same posture as `invite` / `trust`. The
-// grantee-facing provisioning surface lands in the donation-service ticket.
+// bearer (same-machine admin), same posture as `invite` / `trust`.
 
 const grant = program
   .command('grant')
@@ -819,16 +817,14 @@ grant
       process.exit(1);
       return;
     }
-    const body = await response.json() as {
-      grants: Array<{ token: string; label: string; maxNodes: number; expiresAt?: string; revokedAt?: string }>;
-    };
+    const body = await response.json() as { grants: GrantListing[] };
     console.log('Grants:');
     if (body.grants.length === 0) {
       console.log('  (none)');
     } else {
       for (const g of body.grants) {
         const state = g.revokedAt ? ' [revoked]' : (g.expiresAt ? ` (expires ${g.expiresAt})` : '');
-        console.log(`  ${g.token}  ${g.label}  max=${g.maxNodes}${state}`);
+        console.log(`  ${g.token}  ${g.label}  live=${g.liveNodes} max=${g.maxNodes}${state}`);
       }
     }
     process.exit(0);
@@ -836,29 +832,56 @@ grant
 
 grant
   .command('revoke')
-  .description('Revoke a grant token (blocks future requests; live nodes are not torn down)')
+  .description('Revoke a grant token (blocks future requests) and shut down the nodes donated under it')
   .argument('<token>', 'Grant token to revoke')
+  .option('--keep-nodes', 'Leave the nodes already donated under this grant running')
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
-  .action(async (token: string, opts: { port: string; host: string }) => {
+  .action(async (token: string, opts: { keepNodes?: boolean; port: string; host: string }) => {
     const base = `http://${opts.host}:${resolvePort(opts.port)}`;
-    let response: Response;
-    try {
-      response = await fetch(`${base}/grants-admin/${encodeURIComponent(token)}`, { method: 'DELETE' });
-    } catch (err) {
-      console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
-      process.exit(2);
-      return;
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
-      process.exit(1);
-      return;
-    }
+    const query = opts.keepNodes ? '?keepNodes=true' : '';
+    const response = await adminDelete(base, `/grants-admin/${encodeURIComponent(token)}${query}`);
+    const body = await response.json() as { terminated?: string[] };
     console.log(`revoked grant: ${token}`);
+    console.log(opts.keepNodes
+      ? 'existing donated nodes left running'
+      : `terminated ${body.terminated?.length ?? 0} donated node(s)`);
     process.exit(0);
   });
+
+grant
+  .command('terminate')
+  .description('Shut down one donated node (the id shown on the Nodes page)')
+  .argument('<donation-id>', 'Donation id (grn_…) of the node to shut down')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (id: string, opts: { port: string; host: string }) => {
+    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
+    await adminDelete(base, `/grants-admin/donations/${encodeURIComponent(id)}`);
+    console.log(`terminated donated node: ${id}`);
+    process.exit(0);
+  });
+
+/**
+ * DELETE against the loopback admin surface, exiting the process on failure —
+ * 2 when cadre-host is unreachable, 1 on a non-OK response — so callers only
+ * ever see an OK response.
+ */
+async function adminDelete(base: string, path: string): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(`${base}${path}`, { method: 'DELETE' });
+  } catch (err) {
+    console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+    process.exit(1);
+  }
+  return response;
+}
 
 // ============================================================================
 // nat subcommands

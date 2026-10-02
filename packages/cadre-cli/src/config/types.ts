@@ -1,10 +1,22 @@
 import type { PrivateKey } from '@libp2p/interface';
 import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials } from '@serfab/cadre-core';
 
+/** The forms the `strandFilter` key may take in a config file. */
+export type StrandFilterConfig =
+  | 'all'
+  | 'none'
+  | { sAppId: string }
+  | { strandId: string };
+
 /**
- * CLI configuration file format (YAML/JSON)
+ * The validated, complete node configuration: what a config file plus its environment
+ * overrides amount to once `validateConfig` has accepted them. Every key here is checked at
+ * start — an unknown, retired or ill-typed key fails start naming the key and its source.
+ *
+ * The field tables in `schema.ts` are typed against this interface, so a key added here
+ * without a checker is a compile error rather than a silently accepted setting.
  */
-export interface CliConfigFile {
+export interface CliConfig {
   /**
    * Node identity. `keyFile` is the only accepted key — the loader rejects anything else in this
    * block (including the retired `protobufKeyFile` / `privateKeyHex`) rather than resolving to no
@@ -33,11 +45,7 @@ export interface CliConfigFile {
   profile: NodeProfile;
 
   /** Strand filter configuration */
-  strandFilter?:
-    | 'all'
-    | 'none'
-    | { sAppId: string }
-    | { strandId: string };
+  strandFilter?: StrandFilterConfig;
 
   /** Storage configuration (required for storage profile) */
   storage?: {
@@ -89,18 +97,22 @@ export interface CliConfigFile {
     /**
      * How long ONE peer of a block's replication group gets to answer ONE read-path request,
      * in milliseconds, for this machine's control node and every strand node it runs. Unset
-     * takes cadre's own 5000 ms, chosen for two parties that reach each other only through a
-     * relay; a deployment that is all LAN can lower it so a departed peer stops holding up a
-     * read for that long. A value that is not a finite number above zero fails startup where
-     * the node is built. See `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
+     * takes two link round trips at `linkRoundTripMs` below — 7000 ms at its default, sized
+     * for two parties that reach each other only through a relay; a deployment that is all
+     * LAN can lower it so a departed peer stops holding up a read for that long. A value that
+     * is not a finite number above zero fails startup where the node is built. See
+     * `NetworkConfig.cohortQueryTimeoutMs` in `@serfab/cadre-core`.
      */
     cohortQueryTimeoutMs?: number;
     /**
      * The round trip this machine assumes between itself and another machine, in milliseconds.
-     * Unset takes cadre's own 2000 ms, which states the relayed phone-to-phone link sereus
-     * assumes. It is not a timeout: cadre's own dial and relay-reservation deadlines are derived
-     * from it, each by the number of exchanges that operation was measured to cost, so a
-     * deployment on a slower link raises this one number instead of a list of timeouts. A value
+     * Unset takes cadre's own 3500 ms, which covers the slowest link sereus supports: two
+     * machines reaching each other through a relay at a 3-second round trip. It is not a timeout:
+     * cadre's own dial and relay-reservation deadlines, and libp2p's dial and inbound-upgrade
+     * limits, are derived from it, each by the number of exchanges that operation was measured to
+     * cost, so a deployment on a slower link raises this one number instead of a list of
+     * timeouts. Every machine of a party should declare the same value — this machine is the
+     * listener for the others, and a faster declaration here cuts their connections off. A value
      * that is not a finite number above zero fails startup where the node is built. See
      * `NetworkConfig.linkRoundTripMs` in `@serfab/cadre-core`.
      */
@@ -139,30 +151,30 @@ export interface CliConfigFile {
 }
 
 /**
- * Environment variable mappings for config overrides
+ * Every plain-object level made optional, recursively. Arrays are kept whole: a partial
+ * list is still a list of complete entries.
  */
-export const ENV_MAPPINGS = {
-  CADRE_PARTY_ID: 'controlNetwork.partyId',
-  CADRE_BOOTSTRAP_NODES: 'controlNetwork.bootstrapNodes',
-  CADRE_PROFILE: 'profile',
-  CADRE_KEY_FILE: 'identity.keyFile',
-  CADRE_STORAGE_PATH: 'storage.path',
-  CADRE_STORAGE_TYPE: 'storage.type',
-  CADRE_LISTEN_ADDRS: 'network.listenAddrs',
-  CADRE_ANNOUNCE_ADDRS: 'network.announceAddrs',
-  CADRE_APPEND_ANNOUNCE_ADDRS: 'network.appendAnnounceAddrs',
-  CADRE_RELAY_ADDRS: 'network.relayAddrs',
-  CADRE_ENABLE_RELAY: 'network.enableRelay',
-  CADRE_HIBERNATION_ENABLED: 'hibernation.enabled',
-  CADRE_STRAND_FILTER: 'strandFilter',
-  CADRE_PUSH: 'push',
-  CADRE_NODE_STATE_DIR: 'nodeState.dir',
-} as const;
+export type DeepPartial<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: DeepPartial<T[K]> }
+    : T;
 
 /**
- * Resolved configuration after loading and applying environment overrides
+ * What a config file may contain on its own, before environment overrides fill it in.
+ * Required keys (`controlNetwork`, `profile`, ...) are checked on the merged tree, not the
+ * file, because real deployments supply them through `CADRE_*` variables — so a writer that
+ * produces a partial file types its output against this.
  */
-export interface ResolvedConfig {
+export type CliConfigFile = DeepPartial<CliConfig>;
+
+/**
+ * Resolved configuration after loading, applying environment overrides, validating, and
+ * loading the identity key. The node-facing blocks (`controlNetwork`, `storage`, `network`,
+ * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the three keys that resolve
+ * into something else are replaced.
+ */
+export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter'> {
   privateKey?: PrivateKey;
   /**
    * Directory for this node's durable node-local stores (the bootstrap-peer
@@ -172,37 +184,5 @@ export interface ResolvedConfig {
    * key file (`identity.keyFile`), which may live anywhere.
    */
   nodeStateDir: string;
-  controlNetwork: {
-    partyId: string;
-    bootstrapNodes: string[];
-  };
-  profile: NodeProfile;
   strandFilter: StrandFilter;
-  storage?: {
-    type: 'memory' | 'file';
-    path?: string;
-    quotaBytes?: number;
-  };
-  network?: {
-    listenAddrs?: string[];
-    /** Advertised INSTEAD OF `listenAddrs` — see `CadreConfig.network.announceAddrs`. */
-    announceAddrs?: string[];
-    /** Advertised IN ADDITION TO `listenAddrs` — see `CadreConfig.network.appendAnnounceAddrs`. */
-    appendAnnounceAddrs?: string[];
-    relayAddrs?: string[];
-    enableRelay?: boolean;
-    /** See `CadreConfig.network.unauthorizedRelayReservationCap`. */
-    unauthorizedRelayReservationCap?: number;
-    /** See `CadreConfig.network.cohortQueryTimeoutMs`. */
-    cohortQueryTimeoutMs?: number;
-    /** See `CadreConfig.network.linkRoundTripMs`. */
-    linkRoundTripMs?: number;
-  };
-  hibernation?: {
-    enabled: boolean;
-    defaultLatencyHint?: LatencyHint;
-  };
-  strandWatchInterval?: number;
-  push?: PushCredentials;
 }
-

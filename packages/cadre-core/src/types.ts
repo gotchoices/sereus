@@ -1,4 +1,5 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
 import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
@@ -10,10 +11,13 @@ import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
+import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
+import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { RevocableTable } from './control-authorization.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
+import type { FormationRejectionCode } from './strand-formation-rejection.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -121,10 +125,12 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
  * Factory functions are useful for creating per-scope storage instances.
  *
  * **The argument is an opaque scope key.** Use it directly as a file name, directory
- * name or database name: every key stays within `[A-Za-z0-9._-]`, so no escaping is
- * needed and none should be assumed. Do not parse it; `controlStorageScope` /
- * `isControlStorageScope` (`storage-scope.ts`) are the supported way to mint and
- * recognize the control key. The control key holds the charset by base64url encoding;
+ * name or database name: every key stays within `[a-z0-9._-]`, so no escaping is
+ * needed and none should be assumed, and two different keys are two different names
+ * even on a filesystem that ignores case (Windows, macOS). Do not parse it;
+ * `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the supported
+ * way to mint and recognize the control key. The control key holds the charset by
+ * lowercase hex encoding;
  * a strand's key — its strand id, which may have replicated in from another node in
  * the party — holds it because `StrandInstanceManager.startStrand` runs
  * `assertStrandScopeKey` on every launch and refuses a strand that fails it.
@@ -169,7 +175,7 @@ export interface StorageConfig {
    * the single-instance form cannot serve more than one party.
    *
    * The `scope` a factory receives is an opaque key already safe as a path or
-   * database-name segment (always within `[A-Za-z0-9._-]`), so each example below
+   * database-name segment (always within `[a-z0-9._-]`), so each example below
    * interpolates it directly.
    *
    * For Node.js environments, use FileRawStorage from @optimystic/db-p2p-storage-fs:
@@ -317,7 +323,8 @@ export interface NetworkConfig {
    * It buys a node that BOOTS, not a node that boots fast: `start()` still waits
    * out that first attempt, which costs the drive's whole timeout
    * (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, four link round trips at
-   * {@link linkRoundTripMs} — 8 s at its default) against a relay that is unreachable
+   * {@link linkRoundTripMs} plus two admission decisions — 18 s at its default) against a relay
+   * that is unreachable
    * rather than merely refusing (`relay-reservation.ts` polls to the deadline, in
    * case libp2p's own discovery lands a reservation independently).
    *
@@ -340,6 +347,31 @@ export interface NetworkConfig {
    * better connectivity and uptime), false for transaction profile nodes.
    */
   enableRelay?: boolean;
+  /**
+   * Settings for this machine's circuit-relay SERVER, handed to `@libp2p/circuit-relay-v2`'s
+   * `circuitRelayServer(...)` (through db-p2p's `NodeOptions.relayServerInit`) on the control
+   * node and on every strand node. Only meaningful while {@link enableRelay} is on.
+   *
+   * Omitted, a party-run relay FORWARDS WITHOUT LIMIT: `reservations.applyDefaultLimit` is
+   * `false`, where libp2p's own default caps every relayed connection at 128 KiB or two
+   * minutes and resets it — which cut off any database sync or chat history forwarded
+   * through a party's own always-on machine. The store also holds
+   * `PARTY_RELAY_MAX_RESERVATIONS` (128) reservations instead of libp2p's 15, and each lives
+   * `PARTY_RELAY_RESERVATION_TTL_MS` (2 h) unrefreshed. See `relay-server.ts`.
+   *
+   * A value is MERGED over those defaults, not substituted for them: `reservations` key by
+   * key, every other top-level key as given. Setting only `reservations.maxReservations`
+   * keeps the limit off; `reservations: { applyDefaultLimit: true }` is how to turn libp2p's
+   * cap back on.
+   *
+   * The accepted tradeoff of the unlimited default: once a slot is granted, nothing caps what
+   * is forwarded through it, and a holder that keeps refreshing keeps it indefinitely — the
+   * 2 h lifetime only reclaims a slot whose holder went away. On the control node a peer it
+   * cannot place as a party member is bounded by COUNT ({@link unauthorizedRelayReservationCap}).
+   * A strand node's relay server has no such budget (its peers are cross-party by design), so
+   * any peer that reaches it is bounded only by `maxReservations`.
+   */
+  relayServerInit?: CircuitRelayServerInit;
   /**
    * Cap on concurrent circuit-relay reservations this node's relay server grants to
    * peers it cannot (yet) recognize as authorized members — the boot-ordering window
@@ -411,16 +443,21 @@ export interface NetworkConfig {
    * How long ONE cohort peer gets to answer ONE read-path request, in milliseconds, for the
    * control node and every strand node — as {@link connectionMonitor} is, and for the same
    * reason: the setting describes the LINK, and a phone's control node and its strand nodes
-   * ride the same one. Omitted takes {@link COHORT_READ_DEADLINE_MS} (5000 ms), chosen for two
-   * parties reaching each other only through a relay; Optimystic's own default is 1000 ms.
+   * ride the same one. Omitted, the deadline is DERIVED from {@link linkRoundTripMs}: one
+   * request and its answer over an open circuit costs two link round trips, so 7 000 ms at the
+   * default declaration (`cohortReadDeadlineMs` in `link-budget.ts`; the plugin's
+   * {@link COHORT_READ_DEADLINE_MS} is the same number). Optimystic's own default is 1000 ms.
    *
-   * Raise it for a link slower still, lower it for a deployment that is all LAN and wants a
-   * departed peer to stop holding up a read sooner. The cost of a larger value is that a peer
-   * which is truly gone holds a read of a block missing locally for that long before the read
-   * is declined and retried, and a joining machine's first sync runs several such consults —
-   * so a change here should be weighed against
-   * {@link CadreNodeConfig.strandFirstSync}'s budget. The measurement behind the default, and
-   * what it costs, are on {@link COHORT_READ_DEADLINE_MS}.
+   * Set this only to break the derivation on purpose: an explicit value wins over whatever
+   * {@link linkRoundTripMs} would derive, so a deployment that is all LAN can make a departed
+   * peer stop holding up a read sooner without declaring a faster link (which would also
+   * shorten the dial budgets). A deployment on a slower link should raise
+   * {@link linkRoundTripMs} instead, which moves this and every dial budget together. The
+   * cost of a larger value is that a peer which is truly gone holds a read of a block missing
+   * locally for that long before the read is declined and retried, and a joining machine's
+   * first sync runs several such consults — so a change here should be weighed against
+   * {@link CadreNodeConfig.strandFirstSync}'s budget. The derivation, its history and what it
+   * costs are on {@link COHORT_READ_DEADLINE_MS}.
    *
    * Handed to db-p2p's `clusterPolicy.cohortQueryTimeoutMs` unchanged and NOT re-validated
    * here. Optimystic refuses a value that is not a finite number above zero, or is above its
@@ -434,27 +471,39 @@ export interface NetworkConfig {
    * The round trip this node assumes between itself and another machine, in milliseconds, for
    * the control node and every strand node — as {@link cohortQueryTimeoutMs} is, and for the
    * same reason: the setting describes the LINK, and a phone's control node and its strand
-   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (2000 ms).
+   * nodes ride the same one. Omitted takes {@link DECLARED_LINK_ROUND_TRIP_MS} (3500 ms).
    *
    * This is NOT a timeout. It is the one stated assumption that cadre's own dial and
    * reservation deadlines are DERIVED from, each by the number of round trips that operation
    * was measured to cost: a peer-join catch-up's dial to one peer, its push response, one relay
-   * reservation drive, and the control-cohort dial budgets. Reaching another machine through a
+   * reservation drive, the control-cohort dial budgets, and the per-peer cohort read deadline
+   * ({@link cohortQueryTimeoutMs}, unless set explicitly). It is also handed to Optimystic
+   * (`NodeOptions.linkRoundTripMs`), default included, which derives its own deadlines from it:
+   * its request dials and responses, its block pushes, and libp2p's `addressDialTimeout`,
+   * `dialTimeout` and `inboundUpgradeTimeout` on every node, cadre adding its admission decisions
+   * to the three that open a connection. Reaching another machine through a
    * relay costs a fixed number of exchanges, so a deadline written as milliseconds has a link
    * speed above which it can never open a connection — which is the defect this declaration
-   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement
-   * behind them, and the ceiling that no declaration here can lift are in `link-budget.ts`.
+   * exists to make impossible to reintroduce one budget at a time. The counts, the measurement behind them,
+   * and what still fails at the supported link are in `link-budget.ts`.
    *
-   * Raise it for a link slower than the relayed phone-to-phone band sereus assumes; the cost is
-   * the ordinary cost of longer deadlines, a peer that is genuinely gone holding each operation
-   * that much longer before it is abandoned and retried. Above about 2500 it buys nothing: two
-   * libp2p budgets that sereus cannot reach abandon the connection first
-   * (`tickets/blocked/how-slow-a-relayed-link-does-sereus-carry`).
+   * The default covers the slowest link sereus supports, a 3-second round trip through a relay.
+   * Raise it for a link slower still; the cost is the ordinary cost of longer deadlines, a peer
+   * that is genuinely gone holding each operation that much longer before it is abandoned and
+   * retried. Lower it only if EVERY machine of the party is that close: this node is also the
+   * listener for connections other machines open to it, and its `inboundUpgradeTimeout` comes
+   * from this value, so a node declaring a faster link than its peers discards their
+   * half-built connections — silently, from the dialer's side.
    *
    * Refused where the libp2p node is built — inside `CadreNode.start()` for the control
    * network, inside `CadreNode.addStrand` for a strand — if it is not a finite number above
    * zero, because every consumer multiplies it into a deadline where a zero means "give up at
-   * once" and a `NaN` means "never".
+   * once" and a `NaN` means "never". A value above about 10.8 hours is refused in the same place,
+   * by Optimystic: the request dial cadre states from it (eleven round trips plus two admission
+   * decisions, `optimysticDialLimits` in `link-budget.ts`) then exceeds its
+   * `MAX_RPC_DIAL_TIMEOUT_MS` (about 4.97 days), and its error names `rpcDeadlines.dialTimeoutMs`.
+   * That is below Optimystic's own `MAX_LINK_ROUND_TRIP_MS` (about 13.3 hours) and far above any
+   * real link, so cadre adds no check of its own.
    */
   linkRoundTripMs?: number;
   /**
@@ -525,14 +574,19 @@ export interface NetworkConfig {
      * {@link dialTimeoutMs}. Each address is dialed on its own under this limit,
      * so an address that never answers cannot use up the time the peer's other
      * addresses needed. Defaults to
-     * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}.
+     * {@link DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS}. A value given
+     * here replaces that whole derived budget, including its allowances for the
+     * relay's and the called machine's admission decisions (`relayedDialBudgetMs`).
      */
     perAddressDialTimeoutMs?: number;
     /**
-     * How often each running strand re-resolves its siblings' strand-network
-     * addresses into its own libp2p address book — a step of the reconcile pass,
-     * on its own much longer throttle. Defaults to `STRAND_PEER_ADDR_REFRESH_MS`
-     * (10 min); must stay well under the peerStore's one-hour address expiry.
+     * How long a running strand waits, after a sibling answers its strand-addr
+     * RPC, before asking that sibling again for its strand-network addresses — a
+     * step of the reconcile pass, scheduled per (sibling, strand). A sibling that
+     * did not answer is retried sooner, on `STRAND_PEER_ADDR_RETRY_MS` (or this
+     * interval, when it is set shorter). Defaults to
+     * `STRAND_PEER_ADDR_REFRESH_MS` (10 min); must stay well under the peerStore's
+     * one-hour address expiry.
      */
     strandAddrRefreshMs?: number;
   };
@@ -569,6 +623,12 @@ export interface NetworkConfig {
  * kept it (the same pair aborted at a 200ms stall only when the deadline was 300ms). An
  * interval strictly above the deadline is what makes the 30 seconds real.
  *
+ * WHAT THE LINK NEEDS OF IT. One ping opens a fresh stream and echoes over it: a protocol
+ * negotiation plus the echo, two link round trips by `link-budget.ts`'s counts (a `newStream`
+ * over a relayed circuit measured 3016 ms at 1500 ms one-way). At the slowest link sereus
+ * supports, a 3-second relayed round trip, that is about 6 s — well inside the 30 s deadline,
+ * which exists for the phone's CPU rather than the link.
+ *
  * WHAT IT COSTS. A dead peer is reclaimed 30 to 65 seconds after it stops answering — the
  * deadline, plus up to one interval of waiting for the ping that will fail — where
  * libp2p's defaults took about 5 to 15 seconds. `db-p2p` caps a node at 16 connections,
@@ -577,15 +637,11 @@ export interface NetworkConfig {
  *
  * WHY THE DEADLINE IS PINNED rather than given room to adapt. `pingTimeout` is an
  * adaptive-timeout init, and equal `minTimeout`/`maxTimeout` clamp it to one value on
- * every libp2p version. Under libp2p 3.1.3, which sereus resolves today, it is already
- * flat at `minTimeout`: `ConnectionMonitor` asks its `AdaptiveTimeout` for a deadline but
- * never calls `cleanUp` to report how long the ping took, so the moving average the
- * deadline derives from stays at zero. libp2p 3.3 does report ping durations back, and a
- * ceiling above `pingInterval` would then let the deadline grow past the interval and put
- * the overlapping-ping abort above straight back. Pinning both ends keeps the interval's
- * margin true on the version bump instead of making it something to remember. It also
- * sidesteps 3.3's other surprise: the monitor keeps one `AdaptiveTimeout` for all of a
- * node's connections, so one slow peer would otherwise lengthen the deadline for every
+ * every libp2p version. libp2p 3.3 reports each ping's duration back to the monitor's
+ * `AdaptiveTimeout`, so a ceiling above `pingInterval` would let the deadline grow past the
+ * interval and put the overlapping-ping abort above straight back. Pinning both ends keeps
+ * the interval's margin true. It also sidesteps the monitor keeping one `AdaptiveTimeout`
+ * for all of a node's connections, so one slow peer cannot lengthen the deadline for every
  * connection on that node.
  */
 export const DEFAULT_CONNECTION_MONITOR = Object.freeze({
@@ -645,9 +701,10 @@ export interface ControlNetworkConfig {
  *
  * The two `*ClusterPolicy` BUILDERS are the same objects with the block-repair
  * corroboration yardstick declared from the machines enrolled in this party
- * ({@link resolveRepairYardstick}) and, if the host set one, its own per-peer read
- * deadline in place of {@link COHORT_READ_DEADLINE_MS}. Both arrive in one named
- * declarations object, because both are plain numbers meaning unrelated things;
+ * ({@link resolveRepairYardstick}) and, if the host set one or declared its link, a
+ * per-peer read deadline in place of {@link COHORT_READ_DEADLINE_MS}
+ * (`declaredCohortReadDeadlineMs` in `link-budget.ts` settles which). Both arrive in one
+ * named declarations object, because both are plain numbers meaning unrelated things;
  * declaring neither returns the frozen base constant unchanged. A network picks the
  * derived numbers up when its libp2p node is built, which for a strand is every wake
  * from hibernation.
@@ -710,6 +767,22 @@ export interface CadreNodeConfig {
 
   /** Which strands to participate in */
   strandFilter?: StrandFilter;
+
+  /**
+   * Run every strand {@link strandFilter} admits, including ones no app on this machine
+   * has claimed with `addStrand`, as a **storage replica**: the strand's own libp2p node,
+   * storage and `Strand` membership schema, storing and serving its blocks, without the
+   * app's schema (no sApp config needed, none of the app's code or schema runs). This is
+   * how an always-on machine keeps a copy of every shared workspace its party runs, so a
+   * lost phone loses nothing that had reached it.
+   *
+   * The strand is still announced as `strand:discovered` (once) and stays in
+   * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
+   *
+   * Default: `profile === 'storage'` — always-on machines host replicas, phones
+   * (`'transaction'`) keep today's announce-only behaviour.
+   */
+  hostUnclaimedStrands?: boolean;
 
   /** Storage configuration (only for storage profile) */
   storage?: StorageConfig;
@@ -807,11 +880,11 @@ export interface CadreNodeConfig {
    * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
    * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing);
    * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
-   * 120 s — sized for a machine joining through a relay on a slow link; that constant's doc
-   * comment carries the measurement behind the number and what the budget costs, and is the
-   * only copy of it; `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`, 500 ms). There is
-   * deliberately no way to disable the gate: a machine that already holds the Header is never
-   * gated, so nothing that works today is blocked by it.
+   * sized for a machine re-attaching through a relay on a slow link, the slowest attach
+   * measured; that constant's doc comment carries the number, the measurement behind it and
+   * what the budget costs, and is the only copy of them; `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`,
+   * 500 ms). There is deliberately no way to disable the gate: a machine whose store already
+   * holds the Header is never gated, so nothing that works today is blocked by it.
    */
   strandFirstSync?: StrandFirstSyncConfig;
 
@@ -939,6 +1012,52 @@ export interface CadreNodeConfig {
   };
 
   /**
+   * Node-local record of the strands this node joined from ANOTHER party and has not yet
+   * published to the party-wide `JoinedStrand` table (see `joined-strand-store.ts`): id,
+   * type and the closed strand's read secret, recorded by `formStrand` and by a joining
+   * (not `founder: true`) `addStrand` whose row this party's control database does not
+   * name, offered on every start as `strand:discovered` until an owner machine's
+   * reconcile pass publishes it — so an embedding app keeps no list of its own.
+   *
+   * Absent ⇒ a `KeyStoreJoinedStrandStore` over {@link keyStore} when one is
+   * configured (the record carries a secret, and the KeyStore is where every platform
+   * already keeps secrets), else an in-memory store that warns once and forgets every
+   * join on restart. An embedder that passes {@link privateKey} rather than a
+   * `keyStore` injects a durable store here, e.g.
+   * `new KeyStoreJoinedStrandStore(new FileKeyStore(dir), partyId)`.
+   */
+  joinedStrands?: {
+    /** Its `partyId` must match `controlNetwork.partyId`; start() fails closed on a mismatch. */
+    store?: JoinedStrandStore;
+  };
+
+  /**
+   * Node-local strand network state (see `strand-network-state.ts`): per strand, the
+   * state Optimystic's db-p2p saves for the strand's libp2p node — its FRET routing
+   * table, each entry carrying the peer's signed address record. A strand node reads
+   * it back when it is built and re-imports the table, so a restarted machine already
+   * holds addresses for the strand peers it was talking to (gotchoices/sereus#18).
+   * Sibling of {@link bootstrapPeers} — same NON-replicated, per-party,
+   * injected-backend shape — and, like it, nothing here is trust-bearing: FRET
+   * verifies every record at import.
+   *
+   * Absent ⇒ an in-memory store is created at start() (ephemeral: a restarted process
+   * starts every strand with an empty routing table). Every reference embedder
+   * injects a durable backend over the same slot kind as its bootstrap-peer store. A
+   * new platform needs no new store class: supply a `DurableSlot` and inject
+   * `PersistentStrandNetworkStateStore.open(slot, partyId)`.
+   */
+  strandNetworkState?: {
+    /**
+     * Injected store instance — e.g. a `FileStrandNetworkStateStore` from the
+     * Node-only subpath `@serfab/cadre-core/strand-network-state-file`, persisted in
+     * the node's state directory. Its `partyId` must match
+     * `controlNetwork.partyId`; start() fails closed on a mismatch.
+     */
+    store?: StrandNetworkStateStore;
+  };
+
+  /**
    * Platform push-delivery for suspended mobile peers. When present, the node's
    * server fan-out can deliver strand-wake data messages over the platform push
    * channel (FCM/APNs). Absent ⇒ no platform push (control-network push-wake only).
@@ -1023,6 +1142,12 @@ export interface StrandInstance {
 
   /** Activity tracking */
   connectedPeers: number;
+  /**
+   * When the strand last saw activity: the app's (`recordStrandActivity`), a requested wake
+   * (`wakeStrand`), or a peer delivering a gated joiner's `Strand.Header`. Always a fresh
+   * `Date`. Bringing the runtime up is NOT activity — a check-in window decides whether to
+   * re-hibernate by whether this changed since before its resume.
+   */
   lastActivity: Date;
   nextCheckIn?: Date;
 
@@ -1073,6 +1198,69 @@ export interface StrandRow {
    * `strandRowMismatches` excludes it from the identical-content comparison.
    */
   FounderOwnerKey: string | null;
+}
+
+/**
+ * A `CadreControl.PendingJoin` row: a join this party asked for through another party's
+ * invitation, readable by every machine of the party. Each outcome carries only its own
+ * columns (the schema's `OutcomeShape` check): `'joined'` sets `StrandId` (and, for a
+ * closed strand, `MembershipInvite`), `'failed'` sets `FailureCode`, and a pending row
+ * (`Outcome: null`) sets neither.
+ */
+export interface PendingJoinRow {
+  /** base64url sha256 of the invitation token (`pendingJoinId`). */
+  Id: string;
+  /** `CadreNode.encodeInvitation` of the invitation. A bearer credential. */
+  Invitation: string;
+  /** `canonicalJson` of the disclosure the requester gave. */
+  Disclosure: string;
+  /** Epoch ms. */
+  RequestedAt: number;
+  /** Epoch ms; no attempt starts at or after it. */
+  ExpiresAt: number;
+  Outcome: null | 'joined' | 'failed';
+  /** Epoch ms the outcome was recorded; null while pending. */
+  OutcomeAt: number | null;
+  /** `'joined'`: the strand the formation returned. */
+  StrandId: string | null;
+  /** `'joined'`, closed strand: JSON of the {@link StrandMembershipInvite} the formation delivered. */
+  MembershipInvite: string | null;
+  /** `'failed'`: a `FormationRejectionCode`, `'expired'` or `'local'`. Not constrained by the schema. */
+  FailureCode: string | null;
+  /** `'failed'`: human-readable text. */
+  FailureReason: string | null;
+  /** Single-use nonce of this row incarnation; `ControlDatabase.replacePendingJoin` names it as the row it replaces. */
+  StampId: string;
+}
+
+/**
+ * A join this party asked for through `CadreNode.requestJoin`, as one machine sees it.
+ *
+ * `pending`, `joined` and `failed` come from the party-wide `PendingJoin` row and read the same
+ * on every machine. `trying` (an attempt is running on this machine) and `waiting` (this
+ * machine's last attempt failed in a way worth retrying) are this machine's own view of a
+ * pending row, so two machines can report different states for it.
+ */
+export interface PendingJoinStatus {
+  /** `PendingJoin.Id`: the sha256 of the invitation token. */
+  id: string;
+  sAppId: string;
+  /** Epoch ms. */
+  requestedAt: number;
+  /** Epoch ms; no attempt starts at or after it. */
+  expiresAt: number;
+  state: 'pending' | 'trying' | 'waiting' | 'joined' | 'failed';
+  /** `'waiting'`: when this machine tries again, epoch ms. */
+  nextAttemptAt?: number;
+  /**
+   * `'waiting'`: why this machine's last attempt failed. `'unreachable'` means no answer came
+   * back; `'local'` means the attempt failed on this machine before an answer.
+   */
+  lastError?: { code: FormationRejectionCode | 'unrecognized' | 'unreachable' | 'local'; reason: string };
+  /** `'joined'`: the strand the join produced. */
+  strandId?: string;
+  /** `'failed'`: a `FormationRejectionCode`, `'expired'`, or `'local'` (approved, then a step on the joining machine failed). */
+  failure?: { code: string; reason: string };
 }
 
 /**
@@ -1251,7 +1439,13 @@ export interface OpenInvitation {
   sAppId: string;
   /** When this invitation expires */
   expiration: Date;
-  /** Bootstrap addresses to contact the inviter's cadre */
+  /**
+   * Addresses of the inviting party's machines, each ending in `/p2p/<peerId>`: the minting
+   * machine's own first, then up to three of its siblings with up to four addresses each
+   * (`CadreNode.createOpenInvitation`). A joiner tries the machines in order, one formation
+   * session each, so an entry may be dead by the time it is used; one that names no machine
+   * is ignored.
+   */
   bootstrap: string[];
 }
 
@@ -1271,7 +1465,11 @@ export interface StrandMembershipInvite {
    * The invite ed25519 PRIVATE seed (base64url). A single-use bearer credential:
    * whoever holds it can `consumeInvite` exactly once. Same sensitivity class and
    * handling as `memberPrivateKey` — delivered only inside the validated,
-   * post-approval formation result, never written to either side's control DB.
+   * post-approval formation result. The inviting side never writes it to its control
+   * DB. The joining side may copy it into its own `PendingJoin` row
+   * (`MembershipInvite`), owner-signed and party-private like
+   * `JoinedStrand.MemberPrivateKey`, so a join finished on one machine of the party
+   * can be seated by whichever machine launches the strand first.
    */
   invitePrivateKey: string;
 }
@@ -1385,6 +1583,10 @@ export interface CadreNodeEvents {
    * re-admits this party, so a second removal is reported again — and a
    * hibernation wake rebuilds the gate, which may re-emit for a strand still
    * revoked.
+   *
+   * For a strand joined from another party, the node also forgets its remembered
+   * join (see {@link CadreNodeConfig.joinedStrands}): it keeps running this session
+   * and is not re-offered after the next start.
    */
   'strand:revoked': { strandId: string };
   /**
@@ -1418,6 +1620,12 @@ export interface CadreNodeEvents {
    * Carries the full {@link StrandRow} so the app can join without re-querying
    * the control DB.
    *
+   * Also emitted for a strand this node joined from ANOTHER party, which no control
+   * row names: the node remembers every such join (see
+   * {@link CadreNodeConfig.joinedStrands}) and offers it here on each start, as a row
+   * with `FounderOwnerKey: null` carrying the closed strand's `MemberPrivateKey`. That
+   * row is the product of the formation's consent, so claiming it needs no second one.
+   *
    * **Fired once per strand per session, and it can fire before your listener is
    * attached.** The strand watcher's first poll runs inside `CadreNode.start()`
    * (100 ms after the watcher starts), so every strand already stored for this
@@ -1439,6 +1647,12 @@ export interface CadreNodeEvents {
    * be idempotent (guard on an in-flight set, not only on
    * `getStrands().has(id)` — the strand manager tracks an instance only once
    * `addStrand` has resolved).
+   *
+   * On a node that hosts storage replicas ({@link CadreNodeConfig.hostUnclaimedStrands},
+   * the default for `profile: 'storage'`) the event still fires once, and the node launches
+   * the strand as a replica right after it — so there `getStrands().has(id)` soon turns
+   * true for a strand no app has claimed; an unclaimed instance has no `sAppInfo`. A
+   * launch that fails is retried by the watcher without a second `strand:discovered`.
    */
   'strand:discovered': { strandId: string; strand: StrandRow };
   'control:connected': void;
@@ -1462,6 +1676,13 @@ export interface CadreNodeEvents {
    * or connection state change.
    */
   'control:write-abandoned': ControlRetryAbandonment;
+  /**
+   * Emitted when this machine's view of a join asked for with `CadreNode.requestJoin` changes:
+   * its own attempt started or ended, or a pass read an outcome another owner machine wrote.
+   * Owner machines only, since only they run the retry loop. A dismissed join emits nothing
+   * further; `listPendingJoins` no longer names it.
+   */
+  'pendingJoin:changed': PendingJoinStatus;
   /** Emitted when a seed is received via the seed protocol */
   'seed:received': { partyId: string; peerId: string };
   /** Emitted when a seed is successfully applied */
@@ -1817,7 +2038,11 @@ export interface WakeRequest {
 export interface WakeAck {
   /** Whether the receiver honored the wake (member + participated strand). */
   accepted: boolean;
-  /** The strand's status after the wake (present when `accepted`). */
+  /**
+   * The strand's status when the receiver accepted the wake (present when `accepted`). The
+   * receiver replies before the wake runs, so `hibernating` or `idle` here means "a wake was
+   * started", not "the strand is now up".
+   */
   status?: StrandStatus;
   /** Reason for rejection (non-member, unknown strand, malformed frame). */
   reason?: string;
@@ -1847,16 +2072,31 @@ export interface StrandAddrRequest {
 }
 
 /**
+ * How a strand-addr responder handled a {@link StrandAddrRequest}. Carried so the
+ * asker can tell "I have nothing" from "I could not answer" — the two need
+ * different retry timing, and an empty address list alone cannot say which.
+ *
+ * - `ok` — looked up; `multiaddrs` is the truth, possibly empty (strand not running here).
+ * - `unavailable` — the responder could not answer: over its concurrency cap, the
+ *   request was unreadable, or its own lookup threw (e.g. a control-database read failed).
+ * - `refused` — the requester is not an authorized member in the responder's
+ *   current view (possibly because its `CadrePeer` row has not replicated there yet);
+ *   any `delegatePeerId` it carried was NOT recorded.
+ */
+export type StrandAddrStatus = 'ok' | 'unavailable' | 'refused';
+
+/**
  * Response to a {@link StrandAddrRequest}, carrying the responder's strand-node
  * multiaddrs, returned on the same stream.
  */
 export interface StrandAddrResponse {
-  /** Echoes the requested strand id (empty on a reject/error reply). */
+  /** How the responder handled the request; a reply without one is malformed. */
+  status: StrandAddrStatus;
+  /** Echoes the requested strand id; always empty on an `unavailable` reply. */
   strandId: string;
   /**
    * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
-   * empty when the responder is a non-member, or does not currently run that
-   * strand, or the exchange failed.
+   * empty unless `status` is `ok` and the responder runs that strand.
    */
   multiaddrs: string[];
 }

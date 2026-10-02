@@ -77,22 +77,39 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * This budget — not the attempt count — is what makes the policy safe to sit under every
  * control write. A transient failure (stream reset while a connection is still forming)
  * surfaces in well under a second, so it is retried and the loop adds at most ~2.2 s. A
- * genuinely silent cohort member fails at ~20 s (two 10 s `ClusterClient` response-deadline
- * attempts, measured in `control-write-degraded-cohort-member.integration.ts`), which
- * already exceeds this budget when attempt 1 returns — so that case is surfaced immediately
- * and retry adds ZERO latency to the case where it cannot help.
+ * genuinely silent cohort member costs ~21 s per consensus round (two `ClusterClient`
+ * response-deadline attempts, 10.5 s each at the default declared link): one pend round plus
+ * the cancel discharge's three rounds, about 84 s for one write in
+ * `control-write-degraded-cohort-member.integration.ts`, which already exceeds this budget
+ * when attempt 1 returns — so that case is surfaced immediately and retry adds ZERO latency
+ * to the case where it cannot help.
  *
- * NOTE: a failed commit attempt now also pays a cancel discharge before its error returns
- * (optimystic `TransactorSource.transact`'s catch, added by upstream
- * `1-a-failed-attempt-must-discharge-its-own-pend`) — bounded by six rounds and
- * `abortOrCancelTimeoutMs`, which every collection this repo opens sets to 5 s
- * (`../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`).
- * Two failed attempts whose cancels each run their full budget would consume this whole 10 s
- * ceiling and cut the three-attempt policy to two. Not observed — every measured round of the
- * transient-reset case committed on attempt 3 of 3 — so this is a condition to watch, not work
- * to do: if that case ever starts failing with `failed after 2/3 attempt(s)`, the cancel
- * discharge is where the time went.
+ * It cuts the loop off by design, so it does not grow with the link: its job is to end the
+ * retries of slow attempts, and the caller gets the last attempt's error unchanged. An attempt
+ * whose read phase consulted a silent peer ends at about one per-peer read deadline
+ * (`cohortReadDeadlineMs` in `link-budget.ts`: 7 s at the default declared link, 5 s before it
+ * was derived, 1 s at Optimystic's own default), so it still gets one retry inside this budget
+ * where it once got two; an attempt that runs into the `ClusterClient` response deadline
+ * (10.5 s at the default declared link) still gets none. See `docs/cadre-consistency.md` →
+ * "Deadlines Over Optimystic's Reads and Commits".
+ *
+ * NOTE: a failed commit attempt also pays a cancel discharge before its error returns
+ * (optimystic `TransactorSource.transact`'s catch) — bounded by six rounds and
+ * `abortOrCancelTimeoutMs`, which every collection this repo opens sets to the larger of 5 s
+ * and the RPC dial deadline: 42.5 s at the default declared link (`optimysticDialLimits` in
+ * `link-budget.ts`;
+ * `../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`).
+ * One cancel that runs its full budget therefore ends the retries on its own, cutting the
+ * three-attempt policy to however many attempts came before it. A cancel only runs that long
+ * when a peer stays silent, and that attempt has already spent its pend round past this
+ * budget, so the cut loses nothing there. After a transient fault the cancel is either
+ * answered or gives up after its six rounds against a dead transport, in about a second
+ * either way (optimystic `NetworkTransactor.MAX_CANCEL_ROUNDS`). Not observed — every
+ * measured round of the transient-reset case committed on attempt 3 of 3 — so this is a
+ * condition to watch, not work to do: if that case ever starts failing with
+ * `failed after 2/3 attempt(s)`, the cancel discharge is where the time went.
  */
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: it ends the retries of slow attempts rather than waiting them out; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
 
 /**

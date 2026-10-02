@@ -52,13 +52,15 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * test is the schema apply over optimystic storage, not how a node is configured.
  */
 
-/** The nine `CadreControl` tables `schemas/control.qsql` declares, in name order. */
+/** The eleven `CadreControl` tables `schemas/control.qsql` declares, in name order. */
 const CONTROL_TABLE_NAMES = [
 	'CadrePeer',
 	'DeviceToken',
 	'FormationInvite',
 	'FormationUsage',
+	'JoinedStrand',
 	'OwnerKey',
+	'PendingJoin',
 	'Revocation',
 	'Strand',
 	'StrandPartyKey',
@@ -69,7 +71,7 @@ const CONTROL_TABLE_NAMES = [
  * The optimystic collection id of the `CadrePeer` table — `default/<schema>/<table>` with the
  * schema lowercased — which is also that collection's header block id (see
  * `CollectionFactory.getCollectionId`). Refusing this one id fails exactly the
- * `create table CadreControl.CadrePeer` step, four tables into the apply, and leaves every other
+ * `create table CadreControl.CadrePeer` step, six tables into the apply, and leaves every other
  * step's storage untouched.
  */
 const CADRE_PEER_BLOCK = 'default/cadrecontrol/CadrePeer';
@@ -181,7 +183,7 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			expect(failure, 'the gated apply must fail').toBeInstanceOf(Error);
 			const message = (failure as Error).message;
 			// The NAMED step, not just "something failed": this is what says the apply died
-			// four tables in rather than before it started or after it finished.
+			// six tables in rather than before it started or after it finished.
 			expect(message).toContain('Failed to execute DDL: create table CadreControl.CadrePeer');
 			// Anti-vacuity: the gate is what failed it. (Measured 2026-09-25: two refusals —
 			// the layer below absorbs the first and retries once. The unwind does not ask for
@@ -194,7 +196,7 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			expect(message).not.toContain('partially migrated');
 
 			// And the unwind was TOTAL, which is the claim the call-site comment rests on:
-			// the four tables that HAD landed are gone from the catalog too, so attempt 2
+			// the six tables that HAD landed are gone from the catalog too, so attempt 2
 			// re-emits the whole schema rather than resuming at CadrePeer. Without this the
 			// test would also pass on an engine that left them in place, since the re-apply's
 			// diff reaches the complete schema either way.
@@ -208,7 +210,7 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			await internals.loadSchema();
 
 			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
-			// that appeared uninvited both fail here: nine tables and the one index
+			// that appeared uninvited both fail here: eleven tables and the one index
 			// `schemas/control.qsql` declares, and nothing of the plugin's own alongside them
 			// (measured 2026-09-25).
 			expect(await readCatalog(internals.db!)).toEqual(new Map([

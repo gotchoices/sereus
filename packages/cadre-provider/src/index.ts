@@ -35,7 +35,9 @@
 // Configuration
 export {
   type ProviderConfig,
+  type ProviderConfigFile,
   type PartialProviderConfig,
+  type LoadConfigOptions,
   type ServerConfig,
   type AuthConfig,
   type DockerConfig,
@@ -45,7 +47,8 @@ export {
   DEFAULT_CONFIG,
   loadConfig,
   loadConfigFile,
-  loadEnvConfig,
+  applyEnvironmentOverrides,
+  validateProviderConfig,
 } from './config/index.js';
 
 // Types
@@ -80,6 +83,13 @@ export {
 } from './service/orchestrator.js';
 
 export { DockerOrchestrator } from './service/docker-orchestrator.js';
+
+export {
+  PortAllocator,
+  allocatePortSet,
+  reservePortSet,
+  releasePortSet,
+} from './service/port-allocator.js';
 
 export {
   type NodeEnvPorts,

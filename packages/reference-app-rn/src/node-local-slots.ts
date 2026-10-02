@@ -1,11 +1,12 @@
 /**
- * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's three
+ * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's
  * **node-local** records: the trusted-owner anchor (`PersistentTrustedOwnerStore`),
- * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`) and the
- * enrolled-machine count (`PersistentEnrolledMachineStore`), all from
- * `@serfab/cadre-core`. Wired in `cadre-phone.ts` (`startPhoneNode`).
+ * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`), the
+ * enrolled-machine count (`PersistentEnrolledMachineStore`) and the strand network
+ * state (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — plus the app's
+ * own saved start options (`start-options.ts`). Wired in `cadre-phone.ts`.
  *
- * The anchor gets a DIFFERENT backend from the other two, deliberately — it has
+ * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
  * different security properties and a different size.
  *
  * **Trusted-owner anchor → the platform secure enclave** (`expo-secure-store`:
@@ -36,6 +37,19 @@
  * "declare today's default" has no business behind a keystore that can prompt or
  * deny, so it sits with the other non-trust-bearing record.
  *
+ * **Saved start options → the same app-private LevelDB**, one key
+ * ({@link START_OPTIONS_KV_KEY}) that is NOT party-scoped, because it is what selects
+ * the party every other record is filed under. Nothing in it is secret or
+ * trust-bearing — a group identifier and public network addresses — and a relay list
+ * can outgrow secure store's value limit like the dial hints do.
+ *
+ * NOTE: accepted tradeoff — the anchor and the saved party id do not share a fate
+ * across an iOS reinstall. The Keychain survives it, this LevelDB does not, so a
+ * reinstalled phone picks a new party id and the surviving anchor, filed under the old
+ * one, is simply never read again. That is the outcome every install had before start
+ * options were saved at all; revisit if a reinstall ever needs to rejoin its old party
+ * unaided (the party id would then belong in the Keychain beside the anchor).
+ *
  * Neither backend is a new native dependency (`expo-secure-store` and
  * `rn-leveldb` are both already linked), so nothing here forces a dev-client
  * rebuild. `expo-file-system` was the other candidate for the dial hints and was
@@ -47,6 +61,7 @@
  * anchor and the dial hints, `enrolled-machine-store.ts` for the count, which
  * deliberately does NOT share that machinery (an unreadable slot cold-starts there
  * rather than throwing, because a lost repair hint must not stop a node starting).
+ * The saved start options are the app's own record, parsed in `start-options.ts`.
  */
 
 import type { DurableSlot } from '@serfab/cadre-core';
@@ -85,6 +100,13 @@ export function anchorSlotKey(partyId: string): string {
 }
 
 /**
+ * `LevelDBKVStore` key for the saved start options (`start-options.ts`). One per
+ * install, not per party: it is what names the party. Dot-free, so it cannot collide
+ * with the `<record>.<partyId>` keys below.
+ */
+export const START_OPTIONS_KV_KEY = 'start-options';
+
+/**
  * `LevelDBKVStore` key for a party's retained cold-start dial targets. LevelDB
  * keys are bytes, so the party id needs no encoding here.
  */
@@ -99,6 +121,17 @@ export function bootstrapPeersKvKey(partyId: string): string {
  */
 export function enrolledMachinesKvKey(partyId: string): string {
 	return `enrolled-machines.${partyId}`;
+}
+
+/**
+ * `LevelDBKVStore` key for a party's strand network state — per strand, the FRET
+ * routing table its strand node saved, re-imported after a relaunch. Same database
+ * and shape as {@link bootstrapPeersKvKey}, its own key; not trust-bearing (FRET
+ * verifies each address record at import), and a routing table would not fit secure
+ * store either.
+ */
+export function strandNetworkKvKey(partyId: string): string {
+	return `strand-network.${partyId}`;
 }
 
 /**
@@ -158,9 +191,9 @@ export function secureStoreSlot(
 }
 
 /**
- * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for both
- * non-trust-bearing records (the bootstrap-peer store and the enrolled-machine
- * count), each over its own key.
+ * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for every
+ * non-trust-bearing record (the bootstrap-peer store, the enrolled-machine count, the
+ * strand network state and the saved start options), each over its own key.
  *
  * A direct pass-through: the KV store already deals in text and already reports
  * an absent key as `undefined`, and a read fault throws out of `get`, which is

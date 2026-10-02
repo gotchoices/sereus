@@ -5,7 +5,7 @@ import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
   dueRelayAnnounces,
-  pruneStoppedStrandAnnounces,
+  prunePeerStrandKeys,
   peerStrandKey,
   DELEGATE_GRANT_TTL_MS,
   MAX_DELEGATE_GRANTS_PER_MEMBER,
@@ -167,7 +167,7 @@ describe('dueRelayAnnounces', () => {
   });
 });
 
-describe('pruneStoppedStrandAnnounces', () => {
+describe('prunePeerStrandKeys', () => {
   it('drops entries whose strand is no longer running, keeps the rest', () => {
     const announceAt = new Map([
       [peerStrandKey('relay-A', 'strand-live'), T0],
@@ -175,7 +175,7 @@ describe('pruneStoppedStrandAnnounces', () => {
       [peerStrandKey('relay-A', 'strand-stopped'), T0]
     ]);
 
-    pruneStoppedStrandAnnounces(announceAt, new Set(['strand-live']));
+    prunePeerStrandKeys(announceAt, new Set(['strand-live']));
 
     expect([...announceAt.keys()]).toEqual([
       peerStrandKey('relay-A', 'strand-live'),
@@ -186,7 +186,7 @@ describe('pruneStoppedStrandAnnounces', () => {
   it('empties the map when nothing is running', () => {
     const announceAt = new Map([[peerStrandKey('relay-A', 'strand-1'), T0]]);
 
-    pruneStoppedStrandAnnounces(announceAt, new Set());
+    prunePeerStrandKeys(announceAt, new Set());
 
     expect(announceAt.size).toBe(0);
   });

@@ -1,12 +1,13 @@
 /**
- * The one fake `CadreNode` both view-model suites drive, plus the two module
- * doubles that hand it to them (`src/cadre-phone`, `src/chat-strand`).
+ * The one fake `CadreNode` the three view-model suites drive (cadre, settings,
+ * chat), plus the two module doubles that hand it to them (`src/cadre-phone`,
+ * `src/chat-strand`).
  *
  * Shared rather than duplicated per suite. Each suite reaches it through a
  * `vi.hoisted(async () => import(…))` binding, which both the suite body and the
  * hoisted `vi.mock` factories can see; the two therefore share ONE instance for
- * the file's lifetime. Re-importing this module per test would not work: both
- * suites must call `vi.resetModules()` (`getCadreVm()` caches a module-level
+ * the file's lifetime. Re-importing this module per test would not work: every
+ * suite must call `vi.resetModules()` (`getCadreVm()` caches a module-level
  * singleton), and the mock factories do not re-import in step with the suite —
  * the factory keeps whichever instance it first captured, so a suite that
  * re-imported would end up configuring a different fake node than the view model
@@ -18,12 +19,14 @@
  * plumbing would not read as an ordering at the assertion site.
  *
  * {@link FakeNode} declares `implements NodeSurface`, so a cadre-core signature
- * change breaks the BUILD here rather than leaving both suites green while the
+ * change breaks the BUILD here rather than leaving the suites green while the
  * app breaks on device. A `vi.mock` factory is not type-checked against the
  * module it replaces, so without this the fake could drift arbitrarily far from
  * the real class.
  */
 
+import type { SavedStartOptions } from '../../src/start-options';
+import type { Database } from '@quereus/quereus';
 import type {
 	ApplySeedResult,
 	CadreInvite,
@@ -36,7 +39,7 @@ import type {
 } from '@serfab/cadre-core';
 
 /**
- * The slice of `CadreNode` the two view models reach. Pinned as a type so the
+ * The slice of `CadreNode` the view models reach. Pinned as a type so the
  * fake below is checked against the real signatures — including argument ORDER,
  * which is what a `trustOwnerKeys(source, keys)` refactor would change.
  */
@@ -53,13 +56,25 @@ export const KEY_A = 'ZXhhbXBsZS1vd25lci1rZXktYWFhYWFhYWFhYWFhYWFh';
 export const KEY_B = 'ZXhhbXBsZS1vd25lci1rZXktYmJiYmJiYmJiYmJiYmJi';
 
 /**
- * A strand the view models only ever read `.status` off. The real interface
- * carries a dozen runtime-only fields (libp2p node, Quereus database, activity
- * counters); building them would say nothing about the view models, so the cast
- * is deliberate and lives at this ONE site.
+ * A strand the view models read `.strandId`, `.status` and `.database` off. The
+ * real interface carries a dozen runtime-only fields (libp2p node, activity
+ * counters, the full `StrandDatabase`); building them would say nothing about the
+ * view models, so the cast is deliberate and lives at this ONE site.
+ *
+ * `database` is the Quereus `Database` the chat operations run against; it is
+ * wrapped as the one `StrandDatabase` method they call, `getDatabase()`. A test
+ * modelling a `'syncing'` joiner saves the wrapped `strand.database`, sets it to
+ * `undefined`, and puts it back when the strand becomes writable.
  */
-export function fakeStrand(status: StrandStatus = 'active'): StrandInstance {
-	return { status } as unknown as StrandInstance;
+export function fakeStrand(
+	status: StrandStatus = 'active',
+	{ strandId = 'strand-1', database }: { strandId?: string; database?: Database } = {},
+): StrandInstance {
+	return {
+		strandId,
+		status,
+		...(database ? { database: { getDatabase: () => database } } : {}),
+	} as unknown as StrandInstance;
 }
 
 /** Opaque return values — the view models forward these, they never read into them. */
@@ -179,6 +194,8 @@ export const state = {
 	dialError: null as Error | null,
 	createStrandError: null as Error | null,
 	startOpts: [] as unknown[],
+	/** What the mocked `loadSavedStartOptions()` resolves to — nothing saved by default. */
+	savedStartOptions: undefined as SavedStartOptions | undefined,
 };
 
 /** Back to a fresh, empty world — one fake node, nothing running, nothing recorded. */
@@ -190,6 +207,7 @@ export function reset(): void {
 	state.dialError = null;
 	state.createStrandError = null;
 	state.startOpts = [];
+	state.savedStartOptions = undefined;
 }
 
 /** Make {@link state}'s node the one a freshly-constructed view model adopts. */
@@ -222,6 +240,10 @@ function getPhoneNode(): FakeNode | null {
 	return state.phoneNode;
 }
 
+async function loadSavedStartOptions(): Promise<SavedStartOptions | undefined> {
+	return state.savedStartOptions;
+}
+
 async function dialPeer(addr: string): Promise<void> {
 	calls.push(`dialPeer:${addr}`);
 	if (state.dialError) throw state.dialError;
@@ -238,7 +260,7 @@ async function createChatStrand(node: unknown, strandId: string): Promise<Strand
 
 /** Replacement module shape for `src/cadre-phone`. */
 export function phoneNodeMock(): Record<string, unknown> {
-	return { startPhoneNode, stopPhoneNode, getPhoneNode, dialPeer };
+	return { startPhoneNode, stopPhoneNode, getPhoneNode, loadSavedStartOptions, dialPeer };
 }
 
 /** Replacement module shape for `src/chat-strand`. */

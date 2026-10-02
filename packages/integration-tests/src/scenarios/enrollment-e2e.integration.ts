@@ -32,14 +32,14 @@ function extractPrivateKeyBase64(privateKey: Uint8Array): string {
 /**
  * Create a SeedBootstrapService for a test party's owner node.
  */
-function createSeedService(party: TestParty): SeedBootstrapService {
+async function createSeedService(party: TestParty): Promise<SeedBootstrapService> {
 	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
 		ownerPrivateKey: privateKeyBase64,
 		ownerPublicKey: party.ownerPublicKey,
 	});
-	service.initialize(party.ownerNode.libp2p, party.controlDatabase);
+	await service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
 }
 
@@ -47,9 +47,9 @@ function createSeedService(party: TestParty): SeedBootstrapService {
  * Create a receiving-only SeedBootstrapService for a drone/phone node.
  * No owner keys — can only receive and apply seeds.
  */
-function createReceiverService(partyId: string, node: TestCadreNode, controlDatabase: TestParty['controlDatabase']): SeedBootstrapService {
+async function createReceiverService(partyId: string, node: TestCadreNode, controlDatabase: TestParty['controlDatabase']): Promise<SeedBootstrapService> {
 	const service = new SeedBootstrapService({ partyId });
-	service.initialize(node.libp2p, controlDatabase);
+	await service.initialize(node.libp2p, controlDatabase);
 	return service;
 }
 
@@ -94,8 +94,8 @@ describe('E2E Enrollment', () => {
 		const owner = await network.createParty({ name: 'auth-seed' });
 		const drone = await network.createParty({ name: 'drone-seed' });
 
-		const authService = createSeedService(owner);
-		const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
+		const authService = await createSeedService(owner);
+		const droneService = await createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
 		// Owner must be in CadrePeer so the seed includes it as owner peer
 		await registerOwnerPeer(authService, owner);
@@ -152,8 +152,8 @@ describe('E2E Enrollment', () => {
 		const owner = await network.createParty({ name: 'auth-oob' });
 		const drone = await network.createParty({ name: 'drone-oob' });
 
-		const authService = createSeedService(owner);
-		const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
+		const authService = await createSeedService(owner);
+		const droneService = await createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
 		// Register owner in CadrePeer
 		await registerOwnerPeer(authService, owner);
@@ -203,8 +203,8 @@ describe('E2E Enrollment', () => {
 		const server = await network.createParty({ name: 'server-invite' });
 		const phone = await network.createParty({ name: 'phone-invite' });
 
-		const serverService = createSeedService(server);
-		const phoneService = createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
+		const serverService = await createSeedService(server);
+		const phoneService = await createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
 
 		// Server creates invite
 		const { invite, encodedInvite } = await serverService.createInvite('test-token-123', 60_000);
@@ -256,9 +256,9 @@ describe('E2E Enrollment', () => {
 		const drone1 = await network.createParty({ name: 'drone1-multi' });
 		const drone2 = await network.createParty({ name: 'drone2-multi' });
 
-		const authService = createSeedService(owner);
-		const drone1Service = createReceiverService(owner.partyId, drone1.ownerNode, drone1.controlDatabase);
-		const drone2Service = createReceiverService(owner.partyId, drone2.ownerNode, drone2.controlDatabase);
+		const authService = await createSeedService(owner);
+		const drone1Service = await createReceiverService(owner.partyId, drone1.ownerNode, drone1.controlDatabase);
+		const drone2Service = await createReceiverService(owner.partyId, drone2.ownerNode, drone2.controlDatabase);
 
 		// Register owner in CadrePeer
 		await registerOwnerPeer(authService, owner);
@@ -317,8 +317,8 @@ describe('E2E Enrollment', () => {
 			const owner = await network.createParty({ name: 'auth-tamper' });
 			const drone = await network.createParty({ name: 'drone-tamper' });
 
-			const authService = createSeedService(owner);
-			const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
+			const authService = await createSeedService(owner);
+			const droneService = await createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
 			await registerOwnerPeer(authService, owner);
 
@@ -340,8 +340,8 @@ describe('E2E Enrollment', () => {
 			const owner = await network.createParty({ name: 'auth-noauth' });
 			const drone = await network.createParty({ name: 'drone-noauth' });
 
-			const authService = createSeedService(owner);
-			const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
+			const authService = await createSeedService(owner);
+			const droneService = await createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
 			await registerOwnerPeer(authService, owner);
 
@@ -365,8 +365,8 @@ describe('E2E Enrollment', () => {
 			const server = await network.createParty({ name: 'server-expired' });
 			const phone = await network.createParty({ name: 'phone-expired' });
 
-			const serverService = createSeedService(server);
-			const phoneService = createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
+			const serverService = await createSeedService(server);
+			const phoneService = await createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
 
 			// Create invite that expired 1 second ago
 			const { invite } = await serverService.createInvite('expired-token', -1000);
@@ -381,7 +381,7 @@ describe('E2E Enrollment', () => {
 		it('should reject expired invite via acceptPhone', async () => {
 			const server = await network.createParty({ name: 'server-exp-accept' });
 
-			const serverService = createSeedService(server);
+			const serverService = await createSeedService(server);
 
 			// Create expired invite
 			const { invite } = await serverService.createInvite('accept-token', -1000);
@@ -398,7 +398,7 @@ describe('E2E Enrollment', () => {
 		it('should reject acceptPhone with wrong token', async () => {
 			const server = await network.createParty({ name: 'server-bad-token' });
 
-			const serverService = createSeedService(server);
+			const serverService = await createSeedService(server);
 
 			const { invite } = await serverService.createInvite('correct-token', 60_000);
 

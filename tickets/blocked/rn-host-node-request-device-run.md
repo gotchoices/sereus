@@ -29,7 +29,7 @@ This is a blocked ticket rather than a backlog one because the missing ingredien
 
 The progress line reaches "Connected." and the borrowed node's peer id shows up among the phone's connections. Chat traffic through the borrowed node is out of scope here — a borrowed node starts no strand of its own (ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`).
 
-Reconnecting to the borrowed node after an app restart cannot be checked yet: the phone picks a new cadre id on every launch until ticket `feat-rn-persist-node-start-options` lands.
+Then check the reconnect after a relaunch: force-stop the app (swipe it away, or `adb shell am force-stop <package>`), open it again, and wait on the Settings tab. It should reach Connected by itself with the same Party ID, and the borrowed node's peer id should reappear among the phone's connections without a new request.
 
 ## If the run finds bugs
 

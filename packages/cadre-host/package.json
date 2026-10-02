@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-host",
-  "version": "1.5.0",
+  "version": "1.10.0",
   "type": "module",
   "description": "Self-hosted cadre node manager for basement-PC deployments",
   "main": "dist/index.js",
@@ -61,10 +61,10 @@
   },
   "dependencies": {
     "@achingbrain/nat-port-mapper": "^4.0.0",
-    "@libp2p/crypto": "^5.1.13",
-    "@libp2p/interface": "^3.1.0",
-    "@libp2p/peer-id": "^6.0.4",
-    "@multiformats/multiaddr": "^12.5.1",
+    "@libp2p/crypto": "^5.1.23",
+    "@libp2p/interface": "^3.3.0",
+    "@libp2p/peer-id": "^6.0.15",
+    "@multiformats/multiaddr": "^13.0.3",
     "@serfab/cadre-cli": "workspace:^",
     "@serfab/cadre-core": "workspace:^",
     "@serfab/cadre-provider": "workspace:^",

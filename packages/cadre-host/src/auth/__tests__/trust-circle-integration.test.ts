@@ -58,7 +58,7 @@ describe('TrustCircleService — real CadreNode integration', () => {
     expect(db).not.toBeNull();
     await db!.insertOwnerKey(hostOwnerPublicKey);
 
-    host.initializeSeedBootstrap(hostOwnerPrivateKey);
+    await host.initializeSeedBootstrap(hostOwnerPrivateKey);
 
     // The owner writes its own CadrePeer row up-front (the implement ticket's
     // CLI change). After this the host's own peerId is a member, so it shows up

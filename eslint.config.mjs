@@ -55,8 +55,8 @@ const CADRE_PEER_WRITE_GUARD = [
 ];
 
 // Web APIs the phone runtimes lack. Both phone apps (Hermes under React Native, V8 under
-// NativeScript) run our first-party source, and the polyfills in reference-app-rn/polyfills/
-// hermes.js and reference-app-ns/src/polyfills/ exist for the dependencies (libp2p and friends)
+// NativeScript) run our first-party source, and the polyfills in cadre-rn/polyfills/hermes.js
+// and reference-app-ns/src/polyfills/ exist for the dependencies (libp2p and friends)
 // that call these. Our own code should not add to that dependence: a polyfill is a fallback
 // for code we do not control, and it cannot see when a caller is finished with what it made —
 // `AbortSignal.any` in particular leaves listeners on its inputs if none of them ever aborts.
@@ -92,6 +92,60 @@ const PHONE_RUNTIME_GUARD = [
 		message: 'DOMException construction is not guaranteed under Hermes/React Native or NativeScript. Throw a plain Error with its `name` set instead.',
 	},
 ];
+
+// Deadlines in cadre-core written as a fixed number of milliseconds. A deadline on an exchange
+// with another machine has to come from the declared link round trip (link-budget.ts), because
+// a relayed exchange costs a fixed number of round trips and a fixed millisecond figure stops
+// working on any link slow enough. A check on names containing "dial" would have missed every
+// site that broke this so far, so this check covers every deadline-named value and makes the
+// author classify the ones that stay numbers, with one of four greppable disable reasons:
+//   `-- link-independent: <why>`                 the deadline never waits on the link
+//   `-- link-bound, not yet derived: <slug>`     it does, and that open ticket owns converting it
+//   `-- cuts off by design: <why>; see …`        it waits on the link through an Optimystic read
+//                                                or commit, but its value is what its caller can
+//                                                tolerate, so it must not grow with the link; the
+//                                                sites are listed in docs/cadre-consistency.md →
+//                                                "Deadlines Over Optimystic's Reads and Commits"
+//   `-- measured, not derived: <where>`          it waits on the link but bounds a whole phase of
+//                                                many exchanges with no round-trip count to derive
+//                                                from (a joining machine's first sync), so it is
+//                                                sized from a recorded measurement, which the
+//                                                directive names, and re-measured rather than
+//                                                recomputed when a number under it moves
+//
+// Flagged: a value named `…TIMEOUT_MS`, `…BUDGET_MS`, `…DEADLINE_MS` (any case, so `timeoutMs`,
+// `dialBudgetMs` too) whose value is a numeric literal or arithmetic over numeric literals only
+// (`10 * 60 * 1000`), as a const, a parameter or destructuring default, a class field, an
+// object property, an assignment (`this.timeoutMs = 5000`), or the right side of `??` / `||`
+// (`opts?.timeoutMs ?? 5000`). A value that names anything (`relayedDialBudgetMs()`,
+// `ATTEMPTS * PER_ATTEMPT_MS`) passes.
+//
+// NOTE: a guard against the idiom this codebase uses, not a proof. A deadline under another
+// name (`FOO_WAIT_MS`), an inline `setTimeout(…, 5000)` or `withDeadline(5000, …)`, or a literal
+// hidden behind `as` passes unflagged.
+//
+// Converting a `link-bound, not yet derived` site means deleting its directive too; a directive
+// left disabling nothing fails `yarn lint` (reportUnusedDisableDirectives, below).
+//
+// Scope is cadre-core's src only (LINK_DEADLINE_SCOPE). `COHORT_READ_DEADLINE_MS` in
+// quereus-plugin-sereus is a number because that package cannot import cadre-core; it is
+// pinned equal to cadre-core's derivation by `packages/cadre-core/test/link-budget.spec.ts`.
+// Widening the scope is one glob.
+const LINK_DEADLINE_MESSAGE = 'A deadline written as milliseconds. If it bounds an exchange with another machine, derive it from packages/cadre-core/src/link-budget.ts: count the round trips, as that module\'s doc describes. If it does not, keep the number and disable this line with the reason: `// eslint-disable-next-line no-restricted-syntax -- link-independent: <why>`. That module\'s doc lists the other three reasons: a deadline over the link not yet derived, one that cuts off an Optimystic read or commit by design, and one sized from a measurement because it bounds a whole phase with no round-trip count.';
+const LINK_DEADLINE_NAME = '/(timeout|budget|deadline)_?ms$/i';
+const LITERAL_ONLY_VALUE = ':matches(Literal[value=type(number)], BinaryExpression:not(:has(Identifier)))';
+// The left side is `timeoutMs`, `opts.timeoutMs`, or `opts?.timeoutMs` — the last parses as a
+// ChainExpression wrapping the member access, hence the third arm.
+const NAMED_LINK_DEADLINE_LEFT = `:matches([left.name=${LINK_DEADLINE_NAME}], [left.property.name=${LINK_DEADLINE_NAME}], [left.expression.property.name=${LINK_DEADLINE_NAME}])`;
+const LINK_DEADLINE_GUARD = [
+	`VariableDeclarator[id.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.init`,
+	`AssignmentPattern[left.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.right`,
+	`PropertyDefinition[key.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.value`,
+	`Property[key.name=${LINK_DEADLINE_NAME}] > ${LITERAL_ONLY_VALUE}.value`,
+	`AssignmentExpression${NAMED_LINK_DEADLINE_LEFT} > ${LITERAL_ONLY_VALUE}.right`,
+	`LogicalExpression:matches([operator='??'], [operator='||'])${NAMED_LINK_DEADLINE_LEFT} > ${LITERAL_ONLY_VALUE}.right`,
+].map((selector) => ({ selector, message: LINK_DEADLINE_MESSAGE }));
+const LINK_DEADLINE_SCOPE = ['packages/cadre-core/src/**/*.{ts,tsx,mts,cts}'];
 
 // `packages/*/src` is the first-party source of every package, including the two browser-only
 // apps (reference-app-web, cadre-host/ui) where these APIs exist — accepted deliberately: they
@@ -142,7 +196,13 @@ export default tseslint.config(
 	...tseslint.configs.recommended,
 
 	// ---- Environment globals (TS sources may target node and/or browser) ----
+	// A disable directive that no longer disables anything fails the gate rather than warning:
+	// LINK_DEADLINE_GUARD's `link-bound, not yet derived` directives are the list of unconverted
+	// deadlines, and one left behind on a converted site would keep it on that list.
 	{
+		linterOptions: {
+			reportUnusedDisableDirectives: 'error',
+		},
 		languageOptions: {
 			globals: {
 				...globals.node,
@@ -186,7 +246,7 @@ export default tseslint.config(
 		},
 	},
 
-	// ---- `no-restricted-syntax`: CadrePeer writes everywhere, phone-runtime APIs in package src ----
+	// ---- `no-restricted-syntax`: CadrePeer writes everywhere, phone-runtime APIs in package src, literal deadlines in cadre-core src ----
 	// Every write to the party-membership table has to refresh the in-memory snapshot of
 	// approved members, or the node starts denying control traffic from the member it just
 	// approved. `ControlDatabase.mutateCadrePeer` is what triggers that refresh, and the
@@ -195,9 +255,10 @@ export default tseslint.config(
 	// happily while skipping the refresh — a mistake that has been made twice — so flag
 	// the SQL itself (CADRE_PEER_WRITE_GUARD, above).
 	//
-	// First-party package source additionally gets PHONE_RUNTIME_GUARD (above). A later entry
-	// replaces an earlier one's options for the files it matches, so the source scope repeats
-	// the CadrePeer selectors rather than adding to them.
+	// First-party package source additionally gets PHONE_RUNTIME_GUARD, and cadre-core's source
+	// LINK_DEADLINE_GUARD on top (both above). A later entry replaces an earlier one's options
+	// for the files it matches, so each narrower scope repeats the wider one's selectors rather
+	// than adding to them.
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {
@@ -211,12 +272,18 @@ export default tseslint.config(
 		},
 	},
 	{
+		files: LINK_DEADLINE_SCOPE,
+		rules: {
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
+		},
+	},
+	{
 		// The exemptions (flat config: a later entry wins, so these must follow the rules).
-		// The destination itself — these ARE the wrapped writers. It is package source, so
-		// only the CadrePeer selectors come off; the phone-runtime ones stay.
+		// The destination itself — these ARE the wrapped writers. It is cadre-core source, so
+		// only the CadrePeer selectors come off; the phone-runtime and deadline ones stay.
 		files: ['packages/cadre-core/src/control-database.ts'],
 		rules: {
-			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD],
+			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
 		},
 	},
 	{
@@ -235,6 +302,23 @@ export default tseslint.config(
 			'no-restricted-syntax': 'off',
 		},
 	},
+	// ---- Import-free app modules ----
+	// `integration-tests` imports this module's SOURCE by relative path and runs it in plain
+	// Node (docs/testing.md → "App modules in a scenario"), so a runtime import of anything —
+	// a native or Expo module above all — would break that scenario as it loads. Type-only
+	// imports are erased and stay allowed.
+	{
+		files: ['packages/reference-app-rn/src/host-node-request.ts'],
+		rules: {
+			'@typescript-eslint/no-restricted-imports': ['error', {
+				patterns: [{
+					regex: '.',
+					allowTypeImports: true,
+					message: 'This module is imported by an integration-tests scenario and must stay import-free (docs/testing.md → "App modules in a scenario"). Pass the dependency in through HostNodeRequestDeps instead.',
+				}],
+			}],
+		},
+	},
 	// ---- Type-aware rules (node/library src only) ----
 	// `no-floating-promises` needs type information. Scope it to package `src/` trees
 	// whose tsconfig.json resolves cleanly under NodeNext; the bundler/expo apps
@@ -246,6 +330,7 @@ export default tseslint.config(
 			'packages/cadre-cli/src/**/*.ts',
 			'packages/cadre-host/src/**/*.ts',
 			'packages/cadre-provider/src/**/*.ts',
+			'packages/config-check/src/**/*.ts',
 			'packages/quereus-plugin-sereus/src/**/*.ts',
 			'packages/integration-tests/src/**/*.ts',
 		],
@@ -253,9 +338,11 @@ export default tseslint.config(
 		// outside this pass — neither is covered by a `tsconfig.json` the project
 		// service can find (the packages' include only `src`, and test-harness has
 		// no tsconfig at all; `tsconfig.typecheck.json` is not what the service
-		// picks up). Nothing there is async today, so `no-floating-promises` has
-		// nothing to bite on. If test infrastructure ever grows promises, give
-		// test-harness its own `tsconfig.json` and add both globs here.
+		// picks up). test-harness's only promises are awaited inside
+		// `describeChatSchemaCopy` (`chat-simple-schema.ts`), which exports nothing
+		// async, so no caller can leave one floating. If test infrastructure starts
+		// exporting a promise a spec must await, give test-harness its own
+		// `tsconfig.json` and add both globs here.
 		languageOptions: {
 			parserOptions: {
 				projectService: true,

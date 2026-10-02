@@ -194,7 +194,7 @@ describe('createGrantAdminHandlers', () => {
     let listed = await handlers.listGrants();
     expect(listed.grants.map(g => g.token)).toContain(issued.grant.token);
 
-    await handlers.deleteGrant(issued.grant.token);
+    await handlers.deleteGrant(issued.grant.token, { keepNodes: false });
     listed = await handlers.listGrants();
     // Revocation marks, not removes — the grant is still listed but revoked.
     expect(listed.grants.find(g => g.token === issued.grant.token)?.revokedAt).toBeTruthy();
@@ -208,6 +208,6 @@ describe('createGrantAdminHandlers', () => {
 
   it('deleteGrant surfaces not_found for an unknown token', async () => {
     const handlers = createGrantAdminHandlers(service);
-    await expect(handlers.deleteGrant('nope')).rejects.toMatchObject({ code: 'not_found' });
+    await expect(handlers.deleteGrant('nope', { keepNodes: false })).rejects.toMatchObject({ code: 'not_found' });
   });
 });

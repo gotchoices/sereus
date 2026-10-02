@@ -76,3 +76,7 @@ whole NativeScript bundle.
   would eliminate cause (2) outright and shrink this ticket to cause (1) alone.
 - `scripts/bundle-check.js` now fails on any warning, so a partial fix cannot
   regress silently.
+
+## Status at triage (2026-09-28, after 1.7.0)
+
+Partly done: gossipsub is gone (optimystic c497dff1), so two webpack ignore patterns are stale. Only the protons 5.6 vs 6.0.2 split remains.

@@ -26,10 +26,12 @@ export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-host', distEntry: 'dist/index.js', location: 'workspace' },
 	// Not imported by a scenario directly, but loaded from `dist` on every run all
-	// the same: `cadre-core`'s entry point imports `quereus-plugin-sereus`, and
-	// `cadre-host`'s re-exports `cadre-provider`.
+	// the same: `cadre-core`'s entry point imports `quereus-plugin-sereus`,
+	// `cadre-host`'s re-exports `cadre-provider`, and the spawned `cadre-cli`
+	// loads `config-check`.
 	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-provider', distEntry: 'dist/index.js', location: 'workspace' },
+	{ packageName: '@serfab/config-check', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p-storage-fs', distEntry: 'dist/src/index.js', location: 'linked' },

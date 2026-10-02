@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-core",
-  "version": "1.5.0",
+  "version": "1.10.0",
   "type": "module",
   "description": "Core library for Sereus cadre nodes - manages control networks and strand participation",
   "main": "dist/index.js",
@@ -36,6 +36,10 @@
       "types": "./dist/enrolled-machine-store-file.d.ts",
       "import": "./dist/enrolled-machine-store-file.js"
     },
+    "./strand-network-state-file": {
+      "types": "./dist/strand-network-state-file.d.ts",
+      "import": "./dist/strand-network-state-file.js"
+    },
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"
@@ -66,36 +70,37 @@
   "devDependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@libp2p/circuit-relay-v2": "^4.1.3",
-    "@libp2p/identify": "4.0.10",
-    "@libp2p/logger": "^6.2.2",
-    "@libp2p/peer-store": "^12.0.10",
-    "@libp2p/tcp": "^11.0.10",
-    "@libp2p/webrtc": "6.0.14",
-    "@libp2p/websockets": "^10.1.3",
-    "@optimystic/db-p2p-storage-fs": "^1.6.0",
+    "@libp2p/circuit-relay-v2": "^4.2.13",
+    "@libp2p/identify": "4.1.14",
+    "@libp2p/logger": "^6.2.13",
+    "@libp2p/peer-store": "^12.0.28",
+    "@libp2p/tcp": "^11.0.28",
+    "@libp2p/webrtc": "6.0.33",
+    "@libp2p/websockets": "^10.1.21",
+    "@optimystic/db-p2p-storage-fs": "^1.9.0",
     "@types/debug": "^4.1.12",
     "@types/node": "^25.0.10",
     "@vitest/coverage-v8": "^4.0.17",
-    "datastore-core": "^11.0.1",
+    "datastore-core": "^12.0.1",
     "main-event": "^1.0.1",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
   },
   "dependencies": {
-    "@libp2p/crypto": "^5.1.13",
-    "@libp2p/interface": "^3.1.0",
-    "@libp2p/peer-id": "^6.0.4",
-    "@multiformats/multiaddr": "^12.5.1",
-    "@optimystic/db-core": "^1.6.0",
-    "@optimystic/db-p2p": "^1.6.0",
-    "@optimystic/quereus-plugin-crypto": "^1.6.0",
-    "@optimystic/quereus-plugin-optimystic": "^1.6.0",
+    "@libp2p/crypto": "^5.1.23",
+    "@libp2p/interface": "^3.3.0",
+    "@libp2p/peer-id": "^6.0.15",
+    "@libp2p/peer-record": "^9.0.16",
+    "@multiformats/multiaddr": "^13.0.3",
+    "@optimystic/db-core": "^1.9.0",
+    "@optimystic/db-p2p": "^1.9.0",
+    "@optimystic/quereus-plugin-crypto": "^1.9.0",
+    "@optimystic/quereus-plugin-optimystic": "^1.9.0",
     "@quereus/quereus": "^4.20.0",
     "@serfab/quereus-plugin-sereus": "workspace:^",
     "debug": "^4.4.3",
-    "libp2p": "^3.1.3",
-    "uint8arrays": "^5.1.0"
+    "libp2p": "^3.3.11",
+    "uint8arrays": "^6.1.1"
   }
 }

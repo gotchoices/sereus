@@ -201,6 +201,51 @@ export function tarballProvenance(projectDir, workspaces) {
 }
 
 /**
+ * Every `exports` target of an installed publishable workspace that is not on disk. A
+ * package whose shipped directories are listed by hand in `files` can export a path its
+ * tarball does not carry, and nothing else here would notice: the scenario imports only
+ * the entry points it uses. Read off the *installed* manifest, since that is what a
+ * consumer's resolver reads. A workspace that is not installed is skipped;
+ * `tarballProvenance` already reports it.
+ */
+export function missingExportTargets(projectDir, workspaces) {
+	const missing = [];
+	for (const { manifest } of workspaces) {
+		const dir = findPackageDir(projectDir, manifest.name);
+		if (!dir) {
+			continue;
+		}
+		for (const { key, target } of exportTargets(readJson(join(dir, 'package.json')).exports)) {
+			if (!existsSync(join(dir, target))) {
+				missing.push({ name: manifest.name, key, target });
+			}
+		}
+	}
+	return missing;
+}
+
+/**
+ * Flatten an `exports` value — a string, a fallback array, or subpath and condition
+ * objects nested to any depth — into its target paths, each labelled with the keys that
+ * lead to it. `null` targets are exclusions and name no file.
+ *
+ * NOTE: a subpath pattern target (containing `*`) is skipped, not checked; no workspace
+ * uses one today. If one ever does, expand it against the installed files instead.
+ */
+function exportTargets(value, keys = []) {
+	if (typeof value === 'string') {
+		return value.includes('*') ? [] : [{ key: keys.join(' → ') || '.', target: value }];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap((entry) => exportTargets(entry, keys));
+	}
+	if (value && typeof value === 'object') {
+		return Object.entries(value).flatMap(([key, entry]) => exportTargets(entry, [...keys, key]));
+	}
+	return [];
+}
+
+/**
  * Publishable workspaces whose `dist` is missing, or older than their `src`. `pack`
  * does not build, so under `--skip-build` either state means the tarballs carry code
  * that is not what `src` says — and the smoke would print a pass for the *previous*

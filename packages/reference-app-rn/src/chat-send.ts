@@ -39,12 +39,48 @@ export interface SendResult {
  * Holds the id minted for the draft currently in the composer, so a resend after a failed
  * send re-presents the same primary key instead of minting a second one.
  *
- * One instance per composer. `send` clears the pending draft when it resolves and keeps it
- * when it rejects, which is what makes the next press of Send a resend rather than a new
- * message.
+ * One instance per composer. The key is held exactly as long as the composer still holds the
+ * draft it was minted for, and let go at the first of:
+ *
+ * - a send of it resolving (`send`);
+ * - the composer no longer holding that text (`composerChanged`) — without this, text the user
+ *   clears and later types again would be taken for a retry, found stored, and silently dropped;
+ * - a read of the list showing its row (`settle`), which means an attempt that reported
+ *   failure did land.
+ *
+ * A rejected send keeps the key, which is what makes the next press of Send a resend rather
+ * than a new message.
  */
 export class ChatSender {
   private pending: PendingDraft | null = null;
+  private sending = false;
+
+  /**
+   * Report the composer's text, in the form `send` would be given it. Any text other than the
+   * pending draft's retires its key: editing away and back, or clearing and retyping the same
+   * words, is a new message.
+   */
+  composerChanged(text: string): void {
+    if (this.pending && this.pending.text !== text) this.pending = null;
+  }
+
+  /**
+   * Retire the pending draft's key if `messages` — a completed read of the list — holds its row,
+   * and return the draft's text so the composer can drop its "not confirmed" state and clear the
+   * box if it still holds that text. Null when nothing was retired.
+   *
+   * Never while a send is in flight: that send's outcome is still open, and if it then failed
+   * the user would be told to press Send again with no key left to re-present, so the next press
+   * would mint a new one and could store the message twice. The first read after the send
+   * settles retires it instead.
+   */
+  settle(messages: readonly ChatMessage[]): string | null {
+    const pending = this.pending;
+    if (this.sending || !pending) return null;
+    if (!messages.some((m) => m.Id === pending.id)) return null;
+    this.pending = null;
+    return pending.text;
+  }
 
   /**
    * Store `text` as a message from `participantId`, resolving when it is stored — whether
@@ -57,6 +93,15 @@ export class ChatSender {
    * that text.
    */
   async send(strand: StrandInstance, participantId: string, text: string): Promise<SendResult> {
+    this.sending = true;
+    try {
+      return await this.store(strand, participantId, text);
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  private async store(strand: StrandInstance, participantId: string, text: string): Promise<SendResult> {
     const resend = this.pending?.text === text ? this.pending : null;
     const draft = resend ?? { id: newChatMessageId(), text };
     this.pending = draft;

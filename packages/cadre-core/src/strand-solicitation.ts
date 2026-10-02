@@ -7,8 +7,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import type {
   OpenInvitation,
   FormStrandResult,
-  StrandFormationDisclosure,
-  StrandMembershipInvite
+  StrandFormationDisclosure
 } from './types.js';
 // control-database does not import this service, so these imports introduce no cycle.
 import { generateStampId, formationConsentMessage } from './control-database.js';
@@ -17,6 +16,8 @@ import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
 import { mintPlaceholderStrandId } from './strand-id.js';
 import {
   StrandFormationManager,
+  type CadrePeerAddrsSource,
+  type MembershipInviteIssuer,
   type StrandFormationManagerConfig
 } from './strand-formation-manager.js';
 import {
@@ -63,27 +64,46 @@ export type ResolvedHostStrand =
   | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
   | { kind: 'missing'; strandId: string };
 
+/** One redemption of an invite against an already-existing host strand (the record-only consent write). */
+export interface FormationUsageParams {
+  token: string;
+  /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
+  peerKey: string;
+  /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
+  peerSignature: string;
+  /** Joiner-minted single-use nonce; both signed digests cover it. */
+  usageStampId: string;
+  strandId: string;
+  /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
+  disclosure: string;
+  /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
+  signal?: AbortSignal;
+}
+
+/** A redemption the recorder has authorized (approval obtained, a seat still free) but not yet written. */
+export interface AuthorizedFormationUsage {
+  /** Write the consent row. Abort and seat budget are re-checked inside the write lock. */
+  record(): Promise<void>;
+}
+
 /**
  * Interface for recording formation usage
  */
 export interface FormationUsageRecorder {
   /**
-   * Record that a formation invite was used
+   * Record that a formation invite was used. Where {@link authorizeUsage} is implemented, this
+   * is the same as authorizing and then calling `record()` straight away.
    */
-  recordUsage(params: {
-    token: string;
-    /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
-    peerKey: string;
-    /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
-    peerSignature: string;
-    /** Joiner-minted single-use nonce; both signed digests cover it. */
-    usageStampId: string;
-    strandId: string;
-    /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
-    disclosure: string;
-    /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
-    signal?: AbortSignal;
-  }): Promise<void>;
+  recordUsage(params: FormationUsageParams): Promise<void>;
+
+  /**
+   * Everything {@link recordUsage} does short of the write: obtain the outside approval (when
+   * the invite demands one) and pre-check the seat budget, returning a handle whose `record()`
+   * writes the consent row with exactly the fields that were approved. Lets the manager ask
+   * before it writes anything into the host strand, and write consent only after.
+   * Optional: a recorder without it is treated as having nothing to ask up front.
+   */
+  authorizeUsage?(params: FormationUsageParams): Promise<AuthorizedFormationUsage>;
 
   /**
    * Check if a token has already been used (for single-use invites)
@@ -91,9 +111,11 @@ export interface FormationUsageRecorder {
   isTokenUsed(token: string): Promise<boolean>;
 
   /**
-   * Check if a token is valid and not expired
+   * Check if a token is valid and not expired. An invalid answer says why: `'unknown'` (no
+   * invitation row here — it may not have replicated yet) or `'expired'`. An answer without
+   * a reason is treated as `'unknown'`, the retryable one.
    */
-  isTokenValid(token: string): Promise<{ valid: boolean; invitation?: OpenInvitation }>;
+  isTokenValid(token: string): Promise<{ valid: boolean; reason?: 'unknown' | 'expired'; invitation?: OpenInvitation }>;
 
   /**
    * Resolve the host strand an invite binds to, classifying it as unbound / bound /
@@ -194,7 +216,7 @@ export interface StrandSolicitationServiceOptions {
   /** Party ID for this node (used in protocol messages) */
   partyId?: string;
   /** Cadre peer addresses for this node */
-  cadrePeerAddrs?: string[];
+  cadrePeerAddrs?: CadrePeerAddrsSource;
   /**
    * This node's live STRAND-network multiaddrs for a strand it is running (responder
    * side), carried back to a validated joiner as its cross-party discovery seed. Wired
@@ -208,7 +230,7 @@ export interface StrandSolicitationServiceOptions {
    * (null = open strand, throw = reject the redemption retryably, unwired = mock/test
    * posture: approve with no invitation).
    */
-  issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  issueMembershipInvite?: MembershipInviteIssuer;
   /** Configuration for the formation manager */
   formationConfig?: StrandFormationManagerConfig;
 }
@@ -232,9 +254,9 @@ export class StrandSolicitationService {
   private readonly strandProvisioner?: StrandProvisioner;
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
-  private readonly cadrePeerAddrs: string[];
+  private readonly cadrePeerAddrs: CadrePeerAddrsSource;
   private readonly resolveStrandAddrs?: (strandId: string) => string[];
-  private readonly issueMembershipInvite?: (strandId: string) => Promise<StrandMembershipInvite | null>;
+  private readonly issueMembershipInvite?: MembershipInviteIssuer;
   private formationManager?: StrandFormationManager;
   private readonly formationConfig?: StrandFormationManagerConfig;
   /**
@@ -288,16 +310,16 @@ export class StrandSolicitationService {
    * Register as a responder on a libp2p node.
    * This enables the node to handle incoming strand formation requests.
    */
-  registerResponder(node: Libp2p): void {
-    this.getFormationManager().registerResponder(node);
+  async registerResponder(node: Libp2p): Promise<void> {
+    await this.getFormationManager().registerResponder(node);
     log('Registered as responder');
   }
 
   /**
    * Unregister as a responder from a libp2p node.
    */
-  unregisterResponder(node: Libp2p): void {
-    this.getFormationManager().unregisterResponder(node);
+  async unregisterResponder(node: Libp2p): Promise<void> {
+    await this.getFormationManager().unregisterResponder(node);
     log('Unregistered as responder');
   }
 
@@ -425,6 +447,16 @@ export class StrandSolicitationService {
   registerMintedInvitation(token: string, expiresAtMs: number): void {
     this.mintedInvitations.set(token, expiresAtMs);
     log('Registered minted invitation %s (expires %d)', token, expiresAtMs);
+  }
+
+  /**
+   * Take over every token `previous` minted or published, so a service that replaces it
+   * on a node keeps the connection gate open for invitations already handed out.
+   */
+  adoptMintedInvitations(previous: StrandSolicitationService): void {
+    for (const [token, expiresAtMs] of previous.mintedInvitations) {
+      this.mintedInvitations.set(token, expiresAtMs);
+    }
   }
 
   /**

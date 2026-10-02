@@ -151,6 +151,7 @@ import {
 	waitUntil,
 	controlNodeConfig,
 	createMockProvisioner,
+	createMockUsageRecorder,
 	createSignedSAppConfig,
 	captureRawStorage,
 	compareBlockCoverage,
@@ -499,9 +500,15 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		await joinerNode.start();
 
 		// Form a strand over the wire to get a real negotiated strandId (the closed
-		// MemberPrivateKey delivery itself is out of scope — see header).
-		founderNode.initializeStrandSolicitation({ strandProvisioner: createMockProvisioner(label) });
+		// MemberPrivateKey delivery itself is out of scope — see header). The mock recorder
+		// accepts the unpublished token the node's default recorder would refuse.
+		const recorder = createMockUsageRecorder();
+		await founderNode.initializeStrandSolicitation({
+			strandProvisioner: createMockProvisioner(label),
+			formationUsageRecorder: recorder,
+		});
 		const invitation = await founderNode.createOpenInvitation('closed-sapp');
+		recorder.knownTokens.add(invitation.token);
 		const formResult = await joinerNode.formStrand(invitation, {
 			partyId: `joiner-${partyId}`,
 			purpose: `closed-strand membership lifecycle test (${label})`,

@@ -97,7 +97,7 @@ async function main() {
 	console.log(`  Peer ID: ${node.peerId.toString()}`);
 
 	// Seed bootstrap — allows creating + delivering seeds
-	node.initializeSeedBootstrap(ownerPrivateKey);
+	await node.initializeSeedBootstrap(ownerPrivateKey);
 
 	// Enroll the drone's own owner key into the replicated OwnerKey table, which
 	// is what marks the drone as an owner peer in the seeds it mints (the dial

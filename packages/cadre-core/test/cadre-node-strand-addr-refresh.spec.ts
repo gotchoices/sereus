@@ -3,11 +3,13 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import { CadreNode, STRAND_PEER_ADDR_REFRESH_MS } from '../src/cadre-node.js';
+import { CadreNode, STRAND_PEER_ADDR_REFRESH_MS, STRAND_PEER_ADDR_RETRY_MS } from '../src/cadre-node.js';
 import { MemoryBootstrapPeerStore } from '../src/bootstrap-peer-store.js';
 import type { CadreNodeConfig, SAppConfig, StrandInstance, StrandRow } from '../src/types.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
+import { peerStrandKey } from '../src/delegate-admission.js';
 import { duplexPair } from './wake-stream-helpers.js';
+import { fretEntry, fretService, type FretEntryFake } from './fret-record-helpers.js';
 
 /**
  * Unit coverage for the periodic strand address-book refresh
@@ -24,8 +26,8 @@ import { duplexPair } from './wake-stream-helpers.js';
  * The doubles here stub the control node / DB / strand manager exactly as
  * `cadre-node-strand-seed.spec.ts` does (the RPC union itself is covered in
  * `strand-addr-protocol.spec.ts`, the merge in `peer-addr-book.spec.ts`); what is
- * asserted here is WHICH siblings get RPC'd, WHEN the throttle lets a pass
- * through, and WHOSE address book the answers land in.
+ * asserted here is WHICH siblings get RPC'd, WHEN each (sibling, strand) is due
+ * again, and WHOSE address book the answers land in.
  */
 
 function createConfig(): CadreNodeConfig {
@@ -60,7 +62,9 @@ interface ControlFakeOpts {
   connections: string[];
   /** peerId → strandId → the strand addrs that sibling answers with; peer absent = dial throws. */
   replies: Map<string, Record<string, string[]>>;
-  /** Every (sibling, strand) pair whose receiver actually answered. */
+  /** Siblings whose receiver's own lookup throws after recording the ask, so they reply `unavailable`. */
+  unavailable?: ReadonlySet<string>;
+  /** Every (sibling, strand) pair whose receiver the request actually reached. */
   asked: AskRecord[];
   /** Called from inside a receiver, just before it answers — the "stopped mid-RPC" hook. */
   onAsk?(record: AskRecord): void;
@@ -100,6 +104,9 @@ function fakeControlNode(opts: ControlFakeOpts): Libp2p {
           const record = { peerId: id, strandId };
           opts.asked.push(record);
           opts.onAsk?.(record);
+          if (opts.unavailable?.has(id)) {
+            throw new Error('control read failed');
+          }
           return reply[strandId] ?? [];
         }
       });
@@ -117,11 +124,15 @@ interface StrandNodeFake {
 }
 
 /**
- * Strand-node fake with just a peerId and a recording peerStore. `merge` echoes
- * the addresses back as the stored (expiry-filtered) set, which is what makes
- * `mergePeerAddrs` report `'merged'` and skip its restamp `save`.
+ * Strand-node fake with just a peerId, a recording peerStore and — when `fretEntries`
+ * is given — the FRET service whose table the pass reads. `merge` echoes the addresses
+ * back as the stored (expiry-filtered) set, which is what makes `mergePeerAddrs` report
+ * `'merged'` and skip its restamp `save`.
  */
-function fakeStrandNode(peerId: string, opts: { mergeRejects?: boolean; peerIdThrows?: boolean } = {}): StrandNodeFake {
+function fakeStrandNode(
+  peerId: string,
+  opts: { mergeRejects?: boolean; peerIdThrows?: boolean; fretEntries?: FretEntryFake[] } = {}
+): StrandNodeFake {
   const merges: Array<{ peerId: string; addrs: string[] }> = [];
   const node = {
     get peerId(): { toString(): string } {
@@ -130,6 +141,7 @@ function fakeStrandNode(peerId: string, opts: { mergeRejects?: boolean; peerIdTh
       }
       return { toString: () => peerId };
     },
+    ...(opts.fretEntries && { services: fretService(opts.fretEntries) }),
     peerStore: {
       merge: async (id: PeerId, data: { multiaddrs: Array<{ toString(): string }> }) => {
         if (opts.mergeRejects) {
@@ -162,6 +174,7 @@ function injectRefresh(opts: {
   members: Array<{ peerId: string; multiaddr: string | null }>;
   connections: string[];
   replies?: Map<string, Record<string, string[]>>;
+  unavailable?: ReadonlySet<string>;
   instances?: Map<string, StrandInstance>;
   onAsk?(record: AskRecord): void;
 }): Harness {
@@ -175,6 +188,7 @@ function injectRefresh(opts: {
     selfPeerId: opts.selfPeerId,
     connections,
     replies: opts.replies ?? new Map(),
+    unavailable: opts.unavailable,
     asked,
     onAsk: opts.onAsk
   });
@@ -197,16 +211,21 @@ function refresh(node: CadreNode, now: number): Promise<void> {
   return (node as unknown as { refreshStrandPeerAddrs(now: number): Promise<void> }).refreshStrandPeerAddrs(now);
 }
 
-/** The private per-strand throttle map, for asserting what a pass did (or did not) stamp. */
-function throttleMap(node: CadreNode): Map<string, number> {
-  return (node as unknown as { strandPeerAddrRefreshAt: Map<string, number> }).strandPeerAddrRefreshAt;
+/** The private per-(sibling, strand) due-time map, for asserting what a pass did (or did not) stamp. */
+function askDueMap(node: CadreNode): Map<string, number> {
+  return (node as unknown as { strandAddrAskDueAt: Map<string, number> }).strandAddrAskDueAt;
 }
 
-/** Record a formation's cross-party strand addrs, exactly as a successful `formStrand` does. */
-function recordCrossParty(node: CadreNode, strandId: string, addrs: string[]): void {
-  (node as unknown as {
-    recordCrossPartyStrandAddrs(id: string, addrs: readonly string[]): void;
-  }).recordCrossPartyStrandAddrs(strandId, addrs);
+/**
+ * Another party's strand peer as the strand node's FRET table holds it: a fresh key, its
+ * signed record at one direct address, and that address as the pass merges it (bound to
+ * the peer).
+ */
+async function crossPartyPeer(): Promise<{ peerId: string; entry: FretEntryFake; merged: string }> {
+  const key = await generateKeyPair('Ed25519');
+  const peerId = peerIdFromPrivateKey(key).toString();
+  const addr = '/ip4/203.0.113.7/tcp/4001/ws';
+  return { peerId, entry: await fretEntry(key, [addr]), merged: `${addr}/p2p/${peerId}` };
 }
 
 const T0 = 1_700_000_000_000;
@@ -253,7 +272,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(strand.merges.map((m) => m.peerId)).not.toContain(sib2);
   });
 
-  it('throttles a second pass, and lets one through after STRAND_PEER_ADDR_REFRESH_MS', async () => {
+  it('re-asks a sibling once its own interval has elapsed, and on the next tick after it reconnects', async () => {
     const [self, sib, sibStrand, ownStrand] = await Promise.all(
       Array.from({ length: 4 }, () => freshPeerId())
     );
@@ -269,8 +288,9 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
 
     await refresh(harness.node, T0);
     expect(harness.asked).toHaveLength(1);
+    expect(askDueMap(harness.node).get(peerStrandKey(sib, 's1'))).toBe(T0 + STRAND_PEER_ADDR_REFRESH_MS);
 
-    // Immediately after, and one millisecond short of the interval: still throttled.
+    // Immediately after, and one millisecond short of the interval: not due.
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS - 1);
     expect(harness.asked).toHaveLength(1);
@@ -278,37 +298,93 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS);
     expect(harness.asked).toHaveLength(2);
     expect(strand.merges).toHaveLength(2);
+
+    // A pass without the sibling forgets its due time, so reconnecting — a phone
+    // restart, a new relay reservation — gets it asked on the very next tick.
+    const t1 = T0 + STRAND_PEER_ADDR_REFRESH_MS + 15_000;
+    harness.connections.splice(0);
+    await refresh(harness.node, t1);
+    harness.connections.push(sib);
+    await refresh(harness.node, t1 + 15_000);
+    expect(harness.asked).toHaveLength(3);
   });
 
-  it('leaves the throttle unstamped when there is no connected sibling to ask', async () => {
-    const [self, sib, sibStrand, ownStrand] = await Promise.all(
-      Array.from({ length: 4 }, () => freshPeerId())
+  it('asks a sibling that connects after a pass on the next tick', async () => {
+    // gotchoices/sereus#21: a phone connecting after the party's always-on machines used
+    // to wait out a stamp keyed by strand alone — set by the pass that asked the others,
+    // or (1.7.0) by a pass that merged another party's addresses and asked nobody.
+    const [self, sibA, sibB, aStrand, bStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 6 }, () => freshPeerId())
     );
-    const addr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
-    const strand = fakeStrandNode(ownStrand);
+    const members = [self, sibA, sibB].map((peerId) => ({ peerId, multiaddr: null }));
+    const replies = new Map([
+      [sibA, { 's1': [`/ip4/10.0.0.1/tcp/1/p2p/${aStrand}`] }],
+      [sibB, { 's1': [`/ip4/10.0.0.2/tcp/1/p2p/${bStrand}`] }]
+    ]);
+
+    // After another sibling was asked: B is asked, A is not re-asked.
+    const afterSibling = injectRefresh({
+      selfPeerId: self,
+      members,
+      connections: [sibA],
+      replies,
+      instances: new Map([['s1', strandInstance('s1', fakeStrandNode(ownStrand).node)]])
+    });
+    await refresh(afterSibling.node, T0);
+    afterSibling.connections.push(sibB);
+    await refresh(afterSibling.node, T0 + 15_000);
+    expect(afterSibling.asked).toEqual([
+      { peerId: sibA, strandId: 's1' },
+      { peerId: sibB, strandId: 's1' }
+    ]);
+
+    // After a pass that only re-merged FRET's address records — also the first tick
+    // after a restart, before any control connection exists.
+    const cross = await crossPartyPeer();
+    const recordsStrand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
+    const afterRecords = injectRefresh({
+      selfPeerId: self,
+      members,
+      connections: [],
+      replies,
+      instances: new Map([['s1', strandInstance('s1', recordsStrand.node)]])
+    });
+    await refresh(afterRecords.node, T0);
+    expect(recordsStrand.merges.map((m) => m.peerId)).toEqual([cross.peerId]);
+    afterRecords.connections.push(sibB);
+    await refresh(afterRecords.node, T0 + 15_000);
+    expect(afterRecords.asked).toEqual([{ peerId: sibB, strandId: 's1' }]);
+  });
+
+  it('retries a sibling that could not answer within STRAND_PEER_ADDR_RETRY_MS, a healthy one only after the full interval', async () => {
+    const [self, sick, healthy, healthyStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 5 }, () => freshPeerId())
+    );
     const harness = injectRefresh({
       selfPeerId: self,
-      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
-      connections: [], // member, but no open control connection
-      replies: new Map([[sib, { 's1': [addr] }]]),
-      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+      members: [self, sick, healthy].map((peerId) => ({ peerId, multiaddr: null })),
+      connections: [sick, healthy],
+      replies: new Map([
+        [sick, { 's1': [] }],
+        [healthy, { 's1': [`/ip4/10.0.0.1/tcp/1/p2p/${healthyStrand}`] }]
+      ]),
+      unavailable: new Set([sick]),
+      instances: new Map([['s1', strandInstance('s1', fakeStrandNode(ownStrand).node)]])
     });
+    const askedOf = (peerId: string): number => harness.asked.filter((a) => a.peerId === peerId).length;
 
     await refresh(harness.node, T0);
+    await refresh(harness.node, T0 + STRAND_PEER_ADDR_RETRY_MS - 1);
+    expect([askedOf(sick), askedOf(healthy)]).toEqual([1, 1]);
 
-    expect(harness.asked).toEqual([]);
-    expect(throttleMap(harness.node).has('s1')).toBe(false);
+    await refresh(harness.node, T0 + STRAND_PEER_ADDR_RETRY_MS);
+    expect([askedOf(sick), askedOf(healthy)]).toEqual([2, 1]);
 
-    // The sibling connects; the very next tick retries rather than sitting out
-    // the whole refresh interval.
-    harness.connections.push(sib);
-    await refresh(harness.node, T0);
-
-    expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
-    expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [addr] }]);
+    await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS);
+    expect(askedOf(healthy)).toBe(2);
   });
 
-  it('skips a hibernating strand and prunes its throttle entry, so a resume refreshes at once', async () => {
+  it('skips a hibernating strand and prunes its due times, so a resume refreshes at once', async () => {
     const [self, sib, sibStrand, ownStrand] = await Promise.all(
       Array.from({ length: 4 }, () => freshPeerId())
     );
@@ -323,17 +399,17 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     });
 
     await refresh(harness.node, T0);
-    expect(throttleMap(harness.node).get('s1')).toBe(T0);
+    expect(askDueMap(harness.node).has(peerStrandKey(sib, 's1'))).toBe(true);
 
     // Hibernated: the instance is still tracked, but it has no node to seed.
     harness.instances.set('s1', strandInstance('s1', undefined));
     await refresh(harness.node, T0 + 1);
 
     expect(harness.asked).toHaveLength(1);
-    expect(throttleMap(harness.node).has('s1')).toBe(false);
+    expect(askDueMap(harness.node).size).toBe(0);
 
-    // Resumed within the throttle window: refreshes immediately rather than
-    // inheriting the stamp its previous incarnation left.
+    // Resumed within the refresh interval: asks immediately rather than
+    // inheriting the due time its previous incarnation left.
     harness.instances.set('s1', strandInstance('s1', strand.node));
     await refresh(harness.node, T0 + 2);
 
@@ -444,7 +520,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     await refresh(harness.node, T0);
 
     expect(harness.asked).toEqual([]);
-    expect(throttleMap(harness.node).size).toBe(0);
+    expect(askDueMap(harness.node).size).toBe(0);
   });
 
   it('runs as a step of the public reconcile pass, not only when called directly', async () => {
@@ -472,7 +548,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     // guards around it — not merely the helper the other tests call directly.
     expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
     expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [addr] }]);
-    expect(throttleMap(harness.node).get('s1')).toBeTypeOf('number');
+    expect(askDueMap(harness.node).get(peerStrandKey(sib, 's1'))).toBeTypeOf('number');
   });
 
   it('reads no CadrePeer row when the node holds no control connection', async () => {
@@ -489,8 +565,8 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     const inner = db.queryCadrePeers.bind(db);
     db.queryCadrePeers = async () => { queries++; return inner(); };
 
-    // The pass leaves its throttle unstamped with nobody to ask, so it re-enters
-    // on every 15 s tick — the unbounded membership read must not ride along.
+    // The pass runs on every 15 s tick to re-merge FRET's address records — the
+    // unbounded membership read must not ride along when nobody could answer it.
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + 1);
 
@@ -498,46 +574,43 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(harness.asked).toEqual([]);
   });
 
-  // ── Cross-party addrs: re-merged on every pass, with or without a sibling ──
+  // ── FRET's address records: re-merged on every pass, with or without a sibling ──
 
-  it("keeps a formation's cross-party addrs alive when there is no sibling to ask", async () => {
+  it("keeps another party's addrs alive, re-merging FRET's records on every tick without stamping", async () => {
     // Nothing can RE-RESOLVE a cross-party address — the strand-addr RPC is
-    // membership-gated and answers own-party callers only — so this periodic re-merge is
-    // the only thing standing between the joiner's seed and the peerStore's one-hour
-    // expiry. A two-party joiner has no cohort sibling at all, which is exactly the case
-    // that used to make the pass return before merging anything.
-    const [self, crossStrand, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const strand = fakeStrandNode(ownStrand);
+    // membership-gated and answers own-party callers only — and FRET hands a record to
+    // the peerStore once, so this periodic re-merge is the only thing standing between
+    // the other party's addresses and the peerStore's one-hour expiry. A two-party joiner
+    // has no cohort sibling at all, which is exactly the case that must still merge.
+    const [self, ownStrand] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const cross = await crossPartyPeer();
+    const strand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
     const harness = injectRefresh({
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }],
       connections: [],
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
     expect(harness.asked).toEqual([]);
-    expect(strand.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
-    // The pass DID work, so it stamps — unlike the nothing-to-do case above, it must not
-    // re-run on every 15 s reconcile tick.
-    expect(throttleMap(harness.node).get('s1')).toBe(T0);
+    expect(strand.merges).toEqual([{ peerId: cross.peerId, addrs: [cross.merged] }]);
 
-    // ...and it comes back round once the refresh interval has elapsed, which is what
-    // actually beats the expiry.
-    await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS);
+    // A local merge costs no RPC, so the next tick merges again, and nothing is stamped
+    // that could hold back a sibling connecting later.
+    await refresh(harness.node, T0 + 15_000);
     expect(strand.merges).toHaveLength(2);
+    expect(askDueMap(harness.node).size).toBe(0);
   });
 
-  it('unions cross-party addrs with the sibling answers rather than replacing them', async () => {
-    const [self, sib, sibStrand, crossStrand, ownStrand] = await Promise.all(
-      Array.from({ length: 5 }, () => freshPeerId())
+  it("merges FRET's records alongside the sibling answers, each under its own peer", async () => {
+    const [self, sib, sibStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
     );
     const sibAddr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const strand = fakeStrandNode(ownStrand);
+    const cross = await crossPartyPeer();
+    const strand = fakeStrandNode(ownStrand, { fretEntries: [cross.entry] });
     const harness = injectRefresh({
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
@@ -545,85 +618,64 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
       replies: new Map([[sib, { 's1': [sibAddr] }]]),
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
 
     await refresh(harness.node, T0);
 
     expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
-    // Two peers, one from each source — the cross-party entry is filed under the OTHER
+    // Two peers, one from each source — the cross-party record is filed under the OTHER
     // party's strand transport id, never merged into the sibling's group.
     expect(strand.merges).toEqual([
       { peerId: sibStrand, addrs: [sibAddr] },
-      { peerId: crossStrand, addrs: [crossAddr] }
+      { peerId: cross.peerId, addrs: [cross.merged] }
     ]);
   });
 
-  it("never merges one strand's cross-party addrs into another strand's address book", async () => {
-    const [self, crossStrand, ownStrand1, ownStrand2] = await Promise.all(
-      Array.from({ length: 4 }, () => freshPeerId())
-    );
-    const crossAddr = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const s1 = fakeStrandNode(ownStrand1);
-    const s2 = fakeStrandNode(ownStrand2);
-    const harness = injectRefresh({
-      selfPeerId: self,
-      members: [{ peerId: self, multiaddr: null }],
-      connections: [],
-      instances: new Map([
-        ['s1', strandInstance('s1', s1.node)],
-        ['s2', strandInstance('s2', s2.node)]
-      ])
-    });
-    recordCrossParty(harness.node, 's1', [crossAddr]);
-
-    await refresh(harness.node, T0);
-
-    expect(s1.merges).toEqual([{ peerId: crossStrand, addrs: [crossAddr] }]);
-    expect(s2.merges).toEqual([]);
-    expect(throttleMap(harness.node).has('s2')).toBe(false);
-  });
-
-  it('re-forming against a running strand refreshes on the next tick, not ten minutes later', async () => {
-    // Re-forming is the documented recovery when a carried address goes dead (the
-    // responder rotated its relay reservation). If the freshly-carried addresses had to
-    // wait out the rest of the refresh throttle, that recovery would take up to the full
-    // interval to reach the address book.
-    const [self, crossStrand, crossStrand2, ownStrand] = await Promise.all(
-      Array.from({ length: 4 }, () => freshPeerId())
-    );
-    const stale = `/ip4/203.0.113.7/tcp/4001/ws/p2p/${crossStrand}`;
-    const fresh = `/ip4/203.0.113.9/tcp/4003/ws/p2p/${crossStrand2}`;
-    const strand = fakeStrandNode(ownStrand);
+  it("re-merges a formation's carried addrs on every tick until FRET holds that peer's record", async () => {
+    // Until the first connection the carried addresses are all that names the responder,
+    // and FRET's bootstraps keep only its peer id — so if it stays away past the
+    // peerStore's one-hour expiry, only this re-merge leaves anything to dial.
+    const [self, unmet, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const cross = await crossPartyPeer();
+    const carriedCross = `/ip4/198.51.100.5/tcp/4100/ws/p2p/${cross.peerId}`;
+    const carriedUnmet = `/ip4/198.51.100.6/tcp/4100/ws/p2p/${unmet}`;
+    const fretEntries: FretEntryFake[] = [];
+    const strand = fakeStrandNode(ownStrand, { fretEntries });
     const harness = injectRefresh({
       selfPeerId: self,
       members: [{ peerId: self, multiaddr: null }],
       connections: [],
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
-    recordCrossParty(harness.node, 's1', [stale]);
+    await (harness.node as unknown as {
+      recordFormationStrandAddrs(id: string, addrs: readonly string[]): Promise<void>;
+    }).recordFormationStrandAddrs('s1', [carriedCross, carriedUnmet]);
+    strand.merges.length = 0;
+
     await refresh(harness.node, T0);
-    expect(throttleMap(harness.node).get('s1')).toBe(T0);
+    expect(strand.merges).toEqual([
+      { peerId: cross.peerId, addrs: [carriedCross] },
+      { peerId: unmet, addrs: [carriedUnmet] }
+    ]);
 
-    // A second redemption lands one tick later — well inside the throttle window.
-    recordCrossParty(harness.node, 's1', [fresh]);
-    expect(throttleMap(harness.node).has('s1')).toBe(false);
-
+    // Once FRET holds the peer's own signed record, that record supersedes the carried one.
+    fretEntries.push(cross.entry);
+    strand.merges.length = 0;
     await refresh(harness.node, T0 + 15_000);
     expect(strand.merges).toEqual([
-      { peerId: crossStrand, addrs: [stale] },
-      { peerId: crossStrand2, addrs: [fresh] },
-      { peerId: crossStrand, addrs: [stale] }
+      { peerId: cross.peerId, addrs: [cross.merged] },
+      { peerId: unmet, addrs: [carriedUnmet] }
     ]);
   });
 
-  it('honours a configured strandAddrRefreshMs override', async () => {
-    const [self, sib, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+  it('honours a configured strandAddrRefreshMs override, never retrying a failed sibling later than it', async () => {
+    const [self, sib, sick, ownStrand] = await Promise.all(Array.from({ length: 4 }, () => freshPeerId()));
     const strand = fakeStrandNode(ownStrand);
     const harness = injectRefresh({
       selfPeerId: self,
-      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
-      connections: [sib],
-      replies: new Map([[sib, { 's1': [] }]]),
+      members: [self, sib, sick].map((peerId) => ({ peerId, multiaddr: null })),
+      connections: [sib, sick],
+      replies: new Map([[sib, { 's1': [] }], [sick, { 's1': [] }]]),
+      unavailable: new Set([sick]),
       instances: new Map([['s1', strandInstance('s1', strand.node)]])
     });
     (harness.node as unknown as { config: CadreNodeConfig }).config.network = {
@@ -632,10 +684,10 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
 
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + 999);
-    expect(harness.asked).toHaveLength(1);
+    expect(harness.asked).toHaveLength(2);
 
     await refresh(harness.node, T0 + 1000);
-    expect(harness.asked).toHaveLength(2);
+    expect(harness.asked.map((a) => a.peerId).sort()).toEqual([sib, sib, sick, sick].sort());
   });
 });
 
@@ -702,5 +754,30 @@ describe('CadreNode strand launch/resume seed merge', () => {
     // Both of the sibling's addresses land under its one strand peer id, with the
     // relay's peer id nowhere in sight.
     expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [relayed, direct] }]);
+  });
+});
+
+/**
+ * A re-formation is the recovery path for a dead cross-party address, and the seed it
+ * feeds is read only at launch and resume — so a strand already running gets the freshly
+ * carried addresses written into its address book by `formStrand` itself.
+ */
+describe('CadreNode re-formation of a running strand', () => {
+  it('merges the carried addresses straight into the running strand node', async () => {
+    const [self, cross, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const carried = `/ip4/203.0.113.7/tcp/4100/ws/p2p/${cross}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+
+    await (harness.node as unknown as {
+      recordFormationStrandAddrs(id: string, addrs: readonly string[]): Promise<void>;
+    }).recordFormationStrandAddrs('s1', [carried]);
+
+    expect(strand.merges).toEqual([{ peerId: cross, addrs: [carried] }]);
   });
 });

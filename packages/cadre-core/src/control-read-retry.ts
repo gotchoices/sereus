@@ -14,7 +14,7 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * was absorbed). This module gives reads the same bounded re-presentation with a SHORTER
  * deadline and a NARROWER failure set, because the tightest caller deadline over a control
  * read is the inbound admission gate's 2 s fail-open timeout
- * (`ADMISSION_DECISION_TIMEOUT_MS`, `membership-connection-gater.ts`) — a read budget that
+ * (`ADMISSION_DECISION_TIMEOUT_MS`, `link-budget.ts`) — a read budget that
  * does not fit inside it with headroom spends its retries after the gate has already
  * admitted.
  *
@@ -67,18 +67,20 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * 2 s only because each stays well under it. Do not raise these numbers without
  * re-checking against `ADMISSION_DECISION_TIMEOUT_MS`.
  *
- * NOTE: the obligation runs the other way too, and the number that dominates this budget is
- * declared in another package. One attempt whose cohort consult finds a silent peer costs
- * `clusterPolicy.cohortQueryTimeoutMs`, which sereus declares at 5000 ms
- * (`COHORT_READ_DEADLINE_MS`, `quereus-plugin-sereus/src/cluster-size.ts`) for relayed phone
- * links — more than three times this budget, so such an attempt is never retried and the
- * admission gate above it has already fail-opened. That is a widened cost of a deliberate
- * choice, not a hole (the stream gates still decide), and the whole ladder of cadre-core
- * deadlines against Optimystic's is audited by
- * `backlog/debt-cadre-deadlines-sized-against-old-optimystic-bounds`. What this budget still
- * buys is the failure it was built for: the ~25 ms transactor read-phase aggregate off a
- * stream still forming, which retries twice well inside 1500 ms.
+ * It cuts the loop off by design, so it does not grow with the link or with the number that
+ * dominates a slow attempt: an attempt whose cohort consult finds a silent peer costs
+ * `clusterPolicy.cohortQueryTimeoutMs`, two link round trips at the declared link
+ * (`cohortReadDeadlineMs` in `link-budget.ts`, 7 000 ms at the default declaration; the plugin's
+ * `COHORT_READ_DEADLINE_MS` is the same number). That is more than four times this budget, so
+ * such an attempt is never retried and the caller gets its error unchanged. That is deliberate:
+ * the caller this budget is sized for, the admission gate, has
+ * already taken its fail-open answer by then, and a retry would only spend time after it. What
+ * the budget still buys is the fast failures it was built for: the ~25 ms transactor read-phase
+ * aggregate off a stream still forming, and a `cohort-unreachable` read during bring-up, which
+ * fails fast because there is no connection to ask. Both retry twice well inside 1500 ms. See
+ * `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and Commits".
  */
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a slow attempt is not retried, because the admission gate this budget is sized for has already failed open by then; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 
 /**

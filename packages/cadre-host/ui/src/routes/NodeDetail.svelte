@@ -1,13 +1,14 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 
-	import { apiPost, ApiError } from '../lib/api.js';
+	import { apiDelete, apiPost, ApiError } from '../lib/api.js';
 	import {
 		appState,
 		refreshNodeDetail,
+		refreshNodes,
 		pushToast,
 	} from '../lib/state.svelte.js';
-	import { hrefFor } from '../lib/router.js';
+	import { hrefFor, navigate } from '../lib/router.js';
 	import { formatBytes, formatRelativeTime, shortPeerId } from '../lib/format.js';
 
 	import ConfirmDialog from '../components/ConfirmDialog.svelte';
@@ -19,20 +20,40 @@
 	const app = appState();
 
 	let confirmStop = $state(false);
+	let confirmTerminate = $state(false);
 	let busyAction: string | null = $state(null);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	// A terminate outlives the page if the user leaves mid-request; its
+	// follow-ups (restart the poll, navigate) must not act on a page that is gone.
+	let destroyed = false;
 
 	const node = $derived(app.nodes.find((n) => n.id === id) ?? null);
 	const stats = $derived(app.nodeStats[id] ?? null);
 
 	onMount(() => {
 		void refreshNodeDetail(id);
-		pollTimer = setInterval(() => void refreshNodeDetail(id), 5_000);
+		startPolling();
 	});
 
 	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
+		destroyed = true;
+		stopPolling();
 	});
+
+	function startPolling(): void {
+		pollTimer = setInterval(() => void refreshNodeDetail(id), 5_000);
+	}
+
+	function stopPolling(): void {
+		if (pollTimer) clearInterval(pollTimer);
+		pollTimer = undefined;
+	}
+
+	function reportActionFailure(action: string, err: unknown): void {
+		const code = err instanceof ApiError ? err.code : 'error';
+		const msg = err instanceof Error ? err.message : String(err);
+		pushToast('error', `${action} failed: ${msg} (${code})`);
+	}
 
 	async function postAction(action: 'start' | 'stop' | 'restart'): Promise<void> {
 		busyAction = action;
@@ -41,12 +62,32 @@
 			pushToast('success', `${action} requested`);
 			await refreshNodeDetail(id);
 		} catch (err) {
-			const code = err instanceof ApiError ? err.code : 'error';
-			const msg = err instanceof Error ? err.message : String(err);
-			pushToast('error', `${action} failed: ${msg} (${code})`);
+			reportActionFailure(action, err);
 		} finally {
 			busyAction = null;
 		}
+	}
+
+	/**
+	 * End a donated node through the same loopback admin surface as
+	 * `cadre-host grant terminate`. A terminated node leaves `/api/nodes`, so the
+	 * poll is paused for the request — a tick landing after the teardown would
+	 * toast "not found" — and the page leaves for the list on success.
+	 */
+	async function terminate(): Promise<void> {
+		busyAction = 'terminate';
+		stopPolling();
+		try {
+			await apiDelete(`/grants-admin/donations/${encodeURIComponent(id)}`);
+		} catch (err) {
+			reportActionFailure('terminate', err);
+			if (!destroyed) startPolling();
+			busyAction = null;
+			return;
+		}
+		pushToast('success', `Terminated donated node ${id}`);
+		await refreshNodes();
+		if (!destroyed) navigate(hrefFor('nodes'));
 	}
 </script>
 
@@ -75,31 +116,49 @@
 				<div><dt>Workdir</dt><dd><code>{node.workdir || '—'}</code></dd></div>
 				<div><dt>Spawned</dt><dd>{formatRelativeTime(node.spawnedAt)}</dd></div>
 				<div><dt>Ports</dt><dd>health {node.ports.health} · metrics {node.ports.metrics} · p2p {node.ports.p2p} · ws {node.ports.ws}</dd></div>
-				<div><dt>CPU</dt><dd>{stats ? stats.cpu.toFixed(1) + '%' : '—'}</dd></div>
-				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.rssBytes)}</dd></div>
+				<div><dt>CPU</dt><dd>{stats ? stats.cpuPercent.toFixed(1) + '%' : '—'}</dd></div>
+				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.memoryBytes)}</dd></div>
 			</dl>
 
-			<div class="actions">
-				<button
-					disabled={busyAction !== null || node.status === 'running'}
-					onclick={() => postAction('start')}
-				>
-					{busyAction === 'start' ? 'Starting…' : 'Start'}
-				</button>
-				<button
-					disabled={busyAction !== null || node.status === 'running'}
-					onclick={() => postAction('restart')}
-				>
-					{busyAction === 'restart' ? 'Restarting…' : 'Restart'}
-				</button>
-				<button
-					class="danger"
-					disabled={busyAction !== null || node.status !== 'running'}
-					onclick={() => (confirmStop = true)}
-				>
-					Stop
-				</button>
-			</div>
+			<!-- Only the owner node has a lifecycle here; a donated node's belongs to its grant. -->
+			{#if node.owner && app.role === 'founder'}
+				<div class="actions">
+					<button
+						disabled={busyAction !== null || node.status === 'running'}
+						onclick={() => postAction('start')}
+					>
+						{busyAction === 'start' ? 'Starting…' : 'Start'}
+					</button>
+					<button
+						disabled={busyAction !== null || node.status === 'running'}
+						onclick={() => postAction('restart')}
+					>
+						{busyAction === 'restart' ? 'Restarting…' : 'Restart'}
+					</button>
+					<button
+						class="danger"
+						disabled={busyAction !== null || node.status !== 'running'}
+						onclick={() => (confirmStop = true)}
+					>
+						Stop
+					</button>
+				</div>
+			{:else if node.owner}
+				{#if app.role === 'donor'}
+					<p class="muted">Your own cadre is turned off on this machine, so this node is not run here.</p>
+				{/if}
+			{:else}
+				<div class="actions">
+					<!-- Enabled even while stopped: a crashed node awaiting respawn is ended the same way. -->
+					<button
+						class="danger"
+						disabled={busyAction !== null}
+						onclick={() => (confirmTerminate = true)}
+					>
+						{busyAction === 'terminate' ? 'Terminating…' : 'Terminate'}
+					</button>
+				</div>
+			{/if}
 		</div>
 
 		<LogTail nodeId={node.id} />
@@ -117,6 +176,20 @@
 		await postAction('stop');
 	}}
 	onCancel={() => (confirmStop = false)}
+/>
+
+<ConfirmDialog
+	open={confirmTerminate}
+	title="Terminate donated node"
+	message={`Shut down donated node ${id}? It leaves the borrower's cadre and frees one node slot on their grant; they can ask for another while the grant is valid.`}
+	note="The grant itself is untouched; revoke it with: cadre-host grant revoke"
+	confirmLabel="Terminate"
+	danger
+	onConfirm={async () => {
+		confirmTerminate = false;
+		await terminate();
+	}}
+	onCancel={() => (confirmTerminate = false)}
 />
 
 <style>

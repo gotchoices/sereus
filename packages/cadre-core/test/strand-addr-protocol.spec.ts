@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -10,6 +10,7 @@ import {
   type StrandAddrServiceOptions
 } from '../src/strand-addr-protocol.js';
 import type { StrandAddrRequest, StrandAddrResponse } from '../src/types.js';
+import { writeFrame } from '../src/control-stream.js';
 import {
   frameMessage,
   decodeFrames,
@@ -50,6 +51,27 @@ describe('STRAND_ADDR_PROTOCOL', () => {
   });
 });
 
+describe('StrandAddrService.initialize', () => {
+  it('rejects when libp2p refuses the registration, leaving nothing to unhandle and no unhandled rejection', async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => { rejections.push(reason); };
+    const unhandle = vi.fn(async () => {});
+    const node = { handle: async () => { throw new Error('dup handler'); }, unhandle } as unknown as Libp2p;
+    const service = makeService([]);
+    process.on('unhandledRejection', onRejection);
+    try {
+      await expect(service.initialize(node)).rejects.toThrow('dup handler');
+      await service.shutdown();
+      expect(unhandle).not.toHaveBeenCalled();
+      // Node reports an unhandled rejection on a later macrotask.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+});
+
 describe('StrandAddrService.processAddrRequest — decision matrix', () => {
   it('returns the local strand addrs for a member + running strand', async () => {
     const lookups: string[] = [];
@@ -62,12 +84,13 @@ describe('StrandAddrService.processAddrRequest — decision matrix', () => {
 
     expect(lookups).toEqual(['running']);
     expect(response).toEqual({
+      status: 'ok',
       strandId: 'running',
       multiaddrs: ['/ip4/10.0.0.1/tcp/5001/p2p/strand-node']
     });
   });
 
-  it('refuses a non-member sender with empty multiaddrs, before any strand lookup', async () => {
+  it('refuses a non-member sender, before any strand lookup', async () => {
     const service = makeService(
       () => { throw new Error('non-member must be refused before strand lookup'); },
       { isMember: async () => false }
@@ -75,16 +98,16 @@ describe('StrandAddrService.processAddrRequest — decision matrix', () => {
 
     const response = await service.processAddrRequest({ strandId: 'strand-1' }, 'stranger-peer');
 
-    expect(response).toEqual({ strandId: 'strand-1', multiaddrs: [] });
+    expect(response).toEqual({ status: 'refused', strandId: 'strand-1', multiaddrs: [] });
   });
 
-  it('returns empty multiaddrs when the strand is not running locally', async () => {
+  it('returns ok with empty multiaddrs when the strand is not running locally', async () => {
     // getStrandMultiaddrs returns [] when there is no live strand node.
     const service = makeService(() => []);
 
     const response = await service.processAddrRequest({ strandId: 'hibernating' }, 'member-peer');
 
-    expect(response).toEqual({ strandId: 'hibernating', multiaddrs: [] });
+    expect(response).toEqual({ status: 'ok', strandId: 'hibernating', multiaddrs: [] });
   });
 });
 
@@ -120,7 +143,7 @@ describe('StrandAddrService.processAddrRequest — delegate announce', () => {
       { strandId: 'strand-1', delegatePeerId: delegate }, 'stranger-peer');
 
     expect(announces).toEqual([]);
-    expect(response).toEqual({ strandId: 'strand-1', multiaddrs: [] });
+    expect(response).toEqual({ status: 'refused', strandId: 'strand-1', multiaddrs: [] });
   });
 
   it('ignores a malformed delegatePeerId, keeping the address lookup intact', async () => {
@@ -166,10 +189,10 @@ describe('StrandAddrService.handleStream — framing round-trip', () => {
     await runHandleStream(service, stream, 'member-peer');
 
     expect(stream.closed).toBe(true);
-    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ strandId: 'framed', multiaddrs: addrs });
+    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'ok', strandId: 'framed', multiaddrs: addrs });
   });
 
-  it('replies with empty multiaddrs for a non-member sender', async () => {
+  it('replies refused, with empty multiaddrs, for a non-member sender', async () => {
     const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], { isMember: async () => false });
 
     const request: StrandAddrRequest = { strandId: 'framed' };
@@ -177,15 +200,28 @@ describe('StrandAddrService.handleStream — framing round-trip', () => {
 
     await runHandleStream(service, stream, 'stranger-peer');
 
-    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ strandId: 'framed', multiaddrs: [] });
+    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'refused', strandId: 'framed', multiaddrs: [] });
   });
 
-  it('replies with empty multiaddrs to an oversized/malformed frame (length-prefix guard)', async () => {
+  it('replies unavailable, not refused or empty, when the membership lookup throws', async () => {
+    // gotchoices/sereus#22: a failed control-database read used to reply exactly what
+    // "I have nothing" replies, so the asker waited a full refresh interval to retry.
+    const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], {
+      isMember: async () => { throw new Error('peers-unreachable'); }
+    });
+    const stream = new CapturingStream([frameMessage({ strandId: 'framed' })]);
+
+    await runHandleStream(service, stream, 'member-peer');
+
+    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'unavailable', strandId: '', multiaddrs: [] });
+  });
+
+  it('replies unavailable to an oversized/malformed frame (length-prefix guard)', async () => {
     const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
 
     // A frame declaring a 2,000,000-byte body (far past the 64KB cap) but carrying
     // only a few bytes: the shared length guard throws, and the handler converts
-    // that into an empty response rather than dropping the stream.
+    // that into an unavailable response rather than dropping the stream.
     const malformed = new Uint8Array(8);
     new DataView(malformed.buffer).setUint32(0, 2_000_000, false);
     const stream = new CapturingStream([malformed]);
@@ -193,10 +229,10 @@ describe('StrandAddrService.handleStream — framing round-trip', () => {
     await runHandleStream(service, stream, 'member-peer');
 
     const response = decodeFrames<StrandAddrResponse>(stream.sent);
-    expect(response.multiaddrs).toEqual([]);
+    expect(response).toEqual({ status: 'unavailable', strandId: '', multiaddrs: [] });
   });
 
-  it('replies with empty multiaddrs when streamed bytes exceed the 64KB cap (accumulation guard)', async () => {
+  it('replies unavailable when streamed bytes exceed the 64KB cap (accumulation guard)', async () => {
     const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
 
     // Stream many chunks whose running total passes the 64KB cap before EOF — this
@@ -208,14 +244,14 @@ describe('StrandAddrService.handleStream — framing round-trip', () => {
     await runHandleStream(service, stream, 'member-peer');
 
     const response = decodeFrames<StrandAddrResponse>(stream.sent);
-    expect(response.multiaddrs).toEqual([]);
+    expect(response).toEqual({ status: 'unavailable', strandId: '', multiaddrs: [] });
   });
 });
 
 describe('StrandAddrService.handleStream — read-timeout + concurrency cap', () => {
   it('settles within the read timeout (does not hang) on a never-half-closing stream', async () => {
     // A peer that opens a stream and never half-closes its write end: the read
-    // timeout aborts + rejects so the handler emits an empty response instead of
+    // timeout aborts + rejects so the handler emits an unavailable response instead of
     // hanging. The vitest test timeout is the backstop — a hang fails, not passes.
     const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], { readTimeoutMs: 50 });
     const stream = new NeverEndingStream();
@@ -223,13 +259,13 @@ describe('StrandAddrService.handleStream — read-timeout + concurrency cap', ()
     await runHandleStream(service, stream, 'member-peer');
 
     const response = decodeFrames<StrandAddrResponse>(stream.sent);
-    expect(response.multiaddrs).toEqual([]);
+    expect(response.status).toBe('unavailable');
     expect(stream.aborted).toBeTruthy();
     expect(stream.closed).toBe(true);
     expect(service.activeCount).toBe(0);
   });
 
-  it('rejects over the concurrency cap with an empty response, without looking up any address', async () => {
+  it('rejects over the concurrency cap as unavailable, without looking up any address', async () => {
     let lookups = 0;
     const service = makeService(
       () => { lookups++; return ['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']; },
@@ -247,7 +283,7 @@ describe('StrandAddrService.handleStream — read-timeout + concurrency cap', ()
     await runHandleStream(service, overflow, 'member-peer');
 
     const response = decodeFrames<StrandAddrResponse>(overflow.sent);
-    expect(response.multiaddrs).toEqual([]);
+    expect(response).toEqual({ status: 'unavailable', strandId: '', multiaddrs: [] });
     expect(overflow.closed).toBe(true);
     expect(lookups).toBe(0);
     expect(service.activeCount).toBe(2);
@@ -297,7 +333,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     ]);
     const node = collectNode(self, replies);
 
-    const result = await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x');
+    const { addrs: result } = await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x');
 
     // Deduped union, with the /p2p-circuit signaling addr ordered first.
     expect(result).toEqual([
@@ -314,7 +350,8 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     const result = await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x');
 
-    expect(result).toEqual(['/ip4/2.2.2.2/tcp/2']);
+    expect(result.addrs).toEqual(['/ip4/2.2.2.2/tcp/2']);
+    expect(result.outcomes).toEqual(new Map([[sib1, 'unreachable'], [sib2, 'answered']]));
   });
 
   it('excludes self — never dials its own peer id, returns only the sibling addrs', async () => {
@@ -323,7 +360,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     const replies = new Map<string, string[]>([[sib, ['/ip4/2.2.2.2/tcp/2']]]);
     const node = collectNode(self, replies, { dialed });
 
-    const result = await collectStrandAddrs(node, [{ peerId: self }, { peerId: sib }], 'strand-x');
+    const { addrs: result } = await collectStrandAddrs(node, [{ peerId: self }, { peerId: sib }], 'strand-x');
 
     expect(result).toEqual(['/ip4/2.2.2.2/tcp/2']);
     expect(dialed).toEqual([sib]);
@@ -336,14 +373,46 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     const result = await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x');
 
-    expect(result).toEqual([]);
+    expect(result.addrs).toEqual([]);
+    expect(result.outcomes).toEqual(new Map([[sib1, 'unreachable'], [sib2, 'unreachable']]));
+  });
+
+  it('reports each reply status as its outcome, and takes addresses only from an ok reply', async () => {
+    // The refresh pass schedules each sibling's next ask from this outcome, so a reply
+    // that is not `ok` must not pass as an answer, and one without a valid status —
+    // a responder that predates the field, or a broken one — must count as no reply.
+    const [self, empty, busy, refusing, statusless] = await Promise.all(
+      Array.from({ length: 5 }, () => freshPeerId())
+    );
+    const canned = new Map<string, unknown>([
+      [empty, { status: 'ok', strandId: 'strand-x', multiaddrs: [] }],
+      [busy, { status: 'unavailable', strandId: '', multiaddrs: [] }],
+      [refusing, { status: 'refused', strandId: 'strand-x', multiaddrs: ['/ip4/3.3.3.3/tcp/3'] }],
+      [statusless, { strandId: 'strand-x', multiaddrs: ['/ip4/4.4.4.4/tcp/4'] }]
+    ]);
+    const node = {
+      peerId: { toString: () => self },
+      dialProtocol: async (target: unknown) => {
+        const { clientStream, serverStream } = duplexPair();
+        writeFrame(serverStream, canned.get((target as { toString(): string }).toString()));
+        await serverStream.close();
+        return clientStream;
+      }
+    } as unknown as Libp2p;
+
+    const result = await collectStrandAddrs(node, [...canned.keys()].map((peerId) => ({ peerId })), 'strand-x');
+
+    expect(result.addrs).toEqual([]);
+    expect(result.outcomes).toEqual(new Map([
+      [empty, 'empty'], [busy, 'unavailable'], [refusing, 'refused'], [statusless, 'unreachable']
+    ]));
   });
 
   it('returns [] when given no candidate peers', async () => {
     const self = await freshPeerId();
     const node = collectNode(self, new Map());
 
-    const result = await collectStrandAddrs(node, [], 'strand-x');
+    const { addrs: result } = await collectStrandAddrs(node, [], 'strand-x');
 
     expect(result).toEqual([]);
   });
@@ -356,7 +425,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     const replies = new Map<string, string[]>([[addr.toString(), ['/ip4/3.3.3.3/tcp/3/p2p/strand']]]);
     const node = collectNode(self, replies);
 
-    const result = await collectStrandAddrs(
+    const { addrs: result } = await collectStrandAddrs(
       node,
       [{ peerId: 'not-a-peer-id', addrs: [addr] }],
       'strand-x'
@@ -376,7 +445,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     const replies = new Map<string, string[]>([[addr.toString(), ['/ip4/4.4.4.4/tcp/4/p2p/strand']]]);
     const node = collectNode(self, replies, { throwing: new Set([sib]), dialed });
 
-    const result = await collectStrandAddrs(node, [{ peerId: sib, addrs: [addr] }], 'strand-x');
+    const { addrs: result } = await collectStrandAddrs(node, [{ peerId: sib, addrs: [addr] }], 'strand-x');
 
     expect(result).toEqual(['/ip4/4.4.4.4/tcp/4/p2p/strand']);
     // peerId dialed first (and failed), then the explicit addr fallback.
@@ -411,7 +480,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     // The receiver opens the stream but never writes/closes the response — pre-
     // abort the client's unbounded response-read would leak the dangling stream.
     // The per-attempt AbortController fires on timeout, resets the live stream,
-    // and the failure folds to [] (best-effort: a dead sibling never aborts the
+    // and the failure folds to no addrs (best-effort: a dead sibling never aborts the
     // whole collection). Parity with dialWake's timeout test.
     const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
     const hanging = new PausableStream();
@@ -420,7 +489,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
       dialProtocol: async () => hanging
     } as unknown as Libp2p;
 
-    const result = await collectStrandAddrs(node, [{ peerId: sib }], 'strand-x', { timeoutMs: 50 });
+    const { addrs: result } = await collectStrandAddrs(node, [{ peerId: sib }], 'strand-x', { timeoutMs: 50 });
 
     expect(result).toEqual([]);
     expect(hanging.aborted).toBeTruthy();

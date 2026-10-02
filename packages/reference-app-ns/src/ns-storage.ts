@@ -34,23 +34,71 @@ import { openOptimysticNSDb, SqliteRawStorage } from '@optimystic/db-p2p-storage
  * prepared statements) per strand rather than reopening the file on that second
  * call. The cache is for the connection, not for the `LazyNsRawStorage` proxy over
  * it — cadre-core owns the store instance's lifetime itself.
+ *
+ * A rejected open is forgotten, so the next operation on that database retries —
+ * the same policy as `openIdentityDb` in `cadre-phone.ts`. Callers already awaiting
+ * the failed promise still receive its rejection.
  */
 const openByDbName = new Map<string, Promise<SqliteRawStorage>>();
 
+/**
+ * NOTE: `openOptimysticNSDb` opens the native handle and then applies the schema, and
+ * does not close the handle if applying the schema throws; a retry then opens a second
+ * handle on the same file. Fine while schema application does not fail in practice; if
+ * retried opens are ever seen blocking on a leaked handle, the fix belongs in the
+ * upstream opener. Retries also have no backoff — one fresh open attempt per operation
+ * on a permanently broken file; revisit only if a failing scope is seen issuing opens
+ * in a tight loop.
+ */
 function openStorage(dbName: string): Promise<SqliteRawStorage> {
-	let pending = openByDbName.get(dbName);
-	if (!pending) {
-		pending = openOptimysticNSDb(dbName).then((db) => new SqliteRawStorage(db));
-		openByDbName.set(dbName, pending);
-	}
-	return pending;
+	const cached = openByDbName.get(dbName);
+	if (cached) return cached;
+	const opening = openOptimysticNSDb(dbName).then((db) => new SqliteRawStorage(db));
+	openByDbName.set(dbName, opening);
+	// The rejection itself reaches every caller awaiting `opening`; this only forgets it.
+	void opening.catch(() => {
+		if (openByDbName.get(dbName) === opening) openByDbName.delete(dbName);
+	});
+	return opening;
 }
+
+type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
+/**
+ * `getStoreIdentity`: see the accepted tradeoff on `LazyNsRawStorage`. `readCached`: a
+ * marker set only by a storage with a read cache beneath it, which `SqliteRawStorage`
+ * does not have.
+ */
+type OptionalMemberOmitted = 'getStoreIdentity' | 'readCached';
+
+type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
+type MustBeNever<T extends never> = T;
+/**
+ * Fails to compile when `IRawStorage` gains an optional member that is in neither list
+ * above, so each one is forwarded or omitted by decision rather than by default.
+ */
+export type UnclassifiedOptionalMember = MustBeNever<
+	Exclude<OptionalKeys<IRawStorage>, OptionalMethodForwarded | OptionalMemberOmitted>
+>;
 
 /**
  * Lazy `IRawStorage` proxy. Defers the async SQLite open until the first
  * operation, then delegates everything to the concrete `SqliteRawStorage`.
+ *
+ * `IRawStorage`'s optional methods are detected by callers checking that the method
+ * exists, so one this proxy leaves out reads as "not supported" on this app. The
+ * `implements` clause names the optional methods the proxy forwards, so dropping one
+ * is a compile error, and `UnclassifiedOptionalMember` rejects one added upstream later.
+ *
+ * NOTE: accepted tradeoff — `getStoreIdentity` is omitted although `SqliteRawStorage`
+ * has it. It is synchronous and must return a string fixed at construction, but the
+ * real identity exists only after the asynchronous open; the interface says a backend
+ * that cannot honour that must omit the method. `withReadCache` then identifies the
+ * store by object. Revisit if two proxies over one database are seen getting separate
+ * read caches, or if the interface allows a lazily-resolved identity.
  */
-class LazyNsRawStorage implements IRawStorage {
+class LazyNsRawStorage
+	implements IRawStorage, Required<Pick<IRawStorage, OptionalMethodForwarded>>
+{
 	constructor(private readonly dbName: string) {}
 
 	private storage(): Promise<SqliteRawStorage> {
@@ -145,6 +193,14 @@ class LazyNsRawStorage implements IRawStorage {
 	async getApproximateBytesUsed(): Promise<number> {
 		return (await this.storage()).getApproximateBytesUsed();
 	}
+
+	// NOTE: `SqliteRawStorage.listBlockIds` reads every block id into memory before yielding,
+	// and runs at node startup and at each peer join. Cost on a large phone database is
+	// unmeasured; if either is seen stalling, the upstream statement needs to page.
+	async *listBlockIds(): AsyncIterable<BlockId> {
+		const storage = await this.storage();
+		yield* storage.listBlockIds();
+	}
 }
 
 /**
@@ -153,7 +209,7 @@ class LazyNsRawStorage implements IRawStorage {
  *
  * `scope` is cadre-core's storage scope key — a strand id, or the party's control
  * key from `controlStorageScope`. Every key it mints is already within
- * `[A-Za-z0-9._-]`, so it goes straight into the database name unescaped.
+ * `[a-z0-9._-]`, so it goes straight into the database name unescaped.
  *
  * NOTE: a dev device that ran a build predating the party scoping still has an
  * unscoped `sereus-control` database on disk. Nothing opens or deletes it — its

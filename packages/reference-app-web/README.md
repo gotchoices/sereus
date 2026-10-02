@@ -77,8 +77,8 @@ and stored messages.
 
 `CadreNodeConfig.storage.provider` is a **synchronous** factory
 `(scope) => IRawStorage`, and cadre-core partitions data by scope key: the strand
-id for each strand, and `controlStorageScope(partyId)` — `control-<base64url party
-id>` — for the control database. `IndexedDBRawStorage` wraps an **already-open**
+id for each strand, and `controlStorageScope(partyId)` — `control-<hex party id>` —
+for the control database. `IndexedDBRawStorage` wraps an **already-open**
 handle (the opener is async) with no per-scope namespacing. The bridge pre-opens one
 IndexedDB database per key (`sereus-strand-<key>`) **before** the synchronous
 provider is hit — the app drives control bring-up and `addStrand` explicitly, so
@@ -113,6 +113,13 @@ Owner genesis is **fail-soft**: the chat round-trip runs on the solo node
 and does not depend on owner, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
 
+The chat strand's database can only be opened with the chat schema that
+created it. A build whose `CHAT_SCHEMA` changes an existing table (a column
+added, say) cannot open a database an earlier build left in the browser: the
+schema apply issues `ALTER TABLE`, which the optimystic table module refuses,
+and `startCadre` fails. Nothing migrates it under the current
+no-backwards-compatibility policy; clear the site's data to start over.
+
 ## Strand formation (consent / invitation flow)
 
 The Home **Strand formation** panel drives the cadre-core formation API
@@ -137,8 +144,8 @@ hold a circuit-relay-v2 **reservation** and advertise a `/p2p-circuit` address.
 The relay is deployment infrastructure (see `ops/`), so its multiaddr is resolved
 at runtime:
 
-- `VITE_RELAY_ADDR` (build-time, comma-separated), or
-- `localStorage["relay-addr"]` (runtime override).
+- `VITE_RELAY_ADDR` (build-time, comma-separated), then
+- `localStorage["relay-addr"]` (per-browser, read only when the build sets none).
 
 When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, and
 `CadreNode.reserveRelays()` dials the relay, asks it for a reservation slot, and
@@ -149,7 +156,7 @@ the retries, and the status all live in cadre-core (`relay-reservation.ts`); thi
 app only supplies the addresses and renders the result.
 
 Each relay is also the tab's **STUN** server, for upgrading a relayed connection to a
-direct WebRTC one: `src/lib/ice-config.ts` turns each relay address into
+direct WebRTC one: cadre-core's `resolveStunServers` turns each relay address into
 `stun:<relay host>:3478`. `VITE_STUN_URLS` (comma-separated `stun:` URLs) replaces
 that, for a relay whose STUN is published elsewhere. See `ops/docs/ice-servers.md`.
 
@@ -294,8 +301,6 @@ src/
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
-    connection-path.ts       # relayed-vs-direct classification (cadre-core duplicate)
-    ice-config.ts            # STUN servers derived from the relay addresses
     Copyable.svelte          # copy-to-clipboard chip used in /diag
   shims/
     empty.ts             # vite alias target for node:os / node:net / node:tls
@@ -318,8 +323,7 @@ yarn workspace @serfab/reference-app-web test:e2e
   persistence, hash routing, the chat strand send/list round-trip, reload
   persistence of strand DML, the schema-signature gate (a pure-Node assertion
   that the valid signed config verifies and a tampered one throws
-  `SchemaVerificationError`), the connection-path classifier parity table, the
-  diagnostics-surface invariants — notably the **four-transport** Transports list,
+  `SchemaVerificationError`), the diagnostics-surface invariants — notably the **four-transport** Transports list,
   the canary that no TCP transport leaked into the browser bundle — and
   (`formation-rbac.spec.ts`) the **formation + RBAC** surface a single tab can
   prove: the formation panel renders, the dialability guard rejects *Create

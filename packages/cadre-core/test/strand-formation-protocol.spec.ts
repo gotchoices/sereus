@@ -11,6 +11,12 @@ import {
   type FormationProvisionResult,
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
+import {
+  FORMATION_REJECTION_RETRYABLE,
+  FormationRejectedError,
+  FormationUnreachableError,
+  type FormationRejectionCode
+} from '../src/strand-formation-rejection.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 import { MockStream, captureHandler } from './formation-stream-helpers.js';
@@ -107,19 +113,19 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   it('rejects an invalid token without disclosing responder identity/cadre', async () => {
     let disclosureChecks = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: false }),
+      validateToken: async () => ({ valid: false, code: 'token-unknown' }),
       validateDisclosure: async () => { disclosureChecks++; return true; }
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
 
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
     expect(result.approved).toBe(false);
-    expect(result.reason).toBe('Invalid token');
+    expect(result.code).toBe('token-unknown');
     expect(result.partyId).toBeUndefined();
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(result.strandAddrs).toBeUndefined();
@@ -136,7 +142,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -156,7 +162,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed } = baseOptions({});
     const listener = new FormationListener({ ...options, maxConcurrentSessions: 0 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -174,7 +180,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed, strandAddrsRead } = baseOptions({});
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -195,10 +201,10 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   it('never looks up strand addrs on a rejection, so a stranger cannot probe them', async () => {
     // The positive control for every `strandAddrs === undefined` assertion in this file:
     // the hook is wired, the token is not, and the hook is never even CALLED.
-    const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false }) });
+    const { options, strandAddrsRead } = baseOptions({ validateToken: async () => ({ valid: false, code: 'token-unknown' }) });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -212,11 +218,11 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // strand). The listener must reply with a clean, non-disclosing approved:false.
     const { options, identityDisclosed } = baseOptions({
       provisionStrand: async (): Promise<ResponderProvisionOutcome> =>
-        ({ approved: false, reason: 'Host strand not yet available on this responder' })
+        ({ approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' })
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -241,7 +247,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 200 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -262,7 +268,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 20 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -281,21 +287,23 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
   it('clamps provisionTimeoutMs when it would outlive the session, so a slow hook still gets a reply', async () => {
     // provisionTimeoutMs (5000) >= sessionTimeoutMs (1000) must clamp to the responder
-    // ceiling: session - step = 900, minus the travel margin held back for the initiator
-    // (capped at half the room) = 450. A provisioning hook that takes longer than the
-    // clamped budget but would fit under the UNCLAMPED one must still see a clean rejection
-    // frame — not silence from the outer session timeout firing first.
+    // ceiling. At a 100 ms link the two validation reads are budgeted at 400, so the room is
+    // session - (step 100 + validation 400) = 500, minus the reserve held back for the
+    // initiator (capped at half the room) = 250. A provisioning hook that takes longer than
+    // the clamped budget but would fit under the UNCLAMPED one must still see a clean
+    // rejection frame — not silence from the outer session timeout firing first.
     const { options } = baseOptions({
       provisionStrand: slowProvision(950, 'strand-too-slow')
     });
     const listener = new FormationListener({
       ...options,
+      linkRoundTripMs: 100,
       sessionTimeoutMs: 1000,
       stepTimeoutMs: 100,
       provisionTimeoutMs: 5000
     });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -307,21 +315,23 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
   it('clamps a provisionTimeoutMs that leaves no room for the preceding wire step', async () => {
     // 800ms fits under the 1000ms session on its own, but the session budget also has to
-    // cover the contact read (stepTimeoutMs 400), so it clamps to session - step = 600ms,
-    // less the initiator's travel margin (half of 600) = 300ms. A 700ms hook therefore gets
-    // a rejection frame; without the headroom in the guard it would have run to 800ms and
-    // raced the session timeout instead.
+    // cover the contact read (stepTimeoutMs 400) and the two validation reads (400 at a
+    // 100 ms link), so it clamps to session - 800 = 200ms, less the reserve held back for
+    // the initiator (half of 200) = 100ms. A 700ms hook therefore gets a rejection frame;
+    // without the headroom in the guard it would have run to 800ms and raced the session
+    // timeout instead.
     const { options } = baseOptions({
       provisionStrand: slowProvision(700, 'strand-no-headroom')
     });
     const listener = new FormationListener({
       ...options,
+      linkRoundTripMs: 100,
       sessionTimeoutMs: 1000,
       stepTimeoutMs: 400,
       provisionTimeoutMs: 800
     });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -338,7 +348,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 0 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -354,7 +364,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // 300ms — after the abort but inside the grace — so its approval is adopted.
     let uses = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: uses < 1 }),
+      validateToken: async () => (uses < 1 ? { valid: true } : { valid: false, code: 'token-spent' }),
       provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
         await new Promise((resolve) => setTimeout(resolve, 300));
         uses++; // stands in for the append-only FormationUsage insert: ignores the abort
@@ -369,7 +379,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const first = new MockStream([encodeFrame(contact)]);
     await invoke(first);
@@ -386,7 +396,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // presentation of the same token is honest — not a silently lost invitation.
     const second = new MockStream([encodeFrame(contact)]);
     await invoke(second);
-    expect(decodeFirstFrame<FormationResultMessage>(second.sent).reason).toBe('Invalid token');
+    expect(decodeFirstFrame<FormationResultMessage>(second.sent).code).toBe('token-spent');
   });
 
   it('adopts a REJECTION that lands inside the settle grace, reporting its reason non-disclosingly', async () => {
@@ -396,12 +406,12 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const { options, identityDisclosed } = baseOptions({
       provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
         await new Promise((resolve) => setTimeout(resolve, 300));
-        return { approved: false, reason: 'Host strand not yet available on this responder' };
+        return { approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' };
       }
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -428,7 +438,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -445,7 +455,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     let uses = 0;
     let calls = 0;
     const { options } = baseOptions({
-      validateToken: async () => ({ valid: uses < 1 }),
+      validateToken: async () => (uses < 1 ? { valid: true } : { valid: false, code: 'token-spent' }),
       provisionStrand: (_contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome> => {
         if (++calls === 1) {
           // Writes nothing and rejects the moment the work budget aborts it — what
@@ -470,7 +480,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 100 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const first = new MockStream([encodeFrame(contact)]);
     await invoke(first);
@@ -496,7 +506,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 500 });
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const started = Date.now();
     const stream = new MockStream([encodeFrame(contact)]);
@@ -515,7 +525,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
@@ -541,7 +551,7 @@ describe('FormationListener strandAddrs disclosure', () => {
     const { options } = baseOptions(overrides);
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
     const stream = new MockStream([encodeFrame(contact)]);
     await invoke(stream);
     return decodeFirstFrame<FormationResultMessage>(stream.sent);
@@ -637,7 +647,7 @@ describe('FormationListener joiner-consent pre-check', () => {
       });
       const listener = new FormationListener(options);
       const { node, invoke } = captureHandler();
-      listener.register(node);
+      await listener.register(node);
 
       const stream = new MockStream([encodeFrame(bad)]);
       await invoke(stream);
@@ -674,7 +684,7 @@ describe('FormationListener joiner-consent pre-check', () => {
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
-    listener.register(node);
+    await listener.register(node);
 
     const stream = new MockStream([encodeFrame(reordered)]);
     await invoke(stream);
@@ -814,18 +824,10 @@ describe('dialFormation provision-result invariant', () => {
     ).rejects.toThrow(/Missing provision result/);
   });
 
-  it('throws when the responder rejects the formation', async () => {
-    const { node } = dialNode({ approved: false, reason: 'Invalid token' });
-
-    await expect(
-      dialFormation(node, { contact, responderAddrs, validateResponse: async () => true })
-    ).rejects.toThrow(/Formation rejected: Invalid token/);
-  });
-
-  it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect stepTimeoutMs', async () => {
-    // Regression for the initiator side: the result read used to share stepTimeoutMs with
+  it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect dialTimeoutMs', async () => {
+    // Regression for the initiator side: the result read used to share one step budget with
     // dial-connect, so a responder doing real provisioning work could blow a 5s budget even
-    // though the join would have succeeded. Delay the response frame past stepTimeoutMs but
+    // though the join would have succeeded. Delay the response frame past dialTimeoutMs but
     // within provisionTimeoutMs and confirm the dial still resolves.
     const provisionResult: FormationProvisionResult = {
       strand: { strandId: 'strand-delayed', createdBy: 'responder' },
@@ -850,7 +852,7 @@ describe('dialFormation provision-result invariant', () => {
       contact,
       responderAddrs,
       validateResponse: async () => true,
-      stepTimeoutMs: 10,
+      dialTimeoutMs: 10,
       provisionTimeoutMs: 200
     });
     expect(result.provision).toEqual(provisionResult);
@@ -872,9 +874,56 @@ describe('dialFormation provision-result invariant', () => {
       responderAddrs,
       validateResponse: async () => true,
       sessionTimeoutMs: 500,
-      stepTimeoutMs: 10,
+      dialTimeoutMs: 10,
       provisionTimeoutMs: 50
     })).rejects.toThrow(/Formation await-response timed out after 50ms/);
     expect(stream.closed).toBe(true);
+  });
+});
+
+// ── dialFormation failure classification (what a joiner branches on to retry or stop) ──
+
+describe('dialFormation failure classification', () => {
+  const dial = (node: Libp2p, responderAddrs = ['/ip4/127.0.0.1/tcp/1']): Promise<unknown> =>
+    dialFormation(node, { contact, responderAddrs, validateResponse: async () => true }).then(
+      () => { throw new Error('expected the dial to fail'); },
+      (error: unknown) => error
+    );
+
+  /** The specified retryable set, written out so a change to the table has to change this too. */
+  const RETRYABLE: FormationRejectionCode[] = [
+    'token-unknown', 'approval-unavailable', 'host-strand-unavailable', 'busy', 'provisioning-timeout', 'conflict', 'internal'
+  ];
+
+  it('throws FormationRejectedError carrying each code, retryable exactly for the retryable set', async () => {
+    for (const code of Object.keys(FORMATION_REJECTION_RETRYABLE) as FormationRejectionCode[]) {
+      const error = await dial(dialNode({ approved: false, code, reason: `refused: ${code}` }).node);
+      expect(error, code).toBeInstanceOf(FormationRejectedError);
+      expect(error, code).toMatchObject({ code, reason: `refused: ${code}`, retryable: RETRYABLE.includes(code) });
+    }
+  });
+
+  it('reads an absent or unknown code as unrecognized and retryable', async () => {
+    // A responder on another version may send no code or one this build lacks; `constructor`
+    // checks the lookup does not reach the table's prototype.
+    for (const code of [undefined, 'from-a-newer-build', 'constructor']) {
+      const frame = { approved: false, code, reason: 'refused' } as unknown as FormationResultMessage;
+      const error = await dial(dialNode(frame).node);
+      expect(error, String(code)).toBeInstanceOf(FormationRejectedError);
+      expect(error, String(code)).toMatchObject({ code: 'unrecognized', retryable: true });
+    }
+  });
+
+  it('throws FormationUnreachableError when no address parses or every address refuses the dial', async () => {
+    const unparsable = await dial(dialNode({ approved: true }).node, ['not-a-multiaddr']);
+    expect(unparsable).toBeInstanceOf(FormationUnreachableError);
+    expect(unparsable).toMatchObject({ message: 'No responder addresses available for formation', retryable: true });
+
+    const refusal = new AggregateError([new Error('connect ECONNREFUSED 10.0.0.1:1')], 'All multiaddr dials failed');
+    const node = { dialProtocol: async () => { throw refusal; } } as unknown as Libp2p;
+    const refused = await dial(node);
+    expect(refused).toBeInstanceOf(FormationUnreachableError);
+    expect((refused as Error).message).toContain('ECONNREFUSED 10.0.0.1:1');
+    expect((refused as Error).cause).toBe(refusal);
   });
 });

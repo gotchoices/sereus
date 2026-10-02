@@ -4,6 +4,7 @@ import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
@@ -40,8 +41,9 @@ import type {
 } from './types.js';
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
+import { resolveRelayServer } from './relay-server.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
-import { peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -86,8 +88,15 @@ export function liveStrandStatus(instance: StrandInstance): 'active' | 'syncing'
  */
 export interface StartStrandConfig {
   strandRow: StrandRow;
-  /** sApp configuration provided by the hosting application */
-  sAppConfig: SAppConfig;
+  /**
+   * sApp configuration provided by the hosting application. Absent for a **storage
+   * replica** — a strand this node stores and serves without the app installed
+   * (`CadreNodeConfig.hostUnclaimedStrands`): no schema signature check, no `App`
+   * schema, no `sAppInfo` on the instance, and the default latency hint. A replica is
+   * always a joiner; `StrandDatabase` refuses to found one. An app that later claims the
+   * strand upgrades the running replica in place ({@link StrandInstanceManager.attachSApp}).
+   */
+  sAppConfig?: SAppConfig;
   storage?: StorageConfig;
   network?: NetworkConfig;
   profile: NodeProfile;
@@ -261,6 +270,16 @@ export interface StartStrandConfig {
    * hibernation wake's rebuilt supervisors carry it too.
    */
   announceDelegateToRelay?: (strandId: string, relayAddr: string, delegatePeerId: string) => Promise<void>;
+
+  /**
+   * The node-local strand network state (`strand-network-state.ts`): this strand's
+   * slice of it is handed to db-p2p as `persistence`, so the strand node saves its
+   * FRET routing table (with each peer's signed address record) on every connection
+   * and re-imports it when it is next built. Absent ⇒ nothing is saved and the node
+   * starts with an empty table. `CadreNode` passes its store. Retained with the launch
+   * config, so a hibernation wake rebuilds the node over the same state.
+   */
+  networkState?: StrandNetworkStateStore;
 }
 
 /**
@@ -285,6 +304,11 @@ export interface ResumeStrandOverrides {
    */
   servingMachines?: number;
 }
+
+/** A {@link StrandInstanceManager.resumeStrand} or {@link StrandInstanceManager.quiesceStrand} of one strand. */
+type RuntimeTransition =
+  | { kind: 'resume'; operation: Promise<StrandInstance> }
+  | { kind: 'quiesce'; operation: Promise<void> };
 
 /**
  * Get the isolated storage path for a specific strand.
@@ -347,6 +371,26 @@ function resolveStrandStorage(
   // Called ONCE per strand launch — `startStrand` keeps the result for the instance's
   // lifetime — so the wrap survives every runtime rebuild the instance goes through.
   return wrapStorageWithCache(storage, strandId);
+}
+
+/**
+ * Verify an sApp's schema signature (fail-closed unless `requireSignedSchemas` is
+ * false) and project the config onto the instance's `sAppInfo`.
+ */
+function verifiedSAppInfo(strandId: string, sAppConfig: SAppConfig, requireSignedSchemas: boolean | undefined): SAppInfo {
+  assertSchemaSignature(sAppConfig, { requireSignature: requireSignedSchemas ?? true });
+  log('Strand %s sApp schema signature verified (author: %s)', strandId, sAppConfig.id);
+  return {
+    id: sAppConfig.id,
+    version: sAppConfig.version,
+    schema: sAppConfig.schema,
+    signature: sAppConfig.signature
+  };
+}
+
+/** Log wording for what a launch runs: the sApp and its version, or a storage replica. */
+function describeSApp(sAppConfig: SAppConfig | undefined): string {
+  return sAppConfig ? `sApp: ${sAppConfig.id} v${sAppConfig.version}` : 'storage replica';
 }
 
 /**
@@ -436,6 +480,23 @@ export class StrandInstanceManager {
    * wake becomes the better trade.
    */
   private strandStorages: Map<string, IRawStorage> = new Map();
+  /**
+   * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
+   * `resumeStrand`), present until it settles. The instance is tracked for the whole build,
+   * with its database not yet constructed or not yet initialized, so a caller that must act
+   * on the FINISHED runtime ({@link attachSApp}, {@link whenRuntimeBuilt}) waits on this instead. A failed build's
+   * rejection belongs to the call that started it.
+   */
+  private runtimeBuilds: Map<string, Promise<void>> = new Map();
+  /**
+   * The latest resume or quiesce requested per strand id, present until it settles. Each one
+   * starts only once the one requested before it has settled, so a wake that lands during a
+   * quiesce rebuilds after it, and a quiesce requested during a rebuild releases what that
+   * rebuild finished. The WHOLE operation, not its entry in {@link runtimeBuilds}: that settles
+   * before a resume's own catch records `'error'`, so a joiner awaiting it could read a stale
+   * status.
+   */
+  private transitions: Map<string, RuntimeTransition> = new Map();
   private stopping = false;
 
   constructor() {
@@ -500,7 +561,7 @@ export class StrandInstanceManager {
       return this.instances.get(strandId)!;
     }
 
-    log('Starting strand instance: %s (sApp: %s v%s)', strandId, sAppConfig.id, sAppConfig.version);
+    log('Starting strand instance: %s (%s)', strandId, describeSApp(sAppConfig));
     const tTotal = performance.now();
 
     // The id becomes two names below: the storage scope key the embedder's provider
@@ -512,18 +573,7 @@ export class StrandInstanceManager {
     // still reaches buildStrandRuntime and still mints the protocol prefix.
     assertStrandScopeKey(strandId);
 
-    // Verify schema signature before proceeding (fail-closed by default)
-    const requireSignature = config.requireSignedSchemas ?? true;
-    assertSchemaSignature(sAppConfig, { requireSignature });
-    log('Strand %s sApp schema signature verified (author: %s)', strandId, sAppConfig.id);
-
-    // Convert SAppConfig to SAppInfo for the instance
-    const sAppInfo: SAppInfo = {
-      id: sAppConfig.id,
-      version: sAppConfig.version,
-      schema: sAppConfig.schema,
-      signature: sAppConfig.signature
-    };
+    const sAppInfo = sAppConfig ? verifiedSAppInfo(strandId, sAppConfig, config.requireSignedSchemas) : undefined;
 
     // Resolve this strand's storage ONCE, before anything is recorded. If a factory
     // function is provided, it is called with the strandId to create strand-specific
@@ -535,7 +585,7 @@ export class StrandInstanceManager {
     }
 
     // Determine latency hint: sApp config > default
-    const latencyHint = sAppConfig.latencyHint ?? config.defaultLatencyHint;
+    const latencyHint = sAppConfig?.latencyHint ?? config.defaultLatencyHint;
 
     const instance: StrandInstance = {
       strandId,
@@ -554,9 +604,9 @@ export class StrandInstanceManager {
     }
 
     try {
-      await this.buildStrandRuntime(instance, config);
+      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, config));
       timing('[startStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
-      log('Strand %s started successfully with sApp %s', strandId, sAppConfig.id);
+      log('Strand %s started successfully (%s)', strandId, describeSApp(sAppConfig));
       return instance;
     } catch (error) {
       // Status/error first — the (now discarded) record is still what `log` reports on.
@@ -572,6 +622,35 @@ export class StrandInstanceManager {
       // retained cache wrapper would be handed back (already retired) on a retry.
       await this.disposeStrandStorage(strandId);
       throw error;
+    }
+  }
+
+  /** Hold `build` in {@link runtimeBuilds} until it settles, and settle as it does. */
+  private async trackRuntimeBuild(strandId: string, build: Promise<void>): Promise<void> {
+    this.runtimeBuilds.set(strandId, build);
+    try {
+      await build;
+    } finally {
+      if (this.runtimeBuilds.get(strandId) === build) {
+        this.runtimeBuilds.delete(strandId);
+      }
+    }
+  }
+
+  /**
+   * Wait until no runtime build of `strandId` is in flight. Never rejects: a failed build
+   * is reported by the call that started it, and the caller re-reads the instance after.
+   *
+   * NOTE: after a failed launch the re-read sees the instance gone only because
+   * `startStrand`'s catch deletes it synchronously, and its continuation is queued before
+   * this waiter's. If that cleanup ever awaits before `instances.delete`, a waiter can act
+   * on the dying record; move the cleanup inside the tracked promise then.
+   */
+  private async settleRuntimeBuilds(strandId: string): Promise<void> {
+    for (let build = this.runtimeBuilds.get(strandId); build; build = this.runtimeBuilds.get(strandId)) {
+      await build.catch((error: unknown) => {
+        log('Strand %s: the runtime build waited on failed (reported by its launcher): %o', strandId, error);
+      });
     }
   }
 
@@ -606,9 +685,9 @@ export class StrandInstanceManager {
     const networkName = `strand-${strandId}`;
     const protocolPrefix = `/optimystic/${networkName}`;
 
-    // Determine relay mode: if explicitly set in config, use that;
-    // otherwise default to true for storage profile nodes.
-    const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
+    // Whether this node runs the circuit-relay server, and its init — the same
+    // resolution the control node takes from the same config (`relay-server.ts`).
+    const relayServer = resolveRelayServer(config.network, config.profile);
     // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
     // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
     // bind one port), the announce config is dropped (it names the control node's
@@ -682,7 +761,12 @@ export class StrandInstanceManager {
         networkName,
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
-        relay: enableRelay,
+        relay: relayServer.enabled,
+        // NOTE: unlike the control node, a strand node has no unauthorized-reservation budget,
+        // so with the per-connection cap off any peer that reaches this node can hold one of
+        // `maxReservations` slots and forward uncapped through it. If strand relays are ever
+        // abused for bandwidth, give strand nodes a budget or a capped init of their own.
+        ...(relayServer.enabled && { relayServerInit: relayServer.init }),
         clusterSize: strandClusterSize,
         // Deliberately NOT CONTROL_CLUSTER_POLICY: a strand is application data with its own
         // breadth reasoning, and the shape match with the control policy is a coincidence.
@@ -694,16 +778,29 @@ export class StrandInstanceManager {
         // returns the frozen STRAND_CLUSTER_POLICY itself, declaring nothing. Resolved
         // HERE rather than at `startStrand`, so a wake from hibernation would pick up a
         // serving set that changed while the strand slept.
-        // The read deadline is the same field the control node reads, because the two
-        // networks ride one link; absent, the base policy's COHORT_READ_DEADLINE_MS stands.
+        // The read deadline is settled by the same helper the control node uses, because the
+        // two networks ride one link: the host's own, else derived from its declared
+        // `linkRoundTripMs`, else nothing, and the base policy's COHORT_READ_DEADLINE_MS stands.
         clusterPolicy: strandClusterPolicy(strandClusterSize, {
           servingMachines: config.servingMachines,
-          cohortQueryTimeoutMs: config.network?.cohortQueryTimeoutMs
+          cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(config.network)
         }),
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
+        // Built per runtime, not per launch: the adapter stops saving once the strand's
+        // state is forgotten, and a rebuilt runtime is what starts it saving again.
+        //
+        // NOTE: the saved state also restores which peers db-p2p saw serving the strand,
+        // and it counts them in the cohort until FRET finds them unreachable. A node built
+        // while every other member is offline therefore fails its first writes ("Failed to
+        // get super-majority") — for 4-6 s on loopback, the window a running node already
+        // sees when a member drops. If apps report failed sends after relaunching alone on
+        // a slow relayed link, retry the write in the app or raise it upstream (db-p2p's
+        // remembered-serving fallback); dropping `persistence` brings back the split
+        // restart.
+        ...(config.networkState && { persistence: strandNetworkStatePersistence(config.networkState, strandId) }),
         ...(config.network?.transports && { transports: config.network.transports }),
         ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
         // Unconditional, and the same default the control node takes: every node of
@@ -711,6 +808,13 @@ export class StrandInstanceManager {
         // widened ping deadline has to reach the strand nodes too (see
         // DEFAULT_CONNECTION_MONITOR).
         connectionMonitor: config.network?.connectionMonitor ?? DEFAULT_CONNECTION_MONITOR,
+        // The same declared link the control node states, and for the same reason: a strand
+        // node is also the listener for every other member's strand node, and Optimystic
+        // derives that listener's limit from this (`link-budget.ts`).
+        linkRoundTripMs: resolveLinkRoundTripMs(config.network?.linkRoundTripMs),
+        // The same dial limits as the control node: a strand node dials the same machines,
+        // through the same relays and gates.
+        ...optimysticDialLimits(config.network?.linkRoundTripMs),
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
         // spreads AFTER `transports` above because the switch is a no-op whenever the
@@ -846,7 +950,7 @@ export class StrandInstanceManager {
       // peer-join-backfill.ts for the strand-side argument (and why the control
       // network, which DOES gate, is different).
       //
-      // NOTE: cost is one PeerJoinBackfill object + one `connection:open` listener
+      // NOTE: cost is one PeerJoinBackfill object + one `peer:identify` listener
       // per running strand — linear in strand count, negligible at the handful a
       // device or host runs today. If a node ever hosts strands by the hundred,
       // move to one shared listener that dispatches by strand id.
@@ -884,7 +988,7 @@ export class StrandInstanceManager {
       // failing here would only trade that for `StrandWatcher`'s full-rebuild retry.
       //
       // NOTE: a relay that is down costs this launch one full drive — the reservation budget
-      // counted from the declared link round trip, 8 s at its default (`link-budget.ts`) — and
+      // counted from the declared link round trip, 18 s at its default (`link-budget.ts`) — and
       // `StrandWatcher` launches strands one at a time, so N strands cost N of those in
       // bring-up during a relay outage, and MORE on a host that declared a slower link. If that
       // ever matters, stop awaiting here (the circuit addr then lands after `active`) rather
@@ -893,8 +997,9 @@ export class StrandInstanceManager {
       await this.awaitFirstRelayAttempts(strandId);
       timing('[buildStrandRuntime:%s] relay first attempts: %dms', strandId, Math.round(performance.now() - t0));
 
+      // No `lastActivity` stamp: bringing a runtime up is not activity. A check-in marks
+      // activity before its resume and must see only what landed while the strand was up.
       instance.status = liveStrandStatus(instance);
-      instance.lastActivity = new Date();
       if (instance.status === 'syncing') {
         log('Strand %s launched as a joiner with no Strand.Header held yet — writes are withheld until ' +
           'a member of the strand is reached', strandId);
@@ -1154,24 +1259,54 @@ export class StrandInstanceManager {
    * Quiesce a strand: release its strand-network resources (stop the libp2p node,
    * close the StrandDatabase) while RETAINING the instance record — identity,
    * sAppInfo, keys, latency hint, metadata — and its launch config so it can be
-   * resumed later. Mechanically this is `stopStrand` minus the instance/config
-   * deletion. The caller sets the post-quiesce status (e.g. `hibernating`).
-   * No-ops when the strand is missing or already quiesced.
+   * resumed later, then mark it `hibernating`. Mechanically this is `stopStrand` minus
+   * the instance/config deletion. A tracked strand with no runtime left (a failed
+   * rebuild already released it) is only marked; an untracked one is left alone.
+   *
+   * Ordered with {@link resumeStrand} (see {@link transitions}): it starts once the resume
+   * or launch build before it has settled, so it releases a finished runtime, and the
+   * status write is its last step, so a resume requested meanwhile writes after it. A call
+   * made while another quiesce is the latest request joins it. A failed release leaves the
+   * status as it was and rejects.
    */
   async quiesceStrand(strandId: string): Promise<void> {
+    const previous = this.transitions.get(strandId);
+    if (previous?.kind === 'quiesce') {
+      log('quiesceStrand: strand %s — joining the quiesce already requested', strandId);
+      return previous.operation;
+    }
+    const operation = this.runQuiesce(strandId, previous);
+    this.holdTransition(strandId, { kind: 'quiesce', operation });
+    return operation;
+  }
+
+  /** Body of {@link quiesceStrand}. */
+  private async runQuiesce(strandId: string, previous: RuntimeTransition | undefined): Promise<void> {
+    await this.settleTransition(strandId, previous);
+    await this.settleRuntimeBuilds(strandId);
     const instance = this.instances.get(strandId);
     if (!instance) {
       log('quiesceStrand: strand %s not found', strandId);
       return;
     }
-    if (!instance.libp2pNode && !instance.database) {
+    if (instance.libp2pNode || instance.database) {
+      log('Quiescing strand instance: %s', strandId);
+      await this.releaseRuntime(instance);
+      log('Strand %s quiesced (resources released, instance retained)', strandId);
+    } else {
       log('quiesceStrand: strand %s already quiesced', strandId);
-      return;
     }
+    instance.status = 'hibernating';
+  }
 
-    log('Quiescing strand instance: %s', strandId);
-    await this.releaseRuntime(instance);
-    log('Strand %s quiesced (resources released, instance retained)', strandId);
+  /**
+   * Whether the latest runtime transition requested for `strandId` is a quiesce that has
+   * not finished. Its handles may still be attached and its status still live, but it is on
+   * its way to `hibernating`, so a caller that needs it up must {@link resumeStrand} it — the
+   * resume runs after the quiesce — rather than treat it as live.
+   */
+  isQuiescing(strandId: string): boolean {
+    return this.transitions.get(strandId)?.kind === 'quiesce';
   }
 
   /**
@@ -1181,11 +1316,65 @@ export class StrandInstanceManager {
    * launch (the cohort `bootstrapNodes` seed and the strand's `servingMachines`
    * count) and updates the retained config so a later resume reuses the latest
    * values. Returns the live instance unchanged if it is already running.
+   *
+   * Overlapping calls share one rebuild: a call made while a resume is the latest request
+   * for the strand — a wake landing during a check-in — joins it and settles exactly as it
+   * does, `'error'` status included. The joiner's own `overrides` are ignored; the first
+   * resume's seed wins, and both callers resolved the cohort seed moments apart. A call made
+   * while a quiesce is the latest request runs after that quiesce and rebuilds (see
+   * {@link transitions}), and one made while `startStrand` is still building waits for that
+   * build rather than starting a second.
    */
   async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
     if (this.stopping) {
       throw new Error('StrandInstanceManager is stopping');
     }
+    // No `await` between this read and `holdTransition`, or a second caller slips through
+    // and builds.
+    const previous = this.transitions.get(strandId);
+    if (previous?.kind === 'resume') {
+      log('resumeStrand: strand %s — joining the resume already in flight', strandId);
+      return previous.operation;
+    }
+    const operation = this.runResume(strandId, previous, overrides);
+    this.holdTransition(strandId, { kind: 'resume', operation });
+    return operation;
+  }
+
+  /** Record `transition` as the latest for `strandId` until it settles. */
+  private holdTransition(strandId: string, transition: RuntimeTransition): void {
+    this.transitions.set(strandId, transition);
+    const release = (): void => {
+      if (this.transitions.get(strandId) === transition) {
+        this.transitions.delete(strandId);
+      }
+    };
+    // The rejection itself reaches the caller through the operation returned to it.
+    void transition.operation.then(release, release);
+  }
+
+  /** Wait for the transition requested before this one. Never rejects: its failure belongs to its caller. */
+  private async settleTransition(strandId: string, previous: RuntimeTransition | undefined): Promise<void> {
+    if (!previous) {
+      return;
+    }
+    await (previous.operation as Promise<unknown>).catch((error: unknown) => {
+      log('Strand %s: the %s queued ahead failed (reported by its caller): %o', strandId, previous.kind, error);
+    });
+  }
+
+  /** Body of {@link resumeStrand}; at most one runs per strand at a time. */
+  private async runResume(
+    strandId: string,
+    previous: RuntimeTransition | undefined,
+    overrides?: ResumeStrandOverrides
+  ): Promise<StrandInstance> {
+    // Before any "already live" test: a quiesce ahead still has the handles attached, and
+    // mid-build (a launch still building) the libp2p node is attached while the database is
+    // not. A failed launch has already dropped the instance, and the check below reports it
+    // untracked.
+    await this.settleTransition(strandId, previous);
+    await this.settleRuntimeBuilds(strandId);
     const instance = this.instances.get(strandId);
     if (!instance) {
       throw new Error(`Cannot resume strand ${strandId}: not tracked`);
@@ -1222,7 +1411,7 @@ export class StrandInstanceManager {
 
     instance.status = 'starting';
     try {
-      await this.buildStrandRuntime(instance, resumeConfig);
+      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, resumeConfig));
       timing('[resumeStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
       log('Strand %s resumed successfully', strandId);
       return instance;
@@ -1250,7 +1439,8 @@ export class StrandInstanceManager {
    * - `'already-founder'` — the retained config already founds; nothing to do.
    * - `'bootstrapped'` — config flipped and the live database ran the bootstrap.
    * - `'needs-resume'` — config flipped, but the instance is quiesced (no live
-   *   database), so the bootstrap could not run here: the CALLER must wake the
+   *   database) or being quiesced (its database is closing), so the bootstrap could
+   *   not run here: the CALLER must wake the
    *   strand (`CadreNode.wakeStrand`, which owns the hibernation bookkeeping this
    *   manager does not) so the rebuild — which now founds — runs it.
    * @param resolvePartyKey - Asked for the party's own membership key when (and only
@@ -1283,7 +1473,7 @@ export class StrandInstanceManager {
     // A fresh object rather than mutating in place: startStrand retains the CALLER'S
     // config object, which is not ours to rewrite.
     this.launchConfigs.set(strandId, { ...config, founder: true, partyMemberPrivateKey });
-    if (!instance.database && !this.firstSyncGates.has(strandId)) {
+    if (this.isQuiescing(strandId) || (!instance.database && !this.firstSyncGates.has(strandId))) {
       return 'needs-resume';
     }
     try {
@@ -1293,6 +1483,75 @@ export class StrandInstanceManager {
       throw error;
     }
     return 'bootstrapped';
+  }
+
+  /**
+   * Give a tracked storage replica ({@link StartStrandConfig.sAppConfig} absent) the app's
+   * schema in place — the seam for an app on this machine claiming a strand this node was
+   * already hosting. No runtime rebuild: the libp2p node, its peer id and connections, the
+   * store and its warm cache all stay, and the new `App` tables read the blocks the replica
+   * already holds. Callers attach BEFORE {@link foundExistingStrand}: the founder bootstrap
+   * writes the sApp into `Strand.Header` and refuses a database that has none.
+   *
+   * A runtime build in flight (the replica's launch, or a hibernation wake) is waited out
+   * first, so the attach acts on the database that build produced. Then, in order: the
+   * schema signature is checked before anything changes; the retained launch config takes
+   * the sApp, so every later rebuild applies it through `composeStrand`; the live database —
+   * published, or still held by the first-sync gate — gets the schema; and only then does
+   * the instance record `sAppInfo` and the sApp's latency hint. A quiesced instance gets the
+   * config alone, and its next resume applies the schema.
+   *
+   * @returns `'already-attached'` when the instance already runs an sApp — a DIFFERENT one
+   *   is logged and left as it is, as a second claim of a claimed strand always has been —
+   *   else `'attached'`.
+   * @throws when the strand is not tracked (a caller bug, or a launch that failed while
+   *   this waited on it); when the schema signature is refused, having changed nothing; and
+   *   whatever the live apply throws (e.g. a quiesce closed the database mid-apply) — the
+   *   retained config then still carries the sApp and `sAppInfo` stays unset, so the next
+   *   claim retries the apply.
+   *
+   * NOTE: two claims of one replica racing each other both pass the `sAppInfo` check and
+   * apply concurrently; the loser of the declarative diff can reject, and its `addStrand`
+   * retry then resolves `'already-attached'`. Needs an app calling `addStrand` twice at once
+   * (or beside a watcher retry); if it is ever seen, chain attaches per strand id.
+   */
+  async attachSApp(
+    strandId: string,
+    sAppConfig: SAppConfig,
+    options: { requireSignedSchemas?: boolean } = {}
+  ): Promise<'attached' | 'already-attached'> {
+    await this.settleRuntimeBuilds(strandId);
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config) {
+      throw new Error(`Cannot attach an sApp to strand ${strandId}: not tracked`);
+    }
+    if (instance.sAppInfo) {
+      if (instance.sAppInfo.id !== sAppConfig.id) {
+        log('attachSApp: strand %s already runs sApp %s — the claim for sApp %s is ignored',
+          strandId, instance.sAppInfo.id, sAppConfig.id);
+      }
+      return 'already-attached';
+    }
+    const sAppInfo = verifiedSAppInfo(strandId, sAppConfig, options.requireSignedSchemas);
+    // A fresh object rather than mutating in place: startStrand retains the CALLER'S
+    // config object, which is not ours to rewrite.
+    this.launchConfigs.set(strandId, { ...config, sAppConfig });
+    const database = instance.database ?? this.firstSyncGates.get(strandId)?.database;
+    if (database) {
+      await database.attachAppSchema(sAppConfig);
+    } else {
+      log('attachSApp: strand %s is quiesced — its next resume applies the sApp schema', strandId);
+    }
+    instance.sAppInfo = sAppInfo;
+    if (sAppConfig.latencyHint) {
+      // HibernationManager reads the hint whenever it arms a timer, so the app's hint governs
+      // from the next one: a timer already armed runs once at the old duration, and a replica
+      // launched under a realtime default was never tracked, so it stays up until relaunched.
+      instance.latencyHint = sAppConfig.latencyHint;
+    }
+    log('Strand %s upgraded from storage replica to %s', strandId, describeSApp(sAppConfig));
+    return 'attached';
   }
 
   /**
@@ -1351,6 +1610,18 @@ export class StrandInstanceManager {
   }
 
   /**
+   * The tracked instance once no runtime build of it is in flight, or `undefined` when none
+   * is tracked by then — never launched, or the launch waited on failed and dropped its
+   * record. For a caller about to hand a tracked instance to an app: until its build settles
+   * the instance is `'starting'` with no database, and a failed launch leaves no instance.
+   * Never rejects; a failed build is reported by the call that started it.
+   */
+  async whenRuntimeBuilt(strandId: string): Promise<StrandInstance | undefined> {
+    await this.settleRuntimeBuilds(strandId);
+    return this.instances.get(strandId);
+  }
+
+  /**
    * Hand a launch's database to the app: set `instance.database`, retire the gate that
    * held it, release every {@link whenWritable} waiter, and — when the launch had already
    * been reported gated — flip it `'active'` and announce it through the retained config's
@@ -1379,9 +1650,11 @@ export class StrandInstanceManager {
       this.firstSyncGates.delete(strandId);
     }
     instance.database = database;
-    instance.lastActivity = new Date();
     const wasGated = instance.status !== 'starting';
     if (wasGated) {
+      // A Header delivered by a peer is strand activity; a publish during bring-up is not
+      // (see the build's end in `buildStrandRuntime`).
+      instance.lastActivity = new Date();
       instance.status = 'active';
       log('Strand %s is now writable: Strand.Header held', strandId);
     }

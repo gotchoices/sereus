@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-cli",
-  "version": "1.5.0",
+  "version": "1.10.0",
   "type": "module",
   "description": "CLI wrapper for Sereus cadre nodes - start, monitor, and manage cadre node instances",
   "main": "dist/index.js",
@@ -53,15 +53,17 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
-    "@libp2p/crypto": "^5.1.13",
-    "@libp2p/interface": "^3.1.0",
-    "@libp2p/peer-id": "^6.0.4",
-    "@optimystic/db-p2p": "^1.6.0",
-    "@optimystic/db-p2p-storage-fs": "^1.6.0",
+    "@libp2p/crypto": "^5.1.23",
+    "@libp2p/interface": "^3.3.0",
+    "@libp2p/peer-id": "^6.0.15",
+    "@multiformats/multiaddr": "^13.0.3",
+    "@optimystic/db-p2p": "^1.9.0",
+    "@optimystic/db-p2p-storage-fs": "^1.9.0",
     "@serfab/cadre-core": "workspace:^",
+    "@serfab/config-check": "workspace:^",
     "commander": "^14.0.2",
     "debug": "^4.4.3",
     "js-yaml": "^4.1.1",
-    "uint8arrays": "^5.1.0"
+    "uint8arrays": "^6.1.1"
   }
 }

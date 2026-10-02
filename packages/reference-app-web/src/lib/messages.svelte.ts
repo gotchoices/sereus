@@ -50,7 +50,8 @@ let refreshInFlight = false;
 /**
  * A composed message that has been submitted at least once, and the id minted for it. Held
  * across a failed send so pressing Send again re-presents the SAME primary key rather than
- * minting a second one — see {@link sendMessage}.
+ * minting a second one — see {@link sendMessage}. Held only while the composer still holds its
+ * author and content: see {@link composerChanged} and {@link settlePendingDraft}.
  */
 interface PendingDraft {
 	id: string;
@@ -59,6 +60,11 @@ interface PendingDraft {
 }
 
 let pendingDraft: PendingDraft | null = null;
+
+type DraftSettledListener = (author: string, content: string) => void;
+
+// eslint-disable-next-line svelte/prefer-svelte-reactivity -- subscriber registry read only by `settlePendingDraft`; nothing renders from it, so it must not be reactive.
+const draftSettledListeners = new Set<DraftSettledListener>();
 
 export function messagesState(): MessagesState {
 	return state;
@@ -105,13 +111,15 @@ export async function refresh(): Promise<void> {
 	refreshInFlight = true;
 	try {
 		const rows = await selectChatMessages(db(strand));
-		state.messages = rows.map((r) => ({
+		const messages = rows.map((r) => ({
 			Id: r.id,
 			ParticipantId: r.participantId,
 			Content: r.content,
 			Timestamp: r.timestamp,
 			ParticipantName: r.participantName,
 		}));
+		state.messages = messages;
+		settlePendingDraft(messages);
 		state.ready = true;
 		state.error = null;
 		state.updatedMs = Date.now();
@@ -124,14 +132,56 @@ export async function refresh(): Promise<void> {
 }
 
 /**
+ * Report the composer's author and content, trimmed as {@link sendMessage} is given them. Any
+ * pair other than the pending draft's retires its key: editing away and back, or clearing and
+ * retyping the same words, is a new message. Without this, a message the user cleared and later
+ * typed again would be taken for a retry, found stored, and silently dropped.
+ */
+export function composerChanged(author: string, content: string): void {
+	if (pendingDraft && (pendingDraft.author !== author || pendingDraft.content !== content)) {
+		pendingDraft = null;
+	}
+}
+
+/**
+ * Be told when a poll shows that a send which reported failure did land, with that draft's
+ * author and content, so the composer can drop its "not confirmed" error and clear the box if it
+ * still holds that text. Returns the unsubscribe.
+ */
+export function onDraftSettled(listener: DraftSettledListener): () => void {
+	draftSettledListeners.add(listener);
+	return () => {
+		draftSettledListeners.delete(listener);
+	};
+}
+
+/**
+ * If `messages` holds the pending draft's row, a send that reported failure did land: retire its
+ * key and tell the composer.
+ *
+ * Never while a send is in flight (`state.loading` is set exactly while {@link sendMessage}
+ * runs): that send's outcome is still open, and if it then failed the user would be told to
+ * press Send again with no key left to re-present, so the next press would mint a new one and
+ * could store the message twice. The first read after the send settles retires it instead.
+ */
+function settlePendingDraft(messages: readonly ChatMessage[]): void {
+	const pending = pendingDraft;
+	if (state.loading || !pending) return;
+	if (!messages.some((m) => m.Id === pending.id)) return;
+	pendingDraft = null;
+	for (const listener of draftSettledListeners) listener(pending.author, pending.content);
+}
+
+/**
  * Register (idempotently) the author as a participant, then append a message.
  * Participant.Id = the author name keeps the demo single-field while still
  * exercising the Participant↔Message foreign-key join.
  *
  * A strand write can fail without settling whether it landed, so the id belongs to the
  * composed message and not to the attempt: the first Send mints one and {@link pendingDraft}
- * holds it until a send resolves. Pressing Send again on unchanged text re-presents that same
- * key, so the primary key guarantees at most one row however many attempts the user makes.
+ * holds it until a send resolves, the composer stops holding that author and content, or a poll
+ * shows its row. Pressing Send again on unchanged text re-presents that same key, so the primary
+ * key guarantees at most one row however many attempts the user makes.
  *
  * The author/content match is load-bearing, not an optimisation. If the user edits the text
  * after a failed send and the first attempt HAD landed, reusing the id would report the edit

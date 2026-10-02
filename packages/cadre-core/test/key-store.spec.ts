@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
 import { FileKeyStore } from '../src/key-store-file.js';
+import { encodeFileSafeComponent } from '../src/fs-atomic.js';
 
 // Mock node:fs/promises so the atomic-write tests can force a `rename` failure.
 // Everything else delegates to the real implementation, so the shared contract
@@ -110,14 +111,18 @@ describe.each(backends)('KeyStore contract: $name', ({ make, cleanup }) => {
 		expect((await store.list()).sort()).toEqual(['a', 'c']);
 	});
 
-	it('round-trips awkward keyIds (slashes, spaces, unicode, fs-reserved chars) without collision', async () => {
+	it('round-trips awkward keyIds (slashes, spaces, unicode, fs-reserved chars, case) without collision', async () => {
 		const store = await make();
 		const awkward: Array<[string, Uint8Array]> = [
 			['cadre/identity', new Uint8Array([10])],
 			['with space and #hash', new Uint8Array([20])],
 			['unicode-Ω-✓-é', new Uint8Array([30])],
 			['star*colon:lt<gt>pipe|q?', new Uint8Array([40])],
-			['a/b/c/nested', new Uint8Array([50])]
+			['a/b/c/nested', new Uint8Array([50])],
+			// Differ only in case (base64url party ids of `aa@` and `aaZ`): one
+			// file on a case-insensitive filesystem unless the encoding separates them.
+			['cadre/joined-strand/YWFA/strand-1', new Uint8Array([60])],
+			['cadre/joined-strand/YWFa/strand-1', new Uint8Array([70])]
 		];
 
 		for (const [id, mat] of awkward) {
@@ -162,6 +167,26 @@ describe('FileKeyStore specifics', () => {
 		await writeFile(join(dir, '%ZZ.key'), new Uint8Array([9]));
 
 		expect(await store.list()).toEqual(['real']);
+	});
+
+	it('list() skips a decodable .key file whose name is not the canonical encoding', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-legacy-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+		await store.set('real', new Uint8Array([1]));
+		// Written before uppercase letters were escaped: decodes to a key id that
+		// get() would look for under a different name, so list() must not name it.
+		await writeFile(join(dir, 'cadre%2Fjoined-strand%2FYWFa%2Fstrand-1.key'), new Uint8Array([9]));
+
+		expect(await store.list()).toEqual(['real']);
+	});
+
+	it('encodes ids without literal uppercase letters, leaving lowercase-only ids unchanged', () => {
+		const encoded = encodeFileSafeComponent('Party.Id/YWFa~Ω');
+		expect(encoded.replace(/%[0-9A-F]{2}/g, '')).toMatch(/^[a-z0-9_-]*$/);
+		expect(decodeURIComponent(encoded)).toBe('Party.Id/YWFa~Ω');
+		// The node identity slot's file name must not move across the change.
+		expect(encodeFileSafeComponent('cadre/identity')).toBe('cadre%2Fidentity');
 	});
 
 	it('leaves no .tmp debris after a successful set', async () => {

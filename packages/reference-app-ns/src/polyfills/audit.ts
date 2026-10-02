@@ -7,7 +7,7 @@
  * @valor/nativescript-websockets) and BEFORE any cadre/libp2p code, so the real V8/JSC surface is visible and
  * a regression (an API silently going missing) surfaces loudly at startup.
  *
- * packages/reference-app-rn/polyfills/audit.js is the same audit for the React
+ * packages/cadre-rn/polyfills/audit.js is the same audit for the React
  * Native app, with its own probe list. That duplication is deliberate: the two
  * runtimes have different surfaces (this list probes `AbortController` itself,
  * which React Native provides and NativeScript does not), so a shared list would
@@ -34,7 +34,7 @@ const PROBES: readonly Probe[] = [
 	{ path: 'structuredClone', key: 'structuredClone' },
 	{ path: 'WebSocket' },
 	// NOTE: read off the prototype; if the plugin ever ships a real accessor that throws
-	// without an instance, catch it in resolve() as reference-app-rn/polyfills/audit.js does.
+	// without an instance, catch it in resolve() as cadre-rn/polyfills/audit.js does.
 	{ path: 'WebSocket.prototype.bufferedAmount', key: 'WebSocket.prototype.bufferedAmount' },
 	{ path: 'ReadableStream', key: 'ReadableStream' },
 	{ path: 'WritableStream', key: 'ReadableStream' },

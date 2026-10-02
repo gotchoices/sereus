@@ -38,7 +38,6 @@ import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	ed25519KeyPairFromLibp2p,
-	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
@@ -139,6 +138,10 @@ function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId
 		controlNetwork: { partyId, bootstrapNodes: [] },
 		profile: 'storage',
 		strandFilter: { mode: 'all' },
+		// Not a replica host, as in the integration harness: `foundStrand` below publishes the
+		// row and then attaches, and a watcher poll landing between those two halves would
+		// launch the strand without the chat schema.
+		hostUnclaimedStrands: false,
 		storage: { provider: () => new MemoryRawStorage() },
 		network: {
 			transports: responderTransports(),
@@ -162,7 +165,7 @@ async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNod
 		throw new Error('control database unavailable after start; cannot run responder owner genesis');
 	}
 	await controlDb.ensureOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
+	await node.initializeSeedBootstrap(privateKeyB64);
 }
 
 /**
@@ -170,15 +173,14 @@ async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNod
  *
  * Sequence (each step mirrors the documented production path it is named after):
  *  1. Boot a `CadreNode` with a WS transport + memory storage, listening on an
- *     ephemeral `/ws` port.
+ *     ephemeral `/ws` port. Its start registers the `/sereus/formation/1.0.0`
+ *     responder, which checks tokens against the control database.
  *  2. Genesis-seed its owner (fail-loud).
- *  3. Wire the formation responder (`initializeStrandSolicitation` + a real
- *     `ControlFormationUsageRecorder`) — registers the `/sereus/formation/1.0.0` handler.
- *  4. Create the host CLOSED chat strand byte-identically to the browser
- *     (`publishStrand` + `addStrand` with the SHARED signed `getChatSAppConfig`).
- *  5. Mint + publish the redeemable invitation bound to that strand, PLUS a second
+ *  3. Found the host CLOSED chat strand as the browser does (`foundStrand` with the
+ *     SHARED signed `getChatSAppConfig`).
+ *  4. Mint + publish the redeemable invitation bound to that strand, PLUS a second
  *     already-expired invitation for the negative test.
- *  6. Arm seed-on-connect (best-effort) — the deterministic path is the explicit
+ *  5. Arm seed-on-connect (best-effort) — the deterministic path is the explicit
  *     {@link FormationResponderHandle.seedMessage}.
  */
 export async function startFormationResponder(opts?: {
@@ -194,43 +196,25 @@ export async function startFormationResponder(opts?: {
 
 	try {
 		await runOwnerGenesis(node, identityKey);
-
-		// Wire consent + register the responder. The DB-backed recorder makes token
-		// validity + single-use real and threads the bound host strand back
-		// (provision-then-record), exactly like cadre-web.ts `ensureSolicitation`.
 		const controlDb = node.getControlDatabase();
 		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot wire formation responder');
+			throw new Error('control database unavailable after start; cannot read formation usage');
 		}
-		node.initializeStrandSolicitation({
-			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
-		});
 
-		// Host CLOSED chat strand, using the SHARED signed config the browser uses.
-		//
-		// NOTE: this does NOT mirror the browser's createClosedChatStrand, despite having
-		// been described as byte-identical to it. That call founds the strand (now via
-		// CadreNode.foundStrand); this attaches it — no `founder: true`, so the bootstrap
-		// never seats Header/Member/Manager and the responder hosts a closed strand with no
-		// manager. Divergence is pre-existing and the suite passes with it, which is the
-		// point: the e2e exercises a strand shape the app never produces. Tracked as backlog
-		// debt; fixing it means switching to `foundStrand` and re-running the Playwright
-		// suite, which the ticket covers.
+		// Host CLOSED chat strand, founded the way the browser's `createClosedChatStrand`
+		// founds its own: one `foundStrand` call with the shared signed config.
 		const strandId = crypto.randomUUID();
-		const memberKey = await generateStrandMemberKey();
-		await node.publishStrand(strandId, 'c', memberKey);
-		await node.addStrand({
-			// FounderOwnerKey null (not the published row's own key) keeps this a JOINER
-			// attach, preserving the divergence the NOTE above describes rather than
-			// silently resolving it here: passing the row `publishStrand` returned would
-			// now derive founder-ness and seat Header/Member/Manager.
-			strandRow: { Id: strandId, MemberPrivateKey: memberKey, Type: 'c', FounderOwnerKey: null },
+		const { instance: strand, founded } = await node.foundStrand({
+			strandId,
+			type: 'c',
+			memberPrivateKey: await generateStrandMemberKey(),
 			sAppConfig: getChatSAppConfig(),
 		});
-
-		const strand = node.getStrand(strandId);
-		if (!strand?.libp2pNode) {
-			throw new Error(`responder strand ${strandId} has no libp2p node after addStrand`);
+		if (!founded) {
+			throw new Error(`responder strand ${strandId} attached instead of founding — the host fixture must be the founder`);
+		}
+		if (!strand.libp2pNode) {
+			throw new Error(`responder strand ${strandId} has no libp2p node after foundStrand`);
 		}
 		const strandLibp2p: Libp2p = strand.libp2pNode;
 

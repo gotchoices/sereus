@@ -14,43 +14,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createLocalUiServer } from '../index.js';
 import { EventBus } from '../events/bus.js';
 import type { LocalUiEvent } from '../events/types.js';
+import { fakeFounder } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../../orchestrator/types.js';
-import type { TrustCircleService } from '../../auth/index.js';
-import type { NatService } from '../../nat/index.js';
-import type { NatStatusSnapshot } from '../../nat/types.js';
 import type { UpdateService } from '../../update/index.js';
 import type { UpdateState } from '../../update/types.js';
-
-const CONNECTIVITY: NatStatusSnapshot = {
-  portMode: 'auto-upnp',
-  externalPort: 4001,
-  internalPort: 4001,
-  routerExternalIp: '203.0.113.1',
-  mappingLeaseExpiresAt: null,
-  externalIp: '203.0.113.1',
-  externalIpDetectedAt: null,
-  cgnatDetected: false,
-  directReachability: 'reachable',
-  lastTestedAt: null,
-  ddns: {
-    providerId: null,
-    hostname: null,
-    externallyManaged: false,
-    lastUpdateAt: null,
-    lastUpdateOk: null,
-    lastError: null,
-  },
-};
-
-function fakeTrust(): TrustCircleService {
-  return {
-    list: async () => ({ members: [], pending: [] }),
-  } as unknown as TrustCircleService;
-}
-function fakeNat(): NatService {
-  return { getStatus: () => CONNECTIVITY, putSettings: async () => CONNECTIVITY } as unknown as NatService;
-}
 
 interface ManualOrchestrator extends HostProcessOrchestrator {
   __emit: (info: ManagedNodeInfo) => void;
@@ -117,8 +85,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
-      trustCircle: fakeTrust(),
-      nat: fakeNat(),
+      founder: fakeFounder(),
       events: bus,
       forcePort: 0,
     });
@@ -146,8 +113,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
-      trustCircle: fakeTrust(),
-      nat: fakeNat(),
+      founder: fakeFounder(),
       events: bus,
       forcePort: 0,
     });
@@ -168,8 +134,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
-      trustCircle: fakeTrust(),
-      nat: fakeNat(),
+      founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,
       forcePort: 0,
@@ -194,8 +159,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
-      trustCircle: fakeTrust(),
-      nat: fakeNat(),
+      founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,
       forcePort: 0,

@@ -20,13 +20,17 @@ import {
   stopPhoneNode,
   getPhoneNode,
   getOwnerPublicKey,
+  getNoiseCryptoMode,
   getRelayState,
+  loadSavedStartOptions,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
   formStrand,
   type PhoneNodeOptions,
+  type SavedStartOptions,
 } from './cadre-phone';
+import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import {
   createChatStrand,
   joinChatStrand,
@@ -67,8 +71,8 @@ const RELAY_POSTURE_POLL_MS = 5_000;
 /**
  * Why an invitation cannot be minted, phrased for the person holding the phone and
  * naming the thing they can actually change. The guard itself is `getMultiaddrs()`
- * being empty — the precondition `createOpenInvitation` really has; the posture only
- * explains WHY it is empty.
+ * being empty — this phone runs the strand it invites to, so it must be reachable
+ * itself; the posture only explains WHY it is empty.
  */
 function unreachableInviteMessage(relay: RelayReservationState): string {
   const lead = 'This device has no reachable address yet, so nobody could redeem an invitation.';
@@ -130,6 +134,11 @@ export interface UseCadreResult {
    * pairing / enrollment. Null until connected. Never carries private material.
    */
   ownerPublicKey: string | null;
+  /**
+   * The Noise crypto mode the running node was built with (the `noiseCryptoMode`
+   * start option, or the build default when that was absent). Null until connected.
+   */
+  noiseCryptoMode: NoiseCryptoMode | null;
   /** Active strand instances */
   strands: Map<string, StrandInstance>;
   /** Explicitly selected strand id (null = use the deterministic default). */
@@ -153,6 +162,11 @@ export interface UseCadreResult {
    * the user taps Invite and finds out.
    */
   relayStatus: RelayReservationStatus;
+  /**
+   * The options the node last started with, read once at launch for the Settings form
+   * to prefill from. Null until that read resolves, and when nothing is saved.
+   */
+  savedStartOptions: PhoneNodeOptions | null;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -210,6 +224,9 @@ export function useCadreInternal(): UseCadreResult {
   const [ownerPublicKey, setOwnerPublicKey] = useState<string | null>(
     () => getOwnerPublicKey(),
   );
+  const [noiseCryptoMode, setNoiseCryptoMode] = useState<NoiseCryptoMode | null>(
+    () => getNoiseCryptoMode(),
+  );
   const [strands, setStrands] = useState<Map<string, StrandInstance>>(
     () => getPhoneNode()?.getStrands() ?? new Map(),
   );
@@ -219,13 +236,15 @@ export function useCadreInternal(): UseCadreResult {
   const [resuming, setResuming] = useState(false);
   const [degraded, setDegraded] = useState(false);
   const [relayStatus, setRelayStatus] = useState<RelayReservationStatus>(() => getRelayState().status);
+  const [savedStartOptions, setSavedStartOptions] = useState<PhoneNodeOptions | null>(null);
 
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
 
-  // Last options passed to `start`, so the BackgroundRunner can cold-start the
-  // node (re-run `startPhoneNode`) on a foreground return after the OS killed it.
+  // Last options passed to `start` (a Connect tap, or the launch resume below with the
+  // saved ones), so the BackgroundRunner can cold-start the node (re-run
+  // `startPhoneNode`) on a foreground return after the OS killed it.
   const optsRef = useRef<PhoneNodeOptions | null>(null);
   const runnerRef = useRef<BackgroundRunner | null>(null);
 
@@ -269,14 +288,22 @@ export function useCadreInternal(): UseCadreResult {
       refreshStrands();
     };
 
-    // A strand this node holds no config for arrived over the control network —
-    // created by another member, or created by US in a previous session (sApp
-    // configs are in-memory only, so every stored strand is "unclaimed" again
-    // after a restart). Only OPEN strands (`Type:'o'`) are auto-joined — "anyone
-    // can participate". A CLOSED strand (`Type:'c'`) is invitation-only by design
-    // and must go through the explicit consent handshake (`joinViaInvite` →
-    // `formStrand`); blindly attaching it here would bypass that flow. A closed
-    // strand simply stays unclaimed in the node's discovered map.
+    // A strand this node holds no config for was offered — created by another member,
+    // created by US in a previous session (sApp configs are in-memory only, so every
+    // stored strand is "unclaimed" again after a restart), or joined from another party
+    // in a previous session (the node remembers those joins and re-offers them). OPEN
+    // strands (`Type:'o'`) are auto-joined — "anyone can participate". A CLOSED strand
+    // (`Type:'c'`) is auto-joined only when its row carries the read secret: a remembered
+    // join is the product of an earlier `joinViaInvite`'s consent, and our own party's
+    // closed strand carries its key in the control row. A closed row without the key
+    // stays unclaimed in the node's discovered map; the way in is the explicit consent
+    // handshake (`joinViaInvite` → `formStrand`).
+    //
+    // A closed strand is re-attached through `joinChatStrand` with the offered row
+    // unchanged, NOT `joinClosedChatStrand`: that helper rebuilds the row with a null
+    // `FounderOwnerKey`, which would join our own orphaned closed strand rather than found
+    // it (see the NOTE below), and it writes the `member` role the first attach already
+    // wrote.
     //
     // NOTE: this passes no `founder` flag, and needs none — the `Strand` row records the
     // machine that published it (`FounderOwnerKey`), and `CadreNode` derives founder-ness
@@ -300,7 +327,7 @@ export function useCadreInternal(): UseCadreResult {
     // a fresh set would let a second launch through: hoist it to a `useRef` then.
     const joining = new Set<string>();
     const claimDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
-      if (strand.Type !== 'o') return;
+      if (strand.Type !== 'o' && !strand.MemberPrivateKey) return;
       if (node.getStrands().has(strandId)) return;
       if (joining.has(strandId)) return;
       joining.add(strandId);
@@ -363,6 +390,7 @@ export function useCadreInternal(): UseCadreResult {
     nodeRef.current = started;
     setPeerId(started.peerId?.toString() ?? null);
     setOwnerPublicKey(getOwnerPublicKey());
+    setNoiseCryptoMode(getNoiseCryptoMode());
     setStrands(new Map(started.getStrands()));
   }, []);
 
@@ -425,6 +453,7 @@ export function useCadreInternal(): UseCadreResult {
       nodeRef.current = started;
       setPeerId(started.peerId?.toString() ?? null);
       setOwnerPublicKey(getOwnerPublicKey());
+      setNoiseCryptoMode(getNoiseCryptoMode());
       setStrands(new Map(started.getStrands()));
       setStatus('connected');
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
@@ -438,7 +467,53 @@ export function useCadreInternal(): UseCadreResult {
     }
   }, []);
 
+  // ── Launch: resume the last session ────────────────────────────────────
+
+  // The provider is mounted at the app root, so this runs once per launch. A session
+  // that ended connected (anything but Disconnect — an OS kill included) starts again
+  // with the options it last started with, through `start`, so status, device-token
+  // registration and every other side effect of Connect happen exactly as for a tap.
+  //
+  // Through `start` even when a push wake already started the node in this JS runtime:
+  // `startPhoneNode` hands back the running node, or joins that start while it is still
+  // in flight, so the hook's state catches up with it either way (the initial state read
+  // the singleton only once, at first render) and `optsRef` gets the saved options for
+  // the runner's cold start. A Connect tap that beat this read owns `optsRef` already
+  // and is not second-guessed.
+  useEffect(() => {
+    let unmounted = false;
+    const resume = async () => {
+      let saved: SavedStartOptions | undefined;
+      try {
+        saved = await loadSavedStartOptions();
+      } catch (err) {
+        // NOTE: fields stay blank, so a Connect now mints a new party id and, on
+        // success, overwrites the unreadable record. Acceptable because the party-scoped
+        // stores live in the same database and propagate a read fault, which fails that
+        // start before anything is saved.
+        console.warn('[use-cadre] could not read the saved start options:', err);
+        if (!unmounted) {
+          setError(`Could not read the saved connection settings: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+      if (unmounted || !saved) return;
+      setSavedStartOptions(saved.options);
+      if (!saved.autoStart || optsRef.current) return;
+      await start(saved.options);
+    };
+    void resume();
+    return () => {
+      unmounted = true;
+    };
+  }, [start]);
+
   const stop = useCallback(async () => {
+    // The singleton reads null from the moment `stopPhoneNode` begins its teardown, so a
+    // foreground return during Disconnect would have the runner cold-start the node
+    // straight back on the handle that teardown is about to close. With no options the
+    // runner's `ensureNode` does nothing.
+    optsRef.current = null;
     // Cancel a host-node request first, and give it a bounded moment to unwind:
     // the first thing its cleanup does is drop the lent node's authorization row,
     // which needs this node still running. Aborting without waiting would leave
@@ -458,6 +533,7 @@ export function useCadreInternal(): UseCadreResult {
     nodeRef.current = null;
     setPeerId(null);
     setOwnerPublicKey(null);
+    setNoiseCryptoMode(null);
     setStrands(new Map());
     setSelectedStrandId(null);
     setStatus('idle');
@@ -518,10 +594,11 @@ export function useCadreInternal(): UseCadreResult {
   const createClosedStrandWithInvite = useCallback(async (strandId: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    // The invitation's bootstrap is this node's own addresses, so an unreachable
-    // node cannot invite anyone — refuse BEFORE founding, or every attempt leaves an
-    // orphaned closed strand behind. A phone is reachable only through a relay; see
-    // `relay-config.ts` for where that address comes from.
+    // The invitation also names the party's other machines, but only this node runs
+    // the strand it is about to found, so an unreachable node cannot invite anyone —
+    // refuse BEFORE founding, or every attempt leaves an orphaned closed strand behind.
+    // A phone is reachable only through a relay; see `relay-config.ts` for where that
+    // address comes from.
     if (current.getMultiaddrs().length === 0) {
       // Read the posture LIVE rather than off `relayStatus`: a relay that came back
       // seconds ago must not be reported as down, and one lost seconds ago must not be
@@ -600,9 +677,9 @@ export function useCadreInternal(): UseCadreResult {
   }, []);
 
   return {
-    status, node, peerId, ownerPublicKey, strands,
+    status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
-    error, runnerState, resuming, degraded, relayStatus,
+    error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
     start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite, requestHostNode,
   };

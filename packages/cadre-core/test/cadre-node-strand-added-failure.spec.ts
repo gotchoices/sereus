@@ -111,3 +111,40 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
     expect(discovered[0]!.strandId).toBe(STRAND_ROW.Id);
   });
 });
+
+describe('CadreNode.handleStrandAdded storage replica', () => {
+  it('announces an unclaimed strand once across failed replica launches, and launches it without an sApp config', async () => {
+    // A storage-profile node hosts unclaimed strands as storage replicas. A failed replica
+    // launch rejects so the watcher retries it (forgetStrand + backoff), and every retry
+    // re-enters the no-config branch — which must not re-announce the strand.
+    const node = new CadreNode({ ...createConfig(), profile: 'storage' });
+    (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
+    const launches: StartStrandConfig[] = [];
+    (node as unknown as { strandManager: unknown }).strandManager = {
+      getInstance: () => undefined,
+      startStrand: async (config: StartStrandConfig) => {
+        launches.push(config);
+        if (launches.length <= 2) {
+          throw new Error(`transient fault ${launches.length}`);
+        }
+        return { strandId: config.strandRow.Id, status: 'active', connectedPeers: 0, lastActivity: new Date(), latencyHint: 'interactive' };
+      }
+    };
+
+    const errors: unknown[] = [];
+    const discovered: unknown[] = [];
+    node.on('strand:error', (event) => { errors.push(event); });
+    node.on('strand:discovered', (event) => { discovered.push(event); });
+
+    await expect(handleStrandAdded(node, STRAND_ROW)).rejects.toThrow('transient fault 1');
+    await expect(handleStrandAdded(node, STRAND_ROW)).rejects.toThrow('transient fault 2');
+    await expect(handleStrandAdded(node, STRAND_ROW)).resolves.toBeUndefined();
+
+    expect(discovered).toHaveLength(1);
+    expect(errors).toHaveLength(2);
+    expect(launches).toHaveLength(3);
+    expect(launches[2]!.sAppConfig).toBeUndefined();
+    expect(launches[2]!.founder).toBe(false);
+    expect(node.getDiscoveredStrands().has(STRAND_ROW.Id)).toBe(true);
+  });
+});

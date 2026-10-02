@@ -5,14 +5,17 @@
 Sereus uses [bumpp](https://github.com/antfu/bumpp) for version bumping and follows semver.
 Tags use the `v` prefix (e.g. `v0.1.0`). All packages in the monorepo share one version number.
 
-Five workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
+Seven workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
 record — `yarn smoke:published` derives its set from them, so a package becomes covered the moment
 it gets a `pub:*` script:
 
-`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`.
+`config-check`, `quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`,
+`cadre-rn`.
 
 Publish order matters and `yarn pub` already encodes it (dependency chain first):
-`quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` → `cadre-host`.
+`config-check` → `quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` →
+`cadre-host` → `cadre-rn` (`config-check` depends on nothing and `cadre-cli` depends on it, so it
+goes first; `cadre-rn` depends on no `@serfab/*` package, so its place is free; it goes last).
 
 ## Prerequisites
 
@@ -36,7 +39,7 @@ yarn release
 
 **Nothing leaves this machine until every package is on npm.** That is the rule the whole chain is
 built around: every check that can refuse a release runs before the push and before the publish, so
-a refusal costs nothing but a `git reset`. `yarn release` is five separate commands, and a failure
+a refusal costs nothing but a `git reset`. `yarn release` is six separate commands, and a failure
 stops the chain at a known point:
 
 | # | Command | What it can refuse |
@@ -45,11 +48,12 @@ stops the chain at a known point:
 | 2 | `yarn bump --no-push` | nothing — it commits and tags **locally only** |
 | 3 | `node scripts/release-guard.mjs` | a package the bump missed; a prerelease with no dist-tag; a missing tag, or one not at `HEAD`; a version already fully published |
 | 4 | `yarn pub` | the `cadre-host` placeholder release key; anything the build catches |
-| 5 | `node scripts/release-finish.mjs` | nothing — it pushes, creates the GitHub release, and reopens the notes file |
+| 5 | `yarn await-published` | nothing — it waits until every package is installable, and exits non-zero naming the stragglers once its deadline passes |
+| 6 | `node scripts/release-finish.mjs` | nothing — it pushes, creates the GitHub release, and reopens the notes file |
 
-Steps 1-3 all run before anything is published or pushed. Step 5 runs only once npm has every
-package, so a failure there is an *unfinished* release rather than a failed one — see
-"Recovering a half-finished release".
+Steps 1-3 all run before anything is published or pushed. Step 6 runs only once every package can
+actually be installed from npm, so a failure in step 5 or 6 is an *unfinished* release rather than a
+failed one — see "Recovering a half-finished release".
 
 `yarn pub` publishes under the `latest` dist-tag unless told otherwise — see "Prerelease / RC" below
 for why that is often the wrong thing.
@@ -96,7 +100,7 @@ yarn bump --no-push --release major
 2. Commit the changes
 3. Create an annotated tag: `v{version}`
 
-**It does not push.** `--no-push` is what makes the rest of this reversible: until step 5 the release
+**It does not push.** `--no-push` is what makes the rest of this reversible: until step 6 the release
 commit and its tag exist only on your machine, so a refusal in step 3.5 or a failure in step 4 leaves
 nothing public to clean up. On 2026-09-10 a `v1.0.0-beta.1` tag was pushed to origin and the publish
 then correctly refused it for having no dist-tag; the stray tag had to be deleted from origin by
@@ -129,16 +133,18 @@ yarn pub
 Or publish individually:
 
 ```bash
+yarn pub:config-check
 yarn pub:quereus-plugin-sereus
 yarn pub:cadre-core
 yarn pub:cadre-cli
 yarn pub:cadre-provider
 yarn pub:cadre-host
+yarn pub:cadre-rn
 ```
 
 **`cadre-host` refuses to publish while its embedded release key is the all-zeros placeholder.**
-The guard is in `scripts/publish-package.mjs`. Either provision a real key, or publish the other
-four and hold `cadre-host` back. The escape hatch `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` exists for
+The guard is in `scripts/publish-package.mjs`. Either provision a real key, or publish the
+others and hold `cadre-host` back. The escape hatch `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` exists for
 testing the publish path and should not be used for a real release — an installer signed with a
 key everyone has is an installer nobody can trust.
 
@@ -148,14 +154,39 @@ exactly where it stopped. A registry that cannot be reached is a loud failure, n
 "not published" — the two answers are different, and conflating them would either skip a publish that
 never happened or attempt one that did.
 
-### 5. Push and create the GitHub release
+### 5. Wait until every package is installable
+
+```bash
+yarn await-published
+```
+
+`npm publish` returning is not the same as the package being installable: the registry starts
+serving each package at its own moment, and a version's record and its tarball become downloadable
+at different moments too (in 1.8.0 the records answered while three tarballs were still 404). The
+push and the GitHub release announce the release, so they wait for this step.
+
+For every package the `pub` chain in the root `package.json` publishes, at the version in its own
+manifest, the wait asks the registry every 5 s until one probe finds all three of:
+
+1. the abbreviated packument (the document installers resolve `^` ranges against) lists the version;
+2. that packument's dist-tag — `SEREUS_DIST_TAG`, or `latest` — points at the version, so
+   `npm install <name>` with no range returns it;
+3. a GET of the version's tarball answers 200.
+
+It ends with `all N packages published and installable from npm at <version>`. When the deadline
+passes first (600 s; `SEREUS_PUBLISH_WAIT_SECONDS` changes it) it names each package still missing,
+with the reason, and exits non-zero. It only reads the registry, over HTTPS to the same registry the
+publish reached (`SEREUS_NPM_REGISTRY` / `npm_config_registry`), so it is safe to re-run on its own
+at any time.
+
+### 6. Push and create the GitHub release
 
 ```bash
 node scripts/release-finish.mjs
 ```
 
-This is the first step that touches anything outside this machine, and it runs only once npm has
-every package. In order it:
+This is the first step that touches anything outside this machine, and it runs only once every
+package is installable. In order it:
 
 1. `git push origin HEAD`, then `git push origin v{version}` — explicit, never `--follow-tags`, so an
    unrelated local tag is never pushed along for the ride.
@@ -188,13 +219,29 @@ with the release.
 
 ### `yarn pub` failed partway (some packages on npm)
 
-Fix the cause, then re-run the publish and finish steps — **not** `yarn release`, which would bump a
-second version on top of the first:
+Fix the cause, then re-run the publish, wait and finish steps — **not** `yarn release`, which would
+bump a second version on top of the first:
 
 ```bash
 yarn pub                          # skips what is already on npm
+yarn await-published
 node scripts/release-finish.mjs
 ```
+
+### `yarn await-published` timed out (everything published, nothing pushed)
+
+npm accepted every publish, so this too is an unfinished release: do **not** re-run `yarn release`.
+Nothing has been pushed and no GitHub release exists yet. Once the registry catches up:
+
+```bash
+yarn await-published
+node scripts/release-finish.mjs
+```
+
+If a package the report names was never published at all (it is still missing long after the
+deadline), run `yarn pub` before those two; it skips what is already on npm. For a release under a
+dist-tag, keep `SEREUS_DIST_TAG` set for every one of these commands: the wait checks that tag, and
+`release-finish.mjs` reads it from the environment to decide GitHub's "Latest" badge.
 
 ### `release-finish.mjs` failed (everything is on npm)
 
@@ -240,8 +287,8 @@ SEREUS_DIST_TAG=alpha yarn pub
 $env:SEREUS_DIST_TAG = 'alpha'; yarn pub
 ```
 
-The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is five
-`&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
+The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is a
+chain of `&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
 command in that chain. `--tag` works for a single package's own script, where there is no chain to
 lose the flag partway through:
 
@@ -271,7 +318,8 @@ script ensures this stays in sync. Do not manually edit version numbers in indiv
 - [ ] `gh auth status` is happy (the preflight refuses a logged-out `gh`)
 - [ ] `yarn release` — or, by hand: `yarn bump --no-push` (choose the dist-tag deliberately if this
       is a prerelease), `node scripts/release-guard.mjs`, `yarn pub` (prefix
-      `SEREUS_DIST_TAG=<tag>` for a prerelease), `node scripts/release-finish.mjs`
+      `SEREUS_DIST_TAG=<tag>` for a prerelease), `yarn await-published` (same prefix),
+      `node scripts/release-finish.mjs`
 
 ## Where the last release landed
 

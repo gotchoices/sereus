@@ -24,6 +24,7 @@ import {
 	HostProcessOrchestrator,
 	Installer,
 	NatService,
+	StrandService,
 	TrustCircleService,
 	TrustCircleStore,
 	createLocalUiServer,
@@ -34,7 +35,7 @@ import {
 	type ServiceHostStatus,
 } from '@serfab/cadre-host';
 
-import { defaultFakeCadreNode } from '../harness/index.js';
+import { defaultFakeCadreNode, emptyStrandNode } from '../harness/index.js';
 
 class StubServiceHost implements ServiceHost {
 	readonly name = 'cadre-host-test';
@@ -108,8 +109,7 @@ describe('cadre-host bootstrap', () => {
 			uiPort: config.uiPort,
 			dataDir,
 			orchestrator,
-			trustCircle,
-			nat,
+			founder: { trustCircle, nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 			forcePort: 0,
 		});
 		const started = await server.start();

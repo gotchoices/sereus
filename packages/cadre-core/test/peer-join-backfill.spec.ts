@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionRev, IBlock, IPeerNetwork } from '@optimystic/db-core';
-import type { BlockCommitProof, IRawStorage } from '@optimystic/db-p2p';
+import { buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import {
   PeerJoinBackfill,
   MAX_BLOCK_MESSAGE_BYTES,
@@ -13,9 +13,9 @@ import { peerJoinPushBudget } from '../src/link-budget.js';
 
 /**
  * Unit coverage for the peer-join block catch-up (shared by strand and control
- * networks). Everything here drives `catchUpPeer` (or the connection:open path)
- * against a FAKE raw store and a captured push client — no libp2p node is dialled.
- * The physical two-node evidence lives in the integration suite
+ * networks). Everything here drives `catchUpPeer` (or the peer:identify-driven
+ * scheduling path) against a FAKE raw store and a captured push client — no libp2p
+ * node is dialled. The physical two-node evidence lives in the integration suite
  * (`strand-membership-closed-strand-e2e.integration.ts` for strands,
  * `control-offline-read-after-restart.integration.ts` for the control network).
  */
@@ -98,10 +98,29 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
   return storage;
 }
 
-/** A fake libp2p surface: event registry + a controllable connection list. */
-function makeLibp2p(connections: Array<{ remotePeer: PeerId }> = []) {
+/** The prefix `makeBackfill` and most direct constructions below use. */
+const DEFAULT_TEST_PROTOCOL_PREFIX = '/optimystic/strand-strand-test';
+
+/**
+ * A fake libp2p surface: event registry, a controllable connection list, and a peer store.
+ * `PeerJoinBackfill` schedules a peer on `peer:identify` (or, for one already connected when
+ * it starts, by reading protocols back from the peer store), so both are fakes here rather
+ * than just `connection:open` — a peer connected but not yet identified must behave
+ * differently from one identified without the block-transfer protocol.
+ */
+function makeLibp2p(
+  connections: Array<{ remotePeer: PeerId; protocols?: string[] }> = [],
+  opts: { protocolPrefix?: string } = {}
+) {
+  const speaksProtocol = buildBlockTransferProtocol(opts.protocolPrefix ?? DEFAULT_TEST_PROTOCOL_PREFIX);
   const handlers = new Map<string, Set<(evt: unknown) => void>>();
-  const open = [...connections];
+  const open = connections.map((c) => ({ remotePeer: c.remotePeer }));
+  // A peer passed in `connections` is one whose identify already completed before this fake
+  // existed — mirroring resumeStrand over live connections — so it starts out KNOWN to the
+  // peer store, speaking the protocol by default unless the test says otherwise.
+  const protocolsByPeer = new Map<string, string[]>(
+    connections.map((c) => [c.remotePeer.toString(), c.protocols ?? [speaksProtocol]])
+  );
   const holds = (remotePeer: PeerId) => open.some((c) => c.remotePeer.toString() === remotePeer.toString());
   return {
     node: {
@@ -117,14 +136,33 @@ function makeLibp2p(connections: Array<{ remotePeer: PeerId }> = []) {
       // before re-arming a failed run, so a fake that ignored the argument would answer
       // "connected" for every peer that ever connected.
       getConnections: (peerId?: PeerId) =>
-        peerId ? open.filter((c) => c.remotePeer.toString() === peerId.toString()) : open
+        peerId ? open.filter((c) => c.remotePeer.toString() === peerId.toString()) : open,
+      peerStore: {
+        // Mirrors @libp2p/peer-store: an unidentified peer id THROWS rather than resolving
+        // undefined — that is what lets `scheduleConnectedPeers()` tell "identify hasn't
+        // finished yet" apart from "identified with no matching protocol".
+        get: async (peerId: PeerId) => {
+          const protocols = protocolsByPeer.get(peerId.toString());
+          if (protocols === undefined) {
+            throw Object.assign(new Error('Not found'), { name: 'NotFoundError' });
+          }
+          return { protocols };
+        }
+      }
     } as unknown as Libp2p,
-    dispatchConnectionOpen(remotePeer: PeerId) {
+    /**
+     * Simulates a connection opening and its identify completing — the sequence
+     * `PeerJoinBackfill` actually schedules on. `protocols` defaults to this network's own
+     * block-transfer protocol (an ordinary speaking peer); pass `[]` for a relay or bootstrap
+     * node whose identify never names it.
+     */
+    dispatchConnectionOpen(remotePeer: PeerId, protocols: string[] = [speaksProtocol]) {
       // Record the connection before the event: a peer that just opened one IS connected, and
       // anything consulting getConnections() has to agree with the event it was handed.
       if (!holds(remotePeer)) open.push({ remotePeer });
-      for (const handler of handlers.get('connection:open') ?? []) {
-        handler({ detail: { remotePeer } });
+      protocolsByPeer.set(remotePeer.toString(), protocols);
+      for (const handler of handlers.get('peer:identify') ?? []) {
+        handler({ detail: { peerId: remotePeer, protocols } });
       }
     },
     /** Drop a peer's connection without an event — this module has no `connection:close` path. */
@@ -424,7 +462,7 @@ describe('PeerJoinBackfill', () => {
 
     expect(pushes.length).toBe(3);
     expect(result.accepted).toBe(2);
-    // Not clean, so the peer is not memoized — the next connection:open re-offers everything.
+    // Not clean, so the peer is not memoized — the next peer:identify re-offers everything.
     const retry = await backfill.catchUpPeer(peer('p1'));
     expect(retry.offered).toBe(3);
   });
@@ -443,13 +481,13 @@ describe('PeerJoinBackfill', () => {
     expect(pushes.length).toBe(1);
     expect(result.accepted).toBe(0);
 
-    // Not marked done — the next connection:open retries the whole store from the start.
+    // Not marked done — the next peer:identify retries the whole store from the start.
     const retry = await backfill.catchUpPeer(peer('relay'));
     expect(pushes.length).toBe(2);
     expect(retry.accepted).toBe(0);
   });
 
-  it('marks the peer done after a clean run — a second connection:open pushes nothing', async () => {
+  it('marks the peer done after a clean run — a second peer:identify pushes nothing', async () => {
     const { backfill, pushes, fake } = makeBackfill({ b1: committed('b1') }, { debounceMs: 1 });
     backfill.start();
 
@@ -483,7 +521,7 @@ describe('PeerJoinBackfill', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(pushes.length).toBe(1);
 
-    // …and the re-arm fires on its own, with no further connection:open.
+    // …and the re-arm fires on its own, with no further peer:identify.
     await until(() => pushes.length === 2, 4000);
 
     backfill.stop();
@@ -515,7 +553,7 @@ describe('PeerJoinBackfill', () => {
   });
 
   it('does not re-arm a peer that is no longer connected', async () => {
-    // The trigger is connection:open, so a peer that went away already has its retry. Re-arming
+    // The trigger is peer:identify, so a peer that went away already has its retry. Re-arming
     // one anyway would leave the node dialing a peer it cannot see, once per backoff, for the
     // rest of its uptime.
     let dropPeer = (): void => {};
@@ -536,7 +574,7 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
-  it('debounces reconnect flapping — many connection:open events, one run', async () => {
+  it('debounces reconnect flapping — many peer:identify events, one run', async () => {
     const { backfill, pushes, fake } = makeBackfill(
       { b1: committed('b1'), b2: committed('b2') },
       { debounceMs: 25 }
@@ -618,13 +656,13 @@ describe('PeerJoinBackfill', () => {
   it('start() respects enabled: false and stop() removes the listener', async () => {
     const { backfill: disabled, fake: disabledFake } = makeBackfill({ b1: committed('b1') }, { enabled: false });
     disabled.start();
-    expect(disabledFake.listenerCount('connection:open')).toBe(0);
+    expect(disabledFake.listenerCount('peer:identify')).toBe(0);
 
     const { backfill, fake } = makeBackfill({ b1: committed('b1') });
     backfill.start();
-    expect(fake.listenerCount('connection:open')).toBe(1);
+    expect(fake.listenerCount('peer:identify')).toBe(1);
     backfill.stop();
-    expect(fake.listenerCount('connection:open')).toBe(0);
+    expect(fake.listenerCount('peer:identify')).toBe(0);
   });
 
   it('pushes nothing to a peer the authorizePeer gate refuses, and does not memoize it', async () => {
@@ -688,11 +726,11 @@ describe('PeerJoinBackfill', () => {
   });
 
   it('scheduleConnectedPeers() re-arms a denied-but-still-connected peer without a reconnect', async () => {
-    // The membership-change hook: connection:open fired once (and was denied); when the
+    // The membership-change hook: peer:identify fired once (and was denied); when the
     // peer is later authorized nothing reconnects, so the embedder drives this instead.
     let authorized = false;
     const { pushes, client } = makePushClient();
-    const fake = makeLibp2p([{ remotePeer: peer('joiner') }]);
+    const fake = makeLibp2p([{ remotePeer: peer('joiner') }], { protocolPrefix: '/optimystic/control-test' });
     const backfill = new PeerJoinBackfill({
       label: 'control-test',
       libp2p: fake.node,
@@ -709,7 +747,7 @@ describe('PeerJoinBackfill', () => {
     expect(pushes.length).toBe(0);
 
     authorized = true;
-    backfill.scheduleConnectedPeers();
+    void backfill.scheduleConnectedPeers();
     await until(() => pushes.length === 1);
     expect(pushes[0]!.ids).toEqual(['b1']);
 
@@ -757,7 +795,7 @@ describe('PeerJoinBackfill', () => {
     let releaseGate: (() => void) | undefined;
     const gateHeld = new Promise<void>((resolve) => { releaseGate = resolve; });
     const { pushes, client } = makePushClient();
-    const fake = makeLibp2p([{ remotePeer: peer('joiner') }]);
+    const fake = makeLibp2p([{ remotePeer: peer('joiner') }], { protocolPrefix: '/optimystic/control-test' });
     const backfill = new PeerJoinBackfill({
       label: 'control-test',
       libp2p: fake.node,
@@ -779,7 +817,7 @@ describe('PeerJoinBackfill', () => {
     const run = backfill.catchUpPeer(peer('joiner'));
     // Membership commits mid-run; the embedder re-arms while the run is still in flight.
     authorized = true;
-    backfill.scheduleConnectedPeers();
+    void backfill.scheduleConnectedPeers();
     releaseGate!();
     expect((await run).denied).toBe(true);
     expect(pushes.length).toBe(0);
@@ -814,7 +852,7 @@ describe('PeerJoinBackfill', () => {
     }, { debounceMs: 1 });
 
     const run = backfill.catchUpPeer(peer('p1'));
-    backfill.scheduleConnectedPeers();
+    void backfill.scheduleConnectedPeers();
     release!();
     expect((await run).accepted).toBe(1);
 
@@ -840,11 +878,46 @@ describe('PeerJoinBackfill', () => {
       createPushClient: () => client
     }, { debounceMs: 1 });
 
-    expect(backfill.scheduleConnectedPeers()).toBe(2);
+    expect(await backfill.scheduleConnectedPeers()).toBe(2);
     await until(() => pushes.length === 2);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(pushes.length).toBe(2); // one whole-store pass per PEER, not per connection
 
     backfill.stop();
+  });
+
+  it('never dials, re-arms, or warns about a peer whose identify omits the block-transfer protocol, while a speaking peer is caught up normally', async () => {
+    // gotchoices/sereus#18: a relay is a connected peer of every strand node but speaks no
+    // `/optimystic/strand-<id>/…` protocol, so a push to it can never land. Before this
+    // filter existed it was scheduled anyway, failed every dial, and after three failures
+    // printed a `console.warn` naming the relay — forever, on every reconnect.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A relay push, if ever attempted, fails outright — standing in for a protocol the
+    // relay does not speak at all. The speaker's push succeeds normally.
+    const relay = makePushClient(() => { throw new Error('protocol not supported'); });
+    const speaker = makePushClient();
+    const fake = makeLibp2p();
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
+      libp2p: fake.node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/strand-strand-test',
+      createPushClient: (peerId) => (peerId.toString() === 'relay' ? relay.client : speaker.client)
+    }, { debounceMs: 1, retryBackoffMs: 10, maxRetryBackoffMs: 10 });
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('relay'), []);
+    fake.dispatchConnectionOpen(peer('speaker'));
+
+    await until(() => speaker.pushes.length === 1);
+    // Give a wrongly-scheduled relay retry every chance the backoff would have had to fire.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(relay.pushes.length).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+
+    backfill.stop();
+    warn.mockRestore();
   });
 });

@@ -1,4 +1,5 @@
 export { connectToStrand } from './connect.js';
+export { applyAppSchema } from './compose-strand.js';
 export {
 	MIN_CLUSTER_SIZE,
 	COHORT_READ_DEADLINE_MS,

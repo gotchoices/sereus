@@ -45,19 +45,28 @@ function encodeKeyId(keyId: KeyId): string {
 
 /**
  * Reverse {@link encodeKeyId}: strip the slot suffix and percent-decode. Returns
- * `undefined` for a `.key` filename this store did not write (a foreign file
- * with an invalid percent-sequence), so {@link FileKeyStore.list} can skip it
- * rather than letting one undecodable entry throw and break enumeration of every
- * real slot.
+ * `undefined` for a `.key` filename this store did not write, so
+ * {@link FileKeyStore.list} can skip it rather than letting one undecodable
+ * entry throw and break enumeration of every real slot. That includes a name
+ * that decodes but is not the one {@link encodeKeyId} produces for the result
+ * (e.g. a slot written before uppercase letters were escaped):
+ * {@link FileKeyStore.get} looks only at the canonical name, so listing it
+ * would name a key id that reads back as absent.
  */
 function decodeKeyId(fileName: string): KeyId | undefined {
 	const encoded = fileName.slice(0, -SLOT_SUFFIX.length);
+	let keyId: KeyId;
 	try {
-		return decodeURIComponent(encoded);
+		keyId = decodeURIComponent(encoded);
 	} catch (error) {
 		log('FileKeyStore: skipping undecodable slot filename %s: %o', fileName, error);
 		return undefined;
 	}
+	if (encodeKeyId(keyId) !== encoded) {
+		log('FileKeyStore: skipping non-canonical slot filename %s', fileName);
+		return undefined;
+	}
+	return keyId;
 }
 
 /**

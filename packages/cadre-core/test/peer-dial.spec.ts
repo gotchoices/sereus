@@ -4,8 +4,11 @@ import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import type { Connection, PeerId } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn } from '../src/peer-dial.js';
+import { dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
 import { withTrailingPeerId } from '../src/peer-record.js';
 import { startSilentServer, type SilentServer } from './silent-server.js';
 
@@ -121,6 +124,33 @@ describe('dialPeerAddrs — a list naming a transport the dialer lacks', () => {
 	});
 });
 
+describe('dialPeerAddrs — addresses that relay through the dialer itself', () => {
+	// What a relay holds for a phone with a reservation on it: the phone's circuit address names the
+	// relay — this dialer — as its hop, and dialing it can only fail with `Can not dial self`.
+	it('skips a self-relayed address and dials the others', async () => {
+		const self = await newPeerId();
+		const target = await newPeerId();
+		// Relayed like the skipped one, so ordering alone would keep the self-relayed address first.
+		const throughOther = circuitVia(await newPeerId(), target);
+		const dialer = recordingDialer(self);
+
+		const connection = await dialPeerAddrs(dialer, [circuitVia(self, target), throughOther], { perAddressMs: 100, totalMs: 100 }, 'test dial');
+
+		expect(dialer.dialed.map(String)).toEqual([throughOther.toString()]);
+		expect(connection).toBe(dialer.connection);
+	});
+
+	it('rejects with SelfRelayOnlyError, dialing nothing, when every address relays through the dialer', async () => {
+		const self = await newPeerId();
+		const dialer = recordingDialer(self);
+		const addrs = [circuitVia(self, await newPeerId()), circuitVia(self, await newPeerId())];
+
+		await expect(dialPeerAddrs(dialer, addrs, { perAddressMs: 100, totalMs: 100 }, 'test dial'))
+			.rejects.toBeInstanceOf(SelfRelayOnlyError);
+		expect(dialer.dialed).toEqual([]);
+	});
+});
+
 describe('directBeforeRelayed', () => {
 	it('moves circuit-relay addresses after direct ones, keeping each group in order', () => {
 		const relayId = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
@@ -160,6 +190,30 @@ describe('tryAddrsInTurn', () => {
 		expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
 	});
 });
+
+async function newPeerId(): Promise<PeerId> {
+	return peerIdFromPrivateKey(await generateKeyPair('Ed25519'));
+}
+
+/** `target`'s circuit address through a reservation it holds on `relay`. */
+function circuitVia(relay: PeerId, target: PeerId): Multiaddr {
+	return multiaddr(`/ip4/10.0.0.1/tcp/4001/ws/p2p/${relay.toString()}/p2p-circuit/p2p/${target.toString()}`);
+}
+
+/** An {@link AddrDialer} that records each address it is asked to dial and answers every one. */
+function recordingDialer(peerId: PeerId): AddrDialer & { dialed: Multiaddr[]; connection: Connection } {
+	const dialed: Multiaddr[] = [];
+	const connection = {} as Connection;
+	return {
+		peerId,
+		dialed,
+		connection,
+		dial: async (addr) => {
+			dialed.push(addr);
+			return connection;
+		},
+	};
+}
 
 async function startNode(transports: Libp2pOptions['transports'], listen: string[]): Promise<Libp2p> {
 	const node = await createLibp2p({

@@ -50,19 +50,26 @@ Link latency is the one measurement with no spec to live in, so it lives here. `
 | 50 ms | passes in 24.6–31.8 s over two runs; worst observed send wait 128–153 ms | — |
 | 100 ms, 150 ms | first sync completes; joiner's membership rows miss the 20 s join gate | — |
 
-Reproduce any row with `WS_SEND_DELAY_MS=<ms> WS_SEND_DELAY_MODE=<mode> yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e`, or with `WS_FRAME_STATS=1` for the counters-only row. `WS_SEND_DELAY_MS` pins the whole process, so the committed 10 ms arm's own request is logged and ignored and both tests in that file run at the delay you asked for.
+Reproduce any row with `WS_SEND_DELAY_MS=<ms> WS_SEND_DELAY_MODE=<mode> yarn workspace @serfab/integration-tests exec vitest run blind-relay-phone-to-phone-e2e`, or with `WS_FRAME_STATS=1` for the counters-only row. `WS_SEND_DELAY_MS` pins the whole process, so the committed 10 ms arm's own request is logged and ignored and all three tests in that file run at the delay you asked for.
 
-**Read the right line.** The environment path has no end-of-run hook — vitest recycles its forked workers rather than exiting them, so neither `exit` nor `beforeExit` output reaches the terminal — and the fixture therefore reports on a 5 s timer. Every one of those lines is a RUNNING SUBTOTAL, and a scenario that finishes inside one tick prints none at all. Exact totals come only from a boundary something in the process declares, and under `WS_FRAME_STATS=1` this file has one: the committed latency arm's `installWsLatency` prints the accumulated counters immediately before zeroing them, and its `restore()` prints that arm's closing line. So the first summary after the loopback test passes is the baseline total, and the last line of the run is the 10 ms arm's total. Do not filter the run down to one test with `-t` when you want a total — that removes the only boundary in the file.
+**Read the right line.** The environment path has no end-of-run hook — vitest recycles its forked workers rather than exiting them, so neither `exit` nor `beforeExit` output reaches the terminal — and the fixture therefore reports on a 5 s timer. Every one of those lines is a RUNNING SUBTOTAL, and a scenario that finishes inside one tick prints none at all. Exact totals come only from a boundary something in the process declares, and under `WS_FRAME_STATS=1` this file has one: the committed latency arm's `installWsLatency` prints the accumulated counters immediately before zeroing them, and its `restore()` prints that arm's closing line. So the first summary after the loopback test passes is the baseline total, and the line printed as the 10 ms arm finishes (by its `restore()`) is that arm's total. The per-party test runs after it, and since `restore()` does not zero the counters, any line after that one adds the per-party arm's frames onto the 10 ms arm's and is neither arm's total. Do not filter the run down to one test with `-t` when you want a total — that removes the only boundary in the file.
 
 Measured that way on 2026-09-21 (same machine, two runs), the baseline is 11,939 and 12,531 frames and the 10 ms `pipelined` arm 12,200 and 13,760 — so on this hardware the delay does NOT multiply the frame count. That does not match the 4,735-frame baseline in the row below, and the two windows are not the same (the boundary-declared one also covers the loopback arm's teardown), so treat any frames-vs-delay RATIO built on the older figure as unconfirmed until it is re-measured at a declared boundary. `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips` carries the ratio claim that depends on it.
 
 Two things that table is not saying. The `pipelined` failures at 100 ms are not a broken strand: the strand becomes writable and the join is still climbing the membership reconciler's retry ladder (1 s doubling to the 30 s poll interval, `strand-membership-reconciler.ts`) when the scenario's deliberately tight 20 s gate expires — slow, and not observed through to completion either way. And the frame count is the multiplier on any per-frame cost, which is why the two modes diverge so sharply on the same scenario; how chatty relayed bring-up is in the first place is a separate question, owned by `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`.
 
-**The cohort read deadline's band has no spec either, and no committed scenario.** `COHORT_READ_DEADLINE_MS` (5000 ms, `packages/quereus-plugin-sereus/src/cluster-size.ts`) is how long one cohort peer gets to answer one read-path request; its measurement, its declined-read counts and its first-sync band live in that constant's doc comment, which is the single copy. What lives here is why there is no test and how to re-measure. There is no test because the journey passes at BOTH 1000 ms and 5000 ms on the shape that was measured (two relay-only `CadreNode`s on one shared loopback dedicated relay, 900 ms one-way `pipelined` delay raised after formation), so a committed scenario at that delay would gate nothing, and above it a run breaks on redialling instead (`tickets/fix/strand-node-never-redials-through-a-relay-at-a-three-second-round-trip`) — there is no delay at which a stable pass/fail gate for this exists. What the deadline changes at 900 ms is the COUNT of declined reads, which is a log-line count, not an assertion.
+**The cohort read deadline's band has no spec either, and no gating test.** `COHORT_READ_DEADLINE_MS` (7000 ms, `packages/quereus-plugin-sereus/src/cluster-size.ts`: two link round trips at the default declared link, pinned equal to cadre-core's `cohortReadDeadlineMs` by `packages/cadre-core/test/link-budget.spec.ts`) is how long one cohort peer gets to answer one read-path request; its measurement, its declined-read counts and its first-sync band live in that constant's doc comment, which is the single copy. What lives here is why there is no test and how to re-measure. There is no test because the journey passes at 1000, 5000 and 7000 ms on the shape that was measured (two relay-only `CadreNode`s on one shared loopback dedicated relay, a one-way `pipelined` delay raised after formation), at 900 ms one-way and, since the dial budgets were derived from the declared link, at 1 500 ms too (2026-09-29; the earlier note that runs above 900 ms broke on redialling no longer holds). So a committed scenario at either delay would gate nothing. What the deadline changes is the COUNT of declined reads, which is a log-line count, not an assertion — and at 1 500 ms one-way not even that moves, because Optimystic's fixed 3 s request dial deadline cuts every consult's protocol negotiation off before either value is reached (the constant's doc has the counts).
 
-To re-measure, or to compare a third value, add the shape as a new opt-in configuration of `relay-round-trip-measure.integration.ts` rather than writing a fresh scenario — that file exists because this measurement was rebuilt from scratch three times and each copy was deleted afterwards. It needs one addition first: the injected delay must be raisable AFTER the strand has formed and first synced, because formation's own 5 s per-step budget is what breaks if the link is slow from the start, and both instruments hold their delay in a closure with no setter (`harness/counting-proxy.ts` is the better host for one; `backlog/debt-relay-scenarios-never-see-link-latency` owns that fixture's shape). The shape to build: A founds a closed strand and publishes a bound invitation; B forms, attaches and reads a row; `B.stopStrand(strandId)`; A writes a second row (its first attempts are refused while A's cohort view still counts B, so retry for a few seconds); raise the one-way delay to 900 ms; `B.addStrand(...)` again against the same raw-storage capture (`harness/block-store-probe.ts`'s `captureRawStorage`, so B re-attaches over its own stale store rather than an empty one), wait for the strand connection, then `whenStrandWritable` and read the row written while B was away. Count `cluster-fetch:peers-silent` / `cluster-fetch:no-quorum` lines under `DEBUG='optimystic:db-p2p:coordinator-repo*'`.
+**The re-attach shape behind both that deadline and the first-sync wait is committed as an opt-in scenario**, `packages/integration-tests/src/scenarios/strand-reattach-first-sync-measure.integration.ts`, skipped unless `REATTACH_SYNC_MEASURE=1`. Two relay-only parties on one loopback dedicated relay form a closed strand on an undelayed link, so the measured attach is the only delayed operation, and the one-way `pipelined` delay is raised afterwards, before the measured `addStrand`; sockets created under `ws-latency.ts` read its live delay, so a `restore()` followed by a second install retimes the connections already open. The arms are a fresh join, a re-attach over an empty store, and a re-attach over the store the machine kept, and each run prints when the launch returned, whether it came up gated, and when the strand node connected, the strand became writable, and the row written while the machine was away became readable. The file's doc comment lists its variables, including `REATTACH_COHORT_READ_MS` for the per-peer cohort read deadline. The results live on `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS` (`packages/cadre-core/src/strand-first-sync-gate.ts`), which is sized from them; re-run this before changing that constant or `COHORT_READ_DEADLINE_MS`, and to compare deadlines, run it at each value under `DEBUG='optimystic:db-p2p:coordinator-repo*'` and count the `cluster-fetch:peers-silent` / `cluster-fetch:no-quorum` lines. It is its own file rather than a configuration of `relay-round-trip-measure.integration.ts` (below) because it times one attach under `ws-latency.ts`'s process-wide delay, where that file counts per-operation streams and exchanges over its per-link proxy.
 
-One layer below every scenario above — beneath cadre, beneath Optimystic, beneath any database — `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts` measures what a single relayed libp2p connection costs at a given one-way delay — bare libp2p against the dedicated relay, with `@optimystic/db-p2p`'s own `connectionManager` values, so nothing above the transport can hide the signal. Run it with `RELAY_DIAL_COST=1 yarn workspace @serfab/integration-tests exec vitest run relayed-dial-cost-by-latency`; it is skipped otherwise. The numbers and what they imply about each dial budget in the stack live in that file's own doc comment, which is their single home — do not copy them here. The headline: a relayed dial costs a FIXED NUMBER OF ROUND TRIPS, so any budget stated in milliseconds has a link speed above which it can never open one. That is no longer only a finding: `packages/cadre-core/src/link-budget.ts` derives every cadre-owned dial and relay-reservation deadline from one declared link round trip (`NetworkConfig.linkRoundTripMs`) times the count this measurement gives for that operation, so re-run it before changing a count there.
+```
+REATTACH_SYNC_MEASURE=1 REATTACH_ARMS=reattach-kept REATTACH_RUNS=3 yarn workspace @serfab/integration-tests exec vitest run strand-reattach-first-sync-measure
+REATTACH_SYNC_MEASURE=1 REATTACH_DELAY_MS=1500 REATTACH_ARMS=fresh REATTACH_RUNS=1 REATTACH_COHORT_READ_MS=5000 DEBUG='optimystic:db-p2p:coordinator-repo*' yarn workspace @serfab/integration-tests exec vitest run strand-reattach-first-sync-measure
+```
+
+The first is the re-attach band at the 1.8 s round trip; the second is one fresh join at the supported 3 s round trip with the read deadline set back to 5 000 ms, to count declined reads against a run at the default. Run one arm per command, with the `DEBUG` output streaming: a run takes one to three minutes and the scenario's per-run cap is 600 s.
+
+One layer below every scenario above — beneath cadre, beneath Optimystic, beneath any database — `packages/integration-tests/src/scenarios/relayed-dial-cost-by-latency.integration.ts` measures what a single relayed libp2p connection costs at a given one-way delay — bare libp2p against the dedicated relay, in two arms that differ only in the connection-manager limits and request dial deadline `@optimystic/db-p2p` gives a node (with no link declared, and at the link cadre-core declares), so nothing above the transport can hide the signal. Run it with `RELAY_DIAL_COST=1 yarn workspace @serfab/integration-tests exec vitest run relayed-dial-cost-by-latency`; it is skipped otherwise. The numbers and what they imply about each dial budget in the stack live in that file's own doc comment, which is their single home — do not copy them here. The headline: a relayed dial costs a FIXED NUMBER OF ROUND TRIPS, so any budget stated in milliseconds has a link speed above which it can never open one. That is no longer only a finding: `packages/cadre-core/src/link-budget.ts` derives cadre's dial and relay-reservation deadlines from one declared link round trip (`NetworkConfig.linkRoundTripMs`) times the count this measurement gives for that operation, and cadre-core hands the same declaration to Optimystic, which derives libp2p's dial and inbound-upgrade limits and its own request deadlines from it; so re-run it before changing a count there or the declared default.
 
 Relay ROUND TRIPS — what one chat-shaped strand operation costs two people who reach each other only through a relay — are measured by `packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts`, which is committed but **opt-in**: without `RELAY_RRT_MEASURE=1` the whole suite is skipped, so `yarn test` never runs it. It exists because the same measurement was written from scratch three times, once per optimystic re-measure, and each copy was deleted afterwards; by the third, a change in the numbers could no longer be told apart from a difference between the throwaway scenarios. Results and their history live in `tickets/blocked/optimystic-strand-operations-cost-dozens-of-relay-round-trips`, not here.
 
@@ -112,9 +119,11 @@ worth not re-litigating:
   walks `<dir>/node_modules` from the calling module up to the monorepo root inclusive, because
   packages setting `installConfig.hoistingLimits: "workspaces"` keep their own copies and that is
   what their suites load. A default would silently reinstate the blind spot.
-- **`cadre-provider` is the one package with no guard**, because it declares zero
-  `workspace:`/`link:` dependencies. Nothing here would flag its omission if it ever gains one — a
-  `NOTE:` in its `vitest.config.ts` says so at the site.
+- **Every package with a suite has a guard.** `cadre-provider` was the exception while it declared
+  zero `workspace:`/`link:` dependencies; it gained one (`@serfab/config-check`, for its strict
+  config check) and a `test/global-setup.ts` with it. (`config-check` has neither dependencies nor
+  a suite of its own; it is tested through cadre-cli's and cadre-provider's suites, which guard
+  its `dist`.)
 - Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded from the source scan —
   they are not build inputs, so editing a spec does not trip the guard.
 
@@ -137,8 +146,9 @@ root `yarn test`) proves it catches the drift rather than merely passing today �
 the never-used case, and the mentions-it-in-prose false positive.
 
 **What that gate cannot catch:** a package that gains a `workspace:`/`link:` dependency and never
-writes a setup module at all — `cadre-provider`'s case above. It is driven by the module existing,
-so there is nothing for it to compare against when there is none.
+writes a setup module at all (`cadre-provider` was that package until it took a dependency on
+`config-check`). It is driven by the module existing, so there is nothing for it to compare
+against when there is none.
 
 ### When it fires because a sibling's own runner is mid-ticket
 
@@ -162,13 +172,63 @@ git -C ../quereus status --short                                        # clean 
 Only when a sibling is both idle and clean is its tree worth building. This matters most before a
 release measurement, where the whole point is to describe code someone can install.
 
+## Tests that did not run
+
+Vitest counts every test under a failed `beforeAll` as skipped. A scenario file whose shared boot throws adds one to `Test Files … failed` and nothing to `failed` on the `Tests` line; its tests go into `skipped`, together with the ones skipped on purpose. The run still exits non-zero and the hook's error is printed under `Failed Suites`.
+
+`test-harness/setup-failure-reporter.ts` is a Vitest reporter that separates the two. After the summary it prints one block naming the tests a failed setup kept from running, grouped by the suite (or file) whose hook threw, with the first line of the hook's error. It prints nothing when no setup failed, and does not change the exit code.
+
+```
+ NOT RUN  7 tests did not run because a setup hook (beforeAll) failed. Count as failed, not skipped.
+   src/scenarios/<file>.integration.ts > <suite name> — 7 tests
+     Error: <first line of the hook's error>
+```
+
+- **Recording a run's result.** Move the `NOT RUN` count from `skipped` to `failed` before quoting the `Tests` line in a ticket: `1 passed | 8 skipped` with `NOT RUN  7 tests` is 7 failed, 1 passed, 1 skipped.
+- **What is counted.** A test whose state is `skipped`, that was not marked to be skipped (`it.skip`, `describe.skipIf`, `todo`, a `-t` filter or `only` elsewhere), and that sits under a suite or file that is `failed` with a hook error and has no test that passed or failed. The last condition excludes a failed `afterAll`: its suite is also `failed` with an error, but its tests ran.
+- **What is miscounted.** A suite in which every test calls `ctx.skip()` at run time and whose `afterAll` then throws is reported as not run. Vitest's reporter API does not say which hook an error came from, and no suite here has that shape.
+- **A file that fails to import is not in the block.** It has no collected tests to name; it appears under `Failed Suites` and in `Test Files … failed`.
+- **A `--reporter` flag drops the block.** The flag replaces the config's `reporters` list rather than adding to it, so `vitest run --reporter=dot` prints no `NOT RUN` block. The `test` and `test:debug` scripts of `integration-tests` pass no such flag for that reason; `verbose` is selected in the config.
+- **Only `integration-tests` lists it.** Another package adopts it by adding the file's relative path to its own vitest `reporters`, after the reporter that prints the summary, and removing any `--reporter` flag from its scripts.
+
+The counting rule is covered by `test-harness/setup-failure-reporter.spec.ts`, which runs Vitest itself on a fixture suite written to the OS temp directory.
+
+## App modules in a scenario
+
+An app module that imports nothing can run inside an `integration-tests` scenario: the scenario
+imports its **source** by relative path. `cadre-host-donation-phone-requester.integration.ts` does
+this with `packages/reference-app-rn/src/host-node-request.ts`, the phone's client for cadre-host's
+`/grants` routes, so the real server meets the requests the phone actually sends rather than a
+hand-written equivalent of them.
+
+- **Why not a package dependency.** One from `reference-app-rn` on `@serfab/cadre-host` would
+  install a Fastify server into the Expo app's own `node_modules` (the app sets
+  `hoistingLimits: "workspaces"`) and into every EAS build. One from `integration-tests` on the app
+  would link an Expo app that has no exports map, and bring the question of its dependencies with
+  it. Moving the module into a shared or published package is more than one test is worth, and the
+  module carries phone-specific wording for the user.
+- **The module must stay import-free.** Whatever it imports has to load in plain Node; a native or
+  Expo import breaks the scenario as it loads. The module's header says so, and
+  `eslint.config.mjs` refuses any runtime import in it (type-only imports are erased, so they
+  stay allowed); a second module used this way goes on that rule's `files` list.
+- **No stale-build guard is involved.** Vitest resolves the `.js` specifier to the `.ts` source, so
+  there is no `dist` to go stale.
+- **Scenario files are not built.** `integration-tests`' `tsconfig.build.json` excludes
+  `**/*.integration.ts` as it does `*.spec.ts` and `*.test.ts`: scenarios are Vitest test files,
+  nothing consumes them compiled (the temporary device-run scripts placed in `dist/` import only
+  `dist/harness/`), and a source file from outside `src/` would otherwise fail the build with
+  TS6059. For the same reason `rootDir: "src"` sits in `tsconfig.build.json` rather than
+  `tsconfig.json`, so an editor opening the scenario does not flag the import.
+  `tsconfig.typecheck.json` widens `rootDir` to the repo root, so `yarn typecheck` checks the
+  imported module against this package's settings too.
+
 ## Type-check coverage
 
 `yarn typecheck` (root) fans out to **every** TS workspace. Each package defines a `typecheck`
 script (`tsc --noEmit`) so type validation does not depend on the slower `yarn build`, and test
 files are type-checked where possible (vitest itself never type-checks).
 
-- Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 workspaces.
+- Every TS package has a `typecheck` script; `yarn typecheck` validates every workspace.
 - Every package that **has** a `vitest.config.ts` also has that file inside its `typecheck` program, so a
   Vitest option the installed version no longer recognizes fails `yarn typecheck` instead of sitting
   silently unused (this bit once: a `test.poolOptions.forks.singleFork` removal in Vitest 4 went
@@ -176,7 +236,7 @@ files are type-checked where possible (vitest itself never type-checks).
   parallel despite binding real network ports; now expressed as top-level `pool: 'forks'` +
   `fileParallelism: false`).
   Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
-  `quereus-plugin-sereus`, `integration-tests`) or the package's main `tsconfig.json`
+  `cadre-rn`, `quereus-plugin-sereus`, `integration-tests`) or the package's main `tsconfig.json`
   (`reference-app-ns`, `reference-app-rn`, `reference-app-web`).
   Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
@@ -234,11 +294,13 @@ files are type-checked where possible (vitest itself never type-checks).
   live in `scripts/lib/typecheck-programs.mjs`; the config gate's 16 fixtures pass unmodified across
   that refactor.
 - Per-package scope:
-  - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `integration-tests`,
-    `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
+  - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `cadre-rn`,
+    `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, checked by the separate `typecheck:e2e` script — which is chained into
     that package's `build`, **not** into root `yarn typecheck`, so the fast gate does not cover them)
+  - `config-check` has no tests; its `tsconfig.json` sets `"types": []` and `"lib": ["ES2022"]`, so a
+    `node:` import or a `NodeJS.*` type fails its type check (the package must stay runtime-neutral)
   - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`), whose
     `include` lists `test/**/*.ts` and `vitest.config.ts` beside `app/` and `src/`. That program keeps
     `customConditions: ["react-native", "browser"]`, which turned out not to disturb resolution of
@@ -257,7 +319,7 @@ files are type-checked where possible (vitest itself never type-checks).
     `globalSetup` is not this repo's code to type-check. And `.svelte` is a non-issue for *this* gate:
     every Vitest `include` in the repo targets `*.ts`, so no `.svelte` file is ever collected (Svelte
     coverage remains the separate `svelte-check` gap above).
-  - The six `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
+  - The packages' `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
     `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
     `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather
     than new debt. If a compiler option ever has to change across all of them at once, that is the point to
@@ -288,6 +350,9 @@ section).
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
   plus the same `req.resolve`d cadre-cli bin (integration-tests — its harness spawns real CLI children).
   Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
+- integration-tests' child-process scripts (`src/harness/fixtures/*.mjs`) are spawned by path, so
+  `knip.ts` declares them as entries; without that their imports go unseen and the dependencies only
+  they use (`@optimystic/db-p2p-storage-fs`) read as unused.
 - **Zero configuration hints is part of the gate's value**: a hint means `knip.ts` is carrying an exemption
   reality no longer needs. Two were retired that way (`test-harness/**` from the root `ignore`,
   `@tsconfig/svelte` from `cadre-host`'s `ignoreDependencies` — knip resolves the tsconfig `extends` on its
@@ -335,6 +400,24 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   config-level exemption, which would also switch off the `CadrePeer` selectors sharing the rule. Note that a
   later config entry setting `no-restricted-syntax` replaces the earlier one's selectors for the files it
   matches; the config composes each scope's list from shared constants for that reason.
+- **Link-deadline guard:** the same rule (`LINK_DEADLINE_GUARD`) flags, in `packages/cadre-core/src` only, a value
+  named `…TIMEOUT_MS` / `…BUDGET_MS` / `…DEADLINE_MS` (any case, so `timeoutMs` too) set to a number or to
+  arithmetic over numbers only — as a const, a parameter or destructuring default, a class field, an object
+  property, an assignment, or the right side of `??` / `||` (`opts?.timeoutMs ?? 5000`). A deadline over the machine-to-machine link has to derive from
+  `link-budget.ts`; one that stays a number carries `// eslint-disable-next-line no-restricted-syntax --
+  link-independent: <why>` or `-- link-bound, not yet derived: <ticket slug>`, so the unconverted set is one grep.
+  A third reason, `-- cuts off by design: <why>; see …`, keeps a deadline that waits on the link through an
+  Optimystic read or commit but is sized by what its caller can tolerate; the sites are listed in
+  [cadre-consistency.md](cadre-consistency.md) → "Deadlines Over Optimystic's Reads and Commits". A fourth,
+  `-- measured, not derived: <where>`, keeps one that waits on the link but bounds a whole phase of many
+  exchanges with no round-trip count to derive from (the strand first-sync wait); it is sized from the
+  measurement the directive names and re-measured, not recomputed, when a number under it moves.
+  Not caught: other names (`…_WAIT_MS`) and inline `setTimeout(…, 5000)`. Converting a `link-bound` site means
+  deleting its directive too: `reportUnusedDisableDirectives: 'error'` fails the gate on any directive, anywhere
+  in the repo, that no longer disables anything.
+- **Import-free app modules:** `@typescript-eslint/no-restricted-imports` refuses every runtime import in
+  `reference-app-rn/src/host-node-request.ts`, which an `integration-tests` scenario imports by source path
+  and runs in plain Node (see "App modules in a scenario"). Type-only imports stay allowed.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
@@ -343,7 +426,9 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   not linted, to avoid a formatter war.
 - **cadre-core's default entry must load in a browser and in React Native** (checked by app builds, not by lint or `yarn test`): Node-only code (`node:fs`, `node:crypto`, `node:http2`, …) lives behind the Node-only subpaths in cadre-core's `package.json` `exports` (`./key-store-file`, `./push-node`, …), never in the graph the `.` entry reaches, dependencies included. The only checks over that whole graph are `vite build` in `reference-app-web`, `yarn workspace @serfab/reference-app-rn test:bundle` and `yarn workspace @serfab/reference-app-ns test:bundle`; none of them runs under a root gate. NOTE: this broke once (a dependency's entry that read `fs` / `path` at load) and was caught only by the web build; if it breaks again, add a root-gate bundle check of cadre-core's `.` entry rather than another single-import lint rule.
 - **Babel helper floor for React Native** (enforced by a test, not by lint): Metro compiles async generators with Babel's `wrapAsyncGenerator` helper. In `@babel/runtime` / `@babel/helpers` before 7.29.2, when a consumer stops early (`break` or `return` inside `for await`) the helper drops everything in the generator's `finally` after its first `await`; on the phone that left Quereus's execution lock held and strand founding hung. `reference-app-rn` declares `@babel/runtime` `^7.29.2`, and its `metro-babel` Vitest project (`test/metro-babel/async-generator-cleanup.spec.ts`) compiles an early-exit probe with the app's own Metro Babel transformer, runs it against every `@babel/runtime` on Metro's `nodeModulesPaths` and against the helper `@babel/core` inlines from `@babel/helpers`, and fails with the upgrade command if the cleanup is dropped. That project has no stale-build guard, so `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` runs it while a linked sibling's `dist` is stale (a full `vitest run` stops at the `node` project's guard first). Quereus from `ac4b72bc8` on (not the published 4.19.0) also throws `UNSUPPORTED` naming the upgrade when the broken helper is loaded.
-- **Hermes polyfills for React Native** (also a test, not lint): `reference-app-rn/polyfills/hermes.js` supplies the web APIs Hermes lacks that libp2p reads — `AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `TextDecoder`, `structuredClone` and the rest. Deleting any of them used to break nothing in the repo and everything on a phone, and the worst case was silent: no `bufferedAmount` means `@libp2p/websockets` reads `undefined`, decides the socket is full, and every dial dies on its timeout with no indication why. The `polyfills` Vitest project holds these two specs, plus `test/polyfills/reload-reason.spec.ts` for the development-only reload logger described in [`docs/reference-app-rn.md`](reference-app-rn.md) § Device test runs. `test/polyfills/hermes-polyfills.spec.ts` evaluates the polyfill file in a controlled scope against a fake Hermes + React Native global surface — including the real `abort-controller` classes React Native installs — and drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. `test/polyfills/dependency-globals.spec.ts` is a drift guard: it reads a listed set of dependency `dist` trees as text and fails when a global that neither React Native nor `polyfills/` provides starts appearing; it is a substring search over a hand-listed set of packages, so it narrows the window rather than closing it (its header says what it cannot see). Like `metro-babel`, the project carries no stale-build guard, so `yarn workspace @serfab/reference-app-rn vitest run --project polyfills` runs while a linked sibling's `dist` is stale. What neither can do is see the real engine — `polyfills/audit.js` prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot under `__DEV__` for that. See [`docs/reference-app-rn.md`](reference-app-rn.md) § Key Dependencies.
+- **Hermes polyfills for React Native** (also a test, not lint): `@serfab/cadre-rn`'s `polyfills/hermes.js` (in `packages/cadre-rn/polyfills/`) supplies the web APIs Hermes lacks that libp2p reads — `AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `TextDecoder`, `structuredClone` and the rest. Deleting any of them used to break nothing in the repo and everything on a phone, and the worst case was silent: no `bufferedAmount` means `@libp2p/websockets` reads `undefined`, decides the socket is full, and every dial dies on its timeout with no indication why. The kit's `polyfills` Vitest project holds two polyfill specs. `test/polyfills/hermes-polyfills.spec.ts` evaluates the polyfill file in a controlled scope against a fake Hermes + React Native global surface — including the real `abort-controller` classes React Native installs — and drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. `test/polyfills/reload-reason.spec.ts` covers the development-only reload logger described in [`docs/reference-app-rn.md`](reference-app-rn.md) § Device test runs. The same project also runs `test/metro/with-cadre-metro.spec.ts`, which drives the resolver `@serfab/cadre-rn/metro` installs over a fixture tree and pins its three rules (peers resolve from the app, `@babel/runtime` helpers resolve to CommonJS, `@libp2p/*` files swap to their `browser` variants), each of which would otherwise break only on a phone ([`docs/reference-app-rn.md`](reference-app-rn.md) § Metro Configuration). The reference app's own `polyfills` project holds `test/polyfills/dependency-globals.spec.ts`, a drift guard: it reads a listed set of the app's installed dependency `dist` trees as text and fails when a global that neither React Native nor the kit's `polyfills/` provides starts appearing. It stays in the app because the dependency graph is per app. It is a substring search over a hand-listed set of packages, so it narrows the window rather than closing it (its header says what it cannot see). Like `metro-babel`, neither project carries a stale-build guard, so `vitest run --project polyfills` in either workspace runs while a linked sibling's `dist` is stale. What none of them can do is see the real engine — the kit's `polyfills/audit.js`, loaded by `@serfab/cadre-rn/boot-check`, prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot under `__DEV__` for that. See [`docs/reference-app-rn.md`](reference-app-rn.md) § Key Dependencies.
+- **Schema guide examples execute** (also a test, not lint): `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` extracts every fenced block from `docs/schema-guide.md` with `marked` and requires each fence's info string to be `sql schema` or `sql schema <name>` (an sApp schema body — applied through the plugin's own `applyAppSchema`, which also refuses any item the Quereus parser would silently skip), `sql query <name>` (every statement parsed and planned, never run, against the `sql schema <name>` block with `App` alone on the search path; a parse error, such as placeholder text, fails the block), `sql script` (run as-is) or `sql fragment` (never run); any other fence, and a schema name used twice, fails, naming its heading. Each block gets a fresh in-memory `Database` with the crypto plugin and a stub for the one app-supplied function (`has_role`). Applying is not enough: Quereus compiles a table's CHECK constraints when a write is planned, not at `create table`, so a check calling a missing function or reading an undeclared context variable applies cleanly. The harness therefore plans (never runs) an insert, an update and a delete against every table, supplying every declared context variable, and a select against every view. Defaults, generated columns and assertions are validated at apply. Planning proves a check compiles, not that it accepts a sensible row: a `like(author_email, '%@%')` with its arguments reversed (Quereus's `like` takes the pattern first) planned cleanly and would have refused every real email. Query blocks are planned the same way, so a query that would fail at run time (an insert omitting a NOT NULL column) still passes. `sql fragment` is left for lines that are not statements on their own, such as a lone constraint.
+- **Chat schema copies match `schemas/chat-simple.qsql`** (also a test, not lint): the schema is hand-copied as the `CHAT_SCHEMA` constant in `reference-app-rn`, `reference-app-web` and `reference-app-ns`, because a React Native bundle cannot read the file, and as the fenced block under "Simplified Chat Schema" in `docs/reference-app-rn.md`. Each app's `test/chat-schema-drift.spec.ts` compares its constant with the file, and `packages/quereus-plugin-sereus/test/chat-simple-doc-drift.spec.ts` compares the document's block, which it requires to be the only one under that heading; all four go through `test-harness/chat-simple-schema.ts`. The comparison ignores comments, line endings, indentation and blank lines and nothing else, so a token moved to another line fails it. The copies in test fixtures (`reference-app-rn/test-fixture/start.mjs` and three `integration-tests` scenarios) are not compared; ticket `debt-test-fixtures-hand-copy-the-chat-schema` covers them.
 - Scope notes: type-aware linting (`projectService`) is enabled only for the node/library `src` trees;
   the bundler/expo apps (`reference-app-web`, `reference-app-rn`, `cadre-host/ui`) get non-type-aware rules.
   `maestro/` (Maestro JS engine) and non-package trees (`tess/`, `ops/`,
@@ -403,6 +488,14 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   `^0.29.0` except `@optimystic/db-core`, which stayed `^0.28.0` in five packages). The gate turns that
   into a failure naming each stale range and its suggested edit, for every package with a `link:`
   resolution — which, since the entry above was closed, is every `@optimystic/*` this repo depends on.
+- **The libp2p family follows the linked `@optimystic/db-p2p`, and this gate does not see it.**
+  `libp2p`, `@libp2p/*`, `@multiformats/multiaddr`, `datastore-core` and `uint8arrays` are not
+  linked, so their ranges here are checked against nothing. Keep them on the release line
+  `../optimystic/packages/db-p2p/package.json` declares, exact pins (`@libp2p/identify`,
+  `@libp2p/webrtc`) included. `yarn upgrade:optimystic` does not move them. When they drift, two
+  physical copies of `@libp2p/interface` (or of `multiaddr`) appear and `yarn typecheck` fails with
+  TS2322/TS2345 messages naming both paths; the NativeScript bundle check fails on `uint8arrays`
+  instead (`typecheck-fails-on-libp2p-interface-3-1-against-linked-optimystic-3-3`).
 - NOTE: the published packages declare `@quereus/quereus` as a regular `dependency`, not a
   `peerDependency` — including `quereus-plugin-sereus`, which is loaded *into* a Quereus host. Ranges
   agree today, so installers dedupe to one copy. If a consumer ever pins a Quereus major that our
@@ -518,13 +611,15 @@ Each line names one shape and a scenario that exercises it, not every scenario o
 scenarios whose subject is a protocol or a service rather than a network shape are not listed.
 
 - Single machine, control plane only — `control-write-while-alone-convergence.integration.ts`.
-- Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`,
-  `control-write-degraded-cohort-member.integration.ts`.
+- Two-machine party, control plane (both write orderings) — `control-db-two-node-convergence.integration.ts`.
 - Three-machine party, control plane — `control-cohort-three-node-isolation.integration.ts`,
-  `harness-party-control-cohort.integration.ts` (the `TestParty` star world).
+  `harness-party-control-cohort.integration.ts` (the `TestParty` star world),
+  `control-write-degraded-cohort-member.integration.ts` (one member slow or silent).
 - One party, two machines, one strand — `websocket-chat.integration.ts`,
   `convergence-stress.integration.ts`, `strand-addr-seed-convergence.integration.ts`,
-  `strand-late-cadre-join.integration.ts` (join-after-founding ordering).
+  `strand-late-cadre-join.integration.ts` (join-after-founding ordering),
+  `strand-always-on-replica-survives-phone-loss.integration.ts` (an always-on storage replica
+  with no app, then a replacement machine after the writer is lost).
 - Cross-party strand, one machine per party (two and three parties) — `strand-formation-e2e.integration.ts`,
   `strand-membership-closed-strand-e2e.integration.ts`, `rbac-signed-write.integration.ts`,
   `multi-party-workflows.integration.ts`. All of those reach the strand mesh by dialing one
@@ -551,7 +646,9 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as
   `cadre-host-node-donation.integration.ts`, but the requester is an in-process `CadreNode`
   in the shape `reference-app-rn` runs: `listenAddrs: []`, WebSocket and circuit-relay
-  transports only, no TCP, its own party owner. It provisions with `bootstrapNodes: []`,
+  transports only, no TCP, its own party owner. It borrows the node over the host's real
+  `/grants` routes with the phone's own client (`reference-app-rn/src/host-node-request.ts`,
+  imported by source path — see "App modules in a scenario"), sending no `bootstrapNodes`,
   dials the lent node's `/ws` address itself, and keeps that connection across a node
   respawn (same WebSocket port) and across its own restart (same identity key, control
   storage and node-local dial-target store, and no second donation request). It is the only
@@ -586,14 +683,47 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   suite's ONLY relayed coverage of a link that is not instant; every other line on this map,
   relayed or direct, runs at loopback speed. The injected delay is process-wide, so both
   parties are equally slow — the asymmetric shape (a slow phone talking to a fast desktop) is
-  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. One SHARED relay only; the
-  two-relay shape (each party reserved on a different relay) is not covered.
+  uncovered, ticket `debt-relay-scenarios-never-see-link-latency`. Those two arms share one
+  relay; a third arm (loopback) gives each party its OWN relay, so B's formation and strand
+  dials go through A's relay, where B holds no reservation, and A reaches B through B's. It
+  asserts B's control connection to A names A's relay, and counts reservations per relay at
+  every checkpoint and again after rows have crossed both ways: 2 on each relay (that party's
+  control and strand node), none on the relay a node only dials through — stable over three
+  runs on 2026-09-29, 2.8–2.9 s each.
+- Relayed strand plane across parties, RESTARTED over persisted storage (the line above's
+  shape; after a write has crossed and each side's SAVED strand network state holds the other
+  side's strand peer with an address record, both machines stop and are rebuilt over the
+  identity key, raw stores, strand network state and joined-strand record they kept, each
+  re-claims its strand from `strand:discovered`, a write made after the restart must cross
+  both ways, each rebuilt strand node's FRET table must hold the other side's signed address
+  record at circuit addresses only, and every strand connection classifies `relayed`) —
+  `strand-relay-only-restart-reconverges.integration.ts`, the reproduction of
+  gotchoices/sereus#18. What carries the addresses across the restart is the saved FRET table
+  alone. A second always-on arm cuts one party out of the other's saved table before the
+  rebuild — the state a delivered FRET leave notice would leave — and the write must still
+  cross. Two opt-in arms:
+  `RESTART_NEGATIVE_CONTROL=1` runs it with the network state in memory too and passes only if
+  the post-restart write never crosses within its 180 s budget, and `RESTART_TWO_PROCESS=1`
+  runs each party in its own `node` process over on-disk stores in a temp directory
+  (`FileStrandNetworkStateStore`; `harness/strand-restart-party.ts`,
+  `harness/fixtures/strand-restart-party.mjs`), because a restart inside one process reopens
+  the same live in-memory stores and keeps module state. The two-process arm takes 12–15 s and
+  could run by default; it is opt-in only because the in-process arm already gates the
+  behaviour. Loopback-instant link, one shared relay.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
   machine catches up when it returns) — `strand-two-party-two-machine.integration.ts`. It
   asserts the commit, not the cohort width: whether the surviving three approved as 3-of-4
   or as a downsized 3-of-3 is not distinguished there.
+- Cross-party strand joined by a two-machine party whose second machine runs no app (the host
+  party founds an open strand; the joiner party's phone redeems the invitation and claims the
+  strand; its owner reconcile pass publishes the join as a party-wide `JoinedStrand` row; the
+  party's always-on machine launches a storage replica from that row and receives every block
+  the phone holds; the phone's `forgetJoinedStrand` then stops that replica while the host's
+  strand keeps running) — `strand-always-on-replica-hosts-cross-party-join.integration.ts`.
+  The replica serving a replacement phone is not repeated here; that is
+  `strand-always-on-replica-survives-phone-loss.integration.ts` (the one-party line above).
 - Membership actions issued from a party's second machine on that shape (a closed strand's
   invite consumed, both of a party's machines registered as devices of ONE member, and a
   promoted manager issuing/admitting — all authored on a machine that neither founded the
@@ -628,9 +758,6 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   relay-mediated variant stays uncovered, as above.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
-- **Uncovered**: the two-relay circuit shape — each party holding its reservation on a
-  DIFFERENT relay, so the path between them crosses relay boundaries. Both relay scenarios
-  above share one relay. Ticket `feat-scenario-two-relay-circuit`.
 
 All scenario paths above are relative to `packages/integration-tests/src/scenarios/`
 (harness fixtures live in `packages/integration-tests/src/harness/`). Sizing a new topology

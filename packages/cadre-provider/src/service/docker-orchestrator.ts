@@ -14,6 +14,8 @@ import type {
   RecoverableOrchestrator,
 } from './orchestrator.js';
 import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
+import { PortAllocator, allocatePortSet, releasePortSet, reservePortSet } from './port-allocator.js';
+import { parseCpuLimit, parseMemoryLimit } from './resource-limits.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -50,28 +52,28 @@ function parseDockerFinishedAt(finishedAt: string | undefined): Date | undefined
   return Number.isNaN(ms) || ms <= 0 ? undefined : at;
 }
 
-/** Port allocation tracker */
-class PortAllocator {
-  private usedPorts = new Set<number>();
+/**
+ * A container's host ports, allocated in this order. Reordering changes which
+ * host port each key gets from a fresh range, so a key added later goes on the end.
+ */
+const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p'] as const;
+type ContainerHostPorts = Record<(typeof CONTAINER_PORT_KEYS)[number], number>;
 
-  constructor(
-    private readonly start: number,
-    private readonly end: number
-  ) {}
-
-  allocate(): number {
-    for (let port = this.start; port <= this.end; port++) {
-      if (!this.usedPorts.has(port)) {
-        this.usedPorts.add(port);
-        return port;
-      }
-    }
-    throw new Error('No available ports in range');
+/**
+ * The host ports `createContainer` bound, read back from an inspect's
+ * `HostConfig.PortBindings` — the exact inverse of that write. Not from a list
+ * result's `Ports`, which Docker fills only for running containers: a stopped
+ * one keeps its bindings and gets them back when it restarts. A key with no
+ * binding (a container from a build that published fewer ports) is left out.
+ */
+function hostPortsOf(info: Docker.ContainerInspectInfo): Partial<ContainerHostPorts> {
+  const bindings: Docker.PortMap = info.HostConfig.PortBindings ?? {};
+  const ports: Partial<ContainerHostPorts> = {};
+  for (const key of CONTAINER_PORT_KEYS) {
+    const hostPort = bindings[`${CONTAINER_PORTS[key]}/tcp`]?.[0]?.HostPort;
+    if (hostPort !== undefined) ports[key] = Number(hostPort);
   }
-
-  release(port: number): void {
-    this.usedPorts.delete(port);
-  }
+  return ports;
 }
 
 /**
@@ -81,7 +83,8 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
   private readonly docker: Docker;
   private readonly config: DockerConfig;
   private readonly portAllocator: PortAllocator;
-  private readonly containerPorts = new Map<string, { health: number; metrics: number; p2p: number }>();
+  private readonly containerPorts = new Map<string, Partial<ContainerHostPorts>>();
+  private portsRehydrated: Promise<void> | undefined;
 
   constructor(config: DockerConfig, docker?: Docker) {
     this.config = config;
@@ -91,25 +94,6 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       config.portRange?.end ?? 20000
     );
     log('DockerOrchestrator initialized with socket: %s', config.socketPath);
-  }
-
-  /** Allocate `count` ports atomically; release any already taken if one fails. */
-  private allocatePorts(count: number): number[] {
-    const ports: number[] = [];
-    try {
-      for (let i = 0; i < count; i++) ports.push(this.portAllocator.allocate());
-      return ports;
-    } catch (err) {
-      for (const p of ports) this.portAllocator.release(p);
-      throw err;
-    }
-  }
-
-  /** Release a set of ports (used by both the failure path and removeContainer). */
-  private releasePorts(ports: { health: number; metrics: number; p2p: number }): void {
-    this.portAllocator.release(ports.health);
-    this.portAllocator.release(ports.metrics);
-    this.portAllocator.release(ports.p2p);
   }
 
   /**
@@ -140,6 +124,73 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     return true;
   }
 
+  /**
+   * Run {@link rehydratePorts} once per process, handing every caller the same
+   * promise. A rejected pass (daemon unreachable) is forgotten so the next call
+   * retries it.
+   */
+  private ensurePortsRehydrated(): Promise<void> {
+    this.portsRehydrated ??= this.rehydratePorts().catch((err: unknown) => {
+      this.portsRehydrated = undefined;
+      throw err;
+    });
+    return this.portsRehydrated;
+  }
+
+  /**
+   * Wait out a rehydration pass already in flight, without starting one. A
+   * removal calls this after the container is gone and before releasing its
+   * ports: a pass that listed the container before then may still be about to
+   * record its ports, and releasing first would strand them. A pass that starts
+   * later cannot list it, and with no pass run yet its ports were never reserved,
+   * so there is nothing to wait for. The pass's own failure belongs to the create
+   * that started it.
+   */
+  private async settlePortRehydration(): Promise<void> {
+    try {
+      await this.portsRehydrated;
+    } catch (err) {
+      log('Port rehydration in flight during a removal failed: %O', err);
+    }
+  }
+
+  /**
+   * Reserve the ports of every container this orchestrator created, running or
+   * not. They outlive the provider process (`unless-stopped`), and Docker is the
+   * only record of their ports across a restart — no separate ledger is kept.
+   * Filling `containerPorts` too lets `removeContainer` release a pre-restart
+   * container's ports the same way as a fresh one's.
+   */
+  private async rehydratePorts(): Promise<void> {
+    // The bare label key matches every container wearing it, whatever its value.
+    const listed = await this.docker.listContainers({ all: true, filters: { label: [CONTAINER_ID_LABEL] } });
+    // NOTE: inspects every labelled container at once; if a provider ever carries
+    // thousands, bound the concurrency.
+    const inspected = await Promise.all(listed.map(({ Id }) => this.inspectIfPresent(Id)));
+    for (const info of inspected) {
+      if (!info) continue;
+      const ports = hostPortsOf(info);
+      reservePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
+      this.containerPorts.set(info.Id, ports);
+    }
+    log('Rehydrated ports for %d existing container(s)', this.containerPorts.size);
+  }
+
+  /**
+   * A container's inspect, or `undefined` when the daemon no longer has it
+   * (404). Every other failure rethrows: a Docker outage must not read as
+   * "nothing there".
+   */
+  private async inspectIfPresent(dockerId: string): Promise<Docker.ContainerInspectInfo | undefined> {
+    try {
+      return await this.docker.getContainer(dockerId).inspect();
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode !== 404) throw err;
+      log('Container %s is gone (404)', dockerId);
+      return undefined;
+    }
+  }
+
   /** Best-effort volume removal; a missing volume must never fail a termination. */
   private async removeVolume(name: string): Promise<void> {
     try {
@@ -153,9 +204,9 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
   /**
    * Names of the durable volumes attached to a container, read from a live
    * inspect *before* removal — the container's own record is the only
-   * authoritative source. Deliberately not an in-memory map: `containerPorts`
-   * already loses its contents across a provider restart, and volume cleanup
-   * must not inherit that weakness.
+   * authoritative source. Deliberately not an in-memory map like
+   * `containerPorts`, which after a provider restart is empty until rebuilt from
+   * the daemon; the container's own record needs no rebuild.
    *
    * Only the volume this orchestrator would itself have created for the
    * container's own id is returned, so an operator-attached mount is never
@@ -185,8 +236,12 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       await this.pullImage();
     }
 
+    // Ports handed out before the live containers' ports are known would collide
+    // with them, so a failed rehydration fails the create; the next one retries.
+    await this.ensurePortsRehydrated();
+
     // Allocate ports atomically (releases partial allocations on failure).
-    const [healthPort, metricsPort, p2pPort] = this.allocatePorts(3) as [number, number, number];
+    const ports = allocatePortSet(this.portAllocator, CONTAINER_PORT_KEYS);
 
     const resources = request.resources ?? this.config.defaultResources ?? {};
 
@@ -222,9 +277,9 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           // route to the network. The p2p port (4001) intentionally stays on all
           // interfaces — libp2p peers must reach it remotely.
           PortBindings: {
-            [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(healthPort) }],
-            [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
-            [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(p2pPort) }],
+            [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.health) }],
+            [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.metrics) }],
+            [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(ports.p2p) }],
           },
           // Durable per-tenant state (identity key, generated config,
           // bootstrap-peer store, trusted-owner anchor, storage) all live under
@@ -233,14 +288,16 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           Mounts: [
             { Type: 'volume', Source: volumeNameFor(request.containerId), Target: DATA_MOUNT_TARGET },
           ],
-          Memory: this.parseMemoryLimit(resources.memoryLimit),
-          NanoCpus: this.parseCpuLimit(resources.cpuLimit),
+          // Both sources were checked with these parsers already (config defaults at provider
+          // start, a request's own `resources` at the route), so `undefined` here means unset.
+          Memory: resources.memoryLimit ? parseMemoryLimit(resources.memoryLimit) : undefined,
+          NanoCpus: resources.cpuLimit ? parseCpuLimit(resources.cpuLimit) : undefined,
           NetworkMode: this.config.network,
           RestartPolicy: { Name: 'unless-stopped' },
         },
         Labels: {
-          // The label `resolveDockerId` filters on — the only containerId → handle
-          // mapping that survives a provider restart.
+          // The label `resolveDockerId` and `rehydratePorts` filter on — the only
+          // containerId → handle mapping that survives a provider restart.
           [CONTAINER_ID_LABEL]: request.containerId,
           'sereus.party-id': request.partyId,
           'sereus.profile': request.profile,
@@ -250,7 +307,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       // Start container
       await container.start();
     } catch (err) {
-      this.releasePorts({ health: healthPort, metrics: metricsPort, p2p: p2pPort });
+      releasePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
       if (container) {
         // Free the reserved name + labels left by a created-but-unstarted container.
         try {
@@ -266,18 +323,18 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     }
 
     const dockerId = container.id;
-    this.containerPorts.set(dockerId, { health: healthPort, metrics: metricsPort, p2p: p2pPort });
+    this.containerPorts.set(dockerId, ports);
 
     log('Container %s started as %s', request.containerId, dockerId);
 
     return {
       dockerId,
-      healthEndpoint: `http://localhost:${healthPort}/health`,
-      metricsEndpoint: `http://localhost:${metricsPort}/metrics`,
+      healthEndpoint: `http://localhost:${ports.health}/health`,
+      metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
       // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
-      seedEndpoint: `http://localhost:${healthPort}/seed`,
+      seedEndpoint: `http://localhost:${ports.health}/seed`,
       seedToken,
-      p2pPort,
+      p2pPort: ports.p2p,
     };
   }
 
@@ -301,10 +358,10 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     await container.remove({ force: true, v: true });
     for (const name of volumes) await this.removeVolume(name);
 
-    // Release ports
+    await this.settlePortRehydration();
     const ports = this.containerPorts.get(dockerId);
     if (ports) {
-      this.releasePorts(ports);
+      releasePortSet(this.portAllocator, CONTAINER_PORT_KEYS, ports);
       this.containerPorts.delete(dockerId);
     }
   }
@@ -345,13 +402,8 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
    * fine" is the far more expensive mistake.
    */
   async inspectRunState(dockerId: string): Promise<ContainerRunState | undefined> {
-    let info: Docker.ContainerInspectInfo;
-    try {
-      info = await this.docker.getContainer(dockerId).inspect();
-    } catch (err) {
-      if ((err as { statusCode?: number }).statusCode === 404) return undefined;
-      throw err;
-    }
+    const info = await this.inspectIfPresent(dockerId);
+    if (!info) return undefined;
 
     const exitedAt = parseDockerFinishedAt(info.State.FinishedAt);
     return {
@@ -366,9 +418,11 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
    * the `sereus.container-id` label every created container wears.
    *
    * Asks the daemon rather than the in-memory `containerPorts` map on purpose:
-   * the map is empty after a provider restart, which is exactly when the reap
-   * needs an answer. `all: true` so a container that exited (or never got past
-   * creation) is still found — an orphan to reclaim is usually not running.
+   * after a provider restart the map is rebuilt only once a create triggers
+   * `rehydratePorts`, and the reap can run before one — the daemon is
+   * authoritative anyway. `all: true` so a container that exited (or never
+   * got past creation) is still found — an orphan to reclaim is usually not
+   * running.
    *
    * Errors are NOT swallowed: "the daemon could not answer" must not reach the
    * reap as "there is nothing to reclaim".
@@ -403,18 +457,5 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     });
   }
 
-  private parseMemoryLimit(limit?: string): number | undefined {
-    if (!limit) return undefined;
-    const match = limit.match(/^(\d+(?:\.\d+)?)\s*(B|K|M|G|T)?$/i);
-    if (!match) return undefined;
-    const [, num, unit] = match;
-    const multipliers: Record<string, number> = { B: 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
-    return Math.floor(parseFloat(num!) * (multipliers[unit?.toUpperCase() ?? 'B'] ?? 1));
-  }
-
-  private parseCpuLimit(limit?: string): number | undefined {
-    if (!limit) return undefined;
-    return Math.floor(parseFloat(limit) * 1e9); // Convert to nanocpus
-  }
 }
 

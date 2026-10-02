@@ -95,7 +95,12 @@ export interface LoggingConfig {
 // These mirror `@serfab/cadre-core`'s `PushCredentials` contract (the shape the
 // node reads from `CADRE_PUSH` / `config.push`). They are re-declared locally so
 // the provider stays self-contained — it does not pull cadre-core's runtime graph
-// just to serialize a JSON env var. Keep these in sync with cadre-core's types.
+// just to serialize a JSON env var. Keep these in sync with cadre-core's types:
+// they also drive what the provider ACCEPTS in its own config (`config/schema.ts`
+// builds its push field tables from them). If cadre-core adds a push field, the
+// provider rejects it at start until this mirror and the table gain it (fails
+// safe); if cadre-core removes one, the provider would still forward it in
+// `CADRE_PUSH` and every tenant node would refuse to boot — so update both together.
 
 /** FCM (Android/Firebase) service-account credentials. */
 export interface FcmCredentials {
@@ -167,10 +172,26 @@ export interface ProviderConfig {
   push?: ProviderPushConfig;
 }
 
-/** Partial configuration for overrides */
+/** Partial configuration for programmatic overrides (`loadConfig({ overrides })`). */
 export type PartialProviderConfig = {
   [K in keyof ProviderConfig]?: Partial<ProviderConfig[K]>;
 };
+
+/** Recursively-optional view of T — a config layer may override any leaf without supplying siblings. */
+export type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends ReadonlyArray<unknown>
+    ? T[K]
+    : T[K] extends object
+      ? DeepPartial<T[K]>
+      : T[K];
+};
+
+/**
+ * What a config file plus the environment may contain: every key optional, since
+ * `DEFAULT_CONFIG` fills the rest. The validator (`config/schema.ts`) produces
+ * exactly this, and only its output is merged over the defaults.
+ */
+export type ProviderConfigFile = DeepPartial<ProviderConfig>;
 
 /** Default configuration values */
 export const DEFAULT_CONFIG: ProviderConfig = {

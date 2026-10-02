@@ -38,7 +38,15 @@ const mocks = vi.hoisted(() => {
   return { stop, createLibp2pNode, StrandDatabase, superviseRelayReservation };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
+// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
+    resolveLinkDeadlines: actual.resolveLinkDeadlines
+  };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks.superviseRelayReservation }));
 
@@ -64,7 +72,7 @@ describe('StrandInstanceManager network-addrs wiring', () => {
   let authorPrivateKey: string;
   let authorPublicKey: string;
 
-  const testSchema = 'create table Test (id text primary key);';
+  const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
 
   beforeEach(() => {

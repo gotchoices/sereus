@@ -16,7 +16,15 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
-import type { BootstrapPeerStore, CadreNodeConfig, EnrolledMachineStore, RawStorageProvider, SAppConfig } from '@serfab/cadre-core';
+import type {
+  BootstrapPeerStore,
+  CadreNodeConfig,
+  EnrolledMachineStore,
+  JoinedStrandStore,
+  RawStorageProvider,
+  SAppConfig,
+  StrandNetworkStateStore,
+} from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
@@ -75,6 +83,13 @@ export interface ControlNodeOpts {
   hibernation?: boolean;
   /** Which strands this node participates in (default `'all'`). */
   strandFilter?: 'all' | 'none';
+  /**
+   * Launch a storage replica of every unclaimed strand the filter admits
+   * (`CadreNodeConfig.hostUnclaimedStrands`). Default `false` here, unlike production's
+   * `profile === 'storage'`: a harness storage node stands for "holds control blocks", and
+   * scenarios assert which machines run a strand.
+   */
+  hostUnclaimedStrands?: boolean;
   /**
    * Sleep this long before EVERY raw-storage operation, which multiplies the
    * duration of control-database bring-up by a known factor (`slow-raw-storage.ts`).
@@ -141,6 +156,20 @@ export interface ControlNodeOpts {
    */
   bootstrapPeerStore?: BootstrapPeerStore;
   /**
+   * Becomes `strandNetworkState.store` verbatim — the node-local strand network state
+   * (per strand, the FRET routing table its strand node saves and re-imports). Left
+   * unset the node gets an in-memory store that dies with it. Same restart rule as
+   * {@link bootstrapPeerStore}: a store that must outlive a rebuilt node is opened over
+   * backing state the scenario keeps outside the node.
+   */
+  strandNetworkStateStore?: StrandNetworkStateStore;
+  /**
+   * Becomes `joinedStrands.store` verbatim — the record of strands this node joined from
+   * ANOTHER party, re-offered as `strand:discovered` on every start. Left unset a node
+   * built with `privateKey` (no `keyStore`) remembers joins in memory only.
+   */
+  joinedStrandStore?: JoinedStrandStore;
+  /**
    * Node-local enrolled-machine record this node declares its block-repair
    * yardstick from at bring-up. Build one with {@link enrolledMachineStoreWith}.
    *
@@ -184,6 +213,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: opts.strandFilter ?? 'all' },
+    hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,
     storage: {
       provider: opts.storageProvider
         ?? (opts.storageOpDelayMs === undefined
@@ -217,6 +247,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     },
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
+    ...(opts.strandNetworkStateStore ? { strandNetworkState: { store: opts.strandNetworkStateStore } } : {}),
+    ...(opts.joinedStrandStore ? { joinedStrands: { store: opts.joinedStrandStore } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },
   };
 }
@@ -235,7 +267,7 @@ export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<st
   const db = node.getControlDatabase();
   if (!db) throw new Error('control database missing after start');
   await db.insertOwnerKey(publicKeyB64);
-  node.initializeSeedBootstrap(privateKeyB64);
+  await node.initializeSeedBootstrap(privateKeyB64);
   return publicKeyB64;
 }
 

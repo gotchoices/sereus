@@ -18,6 +18,7 @@ export type { GrantServiceOptions } from './grant-service.js';
 export { GrantError, DonationError } from './types.js';
 export type {
   Grant,
+  GrantListing,
   GrantDenyReason,
   GrantValidation,
   GrantValidator,
@@ -28,7 +29,7 @@ export type {
 
 /* ──────────────── donation lifecycle (2-donation-service) ──────────────── */
 
-export { DonationStore } from './donation-store.js';
+export { DonationStore, isLiveDonationStatus } from './donation-store.js';
 export {
   DonationService,
   DONATION_AWAITING_SEED_TTL_MS,

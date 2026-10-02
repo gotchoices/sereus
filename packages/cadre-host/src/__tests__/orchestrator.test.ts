@@ -19,6 +19,8 @@ import { decodeDockerId, encodeDockerId, type NodePorts } from '../orchestrator/
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { loadIdentity } from '../installer/identity.js';
+import { describeHandleContract } from './orchestrator-handle-contract.js';
+import { removeAllNodes } from './orchestrator-teardown.js';
 
 const FAKE_CHILD = `
 import fs from 'node:fs';
@@ -76,15 +78,12 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  // Force-kill any leftover children before cleanup.
-  for (const orch of orchestrators) {
-    for (const dockerId of listDockerIds(orch)) {
-      try { await orch.removeContainer(dockerId); } catch { /* ignore */ }
-    }
+  try {
+    await removeAllNodes(orchestrators);
+  } finally {
+    await sleep(50);
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   }
-  orchestrators.length = 0;
-  await sleep(50);
-  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function makeOrchestrator(overrides: Partial<ConstructorParameters<typeof HostProcessOrchestrator>[0]> = {}): HostProcessOrchestrator {
@@ -101,12 +100,6 @@ function makeOrchestrator(overrides: Partial<ConstructorParameters<typeof HostPr
   });
   orchestrators.push(orch);
   return orch;
-}
-
-function listDockerIds(orch: HostProcessOrchestrator): string[] {
-  // Use the state file as the source of truth since handles map is private.
-  const state = new StateStore((orch as unknown as { rootDir: string }).rootDir);
-  return state.load().handles.map((h) => h.dockerId);
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 3000, intervalMs = 50): Promise<void> {
@@ -130,6 +123,21 @@ function makeRequest(containerId: string, opts: { profile?: 'storage' | 'transac
     profile: opts.profile ?? 'transaction' as 'storage' | 'transaction',
   };
 }
+
+/** Replace `<workdir>/storage` with a file so the next launch throws EEXIST. */
+function sabotageWorkdir(workdir: string): string {
+  const storage = join(workdir, 'storage');
+  rmSync(storage, { recursive: true, force: true });
+  writeFileSync(storage, 'not-a-directory', 'utf8');
+  return storage;
+}
+
+describeHandleContract<HostProcessOrchestrator>('HostProcessOrchestrator', {
+  make: () => makeOrchestrator(),
+  request: (containerId) => makeRequest(containerId),
+  started: (orch, dockerId) => waitFor(() => orch.isRunning(dockerId)),
+  failNextCreate: (orch, containerId) => { sabotageWorkdir(orch.getNode(containerId)!.workdir); },
+});
 
 describe('HostProcessOrchestrator.createContainer', () => {
   it('spawns a live child and persists handle, ports, and endpoints', async () => {
@@ -265,14 +273,6 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
  * spawn.
  */
 describe('HostProcessOrchestrator failed launch', () => {
-  /** Replace `<workdir>/storage` with a file so the next launch throws EEXIST. */
-  function sabotageWorkdir(workdir: string): string {
-    const storage = join(workdir, 'storage');
-    rmSync(storage, { recursive: true, force: true });
-    writeFileSync(storage, 'not-a-directory', 'utf8');
-    return storage;
-  }
-
   it('keeps the prior handle addressable, so a later terminate still reclaims the workdir', async () => {
     const orch = makeOrchestrator();
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;
@@ -1002,6 +1002,7 @@ describe('child survives orchestrator exit', () => {
         const sizeB = statSync(handle.logPath).size;
         expect(sizeB).toBeGreaterThan(sizeA);
       } finally {
+        // Started by the helper process, so no orchestrator here holds it: the one child removeAllNodes cannot see.
         try { process.kill(handle.pid, 'SIGKILL'); } catch { /* ignore */ }
         try { rmSync(handle.workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
       }

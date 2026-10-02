@@ -118,7 +118,8 @@
 import debug from 'debug';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
 import type { Database } from '@quereus/quereus';
-import { ADMISSION_DECISION_TIMEOUT_MS, decideWithinDeadline } from './membership-connection-gater.js';
+import { decideWithinDeadline } from './membership-connection-gater.js';
+import { ADMISSION_DECISION_TIMEOUT_MS } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-revocation');
 

@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-provider",
-  "version": "1.5.0",
+  "version": "1.10.0",
   "type": "module",
   "description": "Reference provider service for hosting Sereus cadre nodes on behalf of users",
   "main": "dist/index.js",
@@ -51,15 +51,16 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
-    "@libp2p/peer-id": "^6.0.4",
-    "@multiformats/multiaddr": "^12.5.1",
+    "@libp2p/peer-id": "^6.0.15",
+    "@multiformats/multiaddr": "^13.0.3",
+    "@serfab/config-check": "workspace:^",
     "commander": "^14.0.2",
     "debug": "^4.4.3",
     "dockerode": "^4.0.9",
     "fastify": "^5.7.1",
     "js-yaml": "^4.1.1",
     "nanoid": "^5.1.6",
-    "uint8arrays": "^5.1.0"
+    "uint8arrays": "^6.1.1"
   },
   "engines": {
     "node": ">=18"

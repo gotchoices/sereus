@@ -1,6 +1,6 @@
 description: A one-line change in a networking library we depend on would make it work on phones out of the box, instead of every phone app having to discover and work around the same silent failure. Somebody needs to decide whether we open that report with the library's maintainers, and then open it.
 files:
-  - packages/reference-app-rn/polyfills/hermes.js (our local workaround, and the evidence)
+  - packages/cadre-rn/polyfills/hermes.js (our local workaround, and the evidence)
   - node_modules/@libp2p/websockets/dist/src/websocket-to-conn.js (the upstream code, v10.1.3)
 difficulty: easy
 ----

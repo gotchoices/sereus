@@ -112,6 +112,7 @@ network: {
   listenAddrs: [],              // Cannot listen in RN
   relayAddrs: [...],            // Resolved by src/relay-config.ts; may be empty
   requireRelay: false,          // Must still start when the relay is down
+  noiseCrypto: buildNoiseCrypto(mode), // Native Noise crypto; undefined in 'off' mode
   connectionGater: { denyDialMultiaddr: () => false },
 }
 ```
@@ -120,20 +121,35 @@ network: {
 
 `denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
 
-**Native crypto for Noise (not wired yet).** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so every handshake and every encrypted frame runs pure-JS SHA-256 and ChaCha20-Poly1305 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). `CadreNodeConfig.network.noiseCrypto` takes a replacement, and cadre-core hands it to the control node and every strand node. It must implement the whole interface; spread `noisePureJsCrypto` (exported by `@optimystic/db-p2p`) and override `hashSHA256`, `chaCha20Poly1305Encrypt` and `chaCha20Poly1305Decrypt` with native functions. The wire protocol is unchanged, so a phone with native crypto still talks to nodes without it. This app does not set it yet: choosing and linking a native crypto library is a separate decision.
+**Native crypto for Noise.** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so on its own every handshake and every encrypted frame runs pure-JS SHA-256, ChaCha20-Poly1305 and X25519 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). SHA-256 over 512 bytes was measured at about 15 ms on a Galaxy S7, and at that cost the phone's event loop stays busy for long enough that libp2p's connection monitor drops connections (gotchoices/sereus#13). `cadre-phone.ts` therefore passes `buildNoiseCrypto(mode)` from `@serfab/cadre-rn/noise-crypto` as `CadreNodeConfig.network.noiseCrypto`, and cadre-core hands it to the control node and every strand node. The implementation is backed by `react-native-quick-crypto`; [the kit's README](../packages/cadre-rn/README.md) has the measurements and the native modules an app must list. Only local primitives change, not the wire protocol, so a phone with native crypto still talks to nodes without it.
 
-**The ping deadline is already widened, for every node.** While the phone runs pure-JS crypto its event loop can stay busy for longer than libp2p's 5 second liveness-ping deadline, and libp2p aborts a connection on the first missed ping. Each redial costs another handshake, which keeps the phone busy — measured on a Galaxy S7's crypto cost, a two-party bring-up never finished. cadre-core therefore defaults `network.connectionMonitor` to a 30 second deadline, pinged every 35 seconds, on every node it builds (`DEFAULT_CONNECTION_MONITOR`), not only under React Native: the peer at the other end of the connection runs the monitor too, and its abort closes the connection just as effectively. The gap between pings has to exceed the deadline, or libp2p starts a second ping over the same connection while the first is still waiting and drops the connection for that instead. This app sets nothing for it.
+| Mode | What runs natively | Settings label |
+| --- | --- | --- |
+| `symmetric` (default) | SHA-256 and ChaCha20-Poly1305, the costs paid on every frame. X25519 stays pure JavaScript | Native, symmetric only |
+| `full` | Also X25519 key generation and Diffie-Hellman, the handshake's key agreement. It has had less device time than `symmetric` | Native, including key exchange |
+| `off` | Nothing: `noiseCrypto` is `undefined`, which is stock libp2p-noise. Kept to reproduce the connection-monitor timeouts | Pure JavaScript |
 
-**The first-sync wait is widened for the same reason, also for every node.** A phone that has just redeemed an invitation holds none of the strand's data, so cadre-core withholds the strand database until that data arrives from another member and rejects `addStrand` with the retryable `StrandAwaitingFirstSyncError` if it has not arrived within `strandFirstSync.timeoutMs` (see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync)). Through a relay on a slow link that first sync is not quick: on a measured path with a round trip of a couple of seconds it takes tens of seconds, not the second or two a direct connection takes. cadre-core therefore defaults the wait to **120 seconds** (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, whose doc comment carries the measurement and what the budget costs). This app sets nothing for it. The chat screens re-render on `strand:writable` ([`use-cadre.ts`](../packages/reference-app-rn/src/use-cadre.ts)), so a sync that lands after any budget still opens the screen — but [`joinClosedChatStrand`](../packages/reference-app-rn/src/chat-strand.ts) writes the joiner's app-level role right after `addStrand` resolves, so a join that times out has to be retried before that role exists.
+Every mode but `off` starts from optimystic's `noisePureJsCrypto` and overrides only its own functions, so anything it does not replace keeps working. The mode is a start option (`PhoneNodeOptions.noiseCryptoMode`), read when the node is built, as `relayAddrs` is. Two places set it:
+
+| source | how | when to use it |
+| --- | --- | --- |
+| `EXPO_PUBLIC_NOISE_CRYPTO` | build-time env var: `off`, `symmetric` or `full`, read by [`src/noise-crypto-config.ts`](../packages/reference-app-rn/src/noise-crypto-config.ts). Unset or blank means `symmetric`, the kit's `DEFAULT_NOISE_CRYPTO_MODE`. Any other value throws an error naming the three, because silently running a different mode would corrupt the measurement the switch exists for | a build that should start in another mode |
+| Settings → **Connection encryption** | a three-way choice in the disconnected Node form, below **Relay**, prefilled from the mode the node last started with (see [Start options](#start-options-app-private-leveldb)), else from the env var. The choice is remembered: the next launch starts in the same mode | switching one device between modes |
+
+Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or host-node request in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
+
+**The ping deadline is already widened, for every node.** While the phone runs pure-JS crypto (`off` mode, or any build before the native crypto above) its event loop can stay busy for longer than libp2p's 5 second liveness-ping deadline, and libp2p aborts a connection on the first missed ping. Each redial costs another handshake, which keeps the phone busy — measured on a Galaxy S7's crypto cost, a two-party bring-up never finished. cadre-core therefore defaults `network.connectionMonitor` to a 30 second deadline, pinged every 35 seconds, on every node it builds (`DEFAULT_CONNECTION_MONITOR`), not only under React Native: the peer at the other end of the connection runs the monitor too, and its abort closes the connection just as effectively. The gap between pings has to exceed the deadline, or libp2p starts a second ping over the same connection while the first is still waiting and drops the connection for that instead. This app sets nothing for it.
+
+**The first-sync wait is widened for the same reason, also for every node.** A phone that has just redeemed an invitation holds none of the strand's data, so cadre-core withholds the strand database until that data arrives from another member and rejects `addStrand` with the retryable `StrandAwaitingFirstSyncError` if it has not arrived within `strandFirstSync.timeoutMs` (see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync)). Through a relay on a slow link that first sync is not quick: on a measured path with a round trip of a couple of seconds it takes tens of seconds, not the second or two a direct connection takes, and a phone re-attaching after being away can take longer than a first join. cadre-core's default wait (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, whose doc comment carries the number, the measurements and what the budget costs) is sized for that re-attach. This app sets nothing for it. The chat screens re-render on `strand:writable` ([`use-cadre.ts`](../packages/reference-app-rn/src/use-cadre.ts)), so a sync that lands after any budget still opens the screen — but [`joinClosedChatStrand`](../packages/reference-app-rn/src/chat-strand.ts) writes the joiner's app-level role right after `addStrand` resolves, so a join that times out has to be retried before that role exists.
 
 
-**The per-peer read deadline is widened for every node too.** Before serving a read whose local copy may be stale, a node asks the other holders of that block which revision is newest, and believes an answer only if it arrives inside a per-peer deadline. Optimystic's own default for that is 1000 ms — a LAN budget, and shorter than one round trip between two phones that reach each other only through a relay, so every holder read as silent and the read was declined and retried. cadre therefore declares **5000 ms** on both the control node and every strand node (`COHORT_READ_DEADLINE_MS` in [`cluster-size.ts`](../packages/quereus-plugin-sereus/src/cluster-size.ts), whose doc comment carries the measurement and what the wider budget costs). This app sets nothing for it; `network.cohortQueryTimeoutMs` moves both networks at once if a deployment needs another value.
+**The per-peer read deadline is widened for every node too.** Before serving a read whose local copy may be stale, a node asks the other holders of that block which revision is newest, and believes an answer only if it arrives inside a per-peer deadline. Optimystic's own default for that is 1000 ms — a LAN budget, and shorter than one round trip between two phones that reach each other only through a relay, so every holder read as silent and the read was declined and retried. cadre therefore derives it from the declared link on both the control node and every strand node: two link round trips, **7000 ms** at the default declaration (`COHORT_READ_DEADLINE_MS` in [`cluster-size.ts`](../packages/quereus-plugin-sereus/src/cluster-size.ts), whose doc comment carries the derivation, the measurement history and what the wider budget costs). This app sets nothing for it; `network.linkRoundTripMs` moves it with every other link budget if a deployment's link is slower, and `network.cohortQueryTimeoutMs` overrides it on both networks at once.
 
 ### Reachability: configuring a relay
 
-A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a node borrowed from a cadre-host, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: an invitation embeds the inviter's own addresses as its bootstrap list, so a phone with no address cannot mint one (`CadreNode.createOpenInvitation` throws `No multiaddrs available for invitation`).
+A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a node borrowed from a cadre-host, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: the phone runs the strand it invites to, so the joiner must be able to reach the phone itself, and the app refuses to mint an invitation while the phone has no address (`use-cadre.ts`). `CadreNode.createOpenInvitation` alone would still mint one that names only the party's other machines, which may not run a strand the phone has just founded yet.
 
-The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable.
+The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable. Which other kinds of node can hold a reservation today is in [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay).
 
 Two ways to supply it, both resolved by [`src/relay-config.ts`](../packages/reference-app-rn/src/relay-config.ts):
 
@@ -142,11 +158,11 @@ Two ways to supply it, both resolved by [`src/relay-config.ts`](../packages/refe
 | `EXPO_PUBLIC_RELAY_ADDR` | build-time env var, comma-separated; Expo inlines `EXPO_PUBLIC_`-prefixed vars into the bundle | a build that should work with no typing |
 | Settings → **Relay** | typed per device, comma-separated | pointing one device elsewhere; overrides the env var |
 
-The field is prefilled from the env var on launch, so a build that ships one needs no typing. A value typed into it wins; clearing it falls back to the env var, and with neither the phone runs with no relay.
+The field is prefilled with the relays the node last started with (see [Start options](#start-options-app-private-leveldb)), else from the env var, so a build that ships one needs no typing. A value typed into it wins; clearing it falls back to the env var, and with neither the phone runs with no relay. A remembered list also wins over a later build's env var until the field is cleared.
 
 The address is a full relay dial addr ending in the relay's peer id, e.g. `/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooW…`. `ops/` has the relay container this repo ships.
 
-Each relay is also the phone's **STUN** server, for upgrading a relayed connection to a direct WebRTC one: [`src/ice-config.ts`](../packages/reference-app-rn/src/ice-config.ts) turns each relay address into `stun:<relay host>:3478`. `EXPO_PUBLIC_STUN_URLS` (comma-separated `stun:` URLs) replaces that, for a relay whose STUN is published elsewhere. With no relay the phone has no STUN server and WebRTC upgrades use LAN candidates only — see `ops/docs/ice-servers.md`.
+Each relay is also the phone's **STUN** server, for upgrading a relayed connection to a direct WebRTC one: cadre-core's [`resolveStunServers`](../packages/cadre-core/src/relay-stun.ts) turns each relay address into `stun:<relay host>:3478`. `EXPO_PUBLIC_STUN_URLS` (comma-separated `stun:` URLs) replaces that, for a relay whose STUN is published elsewhere. With no relay the phone has no STUN server and WebRTC upgrades use LAN candidates only — see `ops/docs/ice-servers.md`.
 
 **What the phone can and cannot do without one**
 
@@ -161,7 +177,7 @@ Each relay is also the phone's **STUN** server, for upgrading a relayed connecti
 
 **Two costs worth knowing.** A configured-but-unreachable relay adds about ten seconds to `start()` and about ten more to **every** strand launch: cadre-core waits out each reservation supervisor's first attempt (`DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s), and a refused dial spends that whole budget polling in case libp2p's own discovery lands a reservation anyway. Nothing fails — founding is just slower while the relay is down, which the Settings screen's slow-founding hint will surface.
 
-**One relay per phone, and both ends are assumed to share it.** Two people configuring *different* relays is untested and out of scope (backlog `feat-scenario-two-relay-circuit`). Relaying through the phone's own always-on cadre node instead of third-party infrastructure is the intended end state but is blocked on two cadre-core defects — see backlog `feat-phone-relays-through-its-own-always-on-node`.
+**One relay per phone, and the two ends need not share it.** Two people who each configured their own relay form strands and replicate through their two relays — each phone dials the other through the other's relay, without reserving there (`blind-relay-phone-to-phone-e2e.integration.ts`, per-party arm). Relaying through the phone's own always-on cadre node instead of third-party infrastructure is the intended end state but is blocked on two cadre-core defects — see backlog `feat-phone-relays-through-its-own-always-on-node`.
 
 ### How It Connects
 
@@ -192,14 +208,15 @@ table Message (
 );
 ```
 
-`schemas/chat-simple.qsql` is the source of record for the above; `composeStrand` supplies the
+`schemas/chat-simple.qsql` is the source of record for the above, and a test fails when the block
+stops matching it (see [testing.md](testing.md) → "Lint coverage"); `composeStrand` supplies the
 `declare schema App { ... }` wrapper, so the file itself is a bare table list.
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 
 ## Node-Local Persistence
 
-Three things the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
+What the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
 
 ### Peer identity (secure enclave)
 
@@ -225,7 +242,20 @@ The dial targets the node learned out of band: the owner peers of every seed it 
 
 Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-binds every retained address to the peer id it was recorded under before dialing), and multiaddrs run 80–120 characters each with several per peer and the snapshot growing for the node's whole lifetime — it would cross SecureStore's ~2048-byte value limit and simply fail the write.
 
-⚠️ **Both records are party-scoped, and the app does not yet persist its party id** — it is typed into Settings each launch. Until `feat-rn-persist-node-start-options` lands, a fresh party id per launch means both slots load empty every time: the storage is correct, but survival across a relaunch is not yet observable on device.
+Both records are party-scoped, as are the enrolled-machine count and the strand network state beside them in the same database. They are read back on a relaunch because the party id itself is remembered, below.
+
+### Start options (app-private LevelDB)
+
+What the node last started with — party id, bootstrap addresses, relay addresses and Noise crypto mode — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. [`src/start-options.ts`](../packages/reference-app-rn/src/start-options.ts) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
+
+- **Written** only by `cadre-phone.ts`: after every successful start (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing.
+- **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
+- **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
+- **Overlapping starts** — a launch auto-start, a push-wake cold start, the runner's resume and a Connect tap — share one start in flight, so they never build two nodes; the first caller's options win. Disconnect during a start waits for it, then stops the node it produced.
+- **Reinstall.** On iOS the trusted-owner anchor lives in the Keychain, which survives an uninstall; this record does not. A reinstalled phone picks a new party id and the surviving anchor, filed under the old one, is never read again — the same outcome as before start options were saved.
+
+The Maestro flows launch with `clearState: true`, so they always see a fresh, idle app.
 
 ## cadre-core React Native Compatibility
 
@@ -235,44 +265,44 @@ Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-bi
 
 **cadre-core** now declares a `react-native` export condition in its `package.json`. Source audit confirmed two Node-only dynamic imports — `require('path')` in `getStrandStoragePath` and `require('fs/promises')` in `ControlDatabase.loadSchema` — both runtime-guarded behind `process.versions?.node` checks and restricted to Node-only code paths.
 
-**Quereus** has no Node-only imports. BigInt is supported in Hermes since RN 0.70. Only `TextEncoder` is used (built-in to Hermes); `TextDecoder` is not required by Quereus. However, `@optimystic/db-p2p` (and `uint8arrays`, which it pulls in transitively via libp2p/yamux/multiformats) uses `TextDecoder` at module scope — this is covered by Expo SDK 52+'s built-in `TextDecoder` global (UTF-8 only). On **bare RN** Hermes (non-Expo) `TextDecoder` is NOT present as of RN 0.85, so `polyfills/hermes.js` ships a UTF-8-only fallback that becomes a no-op once the runtime provides it.
+**Quereus** has no Node-only imports. BigInt is supported in Hermes since RN 0.70. Only `TextEncoder` is used (built-in to Hermes); `TextDecoder` is not required by Quereus. However, `@optimystic/db-p2p` (and `uint8arrays`, which it pulls in transitively via libp2p/yamux/multiformats) uses `TextDecoder` at module scope — this is covered by Expo SDK 52+'s built-in `TextDecoder` global (UTF-8 only). On **bare RN** Hermes (non-Expo) `TextDecoder` is NOT present as of RN 0.85, so `@serfab/cadre-rn`'s `polyfills/hermes.js` ships a UTF-8-only fallback that becomes a no-op once the runtime provides it.
 
 **Metro bundle** succeeds with 2790 modules (cadre-core, Quereus, db-p2p, libp2p, and all transitive deps). The only warnings are cosmetic: `multiformats` subpath export fallbacks that resolve correctly via file-based resolution.
 
 ### Polyfills
 
-The app uses a custom entry point (`index.js`) that imports global polyfills before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time. The import order matters:
+The global polyfills live in the React Native kit, [`@serfab/cadre-rn`](../packages/cadre-rn/README.md), under `packages/cadre-rn/polyfills/`. A Sereus React Native app depends on the kit rather than copying the files. In this section, `polyfills/<file>.js` means the kit's file. The Node built-in shims Metro maps (`node-os.js`, `node-crypto.js`, `empty.js`, below) are in the kit's `shims/` directory, wired in by `@serfab/cadre-rn/metro` (§ Metro Configuration).
+
+The app's job is three imports at the top of its entry file (`index.js`), before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time, so `@serfab/cadre-rn/polyfills` must come first:
 
 ```js
-import './polyfills/hermes';           // Runtime globals (crypto, AbortSignal, WebSocket, structuredClone, …)
-import './polyfills/webrtc';           // react-native-webrtc registerGlobals() — after hermes, before app code
-import './polyfills/intl-pluralrules'; // Intl.PluralRules for moat-maker
-import './polyfills/event';            // Event, CustomEvent, EventTarget for libp2p
-import './polyfills/audit';            // Prints the boot audit table under __DEV__ (below)
-import 'expo-router/entry';            // App code starts here
+import '@serfab/cadre-rn/polyfills';          // hermes.js, intl-pluralrules.js, event.js, in that order
+import '@serfab/cadre-rn/polyfills/webrtc';   // react-native-webrtc registerGlobals(), for @libp2p/webrtc
+import '@serfab/cadre-rn/boot-check';         // audit.js and reload-reason.js, under __DEV__ only (below)
+import 'expo-router/entry';                   // App code starts here
 ```
 
-`polyfills/audit.js` is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
+The boot check is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
+
+The WebRTC globals load after `Intl.PluralRules` and EventTarget. They need only `crypto.getRandomValues` from `hermes.js`. One side effect of the order: `react-native-webrtc`'s own copy of `event-target-shim` checks for a global `Event` and `EventTarget` when it loads and, if they exist, chains its classes onto them. Neither React Native 0.79 nor Expo 53 installs those globals, so before the kit it found none; now it finds `event-target-polyfill`'s.
 
 #### Required polyfill dependencies
 
-The following dependencies **must** be listed as direct dependencies in your app's `package.json` — relying on transitive resolution is fragile and will break when upstream packages change their dependency trees:
+The pure-JavaScript libraries the polyfills use (`@ungap/structured-clone`, `web-streams-polyfill`, `event-target-polyfill`, `@noble/hashes`) are dependencies of `@serfab/cadre-rn`, so the app does not list them. The app **must** list the native modules as its own direct dependencies, because React Native autolinks only those, even though only the kit imports them:
 
 ```json
 {
-  "@noble/hashes": "^2.0.0",
-  "@ungap/structured-clone": "^1.3.0",
-  "buffer": "^6.0.3",
-  "event-target-polyfill": "^0.0.4",
+  "@serfab/cadre-rn": "workspace:^",
   "react-native-get-random-values": "^1.11.0",
-  "readable-stream": "^4.7.0",
-  "web-streams-polyfill": "^4.1.0"
+  "react-native-webrtc": "^124.0.6"
 }
 ```
 
-Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
+The packages the Metro aliases point at (`buffer`, `readable-stream`, and `@noble/hashes` for `shims/node-crypto.js`; see § Metro module aliases) are kit dependencies too, so the app lists none of them. Keep this block in sync with [`packages/reference-app-rn/package.json`](../packages/reference-app-rn/package.json).
 
-`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and `polyfills/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It currently resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously — the polyfills use the v2 import path, so the direct dep must be pinned `^2.0.0`.
+`@noble/hashes` deserves special attention: it provides the SHA-256/SHA-512 implementation used by both of the kit's `polyfills/hermes.js` (lazy `require('@noble/hashes/sha2.js')` inside `crypto.subtle.digest`) and `shims/node-crypto.js` (`import { sha256 } from '@noble/hashes/sha2.js'`). The `.js` suffix matters: version 2.x lists only `./sha2.js` in its package.json `exports`. Metro still resolves a bare `@noble/hashes/sha2`, but only by falling back to file-based resolution and logging a warning on every bundle. It also resolves transitively via libp2p, but the lockfile can carry multiple major versions simultaneously. The kit uses the v2 import path and declares it `^2.0.0`.
+
+**One copy of each native module.** The kit's files sit at `packages/cadre-rn/polyfills/`, outside the app, and Metro looks in the `node_modules` directories above the importing file before its `nodeModulesPaths`. The repo root holds a second `react-native-webrtc` (hoisted there for `@libp2p/webrtc`), so without help the kit's `webrtc.js` would bundle that copy beside the app's. `@serfab/cadre-rn/metro` therefore resolves the kit's peer dependencies as if the app imported them (§ Metro Configuration).
 
 #### Global polyfills (`polyfills/hermes.js`)
 
@@ -300,10 +330,11 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 
 | File | Target | Required by | Notes |
 |------|--------|-------------|-------|
-| `packages/reference-app-rn/polyfills/intl-pluralrules.js` | `Intl.PluralRules` | moat-maker (error messages) | English-only ordinal/cardinal shim |
-| `packages/reference-app-rn/polyfills/event.js` | `EventTarget`, `Event`, `CustomEvent` | libp2p, @libp2p/interface | Imports the [`event-target-polyfill`](https://www.npmjs.com/package/event-target-polyfill) npm package (spec-complete: handles `capture`, `once`, and `signal` options on `addEventListener`), then adds a minimal `CustomEvent` shim on top — `event-target-polyfill` does not include `CustomEvent`, which libp2p's `safeDispatchEvent` uses internally |
+| `packages/cadre-rn/polyfills/intl-pluralrules.js` | `Intl.PluralRules` | moat-maker (error messages) | English-only ordinal/cardinal shim |
+| `packages/cadre-rn/polyfills/event.js` | `EventTarget`, `Event`, `CustomEvent` | libp2p, @libp2p/interface | Imports the [`event-target-polyfill`](https://www.npmjs.com/package/event-target-polyfill) npm package (spec-complete: handles `capture`, `once`, and `signal` options on `addEventListener`), then adds a minimal `CustomEvent` shim on top — `event-target-polyfill` does not include `CustomEvent`, which libp2p's `safeDispatchEvent` uses internally |
+| `packages/cadre-rn/polyfills/webrtc.js` | `RTCPeerConnection`, `RTCSessionDescription`, `RTCIceCandidate`, … | @libp2p/webrtc's private-to-public `browser` variants, which read the engine off the globals | `react-native-webrtc`'s `registerGlobals()`. Exported separately as `@serfab/cadre-rn/polyfills/webrtc`, so an app without WebRTC need not install the native module |
 
-> A hand-rolled inline `EventTarget` class is technically sufficient for libp2p's current usage but quietly drops `once`, `signal`, and capture semantics. We prefer the npm package so future libp2p versions (or other consumers) that rely on those options keep working without surprises. The dependency must be listed in `package.json` — omitting it produces `Unable to resolve module event-target-polyfill` Metro failures.
+> A hand-rolled inline `EventTarget` class is technically sufficient for libp2p's current usage but quietly drops `once`, `signal`, and capture semantics. We prefer the npm package so future libp2p versions (or other consumers) that rely on those options keep working without surprises. It is a dependency of `@serfab/cadre-rn`; dropping it there produces `Unable to resolve module event-target-polyfill` Metro failures.
 
 #### Built-in APIs (no polyfill needed)
 
@@ -326,20 +357,25 @@ These APIs are natively available in the target Hermes/Expo versions used by thi
 - Prefer battle-tested npm packages over hand-rolled shims (e.g., `@ungap/structured-clone` over `JSON.parse(JSON.stringify(...))`)
 - Prefer spec-compliant implementations — shortcuts like JSON round-trips silently drop data types
 - Always guard with `typeof` checks so polyfills are skipped on platforms with native support
-- Native modules (like `react-native-get-random-values`) require a dev client rebuild — document this when adding them
+- Native modules (like `react-native-get-random-values`) require a dev client rebuild, and every app must list them itself for autolinking — document both when adding them
+- A new global polyfill goes in `@serfab/cadre-rn`, not in an app, so every Sereus app gets it; add its probe to the kit's `polyfills/audit.js` and its name to the app's drift guard (§ Guards)
 
 #### Metro module aliases (Node.js built-in shims)
 
-These are configured in `metro.config.js` via `extraNodeModules` and map both `node:X` and bare `X` imports:
+`withCadreMetro` (§ Metro Configuration) sets these as `extraNodeModules`, under both the `node:X` and the bare `X` name. Metro consults them only after every `node_modules` lookup fails. An alias the app's config already has wins over the kit's.
 
 | Module | Target | Source | Required by |
 |--------|--------|--------|-------------|
-| `os` / `node:os` | `packages/reference-app-rn/polyfills/node-os.js` | Custom shim (networkInterfaces, platform, type, hostname) | @libp2p/utils |
-| `crypto` / `node:crypto` | `packages/reference-app-rn/polyfills/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | multiformats/hashes/sha2, @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
-| `stream` / `node:stream` | `readable-stream` (npm) | Metro `extraNodeModules` | libp2p stream handling |
-| `buffer` / `node:buffer` | `buffer` (npm) | Metro `extraNodeModules` | libp2p, multiformats |
-| `net` / `node:net` | `packages/reference-app-rn/polyfills/empty.js` | Empty stub | libp2p transitive imports — never reached at RN runtime, but needs to resolve so the bundle builds |
-| `tls` / `node:tls` | `packages/reference-app-rn/polyfills/empty.js` | Empty stub | libp2p transitive imports — never reached at RN runtime, but needs to resolve so the bundle builds |
+| `os` / `node:os` | `packages/cadre-rn/shims/node-os.js` | Custom shim (networkInterfaces, platform, type, hostname) | @libp2p/utils |
+| `crypto` / `node:crypto` | `packages/cadre-rn/shims/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | The Node variants of multiformats/hashes/sha2, @chainsafe/libp2p-noise crypto/index and @libp2p/crypto's key modules. *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
+| `stream` / `node:stream` | `readable-stream` (npm, a kit dependency) | Metro `extraNodeModules` | libp2p stream handling |
+| `buffer` / `node:buffer` | `buffer` (npm, a kit dependency) | Metro `extraNodeModules` | libp2p, multiformats |
+| `net` / `node:net` | `packages/cadre-rn/shims/empty.js` | Empty stub | The Node variant of @libp2p/websockets' listener — never reached at RN runtime, but needs to resolve so the bundle builds |
+| `tls` / `node:tls` | `packages/cadre-rn/shims/empty.js` | Empty stub | As `net` |
+
+In the reference app's Android export (2026-09-26) only `node-os.js` is bundled: Metro picks the `browser` variants of the modules listed for `crypto`, `net` and `tls`, and nothing bundled imports `stream` or `buffer` by those names. The other entries are there for an app whose resolver settings land on a Node variant, where an unmapped built-in fails the whole bundle with an error naming the importer rather than the cause.
+
+sereus-chat's config also carries a `sign()` stub on the crypto shim and `http2`, `path` and `fs` stubs. The kit does not: they served cadre-core's push notifiers and file-based helpers, which now sit behind Node-only subpaths (`@serfab/cadre-core/push-node`, `/key-store-file`, …) that a React Native app never imports, and stubbing `path` or `fs` to `{}` would break any dependency that really uses them.
 
 #### Commonly needed beyond core
 
@@ -359,11 +395,11 @@ The app lives at `packages/reference-app-rn` as a workspace member. Yarn's works
 
 ```
 packages/reference-app-rn/
-  index.js                    # Custom entry: loads polyfills before expo-router/entry
+  index.js                    # Custom entry: @serfab/cadre-rn polyfills + boot check, then expo-router/entry
   app.json                    # Expo config (SDK 53, custom dev client)
   package.json                # workspace:^ deps on cadre-core, db-p2p, etc.
   tsconfig.json
-  metro.config.js             # Workspace symlink resolution for Metro
+  metro.config.js             # withCadreMetro(...) with this repo's linked roots
   eas.json                    # EAS Build profiles (development, preview)
   app/
     _layout.tsx               # Expo Router root layout
@@ -372,7 +408,8 @@ packages/reference-app-rn/
   src/
     cadre-phone.ts            # CadreNode setup: WS/WebRTC transports, LevelDB storage, seed apply
     secure-key-store.ts       # KeyStore over expo-secure-store (identity in the enclave)
-    node-local-slots.ts       # DurableSlots for the owner anchor + bootstrap peers
+    node-local-slots.ts       # DurableSlots for the owner anchor, dial hints and saved start options
+    start-options.ts          # The last start options + autoStart, remembered between launches
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
@@ -382,21 +419,34 @@ packages/reference-app-rn/
     push-wake.ts              # Platform-agnostic push-wake decision logic
     push-wake-native.ts       # Expo notifications wiring for push-wake
     connection-status.ts      # Derives UI connection state from node events
-    ice-config.ts             # STUN servers derived from the relay addresses
+    relay-config.ts           # Relay multiaddr(s): Settings field, else EXPO_PUBLIC_RELAY_ADDR
+    noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
-  polyfills/
-    hermes.js                 # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
-    webrtc.js                 # react-native-webrtc registerGlobals() for @libp2p/webrtc
-    intl-pluralrules.js       # Intl.PluralRules for moat-maker
-    event.js                  # Event, CustomEvent, EventTarget globals for Hermes
-    registry.js               # Records which globals each polyfill actually patched
-    audit.js                  # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
-    node-os.js                # Minimal os module shim for libp2p
-    node-crypto.js            # createHash() shim via @noble/hashes
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
+```
+
+The global polyfills, the Node built-in shims and the Metro helper are in the kit:
+
+```
+packages/cadre-rn/polyfills/
+  index.js                    # @serfab/cadre-rn/polyfills: hermes, intl-pluralrules, event, in that order
+  hermes.js                   # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
+  intl-pluralrules.js         # Intl.PluralRules for moat-maker
+  event.js                    # Event, CustomEvent, EventTarget globals for Hermes
+  webrtc.js                   # @serfab/cadre-rn/polyfills/webrtc: registerGlobals() for @libp2p/webrtc
+  boot-check.js               # @serfab/cadre-rn/boot-check: audit, then reload-reason
+  registry.js                 # Records which globals each polyfill actually patched
+  audit.js                    # Boot-time native/polyfilled/gap/MISSING table (__DEV__ only)
+  reload-reason.js            # Logs [reload] <reason> before a JS-initiated reload (__DEV__ only)
+packages/cadre-rn/shims/        # Node built-in shims, reached through @serfab/cadre-rn/metro
+  node-os.js                  # Minimal os module shim for libp2p
+  node-crypto.js              # createHash() shim via @noble/hashes
+  empty.js                    # net / tls stubs
+packages/cadre-rn/metro/
+  index.cjs                   # @serfab/cadre-rn/metro: withCadreMetro(config, options)
 ```
 
 ### Key Dependencies
@@ -404,12 +454,16 @@ packages/reference-app-rn/
 | Package | Source | Purpose |
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
+| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration); native Noise crypto (§ Phone (RN app) Configuration) |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
 | `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |
 | `@libp2p/websockets` | npm | WebSocket transport |
 | `@libp2p/circuit-relay-v2` | npm | Circuit relay transport |
 | `rn-leveldb` | npm | Native KV store (requires native compilation) |
+| `react-native-quick-crypto` | npm | Native SHA-256, ChaCha20-Poly1305 and X25519 behind `@serfab/cadre-rn/noise-crypto`. 1.x needs the new architecture (`newArchEnabled` in `app.json`) and React Native 0.75 or newer; listed under `app.json` `plugins` as its Expo instructions produce (the plugin raises the iOS deployment target) |
+| `react-native-nitro-modules` | npm | quick-crypto's native bridge; must be a direct dependency for autolinking. Its podspec and C++ carry explicit branches for React Native below 0.80, so 0.79 is handled |
+| `react-native-quick-base64` | npm | quick-crypto peer; 3.x is a new-architecture TurboModule, supported on Expo 53 with the new architecture enabled |
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
 | `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
@@ -434,7 +488,7 @@ packages/reference-app-rn/
 | `WebAssembly` | `@chainsafe/as-sha256` and `@chainsafe/as-chacha20poly1305` reach the graph only through `@chainsafe/libp2p-noise`, whose package.json `browser` field maps `crypto/index.js` to `crypto/index.browser.js` — noble ciphers and hashes, no WebAssembly. The exported bundle contains `pureJsCrypto` and neither `as-sha256` nor `as-chacha20poly1305` |
 | `navigator.userAgent` | `libp2p`'s `user-agent.browser.js` reads it with no guard, but libp2p's package.json `react-native` field points at `user-agent.react-native.js` instead, which uses `Platform.OS`. The exported bundle contains `react-native/` and no `browser/`, so identify announces `js-libp2p/<version> react-native/android-<version>` — on the 2026-09-16 device run, `js-libp2p/3.1.3 react-native/android-29` |
 
-Those last three all depend on Metro applying a package's `browser`/`react-native` subpath map to that package's own internal relative imports. `metro.config.js` hand-rewrites that map for `@libp2p/crypto` and `@libp2p/webrtc` because package `exports` resolution made it unreliable for them — so if a future bundle ever fails to resolve `@chainsafe/as-*`, or announces `browser/undefined` in identify, this is the mechanism that slipped.
+Those last three all depend on Metro applying a package's `browser`/`react-native` subpath map to that package's own internal relative imports. `@serfab/cadre-rn/metro` hand-rewrites that map for `@libp2p/crypto` and `@libp2p/webrtc` because package `exports` resolution made it unreliable for them — so if a future bundle ever fails to resolve `@chainsafe/as-*`, or announces `browser/undefined` in identify, this is the mechanism that slipped.
 
 **`AggregateError` is native.** `libp2p/dist/src/connection-manager/dial-queue.js` throws `new AggregateError(errors, 'All multiaddr dials failed')` when every address for a peer fails. The repo holds the `hermesc` compiler but no Hermes VM, so only a device could say whether Hermes (`hermes-2025-06-04-RNv0.79.3`) provides it. The boot audit on 2026-09-16 (Galaxy Note 9, Android 10, Expo SDK 53 dev client) found it native, with `errors` and `message` intact and `instanceof Error` true, so a fully failed dial carries its per-address causes.
 
@@ -446,80 +500,70 @@ Three more modules check for a global `DOMException` and build their own class w
 
 | What | Where | What it catches |
 |------|-------|-----------------|
-| Behaviour of `polyfills/hermes.js` | `test/polyfills/hermes-polyfills.spec.ts` (Vitest project `polyfills`) | Evaluates the polyfill against a fake Hermes + React Native surface, then drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. Deleting any arm fails a test rather than a phone |
-| The next missing global | `test/polyfills/dependency-globals.spec.ts` | Reads a listed set of dependency `dist` trees and fails when a global that nothing provides starts appearing. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
-| The real runtime | `polyfills/audit.js`, imported by `index.js` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively |
+| Behaviour of `polyfills/hermes.js` | `packages/cadre-rn/test/polyfills/hermes-polyfills.spec.ts` (the kit's Vitest project `polyfills`) | Evaluates the polyfill against a fake Hermes + React Native surface, then drives `@libp2p/websockets`' own `webSocketToMaConn` over a socket with no `bufferedAmount`. Deleting any arm fails a test rather than a phone |
+| The next missing global | `packages/reference-app-rn/test/polyfills/dependency-globals.spec.ts` (the app's Vitest project `polyfills`) | Reads a listed set of this app's installed dependency `dist` trees and fails when a global that nothing provides starts appearing; checks the kit's polyfill files for the registry keys it relies on. It stays in the app because the dependency graph is per app. A substring search over a hand-listed set of packages — it narrows the window, it does not close it; see the spec's header for what it cannot see |
+| The real runtime | `polyfills/audit.js`, loaded through `@serfab/cadre-rn/boot-check` under `__DEV__` | Prints a `native` / `polyfilled` / `gap` / `MISSING` table at boot, under `[cadre-rn] polyfill audit`, and warns loudly on anything MISSING. The only thing that notices when a React Native upgrade starts — or stops — providing one of these natively |
 
-The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at. Two limits on that: `EventTarget` comes from the `event-target-polyfill` package, which does not mark the registry, so it always reads `native`; and a row the audit cannot read (a native getter that throws when read off a prototype) counts as present rather than crashing boot.
+The audit tells `native` from `polyfilled` through `polyfills/registry.js`: each polyfill calls `markPolyfilled(key)` when its guard actually fires, so a `typeof` check at boot is not left guessing which of the two it is looking at. `EventTarget` comes from the `event-target-polyfill` package, which marks nothing itself, so `event.js` checks for it before loading the package and marks it. One limit: a row the audit cannot read (a native getter that throws when read off a prototype) counts as present rather than crashing boot.
 
 ### Metro Configuration
 
-Metro needs to resolve workspace symlinks, sibling repo packages, and Node.js built-in modules:
+The app's `metro.config.js` is one call to the kit's `withCadreMetro` (`@serfab/cadre-rn/metro`), which adds what a Sereus React Native app needs to the config the app's own toolchain produced:
 
 ```js
 // metro.config.js
 const { getDefaultConfig } = require('expo/metro-config');
+const { withCadreMetro } = require('@serfab/cadre-rn/metro');
 const path = require('path');
 
-const config = getDefaultConfig(__dirname);
-
-// Resolve workspace roots for symlinked packages. `fretRoot` is required because
-// @optimystic/db-p2p portals `p2p-fret` from the sibling ../Fret monorepo; Metro
-// must be allowed to follow that symlink out of the tree or a local release
-// bundle fails with "Unable to resolve module p2p-fret". On EAS the portal
-// resolutions are stripped and p2p-fret resolves from npm, so — like the
-// optimystic/quereus roots — this only matters for local bundling.
-const workspaceRoot = path.resolve(__dirname, '../..');
-const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
-const quereusRoot = path.resolve(__dirname, '../../../quereus');
-const fretRoot = path.resolve(__dirname, '../../../Fret');
-
-config.watchFolders = [workspaceRoot, optimysticRoot, quereusRoot, fretRoot];
-config.resolver.unstable_enableSymlinks = true;
-config.resolver.nodeModulesPaths = [
-  path.resolve(__dirname, 'node_modules'),
-  path.resolve(workspaceRoot, 'node_modules'),
-  path.resolve(optimysticRoot, 'node_modules'),
-  path.resolve(quereusRoot, 'node_modules'),
-  path.resolve(fretRoot, 'node_modules'),
-];
-
-// Map Node.js built-ins to polyfills/npm packages
-config.resolver.extraNodeModules = {
-  'node:os': path.resolve(__dirname, 'polyfills/node-os.js'),
-  'node:stream': require.resolve('readable-stream'),
-  'node:buffer': require.resolve('buffer'),
-  'node:crypto': path.resolve(__dirname, 'polyfills/node-crypto.js'),
-  os: path.resolve(__dirname, 'polyfills/node-os.js'),
-  stream: require.resolve('readable-stream'),
-  buffer: require.resolve('buffer'),
-  crypto: path.resolve(__dirname, 'polyfills/node-crypto.js'),
-};
-
-// Apply @libp2p/crypto's own `browser` map via resolveRequest — the package
-// ships `.browser.js` variants (Ed25519/secp256k1/RSA/ECDH keys, webcrypto,
-// hmac, aes-gcm) that use @noble/curves + WebCrypto instead of Node's crypto.
-// With `unstable_enablePackageExports: true` Metro resolves via `exports` and
-// does not reliably apply the `browser` rewrite on its own.  See
-// `packages/reference-app-rn/metro.config.js` for the implementation.
-
-module.exports = config;
+module.exports = withCadreMetro(getDefaultConfig(__dirname), {
+  projectRoot: __dirname,
+  linkedRoots: [
+    path.resolve(__dirname, '../..'),               // this monorepo
+    path.resolve(__dirname, '../../../optimystic'), // portaled sibling checkouts
+    path.resolve(__dirname, '../../../quereus'),
+    path.resolve(__dirname, '../../../Fret'),
+  ],
+});
 ```
+
+| Option | Meaning |
+|--------|---------|
+| `projectRoot` | The app's directory (`__dirname`). The kit's peers and `@babel/runtime` resolve from here. |
+| `linkedRoots` | Local checkouts whose packages are linked into the app. Each is added to `watchFolders`, and its `node_modules` to `resolver.nodeModulesPaths`. Omit it when every package comes from npm. |
+
+`Fret` is a linked root because `@optimystic/db-p2p` portals `p2p-fret` from the sibling `../Fret` monorepo: Metro must be allowed to follow that symlink or a local release bundle fails with "Unable to resolve module p2p-fret". On EAS the portal resolutions are stripped and `p2p-fret` comes from npm, so, like the optimystic and quereus roots, it only matters for local bundling. The app's `metro.config.js` keeps two notes beside `linkedRoots`: what happens when a fourth portaled sibling appears, and the accepted tradeoff of watching whole repository roots.
+
+`withCadreMetro` mutates and returns the config, keeping what it already had: lists are appended to, an alias the app already set wins over the kit's, and an existing `resolveRequest` is called by the new one. It sets:
+
+- `resolver.unstable_enableSymlinks = true`.
+- `watchFolders`: the existing ones, then `linkedRoots`.
+- `resolver.nodeModulesPaths`: the existing ones, then `<projectRoot>/node_modules`, then each linked root's `node_modules`, in that order. The app's `test/polyfills/metro-resolution.ts` reads this list to find installed packages the way Metro does.
+- `resolver.extraNodeModules`: the Node built-in aliases (§ Metro module aliases).
+- `resolver.resolveRequest`: a wrapper that applies three rules, in this order.
+  1. **The kit's peers resolve from the app.** An import of a name in the kit's `peerDependencies` (`react-native`, `react-native-webrtc`, `react-native-get-random-values`, `react-native-quick-crypto`, `@craftzdog/react-native-buffer`, and quick-crypto's own native dependencies `react-native-nitro-modules` and `react-native-quick-base64`), or of a subpath of one, resolves as if a file in `projectRoot` imported it, whoever the importer is. Metro looks in the `node_modules` directories above the importing file first; in this repo the kit lives outside the app, and the repo root holds its own `react-native-webrtc` and the kit's types-only dev copy of `react-native-quick-crypto`, either of which would otherwise be bundled beside the app's. Native code is linked only for the app's own dependencies, so any second copy is JavaScript that does not match the native side. A peer the app has not installed fails with Metro's usual "unable to resolve", and only if something imports it.
+  2. **`@babel/runtime/*` resolves to the CommonJS helper in the app's copy**, through Node's `require.resolve` from `projectRoot`. An app whose condition list puts `import` ahead of `require` (sereus-chat's does) otherwise gets the ESM wrapper, and the bundle fails at startup with `_interopRequireDefault is not a function`. Expo's default conditions already pick the CommonJS file, so in this app the rule only makes every importer use the app's copy, the one § Key Dependencies requires to be 7.29.2 or newer.
+  3. **`browser`-field variants for `@libp2p/crypto` and `@libp2p/webrtc`.** A resolved file inside either package that the package's `browser` field lists is swapped for its target; targets that are not paths (`"node:net": false`) are skipped. The map is read from the package directory of the file actually resolved, so every installed copy is covered: this app's Android export (2026-09-26) holds 15 copies of `@libp2p/crypto` (the app's, the repo root's, and nested ones under optimystic and Fret), all on their browser key modules. In `@libp2p/webrtc` the rewrite reaches `private-to-public`'s transport and `get-rtcpeerconnection`. Its `webrtc/index.js` entry never fires: Metro applies the package's `react-native` field first and resolves `webrtc/index.react-native.js`, which imports `react-native-webrtc` directly.
+
+It sets neither condition names nor `unstable_enablePackageExports`: both toolchains' defaults already enable package exports, and the condition order is the app's choice. The helper's comments carry the full reasoning, and `packages/cadre-rn/test/metro/with-cadre-metro.spec.ts` guards the three rules, including rules 2 and 3 under sereus-chat's condition order (`import` ahead of `require`), resolved by Metro's own resolver.
 
 > **Why the browser rewrite matters.** `@libp2p/crypto` has parallel
 > `*.browser.js` variants for every module that would otherwise call
 > `crypto.generateKeyPairSync`, `createPrivateKey`, `sign`, or `verify` from
-> Node.js's built-in `crypto`.  Our `polyfills/node-crypto.js` intentionally
+> Node.js's built-in `crypto`.  The kit's `shims/node-crypto.js` intentionally
 > only implements `createHash` (SHA-256/SHA-512 via `@noble/hashes`), so
 > without the rewrite the first call to `generateKeyPair('Ed25519')` (phone
 > peer identity, enrollment, strand solicitation) fails with
-> `undefined cannot be used as a constructor`.  The rewrite is applied in
-> Metro's `resolveRequest` hook — see `packages/reference-app-rn/metro.config.js`
-> and `sereus-health/apps/mobile/metro.config.js` (same pattern).
+> `undefined cannot be used as a constructor`.  With package exports enabled,
+> Metro returns a file it found through a package's `exports` without the `browser`
+> rewrite (`@libp2p/crypto/hmac` resolves to the Node `hmac/index.js`; relative imports
+> inside the package do get the rewrite, checked against metro-resolver 0.82.5), so
+> rule 3 applies it by hand (`sereus-health/apps/mobile/metro.config.js` carries the
+> same pattern).
 
 ## Two-Node Startup Sequence
 
-This section walks through starting the drone and phone from scratch, establishing a connection, and chatting.
+This section walks through starting the drone and phone from scratch, establishing a connection, and chatting. The phone dials the drone, so the drone must be reachable from the phone; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
 
 ### Prerequisites
 
@@ -602,19 +646,19 @@ If the nodes can't discover each other automatically (e.g., after a restart with
    - Creates a `StrandRow` with `Type: 'o'` (open)
    - Registers the simplified chat sApp schema (Participant + Message tables)
    - Starts a strand-specific libp2p network (`strand-<strandId>`)
-3. The drone (with `strandFilter: all`) automatically detects the new strand and joins
+3. The drone (`profile: storage`, `strandFilter: all`) detects the new strand and joins it as a storage replica: it stores and serves the chat's blocks without the chat schema, since no chat app runs on it. So a phone that is lost after its messages reached the drone loses none of them (see [architecture.md → Strand Filtering](architecture.md#strand-filtering))
 
 ### Step 6: Chat
 
 Switch to the **Chat** tab. Type a message and send. The message is:
 
 1. Inserted into the local strand's Quereus database via `insertMessage()`
-2. Replicated to the drone via Optimystic's P2P consensus
-3. Visible on both nodes
+2. Replicated to the drone via Optimystic's P2P consensus, where it is stored as blocks
+3. Visible on every phone that runs the chat
 
-Messages from the drone (if any are inserted programmatically) replicate back to the phone the same way. The chat screen polls for new messages every 2 seconds.
+The drone has no chat schema, so it neither reads nor writes messages itself; it keeps their blocks for the phones. The chat screen polls for new messages every 2 seconds.
 
-A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send the message can be stored at most once. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
+A strand write can fail without settling whether it landed, so a failed send says "Not confirmed sent … Press Send again" and leaves the text in the box. Pressing Send again is safe: `src/chat-send.ts` mints the message's primary key once per draft and re-presents that same key, so however many times the user presses Send on unchanged text the message can be stored at most once. The key is let go once the box stops holding that text (a cleared and retyped message is a new one), and when a poll shows the message did land, which also clears the notice and the box. See [`schema-guide.md` → Client-Generated Keys and Retrying a Write](schema-guide.md#client-generated-keys-and-retrying-a-write).
 
 ### Quick Reference
 
@@ -630,9 +674,9 @@ A strand write can fail without settling whether it landed, so a failed send say
 
 ## Borrowing a Node From a cadre-host
 
-The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**.
+The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**. Here too the phone dials the node; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
 
-This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (a real lent node and a phone-shaped requester dialing in — but a Node-hosted requester, not a device, and one that calls the host's `DonationService` directly rather than over HTTP). No automated test runs the phone's HTTP client against the real `/grants` server; that gap is `tickets/backlog/debt-phone-host-client-against-real-grants-server.md`.
+This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (the phone's own client, `src/host-node-request.ts`, run against the host's real `/grants` server and a real lent node, with a phone-shaped requester dialing in). That scenario covers the success path, a wrong grant token and the cleanup `DELETE` after a cancel; the retry loops and the other error mappings are covered only by the fake host. Neither runs on a device, uses React Native's `fetch`, or reaches the host by a LAN address (which the host's origin guard refuses), so this manual check is still the only coverage of those.
 
 ### On the PC
 
@@ -683,12 +727,12 @@ Expected result: the stages reach `connected`, and the lent node's peer id appea
 
 Disconnecting (Settings → Disconnect) while a request is running cancels it: the app drops the authorization it had given the lent node and asks the host to end the loan, then brings the node down. It waits a few seconds for that to finish — not indefinitely, so a host that has gone quiet cannot hold up a logout. If the wait runs out, the loan is left for the host's own UI or `cadre-host` CLI to end.
 
-Reconnecting to the lent node after the app relaunches is only observable on a device once the party id persists across restarts (ticket `feat-rn-persist-node-start-options`). Until then the headless proof of that reconnect is the integration scenario named above.
+Relaunching the app reconnects to the same cadre by itself (see [Start options](#start-options-app-private-leveldb)), so the phone should reach the lent node again from the address it recorded when it added it. The headless proof of that reconnect is the integration scenario named above; a device run has not checked it yet (blocked ticket `rn-host-node-request-device-run`).
 
 ### If the flow stalls
 
 - **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is ticket `rn-solo-founding-device-run`, which has since landed.
-- **Stuck at "Connecting to the node"**, then failing after 60 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 8 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection. The host reports a TCP and a WebSocket (`/ws`) address on every address the PC has, and the phone can use only the `/ws` ones. VPN adapters are a common source of extra addresses: on the 2026-09-17 run the host reported six, on the Tailscale address, the LAN address and `127.0.0.1`.
+- **Stuck at "Connecting to the node"**, then failing after 180 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 21.5 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection. The host reports a TCP and a WebSocket (`/ws`) address on every address the PC has, and the phone can use only the `/ws` ones. VPN adapters are a common source of extra addresses: on the 2026-09-17 run the host reported six, on the Tailscale address, the LAN address and `127.0.0.1`.
 - **Network or app?** The host also reports `/ip4/127.0.0.1/tcp/<ws-port>/ws` for the lent node, where `<ws-port>` is the node's WebSocket port. The node's page in the host's local UI (Nodes) lists it under Ports as `ws`; it was 10004 for the first loan on a fresh host, but read it rather than assume it. With `adb reverse tcp:<ws-port> tcp:<ws-port>`, the phone's dial to that address reaches the node over USB. If the flow reaches "Connected" with the forward and times out without it, the app works and the cause is the network or the firewall. The forward is only a diagnostic: strand nodes listen on ports the OS picks at start, so it does not make chat work.
 
 ### Not covered here
@@ -727,7 +771,7 @@ When Metro sends a development build a changed module, Fast Refresh applies it i
 | A build that rewrites `dist` files with identical bytes | An empty update |
 | A content change to a module the app bundles: this app's `src/`, a sereus workspace package it imports, or a linked `dist` file in optimystic, quereus or Fret | The module is sent, and the app reloads unless Fast Refresh can apply it |
 
-Ticket, doc and commit writes never need to pause. On `yarn start`, the writes that must wait until the run ends are edits to bundled source and builds that change linked `dist` output. The optional watch narrowing (a Metro `blockList` for `tickets/`, `docs/` and similar) was measured to change none of this and is not configured; the note at `watchFolders` in `metro.config.js` says when to revisit it.
+Ticket, doc and commit writes never need to pause. On `yarn start`, the writes that must wait until the run ends are edits to bundled source and builds that change linked `dist` output. The optional watch narrowing (a Metro `blockList` for `tickets/`, `docs/` and similar) was measured to change none of this and is not configured; the accepted-tradeoff note beside `linkedRoots` in `metro.config.js` says when to revisit it.
 
 One reload does not come from a write. If the app's connection to Metro drops (Wi-Fi, a lost `adb reverse`, Metro restarted), the next time the app loads a module bundled lazily (a dynamic `import()` fetched from Metro, such as optimystic's `import('p2p-fret')`), it reloads with `Bundle Splitting – Metro disconnected`.
 
@@ -742,7 +786,7 @@ Confirmed on a device (2026-09-16): the dev client connected through `adb revers
 
 **First launch on a cold Metro.** This applies to `yarn start` and `start:frozen` alike. After `yarn start --clear`, the dev client's first launch from the deep link gave up after about 10 s with "There was a problem loading the project. timeout" (okhttp `readResponseHeaders`): building the Android bundle on a cold cache takes about 20 s (4825 modules). Fetching the bundle once from the PC, then launching again, worked. Build the bundle before opening the app: start `metro:observe` first, which builds it when no client has loaded it yet (see below). To fetch it by hand instead, use the URL the observer prints on its first line (`bundle <url>`), which comes from Expo's manifest. Do not shorten it to `index.bundle?platform=android&dev=true`: the query carries transform options (`transform.engine=hermes` and others), and a bundle requested with different options is a different build.
 
-**Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js`), as a warning that logcat shows before the next `Running "main"`:
+**Why it reloaded.** Development builds log a line before any reload that starts in JavaScript (`polyfills/reload-reason.js` in `@serfab/cadre-rn`, loaded through `@serfab/cadre-rn/boot-check`), as a warning that logcat shows before the next `Running "main"`:
 
 ```
 W ReactNativeJS: [reload] Bundle Splitting – Metro disconnected
@@ -778,7 +822,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency version changes. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 
@@ -793,7 +837,7 @@ I ReactNativeJS: [settings] create strand 1a2b3c4d succeeded in 1400 ms
 
 A failure is a `W` line, `failed after <n> ms:` followed by the error. No `pressed` line after a tap means the tap never reached the handler.
 
-Development builds also log cadre-core's `sereus:cadre:timing` lines as `D ReactNativeJS` (enabled in `polyfills/hermes.js`). Each awaited step of `CadreNode.foundStrand` and of the strand launch logs a line when it starts and another when it ends, so a step with a start and no end is the one that hung:
+Development builds also log cadre-core's `sereus:cadre:timing` lines as `D ReactNativeJS` (enabled in `@serfab/cadre-rn`'s `polyfills/hermes.js`). Each awaited step of `CadreNode.foundStrand` and of the strand launch logs a line when it starts and another when it ends, so a step with a start and no end is the one that hung:
 
 ```
 D ReactNativeJS: sereus:cadre:timing [foundStrand:<id>] publishStrand: start +0ms

@@ -14,7 +14,11 @@
  *
  * No native imports, on purpose: `fetch` and the node surface both arrive as
  * dependencies, so `test/host-node-request.spec.ts` drives the whole flow in
- * plain Node against fakes. `use-cadre.ts` is what passes the real ones.
+ * plain Node against fakes. `use-cadre.ts` is what passes the real ones. The
+ * integration scenario named below also imports this file by relative path from
+ * Node, so it must keep importing nothing at all: a native or Expo import would
+ * break that scenario as it loads. `eslint.config.mjs` refuses any runtime
+ * import here.
  *
  * The six stages, against the routes in
  * `packages/cadre-host/src/server/routes/grants.ts`:
@@ -30,12 +34,14 @@
  * bootstrap address (`bootstrapNodes` is left off the POST body) and is always
  * the side that opens the connection. `addDrone` retains the addresses the host
  * handed over as a durable dial target, which is what lets step 5 — and every
- * reconnect after a restart — find the node at all. The proof that a real lent
- * node comes up and a listener-less requester can dial it is
- * `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`.
- * That scenario calls `DonationService` directly, not these HTTP routes; nothing
- * yet runs this module against the real `/grants` server
- * (`debt-phone-host-client-against-real-grants-server`).
+ * reconnect after a restart — find the node at all.
+ *
+ * `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts`
+ * runs this module against the real `/grants` server and a real lent node: the
+ * success path through all six stages, a 401 reaching the user as the grant-token
+ * message, and the cleanup `DELETE` after a cancel. The retry loops, the other
+ * error mappings and every other cleanup branch are covered only by the unit
+ * spec's fake host.
  */
 
 /** Where the flow has got to. Reported through {@link HostNodeRequestDeps.onStage}. */
@@ -86,11 +92,13 @@ export interface HostNodeRequestBudgets {
 	seedRetryMs: number;
 	/**
 	 * Wait for the control connection to the lent node to come up, counted from
-	 * before the first dial. 60 s covers most of two full dials of the lent node at
-	 * cadre-core's per-peer limit (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`, 32 s at the
-	 * default declared link round trip — it is derived now, not fixed, so a host that
+	 * before the first dial. 180 s covers two full dials of the lent node at
+	 * cadre-core's per-peer limit (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`, 86 s at the
+	 * default declared link round trip — it is derived, not fixed, so a host that
 	 * declares a slower link moves it: see `link-budget.ts`): room for a first dial that
 	 * finds nothing answering yet and a second one after it. See {@link connectToNode}.
+	 * A full dial only costs that much when the lent node's addresses are silently
+	 * dropped; one that is refused fails at once, and one that works answers in seconds.
 	 */
 	connectMs: number;
 	/** Gap between polls in each of the waits above. */
@@ -128,7 +136,7 @@ export interface HostNodeRequestResult {
 const DEFAULT_BUDGETS: HostNodeRequestBudgets = {
 	nodeStartupMs: 90_000,
 	seedRetryMs: 30_000,
-	connectMs: 60_000,
+	connectMs: 180_000,
 	pollIntervalMs: 1_000,
 	cleanupMs: 10_000,
 };
@@ -389,7 +397,7 @@ async function putSeed(flow: Flow, donationId: string, encodedSeed: string): Pro
  * pass joins it, so this never dials twice at once.
  *
  * NOTE: a pass dials the cadre's members one after another, owners first, and an
- * unreachable member costs up to cadre-core's per-peer limit (30 s) before the
+ * unreachable member costs up to cadre-core's per-peer limit (86 s) before the
  * lent node's turn. A cadre with an offline owner device can therefore use most
  * of `connectMs` before this node is dialed. If that shows up, dial the lent node
  * ahead of the pass rather than raising the budget again.

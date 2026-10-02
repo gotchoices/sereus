@@ -27,7 +27,7 @@ const config: KnipConfig = {
 	workspaces: {
 		// Root workspace: ignore non-package trees. tess/ is the vendored ticket
 		// runner, ops/ is infra tooling, docs/ is documentation, and scripts/ are
-		// release + gate helpers — none are part of the nine product workspaces
+		// release + gate helpers — none are part of the product workspaces
 		// this gate guards. test-harness/ is *not* ignored: its `vitest` import
 		// now resolves against the root manifest (root declares vitest for
 		// scripts/check-test-file-typecheck-coverage.mjs), so ignoring it draws a
@@ -38,6 +38,7 @@ const config: KnipConfig = {
 
 		'packages/cadre-cli': {},
 		'packages/cadre-core': {},
+		'packages/config-check': {},
 
 		'packages/cadre-host': {
 			// Build/signing helpers run via `node scripts/*.mjs`, not imported
@@ -57,7 +58,40 @@ const config: KnipConfig = {
 
 		'packages/cadre-provider': {},
 
+		'packages/cadre-rn': {
+			// The Node built-in shims are reached only through the `extraNodeModules` paths
+			// metro/index.cjs builds, so knip sees no importer (and would call their
+			// dependencies unused).
+			entry: ['shims/*.js'],
+			ignoreDependencies: [
+				// Optional peers by design: each is needed only by the subpath that imports it,
+				// and the README says which app installs what. `react-native` cannot also be a
+				// devDependency (as the noise-crypto peers are): a copy at the repo root would
+				// be bundled beside the app's.
+				'react-native',
+				'react-native-get-random-values',
+				'react-native-webrtc',
+				// react-native-quick-crypto's own native dependencies, which the kit never
+				// imports: peers only so that /metro resolves them from the app too. A
+				// devDependency copy would be a second one at the repo root.
+				'react-native-nitro-modules',
+				'react-native-quick-base64',
+				// test/polyfills/hermes-polyfills.spec.ts and test/metro/with-cadre-metro.spec.ts
+				// load these through `createRequire` or a node_modules path lookup, which knip
+				// cannot follow.
+				'abort-controller',
+				'@libp2p/websockets',
+				'metro-resolver',
+				// Node built-in name: knip does not read metro/index.cjs's
+				// `require.resolve('buffer/')` as the npm package.
+				'buffer',
+			],
+		},
+
 		'packages/integration-tests': {
+			// Child-process scripts the harness spawns by path (`fork` / `spawn`), so no
+			// import reaches them; as entries their own imports count as dependency uses.
+			entry: ['src/harness/fixtures/*.mjs'],
 			ignoreDependencies: [
 				// Quereus plugins are registered by name at runtime; cadre-core pulls
 				// this in transitively, but it's listed here for explicit test setup.
@@ -106,8 +140,8 @@ const config: KnipConfig = {
 				'esbuild-loader',
 				'util',
 				// Node built-in name, so knip won't treat the bare `buffer` import in
-				// src/polyfills/buffer-global.ts as a package — same ignore as the rn and
-				// web apps carry.
+				// src/polyfills/buffer-global.ts as a package — same ignore as
+				// @serfab/cadre-rn and the web app carry.
 				'buffer',
 			],
 		},
@@ -119,7 +153,6 @@ const config: KnipConfig = {
 			// app.json + native config rather than from a static import knip sees.
 			ignoreDependencies: [
 				'@babel/runtime',
-				'buffer',
 				'@expo/vector-icons',
 				'expo-updates',
 			],

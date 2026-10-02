@@ -53,10 +53,18 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase, headerCounts };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
+// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
+    resolveLinkDeadlines: actual.resolveLinkDeadlines
+  };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
-const testSchema = 'create table Test (id text primary key);';
+const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
 /** Fast gate: a 5 ms probe cadence, and a 40 ms default wait so timeouts are cheap. */
 const FAST_GATE = { pollIntervalMs: 5, timeoutMs: 40 };
@@ -124,7 +132,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
     const error = await manager.whenWritable('gate-syncing', { timeoutMs: 20 }).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(StrandAwaitingFirstSyncError);
     expect((error as StrandAwaitingFirstSyncError).strandId).toBe('gate-syncing');
-    expect((error as Error).message).toMatch(/no member of this strand has been reachable/);
+    expect((error as Error).message).toMatch(/has not yet received the strand's data from another member/);
 
     // Retryable: nothing was torn down and nothing was announced.
     expect(manager.hasStrand('gate-syncing')).toBe(true);
@@ -142,7 +150,7 @@ describe('first-sync gate in StrandInstanceManager', () => {
 
     const startedAt = Date.now();
     await expect(manager.whenWritable('gate-default-wait')).rejects.toThrow(StrandAwaitingFirstSyncError);
-    // Well under the module default of 120 s: the retained config's budget applied.
+    // Well under the module default (DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS): the retained config's budget applied.
     expect(Date.now() - startedAt).toBeLessThan(5_000);
 
     await manager.stopAll();
