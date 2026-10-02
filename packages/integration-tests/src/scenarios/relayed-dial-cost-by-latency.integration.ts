@@ -199,6 +199,7 @@ const SUPPORTED_ONE_WAY_MS = 1500;
 const LISTENER_AFTER_STREAM = 'listener holds the connection, after the stream';
 const OWN_DIAL_TIMEOUT = 'relayed dial (the node\'s own dialTimeout)';
 const REQUEST_DIAL_TIMEOUT = 'relayed dial (Optimystic request dial deadline)';
+const FRESH_RELAYED_DIAL = 'relayed dial, no relay connection open yet (300 s budget)';
 
 /**
  * Far above every budget a caller imposes. libp2p still applies the arm's per-address limit
@@ -306,6 +307,7 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 				const measured: Record<string, unknown> = {};
 				let dialer: Libp2p | undefined;
 				let listener: Libp2p | undefined;
+				let freshDialer: Libp2p | undefined;
 				try {
 					dialer = await makeNode(arm.limits);
 					listener = await makeNode(arm.limits);
@@ -346,6 +348,12 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 					await timed(measured, REQUEST_DIAL_TIMEOUT, () =>
 						underBudget(arm.requestDialTimeoutMs, (signal) => dialer!.dial(target, { signal })));
 
+					// 4. A relayed dial from a node that holds NO connection to the relay, so the
+					//    circuit transport opens that connection on the same dial.
+					freshDialer = await makeNode(arm.limits);
+					await timed(measured, FRESH_RELAYED_DIAL, () =>
+						underBudget(UNBOUNDED_MS, (signal) => freshDialer!.dial(target, { signal })));
+
 					if (arm === CADRE_DECLARED && delayMs <= SUPPORTED_ONE_WAY_MS) {
 						// The claim this arm exists for, rather than a measurement: at the supported
 						// link, a relayed dial completes inside cadre-core's per-address limit (so
@@ -368,6 +376,7 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 					);
 					await Promise.resolve(dialer?.stop()).catch(() => { /* teardown */ });
 					await Promise.resolve(listener?.stop()).catch(() => { /* teardown */ });
+					await Promise.resolve(freshDialer?.stop()).catch(() => { /* teardown */ });
 					await relay.stop().catch(() => { /* teardown */ });
 					latency.restore();
 				}
