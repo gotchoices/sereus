@@ -18,9 +18,9 @@
  * remote peer), so one consensus round against a silent member costs two
  * response deadlines, ~21 s. A failing write pays one such PEND round, which
  * ends with the coordinator's answer (the shortfall) rather than a timeout, so
- * the transactor's overall budget (154 s at the default) never comes into it.
+ * the transactor's overall budget (170 s at the default) never comes into it.
  * It then pays a cancel discharge, which keeps starting ~21 s rounds until its
- * own budget (`abortOrCancelTimeoutMs`, 38.5 s at the default) has passed: two
+ * own budget (`abortOrCancelTimeoutMs`, 42.5 s at the default) has passed: three
  * rounds. The measured outcomes (single machine, localhost websockets; the
  * wall-clock is logged on every run, and the bounds in "Deadlines" below are
  * derived from these):
@@ -29,15 +29,15 @@
  *  - 2 s delay (< 10.5 s bar)  → commits, ~8 s — the delay is paid serially
  *    across the inbound cluster RPCs one control write makes, so a small
  *    per-RPC delay becomes a larger per-WRITE one;
- *  - never answers (> 10.5 s bar)→ clean failure at ~63 s per write (one pend
- *    round plus two cancel rounds). Measured 2026-10-01: a remove 63.3 s, and
- *    an authorize 126.3 s because it queued behind a background control write
- *    (`revocation-ledger-open`) that spent its own 63 s first. Naming
+ *  - never answers (> 10.5 s bar)→ clean failure at ~84 s per write (one pend
+ *    round plus three cancel rounds), or ~168 s for an authorize, which queues
+ *    behind a background control write (`revocation-ledger-open`) that spends
+ *    its own ~84 s first. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
  *
  * Control writes run one at a time under the node's write lock, so while a
  * member stalls each failing write holds every other control write on the node
- * for those ~63 s (`docs/cadre-consistency.md` → "Deadlines Over Optimystic's
+ * for those ~84 s (`docs/cadre-consistency.md` → "Deadlines Over Optimystic's
  * Reads and Commits").
  *
  * One case here was a standing EXPECTED FAILURE (`it.fails`) until 2026-08-25:
@@ -60,7 +60,7 @@
  * itself, the writer reaches it over the (healthy) repo protocol, its own
  * cluster vote is in-process, and its degraded INBOUND cluster handler never
  * sees a stream — so the write COMMITS fast (~0.25–0.5 s in an exploratory run)
- * instead of failing (~63 s). That branch is real availability, not a defect.
+ * instead of failing (~84 s). That branch is real availability, not a defect.
  * It is NOT covered here and cannot be, for the reason in the next paragraph:
  * pinning the coordinator to C makes every case fail with `Missing block`
  * before any degradation is reached, writes included (the write path reads
@@ -93,7 +93,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
 import { resolveLinkDeadlines } from '@optimystic/db-p2p';
 import {
-	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, signPeerRecord, ed25519KeyPairFromLibp2p
+	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, optimysticDialLimits, signPeerRecord, ed25519KeyPairFromLibp2p
 } from '@serfab/cadre-core';
 import type { Ed25519KeyPair } from '@serfab/cadre-core';
 import {
@@ -116,7 +116,7 @@ const log = debug('sereus:integration:degraded-cohort');
 //
 //   healthy authorize+remove ......... ~0.6–2.2 s (both writes, combined)
 //   2 s-delayed authorize / remove ... ~8 s       each
-//   never-answering member ........... ~63 s per failing write; ~126 s when the
+//   never-answering member ........... ~84 s per failing write; ~168 s when the
 //                                      write queued behind a failing background one
 //   recovery after a failed write .... ~0.7–1.8 s
 //   transient-reset absorb ........... ~0.9–1.6 s (commits on attempt 3)
@@ -210,12 +210,11 @@ const DELAYED_WRITE_TIMEOUT_MS = 120_000;
 /**
  * The deadlines every node in the trio runs under: cadre-core states
  * `DECLARED_LINK_ROUND_TRIP_MS` to Optimystic when the config declares no link (the harness
- * declares none), and sets no RPC deadline override. The never-answering bounds below are
- * derived from it, so they move with Optimystic's derivation instead of going stale.
- * NOTE: if cadre-core starts passing `rpcDeadlines` to Optimystic, pass the same values here,
- * or these bounds are derived from a dial deadline no node uses.
+ * declares none), and the RPC dial deadline `optimysticDialLimits` derives from it. The
+ * never-answering bounds below are derived from both, so they move with Optimystic's
+ * derivation and cadre-core's additions instead of going stale.
  */
-const LINK_DEADLINES = resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS);
+const LINK_DEADLINES = resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS, optimysticDialLimits().rpcDeadlines);
 /**
  * One consensus round against the never-answering member: `ClusterClient` makes two attempts
  * at it, each ending at the response deadline. 21 s at the default declared link.
@@ -224,7 +223,7 @@ const STALLED_ROUND_MS = 2 * LINK_DEADLINES.responseTimeoutMs;
 /**
  * The cancel discharge's budget (`abortOrCancelTimeoutMs`), as `quereus-plugin-optimystic`'s
  * `collection-factory.ts` sets it on every collection's `NetworkTransactor`:
- * `max(5 s, dial deadline)`, 38.5 s at the default declared link. Restated here because the
+ * `max(5 s, dial deadline)`, 42.5 s at the default declared link. Restated here because the
  * plugin computes it inline and exports nothing for it; if a red run's cancel rounds stop
  * matching {@link STALLED_CANCEL_ROUNDS}, check that expression first.
  */
@@ -233,7 +232,7 @@ const CANCEL_BUDGET_MS = Math.max(5_000, LINK_DEADLINES.dialTimeoutMs);
  * Cancel rounds a failed write runs against the never-answering member. `dischargeCancel`
  * starts another round while its budget has not run out, and each round lasts a whole
  * {@link STALLED_ROUND_MS} however little budget is left, so the last round overruns the
- * budget. 2 at the default declared link.
+ * budget. 3 at the default declared link.
  * NOTE: `dischargeCancel` also stops after six rounds (`NetworkTransactor.MAX_CANCEL_ROUNDS`,
  * private upstream), which this leaves out; it binds only once the cancel budget exceeds six
  * rounds (a dial deadline above 126 s at the default response deadline), so cap this at six if
@@ -244,16 +243,16 @@ const STALLED_CANCEL_ROUNDS = Math.ceil(CANCEL_BUDGET_MS / STALLED_ROUND_MS);
  * One control write that fails against the never-answering member: one pend round, then the
  * cancel rounds. The pend is not re-tried: its round ends with the coordinator's answer (the
  * shortfall), not a timeout, so the transactor's overall budget
- * (`LINK_DEADLINES.transactionTimeoutMs`, 154 s) is never what ends it. 63 s at the default
- * declared link; measured 63.1–63.3 s on 2026-10-01.
+ * (`LINK_DEADLINES.transactionTimeoutMs`, 170 s) is never what ends it. 84 s at the default
+ * declared link.
  */
 const STALLED_WRITE_FAILURE_MS = (1 + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
 /**
  * How long a write against the never-answering member takes to settle, measured from the call.
  * Control writes run one at a time under the node's write lock, so the write can queue behind
  * ONE background control write failing the same way: A's `revocation-ledger-open`, which A
- * files while it is connected and which fails in every stalled window. 126 s at the default
- * declared link; measured 126.3 s on 2026-10-01 in both cases that awaited an authorize.
+ * files while it is connected and which fails in every stalled window. 168 s at the default
+ * declared link.
  */
 const STALLED_SETTLE_MS = 2 * STALLED_WRITE_FAILURE_MS;
 /**
@@ -272,7 +271,7 @@ const FAILURE_CEILING_MS = STALLED_SETTLE_MS + STALLED_ROUND_MS;
  * A write against a never-answering member that has not settled by here is the hang this
  * scenario exists to catch. One more {@link STALLED_ROUND_MS} above {@link FAILURE_CEILING_MS},
  * so a write that settled late is reported by that assertion, with its measured time, rather
- * than as a hang. 168 s at the default declared link.
+ * than as a hang. 210 s at the default declared link.
  */
 const STALLED_WRITE_TIMEOUT_MS = FAILURE_CEILING_MS + STALLED_ROUND_MS;
 /**
@@ -286,7 +285,7 @@ const DELAYED_COMMIT_CEILING_MS = 100_000;
 // Each case's per-`it` timeout is set ABOVE the sum of the labelled deadlines it
 // can pay, so that on a hang the labelled error — which names the operation —
 // wins over vitest's anonymous test timeout. They are ceilings that never fire
-// on a green run (slowest measured case: ~126 s, a stalled authorize).
+// on a green run (slowest case: ~168 s, a stalled authorize).
 
 /** The delay matrix: under the 10.5 s response deadline, and past it forever. */
 const UNDER_DEADLINE_DELAY_MS = 2_000;
@@ -1003,7 +1002,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// The LIVE error object must classify as retriable — this is what the
 			// retry would re-present, and a reworded upstream message now fails this
 			// scenario instead of silently disabling the retry. (The retry still did
-			// not RUN here: the ~63 s first attempt exhausts the 10 s budget, which
+			// not RUN here: the ~84 s first attempt exhausts the 10 s budget, which
 			// the log assertions below pin.)
 			expect(isRetriableControlWriteFailure(outcome.error),
 				'the live degraded-cohort failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
@@ -1018,9 +1017,9 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expectThreePeerCohortConsulted(baseline);
 
 			// The retry budget's whole rationale: a genuinely silent member fails in
-			// one attempt's time, as it would with no retry, because the ~63 s first
+			// one attempt's time, as it would with no retry, because the ~84 s first
 			// attempt exhausts the 10 s budget before any sleep. Wall clock cannot pin
-			// this (a write queued behind a failing background write lands at ~126 s,
+			// this (a write queued behind a failing background write lands at ~168 s,
 			// the same as one retried once), so the funnel's
 			// own log is the assertion surface — scoped by the `peer-insert` label to
 			// THIS write, because background writes are NOT all stall victims:
@@ -1029,7 +1028,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// an unscoped "nothing retried" assertion false-fails.
 			const insertLines = retryLog.lines().filter((l) => l.includes('[peer-insert]'));
 			expect(insertLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
-				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~63 s degraded-member failure').toBe(false);
+				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~84 s degraded-member failure').toBe(false);
 			// Anti-vacuity for the line above: the stalled write's single attempt
 			// must itself be visible in the capture — otherwise the negative
 			// assertion passes because the capture is dead or the failure bypassed
@@ -1143,7 +1142,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// authorize case (background writes can fail fast inside this window).
 			const removeLines = retryLog.lines().filter((l) => l.includes('[peer-remove]'));
 			expect(removeLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
-				'the stalled DELETE ran a SECOND attempt — the 10 s retry budget no longer expires before the ~63 s degraded-member failure').toBe(false);
+				'the stalled DELETE ran a SECOND attempt — the 10 s retry budget no longer expires before the ~84 s degraded-member failure').toBe(false);
 			expect(removeLines.some((l) => /failed after 1\/\d+ attempt\(s\)/.test(l)),
 				'the stalled DELETE\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {

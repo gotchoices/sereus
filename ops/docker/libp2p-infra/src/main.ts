@@ -153,10 +153,12 @@ const node = await createLibp2p({
       maxTimeout: 30_000
     }
   },
-  // The same two limits every cadre node runs with: `@optimystic/db-p2p` derives them as 5 link
-  // round trips from the link `@serfab/cadre-core` declares, 3500 ms by default, = 17 500 ms
-  // (libp2p's own default for both is 10 000). Keep them in step by hand; this container
-  // depends on neither package.
+  // The listener limit every cadre node runs with: `@optimystic/db-p2p` derives
+  // `inboundUpgradeTimeout` as 5 link round trips from the link `@serfab/cadre-core` declares,
+  // 3500 ms by default, = 17 500 ms (libp2p's own default is 10 000). Keep it in step by hand;
+  // this container depends on neither package. A cadre node's own `dialTimeout` is longer
+  // (`optimysticDialLimits`, 39 000 ms); this one's barely matters, because a relay serves a
+  // circuit over the connection its target already holds and dials nothing.
   //
   // This relay is the LISTENER for every client's direct connection to it, which costs about
   // one link round trip to set up, so 10 s already covers the 3-second round trip sereus

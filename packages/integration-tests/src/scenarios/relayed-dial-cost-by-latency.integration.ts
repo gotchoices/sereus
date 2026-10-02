@@ -122,7 +122,7 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { resolveLinkDeadlines, type Libp2pConnectionTimeouts, type LinkDeadlines } from '@optimystic/db-p2p';
-import { DECLARED_LINK_ROUND_TRIP_MS } from '@serfab/cadre-core';
+import { DECLARED_LINK_ROUND_TRIP_MS, optimysticDialLimits } from '@serfab/cadre-core';
 import { installWsLatency, startDedicatedRelay } from '../harness/index.js';
 
 const MEASURE = process.env.RELAY_DIAL_COST === '1';
@@ -149,19 +149,30 @@ interface Arm {
 }
 
 /**
- * The deadlines Optimystic gives a node, as an arm. Both nodes take the connection limits, because
- * each is the listener for the other's dial. The pair is the discriminator: a failure present
- * under db-p2p's fallback and gone under cadre-core's declaration is those limits giving up, not
- * the link.
+ * The deadlines a node gets, as an arm: Optimystic's derivation, with an explicit
+ * `connectionManager` limit winning over it the way `createLibp2pNode` resolves them. Both nodes
+ * take the connection limits, because each is the listener for the other's dial. The pair is the
+ * discriminator: a failure present under db-p2p's fallback and gone under cadre-core's
+ * declaration is those limits giving up, not the link.
  */
-function armOf(name: string, deadlines: LinkDeadlines): Arm {
-	const limits = { dialTimeout: deadlines.libp2pDialTimeoutMs, inboundUpgradeTimeout: deadlines.inboundUpgradeTimeoutMs };
+function armOf(name: string, deadlines: LinkDeadlines, stated: Libp2pConnectionTimeouts = {}): Arm {
+	const limits = {
+		addressDialTimeout: stated.addressDialTimeout ?? deadlines.addressDialTimeoutMs,
+		dialTimeout: stated.dialTimeout ?? deadlines.libp2pDialTimeoutMs,
+		inboundUpgradeTimeout: stated.inboundUpgradeTimeout ?? deadlines.inboundUpgradeTimeoutMs
+	};
 	return { name, limits, requestDialTimeoutMs: deadlines.dialTimeoutMs };
 }
 
 const DB_P2P_FALLBACK = armOf('db-p2p fallback', resolveLinkDeadlines());
-// What the control node and every strand node get: cadre-core always states its declared link.
-const CADRE_DECLARED = armOf('cadre-core declared', resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS));
+// What the control node and every strand node get: cadre-core always states its declared link,
+// and the dial limits it derives from it on top of Optimystic's.
+const CADRE_DIAL_LIMITS = optimysticDialLimits(DECLARED_LINK_ROUND_TRIP_MS);
+const CADRE_DECLARED = armOf(
+	'cadre-core declared',
+	resolveLinkDeadlines(DECLARED_LINK_ROUND_TRIP_MS, CADRE_DIAL_LIMITS.rpcDeadlines),
+	CADRE_DIAL_LIMITS.connectionManager
+);
 const ARMS = [DB_P2P_FALLBACK, CADRE_DECLARED];
 
 /**
@@ -176,7 +187,12 @@ const LISTENER_AFTER_STREAM = 'listener holds the connection, after the stream';
 const OWN_DIAL_TIMEOUT = 'relayed dial (the node\'s own dialTimeout)';
 const REQUEST_DIAL_TIMEOUT = 'relayed dial (Optimystic request dial deadline)';
 
-/** Far above every budget in the stack, so the unbounded arm measures the cost, not a limit. */
+/**
+ * Far above every budget a caller imposes. libp2p still applies the arm's per-address limit
+ * (`addressDialTimeout`) inside a dial under this signal, so the dial measures the cost only while
+ * that limit is longer: under the `cadre-core declared` arm (39 s) up to about 4 875 ms one-way,
+ * under the `db-p2p fallback` arm (6 s) up to about 750 ms (eight one-way delays per dial).
+ */
 const UNBOUNDED_MS = 300_000;
 
 /**
@@ -317,15 +333,16 @@ describe.runIf(MEASURE)('relayed dial cost by link latency (opt-in: RELAY_DIAL_C
 					await timed(measured, REQUEST_DIAL_TIMEOUT, () =>
 						underBudget(arm.requestDialTimeoutMs, (signal) => dialer!.dial(target, { signal })));
 
-					// The claim every arm makes, rather than a measurement: given enough budget, a
-					// relayed dial DOES complete at every delay swept — so every failure above is a
-					// budget.
-					expect(typeof measured['relayed dial (300 s budget)']).toBe('number');
 					if (arm === CADRE_DECLARED && delayMs <= SUPPORTED_ONE_WAY_MS) {
-						// And the one this arm exists for: at the supported link, cadre-core's limits
-						// open a connection the LISTENER holds, a stream works on it, and a dial with
-						// no signal of its own completes inside the node's own `dialTimeout`, as does
-						// one under an Optimystic request's dial deadline.
+						// The claim this arm exists for, rather than a measurement: at the supported
+						// link, a relayed dial completes inside cadre-core's per-address limit (so
+						// every failure under the fallback arm is a limit, not the link), opens a
+						// connection the LISTENER holds, and a stream works on it; and a dial with no
+						// signal of its own completes inside the node's own `dialTimeout`, as does one
+						// under an Optimystic request's dial deadline. Not claimed for the fallback
+						// arm: its 6 s per-address limit cuts the first dial off above about 750 ms
+						// one-way, whatever the caller's budget (see UNBOUNDED_MS).
+						expect(typeof measured['relayed dial (300 s budget)']).toBe('number');
 						expect(measured[LISTENER_AFTER_STREAM]).toBe(1);
 						expect(typeof measured['newStream over that circuit']).toBe('number');
 						expect(typeof measured[OWN_DIAL_TIMEOUT]).toBe('number');

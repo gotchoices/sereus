@@ -548,7 +548,7 @@ export class FormationListener {
    * NOTE: a commit that outlasts even the derived grace (a link slower than declared, a
    * configured `provisionTimeoutMs` whose half-cap shrank the grace, or a commit phase that
    * re-picks an unanswering coordinator, which Optimystic lets run to its transaction budget,
-   * 154 s at the default declared link) still tells the joiner
+   * 170 s at the default declared link) still tells the joiner
    * 'timed out' while its one-time invite is in fact spent, and since every retry mints a
    * fresh keypair no recovery path can match it. Nothing can un-spend an append-only row, so
    * the late-settle logging below is the observability for it; if it is seen in the wild,
