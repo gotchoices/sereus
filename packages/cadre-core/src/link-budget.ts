@@ -261,19 +261,6 @@ export const RELAY_DIAL_ROUND_TRIPS = 1;
 export const RELAYED_DIAL_ROUND_TRIPS = RELAY_DIAL_ROUND_TRIPS + CIRCUIT_DIAL_ROUND_TRIPS;
 
 /**
- * Link round trips one whole reservation drive is budgeted for
- * (`relay-reservation.ts`'s `driveRelayReservation`, whose ONE deadline covers the dial, the
- * reservation request and the wait together).
- *
- * The protocol work measured is 2 — dial the relay (1) plus request the reservation (1). It is
- * budgeted at twice that, because the wait afterwards may instead be satisfied by libp2p's own
- * relay discovery, which repeats both legs after identify has run; 4 is therefore the largest
- * thing this one deadline can be asked to contain, and the poll interval
- * (`DEFAULT_RELAY_RESERVE_POLL_MS`) rounds up on top of it.
- */
-export const RELAY_RESERVATION_ROUND_TRIPS = 4;
-
-/**
  * Link round trips from the moment a party-run relay admits a stranger's connection for relay
  * use to the moment that stranger's RESERVE request reaches it. libp2p's reservation store
  * (`@libp2p/circuit-relay-v2`'s `addRelay`) opens the hop stream the instant its dial resolves,
@@ -290,6 +277,20 @@ export const RELAY_RESERVATION_ROUND_TRIPS = 4;
  * {@link relayAdmissionReserveDeadlineMs} adds it separately.
  */
 export const RELAY_RESERVE_REQUEST_ROUND_TRIPS = 1;
+
+/**
+ * Link round trips one whole reservation drive is budgeted for
+ * (`relay-reservation.ts`'s `driveRelayReservation`, whose ONE deadline covers the dial, the
+ * reservation request and the wait together).
+ *
+ * The protocol work measured is 2 — dial the relay ({@link RELAY_DIAL_ROUND_TRIPS}) plus request
+ * the reservation ({@link RELAY_RESERVE_REQUEST_ROUND_TRIPS}). It is budgeted at twice that,
+ * because the wait afterwards may instead be satisfied by libp2p's own relay discovery, which
+ * repeats both legs after identify has run; 4 is therefore the largest thing this one deadline
+ * can be asked to contain, and the poll interval (`DEFAULT_RELAY_RESERVE_POLL_MS`) rounds up on
+ * top of it.
+ */
+export const RELAY_RESERVATION_ROUND_TRIPS = 2 * (RELAY_DIAL_ROUND_TRIPS + RELAY_RESERVE_REQUEST_ROUND_TRIPS);
 
 /**
  * Link round trips negotiating one protocol over an ALREADY-OPEN connection costs: the

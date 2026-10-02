@@ -221,7 +221,8 @@ const FRESH_RELAYED_DIAL = 'relayed dial, no relay connection open yet (300 s bu
  * Far above every budget a caller imposes. libp2p still applies the arm's per-address limit
  * (`addressDialTimeout`) inside a dial under this signal, so the dial measures the cost only while
  * that limit is longer: under the `cadre-core declared` arm (39 s) up to about 4 875 ms one-way,
- * under the `db-p2p fallback` arm (6 s) up to about 750 ms (eight one-way delays per dial).
+ * under the `db-p2p fallback` arm (6 s) up to about 750 ms (eight one-way delays per dial; step
+ * 4's dial, which opens its relay connection first, costs ten).
  */
 const UNBOUNDED_MS = 300_000;
 
