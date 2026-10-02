@@ -620,7 +620,10 @@ export interface OptimysticDialLimits {
  *
  * Built on Optimystic's derivation rather than restating its round-trip counts, so a change to
  * them reaches every node without an edit here. `dialTimeout` stays at least `addressDialTimeout`,
- * as Optimystic's derivation has it, because both take the same addition.
+ * as Optimystic's derivation has it, because both take the same addition. The request dial stays
+ * one round trip longer than `addressDialTimeout`, also as Optimystic derives them, although
+ * Optimystic's `rpcDeadlines` doc asks for it to be no longer: that round trip is the stream
+ * negotiation after the connection opens, which the per-address limit does not cover.
  *
  * The listener's `inboundUpgradeTimeout` and the request response deadline are left to Optimystic:
  * the listener's timer runs over its own upgrade and its own decision only (the module doc's
