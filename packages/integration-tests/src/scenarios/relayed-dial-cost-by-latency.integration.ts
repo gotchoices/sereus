@@ -81,11 +81,11 @@
  * ceiling the dialer's own `dial()` still resolves — measured 12 050 ms at 1500 ms one-way —
  * but the listener abandoned the half-built connection at 10 s, so the dialer holds a
  * connection whose every stream dies with `Unexpected EOF - stream closed while reading 0/1
- * bytes` and the listener never reports a peer at all. The two arms are what shows that it is
- * the listener and not the link: at 1500 ms one-way under db-p2p's fallback 10 s, `newStream`
- * fails with exactly that error and the listener holds 0 relayed connections; with a 120 s
- * listener limit (the arm this file carried before cadre-core declared its own) the same
- * `newStream` took 3031 ms and the listener held 1.
+ * bytes` and the listener never reports a peer at all. The two arms showed that it is the
+ * listener and not the link, on libp2p 3.1, which had no per-address limit: at 1500 ms one-way
+ * under db-p2p's fallback 10 s, `newStream` failed with exactly that error and the listener held
+ * 0 relayed connections; with a 120 s listener limit (the arm this file carried before
+ * cadre-core declared its own) the same `newStream` took 3031 ms and the listener held 1.
  *
  * **Proved** 2026-09-26, same machine, with `RELAY_DIAL_COST_DELAYS=0,1500`, once cadre-core
  * declared both limits (then 14 000 ms each at its default link): at 1500 ms one-way, the
@@ -107,6 +107,17 @@
  * The `db-p2p fallback` arm reproduced the failure as before (`newStream` `Unexpected EOF` after
  * 2455 ms, listener holding 0, the signal-less dial aborted at 10 005 ms, the 3000 ms request
  * dial at 3012 ms).
+ *
+ * **Proved again** 2026-10-01, same machine, `RELAY_DIAL_COST_DELAYS=1500`, on libp2p 3.3.11 and
+ * `@optimystic/*` 1.9.0, once cadre-core stated its dial limits on top of Optimystic's (39 000 ms
+ * per address and per dial, a 42 500 ms request dial, the listener's 17 500 ms): the
+ * `cadre-core declared` arm's relayed dial took 12 089 ms, `newStream` over it 3018 ms, the
+ * listener held 1, and the signal-less dial and the dial under the request deadline completed
+ * in 12 100 and 12 094 ms. The `db-p2p fallback` arm now fails before the listener's limit is
+ * reached: libp2p 3.3 applies its per-address limit (6 000 ms in that arm) inside every dial, a
+ * caller's own signal included, so the 300 s dial and the signal-less dial both aborted at
+ * 6 004-6 007 ms. That is the cut-off reported on gotchoices/sereus#13, and it is why that arm
+ * no longer shows the listener's silent failure.
  *
  * Read the listener's count AFTER the stream, not the one right after the dial. That earlier
  * one is 0 at every delay, healthy links included — the dialer's `dial()` resolves a moment

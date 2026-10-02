@@ -30,9 +30,9 @@
  *    across the inbound cluster RPCs one control write makes, so a small
  *    per-RPC delay becomes a larger per-WRITE one;
  *  - never answers (> 10.5 s bar)→ clean failure at ~84 s per write (one pend
- *    round plus three cancel rounds), or ~168 s for an authorize, which queues
- *    behind a background control write (`revocation-ledger-open`) that spends
- *    its own ~84 s first. Naming
+ *    round plus three cancel rounds). Measured 2026-10-01: a remove 84.4 s, and
+ *    an authorize 168.9 s because it queued behind a background control write
+ *    (`revocation-ledger-open`) that spent its own 84 s first. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
  *
  * Control writes run one at a time under the node's write lock, so while a
@@ -110,9 +110,10 @@ const log = debug('sereus:integration:degraded-cohort');
 // single-machine (localhost websockets) runs under the forced cohort + pinned
 // coordinator, with ~2–3× headroom so a slower CI box does not flake while a
 // real regression still trips the bound. The never-answering bounds are
-// DERIVED from Optimystic's deadlines at the declared link instead, because
-// they are made of those deadlines and move whenever Optimystic re-derives them
-// (see `STALLED_ROUND_MS` and the constants after it). Last measured 2026-10-01:
+// DERIVED from the deadlines the nodes run under at the declared link instead
+// (Optimystic's, with the request dial cadre-core states), because they are
+// made of those deadlines and move whenever either side re-derives them (see
+// `STALLED_ROUND_MS` and the constants after it). Last measured 2026-10-01:
 //
 //   healthy authorize+remove ......... ~0.6–2.2 s (both writes, combined)
 //   2 s-delayed authorize / remove ... ~8 s       each
@@ -244,7 +245,7 @@ const STALLED_CANCEL_ROUNDS = Math.ceil(CANCEL_BUDGET_MS / STALLED_ROUND_MS);
  * cancel rounds. The pend is not re-tried: its round ends with the coordinator's answer (the
  * shortfall), not a timeout, so the transactor's overall budget
  * (`LINK_DEADLINES.transactionTimeoutMs`, 170 s) is never what ends it. 84 s at the default
- * declared link.
+ * declared link; measured 84.4 s on 2026-10-01.
  */
 const STALLED_WRITE_FAILURE_MS = (1 + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
 /**
@@ -252,7 +253,7 @@ const STALLED_WRITE_FAILURE_MS = (1 + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
  * Control writes run one at a time under the node's write lock, so the write can queue behind
  * ONE background control write failing the same way: A's `revocation-ledger-open`, which A
  * files while it is connected and which fails in every stalled window. 168 s at the default
- * declared link.
+ * declared link; measured 168.5–168.9 s on 2026-10-01 in both cases that awaited an authorize.
  */
 const STALLED_SETTLE_MS = 2 * STALLED_WRITE_FAILURE_MS;
 /**
@@ -285,7 +286,7 @@ const DELAYED_COMMIT_CEILING_MS = 100_000;
 // Each case's per-`it` timeout is set ABOVE the sum of the labelled deadlines it
 // can pay, so that on a hang the labelled error — which names the operation —
 // wins over vitest's anonymous test timeout. They are ceilings that never fire
-// on a green run (slowest case: ~168 s, a stalled authorize).
+// on a green run (slowest measured case: ~169 s, a stalled authorize).
 
 /** The delay matrix: under the 10.5 s response deadline, and past it forever. */
 const UNDER_DEADLINE_DELAY_MS = 2_000;
