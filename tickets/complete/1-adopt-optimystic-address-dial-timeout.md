@@ -1,4 +1,4 @@
-description: Sereus now requires Optimystic 1.9.0, and every sereus node gives it connection time limits sized for the slowest relayed connection plus the time the relay and the called machine take to admit it, so relayed connections on the slowest supported link no longer time out after 6 seconds (gotchoices/sereus#13). Review the change.
+description: Sereus now requires Optimystic 1.9.0, and every sereus node gives it connection time limits sized for the slowest relayed connection plus the time the relay and the called machine take to admit it, so relayed connections on the slowest supported link no longer time out after 6 seconds (gotchoices/sereus#13).
 architecture: docs/cadre-consistency.md#deadlines-over-optimystics-reads-and-commits
 files:
   - packages/{cadre-cli,cadre-core,cadre-rn,integration-tests,quereus-plugin-sereus,reference-app-ns,reference-app-rn,reference-app-web}/package.json, yarn.lock (`@optimystic/*` ^1.9.0; root `resolutions` still `link:`)
@@ -70,3 +70,31 @@ Six cadre-core specs (`strand-first-sync-gate` and five `strand-instance-manager
 - **Two agent runs worked this ticket at the same time** (21:47 and 22:00); the earlier one ended once they coordinated. Its edits are in the tree and were re-validated above.
 - **A leftover `check:published` worktree is still registered**: `C:/Users/n8ers/AppData/Local/Temp/sereus-check-published-W3CPro/repo`, detached at db00f225. It is from an earlier run. It was left alone because its `node_modules` may hold `link:` junctions into the sibling repositories (see docs/testing.md → "Scratch worktrees and clones").
 - **The #13 follow-up** is drafted in `blocked/report-issue-13-address-dial-timeout-rerun.md`. Posting it is the maintainer's call.
+
+## Review findings
+
+Reviewed the combined diff of the five `ticket(implement): adopt-optimystic-address-dial-timeout` commits and the salvage commits between them (`f711a88a^..HEAD`), against Optimystic 1.9.0's source in `../optimystic` (`rpc-deadline.ts`, `libp2p-node-base.ts`, `network-transactor.ts`'s `dischargeCancel`).
+
+**Checked, correct as written:**
+- `optimysticDialLimits` (`link-budget.ts`): adds 2 × 2 000 ms to Optimystic's `addressDialTimeoutMs`, `libp2pDialTimeoutMs` and `dialTimeoutMs`. That gives 39 000 / 39 000 / 42 500 ms at the default 3 500 ms. `dialTimeout ≥ addressDialTimeout` holds by construction (`max(10 000, 10 r)` against `max(6 000, 10 r)`). `createLibp2pNode` takes explicit `connectionManager` fields over the derived ones field by field, so the listener's `inboundUpgradeTimeout` stays Optimystic's.
+- Both node builders spread the helper next to `linkRoundTripMs`. No other `connectionManager` or `rpcDeadlines` key exists in either options object, so nothing gets overwritten. `resolveLinkRoundTripMs` runs first in the literal, so an invalid declaration still fails with cadre's message.
+- The ceiling arithmetic in `types.ts`: `MAX_RPC_DIAL_TIMEOUT_MS` = ⌊(2³¹−1)/5⌋ = 429 496 729 ms, and 11 r + 4 000 reaches it at r ≈ 39.0 M ms ≈ 10.8 h. That is below `MAX_LINK_ROUND_TRIP_MS` = ⌊(2³¹−1)/45⌋ ≈ 13.3 h, as the doc says.
+- Importing `@optimystic/db-p2p` into `link-budget.ts` adds no new load path. cadre-core's only entry point that reaches `link-budget.ts` is `.`, and it already loads db-p2p.
+- Stale figures: I searched the docs, sources, ops and release note for 63 s / 126 s / 154 s / 38.5 s / 1.66 days / "six round trips" / a 17.5 s `dialTimeout`. The only matches left are history in the latency instrument's dated "Proved" records and an unrelated 126 s in the six-round cap NOTE, which is correct.
+- Nodes built outside cadre-core (`quereus-plugin-sereus`'s `connect.ts` and `connect-browser.ts`, the test-party harness) do not get these limits. That is already an arm on `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`, so I filed nothing new.
+- `blocked/report-issue-13-address-dial-timeout-rerun.md` is accurate against the code. It correctly points a 19.5 s formation timeout at `fix/bug-relayed-dial-budget-omits-opening-the-relay-connection`.
+
+**Found and fixed in this pass (minor):**
+- The "three cancel rounds, about 84 s" claim is close to the edge. At the default, the cancel budget (42.5 s) outlasts two 21 s rounds by only 500 ms, and `dischargeCancel` starts a third round only while budget remains. So on a slower box a failing write can stop at about 63 s. The scenario still passes because its floor is 15 s. I added this to `docs/cadre-consistency.md` (the cancel bullet) and as a `NOTE:` tripwire on `STALLED_CANCEL_ROUNDS` in `control-write-degraded-cohort-member.integration.ts`, saying what to do if the failure time is ever pinned from below.
+- `docs/cadre-consistency.md`'s load-bearing-relationships bullet said "`link-budget.spec.ts` pins each formula" right after describing `optimysticDialLimits`, which no spec pins. I changed it to "each of cadre's own budget formulas".
+
+**Tripwires noted, already parked at their sites by the implementer:**
+- A strand join's multi-address dial no longer moves on to the next address of a machine that hangs, because libp2p's per-address limit is now longer than the formation dial budget. This is the `openFormationStream` NOTE, with its revisit condition. The only other cadre dial that can reach several addresses under one signal is `strand-addr-protocol`'s `dialProtocol(target)` when `target` is a peer ID. It falls in the same class, and the 6 s cut-off it used to get was never a design guarantee.
+- A request dial longer than the listener's limit can still meet the silent `Unexpected EOF` failure on a link much slower than the declared one. This is the NOTE in `docs/architecture.md` → "Relay Integration".
+- The request dial is longer than `addressDialTimeout`, against Optimystic's doc wording. The `optimysticDialLimits` doc explains why. Raising the wording upstream is optional and not filed.
+
+**Tests:** I added none and cut none. The six partial `vi.mock(import('@optimystic/db-p2p'), …)` changes are mock-shape updates that `buildStrandRuntime` now needs. They are duplicated, but `vi.mock` hoisting makes a shared helper awkward for no gain. The helper is a constant addition over Optimystic's derivation with no branching, so by the test policy it gets no spec. The degraded-cohort scenario consumes its output, so a change to it moves those bounds.
+
+**Validation (this pass, 2026-10-01):** `yarn workspace @serfab/cadre-core typecheck`, `yarn workspace @serfab/integration-tests typecheck`, `yarn lint` and `yarn check:dep-ranges` are clean. `yarn workspace @serfab/cadre-core test`: 149 files, 2 364 passed, 1 skipped (log: `tickets/.logs/adopt-optimystic-address-dial-timeout.review.test.log`). I did not re-run the degraded-cohort scenario or the latency instrument: my edits there are comments only, and the implementer's 2026-10-01 runs above stand. I also did not run the full `yarn check:published`, which is not agent-runnable; the maintainer should run it before release.
+
+**Not touched:** the leftover `check:published` worktree (`C:/Users/n8ers/AppData/Local/Temp/sereus-check-published-W3CPro/repo`, detached at db00f225) is still registered. I left it alone, because its `node_modules` may hold `link:` junctions into the sibling repositories (docs/testing.md → "Scratch worktrees and clones"). A human should unlink it and remove it.
