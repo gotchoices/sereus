@@ -80,7 +80,6 @@ const config: KnipConfig = {
 				// load these through `createRequire` or a node_modules path lookup, which knip
 				// cannot follow.
 				'abort-controller',
-				'@libp2p/websockets',
 				'metro-resolver',
 				// Node built-in name: knip does not read metro/index.cjs's
 				// `require.resolve('buffer/')` as the npm package.

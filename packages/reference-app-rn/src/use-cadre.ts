@@ -61,7 +61,7 @@ const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
  * only as a live read — so the banner polls. Foreground only, so a backgrounded phone
  * adds no wakeups of its own (the reservation supervisor inside cadre-core keeps its own
  * liveness check running regardless — see the NOTE beside `relayAddrs` in
- * `phone-node-config.ts`).
+ * `@serfab/cadre-rn/phone-node`'s `buildPhoneNodeConfig`).
  *
  * The invite guard does NOT use this value: it reads {@link getRelayState} at the
  * moment of the tap, so a stale poll can never let a doomed invitation through.
@@ -428,7 +428,7 @@ export function useCadreInternal(): UseCadreResult {
   //
   // Polling stops while backgrounded, so this timer costs nothing when the screen is
   // off. cadre-core's own reservation supervisor does keep running there — see the
-  // NOTE beside `relayAddrs` in `phone-node-config.ts`.
+  // NOTE beside `relayAddrs` in `@serfab/cadre-rn/phone-node`'s `buildPhoneNodeConfig`.
   useEffect(() => {
     if (!node) {
       setRelayStatus('none');

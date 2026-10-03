@@ -1,5 +1,5 @@
 description: Someone with an Android phone needs to actually try borrowing a node from a home machine using the app's new Settings section, because that whole feature was written and tested without any phone being involved.
-files: packages/reference-app-rn/src/phone-node-config.ts, packages/reference-app-rn/src/host-node-request.ts, packages/reference-app-rn/app/settings.tsx, docs/reference-app-rn.md
+files: packages/cadre-rn/src/phone-node/config.ts, packages/reference-app-rn/src/host-node-request.ts, packages/reference-app-rn/app/settings.tsx, docs/reference-app-rn.md
 repro: none
 ----
 
@@ -17,7 +17,7 @@ This is a blocked ticket rather than a backlog one because the missing ingredien
 
 ## What is actually unproven
 
-**The dial permission.** The phone's node config now sets a permissive dial gater (`connectionGater: { denyDialMultiaddr: () => false }` in `src/phone-node-config.ts`). The reasoning is that libp2p's connection-gater package points its `react-native` entry at the browser build, which refuses to dial insecure `ws://` and private (home-network and loopback) addresses — exactly what a borrowed node is. A unit test checks the setting is present and permissive; nothing checks the premise. If the premise is wrong the setting is harmless, but if it is right and something else also blocks the dial, the request reaches "Connecting to the node…" and then fails after thirty seconds. That failure mode is the signal to watch for.
+**The dial permission.** The phone's node config now sets a permissive dial gater (`connectionGater: { denyDialMultiaddr: () => false }`, `allowPrivateDial` in `@serfab/cadre-rn/phone-node`). The reasoning is that libp2p's connection-gater package points its `react-native` entry at the browser build, which refuses to dial insecure `ws://` and private (home-network and loopback) addresses — exactly what a borrowed node is. A unit test checks the setting is present and permissive; nothing checks the premise. If the premise is wrong the setting is harmless, but if it is right and something else also blocks the dial, the request reaches "Connecting to the node…" and then fails after thirty seconds. That failure mode is the signal to watch for.
 
 **Reaching the host at all.** The host only answers requests that look like they came from the machine it runs on, so the phone has to reach it through a forwarded port. Whether the forwarded request's `Host` header satisfies that guard has not been observed. If it does not, the app shows a message telling the user to forward the port — which is the advice they already followed, and the doc needs to say what actually works instead.
 
