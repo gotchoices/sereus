@@ -1,21 +1,23 @@
 /**
- * secure-key-store.ts — a {@link KeyStore} backed by `expo-secure-store`
- * (iOS Keychain / Android Keystore-encrypted SharedPreferences).
+ * `@serfab/cadre-rn/key-store` — a {@link KeyStore} over the platform secure store
+ * (iOS Keychain / Android Keystore-encrypted storage).
  *
  * This is the mobile secure-enclave backend for the cadre-core key-material seam:
  * the phone node's libp2p identity (and the owner key derived from it) lives
  * here instead of plaintext LevelDB. The class is platform-agnostic — it talks to
- * an injected {@link SecureStoreApi} (the three `expo-secure-store` async methods
- * it needs), so the production wiring passes the real module while unit tests pass
- * an in-memory fake. The `expo-secure-store` import is **type-only**, so importing
- * this module never pulls the native module into a Node/test graph.
+ * an injected {@link SecureStoreApi}, the three async methods it needs. The
+ * `expo-secure-store` module is structurally assignable to it, so an Expo app
+ * passes the module itself; a bare React Native app passes a small adapter over
+ * its own secure-storage module (`react-native-keychain`, for one); a test passes
+ * an in-memory fake. Nothing here imports a native module or Expo's types.
  *
  * Bridging constraints handled here:
- * - **Bytes ↔ text.** SecureStore stores strings; KeyStore material is bytes.
+ * - **Bytes ↔ text.** A secure store holds strings; KeyStore material is bytes.
  *   We base64-encode on `set` and decode on `get` (lossless for protobuf bytes).
- * - **KeyId → SecureStore key.** SecureStore keys may only contain
- *   `[A-Za-z0-9._-]` (no `/`). We base64url-encode the keyId under a stable
- *   prefix, which round-trips deterministically and escapes every disallowed char.
+ * - **KeyId → secure-store key.** Secure-store keys may only contain
+ *   `[A-Za-z0-9._-]` (no `/`) — Expo's rule, and the narrowest of the platform
+ *   stores. We base64url-encode the keyId under a stable prefix, which round-trips
+ *   deterministically and escapes every disallowed char.
  * - **`list()` via index.** Neither backing enclave can enumerate keys, so we keep
  *   a reserved index entry holding a JSON array of logical keyIds. Material is
  *   written before the index (a crash leaves an orphaned-but-readable slot, never
@@ -30,8 +32,8 @@
  *   keyId present in the index ⇒ was-written-but-now-unreadable ⇒
  *   {@link KeyStoreAccessError} (fail-closed, no regeneration); absent ⇒ genuinely
  *   empty / first launch ⇒ `undefined`. See {@link SecureStoreKeyStore.get} for
- *   the documented residual window. For an **ungated** slot (today's default and
- *   every shipped path) `null` always means `undefined`, verbatim as before.
+ *   the documented residual window. For an **ungated** slot (the default) `null`
+ *   always means `undefined`.
  *
  * Size note: `expo-secure-store` enforces a soft ~2048-byte value limit. An
  * Ed25519 identity protobuf (~68 bytes) is far under it; we never store large
@@ -41,12 +43,23 @@
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { KeyId, KeyStore } from '@serfab/cadre-core';
 import { KeyStoreAccessError } from '@serfab/cadre-core';
-import type { SecureStoreOptions, KeychainAccessibilityConstant } from 'expo-secure-store';
 
 /**
- * The subset of `expo-secure-store` this backend depends on. Injected so tests
- * can supply an in-memory fake and the native module never loads under Node.
- * The real `expo-secure-store` module is structurally assignable to this.
+ * The options forwarded to every secure-store call. The same two fields, with the same
+ * meaning and the same numeric accessibility constants, as `expo-secure-store`'s
+ * `SecureStoreOptions`, declared here so the kit carries no Expo dependency.
+ */
+export interface SecureStoreOptions {
+	requireAuthentication?: boolean;
+	/** An iOS `kSecAttrAccessible` class, e.g. `expo-secure-store`'s `AFTER_FIRST_UNLOCK`. */
+	keychainAccessible?: number;
+}
+
+/**
+ * The secure store this backend depends on: three async methods over string values.
+ * `expo-secure-store` is structurally assignable to this; a bare React Native app
+ * adapts its own secure-storage module, honouring the same contract — a `null` read
+ * for an absent key, a throw for a denied or failed read.
  */
 export interface SecureStoreApi {
 	getItemAsync(key: string, options?: SecureStoreOptions): Promise<string | null>;
@@ -61,7 +74,7 @@ export interface SecureStoreKeyStoreOptions {
 	 * Default `false`: the identity slot must come up in background/headless
 	 * contexts, and a biometric-set change would otherwise invalidate it. Enable
 	 * only for slots whose UX can absorb a prompt. Unsupported in Expo Go — guard
-	 * at the construction site (see `cadre-phone.ts`). On iOS, enabling this also
+	 * at the construction site. On iOS, enabling this also
 	 * requires an `NSFaceIDUsageDescription` string in `app.json`
 	 * (`expo.ios.infoPlist`); without it the first Face-ID prompt crashes the app.
 	 * When enabled, {@link SecureStoreKeyStore.get} fails closed on a biometric-
@@ -74,7 +87,7 @@ export interface SecureStoreKeyStoreOptions {
 	 * permit reads while the device is locked after first unlock (background node
 	 * bring-up). No effect on Android.
 	 */
-	keychainAccessible?: KeychainAccessibilityConstant;
+	keychainAccessible?: number;
 }
 
 /** Stable prefix for every logical slot, keeping our keys clear of foreign ones. */
@@ -89,9 +102,8 @@ const INDEX_KEY = `${KEY_PREFIX}__index`;
  * input is always valid and round-trips deterministically — `'cadre/identity'`
  * included (the `/` is encoded away).
  *
- * Exported so every SecureStore slot this app opens escapes identically: the
- * key store's own slots below, and the trusted-owner anchor's party-scoped slot
- * in `node-local-slots.ts`.
+ * Exported so every secure-store slot escapes identically: the key store's own
+ * slots below, and the trusted-owner anchor's party-scoped slot (`./node-local`).
  */
 export function secureStoreKeySegment(value: string): string {
 	return uint8ArrayToString(uint8ArrayFromString(value, 'utf8'), 'base64url');
@@ -102,7 +114,7 @@ export function secureStoreKeySegment(value: string): string {
  * unset fields so the native layer sees its OWN defaults rather than an explicit
  * `undefined` — notably an absent `requireAuthentication`, which means ungated.
  *
- * Exported so a plain `DurableSlot` over SecureStore (`node-local-slots.ts`)
+ * Exported so a plain `DurableSlot` over the secure store (`./node-local`)
  * forwards exactly what this key store does, rather than re-deriving the rule.
  */
 export function forwardedSecureStoreOptions(options: SecureStoreKeyStoreOptions): SecureStoreOptions {
@@ -143,8 +155,8 @@ function sameIds(a: readonly KeyId[], b: readonly KeyId[]): boolean {
 }
 
 /**
- * {@link KeyStore} over `expo-secure-store`. Construct with the SecureStore module
- * (or a fake) and optional gating/accessibility. See the module header for the
+ * {@link KeyStore} over the platform secure store. Construct with the secure-store
+ * module (or an adapter, or a fake) and optional gating/accessibility. See the module header for the
  * byte/text, keyId-mapping, index, and access-vs-absence contracts.
  */
 export class SecureStoreKeyStore implements KeyStore {

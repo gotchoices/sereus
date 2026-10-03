@@ -222,7 +222,7 @@ What the phone node keeps *locally* — never replicated, never derivable from t
 
 The phone node maintains a stable PeerId across app restarts:
 
-1. **First launch** — cadre-core generates an Ed25519 keypair and stores it through `SecureStoreKeyStore` (`src/secure-key-store.ts`), a `KeyStore` over `expo-secure-store`: iOS Keychain / Android Keystore-encrypted preferences, under the reserved `sereus.ks.` key prefix plus a `__index` entry listing the keyIds it holds.
+1. **First launch** — cadre-core generates an Ed25519 keypair and stores it through `SecureStoreKeyStore` (`@serfab/cadre-rn/key-store`), a `KeyStore` over `expo-secure-store`: iOS Keychain / Android Keystore-encrypted preferences, under the reserved `sereus.ks.` key prefix plus a `__index` entry listing the keyIds it holds.
 2. **Subsequent launches** — the key is loaded from the enclave, producing the same PeerId every time.
 3. **Single identity** — the same key is used for both the control network and all strand networks, matching the one-key-per-device architecture.
 
@@ -232,7 +232,7 @@ Gating: the store is opened **ungated** (no `requireAuthentication`) with `keych
 
 ### Trusted-owner anchor (secure enclave)
 
-The set of owner public keys this device believes speak for its party — what seed acceptance, wake authorization, and vouching all check against. Persisted by cadre-core's `PersistentTrustedOwnerStore` over a `DurableSlot` the app supplies: one `expo-secure-store` entry under its own `sereus.anchor.<base64url partyId>` key (`src/node-local-slots.ts`). Deliberately *not* under the key store's `sereus.ks.` prefix, whose `__index` must never see a foreign entry.
+The set of owner public keys this device believes speak for its party — what seed acceptance, wake authorization, and vouching all check against. Persisted by cadre-core's `PersistentTrustedOwnerStore` over a `DurableSlot` the app supplies: one `expo-secure-store` entry under its own `sereus.anchor.<base64url partyId>` key (`@serfab/cadre-rn/node-local`). Deliberately *not* under the key store's `sereus.ks.` prefix, whose `__index` must never see a foreign entry.
 
 The anchor is not secret but it **is** trust-bearing — anything that can silently edit it can make this device trust a stranger — so it gets the most tamper-resistant store the app has, and shares the identity key's fate (including surviving an iOS reinstall, which is the desirable direction: same peer id, same trusted owners). The slot is ungated for the same headless reason as above, and `secureStoreSlot` **refuses** a gated slot outright: its "a `null` read means absent" mapping would misreport a biometric-invalidated anchor as empty, and the next snapshot write would make that permanent.
 
@@ -407,8 +407,6 @@ packages/reference-app-rn/
     settings.tsx              # Bootstrap config (seed paste, drone address)
   src/
     cadre-phone.ts            # CadreNode setup: WS/WebRTC transports, LevelDB storage, seed apply
-    secure-key-store.ts       # KeyStore over expo-secure-store (identity in the enclave)
-    node-local-slots.ts       # DurableSlots for the owner anchor, dial hints and saved start options
     start-options.ts          # The last start options + autoStart, remembered between launches
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages

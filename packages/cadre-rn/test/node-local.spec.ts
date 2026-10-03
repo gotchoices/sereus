@@ -1,14 +1,15 @@
 /**
- * `node-local-slots.ts` — the phone's two `DurableSlot` backends for cadre-core's
- * three node-local records (`PersistentTrustedOwnerStore`,
- * `PersistentBootstrapPeerStore`, `PersistentEnrolledMachineStore`).
+ * `@serfab/cadre-rn/node-local` — the phone's two `DurableSlot` backends for
+ * cadre-core's node-local records (`PersistentTrustedOwnerStore`,
+ * `PersistentBootstrapPeerStore`, `PersistentEnrolledMachineStore`,
+ * `PersistentStrandNetworkStateStore`).
  *
  * Scope is deliberately narrow. The node-local *store policy* over an arbitrary
  * slot (cold start, corrupt JSON, foreign partyId, discard-all vs drop-entry,
  * synchronous visibility, failed-persist recovery) is owned and covered by
  * `packages/cadre-core/test/node-local-snapshot.spec.ts` (and, for the count,
  * `enrolled-machine-store.spec.ts`) against its own fake slot — re-asserting it
- * here would only duplicate it. What this file covers is what the RN app
+ * here would only duplicate it. What this file covers is what the kit
  * actually owns: the two slots themselves (`secureStoreSlot`, `kvStoreSlot`),
  * the key-shape helpers, and the composition of each real slot with the
  * node-local stores it backs.
@@ -20,8 +21,8 @@ import {
 	PersistentEnrolledMachineStore,
 	DEFAULT_IDENTITY_KEY_ID,
 } from '@serfab/cadre-core';
-import { SecureStoreKeyStore } from '../src/secure-key-store';
-import { FakeSecureStore, INDEX_KEY } from './fake-secure-store';
+import { SecureStoreKeyStore } from '../src/key-store.js';
+import { FakeSecureStore, INDEX_KEY } from './fake-secure-store.js';
 import {
 	secureStoreSlot,
 	kvStoreSlot,
@@ -29,21 +30,18 @@ import {
 	bootstrapPeersKvKey,
 	enrolledMachinesKvKey,
 	strandNetworkKvKey,
-	NODE_LOCAL_DB_NAME,
-	NODE_LOCAL_KV_PREFIX,
 	type KvStoreApi,
-} from '../src/node-local-slots';
+} from '../src/node-local.js';
 
 /**
  * A real Ed25519 peer id, generated once for this fixture — `@libp2p/crypto` and
- * `@libp2p/peer-id` are only transitive deps of `reference-app-rn`, not direct
- * ones, and the bootstrap-peer store's loader runs `peerIdFromString` on every
+ * `@libp2p/peer-id` are only transitive deps of this package, not direct ones, and the bootstrap-peer store's loader runs `peerIdFromString` on every
  * key on reload, so a fixture that must survive a reload has to actually parse.
  */
 const REAL_PEER_ID = '12D3KooWQVo7JTYHgoj9rt9HScoxaM5axn3uB8P1WHiKrhhUqed3';
 
 // ── Fake LevelDBKVStore ─────────────────────────────────────────────────────────
-// The expo-secure-store double is shared with `secure-key-store.spec.ts` — see
+// The secure-store double is shared with `key-store.spec.ts` — see
 // `./fake-secure-store`.
 
 class FakeKvStore implements KvStoreApi {
@@ -180,11 +178,6 @@ describe('key-shape helpers', () => {
 		// A persistence contract, like the two above: renaming it orphans every phone's record.
 		expect(strandNetworkKvKey('p')).toBe('strand-network.p');
 	});
-
-	it('pins the database name and kv prefix', () => {
-		expect(NODE_LOCAL_DB_NAME).toBe('sereus-node-local');
-		expect(NODE_LOCAL_KV_PREFIX).toBe('sereus:node-local:');
-	});
 });
 
 // ── The two node-local stores over a real secureStoreSlot ─────────────────────
@@ -254,8 +247,8 @@ describe('PersistentTrustedOwnerStore over secureStoreSlot', () => {
 });
 
 // ── The anchor slot beside the identity key store, in ONE secure store ─────────
-// Both live in the same `expo-secure-store` namespace on a real phone (see the
-// `ANCHOR_KEY_PREFIX` comment in `node-local-slots.ts`). Asserting the two prefix
+// Both live in the same secure-store namespace on a real phone (see the
+// `ANCHOR_KEY_PREFIX` comment in `src/node-local.ts`). Asserting the two prefix
 // strings differ is not enough: what matters is that the key store's `__index`
 // bookkeeping never picks the anchor up, and that neither write clobbers the other.
 
