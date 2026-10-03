@@ -2,7 +2,7 @@
   "name": "@serfab/cadre-rn",
   "version": "1.11.0",
   "type": "module",
-  "description": "React Native kit for Sereus apps - phone-node bring-up, secure key storage and node-local record slots, native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
+  "description": "React Native kit for Sereus apps - phone-node bring-up and lifecycle, secure key storage and node-local record slots, native crypto for libp2p-noise, the runtime polyfills a cadre node needs under Hermes, and the Metro configuration that bundles it",
   "files": [
     "src",
     "dist",
@@ -25,6 +25,10 @@
     "./phone-node": {
       "types": "./dist/phone-node/index.d.ts",
       "import": "./dist/phone-node/index.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle/index.d.ts",
+      "import": "./dist/lifecycle/index.js"
     },
     "./noise-crypto": {
       "types": "./dist/noise-crypto.d.ts",

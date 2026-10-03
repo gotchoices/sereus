@@ -7,6 +7,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | Import | What it provides |
 |---|---|
 | `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`: builds, starts, stops and rebuilds the phone's `CadreNode` the prescribed way, plus `attachStrandWhenWritable` and `retryAfterRestart` |
+| `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`: hibernates the node's strands when the app goes to the background and resumes, bounded, when it returns; `phoneNodeLifecycle(phone)` connects it to a phone node |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
 | `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code |
@@ -66,6 +67,27 @@ Two helpers for code that uses the node:
 ### What the app must install
 
 `@serfab/cadre-core`, `rn-leveldb` and its secure-store module. `@optimystic/db-p2p-storage-rn` and the default transports are dependencies of the kit. `@libp2p/webrtc` and `react-native-webrtc` only if the app adds WebRTC.
+
+## Lifecycle
+
+`createBackgroundRunner` follows react-native's `AppState`.
+
+- **On `background`** it hibernates the node's strands and keeps the control connection up for as long as the OS allows. It drops to `background-hibernating` when the control network disconnects.
+- **On `active`** it starts the node again if the OS killed it. It then waits, bounded, for the control network to reconnect, and reports `degraded` if it does not. `inactive` (an incoming call, the app switcher) does nothing.
+- **Rapid flapping** is safe: a later transition always wins over an earlier one still in progress.
+
+```ts
+import { AppState } from 'react-native';
+import { createBackgroundRunner, phoneNodeLifecycle } from '@serfab/cadre-rn/lifecycle';
+
+const runner = createBackgroundRunner({ ...phoneNodeLifecycle(phone), appState: AppState });
+runner.onStateChange(() => render(runner.state, runner.resuming, runner.degraded));
+runner.start();   // once the node is running; runner.stop() on logout
+```
+
+`phoneNodeLifecycle(phone)` supplies the runner's two node hooks from a `PhoneNode`. Its cold start uses the saved start, and only while `autoStart` is set, so a node the user stopped stays stopped. An app that must refresh its own state after a cold start passes its own `ensureNode` instead.
+
+The runner never imports `react-native`: `AppState` is assignable to its `AppStateLike`, and tests pass a fake. A push wake (FCM/APNs) is the app's own; the reference app's `push-wake*.ts` is the worked example.
 
 ## Key store and node-local records
 
