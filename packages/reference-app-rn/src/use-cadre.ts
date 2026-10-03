@@ -47,7 +47,7 @@ import {
   createBackgroundRunner,
   type BackgroundRunner,
   type RunnerState,
-} from './background-runner';
+} from '@serfab/cadre-rn/lifecycle';
 import { pickActiveStrandId } from './strand-selection';
 import { createReactNativeAppState } from './app-state';
 import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './push-wake-native';

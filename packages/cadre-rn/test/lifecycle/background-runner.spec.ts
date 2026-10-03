@@ -5,7 +5,7 @@ import {
   type AppStateLike,
   type AppStateSubscription,
   type AppStateValue,
-} from '../src/background-runner';
+} from '../../src/lifecycle/background-runner.js';
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 

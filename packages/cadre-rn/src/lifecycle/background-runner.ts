@@ -1,18 +1,17 @@
 /**
- * background-runner.ts — owns the {@link CadreNode} lifecycle across OS
- * foreground/background transitions for the RN reference app.
+ * background-runner.ts — owns a phone's {@link CadreNode} lifecycle across OS
+ * foreground/background transitions.
  *
- * The node otherwise runs only while the React tree is mounted (started by hand
- * from Settings). This runner subscribes to `AppState` and drives the cadre-core
- * background primitives (`hibernateAll`, the `control:*` readiness edges) so the
- * footprint quiesces on background and a managed resume re-syncs the control
- * network on foreground return.
+ * This runner subscribes to `AppState` and drives the cadre-core background
+ * primitives (`hibernateAll`, the `control:*` readiness edges) so the footprint
+ * quiesces on background and a managed resume re-syncs the control network on
+ * foreground return.
  *
- * Scope is **AppState-driven lifecycle only** — the push/FCM/APNs receive path
- * and native background-task config land in `mobile-push-wake-receive`. This file
- * is platform-agnostic apart from the injectable {@link AppStateLike}; the
- * production `AppState` wrapper lives in `app-state.ts` so this module (and its
- * unit tests) never import `react-native`.
+ * Scope is **AppState-driven lifecycle only** — a push wake (FCM/APNs receive path,
+ * native background task) is the app's. This file is platform-agnostic apart from
+ * the injectable {@link AppStateLike}: react-native's `AppState` is assignable to
+ * it, so the app passes that, tests pass a fake, and this module never imports
+ * `react-native`.
  *
  * State machine:
  *
@@ -47,9 +46,8 @@ export interface AppStateSubscription {
 export type AppStateValue = 'active' | 'background' | 'inactive' | string;
 
 /**
- * Thin, injectable wrapper over react-native's `AppState` so unit tests can
- * drive transitions with a fake and no device. The production impl is
- * {@link createReactNativeAppState} in `app-state.ts`.
+ * The part of react-native's `AppState` the runner uses. `AppState` itself is
+ * assignable to it; unit tests drive transitions with a fake and no device.
  */
 export interface AppStateLike {
   addEventListener(
@@ -82,13 +80,13 @@ export interface BackgroundRunner {
 }
 
 export interface BackgroundRunnerDeps {
-  /** Returns the live node singleton (e.g. `cadre-phone.getPhoneNode`), or null if stopped. */
+  /** Returns the live node (e.g. `PhoneNode.node`), or null if stopped. */
   getNode: () => CadreNode | null;
   /** Injectable AppState (react-native in prod, a fake in tests). */
   appState: AppStateLike;
   /**
-   * Cold-start hook: re-run `startPhoneNode` when a foreground return finds the
-   * node stopped/killed. Optional — without it the runner only awaits an
+   * Cold-start hook: start the node again when a foreground return finds it
+   * stopped/killed ({@link phoneNodeLifecycle} provides one). Optional — without it the runner only awaits an
    * already-present node's control connection. Must be idempotent.
    */
   ensureNode?: () => Promise<void>;

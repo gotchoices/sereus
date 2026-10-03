@@ -411,8 +411,7 @@ packages/reference-app-rn/
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
     strand-selection.ts       # Which strand the chat screen is showing
-    background-runner.ts      # AppState-driven hibernate / bounded resume
-    app-state.ts              # AppState seam the runner is tested against
+    app-state.ts              # The AppState passed to the kit's lifecycle runner; use-cadre's spec fakes it
     push-wake.ts              # Platform-agnostic push-wake decision logic
     push-wake-native.ts       # Expo notifications wiring for push-wake
     connection-status.ts      # Derives UI connection state from node events
