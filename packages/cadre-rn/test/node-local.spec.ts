@@ -35,8 +35,8 @@ import {
 
 /**
  * A real Ed25519 peer id, generated once for this fixture — `@libp2p/crypto` and
- * `@libp2p/peer-id` are only transitive deps of this package, not direct ones, and the bootstrap-peer store's loader runs `peerIdFromString` on every
- * key on reload, so a fixture that must survive a reload has to actually parse.
+ * `@libp2p/peer-id` are only transitive deps of this package, not direct ones, and
+ * the bootstrap-peer store's loader runs `peerIdFromString` on every key on reload, so a fixture that must survive a reload has to actually parse.
  */
 const REAL_PEER_ID = '12D3KooWQVo7JTYHgoj9rt9HScoxaM5axn3uB8P1WHiKrhhUqed3';
 

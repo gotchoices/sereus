@@ -48,6 +48,7 @@ import {
   kvStoreSlot,
   secureStoreSlot,
 } from '@serfab/cadre-rn/node-local';
+import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY } from './node-local-names';
 import { parseSavedStartOptions, serializeSavedStartOptions, type SavedStartOptions } from './start-options';
 import { buildPhoneNodeConfig, runOwnerGenesis, type PhoneNodeOptions } from './phone-node-config';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
@@ -66,36 +67,6 @@ function openLevelDb(name: string) {
 		name,
 	});
 }
-
-// ── Node-local records ───────────────────────────────────────────────────────
-// Where each record is filed is `@serfab/cadre-rn/node-local`'s to explain; the
-// database and the app's own record are named here.
-
-/**
- * LevelDB database holding the node-local records that are NOT trust-bearing, and
- * the saved start options. Its own database (not a strand's) so clearing it cannot
- * disturb replicated strand data.
- */
-const NODE_LOCAL_DB_NAME = 'sereus-node-local';
-
-/** `LevelDBKVStore` key prefix inside {@link NODE_LOCAL_DB_NAME}. */
-const NODE_LOCAL_KV_PREFIX = 'sereus:node-local:';
-
-/**
- * Key for the saved start options (`start-options.ts`). One per install, not per
- * party: it is what names the party every other record is filed under. Nothing in it
- * is secret or trust-bearing — a group identifier and public network addresses — and a
- * relay list can outgrow the secure store's value limit, so it sits in LevelDB too.
- * Dot-free, so it cannot collide with the kit's `<record>.<partyId>` keys.
- *
- * NOTE: accepted tradeoff — the trusted-owner anchor and the saved party id do not
- * share a fate across an iOS reinstall. The Keychain survives it, this LevelDB does
- * not, so a reinstalled phone picks a new party id and the surviving anchor, filed
- * under the old one, is simply never read again. Revisit if a reinstall ever needs to
- * rejoin its old party unaided (the party id would then belong in the Keychain beside
- * the anchor).
- */
-const START_OPTIONS_KV_KEY = 'start-options';
 
 // ── Storage factory ──────────────────────────────────────────────────────────
 //
