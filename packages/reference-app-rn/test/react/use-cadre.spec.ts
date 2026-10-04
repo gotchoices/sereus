@@ -1,8 +1,8 @@
 /**
  * use-cadre.spec.ts — runtime coverage for `useCadreInternal`'s wiring of the
- * {@link BackgroundRunner} into React. `background-runner.ts` is unit-tested in
- * plain node (test/background-runner.spec.ts); this exercises the *hook* that
- * owns the runner's lifecycle, which previously had no test (only typecheck).
+ * {@link BackgroundRunner} into React. The runner itself is unit-tested in the
+ * kit (`@serfab/cadre-rn`, test/lifecycle/background-runner.spec.ts); this
+ * exercises the *hook* that owns the runner's lifecycle.
  *
  * Strategy: mount the real hook with `react-test-renderer` (node env — no DOM)
  * while mocking the modules that would otherwise pull react-native / expo /

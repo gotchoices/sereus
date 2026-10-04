@@ -6,9 +6,7 @@ import { defineConfig } from 'vitest/config';
  * the stale-build guard only gates the tests that run other packages' `dist`:
  *
  *  - **node** — plain-node unit tests for logic that depends only on injectable
- *    interfaces (`background-runner.ts`, `push-wake.ts`, key store, …). No React,
- *    no DOM. `background-runner.ts` stays RN-free precisely because it is never
- *    imported by anything in this project.
+ *    interfaces (`push-wake.ts`, key store, …). No React, no DOM.
  *
  *  - **react** — `renderHook`-style tests that mount `useCadreInternal` with
  *    `react-test-renderer` to exercise the hook ↔ {@link BackgroundRunner} wiring

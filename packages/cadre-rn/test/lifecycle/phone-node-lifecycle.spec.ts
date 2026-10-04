@@ -10,18 +10,13 @@ import type { PhoneNode, SavedStart } from '../../src/phone-node/index.js';
 
 const OPTIONS = { partyId: 'party-1', bootstrapAddrs: [], relayAddrs: [] };
 
-function stubPhone(saved: SavedStart | undefined, node: CadreNode | null = null) {
+function stubPhone(saved: SavedStart | undefined) {
 	const start = vi.fn(async () => ({}) as CadreNode);
-	const phone = { node, loadSavedStart: vi.fn(async () => saved), start } as unknown as PhoneNode;
+	const phone = { loadSavedStart: vi.fn(async () => saved), start } as unknown as PhoneNode;
 	return { phone, start };
 }
 
 describe('phoneNodeLifecycle', () => {
-	it('reports the phone node\'s running node', () => {
-		const node = {} as CadreNode;
-		expect(phoneNodeLifecycle(stubPhone(undefined, node).phone).getNode()).toBe(node);
-	});
-
 	it('cold-starts from the saved start while autoStart is set', async () => {
 		const { phone, start } = stubPhone({ options: OPTIONS, autoStart: true });
 

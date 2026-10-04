@@ -11,8 +11,8 @@
  * shared payload contract, its parser, the background-task **handler** (parse →
  * ensure node → bounded control wait → `serviceWake`), and the device-token
  * registrar. The native expo-notifications / expo-task-manager wiring (the only
- * code that imports `react-native`) lives in `push-wake-native.ts`, mirroring how
- * `app-state.ts` isolates the native `AppState` from `background-runner.ts`.
+ * code that imports `react-native`) lives in `push-wake-native.ts`, as `app-state.ts`
+ * is the one place the native `AppState` is referenced.
  *
  * Receive flow:
  *

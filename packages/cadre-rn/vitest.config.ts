@@ -4,8 +4,8 @@ import { defineConfig } from 'vitest/config';
  * Two test projects, so the stale-build guard only gates the tests that run another
  * package's `dist`:
  *
- *  - **node** — the Noise crypto adapter, which runs `@optimystic/db-p2p`'s compiled
- *    output and so carries the guard.
+ *  - **node** — every other spec. The Noise crypto adapter and phone-node specs run
+ *    compiled output from `@optimystic` and cadre-core, so this project carries the guard.
  *
  *  - **polyfills** — the runtime polyfills under `polyfills/`, and the Metro helper under
  *    `metro/`. They read no sibling `dist`, so this project has no guard and
