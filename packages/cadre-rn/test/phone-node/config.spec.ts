@@ -10,11 +10,11 @@ import {
 	resolveListenAddrs,
 	strandNodeAddrs,
 } from '@serfab/cadre-core';
-import { buildPhoneNodeConfig } from '../src/phone-node-config.js';
+import { buildPhoneNodeConfig } from '../../src/phone-node/config.js';
 
 /**
  * Assertions about the phone's `CadreNodeConfig` that do not need a node started.
- * `solo-founding.spec.ts` builds the same config and runs it for real; this file
+ * `node.spec.ts` builds the same config through `createPhoneNode` and runs it; this file
  * covers the settings whose absence would only show up as a failed dial on a
  * device, which no headless test reaches.
  *
@@ -31,9 +31,10 @@ const partyId = 'phone-node-config-spec';
 const RELAY_ADDR = '/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
 const SECOND_RELAY_ADDR = '/ip4/203.0.113.8/tcp/4002/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
 
-function config(relayAddrs: string[] = []) {
+function config(relayAddrs: string[] = [], allowPrivateDial = true) {
 	return buildPhoneNodeConfig({
 		partyId,
+		allowPrivateDial,
 		bootstrapAddrs: [],
 		relayAddrs,
 		keyStore: new InMemoryKeyStore(),
@@ -60,6 +61,15 @@ describe('buildPhoneNodeConfig', () => {
 		expect(gater?.denyDialMultiaddr).toBeTypeOf('function');
 		// libp2p reads the return value: `true` denies the dial.
 		expect(gater?.denyDialMultiaddr?.({} as never)).toBe(false);
+	});
+
+	it('leaves libp2p\'s own gater in place when the platform does not allow private dials', () => {
+		expect(config([], false).network?.connectionGater).toBeUndefined();
+	});
+
+	it('leaves schema signing at cadre-core\'s fail-closed default', () => {
+		// An app with unsigned schemas relaxes it through `PhoneNodePlatform.configure`.
+		expect(config().requireSignedSchemas).toBeUndefined();
 	});
 
 	it('still listens on nothing — the phone is always the side that dials', () => {

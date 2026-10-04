@@ -12,9 +12,9 @@ import {
 	MemoryTrustedOwnerStore,
 } from '@serfab/cadre-core';
 import { createChatStrand, createClosedChatStrand } from '../src/chat-strand.js';
-import { buildPhoneNodeConfig, runOwnerGenesis } from '../src/phone-node-config.js';
+import { buildPhoneNodeConfig, runOwnerGenesis } from '@serfab/cadre-rn/phone-node';
 import { uuid } from '../src/uuid.js';
-import { FakeWriteBatch, fakeRNLevelDBOpener } from './fake-rn-leveldb.js';
+import { FakeWriteBatch, fakeRNLevelDBOpener } from '../../../test-harness/fake-rn-leveldb.js';
 
 /**
  * A phone on its own founds strands promptly: the headless guard for the 2026-09-14
@@ -25,8 +25,8 @@ import { FakeWriteBatch, fakeRNLevelDBOpener } from './fake-rn-leveldb.js';
  * bundle; Node runs Quereus as published. `metro-babel/async-generator-cleanup.spec.ts`
  * guards that helper headlessly, and Maestro flow 4 is the device-side guard.
  *
- * The node is built by the app's own `buildPhoneNodeConfig` and `runOwnerGenesis`,
- * not a copy, so the config tested is the config the phone runs. Storage is the
+ * The node is built by the kit's `buildPhoneNodeConfig` and `runOwnerGenesis` — what
+ * `cadre-phone.ts` runs — with this app's one override (unsigned schemas allowed). Storage is the
  * phone's real rn-leveldb adapter — `openOptimysticRNDb` into `LevelDBRawStorage`,
  * the calls `cadre-phone.ts` makes — over an in-memory fake of the native module.
  * That is also the adapter's first Node coverage: optimystic's own tests drive
@@ -66,7 +66,12 @@ async function within<T>(label: string, ms: number, op: () => Promise<T>): Promi
 	}
 }
 
-/** `cadre-phone.ts`'s `createStorage`, with rn-leveldb's native constructors swapped for the fake. */
+/** The kit's phone config with `cadre-phone.ts`'s overrides: private dials allowed, unsigned schemas accepted. */
+function phoneConfig(inputs: Omit<Parameters<typeof buildPhoneNodeConfig>[0], 'allowPrivateDial'>) {
+	return { ...buildPhoneNodeConfig({ ...inputs, allowPrivateDial: true }), requireSignedSchemas: false };
+}
+
+/** The kit's per-scope storage (`sereus-<scope>` over rn-leveldb), with the native constructors swapped for the fake. */
 function phoneStorageOverFakeNative(): (id: string) => IRawStorage {
 	const openFn = fakeRNLevelDBOpener();
 	return (id) => new LevelDBRawStorage(openOptimysticRNDb({ openFn, WriteBatch: FakeWriteBatch, name: `sereus-${id}` }));
@@ -82,7 +87,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 	}
 
 	beforeAll(async () => {
-		const cadre = new CadreNode(buildPhoneNodeConfig({
+		const cadre = new CadreNode(phoneConfig({
 			partyId,
 			bootstrapAddrs: [],
 			relayAddrs: [],
@@ -159,7 +164,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
  * this package puts the phone's config on a wire against a real relay.
  * `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`
  * proves the behaviour for a node of this shape (`listenAddrs: []` + `relayAddrs`), and
- * `test/phone-node-config.spec.ts` proves the phone's config resolves to that shape —
+ * `cadre-rn/test/phone-node/config.spec.ts` proves the phone's config resolves to that shape —
  * but the two are joined by inspection, not by a test.
  */
 describe('solo phone founding with a relay configured but unreachable', () => {
@@ -176,7 +181,7 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 	}
 
 	beforeAll(async () => {
-		const cadre = new CadreNode(buildPhoneNodeConfig({
+		const cadre = new CadreNode(phoneConfig({
 			partyId,
 			bootstrapAddrs: [],
 			relayAddrs: [UNREACHABLE_RELAY],

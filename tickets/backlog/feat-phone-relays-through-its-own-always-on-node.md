@@ -1,6 +1,6 @@
 description: A phone needs some machine to act as its address before other people can reach it. Today that has to be a separate public server somebody set up. If the machine a person already runs at home could do the job instead, a phone plus a home machine would be a complete setup with nothing else to configure.
 prereq: bug-party-run-relay-caps-every-relayed-connection, bug-party-run-relay-drops-a-stranger-dialing-through-it
-files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-network-config.ts, packages/reference-app-rn/src/phone-node-config.ts, packages/reference-app-rn/src/host-node-request.ts, packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts, docs/architecture.md, docs/reference-app-rn.md
+files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-rn/src/phone-node/config.ts, packages/reference-app-rn/src/host-node-request.ts, packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts, docs/architecture.md, docs/reference-app-rn.md
 difficulty: hard
 tradeoffs: The configured-relay route already works and is tested, so this buys convenience rather than capability — and it puts a person's home machine on the data path for their own traffic, which is more load and more uptime expectation than that machine signed up for.
 ----

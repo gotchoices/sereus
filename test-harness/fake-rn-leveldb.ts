@@ -126,9 +126,11 @@ class FakeIterator implements RNLevelDBIteratorNative {
 	}
 }
 
-export class FakeRNLevelDB implements RNLevelDBNative {
+class FakeRNLevelDB implements RNLevelDBNative {
 	/** Sorted by key. Replaced entries are new tuples, so an iterator's snapshot never changes. */
 	private readonly entries: Entry[] = [];
+	/** Set by {@link lockingFakeRNLevelDB}: told when this database is closed, to release its lock. */
+	onClose: (() => void) | undefined;
 
 	put(key: ArrayBuffer | string, value: ArrayBuffer | string): void {
 		this.set(toBytes(key), toBytes(value));
@@ -145,7 +147,8 @@ export class FakeRNLevelDB implements RNLevelDBNative {
 	}
 
 	close(): void {
-		// Nothing to release; the data stays reachable through the opener, like a file.
+		// The data stays reachable through the opener, like a file; only a lock is released.
+		this.onClose?.();
 	}
 
 	newIterator(): RNLevelDBIteratorNative {
@@ -197,4 +200,26 @@ export function fakeRNLevelDBOpener(): RNLevelDBOpenFn {
 		}
 		return db;
 	};
+}
+
+/**
+ * A fake device that also keeps rn-leveldb's per-name lock: opening a name that is already open,
+ * and not yet closed, throws as the native module does ("DB is open"). For a test that must show a
+ * host closes every database it opened. `openNames` lists the names open now.
+ */
+export function lockingFakeRNLevelDB(): { openFn: RNLevelDBOpenFn; openNames: () => string[] } {
+	const byName = new Map<string, FakeRNLevelDB>();
+	const open = new Set<string>();
+	const openFn: RNLevelDBOpenFn = (name) => {
+		if (open.has(name)) throw new Error(`fake rn-leveldb: DB is open: ${name}`);
+		let db = byName.get(name);
+		if (!db) {
+			db = new FakeRNLevelDB();
+			byName.set(name, db);
+		}
+		open.add(name);
+		db.onClose = () => open.delete(name);
+		return db;
+	};
+	return { openFn, openNames: () => [...open].sort() };
 }

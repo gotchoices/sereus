@@ -26,7 +26,7 @@ import {
 } from '../src/founding-progress';
 import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
-import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '../src/phone-node-config';
+import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';

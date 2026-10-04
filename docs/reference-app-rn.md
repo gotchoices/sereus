@@ -104,7 +104,7 @@ network:
 
 ### Phone (RN app) Configuration
 
-The phone supplies WebSocket + circuit relay transports via `CadreNodeConfig.network` (`src/phone-node-config.ts`):
+The phone's `CadreNodeConfig` is built by the kit (`@serfab/cadre-rn/phone-node` → `buildPhoneNodeConfig`); `src/cadre-phone.ts` adds the WebRTC transport, native Noise and the demo's unsigned-schema policy:
 
 ```typescript
 network: {
@@ -246,9 +246,9 @@ Both records are party-scoped, as are the enrolled-machine count and the strand 
 
 ### Start options (app-private LevelDB)
 
-What the node last started with — party id, bootstrap addresses, relay addresses and Noise crypto mode — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. [`src/start-options.ts`](../packages/reference-app-rn/src/start-options.ts) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
+What the node last started with — party id, bootstrap addresses, relay addresses and Noise crypto mode — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. The kit's `parseSavedStart` (`@serfab/cadre-rn/phone-node`) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
 
-- **Written** only by `cadre-phone.ts`: after every successful start (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
 - **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing.
 - **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
 - **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
@@ -406,8 +406,7 @@ packages/reference-app-rn/
     index.tsx                 # Chat screen (message list + input)
     settings.tsx              # Bootstrap config (seed paste, drone address)
   src/
-    cadre-phone.ts            # CadreNode setup: WS/WebRTC transports, LevelDB storage, seed apply
-    start-options.ts          # The last start options + autoStart, remembered between launches
+    cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
@@ -846,7 +845,7 @@ D ReactNativeJS: 'sereus:cadre:timing [buildStrandRuntime:%s] createLibp2pNode: 
 
 The trailing `+<n>ms` is `debug`'s time since that namespace's previous line. The last line shows how the older timing lines print on the device: they pass their values as `%s`/`%d` arguments, and React Native's console prints the placeholders unfilled with the values after them, rather than substituting them as a browser console does.
 
-The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the app's own `src/phone-node-config.ts` over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device. The one such stall found so far, the Babel helper defect under Key Dependencies, has its own headless guard in `test/metro-babel/async-generator-cleanup.spec.ts`.
+The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the kit's `buildPhoneNodeConfig`, with this app's override, over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device. The one such stall found so far, the Babel helper defect under Key Dependencies, has its own headless guard in `test/metro-babel/async-generator-cleanup.spec.ts`.
 
 ## Testing Strategy
 

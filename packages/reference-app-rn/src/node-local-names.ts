@@ -1,10 +1,16 @@
 /**
- * The reference app's own names for its node-local records: the LevelDB database and
- * key prefix the `@serfab/cadre-rn/node-local` slots live in, and the key of the saved
- * start options. Each is a persistence contract: renaming one makes every installed
+ * The reference app's storage names, passed to `createPhoneNode` (`cadre-phone.ts`): the
+ * prefix of each storage scope's LevelDB database, the database and key prefix the
+ * `@serfab/cadre-rn/node-local` slots live in, and the key of the saved start options. Each is a persistence contract: renaming one makes every installed
  * phone lose the records filed under it. No native imports, so the names are pinned by
  * a Node test (`test/node-local-names.spec.ts`).
  */
+
+/**
+ * Prefix of each cadre-core storage scope's LevelDB database: `sereus-<scope>`, the
+ * control scope carrying the party id.
+ */
+export const STORAGE_PREFIX = 'sereus-';
 
 /**
  * LevelDB database holding the node-local records that are NOT trust-bearing, and
@@ -17,7 +23,7 @@ export const NODE_LOCAL_DB_NAME = 'sereus-node-local';
 export const NODE_LOCAL_KV_PREFIX = 'sereus:node-local:';
 
 /**
- * Key for the saved start options (`start-options.ts`). One per install, not per
+ * Key for the saved start options (the kit's saved-start record). One per install, not per
  * party: it is what names the party every other record is filed under. Nothing in it
  * is secret or trust-bearing — a group identifier and public network addresses — and a
  * relay list can outgrow the secure store's value limit, so it sits in LevelDB too.

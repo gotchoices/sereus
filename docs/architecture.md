@@ -359,7 +359,7 @@ The browser, React Native and NativeScript reference apps each inject slots, so 
 
 **How the NativeScript anchor fills.** The NativeScript app fills its anchor exactly as React Native's does: Settings carries an optional enrollment-invite paste field beside the seed field, and the pasted `CadreInvite`'s owner keys are anchored via `trustOwnerKeys(keys, 'invite')` *before* the seed is applied (and handed to `pinnedKeyTrustPolicy` for that apply), so a later seed from the same owner is then accepted by the default `anchoredTrustPolicy` with the invite field blank. It wires no owner private key, so it has no genesis self-anchor — it does not need one, since it either forms a cadre solo or enrolls via an invite. Its bootstrap-peer record fills in from `applySeed`.
 
-**Both phone apps relaunch into the same party.** Both phone apps also remember their start options, party id included — one non-party-scoped key beside their records (React Native's LevelDB, `reference-app-rn/src/start-options.ts`; NativeScript's SQLite `kv` table, `reference-app-ns/src/start-options.ts`) — and relaunch into the same party, so their records are read back across a relaunch and their enrolled-machine counts declare a repair yardstick at bring-up.
+**Both phone apps relaunch into the same party.** Both phone apps also remember their start options, party id included — one non-party-scoped key beside their records (React Native's LevelDB, through the kit's `@serfab/cadre-rn/phone-node`; NativeScript's SQLite `kv` table, `reference-app-ns/src/start-options.ts`) — and relaunch into the same party, so their records are read back across a relaunch and their enrolled-machine counts declare a repair yardstick at bring-up.
 
 Tickets: `donated-node-durable-identity`, `provider-container-durable-identity-tests`.
 
@@ -1789,11 +1789,9 @@ The React Native reference app (`reference-app-rn`) backs the seam with
 (`kSecClassGenericPassword`) and Android **Keystore**-encrypted SharedPreferences.
 The phone node's identity (and the owner key derived from it) therefore lives
 in the platform enclave rather than the plaintext LevelDB the app used before.
-`cadre-phone.ts` constructs the store and passes it as `keyStore` — cadre-core's
-load-or-create path does the rest. `startPhoneNode` additionally calls
-`loadOrCreateIdentityKey` on that same store *before* constructing the node,
-because it needs the key to sign the ICE-manifest fetch; the node then loads the
-very key the app just resolved. Bridging details the backend handles:
+The kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) constructs the store
+and passes it as `keyStore` — cadre-core's load-or-create path does the rest.
+Bridging details the backend handles:
 
 - **Bytes ↔ text.** SecureStore stores strings; material is base64-encoded on
   `set`, decoded on `get` (lossless for the protobuf bytes).

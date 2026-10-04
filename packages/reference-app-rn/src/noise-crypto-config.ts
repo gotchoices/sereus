@@ -7,18 +7,17 @@
  * node is built exactly as `relayAddrs` is; `cadre-phone.ts` turns it into an
  * implementation with the kit's `buildNoiseCrypto`. The Settings screen offers the
  * three modes and prefills its choice from the last successful start
- * (`start-options.ts`), else from {@link defaultNoiseCryptoMode}.
+ * (the kit's saved start), else from {@link defaultNoiseCryptoMode}.
  *
  * Sibling of `relay-config.ts`, with the same build-time seam: `EXPO_PUBLIC_NOISE_CRYPTO`
  * (Expo inlines `EXPO_PUBLIC_`-prefixed vars into the Hermes bundle at build time).
  * Unlike that file this one imports the kit's `noise-crypto` module, for its default,
  * so it loads `react-native-quick-crypto` and is for the app bundle only. The mode
- * list lives in the Node-tested `phone-node-config.ts`, which takes the mode's type
- * from the kit and nothing else.
+ * list comes from `@serfab/cadre-rn/phone-node`, which loads nothing native.
  */
 
 import { DEFAULT_NOISE_CRYPTO_MODE, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
-import { isNoiseCryptoMode, NOISE_CRYPTO_MODES } from './phone-node-config';
+import { isNoiseCryptoMode, NOISE_CRYPTO_MODES } from '@serfab/cadre-rn/phone-node';
 
 /**
  * The build-time mode (`EXPO_PUBLIC_NOISE_CRYPTO`), or `undefined` when the build

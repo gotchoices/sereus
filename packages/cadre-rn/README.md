@@ -6,6 +6,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 | Import | What it provides |
 |---|---|
+| `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`: builds, starts, stops and rebuilds the phone's `CadreNode` the prescribed way, plus `attachStrandWhenWritable` and `retryAfterRestart` |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
 | `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code |
@@ -13,6 +14,58 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
 | `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
+
+## Phone node
+
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, and remembers the last start so the app can start again unattended. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+
+```ts
+import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
+import { createPhoneNode } from '@serfab/cadre-rn/phone-node';
+import { buildNoiseCrypto, DEFAULT_NOISE_CRYPTO_MODE } from '@serfab/cadre-rn/noise-crypto';
+
+export const phone = createPhoneNode({
+	secureStore: SecureStore,
+	secureStoreOptions: { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK },
+	leveldb: { openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch },
+	noiseCrypto: { build: buildNoiseCrypto, defaultMode: DEFAULT_NOISE_CRYPTO_MODE },
+	names: { storagePrefix: 'myapp-', nodeLocalDb: 'myapp-node-local', nodeLocalKvPrefix: 'myapp:node-local:' },
+	dataVersion: '1',
+});
+
+// Register strand handling before the first start: strands joined from another party
+// come back through `strand:discovered` after every start.
+phone.on('strand:discovered', ({ strand }) => { /* attachStrandWhenWritable(phone.node!, { strandRow: strand, sAppConfig }) */ });
+
+const saved = await phone.loadSavedStart();
+if (saved?.autoStart) await phone.start(saved.options);
+```
+
+| Member | What it does |
+|---|---|
+| `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
+| `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
+| `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
+| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. |
+| `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
+| `status`, `onStatus` | `stopped`, `starting`, `running` (with `owner`: `enrolled`, `failed` or `timed-out`), or `failed` (with the error). |
+
+Platform options with defaults:
+
+- **`transports`**: WebSockets and circuit relay. An app with `react-native-webrtc` adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`, as the reference app does.
+- **`allowPrivateDial`**: `true`. Dials loopback, private and plain `ws://` addresses, which libp2p's React Native gater refuses. Without it an emulator cannot reach `10.0.2.2`, and a relay on the home network or without TLS is unreachable.
+- **`ownerGenesisTimeoutMs`**: 60 s.
+- **`configure(config)`**: none. The last word on the generated `CadreNodeConfig`: strand filter, `requireSignedSchemas`, `linkRoundTripMs`.
+
+Two helpers for code that uses the node:
+
+- `attachStrandWhenWritable(node, config)` treats a first sync that outlasts `addStrand`'s budget as progress and waits for the strand to become writable.
+- `retryAfterRestart(write)` retries a write that fails for want of a super-majority, as the first writes after a node restarts alone do.
+
+### What the app must install
+
+`@serfab/cadre-core`, `rn-leveldb` and its secure-store module. `@optimystic/db-p2p-storage-rn` and the default transports are dependencies of the kit. `@libp2p/webrtc` and `react-native-webrtc` only if the app adds WebRTC.
 
 ## Key store and node-local records
 

@@ -9,7 +9,7 @@
  * Everything else (founding and reading local strands, dialling out to a drone or a
  * borrowed cadre-host node, joining someone else's invitation) works without one.
  *
- * The resolved list goes into `network.relayAddrs` (`phone-node-config.ts`), not
+ * The resolved list goes into `network.relayAddrs` (the kit's `buildPhoneNodeConfig`), not
  * through `CadreNode.reserveRelays()`: only the config field reaches STRAND nodes,
  * and formation needs the invitee to dial the strand nodes as well as the control
  * node. cadre-core turns it into a bare `/p2p-circuit` search listener plus a
@@ -25,7 +25,7 @@
  *    omitted. The per-device seam here
  *    is the Settings screen's "Relay" field, which passes its value as `explicit`.
  *  - The list a node started with is saved with the other start options
- *    (`start-options.ts`) and is what the next launch starts with and prefills. It is
+ *    (the kit's saved start) and is what the next launch starts with and prefills. It is
  *    saved RESOLVED, so a remembered list wins over a later build's
  *    `EXPO_PUBLIC_RELAY_ADDR`: to pick up a new build default, Disconnect, clear the
  *    Relay field (empty means "build default", below) and Connect. The env var is what
