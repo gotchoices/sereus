@@ -45,10 +45,10 @@ if (saved?.autoStart) await phone.start(saved.options);
 
 | Member | What it does |
 |---|---|
-| `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
+| `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
 | `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
 | `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
-| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. |
+| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
 | `status`, `onStatus` | `stopped`, `starting`, `running` (with `owner`: `enrolled`, `failed` or `timed-out`), or `failed` (with the error). |
 

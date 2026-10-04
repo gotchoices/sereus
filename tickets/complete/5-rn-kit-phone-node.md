@@ -1,7 +1,7 @@
 description: The shared React Native kit now builds and runs a phone's cadre node, so phone apps start their node the prescribed way, with the reference app's start/stop rules and two fixes from sereus-chat, instead of each keeping its own drifting copy.
 prereq: rn-kit-key-store
 architecture: docs/reference-app-rn.md#phone-rn-app-configuration
-files: packages/cadre-rn/src/phone-node/, packages/cadre-rn/test/phone-node/, packages/cadre-rn/test/global-setup.ts, packages/cadre-rn/package.json, packages/cadre-rn/README.md, packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-rn/src/noise-crypto-config.ts, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/test/solo-founding.spec.ts, test-harness/fake-rn-leveldb.ts, knip.ts, yarn.lock, docs/reference-app-rn.md, docs/architecture.md
+files: packages/cadre-rn/src/phone-node/, packages/cadre-rn/test/phone-node/, packages/reference-app-rn/src/use-cadre.ts, packages/cadre-rn/test/global-setup.ts, packages/cadre-rn/package.json, packages/cadre-rn/README.md, packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-rn/src/noise-crypto-config.ts, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/test/solo-founding.spec.ts, test-harness/fake-rn-leveldb.ts, knip.ts, yarn.lock, docs/reference-app-rn.md, docs/architecture.md
 ----
 # Phone node (`@serfab/cadre-rn/phone-node`)
 
@@ -113,3 +113,37 @@ v4.20.0 linked:
 - `feat-rn-kit-lifecycle`: the background runner, next.
 - `feat-rn-kit-native-digest` and `feat-rn-kit-loop-lag-monitor`: from the same review.
 - sereus-chat and health can move onto `createPhoneNode`; that is their maintainers' change.
+
+## Review findings
+
+Reviewed the implement work as it landed (`feat(cadre-rn): share the phone-node bring-up`, merged in PR #30; the runner's `ticket(implement): rn-kit-phone-node` commit does not exist because the work came in through that PR), read against the current tree, which also carries the lifecycle runner from PR #31.
+
+**Fixed in this pass:**
+
+- **A start during a stop or restart built on closed databases (defect, fixed).** `start()` only checked for a start in flight, never a stop. Called while `stop()` was saving `autoStart: false`, it was handed the node about to be stopped. Called during the teardown, it built a new node on the open-handle map, whose handles the teardown's `finally` then closed, and the teardown then set the status to `stopped` over the new start. `restart()` had the same window. The pre-kit `cadre-phone.ts` carried a NOTE saying to make start wait for an in-flight stop once a new unattended caller appeared. That condition has now tripped: the kit's `phoneNodeLifecycle` cold start calls `start` on a foreground return, and other apps will call it too. Fix in `packages/cadre-rn/src/phone-node/node.ts`: start, stop and restart now run one at a time, in call order, on a queue of promises (`inTurn`). A start called after a stop runs after it rather than joining the start that stop ends. `restart` is one queued step that later `start` calls join.
+- **`loadSavedStart` during a stop read the value being replaced (defect, fixed).** The lifecycle cold start reads the saved start when it finds no node, and mid-stop it finds no node. `loadSavedStart` now waits for a pending stop, so it reads `autoStart: false`.
+- **`PhoneNode.node` returned the node being stopped during teardown.** It read the status, which stays `running` until teardown ends. It now reads `null` from the moment teardown begins, which is what `use-cadre.ts`'s stop comment already assumed.
+- Two tests added to `test/phone-node/node.spec.ts`, one for each defect. Both failed before the fix and pass after it.
+- Updated the docs and comments that described the race: the `PhoneNode` interface docs, the kit README's member table, `docs/reference-app-rn.md` → "Overlapping starts", the `stopPhoneNode` NOTE in `cadre-phone.ts`, and the stop comment in `use-cadre.ts`.
+
+**Tripwires recorded:**
+
+- `stop()` after a failed start leaves an earlier `autoStart: true` saved. The reference app offers Disconnect only while connected, so nothing reaches this today. Parked as a NOTE in `stopAndClearAutoStart` (`node.ts`).
+- A push wake that read `autoStart: true` before a Disconnect began can still start the node after it. The read and the start are separate calls, so closing this would need the kit's start to re-check `autoStart` itself. Parked in the existing NOTE on `stopPhoneNode` (`cadre-phone.ts`), reworded.
+
+**Checked, nothing to change:**
+
+- Resource cleanup: a failed start closes what it opened, stop closes every handle even when the node's own stop throws, and the locking rn-leveldb fake pins this.
+- Error handling: the saved-start write and status listeners are best-effort and logged, and the start's own error wins over a cleanup error.
+- Owner-genesis bound: the timer is cleared, and a genesis that runs past the bound still logs its later failure. The NOTE that the bound belongs in cadre-core is correct.
+- Type safety: no `any`. The one cast in `parseRecord` follows an object check.
+- The rest of the diff:
+  - `options.ts` and `config.ts` were moved unchanged apart from the documented `requireSignedSchemas` and `writtenBy` changes.
+  - `strands.ts` matches Optimystic's message text and carries a NOTE about it.
+  - The stale-build-guard list gained cadre-core and db-p2p-storage-rn.
+  - The `docs/architecture.md` edits are accurate.
+- Tests: the moved specs and the new `strands.spec.ts` cover branching logic. The kit's default-names test pins a persistence contract (renaming a default orphans installed phones' data), so it was kept although it reads like a constant test. No tests were cut.
+- File size: `node.ts` is 472 lines (`wc -l`). It is one class with sectioned private methods and has no split candidate.
+- Small duplication in `test-harness/fake-rn-leveldb.ts`: the locking opener repeats the plain opener's lookup by name, about 6 lines. Not worth a shared helper.
+
+**Validation:** `yarn workspace @serfab/cadre-rn typecheck` is clean. `yarn workspace @serfab/cadre-rn test` passes 141 tests in 13 files, a count that includes PR #31's lifecycle specs. `yarn workspace @serfab/cadre-rn build` was run, then `yarn workspace @serfab/reference-app-rn typecheck` (clean) and `test`, which passes 168 tests; the drop from the handoff's 181 is the specs PR #31 moved into the kit. `yarn lint` exits 0. Still not run: an Expo device build.

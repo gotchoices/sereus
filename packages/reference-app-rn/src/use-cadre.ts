@@ -511,8 +511,8 @@ export function useCadreInternal(): UseCadreResult {
   const stop = useCallback(async () => {
     // The singleton reads null from the moment `stopPhoneNode` begins its teardown, so a
     // foreground return during Disconnect would have the runner cold-start the node
-    // straight back on the handle that teardown is about to close. With no options the
-    // runner's `ensureNode` does nothing.
+    // straight back once the stop finishes. With no options the runner's `ensureNode`
+    // does nothing.
     optsRef.current = null;
     // Cancel a host-node request first, and give it a bounded moment to unwind:
     // the first thing its cleanup does is drop the lent node's authorization row,

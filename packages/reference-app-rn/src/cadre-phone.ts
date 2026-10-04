@@ -105,11 +105,12 @@ export function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode> {
  * Stop the node: the user logging out (Settings → Disconnect is the only caller), so the
  * next launch or push wake does not start it again by itself.
  *
- * NOTE: a `startPhoneNode` that arrives during the stop starts a new node and saves
- * `autoStart: true` over the Disconnect. `use-cadre`'s `stop` clears the runner's options
- * first, so the only caller left that can land there is a push wake that read the record
- * just before; if a new unattended caller of `startPhoneNode` appears, make a start wait
- * for an in-flight stop and re-check `autoStart`.
+ * NOTE: a `startPhoneNode` that arrives during the stop runs after it, starts a new node
+ * and saves `autoStart: true` over the Disconnect. `use-cadre`'s `stop` clears the
+ * runner's options first, and a `loadSavedStartOptions` during the stop answers
+ * `autoStart: false`, so the only caller left that can land there is a push wake that read
+ * the record before the stop began. If that ever matters, re-check `autoStart` inside the
+ * kit's start.
  */
 export function stopPhoneNode(): Promise<void> {
   return phone.stop();

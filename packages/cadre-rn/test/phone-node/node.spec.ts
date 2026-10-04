@@ -179,6 +179,38 @@ describe('createPhoneNode — the start/stop rules a phone depends on', () => {
 		expect(await phone.loadSavedStart()).toMatchObject({ autoStart: false });
 	}, LIFECYCLE_MS);
 
+	it('runs a start called during a stop after it, on databases of its own', async () => {
+		// A foreground return or push wake can call start while a stop is tearing down. It
+		// must neither be handed the node being stopped nor reuse handles the stop closes.
+		const { platform, leveldb, partyId } = device();
+		const phone = phoneNode(platform);
+		const first = await phone.start(options(partyId));
+
+		const stopping = phone.stop();
+		const starting = phone.start(options(partyId));
+		await stopping;
+		const second = await starting;
+
+		expect(second).not.toBe(first);
+		expect(phone.status.state).toBe('running');
+		expect(leveldb.openNames().length).toBeGreaterThan(1);
+		expect(await phone.loadSavedStart()).toMatchObject({ autoStart: true });
+	}, LIFECYCLE_MS * 2);
+
+	it('answers loadSavedStart during a stop with what the stop saves', async () => {
+		// The lifecycle runner's cold start reads the saved start when it finds no node, which
+		// is also what it finds mid-stop: it must read `autoStart: false`, not the value being replaced.
+		const { platform, partyId } = device();
+		const phone = phoneNode(platform);
+		await phone.start(options(partyId));
+
+		const stopping = phone.stop();
+		const saved = await phone.loadSavedStart();
+		await stopping;
+
+		expect(saved).toMatchObject({ autoStart: false });
+	}, LIFECYCLE_MS);
+
 	it('starts again after the node died without a stop, reusing its open databases', async () => {
 		// The OS killing the node (or a crash inside it) runs none of `stop`. The next start
 		// must not open a second handle on a database still open: the locking fake throws.

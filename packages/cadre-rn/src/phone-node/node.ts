@@ -128,15 +128,16 @@ export type PhoneNodeStatus =
 
 export interface PhoneNode {
 	readonly status: PhoneNodeStatus;
-	/** The running node, or null. */
+	/** The running node, or null; null as soon as a stop or restart begins tearing it down. */
 	readonly node: CadreNode | null;
 	/** The options the running node was started with, the Noise mode resolved; null unless running. */
 	readonly options: PhoneNodeOptions | null;
 	/**
 	 * Start, or join the start in flight; a running node is returned as is, whatever its options.
-	 * Opens the four node-local stores party-scoped, builds and starts the node, runs owner genesis
-	 * (fail-soft, bounded), then saves the options with `autoStart: true`. A failed start closes
-	 * everything it opened and leaves `status` `failed`; the next call starts afresh.
+	 * A start called during a stop or restart runs after it. Opens the four node-local stores
+	 * party-scoped, builds and starts the node, runs owner genesis (fail-soft, bounded), then saves
+	 * the options with `autoStart: true`. A failed start closes everything it opened and leaves
+	 * `status` `failed`; the next call starts afresh.
 	 */
 	start(options: PhoneNodeOptions): Promise<CadreNode>;
 	/**
@@ -150,7 +151,10 @@ export interface PhoneNode {
 	 * is built. `autoStart` is not cleared on the way, so a crash mid-restart still starts again.
 	 */
 	restart(options: PhoneNodeOptions): Promise<CadreNode>;
-	/** The last start, or `undefined` when none is saved or the record is unusable. A read fault throws. */
+	/**
+	 * The last start, or `undefined` when none is saved or the record is unusable. A read fault
+	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
+	 */
 	loadSavedStart(): Promise<SavedStart | undefined>;
 	/**
 	 * Subscribe to a node event for the life of this phone node, not of one `CadreNode`: the
@@ -200,6 +204,12 @@ class PhoneNodeRuntime implements PhoneNode {
 	private current: CadreNode | null = null;
 	private runningOptions: PhoneNodeOptions | null = null;
 	private starting: Promise<CadreNode> | null = null;
+	private stopping: Promise<void> | null = null;
+	/**
+	 * Start, stop and restart run one at a time, in call order: each opens or closes the databases
+	 * the others use, so a start overlapping a stop would build on handles the stop then closes.
+	 */
+	private transitions: Promise<unknown> = Promise.resolve();
 	private currentStatus: PhoneNodeStatus = { state: 'stopped' };
 	/** Every database this node opened, by name, so `stop` can close them all. */
 	private readonly databases = new Map<string, LevelDbHandle>();
@@ -218,7 +228,7 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	get node(): CadreNode | null {
-		return this.currentStatus.state === 'running' ? this.currentStatus.node : null;
+		return this.currentStatus.state === 'running' ? this.current : null;
 	}
 
 	get options(): PhoneNodeOptions | null {
@@ -227,28 +237,33 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	start(options: PhoneNodeOptions): Promise<CadreNode> {
 		if (this.starting) return this.starting;
-		if (this.current?.isRunning) return Promise.resolve(this.current);
-		this.starting = this.buildAndStart(options).finally(() => {
-			this.starting = null;
+		return this.trackStart(() => (this.current?.isRunning ? Promise.resolve(this.current) : this.buildAndStart(options)));
+	}
+
+	stop(): Promise<void> {
+		// A start called from here on runs after this stop rather than joining the one it ends.
+		this.starting = null;
+		const stopping = this.inTurn(() => this.stopAndClearAutoStart());
+		this.stopping = stopping;
+		const settled = (): void => {
+			if (this.stopping === stopping) this.stopping = null;
+		};
+		stopping.then(settled, settled);
+		return stopping;
+	}
+
+	restart(options: PhoneNodeOptions): Promise<CadreNode> {
+		this.starting = null;
+		return this.trackStart(async () => {
+			await this.shutDown();
+			return this.buildAndStart(options);
 		});
-		return this.starting;
-	}
-
-	async stop(): Promise<void> {
-		await this.settleStart();
-		if (this.runningOptions) {
-			await this.saveStart({ options: this.runningOptions, autoStart: false, writtenBy: this.platform.dataVersion });
-		}
-		await this.shutDown();
-	}
-
-	async restart(options: PhoneNodeOptions): Promise<CadreNode> {
-		await this.settleStart();
-		await this.shutDown();
-		return this.start(options);
 	}
 
 	async loadSavedStart(): Promise<SavedStart | undefined> {
+		// A stop in progress decides `autoStart`: answer after it, so an unattended start does
+		// not act on the value the stop is replacing. Its failure is its caller's.
+		await this.stopping?.catch(() => undefined);
 		return parseSavedStart(await this.nodeLocalSlot(this.names.savedStartKey).load());
 	}
 
@@ -282,6 +297,26 @@ class PhoneNodeRuntime implements PhoneNode {
 			console.warn('[cadre-rn/phone-node] owner public key unavailable:', err);
 			return null;
 		}
+	}
+
+	// ── transitions ──────────────────────────────────────────────────────────
+
+	/** Run `op` after every transition called before it, whether those succeeded or failed. */
+	private inTurn<T>(op: () => Promise<T>): Promise<T> {
+		const result = this.transitions.then(op);
+		this.transitions = result.catch(() => undefined);
+		return result;
+	}
+
+	/** Queue a start, and let later `start` calls join it until it settles. */
+	private trackStart(op: () => Promise<CadreNode>): Promise<CadreNode> {
+		const starting = this.inTurn(op);
+		this.starting = starting;
+		const settled = (): void => {
+			if (this.starting === starting) this.starting = null;
+		};
+		starting.then(settled, settled);
+		return starting;
 	}
 
 	// ── start ────────────────────────────────────────────────────────────────
@@ -351,9 +386,15 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	// ── stop ─────────────────────────────────────────────────────────────────
 
-	/** Let a start in flight finish, so a stop or restart acts on the node it produces. Its failure is its caller's. */
-	private async settleStart(): Promise<void> {
-		if (this.starting) await this.starting.catch(() => undefined);
+	private async stopAndClearAutoStart(): Promise<void> {
+		// NOTE: with no node running (the last start failed) the saved record is left alone, so an
+		// earlier `autoStart: true` survives this stop. The reference app offers Disconnect only
+		// while connected; if an app lets a user stop a phone whose start failed, rewrite the
+		// saved record with `autoStart: false` here too.
+		if (this.runningOptions) {
+			await this.saveStart({ options: this.runningOptions, autoStart: false, writtenBy: this.platform.dataVersion });
+		}
+		await this.shutDown();
 	}
 
 	/**
