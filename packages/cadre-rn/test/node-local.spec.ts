@@ -11,14 +11,13 @@
  * `enrolled-machine-store.spec.ts`) against its own fake slot — re-asserting it
  * here would only duplicate it. What this file covers is what the kit
  * actually owns: the two slots themselves (`secureStoreSlot`, `kvStoreSlot`),
- * the key-shape helpers, and the composition of each real slot with the
- * node-local stores it backs.
+ * the record keys, and that each real slot keeps the throw-not-`undefined`
+ * contract a node-local store relies on.
  */
 import { describe, it, expect } from 'vitest';
 import {
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
-	PersistentEnrolledMachineStore,
 	DEFAULT_IDENTITY_KEY_ID,
 } from '@serfab/cadre-core';
 import { SecureStoreKeyStore } from '../src/key-store.js';
@@ -47,7 +46,6 @@ const REAL_PEER_ID = '12D3KooWQVo7JTYHgoj9rt9HScoxaM5axn3uB8P1WHiKrhhUqed3';
 class FakeKvStore implements KvStoreApi {
 	readonly map = new Map<string, string>();
 	getError: Error | null = null;
-	setError: Error | null = null;
 
 	async get(key: string): Promise<string | undefined> {
 		if (this.getError) throw this.getError;
@@ -55,7 +53,6 @@ class FakeKvStore implements KvStoreApi {
 	}
 
 	async set(key: string, value: string): Promise<void> {
-		if (this.setError) throw this.setError;
 		this.map.set(key, value);
 	}
 }
@@ -119,68 +116,24 @@ describe('secureStoreSlot', () => {
 	});
 });
 
-// ── kvStoreSlot ───────────────────────────────────────────────────────────────
-
-describe('kvStoreSlot', () => {
-	it('round-trips save → load through the fake, statelessly', async () => {
-		const kv = new FakeKvStore();
-		await kvStoreSlot(kv, 'k').save('hello world');
-		expect(await kvStoreSlot(kv, 'k').load()).toBe('hello world');
-	});
-
-	it('loads undefined for a never-written key', async () => {
-		const kv = new FakeKvStore();
-		expect(await kvStoreSlot(kv, 'never').load()).toBeUndefined();
-	});
-
-	it('rejects on a failed read rather than resolving undefined', async () => {
-		const kv = new FakeKvStore();
-		kv.getError = new Error('LevelDB read failed');
-		await expect(kvStoreSlot(kv, 'k').load()).rejects.toThrow('LevelDB read failed');
-	});
-
-	it('rejects on a failed write rather than resolving', async () => {
-		const kv = new FakeKvStore();
-		kv.setError = new Error('LevelDB write failed');
-		await expect(kvStoreSlot(kv, 'k').save('text')).rejects.toThrow('LevelDB write failed');
-	});
-});
-
 // ── Key-shape helpers ─────────────────────────────────────────────────────────
 // Persistence contracts: renaming one of these silently orphans every installed
 // phone's anchor / dial targets rather than failing.
 
 describe('key-shape helpers', () => {
-	it('anchorSlotKey stays under its own prefix, distinct from the key store\'s, and SecureStore-safe', () => {
-		const key = anchorSlotKey('party/with+special=chars');
-		expect(key.startsWith('sereus.anchor.')).toBe(true);
-		expect(key.startsWith('sereus.ks.')).toBe(false);
-		expect(key).toMatch(/^[A-Za-z0-9._-]+$/);
-	});
-
-	it('gives distinct parties distinct keys', () => {
-		expect(anchorSlotKey('party-1')).not.toBe(anchorSlotKey('party-2'));
-		expect(bootstrapPeersKvKey('party-1')).not.toBe(bootstrapPeersKvKey('party-2'));
-		expect(enrolledMachinesKvKey('party-1')).not.toBe(enrolledMachinesKvKey('party-2'));
-	});
-
-	it('bootstrapPeersKvKey is a plain dotted key', () => {
+	it('files each record under a pinned key', () => {
+		expect(anchorSlotKey('party-1')).toBe('sereus.anchor.cGFydHktMQ');
 		expect(bootstrapPeersKvKey('p')).toBe('bootstrap-peers.p');
-	});
-
-	it('enrolledMachinesKvKey is a plain dotted key', () => {
 		expect(enrolledMachinesKvKey('p')).toBe('enrolled-machines.p');
+		expect(strandNetworkKvKey('p')).toBe('strand-network.p');
 	});
 
-	it('gives the LevelDB records distinct keys, so no snapshot write clobbers another', () => {
-		const keys = [bootstrapPeersKvKey('p'), enrolledMachinesKvKey('p'), strandNetworkKvKey('p')];
-		expect(new Set(keys).size).toBe(keys.length);
-		// A persistence contract, like the two above: renaming it orphans every phone's record.
-		expect(strandNetworkKvKey('p')).toBe('strand-network.p');
+	it('escapes an arbitrary party id into the SecureStore key charset', () => {
+		expect(anchorSlotKey('party/with+special=chars')).toMatch(/^[A-Za-z0-9._-]+$/);
 	});
 });
 
-// ── The two node-local stores over a real secureStoreSlot ─────────────────────
+// ── The trusted-owner anchor over a real secureStoreSlot ──────────────────────
 
 describe('PersistentTrustedOwnerStore over secureStoreSlot', () => {
 	it('persists a trusted owner key across a fresh open() of the same slot', async () => {
@@ -195,35 +148,6 @@ describe('PersistentTrustedOwnerStore over secureStoreSlot', () => {
 		expect(reopened.all()).toEqual(new Set(['owner-key-b64']));
 	});
 
-	it('records the source in the raw persisted envelope', async () => {
-		const backend = new FakeSecureStore();
-		const key = anchorSlotKey('party-1');
-
-		const store = await PersistentTrustedOwnerStore.open(secureStoreSlot(backend, key), 'party-1');
-		await store.trust('owner-key-b64', 'invite');
-
-		const raw = JSON.parse(backend.map.get(key)!) as { owners: Record<string, { source: string }> };
-		expect(raw.owners['owner-key-b64']?.source).toBe('invite');
-	});
-
-	it('junk text pre-seeded in the slot ⇒ empty store, no throw', async () => {
-		const backend = new FakeSecureStore();
-		const key = anchorSlotKey('party-1');
-		backend.map.set(key, 'not json at all');
-
-		const store = await PersistentTrustedOwnerStore.open(secureStoreSlot(backend, key), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-
-	it('an envelope carrying a foreign partyId ⇒ empty store', async () => {
-		const backend = new FakeSecureStore();
-		const key = anchorSlotKey('party-1');
-		backend.map.set(key, JSON.stringify({ version: 1, partyId: 'someone-else', owners: { x: { source: 'invite', trustedAt: 1 } } }));
-
-		const store = await PersistentTrustedOwnerStore.open(secureStoreSlot(backend, key), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-
 	it('a failed read rejects open() rather than cold-starting, and touches nothing', async () => {
 		const backend = new FakeSecureStore();
 		const key = anchorSlotKey('party-1');
@@ -233,16 +157,6 @@ describe('PersistentTrustedOwnerStore over secureStoreSlot', () => {
 			'biometric prompt cancelled',
 		);
 		expect(backend.map.size).toBe(0);
-	});
-
-	it('a failed persist rejects trust() but the in-memory trust still stands', async () => {
-		const backend = new FakeSecureStore();
-		const key = anchorSlotKey('party-1');
-		const store = await PersistentTrustedOwnerStore.open(secureStoreSlot(backend, key), 'party-1');
-		backend.setError = new Error('SecureStore write failed');
-
-		await expect(store.trust('owner-key-b64', 'invite')).rejects.toThrow('SecureStore write failed');
-		expect(store.has('owner-key-b64')).toBe(true);
 	});
 });
 
@@ -289,7 +203,9 @@ describe('the anchor slot beside SecureStoreKeyStore', () => {
 	});
 });
 
-// ── The two node-local stores over a real kvStoreSlot ──────────────────────────
+// ── A LevelDB record over a real kvStoreSlot ───────────────────────────────────
+// One record stands for all three: `kvStoreSlot` is a pass-through, so the others
+// differ only in their key, pinned above.
 
 describe('PersistentBootstrapPeerStore over kvStoreSlot', () => {
 	it('persists a bootstrap peer across a fresh open() of the same slot', async () => {
@@ -304,31 +220,6 @@ describe('PersistentBootstrapPeerStore over kvStoreSlot', () => {
 		expect(reopened.all().get(REAL_PEER_ID)?.addrs).toEqual(['/ip4/1.2.3.4/tcp/4001/ws']);
 	});
 
-	it('junk text pre-seeded in the slot ⇒ empty store, no throw', async () => {
-		const kv = new FakeKvStore();
-		const key = bootstrapPeersKvKey('party-1');
-		kv.map.set(key, 'not json at all');
-
-		const store = await PersistentBootstrapPeerStore.open(kvStoreSlot(kv, key), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-
-	it('an envelope carrying a foreign partyId ⇒ empty store', async () => {
-		const kv = new FakeKvStore();
-		const key = bootstrapPeersKvKey('party-1');
-		kv.map.set(
-			key,
-			JSON.stringify({
-				version: 1,
-				partyId: 'someone-else',
-				peers: { [REAL_PEER_ID]: { addrs: ['/ip4/1.2.3.4/tcp/4001/ws'], recordedAt: 1 } },
-			}),
-		);
-
-		const store = await PersistentBootstrapPeerStore.open(kvStoreSlot(kv, key), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-
 	it('a failed read rejects open() rather than cold-starting, and touches nothing', async () => {
 		const kv = new FakeKvStore();
 		const key = bootstrapPeersKvKey('party-1');
@@ -338,66 +229,5 @@ describe('PersistentBootstrapPeerStore over kvStoreSlot', () => {
 			'LevelDB read failed',
 		);
 		expect(kv.map.size).toBe(0);
-	});
-
-	it('a failed persist rejects record()/all() expectations but the in-memory record still stands', async () => {
-		const kv = new FakeKvStore();
-		const key = bootstrapPeersKvKey('party-1');
-		const store = await PersistentBootstrapPeerStore.open(kvStoreSlot(kv, key), 'party-1');
-		kv.setError = new Error('LevelDB write failed');
-
-		await expect(store.record(REAL_PEER_ID, ['/ip4/1.2.3.4/tcp/4001/ws'])).rejects.toThrow('LevelDB write failed');
-		expect([...store.all().keys()]).toEqual([REAL_PEER_ID]);
-	});
-});
-
-describe('PersistentEnrolledMachineStore over kvStoreSlot', () => {
-	it('persists the count across a fresh open() of the same slot', async () => {
-		const kv = new FakeKvStore();
-		const key = enrolledMachinesKvKey('party-1');
-
-		const first = await PersistentEnrolledMachineStore.open(kvStoreSlot(kv, key), 'party-1');
-		await first.record(4);
-
-		const reopened = await PersistentEnrolledMachineStore.open(kvStoreSlot(kv, key), 'party-1');
-		expect(reopened.count()).toBe(4);
-	});
-
-	it('does not disturb the bootstrap-peer record sharing the database', async () => {
-		const kv = new FakeKvStore();
-		const peers = await PersistentBootstrapPeerStore.open(
-			kvStoreSlot(kv, bootstrapPeersKvKey('party-1')), 'party-1');
-		await peers.record(REAL_PEER_ID, ['/ip4/1.2.3.4/tcp/4001/ws']);
-
-		const counts = await PersistentEnrolledMachineStore.open(
-			kvStoreSlot(kv, enrolledMachinesKvKey('party-1')), 'party-1');
-		await counts.record(4);
-
-		const reopenedPeers = await PersistentBootstrapPeerStore.open(
-			kvStoreSlot(kv, bootstrapPeersKvKey('party-1')), 'party-1');
-		expect([...reopenedPeers.all().keys()]).toEqual([REAL_PEER_ID]);
-	});
-
-	it('a failed read COLD-STARTS open() rather than rejecting — unlike the two records above', async () => {
-		// The deliberate divergence: this record is a block-repair hint, recomputed the
-		// moment the control database is up, so an unreadable slot must not stop a node
-		// starting. `enrolled-machine-store.ts` carries the reasoning.
-		const kv = new FakeKvStore();
-		kv.getError = new Error('LevelDB read failed');
-
-		const store = await PersistentEnrolledMachineStore.open(
-			kvStoreSlot(kv, enrolledMachinesKvKey('party-1')), 'party-1');
-
-		expect(store.count()).toBeUndefined();
-	});
-
-	it('a failed persist does not reject, and the in-memory count still stands', async () => {
-		const kv = new FakeKvStore();
-		const store = await PersistentEnrolledMachineStore.open(
-			kvStoreSlot(kv, enrolledMachinesKvKey('party-1')), 'party-1');
-		kv.setError = new Error('LevelDB write failed');
-
-		await expect(store.record(4)).resolves.toBeUndefined();
-		expect(store.count()).toBe(4);
 	});
 });

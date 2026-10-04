@@ -109,13 +109,13 @@ const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
 	kvStoreSlot(nodeLocalKv, bootstrapPeersKvKey(partyId)), partyId);
 ```
 
-The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning; the reference app's `src/cadre-phone.ts` is the worked example.
+The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning. `createPhoneNode` (above) wires all of this; these subpaths are for an app that builds its node another way.
 
 Use the same options object for the key store and the anchor slot. `keychainAccessible: AFTER_FIRST_UNLOCK` lets iOS read the identity while the device is locked, which a background or push-wake start needs. `secureStoreSlot` refuses a gated (`requireAuthentication`) slot, because it reads `null` as absent.
 
 ### What the app must install
 
-`@serfab/cadre-core` (an optional peer: only these two subpaths use it), and the secure-store module it passes in: `expo-secure-store` under Expo, or the bare app's own choice. The LevelDB store is the app's `@optimystic/db-p2p-storage-rn`, which it already has for strand storage.
+`@serfab/cadre-core` (an optional peer, needed by every subpath that builds or persists a node: these two, `/phone-node` and `/lifecycle`), and the secure-store module it passes in: `expo-secure-store` under Expo, or the bare app's own choice. The LevelDB store is the app's `@optimystic/db-p2p-storage-rn`, which it already has for strand storage.
 
 ## Polyfills and boot check
 

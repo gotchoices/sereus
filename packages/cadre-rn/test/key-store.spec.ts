@@ -119,13 +119,12 @@ describe('SecureStoreKeyStore — keyId mapping', () => {
 		expect(new Set(fake.materialKeys()).size).toBe(ids.length);
 	});
 
-	it('maps the default identity slot deterministically across instances', async () => {
-		const a = makeStore();
-		const b = makeStore();
-		await a.store.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1]));
-		await b.store.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1]));
-		expect(a.fake.materialKeys()).toEqual(b.fake.materialKeys());
-		expect(a.fake.materialKeys()[0]).toMatch(ALLOWED);
+	it('files the default identity under a pinned SecureStore key', async () => {
+		// A persistence contract: a changed prefix or encoding reads every installed phone's
+		// identity slot as empty, and cadre-core then generates a new peer id over it.
+		const { store, fake } = makeStore();
+		await store.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1]));
+		expect(fake.materialKeys()).toEqual(['sereus.ks.Y2FkcmUvaWRlbnRpdHk']);
 	});
 });
 

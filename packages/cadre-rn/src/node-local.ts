@@ -5,7 +5,7 @@
  * enrolled-machine count (`PersistentEnrolledMachineStore`) and the strand network
  * state (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — and the
  * key each record is filed under. The app chooses the databases and opens the
- * stores; `reference-app-rn/src/cadre-phone.ts` is the worked example.
+ * stores; `createPhoneNode` (`./phone-node`) does both for an app that uses it.
  *
  * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
  * different security properties and a different size.

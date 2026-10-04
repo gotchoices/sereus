@@ -90,7 +90,14 @@ export interface SecureStoreKeyStoreOptions {
 	keychainAccessible?: number;
 }
 
-/** Stable prefix for every logical slot, keeping our keys clear of foreign ones. */
+/**
+ * Stable prefix for every logical slot, keeping our keys clear of foreign ones. Fixed
+ * rather than per-app because each app's secure store is its own.
+ *
+ * NOTE: if an app ever shares a Keychain access group with another Sereus app, both
+ * write `sereus.ks.__index` and the same identity slot. Make the prefix (or Expo's
+ * `keychainService`, which `SecureStoreOptions` does not forward today) a parameter then.
+ */
 const KEY_PREFIX = 'sereus.ks.';
 
 /** Reserved SecureStore key holding the JSON index of logical keyIds. */
@@ -142,7 +149,7 @@ function parseIndex(raw: string): KeyId[] {
 	try {
 		parsed = JSON.parse(raw);
 	} catch (error) {
-		console.warn('[secure-key-store] index JSON parse failed; treating as empty', error);
+		console.warn('[cadre-rn/key-store] index JSON parse failed; treating as empty', error);
 		return [];
 	}
 	if (!Array.isArray(parsed)) return [];

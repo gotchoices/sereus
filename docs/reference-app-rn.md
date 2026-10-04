@@ -407,6 +407,7 @@ packages/reference-app-rn/
     settings.tsx              # Bootstrap config (seed paste, drone address)
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
+    node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
