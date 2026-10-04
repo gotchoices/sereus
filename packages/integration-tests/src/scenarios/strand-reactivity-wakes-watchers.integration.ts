@@ -150,6 +150,8 @@ interface StrandMachine {
 	wakes: number[];
 	/** `deliver` calls for the watched collection, oldest first. */
 	deliveries: Delivery[];
+	/** Deliveries at or below this revision belong to an earlier round and are not recorded. */
+	revisionFloor: number;
 	unwatch?: () => void;
 }
 
@@ -181,6 +183,7 @@ function strandMachine(label: string, instance: StrandInstance | undefined): Str
 		node: instance.libp2pNode as ReactiveStrandNode,
 		wakes: [],
 		deliveries: [],
+		revisionFloor: 0,
 	};
 }
 
@@ -198,7 +201,7 @@ function spyOnDeliveries(machine: StrandMachine): void {
 	}
 	const deliver = registry.deliver.bind(registry);
 	registry.deliver = (topicId, notification): void => {
-		if (notification.collectionId === WATCHED_COLLECTION_B64) {
+		if (notification.collectionId === WATCHED_COLLECTION_B64 && notification.revision > machine.revisionFloor) {
 			machine.deliveries.push({ at: Date.now(), notification });
 		}
 		deliver(topicId, notification);
@@ -305,6 +308,20 @@ function watcherOutcome(machine: StrandMachine, commitEnd: number, tailGroup: st
 }
 
 /**
+ * Clear what the spies recorded. A previous round's commit can still be delivered after this (the
+ * committer's own copy, say, once its watchers were satisfied), and counted here it would pass for
+ * this round's push; the floor at the highest revision delivered so far keeps it out.
+ */
+function resetRecords(machines: ReadonlyArray<StrandMachine>): void {
+	const floor = Math.max(...machines.flatMap((m) => [m.revisionFloor, ...m.deliveries.map((d) => d.notification.revision)]));
+	for (const machine of machines) {
+		machine.wakes.length = 0;
+		machine.deliveries.length = 0;
+		machine.revisionFloor = floor;
+	}
+}
+
+/**
  * One commit on `committer`, then wait (up to the bound) until every watcher has been woken by a
  * push. Records rather than asserts, so all three rounds are logged before the test judges any.
  */
@@ -312,10 +329,7 @@ async function runRound(
 	round: number, committer: StrandMachine, machines: ReadonlyArray<StrandMachine>,
 ): Promise<RoundOutcome> {
 	const watchers = machines.filter((m) => m !== committer);
-	for (const machine of machines) {
-		machine.wakes.length = 0;
-		machine.deliveries.length = 0;
-	}
+	resetRecords(machines);
 	const commitStart = Date.now();
 	await committer.db.exec('insert into App.Data (Key, Val) values (?, ?)', [`round-${round}`, `from-${committer.label}`]);
 	const commitEnd = Date.now();
@@ -353,9 +367,10 @@ function assertRound(outcome: RoundOutcome): void {
 	for (const watcher of outcome.watchers) {
 		const where = `round ${outcome.round} (${outcome.committer} commits), watcher ${watcher.label}`
 			+ (watcher.inTailGroup === false ? ' outside the tail group' : '');
-		expect(watcher.wakeMs, `${where}: woken within ${WAKE_BOUND_MS} ms of the commit`).toBeDefined();
-		expect(watcher.wakeMs!, `${where}: woken within ${WAKE_BOUND_MS} ms of the commit`).toBeLessThanOrEqual(WAKE_BOUND_MS);
+		expect(watcher.wakeMs, `${where}: woken at all within ${WAKE_BOUND_MS} ms of the commit`).toBeDefined();
 		expect(watcher.pushWakeMs, `${where}: a notification reached its subscribers and woke the watch`).toBeDefined();
+		// The outcome is read after the wait ends, so a late push wake can be recorded; hold it to the bound.
+		expect(watcher.pushWakeMs!, `${where}: woken by that push within ${WAKE_BOUND_MS} ms of the commit`).toBeLessThanOrEqual(WAKE_BOUND_MS);
 	}
 }
 
