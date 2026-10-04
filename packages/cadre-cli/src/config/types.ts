@@ -1,5 +1,5 @@
 import type { PrivateKey } from '@libp2p/interface';
-import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials } from '@serfab/cadre-core';
+import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
 
 /** The forms the `strandFilter` key may take in a config file. */
 export type StrandFilterConfig =
@@ -46,6 +46,14 @@ export interface CliConfig {
 
   /** Strand filter configuration */
   strandFilter?: StrandFilterConfig;
+
+  /**
+   * Optimystic change notifications on this node's strand nodes, so an app on another machine
+   * is told a strand table changed instead of polling. Off when absent. `enabled` is required;
+   * `strandIds` narrows it to those strands (absent or empty: every strand this node runs). See
+   * `CadreNodeConfig.strandReactivity` in `@serfab/cadre-core` for what enabling costs and exposes.
+   */
+  strandReactivity?: StrandReactivityConfig;
 
   /** Storage configuration (required for storage profile) */
   storage?: {

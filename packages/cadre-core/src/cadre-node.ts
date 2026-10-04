@@ -5898,6 +5898,7 @@ export class CadreNode implements SAppIdLookup {
       // than merely weak. The full argument, and the count that will legitimately go here,
       // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
+      reactivity: this.config.strandReactivity,
       revocationEnforcement: this.config.strandRevocationEnforcement,
       membershipReconciliation: this.config.strandMembershipReconciliation,
       onSelfRevoked: (revokedStrandId) => {

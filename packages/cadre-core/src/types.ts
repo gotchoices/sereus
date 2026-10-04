@@ -3,6 +3,7 @@ import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
 import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import type { StrandReactivityConfig } from './strand-reactivity.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
 import type { StrandMembershipReconciliationConfig } from './strand-membership-reconciler.js';
 import type { StrandFirstSyncConfig } from './strand-first-sync-gate.js';
@@ -825,6 +826,25 @@ export interface CadreNodeConfig {
    * separately tuned catch-up — see {@link controlBackfill}.
    */
   strandBackfill?: PeerJoinBackfillConfig;
+
+  /**
+   * Optimystic change notifications on this node's strand nodes (`strand-reactivity.ts`):
+   * a strand node built with them announces the commits whose collection log tail it applied,
+   * and an sApp table tagged `"optimystic.network_watch" = true` wakes its `Database.watch`
+   * subscribers on another machine's commit instead of only on local ones. Default off; with
+   * it off every strand node is built exactly as before. `strandIds` narrows it to chosen
+   * strands, independently of `strandFilter` (which decides whether a strand runs at all).
+   *
+   * Frozen when the strand's libp2p node is built: a change takes effect at the next build —
+   * a restart, or the strand's next wake from hibernation. Every machine serving the strand
+   * should enable it, because a node without it neither announces nor serves as part of the
+   * group a notification is rooted at. Enabling registers Optimystic's change-notification
+   * protocol handlers on the strand node, which the closed-strand per-stream gate does not
+   * cover, and each watched table pays a cold-start proof of work on every node build. Both
+   * are spelled out in `docs/strands.md` → "Change notifications (reactivity)". The control
+   * node never gets it.
+   */
+  strandReactivity?: StrandReactivityConfig;
 
   /**
    * Tuning for the CONTROL network's peer-join block catch-up (same module,

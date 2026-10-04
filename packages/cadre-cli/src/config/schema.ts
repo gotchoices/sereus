@@ -94,6 +94,14 @@ const strandFilter: Checker<StrandFilterConfig> = (value, keyPath, ctx) => {
   }
 };
 
+const strandReactivity = objectOf<Block<'strandReactivity'>>(
+  {
+    enabled: booleanValue,
+    strandIds: arrayOf(nonEmptyString),
+  },
+  { required: ['enabled'] },
+);
+
 const storage = refine(
   objectOf<Block<'storage'>>(
     {
@@ -163,6 +171,7 @@ const root = objectOf<CliConfig>(
     controlNetwork,
     profile: oneOf<NodeProfile>({ transaction: true, storage: true }),
     strandFilter,
+    strandReactivity,
     storage,
     network,
     hibernation,

@@ -32,6 +32,14 @@ profile: storage
 # Options: 'all', 'none', { sAppId: "..." }, { strandId: "..." }
 strandFilter: all
 
+# Optimystic change notifications on this node's strand nodes (optional, off when absent),
+# so apps on other machines are woken by a commit instead of polling. Enable it on every
+# machine serving the strand. See the README's "Strand change notifications".
+# strandReactivity:
+#   enabled: true
+#   strandIds:            # absent or empty: every strand this node runs
+#     - "<strand id>"
+
 # Node-local durable state: the trusted-owner anchor
 # (trusted-owners.<partyId>.json) and the retained cold-start dial targets
 # (bootstrap-peers.<partyId>.json). Defaults to the directory holding THIS file

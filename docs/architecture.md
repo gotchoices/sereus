@@ -745,6 +745,8 @@ flowchart LR
     DEL["DELETE FROM Strand (...)"] -->|watch event| SW2["Strand Watcher"] --> STOP["Stop Instance"]
 ```
 
+An operator can build chosen strand nodes with Optimystic's change notifications, so a watched table on another machine is woken by a commit instead of polling; see [strands.md → Change notifications (reactivity)](strands.md#change-notifications-reactivity).
+
 ### One Transactor Per Strand
 
 Every strand runs on the network transactor — there is no per-strand mode. A device alone is a situation the *storage engine* handles, not the application layer: at a cohort of one, Optimystic resolves the node as its own coordinator, so schema apply, DML, and the founder membership bootstrap all commit with no peer round trips. The coordinator still consults the block's cohort, but on a cohort of one that consult is a local lookup; how many it issues while a solo party is founded is pinned by `control-founding-consult-budget.spec.ts`. The solo evidence is committed: `strand-solo-write-budget.spec.ts` pins two-sided storage-operation budgets for a solo launch/insert/select (a solo insert cost 1.005× what the retired local transactor did — +2 operations over 5 inserts, measured 2026-08-13 before the write-through raw-storage cache; the budgets were re-baselined far lower on 2026-08-17 when Sereus wired that cache, see `cached-storage.ts` in `@serfab/quereus-plugin-sereus`), `strand-transactor-handover.spec.ts` proves blocks written by the old local transactor stay readable and extensible on the network transactor across a restart, and `strand-membership-network-transactor-parity.spec.ts` proves the deferred membership CHECK constraints bite identically. The control database has always worked this way; strands now match it.

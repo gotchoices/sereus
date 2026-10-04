@@ -42,6 +42,7 @@ import type {
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
 import { resolveRelayServer } from './relay-server.js';
+import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
@@ -181,6 +182,13 @@ export interface StartStrandConfig {
    * no-backfill behaviour.
    */
   backfill?: PeerJoinBackfillConfig;
+  /**
+   * Whether this strand's libp2p node is built with Optimystic's change notifications,
+   * forwarded from {@link CadreNodeConfig.strandReactivity} and resolved per strand by
+   * `strandCohortTopicOption`. Retained with the launch config, so a hibernation wake
+   * rebuilds the node with the same setting.
+   */
+  reactivity?: StrandReactivityConfig;
   /**
    * Tuning for the CLOSED-strand revoked-peer gate
    * ({@link StrandRevocationEnforcer}), forwarded from
@@ -748,6 +756,11 @@ export class StrandInstanceManager {
         ? { connectionGater: config.network.connectionGater }
         : {};
 
+    const reactivityOption = strandCohortTopicOption(config.reactivity, strandId);
+    if (reactivityOption.cohortTopic) {
+      log('strand %s: change notifications on', strandId);
+    }
+
     try {
       // Bound once: the breadth is also the ceiling on the repair yardstick below, and the
       // two must be derived from the same resolution. Inside the `try` deliberately — a
@@ -828,7 +841,9 @@ export class StrandInstanceManager {
         // The raw configured gater (open strands), or the revocation-composed
         // gater plus the fail-closed per-stream revoked-peer gate (closed
         // strands) — resolved above, before the try.
-        ...revocationGateOptions
+        ...revocationGateOptions,
+        // `{}` unless the operator enabled change notifications for this strand (`strand-reactivity.ts`).
+        ...reactivityOption
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 

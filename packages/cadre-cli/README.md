@@ -262,6 +262,25 @@ plus three read by the launchers around the CLI rather than by the CLI itself:
 cadre-host and are skipped. The retired `CADRE_IDENTITY_PROTOBUF` fails startup
 with a pointer to `CADRE_KEY_FILE`.
 
+### Strand change notifications
+
+`strandReactivity` turns on Optimystic's change notifications for this node's strand
+nodes, so an app on another machine is woken when a strand table it watches changes,
+instead of polling for it. It is off when absent and has no environment variable.
+
+```yaml
+strandReactivity:
+  enabled: true          # required; the boolean true, nothing else enables it
+  strandIds:             # optional; absent or empty means every strand this node runs
+    - "<strand id>"
+```
+
+It takes effect when a strand's node is next built (a restart, or the strand's next wake
+from hibernation), only reaches tables the sApp tags `"optimystic.network_watch" = true`,
+and should be enabled on every machine serving the strand. What enabling exposes and
+costs is in [`docs/strands.md` → Change notifications
+(reactivity)](../../docs/strands.md#change-notifications-reactivity).
+
 ## Linux Server Deployment
 
 This section covers production deployment on Linux using systemd. Works with either installation method.

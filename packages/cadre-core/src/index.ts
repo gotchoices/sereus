@@ -200,6 +200,10 @@ export {
   type PeerJoinBackfillPushClient
 } from './peer-join-backfill.js';
 
+// Operator opt-in to Optimystic change notifications on chosen strand nodes
+// (`CadreNodeConfig.strandReactivity`).
+export { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
+
 // Closed-strand revoked-peer enforcement (deny the network nodes of removed
 // members at the stream and connection layers, and hang up the sessions they
 // already hold — see the module doc for the settled deny-list design, the

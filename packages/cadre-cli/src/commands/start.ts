@@ -231,6 +231,7 @@ export const startCommand = new Command('start')
         // party publishes; the only opt-out here is `strandFilter`. If an operator needs
         // announce-only on an always-on node, surface the field in the CLI config.
         strandFilter: config.strandFilter,
+        strandReactivity: config.strandReactivity,
         storage: resolveStorageConfig(config.storage),
         network: config.network,
         hibernation: config.hibernation,

@@ -244,6 +244,53 @@ Apps address their own tables as `App.<Table>`. Quereus's `schema_path` defaults
 
 - NOTE: an explicit location still shares storage. An app table declared `table Member using optimystic('tree://default/strand/Member') (…)`, or two app tables given the same explicit URI, open one collection and decode each other's rows. Optimystic refuses such a pairing only once the collection already holds rows, not at strand bring-up when both tables are empty. If sApps start declaring explicit locations, sereus would need to check resolved URIs. (In a declared table the `using` clause goes before the column list; after it, Quereus skips the clause as an unrecognized item.)
 
+## Change notifications (reactivity)
+
+By default a strand table's `Database.watch` subscribers wake only on commits this machine's own storage applies. A phone that stores none of a table's blocks is never woken by another machine's commit and has to poll. Optimystic's change notifications close that gap: a strand node built with them announces (originates a signed notification for) every commit whose collection log tail it applied, and a watched table on any machine with them hears those announcements.
+
+Two things have to be true for a table to be woken this way:
+
+- **The operator enabled it on the node.** `CadreNodeConfig.strandReactivity` (`strandReactivity` in a cadre-cli config file) is `{ enabled: true, strandIds?: [...] }`, off when absent. `packages/cadre-core/src/strand-reactivity.ts` turns it into Optimystic's `cohortTopic: { enabled: true }` node option when `StrandInstanceManager.buildStrandRuntime` builds the strand's libp2p node. It is node-local: never read from the control database, a strand row, or a peer.
+- **The sApp tagged the table.** The table carries `"optimystic.network_watch" = true` in its declared schema. The key is quoted, and the value must be the boolean `true`.
+
+```sql
+table Message (
+  Id text primary key,
+  Body text
+) with tags ("optimystic.network_watch" = true)
+```
+
+Nothing in `quereus-plugin-sereus` changes for this. `compose-strand.ts` registers each strand node with the Optimystic plugin, and the plugin finds the node's watch service there. The tag survives a restart because `compose-strand.ts` re-applies the sApp schema at every open, and Quereus's declarative differ re-issues a tag that drifted. A tagged table on a node without the option logs one plugin warning and keeps local wakes only, so an sApp can ship the tag unconditionally.
+
+A notification is a whole-table invalidation (watchers re-query), and a lost one is bounded by a read of the collection's log tail at each registration renewal: every 20 s on a `'transaction'`-profile node, which Optimystic builds as an edge node (subscribes only), and every 30 s on a `'storage'`-profile node, built as a core node (also forwards notifications). Cadre does not branch on profile for this.
+
+### Which strands
+
+- **`strandIds` absent or empty enables every strand this node runs**, replicas and joined strands included; listing ids enables exactly those strands.
+- **`strandIds` is independent of `strandFilter`.** `strandFilter` decides whether a strand runs on this node at all; `strandIds` decides which running strands get notifications.
+- **Anything but the boolean `true` for `enabled` enables nothing**, and so does a `strandIds` that is not an array. Only the shapes above add the option; otherwise the node is built exactly as before.
+- **The setting is frozen when the strand's libp2p node is built.** A change takes effect at the next build: a restart, or the strand's next wake from hibernation (a wake rebuilds from the retained launch config).
+- **The control node never gets it.**
+
+`strandCohortTopicOption` deliberately passes no `wantK` or host tuning: a notification's root is the storage group of the collection's log tail block, verified at the consensus super-majority, which those settings do not govern.
+
+### Enable it on every machine serving the strand
+
+A notification tree is rooted at the machines that store a collection's log tail. A strand node built without the option neither announces commits whose tail it applied nor serves subscriptions as one of those machines. So push wakes need the option on every machine that serves the strand: the party's always-on replica hosts and the other parties' machines as well as the phones. What a watcher sees when some of the tail's storage machines lack it has not been measured; the renewal tail read should still bound the delay to 20 or 30 s.
+
+### What enabling exposes
+
+Enabling registers Optimystic's cohort-topic, reactivity and matchmaking protocol handlers on the strand node. Their protocol ids are Optimystic's fixed ones, not namespaced under `/optimystic/strand-<id>/`; that is harmless because each strand runs its own libp2p node.
+
+- **Open strand:** any peer that can reach the node can open these protocols, as it already can the four database protocols (`blocked/decide-public-read-only-strand-access`).
+- **Closed strand:** the per-stream revoked-peer gate (`authorizeStream` in `strand-revocation-enforcer.ts`) reaches only db-p2p's four database protocols (`repo`, `cluster`, `sync`, `block-transfer`), not these handlers. A removed party is kept off them by the connection gater, which refuses its connections and dials, and by the enforcer hanging up the connections it already holds (see [What removal does to the network](#what-removal-does-to-the-network)). Between a removal reaching this machine and that hang-up, an open connection from a removed party's machine can still open these streams. A peer that was never a member is denied by neither layer, exactly as for the database protocols, because the gate denies only on positive evidence of removal.
+
+With the option off, both postures are unchanged.
+
+### Known cost
+
+Each watched table registers on every node build, and a cold-start registration runs a proof of work that took 0.3 to 17 s on Node in Optimystic's measurement, and is slower on a phone's JavaScript thread (Optimystic `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Every hibernation wake pays it again. This is why the option is off by default and enabled in none of this repo's apps.
+
 ## Inviting Parties
 
 A party becomes a member of a closed strand through the signed invite handshake in [architecture.md → Invite → join handshake (closed strands)](architecture.md#invite--join-handshake-closed-strands).
