@@ -31,7 +31,7 @@ import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
-import type { RawStorageProvider } from '@serfab/cadre-core';
+import type { RawStorageProvider, StrandReactivityConfig } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectControlNodes, hasOutboundTo, stopStartedNodes
 } from './node-fixtures.js';
@@ -74,6 +74,10 @@ export interface TopologyMachineSpec {
 	 *  machine by hand after boot. */
 	listenAddrs?: string[];
 	reconcileMs?: number;
+	/** See `ControlNodeOpts.strandClusterSize`. Give every machine on one strand the same
+	 *  value, and pass it to `joinStrandOn` as `clusterSize` so its barrier asks for no more. */
+	strandClusterSize?: number;
+	strandReactivity?: StrandReactivityConfig;
 }
 
 export interface TopologyPartySpec {
@@ -191,6 +195,8 @@ function machineConfig(
 		...(machine.enableRelay !== undefined ? { enableRelay: machine.enableRelay } : {}),
 		...(machine.listenAddrs !== undefined ? { listenAddrs: machine.listenAddrs } : {}),
 		...(machine.reconcileMs !== undefined ? { reconcileMs: machine.reconcileMs } : {}),
+		...(machine.strandClusterSize !== undefined ? { strandClusterSize: machine.strandClusterSize } : {}),
+		...(machine.strandReactivity !== undefined ? { strandReactivity: machine.strandReactivity } : {}),
 		...(pinnedOwnerKeys ? { pinnedOwnerKeys } : {}),
 	});
 }

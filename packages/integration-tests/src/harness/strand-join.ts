@@ -68,10 +68,13 @@ export interface StrandJoinSpec {
 	 *  expressible through the builder's parties. */
 	mesh?: 'full' | 'none';
 	/** Readiness barrier: every member's strand cohort reaches
-	 *  `min(members.length, DEFAULT_STRAND_CLUSTER_SIZE)` via `waitForCohortOn` on the
+	 *  `min(members.length, clusterSize)` via `waitForCohortOn` on the
 	 *  strand libp2p node. Default true; forced false when mesh is 'none' (an unwired
 	 *  strand can never satisfy it — the contradictory explicit combination throws). */
 	barrier?: boolean;
+	/** The `strandClusterSize` the members' nodes were built with (`TopologyMachineSpec`).
+	 *  Caps the barrier, since no cohort grows past it. Default `DEFAULT_STRAND_CLUSTER_SIZE`. */
+	clusterSize?: number;
 	timeoutMs?: number;
 }
 
@@ -195,7 +198,7 @@ function validateStrandJoinSpec(spec: StrandJoinSpec): void {
  * — parties share no control network, so watcher discovery cannot cross parties;
  * explicit `addStrand` is how the three-party e2e already does it), optional full-mesh
  * strand wiring, and a cohort barrier at
- * `min(members.length, DEFAULT_STRAND_CLUSTER_SIZE)`.
+ * `min(members.length, clusterSize)`.
  *
  * A FREE FUNCTION, not a `Topology` method, for composability: a scenario may call it
  * several times, on different member subsets, against one topology.
@@ -303,10 +306,10 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 	}
 
 	if (barrier) {
-		// Capped at the strand breadth: FRET offers a write to at most
-		// DEFAULT_STRAND_CLUSTER_SIZE peers however many members exist, so waiting for
-		// more would burn the timeout on a healthy strand.
-		const want = Math.min(members.length, DEFAULT_STRAND_CLUSTER_SIZE);
+		// Capped at the strand breadth: FRET offers a write to at most `clusterSize`
+		// peers however many members exist, so waiting for more would burn the timeout
+		// on a healthy strand.
+		const want = Math.min(members.length, spec.clusterSize ?? DEFAULT_STRAND_CLUSTER_SIZE);
 		for (let i = 0; i < members.length; i++) {
 			const label = machineLabel(members[i]!);
 			await waitForCohortOn(strandNodeOf(instances[i]!, spec.strandId, label), want, {

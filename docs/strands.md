@@ -262,7 +262,7 @@ table Message (
 
 Nothing in `quereus-plugin-sereus` changes for this. `compose-strand.ts` registers each strand node with the Optimystic plugin, and the plugin finds the node's watch service there. The tag survives a restart because `compose-strand.ts` re-applies the sApp schema at every open, and Quereus's declarative differ re-issues a tag that drifted. A tagged table on a node without the option logs one plugin warning and keeps local wakes only, so an sApp can ship the tag unconditionally.
 
-A notification is a whole-table invalidation (watchers re-query), and a lost one is bounded by a read of the collection's log tail at each registration renewal, every 30 s.
+A notification is a whole-table invalidation (watchers re-query), and a lost one is bounded by a read of the collection's log tail at each registration renewal, every 30 s, except in the case described in [Registrations that arrive together](#registrations-that-arrive-together).
 
 Every strand node built with the option is a core change-notification host, whatever its cadre `profile`: db-p2p takes the host's profile from `cohortTopic.host.profile` (default core), not from the node's FRET profile, and cadre passes none. So a `'transaction'`-profile phone is also eligible to forward notifications to other subscribers, and renews at the core 30 s rather than the edge 20 s.
 
@@ -279,6 +279,21 @@ Every strand node built with the option is a core change-notification host, what
 ### Enable it on every machine serving the strand
 
 A notification tree is rooted at the machines that store a collection's log tail. A strand node built without the option neither announces commits whose tail it applied nor serves subscriptions as one of those machines. So push wakes need the option on every machine that serves the strand: the party's always-on replica hosts and the other parties' machines as well as the phones. What a watcher sees when some of the tail's storage machines lack it has not been measured; the renewal tail read should still bound the delay to 30 s.
+
+### What a watcher sees
+
+`packages/integration-tests/src/scenarios/strand-reactivity-wakes-watchers.integration.ts` measures this on three machines running one strand at `strandClusterSize: 2`, so each block is stored on two machines and one machine is outside the storage group of the table's log tail block. Its doc comment and run output carry the figures.
+
+- **A commit is pushed to every registered watcher, including the machine outside the tail's storage group.** That machine applies no tail, so only a push or the 30 s tail read can tell it; its watch fired within about 50 ms of the committing machine's `insert` returning, as every other watcher's did. A strand larger than its replication breadth therefore gets push wakes. Optimystic roots each collection's notification tree at its tail's storage group, so the plugin README's "every machine in every cohort" requirement is out of date (`blocked/report-optimystic-reactivity-outside-tail-group`).
+- **A table watched before its first commit registers at the first renewal tick after that commit**, up to 30 s later, because the watch service registers only once it has read a committed tail. Until then a commit reaches it only through the tail read.
+- **The first registration at a root takes seconds; later ones about 60 ms.** The first pays the cold root's proof of work, and if it backs off it retries at the next 30 s tick (1.5 to 41 s measured).
+- **In the seconds after a machine registers, a commit can be pushed to nobody.** A registration is held by the root-group machine it lands on and reaches the others by cohort gossip every 5 s, so a commit announced only by a machine that has not heard of it yet waits for the tail read.
+
+#### Registrations that arrive together
+
+Optimystic's root for a collection stops admitting registrations after a burst. Two registrations under about 0.5 s apart, or three under about 1 s, extrapolate to 64 subscribers within 30 s, so the root pre-promotes, and a root never demotes. A machine registering after that is sent to a lower tier that needs 14 signatures, which a strand of fewer than 14 machines cannot form, so it never registers and is never pushed to.
+
+On a new strand this is the usual case: every machine's watch opens at launch, so all of them register on the same renewal tick after the first commit. In the scenario with the tag left on from the schema, one of the three machines never registered in 5 of 8 runs. In those runs the registered machines also stopped being pushed later (one about 90 s after registering), and once the unregistered machine's tail reads stopped too, so the 30 s bound failed as well. Until Optimystic fixes it (`blocked/report-optimystic-reactivity-registration-burst-on-a-small-strand`), an app that needs a bound on staleness keeps its poll. The scenario avoids the burst by turning each machine's tag on one second after the previous machine registered.
 
 ### What enabling exposes
 

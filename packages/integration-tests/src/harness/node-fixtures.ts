@@ -24,6 +24,7 @@ import type {
   RawStorageProvider,
   SAppConfig,
   StrandNetworkStateStore,
+  StrandReactivityConfig,
 } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
@@ -110,6 +111,15 @@ export interface ControlNodeOpts {
   reconcileMs?: number;
   /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
   strandWatchMs?: number;
+  /**
+   * Becomes `strandClusterSize` verbatim — the replication breadth every strand this node
+   * starts is built with (default `DEFAULT_STRAND_CLUSTER_SIZE`, 4). Every machine on one
+   * strand should get the same value. Set it below a strand's member count to get machines
+   * that do NOT store a given block.
+   */
+  strandClusterSize?: number;
+  /** Becomes `strandReactivity` verbatim — Optimystic change notifications on this node's strand nodes. */
+  strandReactivity?: StrandReactivityConfig;
   /**
    * Override the CLOSED-strand revoked-peer deny-set refresh cadence (ms;
    * `DEFAULT_REVOCATION_POLL_INTERVAL_MS`, 30 s). Two uses, opposite ends:
@@ -221,6 +231,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
           : slowMemoryStorageProvider(opts.storageOpDelayMs))
     },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
+    ...(opts.strandClusterSize !== undefined ? { strandClusterSize: opts.strandClusterSize } : {}),
+    ...(opts.strandReactivity !== undefined ? { strandReactivity: opts.strandReactivity } : {}),
     ...(opts.revocationPollMs !== undefined
       ? { strandRevocationEnforcement: { pollIntervalMs: opts.revocationPollMs } } : {}),
     ...(opts.membershipReconciliation !== undefined
