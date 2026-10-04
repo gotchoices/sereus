@@ -262,7 +262,9 @@ table Message (
 
 Nothing in `quereus-plugin-sereus` changes for this. `compose-strand.ts` registers each strand node with the Optimystic plugin, and the plugin finds the node's watch service there. The tag survives a restart because `compose-strand.ts` re-applies the sApp schema at every open, and Quereus's declarative differ re-issues a tag that drifted. A tagged table on a node without the option logs one plugin warning and keeps local wakes only, so an sApp can ship the tag unconditionally.
 
-A notification is a whole-table invalidation (watchers re-query), and a lost one is bounded by a read of the collection's log tail at each registration renewal: every 20 s on a `'transaction'`-profile node, which Optimystic builds as an edge node (subscribes only), and every 30 s on a `'storage'`-profile node, built as a core node (also forwards notifications). Cadre does not branch on profile for this.
+A notification is a whole-table invalidation (watchers re-query), and a lost one is bounded by a read of the collection's log tail at each registration renewal, every 30 s.
+
+Every strand node built with the option is a core change-notification host, whatever its cadre `profile`: db-p2p takes the host's profile from `cohortTopic.host.profile` (default core), not from the node's FRET profile, and cadre passes none. So a `'transaction'`-profile phone is also eligible to forward notifications to other subscribers, and renews at the core 30 s rather than the edge 20 s.
 
 ### Which strands
 
@@ -272,11 +274,11 @@ A notification is a whole-table invalidation (watchers re-query), and a lost one
 - **The setting is frozen when the strand's libp2p node is built.** A change takes effect at the next build: a restart, or the strand's next wake from hibernation (a wake rebuilds from the retained launch config).
 - **The control node never gets it.**
 
-`strandCohortTopicOption` deliberately passes no `wantK` or host tuning: a notification's root is the storage group of the collection's log tail block, verified at the consensus super-majority, which those settings do not govern.
+`strandCohortTopicOption` deliberately passes no `wantK` or host tuning: a notification's root is the storage group of the collection's log tail block, verified at the consensus super-majority, which those settings do not govern. The one host setting that does change a node's own role is the profile above.
 
 ### Enable it on every machine serving the strand
 
-A notification tree is rooted at the machines that store a collection's log tail. A strand node built without the option neither announces commits whose tail it applied nor serves subscriptions as one of those machines. So push wakes need the option on every machine that serves the strand: the party's always-on replica hosts and the other parties' machines as well as the phones. What a watcher sees when some of the tail's storage machines lack it has not been measured; the renewal tail read should still bound the delay to 20 or 30 s.
+A notification tree is rooted at the machines that store a collection's log tail. A strand node built without the option neither announces commits whose tail it applied nor serves subscriptions as one of those machines. So push wakes need the option on every machine that serves the strand: the party's always-on replica hosts and the other parties' machines as well as the phones. What a watcher sees when some of the tail's storage machines lack it has not been measured; the renewal tail read should still bound the delay to 30 s.
 
 ### What enabling exposes
 
