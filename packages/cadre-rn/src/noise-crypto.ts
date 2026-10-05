@@ -48,6 +48,12 @@ import {
 import { Buffer } from '@craftzdog/react-native-buffer';
 import { noisePureJsCrypto } from '@optimystic/db-p2p';
 import type { NoiseCryptoInterface } from '@optimystic/db-p2p';
+import { installNativeDigest } from './native-digest.js';
+
+// An app that loads native Noise crypto has quick-crypto loaded, so the boot polyfill's
+// JavaScript `crypto.subtle.digest` (which Optimystic's block hashing goes through) is
+// replaced with quick-crypto's here. See native-digest.ts.
+installNativeDigest(algorithm => createHash(algorithm));
 
 /**
  * How much of the interface to replace. The app passes the result of

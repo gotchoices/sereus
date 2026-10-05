@@ -34,6 +34,10 @@
       "types": "./dist/noise-crypto.d.ts",
       "import": "./dist/noise-crypto.js"
     },
+    "./native-digest": {
+      "types": "./dist/native-digest.d.ts",
+      "import": "./dist/native-digest.js"
+    },
     "./polyfills": "./polyfills/index.js",
     "./polyfills/webrtc": "./polyfills/webrtc.js",
     "./boot-check": "./polyfills/boot-check.js",

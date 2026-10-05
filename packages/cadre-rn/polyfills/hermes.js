@@ -70,6 +70,9 @@ if (!globalThis.crypto.subtle) {
 			return Promise.resolve(fn(new Uint8Array(data)).buffer);
 		},
 	};
+	// Tagged so `@serfab/cadre-rn/native-digest` can recognise this fallback and replace it
+	// with a native hash once react-native-quick-crypto has loaded (noise-crypto does).
+	globalThis.crypto.subtle.digest[Symbol.for('@serfab/cadre-rn/js-digest')] = true;
 	markPolyfilled('crypto.subtle.digest');
 }
 

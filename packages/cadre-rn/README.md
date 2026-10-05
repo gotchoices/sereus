@@ -10,7 +10,8 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`: hibernates the node's strands when the app goes to the background and resumes, bounded, when it returns; `phoneNodeLifecycle(phone)` connects it to a phone node |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
-| `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code |
+| `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code. Loading it also switches `crypto.subtle.digest` to native SHA-256/512 (see `native-digest`) |
+| `@serfab/cadre-rn/native-digest` | `installNativeDigest(createHash)`, `nativeDigestActive()`: replaces the boot polyfill's JavaScript `crypto.subtle.digest` with a native hash |
 | `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs libp2p and Optimystic read that Hermes and React Native lack (`AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `structuredClone`, `DOMException`, `crypto.subtle.digest`, EventTarget / `CustomEvent`, `Intl.PluralRules`, timer `ref()` / `unref()`, and more) |
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
@@ -207,6 +208,10 @@ cadre-core reads `network.noiseCrypto` only when it builds the node. Changing th
 
 The reference app (`packages/reference-app-rn`) is the worked example: it takes the mode as a start option, defaults it from a build-time `EXPO_PUBLIC_NOISE_CRYPTO`, offers the three modes in its Settings screen, and shows the running node's mode on the Node card. [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#phone-rn-app-configuration) walks through it.
 
+### Native hashing comes with it
+
+Loading this subpath also calls `installNativeDigest` (`@serfab/cadre-rn/native-digest`) with quick-crypto's `createHash`, so the boot polyfill's JavaScript `crypto.subtle.digest` is replaced with native SHA-256/512. Optimystic hashes every block through that digest (multiformats' `sha256`), and in pure JavaScript it took 47% of a phone app's JS time. Hashing done before the import uses the JavaScript fallback.
+
 ### What the app must install
 
 React Native links native modules only for the app's own direct dependencies, so the app lists these in its `package.json`:
@@ -218,3 +223,9 @@ React Native links native modules only for the app's own direct dependencies, so
 `react-native-quick-crypto` needs React Native's new architecture. `@craftzdog/react-native-buffer`, which this module imports, is installed by quick-crypto itself; under a package manager that does not hoist (pnpm's default layout), list it in the app too.
 
 All four are optional peer dependencies of this package: an app that never imports `/noise-crypto` does not need them. This module imports only quick-crypto and the buffer; nitro and quick-base64 are peers so that `/metro` resolves them from the app as well, keeping one copy of each.
+
+## `@serfab/cadre-rn/native-digest`
+
+`installNativeDigest(createHash, subtle?)` replaces `crypto.subtle.digest` with one over a Node-style `createHash`, for SHA-256 and SHA-512; any other algorithm stays with the previous digest. It replaces only the digest `polyfills/hermes.js` tagged as its JavaScript fallback, so real WebCrypto, or a digest the app installed itself, is left alone. It checks the hash against a known SHA-256 vector first, and keeps the fallback, with a warning, if the check fails. It returns `'installed'`, `'already'`, `'not-polyfilled'` or `'check-failed'`. `nativeDigestActive()` reports whether the native digest is in place.
+
+It imports no native module. `noise-crypto` calls it, so an app that passes native Noise crypto needs nothing more; an app that does not can call it with its own `createHash` after the polyfills have loaded.
