@@ -1,6 +1,6 @@
 {
   "name": "@serfab/config-check",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "type": "module",
   "description": "Strict, dependency-free config tree validation shared by Sereus's own packages",
   "main": "dist/index.js",
