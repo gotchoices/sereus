@@ -22,18 +22,14 @@
  * handed to itself in-process. The scenario wraps it to timestamp each call, so "pushed" means a
  * notification for the watched table reached that machine's subscribers and a wake followed it.
  *
- * REGISTRATION, ONE MACHINE AT A TIME. The table is tagged in the sApp schema, and the scenario
- * first checks that the tag opened a network watch on every machine. That watch opened while
- * the collection was still empty, so nothing registers until a renewal tick (30 s) reads a
- * committed tail — on every machine at nearly the same moment. Optimystic's cohort-topic root
- * reads a burst of registrations as growth and stops accepting new ones (see the NOTE at
- * {@link REGISTRATION_SPACING_MS}). So the scenario turns the tag off, commits a seed row, and
- * turns the tag back on one machine at a time: each reopened watch reads the seed's tail at once
- * and registers — a cold root after a proof of work (0.3-17 s on Node, optimystic
+ * REGISTRATION. The table is tagged in the sApp schema, and the scenario first checks that the
+ * tag opened a network watch on every machine. That watch opened while the collection was still
+ * empty, so nothing registers until a renewal tick (30 s) reads a committed tail. The scenario
+ * commits a seed row and waits for every machine to register on its own, at nearly the same
+ * moment — the first at a cold root after a proof of work (0.3-17 s on Node, optimystic
  * `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Only then does each
- * machine open its app-level `Database.watch`: a tag change is a schema change, which ends every
- * Quereus watch on the table, and the watch service's one wake for its first tail read
- * (`collection-watch.ts` module doc) has by then already fired, so no measured round counts it.
+ * machine open its app-level `Database.watch`, so the watch service's one wake for its first tail
+ * read (`collection-watch.ts` module doc) has already fired and no measured round counts it.
  *
  * Commits are sequential, never `Promise.all` across machines (simultaneous writers block each
  * other; see `convergence-stress.integration.ts`). A machine that both stores and watches can
@@ -77,28 +73,11 @@ const MACHINE_COUNT = 3;
 const WAKE_BOUND_MS = 35_000;
 
 /**
- * One registration's budget once its machine's tag is on. Measured: 1.5-41 s for the first
- * registration at a root (the proof of work, and a first attempt that backs off waits for the next
- * 30 s renewal tick), 52-68 ms for each one after it.
+ * Budget for every machine to register after the seed commit: the next 30 s renewal tick, the
+ * first registration's proof of work (up to ~17 s), and one more tick for a first attempt that
+ * backs off.
  */
-const REGISTRATION_BUDGET_MS = 75_000;
-
-/**
- * Gap between one machine's registration landing and the next machine's tag going on.
- *
- * NOTE: workaround for an Optimystic defect, reported via
- * `blocked/report-optimystic-reactivity-registration-burst-on-a-small-strand`. The cohort-topic root
- * pre-promotes when the growth slope of its registrations predicts 64 participants within 30 s,
- * which two registrations under ~0.5 s apart (three under ~1 s) already do, and a root never
- * demotes. A machine registering after that is sent to a child tier that needs 14 signatures and
- * cannot form on three machines, so it never registers. With every machine's tag on from the
- * schema, all three register on the same renewal tick, and in 5 of 8 runs one never did; the
- * registered machines then also lost pushes (one stopped being pushed ~90 s after registering)
- * and the unregistered one's renewal tail reads stopped. With this gap at 0 the third machine
- * never registered (2 of 2 runs); at 1 s every machine has (20 of 20). Once that is fixed, drop
- * the tag toggling and wait for the schema-opened watches to register on their own.
- */
-const REGISTRATION_SPACING_MS = 1_000;
+const REGISTRATION_BUDGET_MS = 90_000;
 
 /**
  * Wait after the last registration before the first measured commit: two rounds of db-p2p's
@@ -109,12 +88,13 @@ const REGISTRATION_SPACING_MS = 1_000;
  * and the watchers wait for the 30 s tail read: with round 1 starting ~1 s after the last
  * registration that happened in 3 of 13 runs (a probe saw the one announcing member deliver to no
  * one, itself included), and in none of 7 runs with this wait. An app pays this only in the
- * seconds after a machine registers; recorded in docs/strands.md → "What a watcher sees".
+ * seconds after a machine registers; Optimystic documents it for groups of three or fewer machines
+ * rather than fixing it, and docs/strands.md → "What a watcher sees" records it.
  */
 const RECORD_GOSSIP_SETTLE_MS = 10_000;
 
-/** Bring-up (~6 libp2p nodes, ~4 s), three registration budgets, the settle, and three rounds at the bound. */
-const TEST_TIMEOUT_MS = 420_000;
+/** Bring-up (~6 libp2p nodes, ~4 s), the registration budget, the settle, and three rounds at the bound. */
+const TEST_TIMEOUT_MS = 240_000;
 
 /**
  * The collection id the plugin opens `App.Data`'s network watch under: the table's default
@@ -232,15 +212,6 @@ function watchedCollections(machine: StrandMachine): number {
 	return machine.node.reactivityWatch?.watchedCount ?? 0;
 }
 
-/** Turn the table's network-watch tag on or off on one machine, and wait for the watch to follow. */
-async function setNetworkWatchTag(machine: StrandMachine, on: boolean): Promise<void> {
-	await machine.db.exec(`alter table App.Data set tags ("optimystic.network_watch" = ${on})`);
-	await waitUntil(() => watchedCollections(machine) === (on ? 1 : 0), {
-		timeoutMs: 10_000, intervalMs: 50,
-		description: `${machine.label}: the network watch ${on ? 'opens' : 'closes'} after the tag is set to ${on}`,
-	});
-}
-
 /** The tag in the sApp schema opened a network watch on every machine (the production path). */
 async function awaitSchemaTagWatches(machines: ReadonlyArray<StrandMachine>): Promise<void> {
 	try {
@@ -253,27 +224,27 @@ async function awaitSchemaTagWatches(machines: ReadonlyArray<StrandMachine>): Pr
 	}
 }
 
-/**
- * Seed commit with every tag off, then each machine's tag on in turn until its registration
- * lands, then {@link REGISTRATION_SPACING_MS} before the next.
- */
-async function seedThenRegisterInTurn(machines: ReadonlyArray<StrandMachine>): Promise<void> {
-	for (const machine of machines) {
-		await setNetworkWatchTag(machine, false);
-	}
+/** Seed commit, then wait for every machine's schema-opened watch to register on its own. */
+async function seedThenAwaitRegistrations(machines: ReadonlyArray<StrandMachine>): Promise<void> {
 	await machines[0]!.db.exec('insert into App.Data (Key, Val) values (?, ?)', ['seed', 'seed']);
-	const timings: string[] = [];
-	for (const machine of machines) {
-		const taggedAt = Date.now();
-		await setNetworkWatchTag(machine, true);
-		await waitUntil(() => isRegistered(machine), {
-			timeoutMs: REGISTRATION_BUDGET_MS, intervalMs: 50,
-			description: `${machine.label}: registration once its tag is on`,
-		});
-		timings.push(`${machine.label} ${Date.now() - taggedAt} ms`);
-		await sleep(REGISTRATION_SPACING_MS);
+	const seededAt = Date.now();
+	const registeredAt = new Map<string, number>();
+	try {
+		await waitUntil(() => {
+			for (const machine of machines) {
+				if (!registeredAt.has(machine.label) && isRegistered(machine)) {
+					registeredAt.set(machine.label, Date.now() - seededAt);
+				}
+			}
+			return registeredAt.size === machines.length;
+		}, { timeoutMs: REGISTRATION_BUDGET_MS, intervalMs: 50 });
+	} catch (error) {
+		throw new Error(
+			`not every machine registered within ${REGISTRATION_BUDGET_MS} ms of the seed commit (`
+			+ machines.map((m) => `${m.label}: ${registeredAt.has(m.label) ? 'registered' : 'not registered'}`).join(', ') + ')',
+			{ cause: error });
 	}
-	console.log(`[reactivity] registered, from each tag going on: ${timings.join('; ')}`);
+	console.log(`[reactivity] registered, from the seed commit: ${[...registeredAt].map(([label, ms]) => `${label} ${ms} ms`).join('; ')}`);
 	await sleep(RECORD_GOSSIP_SETTLE_MS);
 }
 
@@ -396,7 +367,7 @@ describe('Strand change notifications wake watchers on other machines', () => {
 
 			machines.push(...instances.map((instance, i) => strandMachine(`p[${i}]`, instance)));
 			await awaitSchemaTagWatches(machines);
-			await seedThenRegisterInTurn(machines);
+			await seedThenAwaitRegistrations(machines);
 			for (const machine of machines) {
 				spyOnDeliveries(machine);
 				await watchTable(machine);
