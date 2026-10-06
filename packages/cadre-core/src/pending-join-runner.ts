@@ -1,17 +1,17 @@
 /**
  * The pending-join retry loop: carries on a join this party asked for through another party's
- * invitation (`CadreControl.PendingJoin`, one row per invitation) in the background, on every
- * owner machine of the party, until the join works, the invitation is used up or expires, or
- * the user dismisses it. The behaviour is described in `docs/strands.md` → "Joining while the
- * inviter is offline".
+ * invitation (`CadreControl.JoinRequest`, one row per invitation, with its outcome in
+ * `JoinSuccess` / `JoinFailure`) in the background, on every owner machine of the party, until
+ * the join works, the invitation is used up or expires, or the user dismisses it. The behaviour
+ * is described in `docs/strands.md` → "Joining while the inviter is offline".
  *
  * `CadreNode` owns every side effect and hands this module plain functions
- * ({@link PendingJoinRunnerDeps}): read the rows, run one attempt (its own `formStrand`), write
+ * ({@link PendingJoinRunnerDeps}): read the joins, run one attempt (its own `formStrand`), write
  * an outcome, say whether this machine is an owner, and the clock. This module owns the policy:
  * when to attempt, how to read an attempt's failure, and how to settle an outcome write that
  * another machine's write beat.
  *
- * Only owner machines run it, because every `PendingJoin` write is owner-signed. Letting a
+ * Only owner machines run it, because every pending-join write is owner-signed. Letting a
  * machine without an owner key finish a join is `blocked/decide-non-owner-machine-completes-a-pending-join`;
  * that changes {@link PendingJoinRunnerDeps.isOwner} and the write functions, not this loop.
  */
@@ -19,13 +19,14 @@
 import debug from 'debug';
 import type {
   FormStrandResult,
-  PendingJoinRow,
+  JoinOutcome,
+  PendingJoin,
   PendingJoinStatus,
   StrandFormationDisclosure,
   StrandMembershipInvite
 } from './types.js';
 import { canonicalJson } from './canonical-json.js';
-import { PendingJoinChangedError } from './control-database.js';
+import { PendingJoinChangedError, type JoinRequestFields, type PendingJoinFields } from './control-database.js';
 import { FormationPostApprovalError, FormationRejectedError, FormationUnreachableError } from './strand-formation-rejection.js';
 import { formationDeadlines } from './strand-formation-deadlines.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
@@ -40,7 +41,7 @@ export const PENDING_JOIN_POLL_MS = 30_000;
 export const PENDING_JOIN_MAX_BACKOFF_MS = 10 * 60_000;
 
 /**
- * The longest a join is tried for. A row's `ExpiresAt` is the earlier of this and the
+ * The longest a join is tried for. A request's `ExpiresAt` is the earlier of this and the
  * invitation's own expiration, which the inviter chose.
  */
 export const MAX_PENDING_JOIN_MS = 30 * 24 * 3600_000;
@@ -54,42 +55,44 @@ const RETRY_JITTER = 0.2;
 /** Re-read-and-rewrite rounds after another machine's write won, before the next pass decides instead. */
 const MAX_OUTCOME_WRITE_ROUNDS = 3;
 
-/** A `PendingJoin` row as written: every column but the stamp, which each write mints. */
-export type PendingJoinFields = Omit<PendingJoinRow, 'StampId'>;
-
 type AttemptError = NonNullable<PendingJoinStatus['lastError']>;
 
+/** Which pending-join write this machine made: the request itself (an insert or a rewrite), or an outcome row for it. */
+export type PendingJoinWrite = 'request' | 'outcome';
+
 export interface PendingJoinRunnerDeps {
-  /** This machine's peer id; with the row id it fixes when this machine first tries a row it did not ask for. */
+  /** This machine's peer id; with the request id it fixes when this machine first tries a join it did not ask for. */
   selfId: string;
   /** `NetworkConfig.linkRoundTripMs`: the retry pace follows the formation deadlines it yields. */
   linkRoundTripMs?: number;
-  /** Whether this machine may write `PendingJoin` rows now. Asked every pass. */
+  /** Whether this machine may write pending joins now. Asked every pass. */
   isOwner(): Promise<boolean>;
-  readRows(): Promise<PendingJoinRow[]>;
-  readRow(id: string): Promise<PendingJoinRow | null>;
-  /** One formation attempt for the row's invitation and disclosure (`CadreNode.formStrand`). */
-  attempt(row: PendingJoinRow): Promise<FormStrandResult>;
-  /** `ControlDatabase.replacePendingJoin`, owner-signed: throws `PendingJoinChangedError` when the live row is not `expectedStampId`. */
-  replace(expectedStampId: string, next: PendingJoinFields): Promise<PendingJoinRow>;
+  readRows(): Promise<PendingJoin[]>;
+  readRow(id: string): Promise<PendingJoin | null>;
+  /** One formation attempt for the request's invitation and disclosure (`CadreNode.formStrand`). */
+  attempt(join: PendingJoin): Promise<FormStrandResult>;
+  /** `ControlDatabase.recordJoinOutcome`, owner-signed: throws `PendingJoinChangedError` when the live join is not `expected`. */
+  record(expected: PendingJoin, outcome: JoinOutcome): Promise<PendingJoin>;
+  /** `ControlDatabase.rewritePendingJoin`, owner-signed: throws `PendingJoinChangedError` when the live request is not `expectedStampId`. */
+  rewrite(expectedStampId: string, next: PendingJoinFields): Promise<PendingJoin>;
   /** `ControlDatabase.deletePendingJoin`, owner-signed. */
   remove(id: string): Promise<boolean>;
   /** Whether this machine has no control connection now, so a write it commits reaches no other machine. */
   isAlone(): boolean;
-  /** The sApp the row's invitation names. */
-  sAppIdOf(row: PendingJoinRow): string;
-  /** Every pass's rows, read by an owner machine; `CadreNode` stages the membership invitations they carry. */
-  observeRows(rows: readonly PendingJoinRow[]): void;
+  /** The sApp the request's invitation names. */
+  sAppIdOf(join: PendingJoin): string;
+  /** Every pass's joins, read by an owner machine; `CadreNode` stages the membership invitations they carry. */
+  observeRows(joins: readonly PendingJoin[]): void;
   emit(status: PendingJoinStatus): void;
   now?: () => number;
   random?: () => number;
   scheduler?: TimeoutScheduler;
 }
 
-/** This machine's memory of one row. Nothing here survives a restart; the row is the durable state. */
+/** This machine's memory of one join. Nothing here survives a restart; the rows are the durable state. */
 interface TrackedJoin {
-  row: PendingJoinRow;
-  /** Retryable failures on this machine since the row was first seen or asked for again. */
+  row: PendingJoin;
+  /** Retryable failures on this machine since the join was first seen or asked for again. */
   failures: number;
   timer?: unknown;
   /** Due, waiting for a background attempt slot. */
@@ -99,31 +102,31 @@ interface TrackedJoin {
   trying: boolean;
   nextAttemptAt?: number;
   lastError?: AttemptError;
-  /** An earlier attempt here answered `token-spent`; the next such answer fails the row. */
+  /** An earlier attempt here answered `token-spent`; the next such answer fails the join. */
   spentOnce: boolean;
   /** This machine's approved join, held until its outcome write lands, so a later pass rewrites it rather than attempting a spent token. */
-  joinedHere?: PendingJoinFields;
+  joinedHere?: JoinOutcome;
   lastEmitted?: string;
 }
 
-/** What to do after an outcome write found that another write had replaced or removed the row. */
+/** What to do after an outcome write found that another write had changed or removed the join. */
 type LostWriteResolution = 'gone' | 'adopt' | 'rewrite';
 
 /**
  * A `joined` outcome replaces anything still live, since a join that happened cannot be undone
- * by another machine's failure. A failure replaces a pending row of the same request: only a
- * re-issue of a row written alone writes one, unchanged, so it decides nothing. Any other live
- * row wins, and a fresh request is then decided again by the loop.
+ * by another machine's failure. A failure replaces a pending request of the same ask: only a
+ * re-issue of a request written alone writes one, unchanged, so it decides nothing. Any other
+ * live join wins, and a fresh request is then decided again by the loop.
  */
-function resolveLostWrite(live: PendingJoinRow | null, next: PendingJoinFields): LostWriteResolution {
+function resolveLostWrite(live: PendingJoin | null, expected: PendingJoin, next: JoinOutcome): LostWriteResolution {
   if (live === null) return 'gone';
-  if (live.Outcome === 'joined') return 'adopt';
-  if (next.Outcome === 'joined') return 'rewrite';
-  return live.Outcome === null && live.RequestedAt === next.RequestedAt ? 'rewrite' : 'adopt';
+  if (live.outcome?.kind === 'joined') return 'adopt';
+  if (next.kind === 'joined') return 'rewrite';
+  return live.outcome === null && live.RequestedAt === expected.RequestedAt ? 'rewrite' : 'adopt';
 }
 
 /**
- * The pending row a `requestJoin` writes: tried until the invitation's own expiration or
+ * The request a `requestJoin` writes: tried until the invitation's own expiration or
  * {@link MAX_PENDING_JOIN_MS} from now, whichever comes first.
  */
 export function requestedPendingJoin(
@@ -132,32 +135,26 @@ export function requestedPendingJoin(
   disclosure: StrandFormationDisclosure,
   invitationExpiresAt: number,
   now: number
-): PendingJoinFields {
+): JoinRequestFields {
   return {
     Id: id,
     Invitation: encodedInvitation,
     Disclosure: canonicalJson(disclosure),
     RequestedAt: now,
     ExpiresAt: Math.min(invitationExpiresAt, now + MAX_PENDING_JOIN_MS),
-    Outcome: null,
-    OutcomeAt: null,
-    StrandId: null,
-    MembershipInvite: null,
-    FailureCode: null,
-    FailureReason: null,
   };
 }
 
-/** A row's stored disclosure, as the next attempt sends it. Owner-signed, so anything but an object is a bug. */
-export function parseStoredDisclosure(row: PendingJoinRow): StrandFormationDisclosure {
-  const parsed: unknown = JSON.parse(row.Disclosure);
+/** A request's stored disclosure, as the next attempt sends it. Owner-signed, so anything but an object is a bug. */
+export function parseStoredDisclosure(join: PendingJoin): StrandFormationDisclosure {
+  const parsed: unknown = JSON.parse(join.Disclosure);
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`PendingJoin ${row.Id}: the stored disclosure is not a JSON object`);
+    throw new Error(`JoinRequest ${join.Id}: the stored disclosure is not a JSON object`);
   }
   return parsed as StrandFormationDisclosure;
 }
 
-/** A `joined` row's `MembershipInvite` column, or null when it is not the `{inviteKey, invitePrivateKey}` JSON the loop writes. */
+/** A `JoinSuccess` row's `MembershipInvite` column, or null when it is not the `{inviteKey, invitePrivateKey}` JSON the loop writes. */
 export function parseStoredMembershipInvite(text: string): StrandMembershipInvite | null {
   let parsed: unknown;
   try {
@@ -171,68 +168,58 @@ export function parseStoredMembershipInvite(text: string): StrandMembershipInvit
 }
 
 /**
- * The membership invitations `joined` rows carry that this process has not staged yet, so a
+ * The membership invitations joined requests carry that this process has not staged yet, so a
  * closed strand joined on one owner machine can be seated by whichever machine launches it
- * first. Rows older than {@link MEMBERSHIP_INVITE_TTL_MS} are skipped: their invitation is dead.
+ * first. Joins older than {@link MEMBERSHIP_INVITE_TTL_MS} are skipped: their invitation is dead.
  * `alreadyStaged` holds invite keys; a malformed column is skipped and logged.
  */
 export function membershipInvitesToStage(
-  rows: readonly PendingJoinRow[],
+  joins: readonly PendingJoin[],
   alreadyStaged: ReadonlySet<string>,
   now: number
 ): Array<{ rowId: string; strandId: string; invite: StrandMembershipInvite }> {
   const toStage: Array<{ rowId: string; strandId: string; invite: StrandMembershipInvite }> = [];
-  for (const row of rows) {
-    if (row.Outcome !== 'joined' || row.StrandId === null || row.MembershipInvite === null || row.OutcomeAt === null) continue;
-    if (now >= row.OutcomeAt + MEMBERSHIP_INVITE_TTL_MS) continue;
-    const invite = parseStoredMembershipInvite(row.MembershipInvite);
+  for (const join of joins) {
+    const { outcome } = join;
+    if (outcome?.kind !== 'joined' || outcome.MembershipInvite === null) continue;
+    if (now >= outcome.RecordedAt + MEMBERSHIP_INVITE_TTL_MS) continue;
+    const invite = parseStoredMembershipInvite(outcome.MembershipInvite);
     if (!invite) {
-      log('pending join %s: its MembershipInvite column does not parse; not staged', row.Id);
+      log('pending join %s: its MembershipInvite column does not parse; not staged', join.Id);
       continue;
     }
     if (!alreadyStaged.has(invite.inviteKey)) {
-      toStage.push({ rowId: row.Id, strandId: row.StrandId, invite });
+      toStage.push({ rowId: join.Id, strandId: outcome.StrandId, invite });
     }
   }
   return toStage;
 }
 
-/** The row's columns without its stamp, as a replacement is written. */
-function fieldsOf(row: PendingJoinRow): PendingJoinFields {
-  const { StampId: _stampId, ...fields } = row;
+/** The join without its stamp, as a rewrite takes it. */
+function fieldsOf(join: PendingJoin): PendingJoinFields {
+  const { StampId: _stampId, ...fields } = join;
   return fields;
 }
 
-function joinedFields(row: PendingJoinRow, result: FormStrandResult, now: number): PendingJoinFields {
+function joinedOutcome(result: FormStrandResult, now: number): JoinOutcome {
   const invite = result.membershipInvite;
   return {
-    ...fieldsOf(row),
-    Outcome: 'joined',
-    OutcomeAt: now,
+    kind: 'joined',
+    RecordedAt: now,
     StrandId: result.strandId,
     MembershipInvite: invite ? JSON.stringify({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey }) : null,
-    FailureCode: null,
-    FailureReason: null,
   };
 }
 
-function failedFields(row: PendingJoinRow, code: string, reason: string, now: number): PendingJoinFields {
-  return {
-    ...fieldsOf(row),
-    Outcome: 'failed',
-    OutcomeAt: now,
-    StrandId: null,
-    MembershipInvite: null,
-    FailureCode: code,
-    FailureReason: reason,
-  };
+function failedOutcome(code: string, reason: string, now: number): JoinOutcome {
+  return { kind: 'failed', RecordedAt: now, Code: code, Reason: reason };
 }
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** A fraction in [0, 1) fixed by `key` (32-bit FNV-1a): the same machine staggers the same row the same way every time. */
+/** A fraction in [0, 1) fixed by `key` (32-bit FNV-1a): the same machine staggers the same join the same way every time. */
 function stableFraction(key: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) {
@@ -244,13 +231,13 @@ function stableFraction(key: string): number {
 
 export class PendingJoinRunner {
   private readonly tracked = new Map<string, TrackedJoin>();
-  /** Rows whose latest write by this machine committed with no control connection: id → the stamp written. */
+  /** Joins whose latest write by this machine committed with no control connection: id → the request stamp written. */
   private readonly writtenAlone = new Map<string, string>();
   private readonly dueQueue: TrackedJoin[] = [];
   private readonly scheduler: TimeoutScheduler;
   private readonly now: () => number;
   private readonly random: () => number;
-  /** First retry delay, and the window a row this machine did not ask for is first tried in. */
+  /** First retry delay, and the window a join this machine did not ask for is first tried in. */
   private readonly baseDelayMs: number;
   /** How long a `token-spent` answer waits before its confirming attempt: long enough for a sibling's `joined` write to replicate. */
   private readonly spentConfirmDelayMs: number;
@@ -280,8 +267,8 @@ export class PendingJoinRunner {
    * Stop scheduling. Clears every timer and starts no new attempt.
    *
    * NOTE: an attempt already in flight is not awaited, because `formStrand` takes no abort
-   * signal. An approval that lands while the node stops can lose its local records; the row then
-   * stays pending, and the next start's attempt answers `token-spent`, which fails the row after
+   * signal. An approval that lands while the node stops can lose its local records; the request
+   * then stays pending, and the next start's attempt answers `token-spent`, which fails it after
    * its confirming attempt. Honest and bounded; if it shows up in practice, give `formStrand` a
    * signal and abort it here.
    */
@@ -302,46 +289,51 @@ export class PendingJoinRunner {
   }
 
   /**
-   * Try `row` on this machine at once, outside the background slots, and report the status
-   * after the attempt. Joins an attempt already running for the row.
+   * Try `join` on this machine at once, outside the background slots, and report the status
+   * after the attempt. Joins an attempt already running for it.
    */
-  async attemptNow(row: PendingJoinRow): Promise<PendingJoinStatus> {
-    const entry = this.adopt(row);
-    if (entry.row.Outcome === null) {
+  async attemptNow(join: PendingJoin): Promise<PendingJoinStatus> {
+    const entry = this.adopt(join);
+    if (entry.row.outcome === null) {
       await this.startAttempt(entry);
     }
     return this.describe(entry.row, entry);
   }
 
-  /** This machine's view of `row`: the row's own state, with this machine's attempt state laid over a pending row. */
-  statusOf(row: PendingJoinRow): PendingJoinStatus {
-    return this.describe(row, this.tracked.get(row.Id));
+  /** This machine's view of `join`: its own state, with this machine's attempt state laid over a pending one. */
+  statusOf(join: PendingJoin): PendingJoinStatus {
+    return this.describe(join, this.tracked.get(join.Id));
   }
 
-  /** Record a `PendingJoin` write this machine made outside the loop (a `requestJoin`), for {@link reissueWritesMadeAlone}. */
-  noteWritten(row: PendingJoinRow): void {
+  /**
+   * Record a pending-join write this machine made, for {@link reissueWritesMadeAlone}. A write
+   * made alone marks the join. A request write made connected clears the mark, since it
+   * carried the request; an outcome write made connected does not, since the request it names
+   * may still be unknown to the other machines.
+   */
+  noteWritten(join: PendingJoin, write: PendingJoinWrite): void {
     if (this.deps.isAlone()) {
-      this.writtenAlone.set(row.Id, row.StampId);
-    } else {
-      this.writtenAlone.delete(row.Id);
+      this.writtenAlone.set(join.Id, join.StampId);
+    } else if (write === 'request') {
+      this.writtenAlone.delete(join.Id);
     }
   }
 
-  /** Stop tracking a row the user dismissed. An attempt in flight finishes; its outcome write then finds the row gone. */
+  /** Stop tracking a join the user dismissed. An attempt in flight finishes; its outcome write then finds the request gone. */
   forgetRow(id: string): void {
     const entry = this.tracked.get(id);
     if (entry) this.forget(entry);
   }
 
   /**
-   * Re-write, with identical content under a fresh stamp, each row this machine last wrote while
+   * Re-write, with identical content under a fresh stamp, each join this machine last wrote while
    * it had no control connection, so the other machines receive it. Called on the control
-   * connection growth edge. A row someone wrote since is left alone.
+   * connection growth edge. A join someone wrote since is left alone.
    *
-   * NOTE: in memory only, so a row written alone by a process that stopped before it reconnected
-   * reaches the party only with that row's next write. A sweep of every row this machine wrote,
+   * NOTE: in memory only, so a join written alone by a process that stopped before it reconnected
+   * reaches the party only with that join's next write. A sweep of every join this machine wrote,
    * on the first connection after start, would cover that, at the cost of one permanent
-   * `Revocation` tombstone per row per start. Revisit if other machines are seen missing such rows.
+   * `Revocation` tombstone per join per start. Revisit if other machines are seen missing such joins.
    */
   async reissueWritesMadeAlone(): Promise<void> {
     if (this.writtenAlone.size === 0) return;
@@ -356,13 +348,13 @@ export class PendingJoinRunner {
           this.writtenAlone.delete(id);
           continue;
         }
-        const written = await this.deps.replace(stampId, fieldsOf(live));
-        this.noteWritten(written);
+        const written = await this.deps.rewrite(stampId, fieldsOf(live));
+        this.noteWritten(written, 'request');
         const entry = this.tracked.get(id);
         if (entry?.row.StampId === stampId) entry.row = written;
-        log('pending join %s: re-issued the row written while alone', id);
+        log('pending join %s: re-issued the join written while alone', id);
       } catch (error) {
-        log('pending join %s: re-issuing the row written while alone failed; kept for the next connection: %s', id, errorText(error));
+        log('pending join %s: re-issuing the join written while alone failed; kept for the next connection: %s', id, errorText(error));
       }
     }
   }
@@ -411,19 +403,19 @@ export class PendingJoinRunner {
       this.pauseAttempts();
       return;
     }
-    const rows = await this.deps.readRows();
+    const joins = await this.deps.readRows();
     if (!this.running) return;
-    this.deps.observeRows(rows);
-    const live = new Set(rows.map((row) => row.Id));
+    this.deps.observeRows(joins);
+    const live = new Set(joins.map((join) => join.Id));
     for (const entry of [...this.tracked.values()]) {
       if (!live.has(entry.row.Id) && !entry.attempt) this.forget(entry);
     }
-    for (const row of rows) {
+    for (const join of joins) {
       if (!this.running) return;
       try {
-        await this.consider(row);
+        await this.consider(join);
       } catch (error) {
-        log('pending join %s: this pass could not handle it; the next one retries: %s', row.Id, errorText(error));
+        log('pending join %s: this pass could not handle it; the next one retries: %s', join.Id, errorText(error));
       }
     }
   }
@@ -438,11 +430,11 @@ export class PendingJoinRunner {
     this.dueQueue.length = 0;
   }
 
-  /** Bring one read row into this machine's schedule. */
-  private async consider(row: PendingJoinRow): Promise<void> {
-    const entry = this.adopt(row);
+  /** Bring one read join into this machine's schedule. */
+  private async consider(join: PendingJoin): Promise<void> {
+    const entry = this.adopt(join);
     if (entry.attempt) return;
-    if (entry.row.Outcome !== null) {
+    if (entry.row.outcome !== null) {
       this.emitIfChanged(entry);
       await this.ageOut(entry);
       return;
@@ -458,26 +450,26 @@ export class PendingJoinRunner {
   }
 
   /**
-   * The tracked entry for `row`, updated to it. A row asked for again (`RequestedAt` changed)
-   * starts this machine's counting over; a finished row stops its schedule.
+   * The tracked entry for `join`, updated to it. A join asked for again (`RequestedAt` changed)
+   * starts this machine's counting over; a finished join stops its schedule.
    */
-  private adopt(row: PendingJoinRow): TrackedJoin {
-    const entry = this.tracked.get(row.Id);
+  private adopt(join: PendingJoin): TrackedJoin {
+    const entry = this.tracked.get(join.Id);
     if (!entry) {
-      const fresh: TrackedJoin = { row, failures: 0, queued: false, trying: false, spentOnce: false };
-      this.tracked.set(row.Id, fresh);
+      const fresh: TrackedJoin = { row: join, failures: 0, queued: false, trying: false, spentOnce: false };
+      this.tracked.set(join.Id, fresh);
       return fresh;
     }
-    if (entry.row.StampId === row.StampId) return entry;
-    if (row.Outcome !== null || entry.row.RequestedAt !== row.RequestedAt) {
+    if (entry.row.StampId === join.StampId && entry.row.outcome?.kind === join.outcome?.kind) return entry;
+    if (join.outcome !== null || entry.row.RequestedAt !== join.RequestedAt) {
       this.cancelTimer(entry);
       entry.failures = 0;
       entry.spentOnce = false;
       entry.lastError = undefined;
       entry.nextAttemptAt = undefined;
     }
-    if (row.Outcome === 'joined') entry.joinedHere = undefined;
-    entry.row = row;
+    if (join.outcome?.kind === 'joined') entry.joinedHere = undefined;
+    entry.row = join;
     return entry;
   }
 
@@ -485,8 +477,8 @@ export class PendingJoinRunner {
     if (!this.running) return;
     this.cancelTimer(entry);
     const now = this.now();
-    // A row already past its expiry keeps the full delay: its due attempt is an outcome write,
-    // and clamping to a past expiry would retry a failing write with no wait at all.
+    // A request already past its expiry keeps the full delay: its due attempt is an outcome
+    // write, and clamping to a past expiry would retry a failing write with no wait at all.
     const at = now < entry.row.ExpiresAt ? Math.min(now + delayMs, entry.row.ExpiresAt) : now + delayMs;
     entry.nextAttemptAt = at;
     entry.timer = this.scheduler.setTimeout(() => {
@@ -538,7 +530,7 @@ export class PendingJoinRunner {
       .catch((error: unknown) => {
         entry.trying = false;
         log('pending join %s: attempt failed on this machine: %s', entry.row.Id, errorText(error));
-        if (entry.row.Outcome === null && this.tracked.get(entry.row.Id) === entry) {
+        if (entry.row.outcome === null && this.tracked.get(entry.row.Id) === entry) {
           this.retryLater(entry, { code: 'local', reason: errorText(error) });
         }
       })
@@ -550,14 +542,14 @@ export class PendingJoinRunner {
   }
 
   private async attemptOnce(entry: TrackedJoin): Promise<void> {
-    if (entry.row.Outcome !== null) return;
+    if (entry.row.outcome !== null) return;
     if (entry.joinedHere) {
       await this.writeOutcome(entry, entry.joinedHere);
       return;
     }
     if (this.now() >= entry.row.ExpiresAt) {
       const reason = `No attempt starts after ${new Date(entry.row.ExpiresAt).toISOString()}`;
-      await this.writeOutcome(entry, failedFields(entry.row, 'expired', reason, this.now()));
+      await this.writeOutcome(entry, failedOutcome('expired', reason, this.now()));
       return;
     }
     entry.trying = true;
@@ -573,27 +565,27 @@ export class PendingJoinRunner {
     }
     entry.trying = false;
     log('pending join %s: approved, strand %s', entry.row.Id, result.strandId);
-    entry.joinedHere = joinedFields(entry.row, result, this.now());
+    entry.joinedHere = joinedOutcome(result, this.now());
     await this.writeOutcome(entry, entry.joinedHere);
   }
 
-  /** Read a failed attempt: retry, confirm a spent token, or fail the row. */
+  /** Read a failed attempt: retry, confirm a spent token, or fail the join. */
   private async onAttemptFailed(entry: TrackedJoin, error: unknown): Promise<void> {
     const now = this.now();
     if (error instanceof FormationRejectedError && error.code === 'token-spent') {
       await this.onSpent(entry, error);
     } else if (error instanceof FormationPostApprovalError) {
-      log('pending join %s: approved, then a step on this machine failed; failing the row', entry.row.Id);
-      await this.writeOutcome(entry, failedFields(entry.row, 'local', error.message, now));
+      log('pending join %s: approved, then a step on this machine failed; failing the join', entry.row.Id);
+      await this.writeOutcome(entry, failedOutcome('local', error.message, now));
     } else if (error instanceof FormationRejectedError && !error.retryable) {
-      log('pending join %s: refused (%s); failing the row', entry.row.Id, error.code);
-      await this.writeOutcome(entry, failedFields(entry.row, error.code, error.reason, now));
+      log('pending join %s: refused (%s); failing the join', entry.row.Id, error.code);
+      await this.writeOutcome(entry, failedOutcome(error.code, error.reason, now));
     } else if (error instanceof FormationRejectedError) {
       this.retryLater(entry, { code: error.code, reason: error.reason });
     } else if (error instanceof FormationUnreachableError) {
       this.retryLater(entry, { code: 'unreachable', reason: error.message });
     } else {
-      // Retrying is safe: nothing is attempted after the row's expiry.
+      // Retrying is safe: nothing is attempted after the request's expiry.
       log('pending join %s: attempt threw an unexpected error; retrying: %s', entry.row.Id, errorText(error));
       this.retryLater(entry, { code: 'local', reason: errorText(error) });
     }
@@ -601,8 +593,8 @@ export class PendingJoinRunner {
 
   /**
    * A `token-spent` answer may mean another owner machine of this party won the same
-   * invitation. Adopt its outcome if the row already shows one; otherwise confirm once, after
-   * long enough for that machine's `joined` write to arrive, before failing the row.
+   * invitation. Adopt its outcome if the join already shows one; otherwise confirm once, after
+   * long enough for that machine's `joined` write to arrive, before failing the join.
    */
   private async onSpent(entry: TrackedJoin, error: FormationRejectedError): Promise<void> {
     const live = await this.deps.readRow(entry.row.Id);
@@ -611,13 +603,13 @@ export class PendingJoinRunner {
       return;
     }
     this.adopt(live);
-    if (live.Outcome !== null) {
+    if (live.outcome !== null) {
       this.emitIfChanged(entry);
       return;
     }
     if (entry.spentOnce) {
-      log('pending join %s: token spent again after the confirming wait; failing the row', entry.row.Id);
-      await this.writeOutcome(entry, failedFields(entry.row, 'token-spent', error.reason, this.now()));
+      log('pending join %s: token spent again after the confirming wait; failing the join', entry.row.Id);
+      await this.writeOutcome(entry, failedOutcome('token-spent', error.reason, this.now()));
       return;
     }
     entry.spentOnce = true;
@@ -640,27 +632,28 @@ export class PendingJoinRunner {
   }
 
   /**
-   * Write `next` over the row this machine last read. When another write got there first,
-   * re-read and settle by {@link resolveLostWrite}. A row the user dismissed meanwhile is not
-   * recreated; a join this machine made is still remembered machine-locally, as every
-   * `formStrand` is.
+   * Record `next` on the join this machine last read. When another write got there first, settle
+   * by {@link resolveLostWrite} from the live join the refusal carries. A join the user dismissed
+   * meanwhile is not recreated; a join this machine made is still remembered machine-locally, as
+   * every `formStrand` join is.
    */
-  private async writeOutcome(entry: TrackedJoin, next: PendingJoinFields): Promise<void> {
+  private async writeOutcome(entry: TrackedJoin, next: JoinOutcome): Promise<void> {
     let expected = entry.row;
     for (let round = 0; round < MAX_OUTCOME_WRITE_ROUNDS; round++) {
+      let live: PendingJoin | null;
       try {
-        const written = await this.deps.replace(expected.StampId, next);
-        this.noteWritten(written);
+        const written = await this.deps.record(expected, next);
+        this.noteWritten(written, 'outcome');
         this.settle(written);
-        log('pending join %s: recorded %s%s', next.Id, next.Outcome, next.FailureCode ? ` (${next.FailureCode})` : '');
+        log('pending join %s: recorded %s', entry.row.Id, next.kind === 'failed' ? `failed (${next.Code})` : 'joined');
         return;
       } catch (error) {
         if (!(error instanceof PendingJoinChangedError)) throw error;
+        live = error.live;
       }
-      const live = await this.deps.readRow(next.Id);
-      const resolution = resolveLostWrite(live, next);
+      const resolution = resolveLostWrite(live, expected, next);
       if (resolution === 'gone') {
-        log('pending join %s: dismissed while this machine was recording %s; not recreated', next.Id, next.Outcome);
+        log('pending join %s: dismissed while this machine was recording %s; not recreated', entry.row.Id, next.kind);
         this.forget(entry);
         return;
       }
@@ -670,17 +663,17 @@ export class PendingJoinRunner {
       }
       expected = live!;
     }
-    log('pending join %s: another machine kept replacing the row; the next pass decides', next.Id);
+    log('pending join %s: another machine kept changing the join; the next pass decides', entry.row.Id);
   }
 
-  private settle(row: PendingJoinRow): void {
-    const entry = this.adopt(row);
-    if (row.Outcome !== null) entry.joinedHere = undefined;
+  private settle(join: PendingJoin): void {
+    const entry = this.adopt(join);
+    if (join.outcome !== null) entry.joinedHere = undefined;
     this.emitIfChanged(entry);
   }
 
   /**
-   * Remove a finished row {@link MEMBERSHIP_INVITE_TTL_MS} after its outcome: the membership
+   * Remove a finished join {@link MEMBERSHIP_INVITE_TTL_MS} after its outcome: the membership
    * invitation it carries is dead by then, and an app that was not running has seen the strand
    * through `strand:discovered`. Only while connected, like every write nothing waits on.
    *
@@ -689,8 +682,8 @@ export class PendingJoinRunner {
    * user asks again; revisit if that is ever seen.
    */
   private async ageOut(entry: TrackedJoin): Promise<void> {
-    const { OutcomeAt } = entry.row;
-    if (OutcomeAt === null || this.now() < OutcomeAt + MEMBERSHIP_INVITE_TTL_MS || this.deps.isAlone()) return;
+    const recordedAt = entry.row.outcome?.RecordedAt;
+    if (recordedAt === undefined || this.now() < recordedAt + MEMBERSHIP_INVITE_TTL_MS || this.deps.isAlone()) return;
     await this.deps.remove(entry.row.Id);
     log('pending join %s: removed, %d days after its outcome', entry.row.Id, MEMBERSHIP_INVITE_TTL_MS / (24 * 3600_000));
     this.forget(entry);
@@ -710,20 +703,21 @@ export class PendingJoinRunner {
     this.deps.emit(status);
   }
 
-  private describe(row: PendingJoinRow, entry: TrackedJoin | undefined): PendingJoinStatus {
+  private describe(join: PendingJoin, entry: TrackedJoin | undefined): PendingJoinStatus {
     const base = {
-      id: row.Id,
-      sAppId: this.deps.sAppIdOf(row),
-      requestedAt: row.RequestedAt,
-      expiresAt: row.ExpiresAt,
+      id: join.Id,
+      sAppId: this.deps.sAppIdOf(join),
+      requestedAt: join.RequestedAt,
+      expiresAt: join.ExpiresAt,
     };
-    if (row.Outcome === 'joined') {
-      return { ...base, state: 'joined', strandId: row.StrandId ?? undefined };
+    const { outcome } = join;
+    if (outcome?.kind === 'joined') {
+      return { ...base, state: 'joined', strandId: outcome.StrandId };
     }
-    if (row.Outcome === 'failed') {
-      return { ...base, state: 'failed', failure: { code: row.FailureCode ?? '', reason: row.FailureReason ?? '' } };
+    if (outcome?.kind === 'failed') {
+      return { ...base, state: 'failed', failure: { code: outcome.Code, reason: outcome.Reason } };
     }
-    const local = entry && entry.row.Outcome === null && entry.row.RequestedAt === row.RequestedAt ? entry : undefined;
+    const local = entry && entry.row.outcome === null && entry.row.RequestedAt === join.RequestedAt ? entry : undefined;
     if (local?.trying) {
       return { ...base, state: 'trying' };
     }

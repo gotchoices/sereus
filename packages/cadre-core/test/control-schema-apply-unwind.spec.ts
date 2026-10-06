@@ -52,15 +52,17 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * test is the schema apply over optimystic storage, not how a node is configured.
  */
 
-/** The eleven `CadreControl` tables `schemas/control.qsql` declares, in name order. */
+/** The thirteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
 const CONTROL_TABLE_NAMES = [
 	'CadrePeer',
 	'DeviceToken',
 	'FormationInvite',
 	'FormationUsage',
+	'JoinFailure',
+	'JoinRequest',
+	'JoinSuccess',
 	'JoinedStrand',
 	'OwnerKey',
-	'PendingJoin',
 	'Revocation',
 	'Strand',
 	'StrandPartyKey',
@@ -71,7 +73,7 @@ const CONTROL_TABLE_NAMES = [
  * The optimystic collection id of the `CadrePeer` table — `default/<schema>/<table>` with the
  * schema lowercased — which is also that collection's header block id (see
  * `CollectionFactory.getCollectionId`). Refusing this one id fails exactly the
- * `create table CadreControl.CadrePeer` step, six tables into the apply, and leaves every other
+ * `create table CadreControl.CadrePeer` step, eight tables into the apply, and leaves every other
  * step's storage untouched.
  */
 const CADRE_PEER_BLOCK = 'default/cadrecontrol/CadrePeer';

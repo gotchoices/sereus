@@ -149,9 +149,10 @@ describe('Pending join across a restart', () => {
 				timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250, description: "the restarted joiner's loop reports the join",
 			});
 			expect(statuses.find((status) => status.state === 'joined')?.strandId).toBe(strandId);
-			const row = await joinerNode.getControlDatabase()!.queryPendingJoin(asked.id);
-			expect(row).toMatchObject({ Outcome: 'joined', StrandId: strandId, FailureCode: null });
-			expect(row!.MembershipInvite, "a closed strand's approval carries the joiner's membership invitation").not.toBeNull();
+			const outcome = (await joinerNode.getControlDatabase()!.queryPendingJoin(asked.id))?.outcome;
+			expect(outcome).toMatchObject({ kind: 'joined', StrandId: strandId });
+			expect(outcome?.kind === 'joined' ? outcome.MembershipInvite : null,
+				"a closed strand's approval carries the joiner's membership invitation").not.toBeNull();
 
 			// ── Step 6: the strand is offered, claimed, and the joiner's party seated ──
 			const instance = await claim(joinerNode, strandId, sApp, 'the restarted joiner');

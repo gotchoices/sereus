@@ -40,7 +40,9 @@ export const CONTROL_TABLES = [
   'Strand',
   'StrandPartyKey',
   'JoinedStrand',
-  'PendingJoin',
+  'JoinRequest',
+  'JoinSuccess',
+  'JoinFailure',
   'CadrePeer',
   'DeviceToken',
   'FormationInvite',
@@ -66,7 +68,7 @@ export type ControlTable = typeof CONTROL_TABLES[number];
  * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
  * `revocationDigest` — can type against it without pulling in the runtime.
  */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'PendingJoin' | 'DeviceToken'>;
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for

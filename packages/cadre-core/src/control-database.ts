@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PendingJoinRow, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
@@ -296,7 +296,7 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   Strand: 'Id',
   StrandPartyKey: 'Id',
   JoinedStrand: 'Id',
-  PendingJoin: 'Id',
+  JoinRequest: 'Id',
   DeviceToken: 'PeerId',
 };
 
@@ -333,7 +333,7 @@ function signGuardedRemoval(
 type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
 
 /** The control tables keyed by an `Id` column whose repeat insert a caller may classify. */
-type IdKeyedTable = StrandIdTable | Extract<RevocableTable, 'PendingJoin'>;
+type IdKeyedTable = StrandIdTable | Extract<RevocableTable, 'JoinRequest'>;
 
 /**
  * The rejection a second insert of an already-seated id into `table` produces, as the
@@ -368,8 +368,8 @@ export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolea
 }
 
 /**
- * Did {@link ControlDatabase.insertPendingJoin} fail because the party already holds a
- * `PendingJoin` row for this invitation? The caller adopts the existing row instead.
+ * Did {@link ControlDatabase.insertJoinRequest} fail because the party already holds a
+ * `JoinRequest` row for this invitation? The caller adopts the existing request instead.
  * Text-matched, failing closed, like {@link isStrandIdConflict}.
  *
  * NOTE: the existing row may be one {@link ControlDatabase.queryPendingJoin} hides (its stamp
@@ -377,11 +377,11 @@ export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolea
  * until the next reap pass.
  */
 export function isPendingJoinConflict(error: unknown): boolean {
-  return errorChainMatches(error, idConflictPattern('PendingJoin'));
+  return errorChainMatches(error, idConflictPattern('JoinRequest'));
 }
 
 /**
- * The `PendingJoin.Id` of an invitation: the base64url sha256 `digest` of its token. One row
+ * The `JoinRequest.Id` of an invitation: the base64url sha256 `digest` of its token. One row
  * per invitation, and the `Revocation` tombstone that names a removed row carries this, never
  * the bearer token itself.
  */
@@ -389,19 +389,23 @@ export function pendingJoinId(token: string): string {
   return digest([token], 'sha256', 'base64url') as string;
 }
 
+/** A `JoinRequest` row as written: every column but the stamp, which each write mints. */
+export type JoinRequestFields = Omit<JoinRequestRow, 'StampId'>;
+
+/** A pending join as re-written: its request fields and its outcome, under a stamp the write mints. */
+export type PendingJoinFields = Omit<PendingJoin, 'StampId'>;
+
 /**
- * {@link ControlDatabase.replacePendingJoin} found that the live `PendingJoin` row is not the
- * incarnation the caller read: another write replaced or removed it first (a sibling machine
- * recorded an outcome, or the user dismissed the join). Nothing was written; the caller
- * re-reads and decides again. `liveStampId` is null when the row is gone.
+ * A pending-join write found that the live join is not the one the caller read: another write
+ * recorded an outcome, asked again or dismissed it first. Nothing was written; the caller
+ * decides again from `live`, which is null when the request is gone.
  */
 export class PendingJoinChangedError extends Error {
   constructor(
     readonly id: string,
-    readonly expectedStampId: string,
-    readonly liveStampId: string | null,
+    readonly live: PendingJoin | null,
   ) {
-    super(`PendingJoin ${id} changed: expected stamp ${expectedStampId}, found ${liveStampId ?? 'no row'}`);
+    super(`Pending join ${id} changed: ${live === null ? 'no request' : `request ${live.StampId}, ${live.outcome?.kind ?? 'pending'}`}`);
     this.name = 'PendingJoinChangedError';
   }
 }
@@ -445,12 +449,12 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  * secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any
  * future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
  * secret is the joined strand's shared read key, which its founding party and every member
- * hold, so a reaped row is recoverable by re-forming. `PendingJoin` is reapable for the same
+ * hold, so a reaped row is recoverable by re-forming. `JoinRequest` is reapable for the same
  * reason: the inviting party and the user also hold its invitation. `OwnerKey` has no
  * production removal path and `MinOneOwner` makes an automated owner-key reap a
  * party-bricking hazard.
  */
-export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand', 'PendingJoin'] as const satisfies readonly RevocableTable[];
+export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand', 'JoinRequest'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 
 /**
@@ -473,51 +477,97 @@ function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
   };
 }
 
-/** Every `PendingJoin` column, in the schema's order. */
-const PENDING_JOIN_COLUMNS = 'Id, Invitation, Disclosure, RequestedAt, ExpiresAt, Outcome, OutcomeAt, StrandId, MembershipInvite, FailureCode, FailureReason, StampId';
-
-const PENDING_JOIN_INSERT_SQL = `
-  insert into CadreControl.PendingJoin (${PENDING_JOIN_COLUMNS})
+const JOIN_REQUEST_INSERT_SQL = `
+  insert into CadreControl.JoinRequest (Id, Invitation, Disclosure, RequestedAt, ExpiresAt, StampId)
     with context OwnerKey = ?, Signature = ?
-    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    values (?, ?, ?, ?, ?, ?)
 `;
 
-/** A `PendingJoin` row as read; the schema's `KnownOutcome` check backs the `Outcome` cast. */
-function pendingJoinRow(row: Record<string, SqlValue>): PendingJoinRow {
+const JOIN_SUCCESS_INSERT_SQL = `
+  insert into CadreControl.JoinSuccess (RequestStampId, RecordedAt, StrandId, MembershipInvite)
+    with context OwnerKey = ?, Signature = ?
+    values (?, ?, ?, ?)
+`;
+
+const JOIN_FAILURE_INSERT_SQL = `
+  insert into CadreControl.JoinFailure (RequestStampId, RecordedAt, Code, Reason)
+    with context OwnerKey = ?, Signature = ?
+    values (?, ?, ?, ?)
+`;
+
+/**
+ * A request with its outcome in one statement: the outcome tables are keyed by the request's
+ * stamp, so the join finds exactly this incarnation's outcome.
+ */
+const PENDING_JOIN_SELECT_SQL = `
+  select R.Id, R.Invitation, R.Disclosure, R.RequestedAt, R.ExpiresAt, R.StampId,
+         S.RecordedAt as JoinedAt, S.StrandId, S.MembershipInvite,
+         F.RecordedAt as FailedAt, F.Code, F.Reason
+    from CadreControl.JoinRequest R
+      left join CadreControl.JoinSuccess S on S.RequestStampId = R.StampId
+      left join CadreControl.JoinFailure F on F.RequestStampId = R.StampId
+`;
+
+/** A {@link PENDING_JOIN_SELECT_SQL} row as read. */
+function pendingJoinOf(row: Record<string, SqlValue>): PendingJoin {
   return {
     Id: row.Id as string,
     Invitation: row.Invitation as string,
     Disclosure: row.Disclosure as string,
     RequestedAt: row.RequestedAt as number,
     ExpiresAt: row.ExpiresAt as number,
-    Outcome: row.Outcome as PendingJoinRow['Outcome'],
-    OutcomeAt: row.OutcomeAt as number | null,
-    StrandId: row.StrandId as string | null,
-    MembershipInvite: row.MembershipInvite as string | null,
-    FailureCode: row.FailureCode as string | null,
-    FailureReason: row.FailureReason as string | null,
     StampId: row.StampId as string,
+    outcome: joinOutcomeOf(row),
   };
 }
 
-/**
- * The row fields `PendingJoin.AuthorizedInsert` signs, in the schema's order: a null column
- * signs as `''` and an integer as its text (`cast(... as text)` on the SQL side).
- */
-function pendingJoinAddFields(row: PendingJoinRow): string[] {
-  return [
-    row.Id, row.Invitation, row.Disclosure, String(row.RequestedAt), String(row.ExpiresAt),
-    row.Outcome ?? '', row.OutcomeAt === null ? '' : String(row.OutcomeAt), row.StrandId ?? '',
-    row.MembershipInvite ?? '', row.FailureCode ?? '', row.FailureReason ?? '', row.StampId,
-  ];
+/** The outcome half of a {@link PENDING_JOIN_SELECT_SQL} row; a request never has both (`JoinSuccess.NoFailure`, `JoinFailure.NotJoined`). */
+function joinOutcomeOf(row: Record<string, SqlValue>): JoinOutcome | null {
+  if (typeof row.JoinedAt === 'number') {
+    return { kind: 'joined', RecordedAt: row.JoinedAt, StrandId: row.StrandId as string, MembershipInvite: row.MembershipInvite as string | null };
+  }
+  if (typeof row.FailedAt === 'number') {
+    return { kind: 'failed', RecordedAt: row.FailedAt, Code: row.Code as string, Reason: row.Reason as string };
+  }
+  return null;
 }
 
-/** The values of {@link PENDING_JOIN_INSERT_SQL}'s columns, in {@link PENDING_JOIN_COLUMNS} order. */
-function pendingJoinValues(row: PendingJoinRow): SqlValue[] {
-  return [
-    row.Id, row.Invitation, row.Disclosure, row.RequestedAt, row.ExpiresAt, row.Outcome, row.OutcomeAt,
-    row.StrandId, row.MembershipInvite, row.FailureCode, row.FailureReason, row.StampId,
-  ];
+/** The fields `JoinRequest.AuthorizedInsert` signs, in the schema's order; integers sign as their text. */
+function joinRequestAddFields(row: JoinRequestRow): string[] {
+  return [row.Id, row.Invitation, row.Disclosure, String(row.RequestedAt), String(row.ExpiresAt), row.StampId];
+}
+
+/** A statement with its parameters, signed and ready to run. */
+interface SignedStatement {
+  readonly sql: string;
+  readonly params: SqlValue[];
+}
+
+/**
+ * The owner-signed insert of `outcome` for the request incarnation `requestStampId`: the
+ * `JoinSuccess` / `JoinFailure` row and the signature its `AuthorizedInsert` verifies, over the
+ * row's columns in the schema's order (a null column signs as `''`, an integer as its text).
+ */
+function signJoinOutcomeInsert(
+  requestStampId: string,
+  outcome: JoinOutcome,
+  ownerKey: string,
+  signMessage: (message: Uint8Array) => string
+): SignedStatement {
+  const at = String(outcome.RecordedAt);
+  const { table, sql, fields, values } = outcome.kind === 'joined'
+    ? {
+        table: 'JoinSuccess' as const, sql: JOIN_SUCCESS_INSERT_SQL,
+        fields: [requestStampId, at, outcome.StrandId, outcome.MembershipInvite ?? ''],
+        values: [requestStampId, outcome.RecordedAt, outcome.StrandId, outcome.MembershipInvite],
+      }
+    : {
+        table: 'JoinFailure' as const, sql: JOIN_FAILURE_INSERT_SQL,
+        fields: [requestStampId, at, outcome.Code, outcome.Reason],
+        values: [requestStampId, outcome.RecordedAt, outcome.Code, outcome.Reason],
+      };
+  const signature = signMessage(buildAuthorizationMessage(`CadreControl.${table}`, 'add', fields));
+  return { sql, params: [ownerKey, signature, ...values] };
 }
 
 /**
@@ -1050,28 +1100,33 @@ export class ControlDatabase {
   }
 
   /**
-   * Every join this party asked for and has not dismissed (`CadreControl.PendingJoin`),
-   * pending or finished.
+   * Every join this party asked for and has not dismissed, pending or finished: each
+   * `CadreControl.JoinRequest` row with its `JoinSuccess` / `JoinFailure` row.
    *
-   * Rows whose `StampId` is retired in `Revocation` are dropped, as {@link queryCadrePeers}
-   * drops them: such a row is either a replaced or dismissed incarnation this node still
-   * holds until the reap sweep removes it, or one re-seated by a replayed approval on a node
-   * that had not yet seen the tombstone. Either way it must not bring a dismissed join back.
+   * A request whose `StampId` is retired in `Revocation` is dropped, as {@link queryCadrePeers}
+   * drops such rows: it is a re-asked or dismissed incarnation this node still holds until the
+   * reap sweep removes it, or one re-seated by a replayed approval on a node that had not yet
+   * seen the tombstone. Either way it must not bring a dismissed join back.
    */
-  async queryPendingJoins(): Promise<PendingJoinRow[]> {
+  async queryPendingJoins(): Promise<PendingJoin[]> {
     this.ensureInitialized();
-    const revoked = await this.queryRevokedStamps('PendingJoin');
-    const rows = await this.readRows(`select ${PENDING_JOIN_COLUMNS} from CadreControl.PendingJoin`, undefined, 'pending-joins');
-    return rows.map(pendingJoinRow).filter(row => !revoked.has(row.StampId));
+    const revoked = await this.queryRevokedStamps('JoinRequest');
+    const rows = await this.readRows(PENDING_JOIN_SELECT_SQL, undefined, 'pending-joins');
+    return rows.map(pendingJoinOf).filter(join => !revoked.has(join.StampId));
   }
 
-  /** Single-row sibling of {@link queryPendingJoins}, with the same retired-stamp filter: the row with this id, or null. */
-  async queryPendingJoin(id: string): Promise<PendingJoinRow | null> {
+  /** Single-row sibling of {@link queryPendingJoins}, with the same retired-stamp filter: the join with this id, or null. */
+  async queryPendingJoin(id: string): Promise<PendingJoin | null> {
     this.ensureInitialized();
-    const revoked = await this.queryRevokedStamps('PendingJoin');
-    const rows = await this.readRows(`select ${PENDING_JOIN_COLUMNS} from CadreControl.PendingJoin where Id = ?`, [id], 'pending-join');
-    const row = rows.length === 0 ? null : pendingJoinRow(rows[0]!);
-    return row === null || revoked.has(row.StampId) ? null : row;
+    const revoked = await this.queryRevokedStamps('JoinRequest');
+    const join = await this.readPendingJoin(id, true);
+    return join === null || revoked.has(join.StampId) ? null : join;
+  }
+
+  /** The raw read behind {@link queryPendingJoin}, with no retired-stamp filter. `retry: false` inside a locked write body. */
+  private async readPendingJoin(id: string, retry: boolean): Promise<PendingJoin | null> {
+    const rows = await this.readRows(`${PENDING_JOIN_SELECT_SQL} where R.Id = ?`, [id], 'pending-join', retry);
+    return rows.length === 0 ? null : pendingJoinOf(rows[0]!);
   }
 
   /**
@@ -1832,97 +1887,155 @@ export class ControlDatabase {
   }
 
   /**
-   * Record, party-wide, a join this party asked for (`PendingJoin` row), using an owner
-   * signature over every column of the row (see {@link pendingJoinAddFields}). Returns the
-   * row as written, with the fresh `StampId` a later {@link replacePendingJoin} names.
+   * Record, party-wide, a join this party asked for: a `JoinRequest` row under a fresh stamp,
+   * owner-signed over every column. Returns the pending join as written.
    *
-   * Fails with a `PendingJoin.Id` uniqueness violation when the party already holds a row for
-   * this invitation; {@link isPendingJoinConflict} identifies that case.
+   * Fails with a `JoinRequest.Id` uniqueness violation when the party already holds a request
+   * for this invitation; {@link isPendingJoinConflict} identifies that case.
    */
-  async insertPendingJoin(
-    row: Omit<PendingJoinRow, 'StampId'>,
+  async insertJoinRequest(
+    request: JoinRequestFields,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<PendingJoinRow> {
+  ): Promise<PendingJoin> {
     this.ensureInitialized();
-    log('Inserting pending join: %s (outcome: %s)', row.Id, row.Outcome);
-    const { written, params } = this.signPendingJoinInsert(row, ownerKey, signMessage);
-    await this.execWrite(PENDING_JOIN_INSERT_SQL, params, 'pending-join-insert');
-    log('Pending join inserted: %s', row.Id);
-    return written;
+    const { written, insert } = this.signJoinRequestInsert(request, ownerKey, signMessage);
+    await this.execWrite(insert.sql, insert.params, 'join-request-insert');
+    log('Join request inserted: %s', request.Id);
+    return { ...written, outcome: null };
   }
 
   /**
-   * Replace the live `PendingJoin` row `next.Id` with `next`, under a fresh stamp — the only way
-   * an outcome is written, since the table refuses updates. Returns the row as written.
+   * Record the outcome of the pending join `expected`: its owner-signed `JoinSuccess` /
+   * `JoinFailure` row, keyed by the request's stamp. A join recorded over a failure deletes the
+   * failure row in the same transaction (the schema authorizes that delete by the join, and
+   * leaves the one-outcome rule in that direction to this writer). Returns the pending join as
+   * written.
    *
-   * One locked transaction deletes the row (owner-signed `'remove'` digest, with its
-   * `Revocation` tombstone) and inserts its successor, so no reader ever sees the id missing in
-   * between. The live row must still be the incarnation the caller read: when its `StampId` is
-   * not `expectedStampId`, or the row is gone, this throws {@link PendingJoinChangedError} and
-   * writes nothing. That check is local; a sibling machine's replacement or removal that lands
-   * between it and the commit fails the transaction instead (its tombstone for the same stamp,
-   * or its successor row, collides on a primary key), and the caller re-reads either way.
+   * The live join must still be what the caller read: the same request incarnation with the
+   * same outcome kind. Otherwise this throws {@link PendingJoinChangedError} and writes nothing.
+   * That check is local; a sibling machine's write landing between it and the commit fails the
+   * transaction instead (its outcome row collides on the primary key, or its tombstone retires
+   * the stamp), and the caller re-reads either way.
+   */
+  async recordJoinOutcome(
+    expected: PendingJoin,
+    outcome: JoinOutcome,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<PendingJoin> {
+    this.ensureInitialized();
+    const insert = signJoinOutcomeInsert(expected.StampId, outcome, ownerKey, signMessage);
+    return this.lockedWithRetry(async () => {
+      const live = await this.readPendingJoin(expected.Id, false);
+      if (live === null || live.StampId !== expected.StampId || live.outcome?.kind !== expected.outcome?.kind) {
+        throw new PendingJoinChangedError(expected.Id, live);
+      }
+      await this.inTransaction('record join outcome', async () => {
+        if (live.outcome?.kind === 'failed') {
+          await this.deleteJoinOutcome('JoinFailure', expected.StampId);
+        }
+        await this.db!.exec(insert.sql, insert.params);
+      });
+      log('Join outcome recorded: %s (%s)', expected.Id, outcome.kind);
+      return { ...live, outcome };
+    }, {}, 'join-outcome-record');
+  }
+
+  /**
+   * Re-write the pending join `next` (request and outcome) under a fresh stamp, retiring the
+   * live request incarnation `expectedStampId`: how a finished request is asked for again, and
+   * how a join written while this machine was alone is re-broadcast. One locked transaction
+   * deletes the outcome row and the request (owner-signed `'remove'` digest, with its
+   * `Revocation` tombstone) and inserts the successors, so no reader ever sees the id missing in
+   * between. Throws {@link PendingJoinChangedError} and writes nothing when the live request is
+   * not `expectedStampId`.
    *
    * Signatures and the new stamp are minted before the lock, so a retried attempt re-presents
    * the same signed messages (the contract on {@link withWriteLock}). A retry after an attempt
-   * that committed but reported failure throws {@link PendingJoinChangedError} whose
-   * `liveStampId` is the returned row's own stamp, so a caller that re-reads finds its write.
+   * that committed but reported failure throws {@link PendingJoinChangedError} whose live join
+   * carries the returned stamp, so a caller that re-reads finds its write.
    */
-  async replacePendingJoin(
+  async rewritePendingJoin(
     expectedStampId: string,
-    next: Omit<PendingJoinRow, 'StampId'>,
+    next: PendingJoinFields,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<PendingJoinRow> {
+  ): Promise<PendingJoin> {
     this.ensureInitialized();
-    const id = next.Id;
-    const removal = signGuardedRemoval('PendingJoin', id, expectedStampId, signMessage);
-    const { written, params } = this.signPendingJoinInsert(next, ownerKey, signMessage);
+    const { outcome, ...request } = next;
+    const removal = signGuardedRemoval('JoinRequest', next.Id, expectedStampId, signMessage);
+    const { written, insert } = this.signJoinRequestInsert(request, ownerKey, signMessage);
+    const outcomeInsert = outcome === null ? null : signJoinOutcomeInsert(written.StampId, outcome, ownerKey, signMessage);
 
     return this.lockedWithRetry(async () => {
       // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
-      const liveStampId = await this.queryStampId('PendingJoin', id, false);
+      const liveStampId = await this.queryStampId('JoinRequest', next.Id, false);
       if (liveStampId !== expectedStampId) {
-        throw new PendingJoinChangedError(id, expectedStampId, liveStampId);
+        throw new PendingJoinChangedError(next.Id, await this.readPendingJoin(next.Id, false));
       }
-      await this.inTransaction('replace PendingJoin', async () => {
+      await this.inTransaction('rewrite pending join', async () => {
+        await this.deleteJoinOutcomes(expectedStampId);
         await this.execGuardedRemoval(removal, ownerKey);
-        await this.db!.exec(PENDING_JOIN_INSERT_SQL, params);
+        await this.db!.exec(insert.sql, insert.params);
+        if (outcomeInsert !== null) {
+          await this.db!.exec(outcomeInsert.sql, outcomeInsert.params);
+        }
       });
-      log('Pending join replaced: %s (outcome: %s; stamp retired)', id, next.Outcome);
+      log('Pending join rewritten: %s (%s; stamp retired)', next.Id, outcome?.kind ?? 'pending');
       this.notifyGuardedDelete(removal.ref);
-      return written;
-    }, {}, 'pending-join-replace');
+      return { ...written, outcome };
+    }, {}, 'pending-join-rewrite');
   }
 
   /**
-   * Owner-signed removal of one `PendingJoin` row, as {@link deleteJoinedStrand} removes its
-   * row: `'remove'`-tagged digest over (Id, StampId), `Revocation` tombstone in the same
-   * transaction. A no-op (no throw, no tombstone) when the row does not exist — `false` then,
-   * `true` when a row was actually removed.
+   * Owner-signed removal of one pending join, as {@link deleteJoinedStrand} removes its row:
+   * `'remove'`-tagged digest over (Id, StampId), `Revocation` tombstone in the same transaction,
+   * and the request's outcome row with it. A no-op (no throw, no tombstone) when there is no
+   * request — `false` then, `true` when one was actually removed.
    */
   deletePendingJoin(
     id: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.lockedWithRetry(() => this.deleteGuardedRow('PendingJoin', id, ownerKey, signMessage), {}, 'pending-join-delete');
+    return this.lockedWithRetry(
+      () => this.deleteGuardedRow('JoinRequest', id, ownerKey, signMessage, (stampId) => this.deleteJoinOutcomes(stampId)),
+      {}, 'pending-join-delete');
   }
 
   /**
-   * Mint a fresh stamp for `row` and the owner signature `PendingJoin.AuthorizedInsert`
-   * verifies, returning the row as it will be written and the parameters of
-   * {@link PENDING_JOIN_INSERT_SQL}.
+   * Mint a fresh stamp for `request` and the owner signature `JoinRequest.AuthorizedInsert`
+   * verifies, returning the row as it will be written and its insert.
    */
-  private signPendingJoinInsert(
-    row: Omit<PendingJoinRow, 'StampId'>,
+  private signJoinRequestInsert(
+    request: JoinRequestFields,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): { written: PendingJoinRow; params: SqlValue[] } {
-    const written: PendingJoinRow = { ...row, StampId: generateStampId(this.config.libp2pNode.peerId.toString()) };
-    const signature = signMessage(buildAuthorizationMessage('CadreControl.PendingJoin', 'add', pendingJoinAddFields(written)));
-    return { written, params: [ownerKey, signature, ...pendingJoinValues(written)] };
+  ): { written: JoinRequestRow; insert: SignedStatement } {
+    const written: JoinRequestRow = { ...request, StampId: generateStampId(this.config.libp2pNode.peerId.toString()) };
+    const signature = signMessage(buildAuthorizationMessage('CadreControl.JoinRequest', 'add', joinRequestAddFields(written)));
+    const params = [ownerKey, signature, written.Id, written.Invitation, written.Disclosure, written.RequestedAt, written.ExpiresAt, written.StampId];
+    return { written, insert: { sql: JOIN_REQUEST_INSERT_SQL, params } };
+  }
+
+  /**
+   * Remove the outcome row of the request incarnation `requestStampId`, whichever table holds
+   * it. Unsigned: the schema authorizes the delete by the tombstone retiring that stamp, filed
+   * in the same transaction or already committed (a reap).
+   */
+  private async deleteJoinOutcomes(requestStampId: string): Promise<void> {
+    await this.deleteJoinOutcome('JoinSuccess', requestStampId);
+    await this.deleteJoinOutcome('JoinFailure', requestStampId);
+  }
+
+  /** One unsigned outcome delete (see {@link deleteJoinOutcomes}; a failure's is also authorized by the join superseding it). */
+  private async deleteJoinOutcome(table: 'JoinSuccess' | 'JoinFailure', requestStampId: string): Promise<void> {
+    await this.db!.exec(`
+      delete from CadreControl.${table}
+        with context OwnerKey = null, Signature = null
+        where RequestStampId = ?
+    `, [requestStampId]);
   }
 
   /**
@@ -2207,6 +2320,9 @@ export class ControlDatabase {
    * second read (e.g. {@link CadreNode.unpublishStrand}'s committed-while-alone warning,
    * which must not fire for a no-op).
    *
+   * `alongside`, when given, runs inside the transaction before the removal, for a table whose
+   * row has dependants the schema requires removed with it ({@link deletePendingJoin}).
+   *
    * NOTE: the stamp read is outside the transaction. A concurrent writer that removes
    * the row in between makes the signature bind a stamp that is no longer live; the
    * delete then matches nothing and the tombstone insert collides with the other
@@ -2221,7 +2337,8 @@ export class ControlDatabase {
     table: RemovableTable,
     keyValue: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: (message: Uint8Array) => string,
+    alongside?: (stampId: string) => Promise<void>
   ): Promise<boolean> {
     this.ensureInitialized();
     // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
@@ -2232,7 +2349,10 @@ export class ControlDatabase {
     }
 
     const removal = signGuardedRemoval(table, keyValue, stampId, signMessage);
-    await this.inTransaction(`delete ${table}`, () => this.execGuardedRemoval(removal, ownerKey));
+    await this.inTransaction(`delete ${table}`, async () => {
+      await alongside?.(stampId);
+      await this.execGuardedRemoval(removal, ownerKey);
+    });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
     this.notifyGuardedDelete(removal.ref);
@@ -2242,7 +2362,7 @@ export class ControlDatabase {
   /**
    * Delete the row incarnation `removal` names and file its tombstone — the statement pair
    * every owner removal of a guarded row runs ({@link deleteGuardedRow},
-   * {@link deleteStrandAndPartyKey}, {@link replacePendingJoin}). The caller supplies the
+   * {@link deleteStrandAndPartyKey}, {@link rewritePendingJoin}). The caller supplies the
    * transaction: the schema's `RevocationRecorded` check refuses the delete unless the
    * tombstone commits with it.
    *
@@ -2367,6 +2487,15 @@ export class ControlDatabase {
       // 0 on its first connected tick and holds there. If a party ever reaps many rows
       // in one pass, hoist the notify to one refresh after the sweep instead.
       await this.mutateCadrePeer('peer-reap', () => this.db!.exec(sql, [rowKey, stampId]));
+    } else if (table === 'JoinRequest') {
+      // The request's outcome row goes with it; the committed tombstone authorizes that delete
+      // too. An outcome row held for a request this node never received (the request was
+      // written alone and its outcome connected, before the growth-edge re-issue) is left: it
+      // is unreadable, since every reader starts from the request.
+      await this.lockedWithRetry(() => this.inTransaction('reap JoinRequest', async () => {
+        await this.deleteJoinOutcomes(stampId);
+        await this.db!.exec(sql, [rowKey, stampId]);
+      }), {}, 'reap-JoinRequest');
     } else {
       await this.execWrite(sql, [rowKey, stampId], `reap-${table}`);
     }
@@ -2406,7 +2535,7 @@ export class ControlDatabase {
    *   reads from this node (every other node already filters it by tombstone). A revoked
    *   node therefore keeps its own copy of its own row; "a node that learns it has been
    *   revoked should shut itself down" is a distinct behaviour and its own ticket.
-   *   `ValidationKey`, `JoinedStrand` and `PendingJoin` have no self notion and are not
+   *   `ValidationKey`, `JoinedStrand` and `JoinRequest` have no self notion and are not
    *   special-cased.
    *
    * A per-row failure is logged and skipped rather than aborting the sweep: an abort would

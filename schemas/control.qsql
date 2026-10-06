@@ -1,261 +1,122 @@
--- This manages a Sereus party's cadre, or set of nodes, and their participation in strands (networks)
+-- A Sereus party's cadre (its nodes) and their participation in strands (networks).
+--
+-- Every write is authorized by a check: an owner signs an action-tagged digest of the row
+-- (cadre-core control-authorization.ts), or a peer signs its own record. Each digest leads
+-- with a 'CadreControl.<Table>' domain tag and an action tag, so an approval verifies only
+-- against the one rule it was minted for.
+--
+-- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey, JoinedStrand,
+-- JoinRequest, CadrePeer, DeviceToken) carry a one-off StampId bound into their add and
+-- remove digests. `unique` holds over live rows only, so a delete retires the stamp into
+-- Revocation in the same transaction (RevocationRecorded) and an insert refuses a retired
+-- stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row. A
+-- legitimate re-add mints a fresh stamp and a fresh signature.
+--
+-- A check with a subquery defers to commit, so a sibling row written in the same transaction
+-- is visible to it; `committed.<Table>` reads the pre-transaction snapshot instead. Every
+-- check reads the rows this node holds: a node that has not converged on a Revocation row
+-- still accepts the replayed add, and the resurrected row then coexists with its tombstone.
+-- ControlDatabase drops retired stamps on the reads that matter (queryCadrePeers,
+-- queryPendingJoins).
 declare schema CadreControl {
-    -- A key that can authorize various control changes
+    -- A key that can authorize control changes.
     table OwnerKey (
         Key text primary key,
-        StampId text not null unique,   -- per-row authorization nonce, bound into the signed digests below.
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is retired
-                                        -- permanently into Revocation (NotRevoked below), so the never-expiring
-                                        -- enrollment signature cannot resurrect a removed owner.
-        -- A removed row's StampId is retired into Revocation, and this refuses any insert
-        -- naming a retired stamp: the approval that seated this row can never re-seat it after
-        -- removal. `unique` alone did not do this — it only holds over LIVE rows, so a delete
-        -- freed the stamp and the original never-expiring signature verified again. A
-        -- legitimate re-add mints a FRESH StampId and a fresh signature, so it is unaffected.
+        StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
+        -- The tombstone must name the removed row, not just its stamp (Revocation.RowKey).
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = old.StampId and R.RowKey = old.Key)
         ),
-        -- A party must never lose its last owner key: every other CadreControl table's
-        -- CHECK requires an OwnerKey row, so an owner-less control database can never
-        -- authorize anything again — emptying this table is a permanent denial of the
-        -- party's control plane. Deferred (subquery), so the count is the POST-delete count.
-        -- NOTE: this is a per-transaction check against locally visible rows. Two
-        -- partitioned nodes that concurrently remove different owners can each see a
-        -- survivor and still converge to zero; if partitioned rotation ever becomes a real
-        -- workflow, the floor needs a cross-node guard, not a local count.
+        -- Every other table's checks require an owner, so an empty table is a permanent denial of
+        -- the party's control plane. Counted post-delete, on this node's rows only: two partitioned
+        -- nodes removing different owners can still converge to zero.
         constraint MinOneOwner check on delete (
             (select count(1) from OwnerKey) >= 1
         ),
-        -- Enrollment is insert + delete only; rotation is add-then-remove. No writer
-        -- updates an OwnerKey row, and a self-rotation branch would double as a sole-owner
-        -- takeover: a deferred post-image count is also true of an update that re-points
-        -- the only row at an attacker key. Mirrors Strand.Manager.NoUpdate.
+        -- Rotation is add-then-remove. An update branch would let the sole owner be re-pointed at
+        -- another key under a post-image count of one.
         constraint NoUpdate check on update (false),
-        -- NOTE: the domain tag scopes an approval to a table and an action, not to a PARTY. Two
-        -- parties that share an owner key would accept each other's approvals. Fine today (each
-        -- party has its own owner key); if shared-owner multi-party ever ships, bind a party
-        -- identity row into these digests.
+        -- The authorizer is read from the pre-transaction snapshot: the check defers to commit, by
+        -- which point the inserted row (and any sibling) is live, so a plain OwnerKey read would let
+        -- a row authorize itself or two strangers seat each other. The founding transaction, whose
+        -- pre-transaction owner set is empty, needs no authorization; gating on the pre-transaction
+        -- count keeps a same-transaction swap of the sole owner off that branch. An owner cannot
+        -- sign its own removal. The domain tag scopes an approval to a table and an action, not to
+        -- a party: two parties sharing an owner key would accept each other's approvals.
         constraint Authorized check on insert, delete (
-            -- Every authorizer is read from the PRE-transaction snapshot (committed.*):
-            -- this CHECK auto-defers to commit (it has a subquery), by which point the row
-            -- being inserted — and any sibling inserted alongside it — is live, so a plain
-            -- from-OwnerKey would let a row authorize itself, or two strangers seat each
-            -- other. committed.* excludes both, stating the rule directly: the authorizer
-            -- must have existed BEFORE this transaction.
-
-            -- Every signed digest below (and in every other CadreControl table) leads with two
-            -- fixed literals — a 'CadreControl.<Table>' domain tag and an 'add'/'remove'/
-            -- 'vouch'/'publish' action tag (cadre-core control-authorization.ts) — so an
-            -- approval verifies ONLY against the one rule it was minted for. Without them,
-            -- e.g. a ValidationKey enrollment approval covered the identical bytes as an
-            -- OwnerKey enrollment: a narrow grant that doubled as full ownership.
-
-            -- Bootstrap: the FOUNDING transaction — one whose pre-transaction owner set is
-            -- empty — needs no authorization, and every row it inserts rides this branch
-            -- (whoever writes it already owns the party outright, so a co-founder row grants
-            -- nothing a single row would not). Gated on the PRE-transaction count, so a
-            -- same-transaction swap of the sole owner (delete the founder, insert the
-            -- attacker — post-image count still 1) cannot ride it.
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0)
-
-                -- or a pre-existing owner authorizes by signing over THIS row (Key, StampId)
                 or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
-
-                -- or a removal authorized by ANOTHER pre-existing owner over the DISTINCT
-                -- 'remove'-tagged digest bound to the stored row's StampId, so an enrollment
-                -- signature can never be replayed as a removal (cf. CadrePeer.AuthorizedDelete).
-                -- A.Key <> old.Key: an owner cannot sign its own removal (no self-resignation).
                 or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and verify(digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
     ) with context (OwnerKey text null, Signature text null);
 
-    -- A key that can validate a strand formation disclosure
+    -- A key that can validate a strand formation disclosure (FormationUsage.Authorized).
     table ValidationKey (
         Key text primary key,
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is retired
-                                        -- permanently into Revocation (NotRevoked below), so the never-expiring
-                                        -- enrollment signature cannot resurrect a removed key.
-        -- A removed row's StampId is retired into Revocation, and this refuses any insert naming
-        -- a retired stamp: the approval that seated this row can never re-seat it after removal.
-        -- Same rationale as OwnerKey.NotRevoked, stated in full there.
-        -- NOTE: this table gained a consumer — FormationUsage.Authorized reads it to gate redemption of
-        -- a ValidationUrl invite — so the convergence gap noted on Strand.StampId now has teeth here: on
-        -- a node that has not yet seen the tombstone, a replayed enrollment re-seats the key and it can
-        -- approve redemptions there until the Revocation row arrives. Still no per-request READ surface to
-        -- filter (the gate is a write-time CHECK), so there is nothing to add today; if one appears, filter
-        -- retired stamps there.
+        StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = old.StampId and R.RowKey = old.Key)
         ),
-        -- Enrollment is insert + delete only; rotation is add-then-remove. No writer in the repo
-        -- updates a ValidationKey row. Required because the AuthorizedInsert / AuthorizedDelete
-        -- pair below covers neither update — and a bare `check`, which is what this rule used to
-        -- be, covers insert+update but NOT delete. Mirrors OwnerKey.NoUpdate.
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
-            -- Owners authorize by signing over THIS row (Key, StampId); single-use via unique StampId
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
+        -- Owner-signed over the stored row, or a reap: a committed tombstone naming this exact row
+        -- incarnation lets a node that was offline at removal time delete the stale row unsigned
+        -- (ControlDatabase.reapRevokedRow). committed.*, so a tombstone filed in this transaction
+        -- cannot stand in for the signature; the stamp clause, so a tombstone of an earlier
+        -- incarnation cannot remove the current one.
         constraint AuthorizedDelete check on delete (
-            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
-            -- the STORED row (Key, StampId), so an enrollment approval — which never expires — can
-            -- never be replayed as a removal. Same shape as CadrePeer.AuthorizedDelete.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519'))
-
-                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation, so a node
-                -- that was offline at removal time may delete the stale row locally with no owner key.
-                -- Why committed.* and why the stamp must be bound: stated in full on
-                -- CadrePeer.AuthorizedDelete.
                 or exists (select 1 from committed.Revocation R where R.TableName = 'ValidationKey' and R.RowKey = old.Key and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text, Signature text);
 
-    -- A network of members sharing an sApp database, each contributing peer nodes (their cadre) to the overall cohort
-    -- Cadre peers should participate in each of these strands
+    -- A network of members sharing an sApp database, each contributing its cadre's peers. This
+    -- party's own strands; a strand joined from another party is a JoinedStrand row.
     table Strand (
-        Id text primary key,    -- UUID
-        MemberPrivateKey text null unique,   -- Our private key as a member of this strand
-        Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
-        FounderOwnerKey text null,  -- ed25519 (base64url) owner key of the MACHINE that published this row
-                                    -- (== insert context.OwnerKey; in the reference model each machine's
-                                    -- owner key is the key behind its PeerId, so this names the founding
-                                    -- machine — the one machine that runs the strand's one-time founder
-                                    -- bootstrap). cadre-core derives "am I the founder?" at launch by
-                                    -- comparing it to the node's own owner key (cadre-node.ts
-                                    -- launchStrand). Null on a consent-seated strand — the consent branch
-                                    -- of AuthorizedInsert carries no signature, so there is no
-                                    -- trustworthy signer to record (see the NOTE on that branch below).
-                                    -- Provenance, not content: cadre-node.ts strandRowMismatches
-                                    -- deliberately excludes it from the identical-content comparison.
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is retired
-                                        -- permanently into Revocation (NotRevoked below).
-        -- NOTE: NotRevoked is a per-transaction check against LOCALLY VISIBLE rows, so a node that
-        -- has not yet converged on the Revocation row can still accept a replayed add and end up
-        -- holding the resurrected strand alongside its tombstone. CadrePeer has a read-side
-        -- mitigation for this class (ControlDatabase.queryCadrePeers drops rows whose stamp is
-        -- retired, so every membership reader inherits it); Strand and ValidationKey deliberately
-        -- do NOT, because neither has a
-        -- per-request authorization surface today. If one ever gains one, filter it there.
+        Id text primary key,                -- UUID
+        MemberPrivateKey text null unique,  -- the strand's shared read secret; closed strands only
+        Type text,                          -- 'o' open | 'c' closed: open gates writes in the sApp, only closed gates reads
+        FounderOwnerKey text null,          -- owner key of the machine that published the row, the founding machine
+                                            -- (cadre-node.ts launchStrand); null on a consent-seated strand, whose
+                                            -- insert carries no signature. Provenance, not content (strandRowMismatches).
+        StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey. That is what makes
-        -- the consent branch of AuthorizedInsert below trustworthy: a removal cannot file a
-        -- tombstone that omits or misnames the id it retires.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = old.StampId and R.RowKey = old.Id)
         ),
-        -- Strand rows are insert + delete only. Required: the consent branch of AuthorizedInsert
-        -- below authorizes by the EXISTENCE of a FormationUsage row naming (new.Id, new.StampId)
-        -- and carries no signature, so while this rule was a bare `check` (insert+update) it also
-        -- said "anyone may REWRITE any consent-formed strand, unsigned" — flipping Type to 'o' and
-        -- nulling MemberPrivateKey destroys the party's own membership key for that network in place.
-        -- Mirrors OwnerKey.NoUpdate / FormationInvite.Immutable.
+        -- The consent branch below carries no signature, so an update rule would let anyone rewrite
+        -- a consent-seated strand.
         constraint NoUpdate check on update (false),
+        -- Owner-signed, with FounderOwnerKey pinned to the verified signer; or consent-seated by a
+        -- FormationUsage row naming this exact row (id and stamp), written in the same transaction
+        -- (ControlDatabase.redeemInvitation). Binding the stamp is what makes a removal stick:
+        -- the usage row outlives the strand, and keyed on the id alone it would re-authorize an
+        -- unsigned re-seat under a fresh stamp. The consent branch is narrow, each clause closing
+        -- one door:
+        --   * open and keyless: a closed strand with a caller-chosen read secret has no legitimate
+        --     producer;
+        --   * through an unbound invite only: a bound invite's host strand is owner-provisioned,
+        --     and consent-seating its id would downgrade the real row on a node it has not reached;
+        --   * no usage row under another stamp, and no tombstone for the id: an id is consent-seated
+        --     once, ever, and never after any removal. Re-joining a removed id is owner-signed.
+        -- A standalone tombstone (no accompanying delete, Revocation.Authorized) lets an owner
+        -- foreclose consent-seating of an id that never existed: owner-only, and ids are random.
         constraint AuthorizedInsert check on insert (
-            -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId.
-            -- FounderOwnerKey persists WHO published the row, so the founding machine can later
-            -- recognise its own strand (founder derivation, cadre-node.ts launchStrand). The
-            -- equality pins the stored column to the VERIFIED signer — same shape as
-            -- CadrePeer.VouchOwner — so a writer cannot record a founder it is not. Deliberately
-            -- NOT added to the signed digest: the equality already binds it to the signature's
-            -- context.OwnerKey, and widening the digest would churn every existing
-            -- insertStrand field-order contract for nothing.
             (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
                 and new.FounderOwnerKey = context.OwnerKey)
-
-                -- or authorized WITHOUT a signature by a redemption record naming THIS EXACT ROW: a
-                -- FormationUsage row carrying both this strand's Id and its one-off StampId
-                -- (control-database.ts:redeemInvitation writes the pair in one transaction; both
-                -- CHECKs defer, so each sees the other's row at commit).
-                --
-                -- Matching the STAMP, not the id alone, is what makes a removal stick. FormationUsage
-                -- is append-only, so a redemption record outlives the strand it formed forever; keyed
-                -- on the id alone it re-authorized ANY later insert of that id, so after a legitimate
-                -- owner-signed, tombstoned removal any writer could re-seat the strand unsigned with a
-                -- fresh StampId (sidestepping NotRevoked, which retires only the removed row's stamp)
-                -- and an ATTACKER-CHOSEN MemberPrivateKey — the party's own secret for that network.
-                -- Bound to the stamp, the removal retires that stamp into Revocation and NotRevoked
-                -- closes this consent record's branch permanently.
-                --
-                -- Beyond the stamp match, the branch is deliberately NARROW — each clause closes one door:
-                --   * Type = 'o' / MemberPrivateKey null — a consent-seated strand looks exactly like
-                --     what the unbound redemption path writes (open, keyless). A closed strand carrying
-                --     a caller-chosen member key (the party's own read-gating secret for that network)
-                --     has no legitimate producer. MemberKeyClosedOnly already implies the second clause
-                --     from the first today; both are stated so this rule does not silently depend on
-                --     another constraint staying as it is.
-                --   * the inner FI.StrandId is null — only an UNBOUND invite may seat a strand at all.
-                --     A bound invite's host strand is owner-provisioned up front; letting the invite
-                --     consent-seat that id would allow an open, keyless downgrade of the real (possibly
-                --     closed, key-bearing) host row on a node where it has not converged yet. The bound
-                --     path records usage only (resolveStrand reports an absent host as missing and the
-                --     formation manager rejects cleanly).
-                --   * the not-exists over OTHER stamps — a strand id may be consent-seated once, EVER.
-                --     FormationUsage is append-only, so the first redemption's record survives a later
-                --     owner-signed removal and permanently forecloses a second consent-seating of the
-                --     id (a spare use of the same token minted a new stamp and rode this branch to
-                --     re-seat the id with an attacker-chosen row). Re-joining a removed id is
-                --     owner-gated: the owner re-seats it signed (fresh stamp, fresh signature) and
-                --     issues a BOUND invite the returning party records consent against — the id is
-                --     not blacklisted, only its unsigned re-seat is. This cannot be weaponised to
-                --     pre-block a legitimate id: StrandExists refuses a usage row naming a strand that
-                --     does not exist, so no usage row can be pre-planted for an unseated id — and ids
-                --     are 128 random bytes anyway.
-                --   * the not-exists over Revocation — a strand id may be consent-seated once EVER
-                --     and never after ANY removal of that id, however it was seated. The usage-row
-                --     rule above binds only ids that ever carried a consent record; an id seated
-                --     purely owner-signed (insertStrand, no usage row) leaves nothing behind on
-                --     removal, so its removal needs its own trace. Every removal files a Revocation
-                --     row naming the removed row's key (RowKey), and this clause refuses any id
-                --     that has ever been tombstoned. RevocationRecorded above makes that trace
-                --     mandatory AND correctly named, so no removal can slip past this clause. The
-                --     usage-row clause is arguably subsumed by this one (a usage row implies the
-                --     strand row existed, and its removal must file a tombstone), but it reaches
-                --     the same conclusion without depending on Revocation at all; both are stated,
-                --     per the style note above. The owner-signed branch is deliberately unaffected,
-                --     so re-join stays owner-gated exactly as described.
-                --     What is NOT schema-verified is a STANDALONE tombstone (one with no
-                --     accompanying delete — see Revocation.Authorized): an owner can file one
-                --     naming an id that never existed and thereby permanently foreclose
-                --     consent-seating of that id — owner-only, the owner already controls invite
-                --     issuance, and unbound ids are 128 random bytes minted at redemption, so no
-                --     escalation (same reasoning as the pre-plant note above).
-                --     NOTE: like NotRevoked above, this is a write-time check against LOCALLY
-                --     VISIBLE rows — a node that has not yet converged on the Revocation row still
-                --     accepts the re-seat. Fails in the safe direction: the tombstone wins after
-                --     merge for the STAMP, and the resurrected row coexists with it (same class as
-                --     the StampId note above).
                 or (
                     new.Type = 'o'
                     and new.MemberPrivateKey is null
-                    -- NOTE: a consent-seated strand records NO founder machine — this branch
-                    -- carries no signature, so there is no trustworthy signer to persist.
-                    -- Consequence: the restart-before-founding orphan shape (a relaunch cannot
-                    -- derive founder-ness from the row) persists for consent-formed strands
-                    -- only; the responder that provisions one must keep passing an explicit
-                    -- founder flag at launch. Revisit if consent-formed strands ever hit the
-                    -- empty-Header symptom in practice: FormationUsage names the redeeming
-                    -- peer (PeerKey), which is the candidate derivation source.
                     and new.FounderOwnerKey is null
                     and exists (
                         select 1 from FormationUsage FU
@@ -273,313 +134,211 @@ declare schema CadreControl {
                     )
                 )
         ),
+        -- No consent branch (an invitation forms a strand, never destroys one) and no reap branch:
+        -- MemberPrivateKey is stored nowhere else, so this delete is unrecoverable
+        -- (tickets/backlog/debt-strand-tombstone-reap.md owns any change).
         constraint AuthorizedDelete check on delete (
-            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
-            -- the STORED row (Id, StampId), so the add approval — which never expires — can never be
-            -- replayed as a removal. Note the consent branch above is deliberately NOT mirrored
-            -- here: an invitation authorizes forming a strand, never destroying one.
-            --
-            -- DELIBERATELY no REAP branch (cf. CadrePeer.AuthorizedDelete): this row carries
-            -- MemberPrivateKey — the party's own membership secret for that network, stored nowhere
-            -- else — so this is the one guarded delete whose effect is unrecoverable, and a stale
-            -- row is already inert for the purpose a tombstone serves (the consent branch of
-            -- AuthorizedInsert above refuses any id ever tombstoned). Do not "fix" the asymmetry;
-            -- tickets/backlog/debt-strand-tombstone-reap.md owns any future change.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
+        -- An open strand has no membership gate, so no member key.
         constraint MemberKeyClosedOnly check (
-            -- An open strand ('o') has no membership gate, so it must not carry a
-            -- member key. A non-null MemberPrivateKey requires a closed strand ('c').
             new.MemberPrivateKey is null or new.Type = 'c'
         )
     ) with context (OwnerKey text, Signature text);
 
-    -- ONE party's own membership identity for one strand: the private key whose public
-    -- half seats this party's `Strand.Member` / `Strand.Manager` rows. Deliberately a
-    -- SEPARATE key from Strand.MemberPrivateKey — that column is the strand-wide read
-    -- secret formation hands to EVERY joining party, so an identity derived from it is
-    -- one every joiner can forge (gotchoices/sereus#4). A side table rather than a
-    -- Strand column because a JOINER holds no control Strand row at all (reference apps
-    -- attach formed strands from an in-memory row) yet must persist its own party key
-    -- too; keyed by strand id it serves founder and joiner uniformly, and it leaves the
-    -- heavily-audited Strand insert digest untouched. Deliberately NO closed-strands-only
-    -- cross-table check: the joiner writes this row with no local Strand row to check
-    -- against. Party-private in the same sense as MemberPrivateKey — replicated in
-    -- plaintext to every machine the party owns (docs/strands.md → "Closed-Strand Member
-    -- Key Handling"; that replication is what lets any of the party's machines sign
-    -- membership writes) — but unlike MemberPrivateKey it is NEVER put on the formation
-    -- wire.
+    -- This party's own membership identity for one strand: the private key whose public half
+    -- seats its Strand.Member / Strand.Manager rows. Separate from Strand.MemberPrivateKey, which
+    -- every joining party receives and so could forge (gotchoices/sereus#4). A side table because
+    -- a joiner holds no Strand row. Replicated in plaintext to every machine the party owns
+    -- (docs/strands.md → "Closed-Strand Member Key Handling") but never put on the formation wire.
     table StrandPartyKey (
-        Id text primary key,            -- the strand id this key is for
-        PrivateKey text not null,       -- THIS party's ed25519 strand member private key, base64
-                                        -- protobuf — the same encoding as Strand.MemberPrivateKey;
-                                        -- decode with cadre-core's strandMemberKeyPair.
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is
-                                        -- retired permanently into Revocation (NotRevoked below).
-        -- A removed row's StampId is retired into Revocation, and this refuses any insert
-        -- naming a retired stamp: the approval that seated this row can never re-seat it
-        -- after removal. Same rationale as OwnerKey.NotRevoked, stated in full there.
+        Id text primary key,        -- the strand id
+        PrivateKey text,            -- ed25519, base64 protobuf, as Strand.MemberPrivateKey (cadre-core strandMemberKeyPair)
+        StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'StrandPartyKey' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'StrandPartyKey' and R.StampId = old.StampId and R.RowKey = old.Id)
         ),
-        -- Insert + delete only; a rotation is remove-then-insert (fresh stamp, fresh
-        -- signature). Required because AuthorizedInsert / AuthorizedDelete below cover
-        -- neither update — an in-place rewrite would swap the party's identity key with
-        -- no signature at all. Mirrors ValidationKey.NoUpdate.
         constraint NoUpdate check on update (false),
+        -- Binding PrivateKey means a captured approval can only reproduce the key it approved.
         constraint AuthorizedInsert check on insert (
-            -- Owners authorize by signing over THIS row (Id, PrivateKey, StampId);
-            -- single-use via unique StampId. Binding PrivateKey means a captured approval
-            -- can only ever reproduce the exact key it approved, never seat an
-            -- attacker-chosen identity under the party's name.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.StrandPartyKey', 'add', new.Id, new.PrivateKey, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
+        -- No reap branch: the key is stored nowhere else (as Strand.AuthorizedDelete).
         constraint AuthorizedDelete check on delete (
-            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest
-            -- bound to the STORED row (Id, StampId), so the enrollment approval — which
-            -- never expires — can never be replayed as a removal.
-            -- DELIBERATELY no REAP branch (cf. ValidationKey.AuthorizedDelete): like
-            -- Strand.MemberPrivateKey, PrivateKey is a secret stored nowhere else, so this
-            -- delete's effect is unrecoverable and stays strictly owner-signed. Same
-            -- reasoning as Strand.AuthorizedDelete.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.StrandPartyKey', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 
-    -- A strand THIS party joined from ANOTHER party. The founding party's control database
-    -- holds its Strand row, so without this table only the machine that joined would know of
-    -- it. Every machine of the party reads it (the strand watcher offers each row like a
-    -- Strand row), so a replica host keeps a copy and the party's other machines can attach.
-    -- A separate table rather than a Strand row with a provenance marker: Strand means "this
-    -- party's own strand" to every reader of it (founder derivation, FormationUsage.StrandExists,
-    -- unpublish, the consent branch of Strand.AuthorizedInsert), and each would need a
-    -- provenance check. MemberPrivateKey is the closed strand's shared read secret the
-    -- formation delivered — replicated in plaintext to every machine the party owns, under the
-    -- same accepted risk as Strand.MemberPrivateKey (docs/strands.md → "Closed-Strand Member
-    -- Key Handling"). Unlike that column it is not held only here: the founding party and
-    -- every member hold it, so a removed row is recoverable by re-forming, which is why this
-    -- table (unlike Strand) carries a REAP branch.
+    -- A strand this party joined from another party, whose control database holds the Strand
+    -- row. Every machine of the party reads it, so a replica host keeps a copy and the party's
+    -- other machines can attach. A separate table because every reader of Strand takes it to
+    -- mean this party's own strand. MemberPrivateKey is held by the founding party and every
+    -- member, so a removed row is recoverable by re-forming, which is why this table has a reap
+    -- branch (unlike Strand and StrandPartyKey).
     table JoinedStrand (
-        Id text primary key,            -- the joined strand's id (the founder's Strand.Id)
-        Type text not null,             -- 'o' | 'c', as Strand.Type
-        MemberPrivateKey text null,     -- closed strand's shared read secret; null for open
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is
-                                        -- retired permanently into Revocation (NotRevoked below).
-        -- The approval that seated a removed row can never re-seat it. Same rationale as
-        -- OwnerKey.NotRevoked, stated in full there.
+        Id text primary key,            -- the founder's Strand.Id
+        Type text,                      -- 'o' | 'c', as Strand.Type
+        MemberPrivateKey text null,     -- the closed strand's shared read secret
+        StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'JoinedStrand' and R.StampId = new.StampId)
         ),
-        -- A delete must file its correctly named tombstone in the same transaction. Same
-        -- rationale as StrandPartyKey.RevocationRecorded.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'JoinedStrand' and R.StampId = old.StampId and R.RowKey = old.Id)
         ),
-        -- Insert + delete only: neither Authorized rule below covers update, so an in-place
-        -- rewrite would swap the read secret unsigned. Mirrors StrandPartyKey.NoUpdate.
         constraint NoUpdate check on update (false),
-        -- Readers cast Type to 'o' | 'c' (ControlDatabase.queryJoinedStrands).
+        -- Readers cast Type (ControlDatabase.queryJoinedStrands).
         constraint KnownType check (new.Type = 'o' or new.Type = 'c'),
-        -- An open strand has no read gate, so no read secret. Same rule as Strand.MemberKeyClosedOnly.
         constraint MemberKeyClosedOnly check (new.MemberPrivateKey is null or new.Type = 'c'),
+        -- Owner-signed only: every always-on machine of the party downloads the strands named
+        -- here, so a machine that is not an owner keeps its joins machine-local.
         constraint AuthorizedInsert check on insert (
-            -- Owners authorize by signing over THIS row (Id, Type, MemberPrivateKey, StampId),
-            -- MemberPrivateKey signing as '' when null, so a captured approval can only reproduce
-            -- the exact secret it approved. Owner-signed, deliberately NOT self-signable by an
-            -- enrolled CadrePeer: every always-on machine of the party downloads the strands this
-            -- table names, so a non-owner machine could otherwise make them all host an arbitrary
-            -- strand. A machine that is not an owner keeps its joins machine-local.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.JoinedStrand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
-            -- 'remove'-tagged digest over the STORED row (Id, StampId), so the add approval can
-            -- never be replayed as a removal.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.JoinedStrand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
-
-                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation.
-                -- Why committed.* and why the stamp is bound: stated in full on
-                -- CadrePeer.AuthorizedDelete. Allowed here, unlike Strand / StrandPartyKey,
-                -- because MemberPrivateKey is recoverable (see the table comment).
                 or exists (select 1 from committed.Revocation R where R.TableName = 'JoinedStrand' and R.RowKey = old.Id and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text, Signature text);
 
-    -- A join THIS party asked for, by redeeming another party's invitation, that it has not
-    -- finished yet, or has finished and not yet dismissed. Party-wide rather than kept on the
-    -- device that asked, so the attempt outlives that device and any owner machine of the party
-    -- can carry it on and record how it ended. Invitation is a bearer credential and
-    -- MembershipInvite a single-use one; both are replicated in plaintext to every machine the
-    -- party owns, under the same accepted risk as JoinedStrand.MemberPrivateKey (docs/strands.md
-    -- → "Closed-Strand Member Key Handling").
-    -- Every write is a whole-row insert or delete: recording an outcome deletes the row (with its
-    -- tombstone) and inserts its successor under a fresh stamp in one transaction
-    -- (ControlDatabase.replacePendingJoin). Which outcome may follow which is CadreNode policy,
-    -- not a rule here, because every writer is an owner.
-    -- Carries a REAP branch, like JoinedStrand, because nothing here is stored only here: the
-    -- inviting party holds the FormationInvite row, the user holds the shared link, and the
-    -- membership invitation is a copy of what the inviter issued.
-    table PendingJoin (
-        Id text primary key,            -- base64url sha256 of the invitation token (cadre-core's
-                                        -- pendingJoinId): one row per invitation, and the Revocation
-                                        -- tombstone that names a removed row never holds the token.
-        Invitation text not null,       -- CadreNode.encodeInvitation: token, sAppId, expiration and
-                                        -- bootstrap addresses. A few kilobytes at most, since
-                                        -- createOpenInvitation caps the addresses an invitation carries.
-        Disclosure text not null,       -- canonicalJson of the disclosure the requester gave; the
-                                        -- formation sets partyId itself on each attempt
-        RequestedAt integer not null,   -- epoch ms
-        ExpiresAt integer not null,     -- epoch ms; no attempt starts at or after it
-        Outcome text null,              -- null while pending | 'joined' | 'failed'
-        OutcomeAt integer null,         -- epoch ms the outcome was recorded
-        StrandId text null,             -- 'joined': the strand the formation returned
-        MembershipInvite text null,     -- 'joined', closed strand only: JSON {inviteKey, invitePrivateKey},
-                                        -- the StrandMembershipInvite the formation delivered
-        FailureCode text null,          -- 'failed': a FormationRejectionCode, 'expired' or 'local'
-        FailureReason text null,        -- 'failed': human-readable text
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
-                                        -- `unique` holds over LIVE rows only; a removed row's stamp is
-                                        -- retired permanently into Revocation (NotRevoked below).
-        -- The approval that seated a removed row can never re-seat it, so a dismissed or replaced
-        -- row cannot be brought back. Same rationale as OwnerKey.NotRevoked, stated in full there.
+    -- A join this party asked for by redeeming another party's invitation, kept party-wide so
+    -- the request outlives the device that asked and any owner machine can carry it on
+    -- (docs/strands.md → "Joining while the inviter is offline"). The row is the request alone
+    -- and never changes; its outcome is a JoinSuccess or JoinFailure row keyed by this row's
+    -- stamp, so asking again (a fresh stamp) starts clean and a dismissal's tombstone retires
+    -- the outcome with the request. Invitation is a bearer credential, replicated in plaintext
+    -- to every machine the party owns, under the same accepted risk as JoinedStrand.
+    -- Owner-signed only; whether a machine that is not an owner may write here is
+    -- tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md.
+    -- The three tables reference only tables declared before them, so an apply that fails
+    -- midway can drop them in reverse order. The two rules that would close a cycle are the
+    -- writer's (ControlDatabase): a request's delete takes its outcome row with it, and a join
+    -- recorded over a failure deletes the failure. An outcome row left behind is unreadable,
+    -- since readers start from the request.
+    table JoinRequest (
+        Id text primary key,            -- base64url sha256 of the invitation token (cadre-core pendingJoinId),
+                                        -- so the token never reaches Revocation
+        Invitation text,                -- CadreNode.encodeInvitation
+        Disclosure text,                -- canonicalJson of the disclosure the requester gave
+        RequestedAt integer,            -- epoch ms
+        ExpiresAt integer,              -- epoch ms; no attempt starts at or after it
+        StampId text unique,
         constraint NotRevoked check on insert (
-            not exists (select 1 from Revocation R where R.TableName = 'PendingJoin' and R.StampId = new.StampId)
+            not exists (select 1 from Revocation R where R.TableName = 'JoinRequest' and R.StampId = new.StampId)
         ),
-        -- A delete must file its correctly named tombstone in the same transaction. Same
-        -- rationale as StrandPartyKey.RevocationRecorded.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'PendingJoin' and R.StampId = old.StampId and R.RowKey = old.Id)
+            exists (select 1 from Revocation R where R.TableName = 'JoinRequest' and R.StampId = old.StampId and R.RowKey = old.Id)
         ),
-        -- Insert + delete only: neither Authorized rule below covers update, so an in-place
-        -- rewrite would change the outcome unsigned. Mirrors StrandPartyKey.NoUpdate.
         constraint NoUpdate check on update (false),
-        -- Readers cast Outcome to null | 'joined' | 'failed' (ControlDatabase.queryPendingJoins).
-        constraint KnownOutcome check (new.Outcome is null or new.Outcome = 'joined' or new.Outcome = 'failed'),
-        -- Each outcome carries exactly its own columns, so a reader can trust the shape it reads.
-        constraint OutcomeShape check (
-            (new.Outcome is null
-                and new.OutcomeAt is null and new.StrandId is null and new.MembershipInvite is null
-                and new.FailureCode is null and new.FailureReason is null)
-            or (new.Outcome = 'joined'
-                and new.OutcomeAt is not null and new.StrandId is not null
-                and new.FailureCode is null and new.FailureReason is null)
-            or (new.Outcome = 'failed'
-                and new.OutcomeAt is not null and new.FailureCode is not null
-                and new.StrandId is null and new.MembershipInvite is null)
-        ),
         constraint AuthorizedInsert check on insert (
-            -- Owners authorize by signing over THIS row, every column ending in StampId; nullable
-            -- columns sign as '' and integers as their text, so a captured approval can only
-            -- reproduce the exact row it approved. Owner-signed only: whether a machine that is
-            -- not an owner may record an outcome is an open decision
-            -- (tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md).
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.PendingJoin', 'add',
-                new.Id, new.Invitation, new.Disclosure, cast(new.RequestedAt as text), cast(new.ExpiresAt as text),
-                coalesce(new.Outcome, ''), coalesce(cast(new.OutcomeAt as text), ''), coalesce(new.StrandId, ''),
-                coalesce(new.MembershipInvite, ''), coalesce(new.FailureCode, ''), coalesce(new.FailureReason, ''),
-                new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest('CadreControl.JoinRequest', 'add', new.Id, new.Invitation, new.Disclosure, cast(new.RequestedAt as text), cast(new.ExpiresAt as text), new.StampId),
+                context.Signature, A.Key, 'ed25519'))
         ),
+        -- Reapable: the inviting party and the user hold the invitation too.
         constraint AuthorizedDelete check on delete (
-            -- 'remove'-tagged digest over the STORED row (Id, StampId), so the add approval can
-            -- never be replayed as a removal.
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.PendingJoin', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
-
-                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation.
-                -- Why committed.* and why the stamp is bound: stated in full on
-                -- CadrePeer.AuthorizedDelete. Allowed for the reason the table comment gives.
-                or exists (select 1 from committed.Revocation R where R.TableName = 'PendingJoin' and R.RowKey = old.Id and R.StampId = old.StampId)
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.JoinRequest', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+                or exists (select 1 from committed.Revocation R where R.TableName = 'JoinRequest' and R.RowKey = old.Id and R.StampId = old.StampId)
         )
-    ) with context (OwnerKey text, Signature text);
+    ) with context (OwnerKey text null, Signature text null);
 
-    -- A peer (node) that is part of the cadre, carrying a self-published,
-    -- freshness-stamped, self-signed address record (see PeerAddressRecord in cadre-core).
-    -- The row IS the peer-address record: a resolver reads it, re-verifies Sig against
-    -- PublicKey, checks freshness (UpdatedAt) and trust, then dials the addrs.
+    -- The outcome of a JoinRequest that joined: the strand the formation returned and, for a
+    -- closed strand, the single-use membership invitation it delivered. Keyed by the request's
+    -- stamp, so it names one request incarnation and a replayed approval can only re-seat the
+    -- row it approved, against the request it approved. A join is final: it may be recorded
+    -- over a failure (whose row the writer deletes with it), and nothing is recorded over it.
+    table JoinSuccess (
+        RequestStampId text primary key,
+        RecordedAt integer,             -- epoch ms
+        StrandId text,
+        MembershipInvite text null,     -- JSON {inviteKey, invitePrivateKey}, the StrandMembershipInvite; closed strands only
+        constraint RequestExists check on insert (
+            exists (select 1 from JoinRequest R where R.StampId = new.RequestStampId)
+        ),
+        constraint NoUpdate check on update (false),
+        constraint AuthorizedInsert check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest('CadreControl.JoinSuccess', 'add', new.RequestStampId, cast(new.RecordedAt as text), new.StrandId, coalesce(new.MembershipInvite, '')),
+                context.Signature, A.Key, 'ed25519'))
+        ),
+        -- Removed only with its request: the tombstone retiring the request's stamp (owner-signed,
+        -- or already committed for a reap) authorizes this delete.
+        constraint AuthorizedDelete check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'JoinRequest' and R.StampId = old.RequestStampId)
+        )
+    ) with context (OwnerKey text null, Signature text null);
+
+    -- The outcome of a JoinRequest that failed for good. Keyed as JoinSuccess is.
+    table JoinFailure (
+        RequestStampId text primary key,
+        RecordedAt integer,             -- epoch ms
+        Code text,                      -- a FormationRejectionCode, 'expired' or 'local'
+        Reason text,                    -- human-readable
+        constraint RequestExists check on insert (
+            exists (select 1 from JoinRequest R where R.StampId = new.RequestStampId)
+        ),
+        -- A join is final: nothing records a failure over it.
+        constraint NotJoined check on insert (
+            not exists (select 1 from JoinSuccess S where S.RequestStampId = new.RequestStampId)
+        ),
+        constraint NoUpdate check on update (false),
+        constraint AuthorizedInsert check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest('CadreControl.JoinFailure', 'add', new.RequestStampId, cast(new.RecordedAt as text), new.Code, new.Reason),
+                context.Signature, A.Key, 'ed25519'))
+        ),
+        -- Removed with its request (JoinSuccess.AuthorizedDelete), or superseded by a join
+        -- recorded in the same transaction.
+        constraint AuthorizedDelete check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'JoinRequest' and R.StampId = old.RequestStampId)
+                or exists (select 1 from JoinSuccess S where S.RequestStampId = old.RequestStampId)
+        )
+    ) with context (OwnerKey text null, Signature text null);
+
+    -- A node of the cadre, carrying its self-published, freshness-stamped, self-signed address
+    -- record (cadre-core PeerAddressRecord): a resolver re-verifies Sig against PublicKey,
+    -- checks UpdatedAt and trust, then dials Multiaddr.
     table CadrePeer (
         PeerId text primary key,
-        PublicKey text null,            -- ed25519 (base64url) whose libp2p identity == PeerId (null if non-Ed25519)
+        PublicKey text null,            -- ed25519 (base64url) behind PeerId; null if not ed25519
         Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
-        UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay/rollback guard)
-        Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
-        StampId text not null unique,    -- per-row authorization nonce, bound into the voucher/remove digests; rotates on
-                                         -- (re)insert. A removed row's stamp is retired permanently into Revocation
-                                         -- (NotRevoked below), so a captured admission approval cannot re-seat a removed peer.
-        VouchOwner text null,        -- ed25519 (base64url) owner key that vouched this membership (== insert context.OwnerKey)
-        VouchSig text null,              -- that owner's signature over the 'vouch'-tagged digest below (== insert context.Signature). A reader checks VouchOwner against its NODE-LOCAL trusted-owner anchor (not this replicated table, which a self-owner can pollute) to decide authorized membership. The domain/action tags keep this STORED, REPLICATED signature useless against every other rule (pre-tag it satisfied OwnerKey/ValidationKey inserts for Key = PeerId).
-        -- A removed row's StampId is retired into Revocation, and this refuses any insert
-        -- naming a retired stamp: the approval that seated this row can never re-seat it after
-        -- removal. `unique` alone did not do this — it only holds over LIVE rows, so a delete
-        -- freed the stamp and the original never-expiring signature verified again. A
-        -- legitimate re-add mints a FRESH StampId and a fresh signature, so it is unaffected.
+        UpdatedAt int null,             -- epoch ms; strictly increases per self-update
+        Sig text null,                  -- self-signature over the 'publish' digest; null until self-published
+        StampId text unique,
+        VouchOwner text null,           -- the owner key that vouched this membership (== insert context.OwnerKey)
+        VouchSig text null,             -- that owner's 'vouch' signature (== insert context.Signature). A reader checks
+                                        -- VouchOwner against its node-local trusted-owner anchor, not against this
+                                        -- replicated table, which a self-owner can pollute.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = old.StampId and R.RowKey = old.PeerId)
         ),
+        -- The owner vouches membership and the PublicKey<->PeerId binding (cadre-core derives
+        -- PublicKey from PeerId) over (PeerId, StampId); the stored voucher must be the pair
+        -- verified here. The same 'vouch' digest serves the owner branch of AuthorizedUpdate:
+        -- both mean "this owner vouches this membership row".
         constraint AuthorizedInsert check on insert (
-            -- Authorized by an owner key, which vouches both membership and the
-            -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
-            -- The digest binds PeerId + the single-use StampId nonce (two TEXT fields),
-            -- matching cadre-core peer-authorization.ts:cadrePeerVoucherDigest. The same
-            -- 'vouch'-tagged digest is DELIBERATELY shared with the owner branch of
-            -- AuthorizedUpdate below: both mean "this owner vouches this membership row".
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
-            -- Persist the vouching (owner, signature) onto the row so a reader can later
-            -- re-check VouchOwner against its node-local anchor. The stored pair MUST equal
-            -- the pair the verify above validated, so a writer cannot store a voucher it did
-            -- not actually receive a signature for.
             and new.VouchOwner = context.OwnerKey
             and new.VouchSig = context.Signature
         ),
+        -- The stored 'vouch' voucher never authorizes a delete; the 'remove' signature rides in
+        -- context and is never stored. Or a reap (ValidationKey.AuthorizedDelete).
         constraint AuthorizedDelete check on delete (
-            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound
-            -- to the row's StampId (cadre-core peer-authorization.ts:cadrePeerRemoveDigest), so
-            -- the stored voucher (a signature over the 'vouch'-tagged digest) can NEVER be
-            -- replayed to authorize a delete. The remove signature rides in context and is never stored.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
-
-                -- or REAP: this node already holds a COMMITTED tombstone retiring THIS EXACT row
-                -- incarnation, so the party owner has already authorized this row's removal and this
-                -- node is merely catching up. That is what lets a node which was offline at
-                -- revocation time delete the stale row locally, with no owner private key
-                -- (control-database.ts:reapRevokedRow). Same shape as the consent branch of
-                -- Strand.AuthorizedInsert: authorization by the EXISTENCE of a row rather than by a
-                -- signature — and that row is itself owner-signed (Revocation.Authorized), so this
-                -- widens WHO may execute a removal, never WHO may decide one. RevocationRecorded is
-                -- satisfied by the same committed tombstone, so a reap files no second one.
-                --
-                -- committed.Revocation, NOT Revocation — and the stamp clause — are both load-bearing:
-                --   * committed.* : this CHECK defers to commit (it has a subquery), by which point a
-                --     tombstone written in the SAME transaction is live. Reading plain Revocation
-                --     would therefore let deleteGuardedRow's own sibling tombstone satisfy this
-                --     branch, making the 'remove'-tagged delete signature above dead weight and
-                --     collapsing two domain-separated approvals into one. committed.* states the rule
-                --     exactly: the tombstone must have existed BEFORE this transaction.
-                --   * R.StampId = old.StampId : binds the ROW INCARNATION, not the name. One name may
-                --     legitimately carry several tombstones over its life (seat -> delete -> owner
-                --     re-seat -> delete). Without this clause a tombstone from a PREVIOUS incarnation
-                --     would authorize deleting the CURRENT row, which the owner never removed.
                 or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
+        -- A peer re-publishes its own addrs and freshness under its own key (cadre-core
+        -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
+        -- re-vouches the row over its current stamp. StampId never changes on update: an update
+        -- that rotated it would leave the old stamp free and untombstoned, so retiring a stamp is
+        -- delete plus tombstone.
         constraint AuthorizedUpdate check on update (
-            -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
-            -- (the key behind PeerId). PeerId/PublicKey/StampId/voucher are immutable on
-            -- self-update, UpdatedAt must strictly increase (replay guard), and Sig is verified
-            -- against the stored PublicKey over the same payload the publish path signs
-            -- (cadre-core peer-record.ts:peerRecordSignedPayload).
             (
                 new.PeerId = old.PeerId
                 and new.PublicKey = old.PublicKey
@@ -591,13 +350,6 @@ declare schema CadreControl {
                         digest('CadreControl.CadrePeer', 'publish', new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
                         new.Sig, new.PublicKey, 'ed25519')
             )
-                -- or an owner re-authorizes (rotation / correction): re-vouches the row over
-                -- its current StampId, so the stored voucher is re-bound to the re-authorizing owner.
-                -- StampId is immutable here too: an update that rotated it would leave the OLD
-                -- stamp live-free and untombstoned (RevocationRecorded only retires the stamp a
-                -- delete carries), so the original admission approval — which is stored on the
-                -- replicated row as VouchSig — would resurrect the peer after a later removal.
-                -- Retiring a stamp is delete + Revocation row, never an update.
                 or (
                     new.StampId = old.StampId
                     and exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
@@ -607,50 +359,27 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text null, Signature text);
 
-    -- A mobile cadre peer's platform push token (FCM/APNs), self-published so a
-    -- server peer can deliver a push-wake to a suspended app over the platform push
-    -- channel (a control-network dial cannot reach an OS-suspended process). The row
-    -- mirrors CadrePeer: a resolver re-verifies Sig against the CadrePeer.PublicKey for
-    -- this PeerId (see device-token.ts:deviceTokenSignedPayload), checks freshness, then
-    -- hands the token to the push sender.
+    -- A mobile peer's platform push token, self-published so a server peer can push-wake a
+    -- suspended app. A resolver re-verifies Sig against the CadrePeer.PublicKey for PeerId
+    -- (cadre-core device-token.ts), checks freshness, then hands the token to the push sender.
     table DeviceToken (
-        PeerId text primary key,        -- the CadrePeer this token belongs to
-        Platform text not null,         -- 'fcm' | 'apns'
-        Token text not null,            -- opaque platform device/registration token
-        UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay guard)
-        Sig text null,                  -- ed25519 self-sig over (PeerId|Platform|Token|UpdatedAt)
-        StampId text not null unique,    -- single-use authorization nonce, bound into the add/remove digests;
-                                         -- rotates on (re)insert. A cleared token's stamp is retired permanently
-                                         -- into Revocation (NotRevoked below), so the approval that published a
-                                         -- token cannot re-seat it after the owner cleared it (logout).
-        -- A removed row's StampId is retired into Revocation, and this refuses any insert
-        -- naming a retired stamp: the approval that seated this row can never re-seat it after
-        -- the clear. `unique` alone did not do this — it only holds over LIVE rows, so a delete
-        -- freed the stamp and the original never-expiring signature verified again. A legitimate
-        -- re-register mints a FRESH StampId and a fresh signature, so it is unaffected. This
-        -- matters more here than the stored-approval case (CadrePeer.VouchSig): a resurrected
-        -- push token has NO freshness ceiling to retire it — cadre-node.ts:resolveDeviceToken
-        -- defaults maxAgeMs to infinity by design — so retirement is the only thing that sticks.
+        PeerId text primary key,
+        Platform text,                  -- 'fcm' | 'apns'
+        Token text,                     -- opaque platform device/registration token
+        UpdatedAt int null,             -- epoch ms; strictly increases per self-update
+        Sig text null,                  -- self-signature over the 'publish' digest
+        StampId text unique,
+        -- A resurrected token has no freshness ceiling to retire it (resolveDeviceToken defaults
+        -- maxAgeMs to infinity), so stamp retirement is what makes a clear stick.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = new.StampId)
         ),
-        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
-        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order. The tombstone must also
-        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = old.StampId and R.RowKey = old.PeerId)
         ),
+        -- The owner signs the whole row, nullable columns as '', so a replayed approval can only
+        -- reproduce the row it approved (cadre-core peer-authorization.ts deviceTokenAddDigest).
         constraint AuthorizedInsert check on insert (
-            -- Authorized by an owner key (membership vouch), exactly like CadrePeer.
-            -- The digest binds the WHOLE row behind the domain/action tags — every column,
-            -- with the nullable UpdatedAt/Sig signing as '' when absent (the shape
-            -- FormationInvite and Strand already use) — so a replayed approval can only ever
-            -- reproduce the row it approved, never one carrying attacker-chosen
-            -- Platform/Token/UpdatedAt; NotRevoked above then refuses even that exact row
-            -- once it has been cleared. The DISTINCT 'remove'-tagged digest below keeps a
-            -- captured insert approval from doubling as a delete (and vice versa).
-            -- Mirrors cadre-core peer-authorization.ts:deviceTokenAddDigest.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
                 digest(
                     'CadreControl.DeviceToken', 'add',
@@ -664,35 +393,13 @@ declare schema CadreControl {
                 context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
-            -- Bound to the STORED row's (PeerId, StampId) — cadre-core
-            -- peer-authorization.ts:deviceTokenRemoveDigest — so the never-expiring insert
-            -- approval can never be replayed as a clear, and a captured clear approval is
-            -- dead once the stamp it names is retired.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
-
-                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation, so a node
-                -- that was offline at removal time may delete the stale row locally with no owner key.
-                -- Why committed.* and why the stamp must be bound: stated in full on
-                -- CadrePeer.AuthorizedDelete.
                 or exists (select 1 from committed.Revocation R where R.TableName = 'DeviceToken' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
+        -- Self-update only: Platform and Token may change, PeerId and StampId may not, UpdatedAt
+        -- must increase. No owner re-touch branch: one outside the monotonicity rule would let a
+        -- captured approval roll UpdatedAt back; an owner correcting a row deletes and re-inserts.
         constraint AuthorizedUpdate check on update (
-            -- Peer self-updates its own token, signing with its OWN ed25519 key (the key
-            -- behind PeerId). PeerId and StampId are immutable, UpdatedAt must strictly
-            -- increase (replay guard), and Sig is verified against the stored
-            -- CadrePeer.PublicKey over the signed payload (cadre-core
-            -- device-token.ts:deviceTokenSignedPayload). Platform and Token may change on
-            -- self-update (platform switch / reinstall / rotation).
-            -- StampId is immutable for the reason CadrePeer spells out: an update that
-            -- rotated it would leave the OLD stamp live-free and untombstoned, so retiring a
-            -- stamp stays delete + Revocation row, never an update.
-            -- This is the ONLY branch: there is deliberately NO owner re-touch. The branch
-            -- that used to sit beside it verified an owner signature over the peer id alone
-            -- and sat OUTSIDE the monotonicity requirement, so one captured owner approval
-            -- rewrote Platform/Token and rolled UpdatedAt BACKWARDS — and seating a
-            -- far-future UpdatedAt wedged the peer's own self-updates permanently. No writer
-            -- used it. An owner that must correct a row deletes it (retiring the stamp) and
-            -- inserts a fresh one, the same path it already takes for CadrePeer.
             new.PeerId = old.PeerId
             and new.StampId = old.StampId
             and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
@@ -702,21 +409,18 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text null, Signature text);
 
-    -- An open invitation to form a strand with this party
+    -- An open invitation to form a strand with this party.
     table FormationInvite (
-        Token text primary key, -- Just a random string
-        sAppId text, -- The app for the strand that will be formed
+        Token text primary key,     -- a random string
+        sAppId text,                -- the app of the strand to be formed
         ExpiresAt datetime null,
         TotalUses int null check (TotalUses >= 0),
-        ValidationUrl text null,   -- Web hook - send disclosure, IP address...
-        StrandId text null,   -- Host strand this invite binds to (provision-then-record). Non-null => the responder records consent against this pre-existing strand; null => unbound invite: the responder provisions a fresh open strand and atomically records its one consent row.
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
+        ValidationUrl text null,    -- web hook sent the disclosure; a ValidationKey then signs off each redemption
+        StrandId text null,         -- bound invite: the host strand consent is recorded against;
+                                    -- null: the responder provisions a fresh open strand per redemption
+        StampId text unique,
+        -- The owner signs the whole row, nullable columns as ''.
         constraint AuthorizedInsert check on insert (
-            -- Authorized by an owner signing over THIS row
-            -- (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId); single-use via unique StampId.
-            -- Nullable bound fields (ExpiresAt/TotalUses/ValidationUrl/StrandId) sign as '' when absent.
-            -- The 'remove'-tagged AuthorizedDelete digest below is DISTINCT, so a captured
-            -- insert approval can never be replayed to revoke-then-reissue an invite (or vice versa).
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
                 digest(
                     'CadreControl.FormationInvite', 'add',
@@ -744,261 +448,101 @@ declare schema CadreControl {
                 ),
                 context.Signature, A.Key, 'ed25519'))
         ),
-        -- Invites are insert/delete only: forbid in-place mutation so the row-bound
-        -- AuthorizedInsert signature cannot be sidestepped by updating consent
-        -- parameters (TotalUses/ExpiresAt/...) after a legitimate insert. A bare check
-        -- defaults to insert+update; the checks on insert / on delete above exclude update,
-        -- so this guard is required. Mirrors FormationUsage.InsertOnly.
+        -- Insert and delete only, so the consent parameters cannot change under a signature.
         constraint Immutable check on update (false)
     ) with context (OwnerKey text, Signature text);
 
+    -- Append-only record of formation invite redemptions, one row per redemption.
     table FormationUsage (
-        Token text not null,            -- the FormationInvite this acceptance redeems. Stated explicitly because
-                                        -- Token is no longer a primary-key prefix; Authorized below would refuse a
-                                        -- null anyway (null = null is never true, so its FormationInvite
-                                        -- exists-clause cannot match), but the column carries the invariant rather
-                                        -- than leaving it to a CHECK.
-        UsageStampId text not null,     -- single-use nonce for THIS redemption, and this table's PRIMARY KEY.
-                                        -- The JOINING peer mints it and sends it in its contact message, having
-                                        -- signed it into its own 'consent' digest (PeerConsented below); the
-                                        -- responder inserts that same value and asks the approver about it, so it
-                                        -- is bound into the 'vouch' digest below too and one sign-off is spendable
-                                        -- exactly once. Neither side can swap it: a substituted nonce fails the
-                                        -- joiner's consent signature.
-                                        -- As the row key, a verbatim replay of an approval collides on the
-                                        -- primary key locally instead of on a column `unique`. Unlike every other
-                                        -- StampId in this schema, this table is append-only (InsertOnly below),
-                                        -- so the nonce is never freed by a delete: the key alone makes it
-                                        -- permanent and there is deliberately NO NotRevoked / RevocationRecorded
-                                        -- pair here — do not go looking for the missing one.
-                                        -- NOTE: the key is evaluated against LOCALLY VISIBLE rows, so two nodes
-                                        -- that have not yet converged could each admit the same nonce and both
-                                        -- rows survive the merge. Same class as the NotRevoked convergence notes
-                                        -- on OwnerKey / Strand / ValidationKey; the digest binding still holds on
-                                        -- both nodes, so the outcome is a duplicated audit row, never a join
-                                        -- nobody approved.
-        PeerKey text not null,          -- the joining peer's own ed25519 public key (base64url, 32 bytes), bound
-                                        -- into BOTH the approver's 'vouch' digest and the joiner's 'consent'
-                                        -- digest below, so an approval cannot be re-filed under a different
-                                        -- joiner's name and the named joiner provably agreed (PeerConsented).
-                                        -- The key IS the joiner's identity — its libp2p peer id is derivable
-                                        -- (identity multihash of these bytes), never stored here.
-        PeerSig text not null,          -- the joining peer's signature over the 'consent' digest — see
-                                        -- PeerConsented below for what it proves and why it is stored on the row.
+        Token text,                 -- the FormationInvite redeemed
+        UsageStampId text,          -- single-use nonce minted by the joining peer, signed into its 'consent' digest
+                                    -- and the approver's 'vouch' digest. The primary key: this table never
+                                    -- deletes, so the key alone makes a nonce permanent and there is no
+                                    -- NotRevoked pair here. Two nodes that have not converged can each admit
+                                    -- the same nonce: a duplicated audit row, never a join nobody approved.
+        PeerKey text,               -- the joining peer's ed25519 public key (base64url); its peer id derives from it
+        PeerSig text,               -- the joiner's signature over the 'consent' digest (PeerConsented)
         Disclosure text,
         StrandId text,
-        StrandStampId text not null,   -- the Strand.StampId this consent record authorizes. Consent is
-                                       -- bound to ONE strand ROW, not to a strand id forever — see
-                                       -- Strand.AuthorizedInsert's consent branch for why. NOT unique:
-                                       -- in the bound (provision-then-record) path several invitees
-                                       -- each write a usage row against the SAME host strand, so many
-                                       -- usage rows legitimately share one stamp.
+        StrandStampId text,         -- the Strand.StampId this consent names: one strand row, not an id forever
+                                    -- (Strand.AuthorizedInsert). Not unique: a bound invite's redeemers share
+                                    -- a host strand.
         primary key (UsageStampId),
         constraint InsertOnly check on update, delete (false),
+        -- The use cap counts the pre-transaction snapshot, so concurrent redeemers on separate
+        -- nodes can over-admit by their number; both rows survive and removal is owner-gated. A
+        -- strict per-token sequence was rejected: a lost race would silently drop a consented
+        -- join. Two usage rows for one token in one transaction read the same count; no writer
+        -- does that.
+        -- A ValidationUrl invite needs a sign-off verified against a STORED ValidationKey row;
+        -- context.ValidationKey only selects which row, so a redeemer cannot approve itself with
+        -- a throwaway key. The sign-off covers (Token, UsageStampId, StrandId, PeerKey,
+        -- Disclosure), so it buys exactly one row; StrandStampId is not bound because the
+        -- unbound path mints it inside the redeeming transaction. Removing the key later does
+        -- not revisit rows it approved.
+        -- A bound invite may only name its own host strand. An unbound invite may name any
+        -- existing strand, which burns a use and forecloses that id's consent-seating: harmless.
         constraint Authorized check on insert (
-            -- Satisfies an invitation
             exists (
                 select 1 from FormationInvite FI
                     where FI.Token = new.Token
-                        -- The use cap is COUNTED against the pre-transaction snapshot, never
-                        -- sequenced. This CHECK auto-defers to commit (it has a subquery), by
-                        -- which point the in-flight row is live; committed.* is what excludes
-                        -- it, so a sequentially exhausted invite — every seat already committed
-                        -- on this node — is still refused here. What is deliberately NOT
-                        -- refused: concurrent redeemers on separate nodes (or nodes that have
-                        -- not yet converged) each count the same committed snapshot and both
-                        -- land, over-admitting by at most the number of concurrent redeemers.
-                        -- Both rows survive in this append-only record, so the overage is
-                        -- auditable, and removal is owner-gated (member removal + Revocation).
-                        -- Same class as the convergence note on UsageStampId above.
-                        -- One rule for FUTURE writers: two FormationUsage rows for one token
-                        -- inserted in ONE transaction each read the same committed count, so
-                        -- they can jointly exceed the cap. No writer in this repo does that; it
-                        -- is a constraint on new writers, not a case to engineer for.
-                        -- Do not "fix" this into a per-token sequence number to restore a
-                        -- strict cap — that trade was weighed and rejected (2026-08-04): a
-                        -- fought-over sequence key turns a concurrent redemption into a silent,
-                        -- unrecoverable loss of a consented join, which is strictly worse than
-                        -- a visible, reversible over-admission.
                         and (FI.TotalUses is null or FI.TotalUses > (select count(1) from committed.FormationUsage U where U.Token = new.Token))
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
-                        -- An invite carrying a ValidationUrl demands a sign-off from a key the party
-                        -- ENROLLED in ValidationKey. The signature is verified against the STORED VK.Key,
-                        -- NOT against context.ValidationKey — that distinction is the whole point:
-                        -- context.ValidationKey is a plain insert parameter, so verifying against it asked
-                        -- only "did the redeemer sign its own disclosure with SOME key it holds?", which any
-                        -- redeemer answers by minting a throwaway keypair. context.ValidationKey survives
-                        -- purely to SELECT which enrolled row is being claimed; naming an enrolled key while
-                        -- signing with a different one fails the verify against VK.Key.
-                        --
-                        -- Deliberate: CHECKs run on write only, so removing a validation key later does NOT
-                        -- re-examine the FormationUsage rows it already approved. The sign-off was valid when
-                        -- given and the strand it authorized stays formed; removal narrows who may approve
-                        -- FUTURE redemptions, it is not a retroactive revocation of past ones.
-                        --
-                        -- What ONE sign-off buys: exactly ONE row. The digest covers
-                        -- (Token, UsageStampId, StrandId, PeerKey, Disclosure), so an approval is NOT
-                        -- transferable across invitations, redemptions, networks, joiners, or disclosure
-                        -- text. Replay is closed twice over, by two independent mechanisms: presenting an
-                        -- approval VERBATIM repeats its UsageStampId and is refused by this table's
-                        -- primary key; presenting it under any OTHER redemption changes a signed field
-                        -- and fails this verify.
-                        -- Every signed field is supplied by the redeeming side — nothing derived from
-                        -- the table's current state is bound — so no concurrent write can invalidate an
-                        -- approval between the sign-off and the row landing.
-                        -- Why StrandStampId is deliberately NOT bound: it names the strand ROW
-                        -- incarnation, which the unbound path (redeemInvitation) mints inside its own
-                        -- transaction, and it adds nothing on top of a strictly single-use approval —
-                        -- StrandId already pins WHICH network the approver approved joining.
                         and (FI.ValidationUrl is null or exists (
                             select 1 from ValidationKey VK
                                 where VK.Key = context.ValidationKey
                                     and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.UsageStampId, new.StrandId, new.PeerKey, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
-                        -- A bound invite (non-null StrandId) may only ever name its own host strand:
-                        -- without this, any holder of a bound token could record consent against an
-                        -- arbitrary strand id — annotating an unrelated strand, or (before
-                        -- Strand.AuthorizedInsert's consent branch was narrowed to unbound invites)
-                        -- consent-seating that id outright.
-                        -- NOTE: an UNBOUND invite is deliberately left free to name any strand, so a
-                        -- holder can spend a use appending a consent row to an unrelated existing
-                        -- strand. Harmless today (the row grants nothing, it only burns a use and
-                        -- forecloses that id's consent-seating, which is the safe direction); if
-                        -- unlimited-TotalUses invites ever become common, this is an append-only
-                        -- growth surface worth bounding.
                         and (FI.StrandId is null or FI.StrandId = new.StrandId)
             )
         ),
-        -- Matched on the (id, stamp) PAIR, the same key Strand.AuthorizedInsert's consent branch
-        -- reads back: a usage row may only ever name a strand ROW that exists, so a consent record
-        -- can never be filed against a stamp of the writer's choosing and held in reserve to
-        -- re-seat the id after a removal.
+        -- A usage row may only name a strand row that exists, so a consent record cannot be held
+        -- in reserve to re-seat an id after its removal.
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId and S.StampId = new.StrandStampId)),
-        -- The JOINING peer proves it consented to this redemption: PeerKey is its own ed25519
-        -- public key and PeerSig is its signature over the 'consent'-tagged digest below.
-        -- Unlike the approver's sign-off (context.ValidationSignature, checked against a STORED
-        -- ValidationKey row), the identity here IS the key, so there is no enrolled row to look
-        -- up and nothing for a writer to substitute: a forged joiner would need that joiner's
-        -- private key. Stored rather than passed in context so any later reader can re-check it
-        -- (verifyFormationConsent); the 'consent' action tag keeps this replicated signature
-        -- useless against every other rule in this schema (notably the approver's 'vouch'
-        -- digest over the same table).
-        -- NOTE: StrandId is deliberately NOT in this digest — the joiner cannot know it when it
-        -- signs (a bound invite's host strand arrives only in the result frame; an unbound
-        -- strand is responder-minted). The responder cannot substitute a strand anyway: bound
-        -- invites are pinned by Authorized's FI.StrandId check, unbound invites mint fresh.
+        -- The joiner proves it agreed. PeerKey is its own key, so there is nothing for a writer to
+        -- substitute; stored on the row so any reader can re-check it (verifyFormationConsent).
+        -- StrandId is not signed: the joiner cannot know it when it signs.
         constraint PeerConsented check on insert (
             verify(digest('CadreControl.FormationUsage', 'consent',
                           new.Token, new.UsageStampId, new.PeerKey, new.Disclosure),
                    new.PeerSig, new.PeerKey, 'ed25519')
-        ),
-    -- Context here is only what the approver-side rules read: Now for expiry, and the
-    -- ValidationKey/ValidationSignature pair for the 'vouch' check in Authorized. The joiner's
-    -- signature is NOT context — it lives on the row (PeerSig, verified by PeerConsented above).
+        )
     ) with context (Now datetime, ValidationKey text null, ValidationSignature text null);
 
-    -- Token is no longer a primary-key prefix (the key is the redemption nonce), so the
-    -- per-token filters — the cap count in Authorized above, and cadre-core's
-    -- countFormationUsage / isTokenUsed / hasOutstandingFormationInvite — are served by this
-    -- index rather than by a full scan of a table that is append-only and grows for the life
-    -- of the party.
-    --
-    -- The cap count is only ever as correct as this index's convergence across machines. That
-    -- convergence failed once: from 2026-08-04 to 2026-08-25 a descent on a second machine
-    -- returned only the rows THAT machine wrote, so the index was removed and the reads went
-    -- back to the scan. The engine defect was fixed upstream and re-measured here on
-    -- 2026-09-17, so the index is declared again. Its guard is the integration-tests scenario
-    -- `strand-formation-concurrent-redemption`, which asserts BOTH machines' views of a raced
-    -- redemption and therefore goes red if that convergence regresses.
-    --
-    -- NOTE: the write side has its own exposure. Every FormationUsage insert now maintains this
-    -- sub-collection as well as the table, and an intermittent engine failure once hit exactly that
-    -- step on other tables (a table's rows committed while its index did not; closed 2026-09-17 with
-    -- the upstream sync fixes, `tickets/complete/strand-unique-index-sync-stale-revision`). Nothing
-    -- has been observed here, and redemptions are rare writes; but if joins start failing
-    -- intermittently with an index-sync error naming FormationUsage, this declaration is the first
-    -- thing to suspect.
+    -- Serves the per-token reads (the cap count above; cadre-core's countFormationUsage,
+    -- isTokenUsed and hasOutstandingFormationInvite) on an append-only table. Its cross-machine
+    -- convergence is guarded by the integration scenario strand-formation-concurrent-redemption.
     index FormationUsageByToken on FormationUsage (Token);
 
-    -- Append-only retirement record for the one-off StampId nonces of removed rows of every
-    -- guarded table (listed on TableName below). Without it a removal was undoable: the add
-    -- approval is a signature over
-    -- (row key, stamp) that never expires, and deleting the row freed the stamp, so anyone who
-    -- kept a copy of the approval could resurrect the row.
-    -- Each tombstone also records WHICH row was retired (RowKey below): the consent branch of
-    -- Strand.AuthorizedInsert reads it to refuse consent-seating any strand id that has ever
-    -- been removed, whichever way it was seated.
-    -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so a node
-    -- that has not yet converged on a Revocation row can still accept the replayed add, and the
-    -- resurrected row coexists with the tombstone after merge — same class as the MinOneOwner
-    -- note on OwnerKey. The read-side mitigation is ControlDatabase.queryCadrePeers, which
-    -- drops any CadrePeer row whose StampId appears here; every membership reader inherits it.
-    -- NOTE: append-only, so this table only ever grows. Every append is owner-signed
-    -- (Authorized below), so the growth surface is the owner keys, not every writer that can
-    -- reach the control database. Cadres are a handful of peers and owner rotation is rare, so
-    -- unbounded growth is fine today; revisit if either changes.
-    -- A tombstone committed while the node was alone is local-only (never broadcast); the
-    -- ReissuedAt counter below exists so an owner can re-write — and therefore re-broadcast —
-    -- such a tombstone once peers are reachable, without changing what it means.
-    -- One row retires nothing: the singleton ledger marker ('Revocation', 'ledger', 'opened'),
-    -- filed once by an owner's connected reconcile pass (ControlDatabase.openRevocationLedger).
-    -- It exists only so this table is never a never-written block. The storage layer consults
-    -- a block's cohort on EVERY read of a block it does not hold, and every membership lookup
-    -- and every guarded insert (NotRevoked) reads this table; once any row exists the block is
-    -- held and re-checked on the storage layer's normal read-repair schedule, like every other
-    -- populated table. It cannot read as a retirement: every reader of this table filters on
-    -- its own guarded TableName, 'Revocation' is not one, and ControlDatabase.queryRevocations
-    -- skips the marker, so nothing reaps or re-issues it.
+    -- Append-only retirement record for the stamps of removed rows of every guarded table, with
+    -- the removed row's key. Every append is owner-signed, so the growth surface is the owner
+    -- keys. One singleton marker row, ('Revocation', 'ledger', 'opened'), retires nothing: an
+    -- owner's connected reconcile pass files it (ControlDatabase.openRevocationLedger) so this
+    -- table is never a never-written block, which the storage layer would consult the cohort
+    -- for on every guarded insert and membership lookup. Readers filter on their own guarded
+    -- TableName, and queryRevocations skips it.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' |
-                                    -- 'JoinedStrand' | 'PendingJoin' | 'DeviceToken', or 'Revocation' for the
-                                    -- ledger marker only (all confined by RowIsGone below)
-        RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
-                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id / StrandPartyKey.Id /
-                                    -- JoinedStrand.Id / PendingJoin.Id
-                                    -- Every guarded table's RevocationRecorded CHECK requires the
-                                    -- accompanying tombstone to carry the removed row's key here, so
-                                    -- a REMOVAL cannot file a misnamed tombstone. A tombstone with no
-                                    -- accompanying delete is not covered by that (see Authorized).
-        StampId text,               -- the retired nonce
-        -- Bumped by an owner-signed re-issue so a tombstone written while the node was alone
-        -- (committed local-only, never broadcast) can be re-written and therefore re-broadcast
-        -- on cohort growth. Carries NO semantics: nothing reads it, and retirement is decided
-        -- by the row's existence, not by this value.
-        ReissuedAt integer not null default 0,
-        -- Keyed on the stamp, not the RowKey: stamps are unique per row incarnation, and one
-        -- name may legitimately carry several tombstones over its life (seat -> delete ->
-        -- owner re-seat -> delete).
+        TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' |
+                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken', or 'Revocation' for the marker
+        RowKey text,                -- primary key of the removed row
+        StampId text,               -- the retired stamp
+        ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
+                                        -- node was alone can be re-written and so re-broadcast; nothing reads it
+        -- Keyed on the stamp: one row key may carry several tombstones over its life.
         primary key (TableName, StampId),
-        -- Retirement is permanent: a tombstone may never be withdrawn.
+        -- Retirement is permanent.
         constraint NoDelete check on delete (false),
-        -- Pinned at 0 on insert so an owner cannot seat a tombstone at a saturated counter and
-        -- thereby freeze its own later re-issues (ReissueOnly below). Deliberately NOT folded
-        -- into the Authorized digest: the value is fixed by this rule, so signing over it would
-        -- only widen the signed surface for no gain, and would invalidate every existing
-        -- insert-side digest.
+        -- Pinned at 0 so an owner cannot seat a tombstone at a counter its own re-issues cannot pass.
         constraint FreshTombstone check on insert (new.ReissuedAt = 0),
-        -- A re-issue may move NOTHING but the counter, and only upward. Without the identity
-        -- clause an "update" would be a way to re-point a tombstone at a different row,
-        -- restoring exactly the replay this table exists to stop.
+        -- A re-issue moves nothing but the counter, and only upward.
         constraint ReissueOnly check on update (
             new.TableName = old.TableName and new.RowKey = old.RowKey
                 and new.StampId = old.StampId and new.ReissuedAt > old.ReissuedAt
         ),
-        -- A stamp may only be retired once its row is actually gone. Deferred (subquery), so a
-        -- delete in the same transaction has already landed. Retiring a stamp that never
-        -- existed is permitted and harmless: a stamp carries 128 bits of CSPRNG output
-        -- (control-database.ts:generateStampId — 16 bytes of sha256(PeerId) followed by 16
-        -- random bytes), so a future legitimate one cannot be guessed and pre-planted.
-        -- Deliberately keyed on the STAMP only, not RowKey: checking "no live row named
-        -- new.RowKey" breaks under out-of-order convergence — a peer removed (tombstone names
-        -- it, stamp1) then re-admitted (stamp2) would leave a node that converges on the
-        -- re-add FIRST rejecting the stamp1 tombstone forever, never learning that stamp is
-        -- retired. The stamp-only form passes there (stamp1 is not live).
-        -- The last branch admits the ledger marker (see the table comment) and nothing else under
-        -- TableName 'Revocation': the whole triple is pinned, so with the primary key
-        -- (TableName, StampId) it is a singleton and the append-only growth surface is unchanged.
-        -- 'opened' cannot collide with a real stamp (43 base64url characters, generateStampId),
-        -- and the primary key includes TableName anyway.
+        -- A stamp is retired only once its row is gone (deferred, so the same-transaction delete
+        -- counts). Keyed on the stamp, not RowKey: a node that converges on a re-admission before
+        -- the earlier removal's tombstone must still accept that tombstone. Retiring a stamp that
+        -- never existed is harmless: stamps carry 128 random bits (generateStampId). The last
+        -- branch admits the marker row and nothing else under 'Revocation'.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -1006,55 +550,21 @@ declare schema CadreControl {
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
                 or (new.TableName = 'StrandPartyKey' and not exists (select 1 from StrandPartyKey K where K.StampId = new.StampId))
                 or (new.TableName = 'JoinedStrand' and not exists (select 1 from JoinedStrand J where J.StampId = new.StampId))
-                or (new.TableName = 'PendingJoin' and not exists (select 1 from PendingJoin P where P.StampId = new.StampId))
+                or (new.TableName = 'JoinRequest' and not exists (select 1 from JoinRequest J where J.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
                 or (new.TableName = 'Revocation' and new.RowKey = 'ledger' and new.StampId = 'opened')
         ),
-        -- Appending a tombstone is an OWNER action, like every other write in this schema.
-        -- Ungated, any writer that could reach the control database could retire a stamp:
-        -- filing one against a CadrePeer row not visible locally (RowIsGone reads LOCALLY
-        -- VISIBLE rows — see the convergence note above) evicted that peer party-wide AND
-        -- permanently blocked the owner's own later re-admission of it (NotRevoked), and
-        -- filing arbitrary stamps flooded a table whose rows never go away.
-        -- The digest binds the WHOLE row (TableName, RowKey, StampId); the 'CadreControl.Revocation'
-        -- domain tag keeps it disjoint from every other rule — including the
-        -- 'CadreControl.CadrePeer' 'remove' digest the same owner signs in the SAME
-        -- transaction for the delete this tombstone accompanies.
-        -- RowKey is not cross-checked HERE against the retired row: positively binding it (e.g.
-        -- requiring a committed.Strand row carrying the pair) would reject a tombstone re-issued
-        -- in a LATER transaction — which the delete-while-alone durability path
-        -- (docs/architecture.md) plans to do — and reject it outright on a node that never
-        -- converged on the removed row. The binding lives on the other side instead: each
-        -- guarded table's RevocationRecorded requires the tombstone accompanying a DELETE to
-        -- name that row's key, which the re-issue path never trips (it files no delete).
-        -- Residual: a STANDALONE tombstone — owner-signed, naming a stamp no live row holds —
-        -- is still accepted, so an owner can name an id that never existed and thereby
-        -- permanently foreclose CONSENT-seating of that id (Strand.AuthorizedInsert).
-        -- Owner-only, the owner already controls invite issuance, and unbound ids are 128
-        -- random bytes minted at redemption — no escalation (same reasoning as the pre-plant
-        -- note on RowIsGone).
-        -- Reads LIVE OwnerKey (like ValidationKey / Strand / CadrePeer / DeviceToken), not
-        -- committed.OwnerKey. The one difference that makes: a founding transaction on an
-        -- owner-less database could seat an owner key and file a tombstone in one go. An
-        -- owner-less control database is already a total loss, and a second transaction
-        -- achieves the same thing under committed.*, so consistency with the siblings is
-        -- worth more than the distinction — do not "tighten" this without a reason other
-        -- than that one.
-        -- RowIsGone and NoDelete are unchanged: they guard an owner retiring a stamp early
-        -- or withdrawing one later, which authorization does not cover.
-        -- The ledger marker is signed under this same rule, over
-        -- digest('CadreControl.Revocation', 'remove', 'Revocation', 'ledger', 'opened'). The
-        -- 'remove' tag on a row that retires nothing is deliberate: reusing the one append rule
-        -- keeps every append owner-signed without adding an unsigned or differently tagged
-        -- branch, and a captured marker signature can only re-file the identical row, whose
-        -- primary key is already taken.
+        -- Owner-signed over the whole row under its own domain tag, so the delete's 'remove'
+        -- signature filed in the same transaction never doubles as the tombstone's. Ungated, any
+        -- writer could evict a peer party-wide and block its re-admission. RowKey is not checked
+        -- against the retired row here (that would reject a tombstone re-issued later, or filed on
+        -- a node that never held the row); each guarded table's RevocationRecorded binds it
+        -- instead. Reads live OwnerKey like the sibling tables. The marker is signed under this
+        -- rule too, over ('Revocation', 'ledger', 'opened').
         constraint Authorized check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
-        -- A re-issue is an OWNER action, like the original append. Distinct 'reissue' action
-        -- tag, so an append approval can never be replayed as a re-issue and vice versa. The
-        -- digest adds ReissuedAt so a captured re-issue signature cannot bump the counter to
-        -- any other value. Reads LIVE OwnerKey, matching Authorized above.
+        -- Distinct 'reissue' tag, binding ReissuedAt, so neither approval replays as the other.
         constraint AuthorizedReissue check on update (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey
                 and verify(digest('CadreControl.Revocation', 'reissue',

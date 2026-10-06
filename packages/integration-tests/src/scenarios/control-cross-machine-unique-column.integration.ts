@@ -3,7 +3,7 @@
  * is refused to the other, and the refused row lands nowhere.
  *
  * Every `unique` column in `schemas/control.qsql` — the `StampId` of each owner-signed table
- * (`OwnerKey`, `ValidationKey`, `Strand`, `StrandPartyKey`, `JoinedStrand`, `PendingJoin`, `CadrePeer`,
+ * (`OwnerKey`, `ValidationKey`, `Strand`, `StrandPartyKey`, `JoinedStrand`, `JoinRequest`, `CadrePeer`,
  * `DeviceToken`, `FormationInvite`), plus `Strand.MemberPrivateKey` — is enforced by the storage engine
  * through a secondary index (the `_uniq_N` sub-collections), not by the table's own tree.
  * That is the same machinery a declared `index` uses, and it was measurably broken across

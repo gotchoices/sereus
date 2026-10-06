@@ -1,6 +1,6 @@
 description: Decide whether a party's always-on machines that hold no owner key (donated or hosted nodes) may finish a join on the party's behalf while its phone is offline, which needs them to write two kinds of record that today only an owner may sign.
 prereq: pending-join-retry-loop
-files: schemas/control.qsql (JoinedStrand.AuthorizedInsert ~395-402, StrandPartyKey.AuthorizedInsert ~330-336), packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/pending-join-runner.ts (from pending-join-retry-loop), packages/cadre-core/src/cadre-node.ts (ensureStrandPartyKey ~5558, enrolledOwnerSigningKey ~2441), docs/architecture.md (JoinedStrand row ~40; cadre-host "holds no owner keys" ~1094, ~2112), docs/cadre-host.md
+files: schemas/control.qsql (JoinedStrand.AuthorizedInsert, StrandPartyKey.AuthorizedInsert, JoinSuccess.AuthorizedInsert), packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/pending-join-runner.ts (from pending-join-retry-loop), packages/cadre-core/src/cadre-node.ts (ensureStrandPartyKey ~5558, enrolledOwnerSigningKey ~2441), docs/architecture.md (JoinedStrand row ~40; cadre-host "holds no owner keys" ~1094, ~2112), docs/cadre-host.md
 ----
 # May a machine that is not an owner finish a pending join?
 
@@ -16,7 +16,7 @@ The architecture says the machines most likely to be "your other nodes" cannot d
 - Finishing a join writes owner-signed control rows:
   - `JoinedStrand`. Its schema comment says it is "deliberately NOT self-signable by an enrolled CadrePeer: every always-on machine of the party downloads the strands this table names, so a non-owner machine could otherwise make them all host an arbitrary strand."
   - For a closed strand, `StrandPartyKey`, the party's membership identity, which `formStrand` seats via `ensureStrandPartyKey` and which throws without an owner key.
-  - The outcome on the `PendingJoin` row itself (`pending-join-control-table`).
+  - The outcome row itself, `JoinSuccess` or `JoinFailure` (`pending-join-control-table`).
 
 `pending-join-retry-loop` therefore runs the retries on **owner** machines only: the phone while its node runs, and an always-on machine only when it is an owner (a founding cadre-cli node, a cadre-host running its own cadre). For the common phone-plus-donated-node party, the phone still has to be running for the join to finish.
 
@@ -26,11 +26,13 @@ That gap is smaller than it sounds, because of the inviter-side tickets (`format
 
 **A. The owner approves in advance; any enrolled machine may finish (recommended).**
 
+The project owner has since stated the design intent for cadre invitations (`cadre-invitations-redeemable-by-any-member`): an owner-signed approval takes effect without the owner signing again, and any member machine may carry it out. Option A applies that same pattern to pending joins, so it matches the intended control model rather than being an exception to it.
+
 When the phone writes the pending row (owner-signed), it also mints the party key the join will use, `PartyPrivateKey`, and that key is covered by the same signature. Three new insert branches, each requiring the signer to be an enrolled, owner-vouched `CadrePeer` (its machine key, as the `CadrePeer` self-publish already verifies):
 
-- `PendingJoin`: a machine may replace a live **pending** row with an outcome row that copies every owner-signed column unchanged.
-- `StrandPartyKey`: a row is allowed when `new.PrivateKey` equals the `PartyPrivateKey` of a `PendingJoin` row that the same transaction turns to `joined` with `StrandId = new.Id`.
-- `JoinedStrand`: a row is allowed when the same transaction turns a pending row to `joined` with `StrandId = new.Id`.
+- `JoinSuccess` / `JoinFailure`: a machine may record an outcome for a live, still **pending** request.
+- `StrandPartyKey`: a row is allowed when `new.PrivateKey` equals the `PartyPrivateKey` of the `JoinRequest` whose `JoinSuccess` row the same transaction writes with `StrandId = new.Id`.
+- `JoinedStrand`: a row is allowed when the same transaction writes a `JoinSuccess` row with `StrandId = new.Id` for a pending request.
 
 What an enrolled machine gains: **once per owner-approved pending join**, it chooses which strand id that join lands on. The honest path gives the same choice to the **inviter**, a stranger, since the strand id comes from the formation result, which the owner cannot check either. A compromised enrolled machine could make the party host one strand of its choosing per pending row. It cannot mint pending rows, and it cannot choose the party key. Cost: three new schema branches in security-sensitive tables, and a `PartyPrivateKey` column, the party's strand identity secret, written before the strand is known. That column is replicated like `StrandPartyKey` already is.
 

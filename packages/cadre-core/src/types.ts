@@ -1221,13 +1221,11 @@ export interface StrandRow {
 }
 
 /**
- * A `CadreControl.PendingJoin` row: a join this party asked for through another party's
- * invitation, readable by every machine of the party. Each outcome carries only its own
- * columns (the schema's `OutcomeShape` check): `'joined'` sets `StrandId` (and, for a
- * closed strand, `MembershipInvite`), `'failed'` sets `FailureCode`, and a pending row
- * (`Outcome: null`) sets neither.
+ * A `CadreControl.JoinRequest` row: a join this party asked for through another party's
+ * invitation, readable by every machine of the party. The row never changes; its outcome is
+ * a `JoinSuccess` or `JoinFailure` row keyed by `StampId` (see {@link PendingJoin}).
  */
-export interface PendingJoinRow {
+export interface JoinRequestRow {
   /** base64url sha256 of the invitation token (`pendingJoinId`). */
   Id: string;
   /** `CadreNode.encodeInvitation` of the invitation. A bearer credential. */
@@ -1238,31 +1236,50 @@ export interface PendingJoinRow {
   RequestedAt: number;
   /** Epoch ms; no attempt starts at or after it. */
   ExpiresAt: number;
-  Outcome: null | 'joined' | 'failed';
-  /** Epoch ms the outcome was recorded; null while pending. */
-  OutcomeAt: number | null;
-  /** `'joined'`: the strand the formation returned. */
-  StrandId: string | null;
-  /** `'joined'`, closed strand: JSON of the {@link StrandMembershipInvite} the formation delivered. */
-  MembershipInvite: string | null;
-  /** `'failed'`: a `FormationRejectionCode`, `'expired'` or `'local'`. Not constrained by the schema. */
-  FailureCode: string | null;
-  /** `'failed'`: human-readable text. */
-  FailureReason: string | null;
-  /** Single-use nonce of this row incarnation; `ControlDatabase.replacePendingJoin` names it as the row it replaces. */
+  /** Single-use nonce of this request incarnation; its outcome rows name it. */
   StampId: string;
+}
+
+/**
+ * The outcome of a {@link JoinRequestRow}: a `CadreControl.JoinSuccess` row (`'joined'`) or
+ * a `CadreControl.JoinFailure` row (`'failed'`), without the request stamp that keys it.
+ */
+export type JoinOutcome =
+  | {
+      kind: 'joined';
+      /** Epoch ms the outcome was recorded. */
+      RecordedAt: number;
+      /** The strand the formation returned. */
+      StrandId: string;
+      /** Closed strand: JSON of the {@link StrandMembershipInvite} the formation delivered. */
+      MembershipInvite: string | null;
+    }
+  | {
+      kind: 'failed';
+      /** Epoch ms the outcome was recorded. */
+      RecordedAt: number;
+      /** A `FormationRejectionCode`, `'expired'` or `'local'`. Not constrained by the schema. */
+      Code: string;
+      /** Human-readable text. */
+      Reason: string;
+    };
+
+/** A join request with its outcome, as `ControlDatabase.queryPendingJoins` reads the three tables. */
+export interface PendingJoin extends JoinRequestRow {
+  /** Null while pending. */
+  outcome: JoinOutcome | null;
 }
 
 /**
  * A join this party asked for through `CadreNode.requestJoin`, as one machine sees it.
  *
- * `pending`, `joined` and `failed` come from the party-wide `PendingJoin` row and read the same
+ * `pending`, `joined` and `failed` come from the party-wide join request and its outcome row and read the same
  * on every machine. `trying` (an attempt is running on this machine) and `waiting` (this
  * machine's last attempt failed in a way worth retrying) are this machine's own view of a
  * pending row, so two machines can report different states for it.
  */
 export interface PendingJoinStatus {
-  /** `PendingJoin.Id`: the sha256 of the invitation token. */
+  /** `JoinRequest.Id`: the sha256 of the invitation token. */
   id: string;
   sAppId: string;
   /** Epoch ms. */
@@ -1486,7 +1503,7 @@ export interface StrandMembershipInvite {
    * whoever holds it can `consumeInvite` exactly once. Same sensitivity class and
    * handling as `memberPrivateKey` — delivered only inside the validated,
    * post-approval formation result. The inviting side never writes it to its control
-   * DB. The joining side may copy it into its own `PendingJoin` row
+   * DB. The joining side may copy it into its own `JoinSuccess` row
    * (`MembershipInvite`), owner-signed and party-private like
    * `JoinedStrand.MemberPrivateKey`, so a join finished on one machine of the party
    * can be seated by whichever machine launches the strand first.

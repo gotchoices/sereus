@@ -23,7 +23,7 @@ import {
 /**
  * REAP authorization coverage: a COMMITTED `Revocation` tombstone authorizes deleting the
  * exact row incarnation it retires — the new branch on `CadrePeer` / `DeviceToken` /
- * `ValidationKey` / `JoinedStrand` / `PendingJoin` `AuthorizedDelete`, and the `ControlDatabase.reapRevokedRow` method that
+ * `ValidationKey` / `JoinedStrand` / `JoinRequest` `AuthorizedDelete`, and the `ControlDatabase.reapRevokedRow` method that
  * drives it. See the constraint comment on `CadrePeer.AuthorizedDelete` for the full
  * rationale (why `committed.*`, why the stamp is bound).
  *
@@ -185,20 +185,25 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
     return { stamp: (await db.queryJoinedStrandStampId(id))! };
   }
 
-  /** Record a pending join the legitimate (owner-signed) way. */
+  /** Record a pending join the legitimate (owner-signed) way, with a failed outcome so the reap has an outcome row to take with it. */
   async function recordPendingJoin(): Promise<{ id: string; stamp: string }> {
     const now = Date.now();
-    const row = await db.insertPendingJoin({
+    const pending = await db.insertJoinRequest({
       Id: pendingJoinId('token-' + Math.random().toString(36).slice(2)),
       Invitation: 'invitation', Disclosure: '{}', RequestedAt: now, ExpiresAt: now + 60_000,
-      Outcome: null, OutcomeAt: null, StrandId: null, MembershipInvite: null, FailureCode: null, FailureReason: null,
     }, founder.publicKey, m => signAs(founder, m));
-    return { id: row.Id, stamp: row.StampId };
+    await db.recordJoinOutcome(pending, { kind: 'failed', RecordedAt: now, Code: 'expired', Reason: 'test' }, founder.publicKey, m => signAs(founder, m));
+    return { id: pending.Id, stamp: pending.StampId };
   }
 
   /** Raw read: queryPendingJoin hides a retired stamp, so it cannot show whether the row was reaped. */
-  function pendingJoinRow(id: string): Promise<Record<string, unknown> | undefined> {
-    return rawDb.get('select Id from CadreControl.PendingJoin where Id = ?', [id]);
+  function joinRequestRow(id: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get('select Id from CadreControl.JoinRequest where Id = ?', [id]);
+  }
+
+  /** Raw read of the outcome row the reap must take with the request. */
+  function joinFailureRow(stamp: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get('select RequestStampId from CadreControl.JoinFailure where RequestStampId = ?', [stamp]);
   }
 
   /** Owner-signed tombstone append (the shape `Revocation.Authorized` verifies). */
@@ -473,9 +478,9 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
 
       it('reaps every reapable table in one pass, and counts each row it removed', async () => {
         // The sweep dispatches on the tombstone's own TableName, so CadrePeer coverage
-        // alone would not show DeviceToken / ValidationKey / JoinedStrand / PendingJoin
+        // alone would not show DeviceToken / ValidationKey / JoinedStrand / JoinRequest
         // reaching reapRevokedRow — and the returned count is what the reconcile pass logs,
-        // so it has to aggregate. This is also JoinedStrand's and PendingJoin's reap-branch
+        // so it has to aggregate. This is also JoinedStrand's and JoinRequest's reap-branch
         // coverage.
         const sibling = '12D3KooWSweepMultiTableSibling';
         const { stamp: tokenStamp } = await seatDeviceToken(sibling);
@@ -487,13 +492,14 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
         await tombstoneStamp('DeviceToken', sibling, tokenStamp);
         await tombstoneStamp('ValidationKey', key, keyStamp);
         await tombstoneStamp('JoinedStrand', joinedId, joinedStamp);
-        await tombstoneStamp('PendingJoin', pendingId, pendingStamp);
+        await tombstoneStamp('JoinRequest', pendingId, pendingStamp);
 
         expect(await db.reapRevokedRows(SELF)).toBe(4);
         expect(await db.queryDeviceTokenStampId(sibling)).toBeNull();
         expect(await validationKeyRow(key)).toBeUndefined();
         expect(await db.queryJoinedStrand(joinedId)).toBeNull();
-        expect(await pendingJoinRow(pendingId)).toBeUndefined();
+        expect(await joinRequestRow(pendingId)).toBeUndefined();
+        expect(await joinFailureRow(pendingStamp), 'the reap takes the outcome row with the request').toBeUndefined();
       }, 60_000);
 
       it('skips this node\'s OWN CadrePeer and DeviceToken rows while reaping a sibling\'s', async () => {
