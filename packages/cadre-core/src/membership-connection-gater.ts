@@ -137,12 +137,12 @@
  *
  * The ordering is arranged so nothing SHOULD open a connection here anyway:
  * `network.relayAddrs` resolves to a listener that dials nothing and reserves
- * after bring-up (`relay-addrs.ts`), and the control-cohort reconcile pass is
- * scheduled post-start. This window is what makes that a property rather than an
- * accident of ordering — the live case it actually catches is
- * `controlNetwork.bootstrapNodes`, where `@libp2p/bootstrap` emits its discovery
- * events ~1 s after `libp2p.start()` and the connection manager auto-dials from
- * there, which is a race bring-up wins only while raw-storage latency stays low.
+ * after bring-up (`relay-addrs.ts`), `controlNetwork.bootstrapNodes` is dialed
+ * after bring-up (`CadreNode.dialControlBootstrapPeers`), and the control-cohort
+ * reconcile pass is scheduled post-start. This window is what makes that a property
+ * rather than an accident of ordering — the live cases it catches are peers the node
+ * remembers from a previous run, which the connection manager auto-dials, and
+ * inbound dials.
  *
  * A denial here costs a retry, not a partition: libp2p's connection manager
  * re-dials on its auto-dial cadence, the reservation supervisor re-drives, and a

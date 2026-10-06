@@ -51,10 +51,11 @@
  * needed no gate, or a founder request that ran the bootstrap against the still-gated
  * database (`foundExistingStrand`).
  *
- * NOTE: the gate covers app and membership tables, not the schema catalog. Every launch —
- * joiner or founder — writes the catalog collection (`optimystic/schema` plus two
- * hash-named blocks, measured 2026-09-16) alone, during `connectToStrand`'s schema apply,
- * before any peer contact. That is the same "two histories under one id" shape this gate
+ * NOTE: the gate covers app and membership tables, not the schema catalog. A launch with no
+ * seed writes the catalog collection (`optimystic/schema` plus two hash-named blocks,
+ * measured 2026-09-16) alone, during `connectToStrand`'s schema apply, before any peer
+ * contact. (One with a seed cannot until a seed peer answers — Optimystic refuses the
+ * absence ruling — and is rebuilt on a timer by `StrandInstanceManager.deferUnreachableJoin`.) That is the same "two histories under one id" shape this gate
  * exists to prevent, and it is only safe because both sides derive byte-identical content
  * from the same schema text. If the catalog ever carries per-machine or ordering-dependent
  * content (optimystic's own `0.5-same-named-tables-in-two-schemas-share-storage` re-keys

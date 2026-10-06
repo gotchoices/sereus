@@ -101,16 +101,12 @@ describe('StrandInstanceManager', () => {
       await manager.stopAll();
     }, 30000);
 
-    it('should accept a cohort-derived bootstrapNodes seed', async () => {
-      // Acceptance smoke: a bootstrapNodes seed is forwarded to createLibp2pNode
-      // and the strand still reaches active. The value-derivation itself is
-      // covered by strand-cohort.spec.ts (asserting the forwarded array would
-      // require mocking the @optimystic/db-p2p import — see review handoff).
-      //
-      // The seed is BOGUS and unreachable, so the node never connects to it and
-      // coordinates alone on the network transactor — the same stale-cohort shape
-      // control-database-solo-warm-start.spec.ts proves does not hang. Reaching
-      // `active` despite the dead seed is part of what this smoke verifies.
+    it('keeps a launch whose seed is unreachable tracked and syncing, not failed', async () => {
+      // A bootstrapNodes seed is forwarded to createLibp2pNode. The seed is BOGUS and
+      // unreachable, and Optimystic will not rule the schema catalog never-created while a
+      // bootstrap peer is unheard, so the database cannot be built. The launch must not fail:
+      // it stays tracked as 'syncing' with no database and rebuilds on a timer
+      // (deferUnreachableJoin) until a seed peer answers.
       const manager = new StrandInstanceManager();
       // A real, parseable peer id — the libp2p bootstrap module validates it.
       const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
@@ -120,7 +116,9 @@ describe('StrandInstanceManager', () => {
 
       const instance = await manager.startStrand(config);
 
-      expect(instance.status).toBe('active');
+      expect(instance.status).toBe('syncing');
+      expect(instance.database).toBeUndefined();
+      expect(manager.getInstance('seeded-strand')).toBe(instance);
 
       await manager.stopAll();
     }, 30000);

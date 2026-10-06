@@ -401,7 +401,9 @@ describe('Chat participants on a closed cross-party strand', () => {
 			expect(instance).toBeDefined();
 			expect(instance!.status).toBe('syncing');
 			expect(instance!.database).toBeUndefined();
-			expect(instance!.libp2pNode).toBeDefined();
+			// No `libp2pNode` assertion: with no seed peer answering, the joiner cannot build even
+			// its schema catalog, so its runtime is torn down and rebuilt on a timer
+			// (`StrandInstanceManager.deferUnreachableJoin`) and a node exists only mid-rebuild.
 			// The retry contract: the same call rejects the same way while the host is gone,
 			// without tearing anything down (an app can keep calling until a member appears).
 			await expect(launchOnJoiner(side, joined)).rejects.toThrow(StrandAwaitingFirstSyncError);
@@ -411,15 +413,13 @@ describe('Chat participants on a closed cross-party strand', () => {
 			// The joiner's strand-scoped raw store holds no `default/<schema>/<Table>` block
 			// — the id every table's collection lives under (`tree://default/<schema>/<Table>`):
 			// no `default/app/Participant`, no `default/app/Message`, no `default/strand/Member`
-			// either. What it does hold is the schema catalog (`optimystic/schema` plus its
-			// hash-named blocks), which `connectToStrand`'s schema apply writes on every launch,
-			// joiner or founder, before any row exists — measured at 3 blocks here. (The control
-			// store is a separate scope and is not consulted here.)
+			// either — and not even the schema catalog (`optimystic/schema`): Optimystic refuses to
+			// rule it never-created while the seed peer is unheard, so the joiner never builds its
+			// own copy. (The control store is a separate scope and is not consulted here.)
 			const strandIndex = await readBlockIndex(joined.capture.forStrand(side.strandId));
 			const blockIds = [...strandIndex.keys()];
 			console.log(`[chat-participants] blocks in the unreachable joiner's strand store: ${blockIds.join(', ')}`);
-			expect(blockIds.filter((id) => id.startsWith('default/'))).toEqual([]);
-			expect(blockIds).toContain('optimystic/schema');
+			expect(blockIds).toEqual([]);
 		} finally {
 			await joined?.joiner.stop();
 			if (!hostStopped) await side?.host.stop();

@@ -461,15 +461,15 @@ describe('CadreNode control-network node options', () => {
       expect(options.port).toBe(0);
     });
 
-    it('forwards configured bootstrapNodes element-for-element', () => {
+    it('builds the node without the configured bootstrapNodes — they are dialed after bring-up', () => {
       const config = createConfig({ controlNetwork: { partyId: 'p', bootstrapNodes: ['/ip4/1.2.3.4/tcp/1/p2p/x'] } });
 
       const options = controlOptions(new CadreNode(config));
 
-      expect(options.bootstrapNodes).toEqual(['/ip4/1.2.3.4/tcp/1/p2p/x']);
+      expect(options.bootstrapNodes).toEqual([]);
     });
 
-    it('forwards an empty bootstrapNodes as [], not undefined — createLibp2pNode requires the field', () => {
+    it('passes bootstrapNodes as [], not undefined — createLibp2pNode requires the field', () => {
       const options = controlOptions(new CadreNode(createConfig()));
 
       expect(options.bootstrapNodes).toEqual([]);

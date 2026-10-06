@@ -1138,22 +1138,20 @@ export class CadreNode implements SAppIdLookup {
       this.initializeEnrolledMachineStore();
 
       // Arm the connection gate's BRING-UP QUIET PERIOD before the libp2p node
-      // exists, so no connection can form ahead of it: `@libp2p/bootstrap` emits
-      // its discovery events ~1 s after `libp2p.start()` and the connection
-      // manager auto-dials from there, which is INSIDE createControlNode below.
+      // exists, so no connection can form ahead of it: the node is built without
+      // its bootstrap peers (dialed after bring-up), but a peer it already knows
+      // from a previous run, or one that dials in, could otherwise connect inside
+      // createControlNode below.
       // The invariant being protected is "zero control connections during
       // control-database bring-up" — see the field's doc and
       // `membership-connection-gater.ts` → "The bring-up quiet period".
       //
-      // NOTE: without this gate the bootstrap arm is a RACE, not a guarantee — its
-      // safety margin is bring-up duration versus @libp2p/bootstrap's 1 s discovery
-      // fuse, and bring-up duration is (raw-storage operations) × per-operation
-      // latency. The cold-start operation count and the 50-90 ms/op figure a loaded
-      // phone actually sees live in `control-database.ts`'s `loadSchema` note (and
-      // are pinned by `control-start-storage-op-budget.spec.ts`): at the top of that
-      // range bring-up is 9-15 s, far past the fuse. So if this gate is ever removed
-      // or bypassed, that arm reopens for exactly the nodes most likely to hit it —
-      // phones joining a party, whose membership row has not replicated yet.
+      // NOTE: the gate, not the ordering, is what holds the invariant. Bring-up
+      // duration is (raw-storage operations) × per-operation latency; the cold-start
+      // operation count and the 50-90 ms/op figure a loaded phone sees live in
+      // `control-database.ts`'s `loadSchema` note (pinned by
+      // `control-start-storage-op-budget.spec.ts`), so bring-up can take 9-15 s —
+      // ample time for a remembered or inbound peer to connect without the gate.
       this.controlBringUpInFlight = true;
 
       // Create the control network libp2p node
@@ -1194,6 +1192,10 @@ export class CadreNode implements SAppIdLookup {
       // bring-up hazard for boot-time strand seeds that are always empty.
       this.controlBringUpInFlight = false;
       log('Control database initialized');
+      // Now that the gate is open, make contact with the configured bootstrap peers the
+      // node was built without (see buildControlNodeOptions). Not awaited: an unreachable
+      // relay must not hold up start().
+      void this.dialControlBootstrapPeers();
 
       // Attach the per-stream gate to the control DB's membership hub, so every
       // committed `CadrePeer` write re-materializes the authorized snapshot on its
@@ -1844,7 +1846,7 @@ export class CadreNode implements SAppIdLookup {
    * only caller in production is `createControlNode`.
    */
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
-    const { controlNetwork, network, profile } = this.config;
+    const { network, profile } = this.config;
     const identityKey = this.identityKey;
     // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
     // opens no connection — the reservation is driven explicitly at the END of
@@ -1863,7 +1865,11 @@ export class CadreNode implements SAppIdLookup {
 
     const nodeOptions: Parameters<typeof createLibp2pNode>[0] = {
       port: 0,
-      bootstrapNodes: controlNetwork.bootstrapNodes,
+      // Empty on purpose: Optimystic refuses to treat a block as never-created until it has
+      // heard from every `bootstrapNodes` peer, and the bring-up quiet period refuses those
+      // dials, so a non-empty list fails start() with `cohort-unreachable`. The configured
+      // peers are dialed once bring-up ends ({@link dialControlBootstrapPeers}).
+      bootstrapNodes: [],
       networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
       fretProfile: profile === 'storage' ? 'core' : 'edge',
@@ -2338,6 +2344,31 @@ export class CadreNode implements SAppIdLookup {
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
     }
+  }
+
+  /**
+   * Add the configured `controlNetwork.bootstrapNodes` to the control node's address book
+   * and dial each peer once — what `@libp2p/bootstrap` would have done had the node been
+   * built with them. Best-effort: a failed dial is logged, and the connection manager and
+   * FRET reconnect from the address book as they do for any known peer.
+   */
+  private async dialControlBootstrapPeers(): Promise<void> {
+    const node = this.controlNode;
+    if (!node) {
+      return;
+    }
+    const groups = groupAddrsByPeerId(this.config.controlNetwork.bootstrapNodes);
+    await Promise.all([...groups].map(async ([peerId, addrs]) => {
+      if (peerId === node.peerId.toString()) {
+        return;
+      }
+      await mergePeerAddrs(node, peerId, addrs);
+      try {
+        await node.dial(peerIdFromString(peerId));
+      } catch (error) {
+        log('dialControlBootstrapPeers: dial to bootstrap peer %s failed: %o', peerId, error);
+      }
+    }));
   }
 
   /**

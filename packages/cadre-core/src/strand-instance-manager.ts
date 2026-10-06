@@ -44,9 +44,18 @@ import { strandNodeAddrs } from './strand-network-config.js';
 import { resolveRelayServer } from './relay-server.js';
 import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
+import { isCohortUnreachableRead } from './control-read-retry.js';
 import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-manager');
+
+/**
+ * How often a joining launch that could not build its database, because no seed peer had
+ * answered, rebuilds its runtime (`StrandInstanceManager.deferUnreachableJoin`). Each attempt
+ * starts a libp2p node and dials the seed, so it is spaced well above the first-sync gate's
+ * probe cadence.
+ */
+export const UNREACHABLE_JOIN_RETRY_MS = 5_000;
 const timing = debug('sereus:cadre:timing');
 
 /** One caller blocked in {@link StrandInstanceManager.whenWritable}. */
@@ -505,6 +514,12 @@ export class StrandInstanceManager {
    * status.
    */
   private transitions: Map<string, RuntimeTransition> = new Map();
+  /**
+   * The pending rebuild per strand id of a launch whose database could not be built
+   * because no seed peer had answered yet ({@link deferUnreachableJoin}). Cleared by
+   * {@link releaseRuntime}, so a stop, a quiesce or a resume cancels it.
+   */
+  private unreachableJoinRetries: Map<string, unknown> = new Map();
   private stopping = false;
 
   constructor() {
@@ -691,6 +706,9 @@ export class StrandInstanceManager {
     // services must derive its prefix from the SAME string the node was built
     // with — hence one binding for both, not two literals that can drift.
     const networkName = `strand-${strandId}`;
+    // Set when the database build failed only because no seed peer has answered yet; see
+    // {@link deferUnreachableJoin}.
+    let joinWaitsForSeed = false;
     const protocolPrefix = `/optimystic/${networkName}`;
 
     // Whether this node runs the circuit-relay server, and its init — the same
@@ -886,7 +904,12 @@ export class StrandInstanceManager {
         onHeaderHeld: () => this.publishDatabase(instance, strandDb)
       }, config.firstSync);
       this.firstSyncGates.set(strandId, gate);
-      await strandDb.initialize();
+      try {
+        await strandDb.initialize();
+      } catch (error) {
+        joinWaitsForSeed = isCohortUnreachableRead(error);
+        throw error;
+      }
       timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
 
       // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
@@ -1027,7 +1050,56 @@ export class StrandInstanceManager {
       await this.releaseRuntime(instance).catch((cleanupErr) => {
         log('buildStrandRuntime cleanup for strand %s also failed: %o', strandId, cleanupErr);
       });
+      if (joinWaitsForSeed) {
+        this.deferUnreachableJoin(instance, error);
+        return;
+      }
       throw error;
+    }
+  }
+
+  /**
+   * Keep a launch `'syncing'` when its database could not be built because no seed peer has
+   * answered yet, and rebuild the runtime every {@link UNREACHABLE_JOIN_RETRY_MS}.
+   *
+   * Optimystic (since 1.11.0) will not rule a block never-created while any of a node's
+   * `bootstrapNodes` is unheard, so a joiner alone with an unreachable seed cannot build even
+   * the schema catalog: `strandDb.initialize()` fails with `cohort-unreachable`. A founder
+   * given a seed is refused the same way (normally it has none: no sibling runs the strand yet). Refusing is
+   * right (building it alone would fork the catalog), but failing the launch would drop the
+   * strand until the watcher relaunched it, and `addStrand` would reject with a raw Optimystic
+   * error. Deferring gives a joiner the same contract the first-sync gate gives one that did
+   * build: the strand stays tracked, {@link whenWritable} waits and rejects with the retryable
+   * `StrandAwaitingFirstSyncError`, and the launch proceeds once a seed peer answers. A failed
+   * composition stops the injected libp2p node, so each retry rebuilds the whole runtime.
+   */
+  private deferUnreachableJoin(instance: StrandInstance, error: unknown): void {
+    const strandId = instance.strandId;
+    instance.status = 'syncing';
+    log('Strand %s: no seed peer has answered yet, so this joiner cannot build its database (%s); ' +
+      'retrying in %dms', strandId, error instanceof Error ? error.message : String(error), UNREACHABLE_JOIN_RETRY_MS);
+    const timer = setTimeout(() => {
+      this.unreachableJoinRetries.delete(strandId);
+      void this.retryUnreachableJoin(instance);
+    }, UNREACHABLE_JOIN_RETRY_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.unreachableJoinRetries.set(strandId, timer);
+  }
+
+  /** One retry scheduled by {@link deferUnreachableJoin}, unless the strand was stopped or rebuilt since. */
+  private async retryUnreachableJoin(instance: StrandInstance): Promise<void> {
+    const strandId = instance.strandId;
+    const config = this.launchConfigs.get(strandId);
+    if (this.stopping || this.instances.get(strandId) !== instance || !config
+      || instance.libp2pNode || this.runtimeBuilds.has(strandId) || this.transitions.has(strandId)) {
+      return;
+    }
+    try {
+      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, config));
+    } catch (error) {
+      instance.status = 'error';
+      instance.error = error instanceof Error ? error.message : String(error);
+      log('Strand %s: rebuilding a joiner that was waiting for a seed peer failed: %s', strandId, instance.error);
     }
   }
 
@@ -1049,6 +1121,11 @@ export class StrandInstanceManager {
     // `stop()` also cancels the drive already in flight, so an attempt started
     // moments before this does not keep dialing and polling the node the lines
     // below are stopping; its result is discarded either way.
+    const unreachableJoinRetry = this.unreachableJoinRetries.get(instance.strandId);
+    if (unreachableJoinRetry !== undefined) {
+      clearTimeout(unreachableJoinRetry as ReturnType<typeof setTimeout>);
+      this.unreachableJoinRetries.delete(instance.strandId);
+    }
     const relaySupervisors = this.relaySupervisors.get(instance.strandId);
     if (relaySupervisors) {
       relaySupervisors.forEach((supervisor) => supervisor.stop());
@@ -1572,12 +1649,14 @@ export class StrandInstanceManager {
   /**
    * Whether `strandId` is launched but still waiting for its first sync — a joiner whose
    * runtime is up while its database is withheld (status `'syncing'`, or `'idle'` after
-   * the hibernation manager's idle timer fired on it). `false` for a writable, quiesced,
+   * the hibernation manager's idle timer fired on it), or one waiting to rebuild because no
+   * seed peer had answered ({@link deferUnreachableJoin}). `false` for a writable, quiesced,
    * or untracked strand. The predicate {@link whenWritable}'s callers gate on.
    */
   isAwaitingFirstSync(strandId: string): boolean {
     const instance = this.instances.get(strandId);
-    return instance !== undefined && isAwaitingFirstSync(instance);
+    return instance !== undefined
+      && (isAwaitingFirstSync(instance) || this.unreachableJoinRetries.has(strandId));
   }
 
   /**
