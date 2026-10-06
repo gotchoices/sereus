@@ -44,4 +44,4 @@ for it.
 
 `@optimystic/quereus-plugin-crypto` calls `@noble/curves` directly for its SQL `verify`, so it
 stays in JS whatever `crypto.subtle` offers. On the S7 that was 408 ms of a 29 s taleus invite.
-Needs a seam in Optimystic.
+Needs a seam in Optimystic (gotchoices/optimystic#30).
