@@ -575,6 +575,13 @@ describe('polyfills/hermes.js under a fake Hermes + React Native runtime', () =>
 		expect(Buffer.from(digest).toString('hex')).toBe(createHash('sha256').update(input).digest('hex'));
 	});
 
+	it('tags its JavaScript digest, so @serfab/cadre-rn/native-digest can replace it', () => {
+		const subtle = (run.globals.crypto as { subtle: SubtleLike }).subtle;
+		// Symbol.for is the cross-realm registry, so the tag set in the polyfill's context
+		// reads the same here.
+		expect((subtle.digest as unknown as Record<symbol, unknown>)[Symbol.for('@serfab/cadre-rn/js-digest')]).toBe(true);
+	});
+
 	it('decodes UTF-8 without a TextDecoder', () => {
 		const TextDecoderPolyfill = run.globals.TextDecoder as new () => { decode(input: Uint8Array): string };
 		expect(new TextDecoderPolyfill().decode(new TextEncoder().encode('héllo'))).toBe('héllo');
