@@ -13,7 +13,7 @@
  * node lent by cadre-host may be dialed by its requester instead (a phone has no
  * address to give). A provider container has no such path yet, so an empty list
  * here is still a container that comes up alone. Giving the provider that shape is
- * `backlog/feat-provider-drone-reachable-by-phone`.
+ * `provider-drone-reachable-by-phone`.
  *
  * ## The rule, and why each clause is there
  *

@@ -21,7 +21,7 @@
  * yet (`admitInboundControlConnection` / `authorizeInboundControlStream` in
  * `cadre-core/src/cadre-node.ts`). A provider container has no such requester yet, so
  * there an empty list is still the node-comes-up-alone failure described below
- * (`backlog/feat-provider-drone-reachable-by-phone`).
+ * (`provider-drone-reachable-by-phone`).
  *
  * The difference is at the list level only: every entry that IS given must pass the
  * rule below, which is identical in both packages.

@@ -31,7 +31,7 @@ Beyond those, this ticket has its own design questions:
 - **How does the phone learn the relay address?** The lent node's address is already in the phone's control database as a `CadrePeer` row, so it could be discovered rather than configured — but that is a *runtime* source, and the config field that reaches a phone's strand nodes (`network.relayAddrs`) is read when the node is built. Either the relay set becomes something that can change while the node is running and propagate into strand instances, or the phone restarts its node when it acquires one. Both are real designs with real costs.
 - **A phone with no always-on node of its own.** It must fall back cleanly to a configured relay, or say plainly that it is not reachable yet.
 - **More than one always-on node.** Which one, or all of them? A second relay is a second reservation per node per strand.
-- **The home machine's reachability.** It has to be dialable from the wider internet for an outsider to hop through it; today only its own TCP port is mapped (`backlog/feat-cadre-host-wan-grant-reachability`), and a machine reachable only on a home network makes this work on that network and nowhere else.
+- **The home machine's reachability.** It has to be dialable from the wider internet for an outsider to hop through it; today only its own TCP port is mapped (`cadre-host-node-reachability`), and a machine reachable only on a home network makes this work on that network and nowhere else.
 - **Two parties, two relays.** Once each side relays through its own machine, the two ends are on different relays. That shape is covered with two dedicated ungated relays (`blind-relay-phone-to-phone-e2e.integration.ts`, per-party arm: each phone dials the other through the other's relay without reserving there); through each party's own membership-gated cadre node it is not, and the outsider's hop through a gated node is exactly what this ticket has to make work.
 
 ## Expected behaviour
@@ -43,5 +43,5 @@ Beyond those, this ticket has its own design questions:
 ## Related
 
 - `blind-relay-phone-to-phone-e2e.integration.ts` (per-party arm) — the two-relay shape this makes ordinary, proven over dedicated relays.
-- `backlog/feat-cadre-host-wan-grant-reachability` — reaching the home machine from outside the home.
+- `cadre-host-node-reachability` — reaching the home machine from outside the home.
 - `backlog/debt-strand-relay-redrive-on-party-run-relay-unscenarioed` — recovery after a party-run relay restarts, which this would put on a data path.
