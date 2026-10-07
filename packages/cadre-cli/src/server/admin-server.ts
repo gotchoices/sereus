@@ -284,11 +284,11 @@ export class AdminServer {
       }
     }
 
-    // Mint a seed authorizing a drone (a provider-hosted / donated node) to join
-    // this node's cadre. The node signs the seed with its own authority key; only
+    // Mint a seed authorizing a drone (a provider-hosted node) to join this
+    // node's cadre. The node signs the seed with its own authority key; only
     // the signed, public form (`encodedSeed`) transits. This is the requester
-    // ("phone") side of the node-donation flow: the donor host presents the
-    // returned seed to the donated node's `POST /seed`.
+    // side of the provider flow: the requester presents the returned seed to
+    // the drone's `POST /seed`.
     if (resource === 'add-drone' && method === 'POST') {
       const body = await this.readJson(req);
       if (typeof body.dronePeerId !== 'string' || body.dronePeerId.length === 0) {

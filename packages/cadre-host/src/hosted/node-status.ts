@@ -39,7 +39,12 @@ export async function readNodeStatus(statusEndpoint: string): Promise<NodeStatus
   if (!res.ok) {
     throw new HostedNodeError('node_unavailable', `Hosted node /status returned ${res.status}`);
   }
-  const status = (await res.json()) as HealthStatus;
+  let status: HealthStatus;
+  try {
+    status = (await res.json()) as HealthStatus;
+  } catch (err) {
+    throw new HostedNodeError('node_unavailable', `Hosted node /status is not JSON: ${errorMessage(err)}`);
+  }
   if (!status.peerId || !status.multiaddrs?.length) {
     throw new HostedNodeError('node_unavailable', 'Hosted node has no peer identity yet');
   }

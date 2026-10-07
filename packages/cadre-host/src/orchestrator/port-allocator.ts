@@ -49,9 +49,9 @@ export function releaseNodePorts(allocator: PortAllocator, ports: NodePorts): vo
  * spawn, or a handle lost along with `state.json`), so every port is allocated
  * fresh.
  *
- * Why a re-spawn must not simply take the lowest free ports: a requester with no
- * address of its own (a phone) reaches a lent node only by dialing the address it
- * was given, so a node that comes back on a different port is one that requester
+ * Why a re-spawn must not simply take the lowest free ports: an owner with no
+ * address of its own (a phone) reaches a hosted node only by dialing the address
+ * it scanned, so a node that comes back on a different port is one that owner
  * can no longer find.
  *
  * A key the dropped handle lacks — `ws` on a handle persisted by an older build —

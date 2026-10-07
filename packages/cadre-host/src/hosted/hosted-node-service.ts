@@ -160,6 +160,11 @@ export interface HostedNodeServiceOptions {
  * at a time, so every long operation re-reads the record after its wait, decides
  * against what is actually stored, and merges forward only the fields it itself
  * produced — never the entry-time copy.
+ *
+ * NOTE: about 760 lines, mostly the comments that carry the re-read rule above; when
+ * the invitation join kind lands (`cadre-host-join-by-invitation`), move the claim
+ * details and address building (`claimDetails` through `isDialableFromLan`) into
+ * their own module rather than growing this one.
  */
 export class HostedNodeService {
   private readonly orchestrator: HostedNodeOrchestrator;
@@ -739,8 +744,10 @@ function isStuckSpawning(node: HostedNode | undefined, cutoff: number): boolean 
 
 /**
  * Whether an address the node reports is one a phone on the host's LAN can dial:
- * not loopback, not a relay circuit, and parsable. A DNS address passes (it names
- * something off this machine); an address with no host component at all is dropped.
+ * not loopback, not the unspecified address (libp2p expands a `0.0.0.0` listen into
+ * interface addresses, but a raw one names nothing to dial), not a relay circuit,
+ * and parsable. A DNS address passes (it names something off this machine); an
+ * address with no host component at all is dropped.
  */
 function isDialableFromLan(addr: string): boolean {
   let components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>;
@@ -752,7 +759,7 @@ function isDialableFromLan(addr: string): boolean {
   if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return false;
   const host = components[0];
   if (!host?.value) return false;
-  if (host.code === CODE_IP4) return !host.value.startsWith('127.');
-  if (host.code === CODE_IP6) return host.value !== '::1';
+  if (host.code === CODE_IP4) return !host.value.startsWith('127.') && host.value !== '0.0.0.0';
+  if (host.code === CODE_IP6) return host.value !== '::1' && host.value !== '::';
   return true;
 }

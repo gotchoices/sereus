@@ -328,6 +328,11 @@ export function applyEvent(event: { type: string; data: string }): void {
 		case 'connectivity-changed':
 			void refreshConnectivity();
 			break;
+		// A join adds an orchestrator handle and a removal drops one, so the node list
+		// is re-read. The hosted-node records themselves get a slice in `cadre-host-join-ui`.
+		case 'hosted-nodes-changed':
+			void refreshNodes();
+			break;
 		case 'update-available': {
 			const version = payload['version'] as string | undefined;
 			const releaseNotesUrl = payload['releaseNotesUrl'] as string | undefined;

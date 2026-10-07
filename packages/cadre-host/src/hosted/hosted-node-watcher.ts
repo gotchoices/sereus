@@ -38,6 +38,10 @@ export interface HostedNodeWatcherOptions {
  * poke stands until a poll succeeds, so a respawned child is noticed on its first
  * answer rather than at the next 15 s mark. Polls are serialized on one promise
  * tail so a timer pass and a poked pass cannot both write one record.
+ *
+ * NOTE: the 2 s timer ticks while nothing is unclaimed (one cached store read, no
+ * I/O per tick); if it ever shows up in a profile, stop it when no record is
+ * unclaimed and restart it from `poke`.
  */
 export class HostedNodeWatcher {
   private readonly store: HostedNodeStore;
@@ -100,9 +104,16 @@ export class HostedNodeWatcher {
       log('poll could not list hosted nodes: %s', errorMessage(err));
       return;
     }
+    this.forgetRemoved(new Set(records.map((r) => r.id)));
     for (const record of records) {
       if (this.shouldPoll(record)) await this.pollOne(record);
     }
+  }
+
+  /** Drop the cadence and poke bookkeeping of nodes no longer on record, so neither map grows with removals. */
+  private forgetRemoved(live: Set<string>): void {
+    for (const id of this.lastPolledAt.keys()) if (!live.has(id)) this.lastPolledAt.delete(id);
+    for (const id of this.due) if (!live.has(id)) this.due.delete(id);
   }
 
   private shouldPoll(record: HostedNode): boolean {

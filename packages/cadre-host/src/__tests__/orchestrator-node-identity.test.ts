@@ -1,7 +1,7 @@
 /**
  * HostProcessOrchestrator per-node identity tests.
  *
- * A donated node must keep the peer id its host cadre approved across restarts,
+ * A hosted node must keep the peer id the claim named across restarts,
  * and needs a durable on-disk home for its node-local stores (`cadre-cli start`
  * opens the file-backed bootstrap-peer / trusted-owner stores only when a
  * protobuf identity key file is configured). The orchestrator therefore writes
@@ -93,14 +93,13 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.init();
 
     await orch.createContainer({
-      containerId: 'donated-1',
-      partyId: 'foreign-P',
+      containerId: 'hosted-1',
+      partyId: 'party-P',
       bootstrapNodes: [],
       profile: 'storage',
-      pinnedOwnerKeys: ['key-a'],
     });
 
-    const workdir = join(rootDir, 'donated-1');
+    const workdir = join(rootDir, 'hosted-1');
     const arg = await waitForFile(join(workdir, 'identity-arg.txt'));
     expect(arg).toBe(join(workdir, 'identity.key'));
     // Decodes as a libp2p protobuf private key → the child gets a usable identity.
@@ -113,49 +112,46 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.init();
 
     const first = await orch.createContainer({
-      containerId: 'donated-2',
-      partyId: 'foreign-P',
+      containerId: 'hosted-2',
+      partyId: 'party-P',
       bootstrapNodes: [],
       profile: 'storage',
-      pinnedOwnerKeys: ['key-a'],
     });
-    const workdir = join(rootDir, 'donated-2');
+    const workdir = join(rootDir, 'hosted-2');
     await waitForFile(join(workdir, 'identity-arg.txt'));
     const before = loadIdentity(join(workdir, 'identity.key')).peerId;
 
     // Stop (not remove — removal deletes the workdir) and re-spawn, as a restart
-    // of a live loan would.
+    // of a live hosted node would.
     await orch.stopContainer(first.dockerId);
     await orch.createContainer({
-      containerId: 'donated-2',
-      partyId: 'foreign-P',
+      containerId: 'hosted-2',
+      partyId: 'party-P',
       bootstrapNodes: [],
       profile: 'storage',
-      pinnedOwnerKeys: ['key-a'],
     });
 
     const after = loadIdentity(join(workdir, 'identity.key')).peerId;
     expect(after).toBe(before);
   });
 
-  it('destroys the identity with the workdir when the loan is terminated', async () => {
+  it('destroys the identity with the workdir when the node is removed', async () => {
     const rootDir = join(tmpRoot, 'c');
     const orch = makeOrchestrator(rootDir);
     await orch.init();
 
     const created = await orch.createContainer({
-      containerId: 'donated-3',
-      partyId: 'foreign-P',
+      containerId: 'hosted-3',
+      partyId: 'party-P',
       bootstrapNodes: [],
       profile: 'storage',
-      pinnedOwnerKeys: ['key-a'],
     });
-    const identityPath = join(rootDir, 'donated-3', 'identity.key');
+    const identityPath = join(rootDir, 'hosted-3', 'identity.key');
     await waitForFile(identityPath);
 
     await orch.removeContainer(created.dockerId);
     expect(existsSync(identityPath)).toBe(false);
-    expect(existsSync(join(rootDir, 'donated-3'))).toBe(false);
+    expect(existsSync(join(rootDir, 'hosted-3'))).toBe(false);
   });
 
   // The failure the identity step can actually produce is a damaged key file,
@@ -169,19 +165,18 @@ describe('HostProcessOrchestrator node identity', () => {
     const orch = makeOrchestrator(rootDir, { start: 18100, end: 18103 });
     await orch.init();
 
-    mkdirSync(join(rootDir, 'donated-bad'), { recursive: true });
-    writeFileSync(join(rootDir, 'donated-bad', 'identity.key'), 'not a protobuf private key', 'utf8');
+    mkdirSync(join(rootDir, 'hosted-bad'), { recursive: true });
+    writeFileSync(join(rootDir, 'hosted-bad', 'identity.key'), 'not a protobuf private key', 'utf8');
 
     const request = {
-      partyId: 'foreign-P',
+      partyId: 'party-P',
       bootstrapNodes: [],
       profile: 'storage' as const,
-      pinnedOwnerKeys: ['key-a'],
     };
-    await expect(orch.createContainer({ ...request, containerId: 'donated-bad' })).rejects.toThrow();
+    await expect(orch.createContainer({ ...request, containerId: 'hosted-bad' })).rejects.toThrow();
 
     // The whole range is still free, so a healthy container still gets its four.
-    const ok = await orch.createContainer({ ...request, containerId: 'donated-good' });
+    const ok = await orch.createContainer({ ...request, containerId: 'hosted-good' });
     expect(ok.p2pPort).toBeGreaterThanOrEqual(18100);
   });
 });

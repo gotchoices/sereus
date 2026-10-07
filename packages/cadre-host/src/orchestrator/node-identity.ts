@@ -1,18 +1,18 @@
 /**
  * Per-node identity keys for orchestrator-managed children.
  *
- * A donated node joins a *foreign* cadre: the requester approves its peer id
- * and its seed nominates dial addresses keyed to that peer id. Both bind to the
- * identity, so a node that generated a fresh libp2p keypair per process would
- * become a stranger to the cadre that admitted it on every restart. It also
+ * A hosted node joins the cadre whose owner claimed it: the claim named its peer
+ * id, and the owner's phone dials the addresses keyed to that peer id. Both bind
+ * to the identity, so a node that generated a fresh libp2p keypair per process
+ * would become a stranger to the cadre that claimed it on every restart. It also
  * needs a stable on-disk home for its node-local stores — `cadre-cli start`
  * opens `FileBootstrapPeerStore` / `FileTrustedOwnerStore` /
  * `FileStrandNetworkStateStore` in the node's state directory, which defaults to
  * the directory holding the config file the orchestrator writes into the workdir.
  *
  * So every managed node gets its own `identity.key` inside its workdir, written
- * once and reused thereafter. The workdir is removed when the loan is
- * terminated (`removeContainer`), so nothing the node persisted outlives it.
+ * once and reused thereafter. The workdir is removed with the node
+ * (`removeContainer`), so nothing the node persisted outlives it.
  */
 
 import { existsSync } from 'node:fs';
