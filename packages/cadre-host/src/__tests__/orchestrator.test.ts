@@ -597,7 +597,7 @@ setInterval(() => {}, 1 << 30);
     expect(existsSync(tokenPath)).toBe(false);
     expect(await orch.isRunning(first.dockerId)).toBe(true);
 
-    // Exactly what `DonationService.respawn` would do next.
+    // Exactly what `HostedNodeService.respawn` would do next.
     await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow(/c1 is still running/);
 
     // Nothing was dropped, released or rotated.

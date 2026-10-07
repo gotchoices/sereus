@@ -534,6 +534,15 @@ export {
   CLAIM_SECRET_BYTES
 } from './claim-proof.js';
 
+// The claim payload: the node's peer id, addresses and claim secret as the text a host
+// shows as a QR code and a phone scans (`CadreNode.claimNode` takes the decoded form).
+export {
+  encodeNodeClaimPayload,
+  decodeNodeClaimPayload,
+  NODE_CLAIM_PAYLOAD_PREFIX,
+  type NodeClaimPayload
+} from './node-claim-payload.js';
+
 // Schema Verification
 export {
   signSchema,

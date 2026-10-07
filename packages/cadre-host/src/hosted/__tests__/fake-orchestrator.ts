@@ -1,5 +1,5 @@
 /**
- * Shared fake orchestrator for the donation unit tests — no real child
+ * Shared fake orchestrator for the hosted-node unit tests — no real child
  * processes. Records every create / stop / remove, hands out deterministic
  * unique spawn results, and tracks per-`dockerId` liveness so a test can crash
  * one node and let the supervisor observe exactly that one as down.
@@ -9,17 +9,16 @@
  * and run against both classes, so the two cannot come to disagree unnoticed.
  * The sibling `fake-orchestrator.test.ts` runs that contract and pins what only
  * the fake has (its recording arrays and hooks). Both exist so a future agent
- * cannot make a failing donation test go green by relaxing the fake.
+ * cannot make a failing hosted-node test go green by relaxing the fake.
  */
 
 import type {
   Orchestrator,
-  OrchestratorCreateRequest,
   OrchestratorCreateResult,
   OrchestratorStats,
 } from '@serfab/cadre-provider';
 
-import type { ManagedNodeInfo, NodeStateListener } from '../../orchestrator/types.js';
+import type { HostedSpawnRequest, ManagedNodeInfo, NodePorts, NodeStateListener } from '../../orchestrator/types.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
@@ -31,15 +30,18 @@ interface FakeChild {
   partyId: string;
   profile: 'storage' | 'transaction';
   running: boolean;
+  /** The ports a re-spawn comes back on (the real `reusedNodePorts`). */
+  ports: NodePorts;
 }
 
 /**
- * Mirrors the parts of `HostProcessOrchestrator`'s handle lifecycle the donation
+ * Mirrors the parts of `HostProcessOrchestrator`'s handle lifecycle the hosted-node
  * code depends on:
  *
  * - a **successful** `createContainer` drops every prior handle for the same
  *   `containerId` (the real `dropStaleHandle`), so an old `dockerId` stops
- *   resolving the moment its container re-spawns;
+ *   resolving the moment its container re-spawns — and the new child comes back
+ *   on the dropped handle's ports (the real `reusedNodePorts`);
  * - a **failed** `createContainer` leaves those handles exactly as it found them
  *   (the real `restoreDroppedHandles`);
  * - `createContainer` refuses a container whose previous child is still running
@@ -56,7 +58,7 @@ interface FakeChild {
  * a test can observe the attempt separately from its outcome.
  */
 export class FakeOrchestrator implements Orchestrator {
-  createCalls: OrchestratorCreateRequest[] = [];
+  createCalls: HostedSpawnRequest[] = [];
   stopped: string[] = [];
   removed: string[] = [];
   /**
@@ -78,7 +80,7 @@ export class FakeOrchestrator implements Orchestrator {
    * Work driven from here sees the previous handle still alive. Contrast
    * {@link onSpawned}.
    */
-  onCreate?: (request: OrchestratorCreateRequest) => void;
+  onCreate?: (request: HostedSpawnRequest) => void;
   /**
    * Observation hook — fires once the drop has landed and the new child is
    * registered, immediately before `createContainer` resolves. Models the
@@ -95,7 +97,7 @@ export class FakeOrchestrator implements Orchestrator {
   private readonly listeners = new Set<NodeStateListener>();
   private counter = 0;
 
-  async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
+  async createContainer(request: HostedSpawnRequest): Promise<OrchestratorCreateResult> {
     this.createCalls.push(request);
     this.onCreate?.(request);
     if (this.createDelayMs) await sleep(this.createDelayMs);
@@ -107,26 +109,32 @@ export class FakeOrchestrator implements Orchestrator {
     // Success-only, and placed here on purpose: the real drop happens after the
     // spawn's every `await` and cannot fail afterwards, and a create that throws
     // puts the handles back (`restoreDroppedHandles`) — so a failed create must
-    // leave them untouched. `DonationSupervisor`'s give-up test depends on that.
+    // leave them untouched. `HostedNodeSupervisor`'s give-up test depends on that.
+    let ports: NodePorts | undefined;
     for (const [id, child] of this.children) {
-      if (child.containerId === request.containerId) this.children.delete(id);
+      if (child.containerId === request.containerId) {
+        ports = child.ports;
+        this.children.delete(id);
+      }
     }
     const n = ++this.counter;
     const dockerId = `dock_${n}`;
+    ports ??= { health: 9000 + n, metrics: 9100 + n, p2p: 4000 + n, ws: 4100 + n };
     this.children.set(dockerId, {
       containerId: request.containerId,
       partyId: request.partyId,
       profile: request.profile,
       running: true,
+      ports,
     });
     this.onSpawned?.(dockerId);
     return {
       dockerId,
-      healthEndpoint: `http://127.0.0.1:${9000 + n}/health`,
-      metricsEndpoint: `http://127.0.0.1:${9000 + n}/metrics`,
-      seedEndpoint: `http://127.0.0.1:${9000 + n}/seed`,
+      healthEndpoint: `http://127.0.0.1:${ports.health}/health`,
+      metricsEndpoint: `http://127.0.0.1:${ports.metrics}/metrics`,
+      seedEndpoint: `http://127.0.0.1:${ports.health}/seed`,
       seedToken: `seed-token-${n}`,
-      p2pPort: 4000 + n,
+      p2pPort: ports.p2p,
     };
   }
 
@@ -142,7 +150,7 @@ export class FakeOrchestrator implements Orchestrator {
   async removeContainer(dockerId: string): Promise<void> {
     // NOTE: the real `removeContainer` stops a still-live child first; this one
     // only deletes, so a remove aimed at a running child records no `stopped`
-    // entry and emits no state change. Every donation caller stops before it
+    // entry and emits no state change. Every hosted-node caller stops before it
     // reclaims, so nothing sees the difference today — if one stops doing that,
     // stop the child here too.
     this.requireChild(dockerId);
@@ -152,8 +160,8 @@ export class FakeOrchestrator implements Orchestrator {
 
   /**
    * NOTE: this and {@link getLogs} take an unknown `dockerId` where the real
-   * class throws (`requireHandle`). No donation path calls either, so the gap is
-   * unobservable — route them through `requireChild` if one starts to.
+   * class throws (`requireHandle`). No hosted-node path calls either, so the gap
+   * is unobservable — route them through `requireChild` if one starts to.
    */
   async getStats(): Promise<OrchestratorStats> {
     return { cpuPercent: 0, memoryBytes: 0, networkRxBytes: 0, networkTxBytes: 0 };
@@ -173,6 +181,20 @@ export class FakeOrchestrator implements Orchestrator {
     return undefined;
   }
 
+  /** The node by containerId or dockerId, as the real `getNode`. */
+  getNode(idOrDockerId: string): ManagedNodeInfo | undefined {
+    const direct = this.children.get(idOrDockerId);
+    if (direct) return toNodeInfo(idOrDockerId, direct);
+    for (const [dockerId, child] of this.children) {
+      if (child.containerId === idOrDockerId) return toNodeInfo(dockerId, child);
+    }
+    return undefined;
+  }
+
+  listNodes(): ManagedNodeInfo[] {
+    return [...this.children].map(([dockerId, child]) => toNodeInfo(dockerId, child));
+  }
+
   /**
    * Remove the workdir of a container no handle owns, mirroring the real
    * `reclaimWorkdir`. Refuses (returns `false`, records nothing) while a child
@@ -181,7 +203,7 @@ export class FakeOrchestrator implements Orchestrator {
    *
    * There is no directory here to check for existence, so a first reclaim of an
    * unresolvable id always reports `true`; the real class returns `false` when
-   * the path is already gone. Nothing in the donation layer branches on the
+   * the path is already gone. Nothing in the hosted-node layer branches on the
    * return value, so the gap is unobservable — model it if one starts to.
    */
   reclaimWorkdir(containerId: string): boolean {
@@ -237,7 +259,7 @@ function toNodeInfo(dockerId: string, child: FakeChild): ManagedNodeInfo {
     status: child.running ? 'running' : 'stopped',
     spawnedAt: new Date(0).toISOString(),
     workdir: `/fake/${child.containerId}`,
-    ports: { health: 0, metrics: 0, p2p: 0, ws: 0 },
+    ports: { ...child.ports },
     announcedAddrs: [],
   };
 }

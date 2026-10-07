@@ -124,14 +124,14 @@ export function buildFastify(): FastifyInstance {
  * request with no body (`request.body === undefined`), instead of Fastify's
  * default `400 FST_ERR_CTP_EMPTY_JSON_BODY`.
  *
- * `/grants` is served to other people's clients, and sending the JSON content
- * type on every request, body or not, is a common client habit — the phone app
- * did it, and the refused body-less `DELETE /grants/:id` left the loan and its
- * node running. Every route that reads a body already reads `request.body ?? {}`,
- * so a route that needs a field still answers its own `invalid_request` naming it.
- * A non-empty body goes to Fastify's own parser, so malformed JSON is still a 400
- * and the prototype-poisoning checks are unchanged (`'error'` is Fastify's default
- * for both).
+ * Sending the JSON content type on every request, body or not, is a common
+ * client habit (`POST /api/hosted-nodes` takes no body today, and a body-less
+ * `DELETE` is the norm), and a refused request here is a node left running.
+ * Every route that reads a body already reads `request.body ?? {}`, so a route
+ * that needs a field still answers its own `invalid_request` naming it. A
+ * non-empty body goes to Fastify's own parser, so malformed JSON is still a 400
+ * and the prototype-poisoning checks are unchanged (`'error'` is Fastify's
+ * default for both).
  */
 function acceptEmptyJsonBodies(app: FastifyInstance): void {
   // NOTE: 'error', 'error' mirrors Fastify's defaults for proto/constructor poisoning; if

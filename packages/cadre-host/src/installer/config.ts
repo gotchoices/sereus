@@ -1,7 +1,7 @@
 /**
  * `host.config.json` schema + I/O.
  *
- * This file captures the wizard's output. Subsystems (donation grants, NAT,
+ * This file captures the wizard's output. Subsystems (hosted nodes, NAT,
  * orchestrator) each own their own files under `<dataDir>/`; this is NOT
  * an umbrella config.
  *

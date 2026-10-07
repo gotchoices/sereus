@@ -20,10 +20,10 @@
 
 	const app = appState();
 
-	let confirmTerminate = $state(false);
+	let confirmRemove = $state(false);
 	let busyAction: string | null = $state(null);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
-	// A terminate outlives the page if the user leaves mid-request; its
+	// A remove outlives the page if the user leaves mid-request; its
 	// follow-ups (restart the poll, navigate) must not act on a page that is gone.
 	let destroyed = false;
 
@@ -56,24 +56,19 @@
 		pushToast('error', `${action} failed: ${msg} (${code})`);
 	}
 
-	/**
-	 * End a donated node through the same loopback admin surface as
-	 * `cadre-host grant terminate`. A terminated node leaves `/api/nodes`, so the
-	 * poll is paused for the request — a tick landing after the teardown would
-	 * toast "not found" — and the page leaves for the list on success.
-	 */
-	async function terminate(): Promise<void> {
-		busyAction = 'terminate';
+	/** Remove a hosted node through the same loopback surface as `cadre-host node remove`: stop it and delete its data on this machine. A removed node leaves `/api/nodes`, so the poll is paused for the request — a tick landing after the teardown would toast "not found" — and the page leaves for the list on success. */
+	async function remove(): Promise<void> {
+		busyAction = 'remove';
 		stopPolling();
 		try {
-			await apiDelete(`/grants-admin/donations/${encodeURIComponent(id)}`);
+			await apiDelete(`/api/hosted-nodes/${encodeURIComponent(id)}`);
 		} catch (err) {
-			reportActionFailure('terminate', err);
+			reportActionFailure('remove', err);
 			if (!destroyed) startPolling();
 			busyAction = null;
 			return;
 		}
-		pushToast('success', `Terminated donated node ${id}`);
+		pushToast('success', `Removed hosted node ${id}`);
 		await refreshNodes();
 		if (!destroyed) navigate(hrefFor('nodes'));
 	}
@@ -109,13 +104,13 @@
 			</dl>
 
 			<div class="actions">
-				<!-- Enabled even while stopped: a crashed node awaiting respawn is ended the same way. -->
+				<!-- Enabled even while stopped: a crashed node awaiting respawn is removed the same way. -->
 				<button
 					class="danger"
 					disabled={busyAction !== null}
-					onclick={() => (confirmTerminate = true)}
+					onclick={() => (confirmRemove = true)}
 				>
-					{busyAction === 'terminate' ? 'Terminating…' : 'Terminate'}
+					{busyAction === 'remove' ? 'Removing…' : 'Remove'}
 				</button>
 			</div>
 		</div>
@@ -136,17 +131,16 @@
 </section>
 
 <ConfirmDialog
-	open={confirmTerminate}
-	title="Terminate donated node"
-	message={`Shut down donated node ${id}? It leaves the borrower's cadre and frees one node slot on their grant; they can ask for another while the grant is valid.`}
-	note="The grant itself is untouched; revoke it with: cadre-host grant revoke"
-	confirmLabel="Terminate"
+	open={confirmRemove}
+	title="Remove hosted node"
+	message={`Remove hosted node ${id}? It is stopped and its data on this machine deleted. The cadre it joined keeps the node's row until its owner removes it there.`}
+	confirmLabel="Remove"
 	danger
 	onConfirm={async () => {
-		confirmTerminate = false;
-		await terminate();
+		confirmRemove = false;
+		await remove();
 	}}
-	onCancel={() => (confirmTerminate = false)}
+	onCancel={() => (confirmRemove = false)}
 />
 
 <style>

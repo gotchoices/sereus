@@ -72,9 +72,9 @@
 		</div>
 
 		<div class="card">
-			<h3>Donation</h3>
-			<p class="muted">This machine donates cadre nodes to other people's cadres.</p>
-			<a class="link" href={hrefFor('grants')}>Manage grants →</a>
+			<h3>Hosted nodes</h3>
+			<p class="muted">This machine runs cadre nodes for the cadres that claim them.</p>
+			<a class="link" href={hrefFor('nodes')}>Details →</a>
 		</div>
 
 		<div class="card">

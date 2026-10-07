@@ -3,98 +3,97 @@ import debug from 'debug';
 import type { Orchestrator } from '@serfab/cadre-provider';
 
 import type { ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
-import { hasSpawnInputs, type DonationService } from './donation-service.js';
-import type { DonationStore } from './donation-store.js';
-import type { Donation, DonationStatus } from './types.js';
+import type { HostedNodeService } from './hosted-node-service.js';
+import type { HostedNodeStore } from './hosted-node-store.js';
+import { errorMessage } from './node-status.js';
+import type { HostedNode, HostedNodeStatus } from './types.js';
 
-const log = debug('cadre:host:donation-supervisor');
+const log = debug('cadre:host:hosted-node-supervisor');
 
 /**
  * Unit of the doubling respawn backoff: the wait after `n` consecutive failed
- * attempts is `base * 2^n`, capped at {@link DONATION_RESPAWN_BACKOFF_MAX_MS}.
+ * attempts is `base * 2^n`, capped at {@link HOSTED_NODE_RESPAWN_BACKOFF_MAX_MS}.
  * So the first retry waits 10s (one attempt is already recorded by then), the
  * second 20s, and so on. A node with no recorded attempt is respawned
  * immediately.
  */
-export const DONATION_RESPAWN_BACKOFF_BASE_MS = 5_000;
+export const HOSTED_NODE_RESPAWN_BACKOFF_BASE_MS = 5_000;
 
 /**
  * Ceiling on the doubling respawn backoff. 5 minutes.
  *
- * NOTE: not reachable at the current {@link DONATION_RESPAWN_MAX_ATTEMPTS} of 5
+ * NOTE: not reachable at the current {@link HOSTED_NODE_RESPAWN_MAX_ATTEMPTS} of 5
  * — the longest wait actually served is the one before the 5th attempt,
  * `5s * 2^4` = 80s, and once that attempt fails or its node dies the supervisor
  * gives up rather than waiting again. The cap only starts clamping
  * once a record can reach 6 recorded attempts (`5s * 2^6` = 320s), so raising
  * the attempt cap without revisiting this one changes nothing.
  */
-export const DONATION_RESPAWN_BACKOFF_MAX_MS = 5 * 60_000;
+export const HOSTED_NODE_RESPAWN_BACKOFF_MAX_MS = 5 * 60_000;
 
 /**
  * Consecutive respawn attempts after which the host stops trying and marks the
- * donation `error` — a node that will not stay up is a host-side fault the
- * borrower cannot see, so surface it instead of spinning forever.
+ * node `error` — a node that will not stay up is a host-side fault its cadre
+ * cannot see, so surface it instead of spinning forever.
  *
  * Every attempt counts, whether its spawn failed or succeeded: a node that spawns
- * and then dies before {@link DONATION_RESPAWN_HEALTHY_MS} refills the budget is
+ * and then dies before {@link HOSTED_NODE_RESPAWN_HEALTHY_MS} refills the budget is
  * as much a crash loop as one that never spawns. Give-up happens on whichever
  * comes first — an attempt that throws with the cap reached, or a pass that finds
  * the node down with the cap already reached.
  */
-export const DONATION_RESPAWN_MAX_ATTEMPTS = 5;
+export const HOSTED_NODE_RESPAWN_MAX_ATTEMPTS = 5;
 
 /**
  * How long a respawned node must stay up before its attempt budget is refilled.
  * The last respawn produced something that survived, so the next crash starts
  * from a fresh budget rather than inheriting an old crash loop's count.
  */
-export const DONATION_RESPAWN_HEALTHY_MS = 10 * 60_000;
+export const HOSTED_NODE_RESPAWN_HEALTHY_MS = 10 * 60_000;
 
 /** How often the supervisor sweep runs while cadre-host is up. 1 minute. */
-export const DONATION_RESPAWN_SWEEP_MS = 60_000;
+export const HOSTED_NODE_RESPAWN_SWEEP_MS = 60_000;
 
 /**
- * Statuses the supervisor considers. `provisioning` is a provision still in
- * flight (its own code path owns the child); `error` and `terminated` are
- * terminal — a loan the host gave up on or the borrower ended, neither of which
- * may come back on its own.
+ * Statuses the supervisor considers. `spawning` is a join still in flight (its
+ * own code path owns the child); `error` is a node the host gave up on, which
+ * may not come back on its own.
  */
-const SUPERVISED_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
-  'awaiting_seed',
-  'seeded',
+const SUPERVISED_STATUSES: ReadonlySet<HostedNodeStatus> = new Set<HostedNodeStatus>([
+  'unclaimed',
+  'joined',
 ]);
 
 /**
  * The orchestrator surface the supervisor needs: the shared `Orchestrator`
  * (for `isRunning` / `stopContainer`) plus cadre-host's own exit-event
- * subscription, which is not part of that cross-package interface.
- * `HostProcessOrchestrator` satisfies this.
+ * subscription and node list, which are not part of that cross-package
+ * interface. `HostProcessOrchestrator` satisfies this.
  */
 export interface SupervisedOrchestrator extends Orchestrator {
   onStateChange(listener: NodeStateListener): () => void;
+  listNodes(): ManagedNodeInfo[];
 }
 
 /** Constructor options. */
-export interface DonationSupervisorOptions {
+export interface HostedNodeSupervisorOptions {
   /** Lifecycle service — the supervisor drives its `respawn`. */
-  service: DonationService;
-  /** Persistent donation store — the candidate list and the give-up write. */
-  store: DonationStore;
-  /** Orchestrator that owns the donated child processes. */
+  service: HostedNodeService;
+  /** Persistent record store — the candidate list and the give-up write. */
+  store: HostedNodeStore;
+  /** Orchestrator that owns the hosted child processes. */
   orchestrator: SupervisedOrchestrator;
   /** Clock override for tests. */
   now?: () => Date;
 }
 
 /**
- * DonationSupervisor — owns the invariant *a non-terminal donation is expected
- * to be running*.
+ * HostedNodeSupervisor — owns the invariant *an `unclaimed` or `joined` node is
+ * expected to be running*.
  *
- * Nothing else re-spawns a donated node: `/api/nodes` is read-only and the
- * stale-`awaiting_seed` reap only terminates. So without this class
- * a crashed, OOM-killed, or reboot-killed donated node stays dead with its
- * record still reading `seeded`, silently costing the borrower a node and their
- * grant a quota slot.
+ * Nothing else re-spawns a hosted node: `/api/nodes` is read-only. So without
+ * this class a crashed, OOM-killed, or reboot-killed node stays dead with its
+ * record still reading `joined`, silently costing its cadre a node.
  *
  * One code path ({@link reconcile}) behind three triggers:
  *
@@ -105,15 +104,20 @@ export interface DonationSupervisorOptions {
  * - **periodic sweep** — the backstop for deaths no exit event covers (host was
  *   down, listener missed, orchestrator re-attached to an already-dead pid).
  *
- * Passes are serialized: `DonationService.respawn` is not itself serialized, and
+ * Passes are serialized: `HostedNodeService.respawn` is not itself serialized, and
  * two overlapping respawns of one id both spawn a child while the second drops
  * the first's orchestrator handle (see its docstring). Since two of the three
  * triggers can fire at once, the serialization lives here. A deliberate
  * {@link restart} runs on the same serialization tail.
+ *
+ * The supervisor reconciles records to handles, never handles to records: a
+ * handle no record names (`hosted-nodes.json` lost, or a handle an older build
+ * persisted) is logged at startup and left running, since stopping it could end
+ * a node that is serving its cadre. `cadre-host node remove <id>` reclaims it.
  */
-export class DonationSupervisor {
-  private readonly service: DonationService;
-  private readonly store: DonationStore;
+export class HostedNodeSupervisor {
+  private readonly service: HostedNodeService;
+  private readonly store: HostedNodeStore;
   private readonly orchestrator: SupervisedOrchestrator;
   private readonly now: () => Date;
 
@@ -126,29 +130,29 @@ export class DonationSupervisor {
   /** Set by `stop()` so an in-flight pass abandons its remaining records. */
   private disposed = false;
 
-  constructor(opts: DonationSupervisorOptions) {
+  constructor(opts: HostedNodeSupervisorOptions) {
     this.service = opts.service;
     this.store = opts.store;
     this.orchestrator = opts.orchestrator;
     this.now = opts.now ?? (() => new Date());
-    log('DonationSupervisor initialized');
+    log('HostedNodeSupervisor initialized');
   }
 
   /**
-   * One reconcile pass over the donation store. Serialized against every other
-   * pass, so a caller may get a queued pass rather than an immediate one.
-   * Returns the donation ids it respawned in *its own* pass.
+   * One reconcile pass over the store. Serialized against every other pass, so
+   * a caller may get a queued pass rather than an immediate one. Returns the ids
+   * it respawned in *its own* pass.
    */
   reconcile(): Promise<string[]> {
     return this.serialize(() => this.reconcileOnce());
   }
 
   /**
-   * Stop a running donated node and start it again, for a change the node picks
-   * up only at start — its public addresses (`NatService.onNodeAddressesStale`).
+   * Stop a running node and start it again, for a change the node picks up
+   * only at start — its public addresses (`NatService.onNodeAddressesStale`).
    * Serialized with the reconcile passes, so it never overlaps a respawn or a
    * give-up of the same record, and it re-reads the record first: a record that
-   * is no longer `awaiting_seed`/`seeded`, has no handle, or whose node is not
+   * is no longer `unclaimed`/`joined`, has no handle, or whose node is not
    * running is left alone (a node that is down is the crash path's).
    *
    * Does not spend the record's respawn budget. A restart whose respawn throws
@@ -177,8 +181,9 @@ export class DonationSupervisor {
     this.disposed = false;
     // Subscribe before the first pass so an exit during it is not missed.
     this.unsubscribe = this.orchestrator.onStateChange((info) => { this.onNodeState(info); });
-    this.timer = setInterval(() => { this.sweep('timer'); }, DONATION_RESPAWN_SWEEP_MS);
+    this.timer = setInterval(() => { this.sweep('timer'); }, HOSTED_NODE_RESPAWN_SWEEP_MS);
     this.timer.unref();
+    this.logOrphanHandles();
     this.sweep('startup');
   }
 
@@ -195,54 +200,76 @@ export class DonationSupervisor {
     }
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    log('DonationSupervisor stopped');
+    log('HostedNodeSupervisor stopped');
+  }
+
+  /**
+   * Name every orchestrator handle that no record claims, once at startup. Not
+   * reclaimed (see the class docstring): the admin ends it with
+   * `cadre-host node remove <id>`.
+   */
+  private logOrphanHandles(): void {
+    let known: Set<string>;
+    try {
+      known = new Set(this.store.list().map((n) => n.id));
+    } catch (err) {
+      log('orphan check could not list hosted nodes: %s', errorMessage(err));
+      return;
+    }
+    for (const handle of this.orchestrator.listNodes()) {
+      if (known.has(handle.id)) continue;
+      console.error(
+        `hosted node ${handle.id} (${handle.status}) has an orchestrator handle but no record in hosted-nodes.json; `
+        + 'it is left as it is. Run `cadre-host node remove ' + handle.id + '` to stop it and delete its data.',
+      );
+    }
   }
 
   /** Fire-and-forget pass for the timer / exit / startup triggers. */
   private sweep(trigger: string): void {
     void this.reconcile()
       .then((ids) => {
-        if (ids.length) log('%s sweep respawned %d donation(s): %o', trigger, ids.length, ids);
+        if (ids.length) log('%s sweep respawned %d hosted node(s): %o', trigger, ids.length, ids);
       })
       .catch((err) => {
-        console.error(`donation respawn sweep failed: ${errorMessage(err)}`);
+        console.error(`hosted node respawn sweep failed: ${errorMessage(err)}`);
       });
   }
 
   /**
    * Exit-event trigger. Deliberately cheap: it does not map the handle back to a
-   * donation (that needs a store read per event), it just asks for a pass.
+   * record (that needs a store read per event), it just asks for a pass.
    */
   private onNodeState(info: ManagedNodeInfo): void {
     if (info.status !== 'stopped') return;
     if (this.exitPassQueued) return;
     this.exitPassQueued = true;
     void this.reconcile()
-      .catch((err) => { console.error(`donation respawn sweep failed: ${errorMessage(err)}`); })
+      .catch((err) => { console.error(`hosted node respawn sweep failed: ${errorMessage(err)}`); })
       .finally(() => { this.exitPassQueued = false; });
   }
 
   /** The unserialized body of one pass. */
   private async reconcileOnce(): Promise<string[]> {
     const respawned: string[] = [];
-    let candidates: Donation[];
+    let candidates: HostedNode[];
     try {
-      candidates = this.store.list().filter((d) => SUPERVISED_STATUSES.has(d.status));
+      candidates = this.store.list().filter((n) => SUPERVISED_STATUSES.has(n.status));
     } catch (err) {
-      // A malformed donations.json throws on every load; log rather than let an
+      // A malformed hosted-nodes.json throws on every load; log rather than let an
       // unhandled rejection escape the timer.
-      log('reconcile could not list donations: %s', errorMessage(err));
+      log('reconcile could not list hosted nodes: %s', errorMessage(err));
       return respawned;
     }
 
-    for (const donation of candidates) {
+    for (const node of candidates) {
       if (this.disposed) break;
       try {
-        const id = await this.reconcileOne(donation);
+        const id = await this.reconcileOne(node);
         if (id) respawned.push(id);
       } catch (err) {
         // One bad record must never end the sweep — the others are still down.
-        log('reconcile of donation %s failed: %s', donation.id, errorMessage(err));
+        log('reconcile of hosted node %s failed: %s', node.id, errorMessage(err));
       }
     }
     return respawned;
@@ -250,23 +277,22 @@ export class DonationSupervisor {
 
   private async restartOnce(id: string): Promise<void> {
     if (this.disposed) return;
-    const donation = this.store.get(id);
-    // A record with no spawn inputs could be stopped but never brought back.
-    if (!donation?.dockerId || !SUPERVISED_STATUSES.has(donation.status) || !hasSpawnInputs(donation)) return;
-    if (!(await this.orchestrator.isRunning(donation.dockerId))) return;
-    await this.orchestrator.stopContainer(donation.dockerId);
+    const node = this.store.get(id);
+    if (!node?.dockerId || !SUPERVISED_STATUSES.has(node.status)) return;
+    if (!(await this.orchestrator.isRunning(node.dockerId))) return;
+    await this.orchestrator.stopContainer(node.dockerId);
     const result = await this.service.respawn(id, { countAttempt: false });
-    log('restarted donation %s: %s', id, result.outcome);
+    log('restarted hosted node %s: %s', id, result.outcome);
   }
 
   /** Reconcile one record. Returns its id when this pass respawned it. */
-  private async reconcileOne(donation: Donation): Promise<string | undefined> {
-    // No handle means nothing was ever spawned — `provision` owns that record
-    // until it writes one, and replaying it here would race that provision.
-    if (!donation.dockerId) return undefined;
+  private async reconcileOne(node: HostedNode): Promise<string | undefined> {
+    // No handle means nothing was ever spawned — `join` owns that record until
+    // it writes one, and replaying it here would race that join.
+    if (!node.dockerId) return undefined;
 
-    if (await this.orchestrator.isRunning(donation.dockerId)) {
-      this.refillBudgetIfHealthy(donation);
+    if (await this.orchestrator.isRunning(node.dockerId)) {
+      this.refillBudgetIfHealthy(node);
       return undefined;
     }
     // The budget is spent, and the last attempt did not stay up long enough to
@@ -277,16 +303,16 @@ export class DonationSupervisor {
     // refilled when the host went down is given up on host restart rather than
     // tried once more; if that is ever seen, skip this check when the host
     // started after `respawn.lastAttemptAt`.
-    const attempts = donation.respawn?.attempts ?? 0;
-    if (attempts >= DONATION_RESPAWN_MAX_ATTEMPTS) {
-      await this.giveUp(donation.id, attempts, 'the node did not stay running after its last respawn');
+    const attempts = node.respawn?.attempts ?? 0;
+    if (attempts >= HOSTED_NODE_RESPAWN_MAX_ATTEMPTS) {
+      await this.giveUp(node.id, attempts, 'the node did not stay running after its last respawn');
       return undefined;
     }
-    if (!this.backoffElapsed(donation)) {
-      log('donation %s is down but still inside its respawn backoff', donation.id);
+    if (!this.backoffElapsed(node)) {
+      log('hosted node %s is down but still inside its respawn backoff', node.id);
       return undefined;
     }
-    return this.attemptRespawn(donation);
+    return this.attemptRespawn(node);
   }
 
   /**
@@ -294,14 +320,14 @@ export class DonationSupervisor {
    * attempt history (or an unparsable timestamp — never wedge a node on bad
    * data) is eligible immediately.
    */
-  private backoffElapsed(donation: Donation): boolean {
-    const respawn = donation.respawn;
+  private backoffElapsed(node: HostedNode): boolean {
+    const respawn = node.respawn;
     if (!respawn) return true;
     const last = Date.parse(respawn.lastAttemptAt);
     if (Number.isNaN(last)) return true;
     const delay = Math.min(
-      DONATION_RESPAWN_BACKOFF_BASE_MS * 2 ** respawn.attempts,
-      DONATION_RESPAWN_BACKOFF_MAX_MS,
+      HOSTED_NODE_RESPAWN_BACKOFF_BASE_MS * 2 ** respawn.attempts,
+      HOSTED_NODE_RESPAWN_BACKOFF_MAX_MS,
     );
     return this.now().getTime() - last >= delay;
   }
@@ -310,24 +336,21 @@ export class DonationSupervisor {
    * Clear the attempt count once a respawned node has been up long enough to
    * count as healthy, so the next crash gets a full budget instead of inheriting
    * the previous crash loop's.
-   *
-   * `updatedAt` is deliberately left alone: it is the age the stale-`awaiting_seed`
-   * reap measures, and a liveness observation is not borrower activity.
    */
-  private refillBudgetIfHealthy(donation: Donation): void {
-    if (!this.budgetRefillDue(donation)) return;
-    // Re-read before writing: `donation` comes from the snapshot this pass
-    // started from, which can be several awaits old, and `store.put` replaces
-    // the whole row — writing the stale copy back would undo a concurrent seed
-    // or terminate that landed mid-pass.
-    const current = this.store.get(donation.id);
+  private refillBudgetIfHealthy(node: HostedNode): void {
+    if (!this.budgetRefillDue(node)) return;
+    // Re-read before writing: `node` comes from the snapshot this pass started
+    // from, which can be several awaits old, and `store.put` replaces the whole
+    // row — writing the stale copy back would undo a claim or a removal that
+    // landed mid-pass.
+    const current = this.store.get(node.id);
     if (!current?.respawn || !this.budgetRefillDue(current)) return;
     try {
       this.store.put({ ...current, respawn: { ...current.respawn, attempts: 0 } });
-      log('donation %s is healthy again — respawn budget refilled', donation.id);
+      log('hosted node %s is healthy again — respawn budget refilled', node.id);
     } catch (err) {
       // Costs one attempt off the next crash's budget, nothing more.
-      log('failed to refill respawn budget for %s: %s', donation.id, errorMessage(err));
+      log('failed to refill respawn budget for %s: %s', node.id, errorMessage(err));
     }
   }
 
@@ -336,106 +359,91 @@ export class DonationSupervisor {
    * unparsable timestamp is treated as not-due — unlike the backoff check,
    * being wrong here would erase real attempt history rather than free a node.
    */
-  private budgetRefillDue(donation: Donation): boolean {
-    const respawn = donation.respawn;
+  private budgetRefillDue(node: HostedNode): boolean {
+    const respawn = node.respawn;
     if (!respawn || respawn.attempts === 0) return false;
     const last = Date.parse(respawn.lastAttemptAt);
     if (Number.isNaN(last)) return false;
-    return this.now().getTime() - last > DONATION_RESPAWN_HEALTHY_MS;
+    return this.now().getTime() - last > HOSTED_NODE_RESPAWN_HEALTHY_MS;
   }
 
   /**
    * One respawn attempt, with the give-up check on failure. (The check for an
    * attempt that spawned but then died lives in {@link reconcileOne}.)
    */
-  private async attemptRespawn(donation: Donation): Promise<string | undefined> {
+  private async attemptRespawn(node: HostedNode): Promise<string | undefined> {
     try {
-      const result = await this.service.respawn(donation.id);
+      const result = await this.service.respawn(node.id);
       switch (result.outcome) {
-        case 'not_respawnable':
-          // A record written before the spawn inputs were persisted. Not
-          // respawnable and never will be; skip it every pass (cheap — no
-          // orchestrator call is reached) rather than fail the sweep.
-          log('donation %s is down but not respawnable (no persisted spawn inputs)', donation.id);
-          return undefined;
         case 'abandoned':
-          // The loan ended while the spawn was in flight and the ending won.
-          // Nothing threw, so no attempt is persisted and the give-up path is
-          // never entered — correct: this is not a failed attempt.
-          log(
-            'respawn of donation %s was abandoned (record went %s mid-spawn)',
-            donation.id,
-            result.status ?? 'missing',
-          );
+          // The node was removed (or given up on) while the spawn was in flight
+          // and the ending won. Nothing threw, so no attempt is persisted and the
+          // give-up path is never entered — correct: this is not a failed attempt.
+          log('respawn of hosted node %s was abandoned (record went %s mid-spawn)', node.id, result.status ?? 'missing');
           return undefined;
         case 'respawned':
-          log('respawned donation %s → %s', donation.id, result.donation.dockerId);
-          return donation.id;
+          log('respawned hosted node %s → %s', node.id, result.node.dockerId);
+          return node.id;
       }
     } catch (err) {
       const message = errorMessage(err);
       // `respawn` persists the incremented counter; re-read it rather than
       // recomputing, so a give-up decision is made on what is actually on disk.
-      const attempts = this.store.get(donation.id)?.respawn?.attempts ?? 0;
-      log('respawn attempt %d for donation %s failed: %s', attempts, donation.id, message);
-      if (attempts >= DONATION_RESPAWN_MAX_ATTEMPTS) {
-        await this.giveUp(donation.id, attempts, message);
+      const attempts = this.store.get(node.id)?.respawn?.attempts ?? 0;
+      log('respawn attempt %d for hosted node %s failed: %s', attempts, node.id, message);
+      if (attempts >= HOSTED_NODE_RESPAWN_MAX_ATTEMPTS) {
+        await this.giveUp(node.id, attempts, message);
       }
       return undefined;
     }
   }
 
   /**
-   * Stop trying: mark the donation `error` and stop whatever child the record
-   * still names. `error` is outside the store's live statuses, so the grant's
-   * quota frees and the borrower can provision a fresh node.
+   * Stop trying: mark the node `error` and stop whatever child the record
+   * still names.
    *
-   * The record is written BEFORE the stop for the same reason `terminate` does
+   * The record is written BEFORE the stop for the same reason `remove` does
    * it in that order — the stop fires `onStateChange`, and a pass triggered by
-   * it must not see "node gone, record still `seeded`" and start respawning
+   * it must not see "node gone, record still `joined`" and start respawning
    * again.
    *
    * The child is stopped but NOT removed: `removeContainer` deletes the workdir,
-   * and the workdir holds the identity key the borrower's cadre approved. A
-   * later `terminate()` still works on an `error` record and reclaims it.
+   * and the workdir holds the identity key the node's cadre approved. A later
+   * `remove()` (or `reset()`) on an `error` record reclaims it.
    *
-   * NOTE: an `error`-after-give-up record therefore keeps its workdir forever
-   * unless someone calls `terminate`. If stale `error` workdirs ever pile up on
-   * real hosts, extend the reap sweep in `donation-service.ts` to cover them.
+   * NOTE: an `error`-after-give-up record therefore keeps its workdir until
+   * someone removes it. If stale `error` workdirs ever pile up on real hosts,
+   * extend the reap sweep in `hosted-node-service.ts` to cover them.
    */
   private async giveUp(id: string, attempts: number, lastError: string): Promise<void> {
-    const donation = this.store.get(id);
-    if (!donation) return;
-    // The record may have gone terminal while the failing attempt was in flight
-    // — a `terminate` mid-pass is exactly why `respawn` threw. Overwriting that
-    // with `error` would rewrite the borrower's own ending as a host fault, and
-    // the stop below would fire against a child `terminate` already reclaimed.
-    if (!SUPERVISED_STATUSES.has(donation.status)) {
-      log('donation %s went %s before give-up — leaving it alone', id, donation.status);
+    const node = this.store.get(id);
+    if (!node) return;
+    // The record may have been removed or given up on while the failing attempt
+    // was in flight — a `remove` mid-pass is exactly why `respawn` threw. A stop
+    // here would fire against a child `remove` already reclaimed.
+    if (!SUPERVISED_STATUSES.has(node.status)) {
+      log('hosted node %s went %s before give-up — leaving it alone', id, node.status);
       return;
     }
     this.store.put({
-      ...donation,
+      ...node,
       status: 'error',
       error: `respawn gave up after ${attempts} attempts: ${lastError}`,
       updatedAt: this.now().toISOString(),
     });
-    log('gave up respawning donation %s after %d attempts: %s', id, attempts, lastError);
-    if (donation.dockerId) {
+    log('gave up respawning hosted node %s after %d attempts: %s', id, attempts, lastError);
+    this.service.emit({ kind: 'changed', id });
+    if (node.dockerId) {
       try {
-        await this.orchestrator.stopContainer(donation.dockerId);
+        await this.orchestrator.stopContainer(node.dockerId);
       } catch (err) {
         // The record names a live handle in the ordinary case — a failed respawn
         // restores the handle it dropped, and a respawn that spawned but failed
         // to record writes the new one onto the record. Still guarded: a handle
         // can be lost to a host restart (state.json gone, or the child already
         // reaped), and the child is dead either way, which is why we are here.
-        log('failed to stop container %s while giving up: %s', donation.dockerId, errorMessage(err));
+        log('failed to stop container %s while giving up: %s', node.dockerId, errorMessage(err));
       }
     }
   }
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

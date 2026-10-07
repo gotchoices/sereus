@@ -2,6 +2,7 @@
  * Test harness that boots a complete cadre-host stack in-process:
  *   - Installer.install() into a fresh temp data dir
  *   - HostProcessOrchestrator + NatService (offline: no router, no IP probe)
+ *     + HostedNodeService with its status watcher and HostedNodeSupervisor
  *     + (optional) UpdateService
  *   - createLocalUiServer wired against the real subsystems on an ephemeral port
  *
@@ -23,6 +24,9 @@ import { join } from 'node:path';
 import {
 	ExternalIpDetector,
 	HostProcessOrchestrator,
+	HostedNodeService,
+	HostedNodeStore,
+	HostedNodeSupervisor,
 	Installer,
 	NatError,
 	NatService,
@@ -79,6 +83,8 @@ export interface TestCadreHostOptions {
 	updateFetcher?: typeof fetch;
 	/** Test-only orchestrator spawn entrypoint (defaults to the cadre-cli bin). */
 	spawnEntrypoint?: string;
+	/** The orchestrator's port band (default 10000–20000); a scenario that runs real children claims its own. */
+	portRange?: { start: number; end: number };
 	/** SSE heartbeat interval (ms) — forwarded to createLocalUiServer. */
 	sseHeartbeatMs?: number;
 	/** Override the platform passed to the Installer (default 'linux'). */
@@ -115,6 +121,10 @@ export interface TestCadreHost {
 	readonly config: HostConfigFile;
 	readonly orchestrator: HostProcessOrchestrator;
 	readonly nat: NatService;
+	/** The hosted-node service behind `/api/hosted-nodes`, its watcher started. */
+	readonly hostedNodes: HostedNodeService;
+	/** Its respawn supervisor, started. */
+	readonly hostedNodeSupervisor: HostedNodeSupervisor;
 	readonly update?: UpdateService;
 	readonly server: LocalUiServer;
 	request(opts: HttpRequestOptions): Promise<HttpResponseLite>;
@@ -151,10 +161,19 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 	if (opts.spawnEntrypoint) {
 		orchestratorOpts.spawn = { entrypoint: opts.spawnEntrypoint };
 	}
+	if (opts.portRange) orchestratorOpts.portRange = opts.portRange;
 	const orchestrator = new HostProcessOrchestrator(orchestratorOpts);
 	await orchestrator.init();
 
 	const nat = await startOfflineNatService(dataDir, orchestrator);
+
+	// As `cadre-host start` wires them: the service with its status watcher, and the
+	// supervisor that respawns a hosted node whose child died.
+	const hostedNodeStore = new HostedNodeStore(dataDir);
+	const hostedNodes = new HostedNodeService({ orchestrator, store: hostedNodeStore, addresses: nat });
+	const hostedNodeSupervisor = new HostedNodeSupervisor({ service: hostedNodes, store: hostedNodeStore, orchestrator });
+	hostedNodeSupervisor.start();
+	hostedNodes.startWatching();
 
 	let update: UpdateService | undefined;
 	if (opts.manifestUrl) {
@@ -173,6 +192,7 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		dataDir,
 		orchestrator,
 		nat,
+		hostedNodes,
 		forcePort: 0,
 	};
 	if (update) serverOpts.update = update;
@@ -188,11 +208,16 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		config,
 		orchestrator,
 		nat,
+		hostedNodes,
+		hostedNodeSupervisor,
 		...(update ? { update } : {}),
 		server,
 		request: (req) => loopbackRequest(url, req),
 		openEventStream: () => openEventStream(url),
 		stop: async () => {
+			// The supervisor first: a child a scenario stops during teardown must not be respawned.
+			hostedNodes.stopWatching();
+			hostedNodeSupervisor.stop();
 			try { await server.stop(); } catch { /* ignore */ }
 			try { await nat.stop(); } catch { /* ignore */ }
 			if (update) {

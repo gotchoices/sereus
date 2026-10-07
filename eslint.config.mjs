@@ -303,10 +303,10 @@ export default tseslint.config(
 		},
 	},
 	// ---- Import-free app modules ----
-	// `integration-tests` imports this module's SOURCE by relative path and runs it in plain
-	// Node (docs/testing.md → "App modules in a scenario"), so a runtime import of anything —
-	// a native or Expo module above all — would break that scenario as it loads. Type-only
-	// imports are erased and stay allowed.
+	// An `integration-tests` scenario may import this module's SOURCE by relative path and run
+	// it in plain Node (docs/testing.md → "App modules in a scenario"), so a runtime import of
+	// anything — a native or Expo module above all — would break such a scenario as it loads.
+	// Type-only imports are erased and stay allowed.
 	{
 		files: ['packages/reference-app-rn/src/host-node-request.ts'],
 		rules: {
@@ -314,7 +314,7 @@ export default tseslint.config(
 				patterns: [{
 					regex: '.',
 					allowTypeImports: true,
-					message: 'This module is imported by an integration-tests scenario and must stay import-free (docs/testing.md → "App modules in a scenario"). Pass the dependency in through HostNodeRequestDeps instead.',
+					message: 'This module may be imported by an integration-tests scenario and must stay import-free (docs/testing.md → "App modules in a scenario"). Pass the dependency in through HostNodeRequestDeps instead.',
 				}],
 			}],
 		},

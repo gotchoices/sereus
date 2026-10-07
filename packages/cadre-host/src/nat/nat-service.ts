@@ -34,7 +34,7 @@ const log = debug('cadre:host:nat-service');
 
 /**
  * How long a node may sit `stopped` before its mappings are released. Longer
- * than the donation supervisor's whole respawn backoff (150 s), so a crash
+ * than the hosted-node supervisor's whole respawn backoff (150 s), so a crash
  * followed by a respawn keeps its mapping.
  */
 export const NAT_UNMAP_GRACE_MS = 3 * 60_000;
@@ -51,7 +51,7 @@ export const NAT_IP_REDETECT_INTERVAL_MS = 5 * 60_000;
 /**
  * The orchestrator surface the service needs: the node list and cadre-host's
  * own state-change subscription. `HostProcessOrchestrator` satisfies this; the
- * donation supervisor declares the same slice.
+ * hosted-node supervisor declares the same slice.
  */
 export interface NatNodeSource {
   listNodes(): ManagedNodeInfo[];
@@ -62,7 +62,7 @@ export interface NatNodeSource {
 export type NatChangeListener = (snapshot: NatStatusSnapshot) => void;
 
 export interface NatServiceOptions {
-  /** Cadre-host root directory (same one the orchestrator + grant store use). */
+  /** Cadre-host root directory (same one the orchestrator and the hosted-node store use). */
   rootDir: string;
   /** Where the hosted nodes and their ports come from. */
   nodeSource: NatNodeSource;

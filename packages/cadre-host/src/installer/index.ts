@@ -81,7 +81,7 @@ export interface InstallResult {
 }
 
 export interface UninstallOptions {
-  /** Also remove the data dir (default false — preserve grants, node identities and NAT state). */
+  /** Also remove the data dir (default false — preserve hosted-node records, node identities and NAT state). */
   removeData: boolean;
   /** Skip the confirmation prompt (for scripts). */
   yes: boolean;

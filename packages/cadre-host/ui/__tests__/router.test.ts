@@ -41,7 +41,7 @@ describe('hrefFor', () => {
 	});
 
 	it('round-trips every simple route through parseHash', () => {
-		for (const name of ['home', 'connectivity', 'nodes', 'settings', 'grants'] as const) {
+		for (const name of ['home', 'connectivity', 'nodes', 'settings'] as const) {
 			expect(parseHash(hrefFor(name)).name).toBe(name);
 		}
 	});

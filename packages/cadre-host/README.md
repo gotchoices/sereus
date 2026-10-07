@@ -1,10 +1,10 @@
 # @serfab/cadre-host
 
-Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **donate cadre nodes to other people's cadres**: a friend or family member keeps their own device as the authority for their cadre, and your box contributes always-on capacity by running an extra node that joins *theirs*. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
+Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **run always-on nodes for cadres whose owners claim them from their phones**: you, a friend or a family member keeps their own device as the authority for their cadre, and your box runs a node that joins *theirs*. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
 
-The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider donates nodes to paying tenants with API keys, billing, and Docker; cadre-host donates them for free to a handful of people you trust, as native child processes, with a one-shot installer.
+The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider hosts nodes for paying tenants with API keys, billing, and Docker; cadre-host hosts them for free for a handful of people you trust, as native child processes, with a one-shot installer.
 
-Who may ask for a node is gated by **grant tokens** you hand out. The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
+`cadre-host join` starts a node and shows a QR code; the phone that owns the cadre scans it to claim the node. The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
 
 [docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth.
 
@@ -29,11 +29,11 @@ npm install @serfab/cadre-host
 npx cadre-host install --data-dir ~/cadre/data
 ```
 
-From inside `~/cadre`, `npx cadre-host <command>` runs the local binary (`grant`, `nat`, `uninstall`, …) without any path prefix — `npx` resolves it from `node_modules/.bin/`. **Caveat:** outside `~/cadre`, `npx cadre-host` won't find the local install and will silently download a fresh copy from the npm registry. To avoid that, either always `cd ~/cadre` first or symlink the binary onto your PATH:
+From inside `~/cadre`, `npx cadre-host <command>` runs the local binary (`join`, `nat`, `uninstall`, …) without any path prefix — `npx` resolves it from `node_modules/.bin/`. **Caveat:** outside `~/cadre`, `npx cadre-host` won't find the local install and will silently download a fresh copy from the npm registry. To avoid that, either always `cd ~/cadre` first or symlink the binary onto your PATH:
 
 ```bash
 ln -s ~/cadre/node_modules/.bin/cadre-host ~/.local/bin/cadre-host
-# now `cadre-host grant issue …` works from anywhere
+# now `cadre-host join` works from anywhere
 ```
 
 If you'd rather skip `npx` and the symlink, the explicit path `./node_modules/.bin/cadre-host <command>` always works from `~/cadre` too.
@@ -77,11 +77,11 @@ The rendered unit files live at:
 
 See [`service/README.md`](./service/README.md) for templates, manual-smoke instructions, and the cross-platform CI gap.
 
-## After install — donating your first node
+## After install — joining your first cadre
 
-`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one materializes when someone you trust asks for one. This walkthrough goes from "install just finished" to "first donated node is running."
+`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one starts when you run `cadre-host join`. This walkthrough goes from "install just finished" to "first hosted node is claimed."
 
-This host's whole job is to lend always-on capacity to *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs an extra node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Node donation](../../docs/cadre-host.md#node-donation) for the full lifecycle.
+This host's whole job is to run always-on nodes for *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs a node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Hosted nodes: Join a cadre](../../docs/cadre-host.md#hosted-nodes-join-a-cadre) for the full lifecycle.
 
 ### 1. Verify the service is running
 
@@ -106,75 +106,29 @@ The UI listens on `http://127.0.0.1:<uiPort>/` (default port 8765) on the host m
 
   The forward stays up as long as the SSH session does.
 
-### 3. Issue your first grant token
+### 3. Join your cadre
 
-Decide whose cadre you want to help keep online — a family member, a friend, or your own phone. That person already has (or is about to create) **their own** cadre; you are donating capacity to it, not enrolling them into anything of yours.
-
-Before anyone can ask, you issue them a **grant token**: a bearer credential meaning "this person may ask my host to donate nodes."
+Decide whose cadre this node is for — a family member, a friend, or your own phone. That person already has **their own** cadre on their phone; you are adding a node to it, not enrolling them into anything of yours. There is no button for this in the local UI yet, so run:
 
 ```bash
-cadre-host grant issue "<label>"
+cadre-host join
 ```
 
-`<label>` is a human-readable name **you** choose to identify this grantee in your grant list. It's purely for your own bookkeeping — the system doesn't use it for anything. Quote it if it has spaces. Examples:
+The command starts the node and prints a QR code and the same text under it. Scan the code with the Sereus app on the phone that owns the cadre, or paste the text into it. The command then waits and prints `✓ Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed the node; the node now appears on the Nodes page as claimed. `--no-qr` prints only the text (on stdout, alone, so it can be piped); `--no-wait` exits once the code is shown, and the node keeps waiting. Ctrl-C while waiting also leaves the node waiting.
+
+If the command warns that the node cannot be reached from outside your home network, a phone on your home network can still claim it; see [Reachability](#reachability--can-people-actually-reach-your-nodes) for the ports to forward.
+
+To host a node for a friend, run `cadre-host join` again and let the friend scan it. **Anyone who scans the code claims the node**, so show it only to the person it is for; if the wrong person claimed it, `cadre-host node reset <id>` removes that node and starts a fresh one with a new code.
+
+### 4. Manage hosted nodes
 
 ```bash
-cadre-host grant issue "Mom's cadre"
-cadre-host grant issue alice
-cadre-host grant issue "Friend — hobby group"
+cadre-host node list              # id, status, cadre, owner fingerprint, connected
+cadre-host node remove <id>       # stop the node and delete its data on this machine
+cadre-host node reset <id>        # remove it and start a fresh one with a new code
 ```
 
-The command prints two things — a terminal-rendered QR code and the encoded token — both representing the same secret. The recipient can use either form. `--max-nodes N` caps how many donated nodes that grantee may keep running here at once (default 1); `--ttl 30d` gives the grant an expiry (`s`/`m`/`h`/`d` suffixes) — omit it and the grant never expires; `--no-qr` prints only the token.
-
-Hand the QR or token to the grantee in person if possible. **Anyone who gets the token can claim what it grants — the right to make your machine run nodes for them** — so treat it like a password. One difference from a cadre invitation: a grant is **not** one-time. It stays spendable, up to `--max-nodes` at a time, until it expires or you revoke it.
-
-### 4. The grantee requests a node
-
-The grantee's cadre authority — typically their phone — presents the grant token as `Authorization: Bearer <grant-token>` and drives the donation lifecycle against your host:
-
-1. `POST /grants` with their party id, owner public key(s) and, optionally, bootstrap addresses → your host spawns a child cadre node that pins **their** owner key and joins **their** cadre. Each bootstrap address given must be a full multiaddr naming both where to reach the peer and who it is (`/dns4/…/tcp/443/wss/p2p/12D3KooW…`); anything the donated node could not dial is refused as `400 invalid_request` naming the bad entry, before anything is spawned. A phone sends none: nothing can dial a phone, so it dials the node instead.
-2. `GET /grants/:id/peer` → the new node's peerId and multiaddrs, including the WebSocket (`/ws`) address a phone dials.
-3. Their device signs a seed for that peer and `PUT /grants/:id/seed` hands it back; the node accepts it precisely because their owner key was pinned at spawn.
-4. `DELETE /grants/:id` when they're done — the node is stopped and removed.
-
-At that moment:
-
-- cadre-host spawns a child cadre-node process for this grantee's cadre (the manager itself never joins a cadre).
-- The node appears on the Nodes page of the UI, and the grant it was spent against shows up in `cadre-host grant list`.
-- The node stays up: if it crashes or dies in a reboot, cadre-host respawns it from the donation's recorded spawn inputs.
-
-Until someone requests a node, the Nodes page in the UI stays empty — that's expected.
-
-**What is not built yet (v1):** `/grants` mounts on the same loopback-only management server as everything else, so today a grantee can only reach it from *this machine* or through an SSH tunnel like the one in step 2. Letting a friend's phone reach it across the internet is not done, and no app drives the four calls above for you yet — it is raw HTTP today. Issuing grants and running donated nodes work now; the last hop from a remote phone does not.
-
-### 5. Manage grants
-
-The dashboard's **Grants** page (`cadre-host ui`, then *Grants*) does everything below from the browser: issue a grant (with the same QR code and copyable token), see how many nodes each grant is using and which ones, show an active grant's token again to re-share it, and revoke a grant with or without its nodes. From the command line:
-
-```bash
-$ cadre-host grant list
-Grants:
-  Zx8kq1...   Mom's cadre           live=1 max=2
-  Ld93af...   Friend — hobby group  live=0 max=1  (expires 2026-09-01T12:00:00Z)
-```
-
-Revoke a grant:
-
-```bash
-$ cadre-host grant revoke <token>
-revoked grant: Zx8kq1...
-terminated 2 donated node(s)
-```
-
-Revoking denies every future request on that token — including the grantee's own `DELETE /grants/:id`, which is refused (403) once the grant is revoked — and shuts down every node already donated under it: each is stopped and its working directory (its identity key and node-local data) deleted. Pass `--keep-nodes` to revoke without touching the nodes already running; they then stay up until you end them yourself.
-
-To shut down one donated node — under a revoked grant or a live one — use its id, which is the id the UI's Nodes page shows (`grn_…`):
-
-```bash
-cadre-host grant terminate <donation-id>
-```
-
-A donated node's page in the UI offers **Terminate** (the same call) rather than Stop: the respawn supervisor treats a live donation as "expected to be running" and would bring a merely stopped node straight back. Revoking a grant again is safe and ends whatever is still running under it.
+`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** (the same call) rather than Stop: the respawn supervisor treats a claimed or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
 
 ## Reachability — can people actually reach your nodes?
 
@@ -188,8 +142,8 @@ cadre-host nat test       # re-run the probes right now
 If a node reads `unreachable`, the status says which of its ports to forward on your router and to which address on this machine, then the command that records the external ports you chose:
 
 ```bash
-cadre-host nat forward grn_abc123 --tcp 10003 --ws 10004   # the ports your router forwards to that node
-cadre-host nat forward grn_abc123 --clear                  # forget them
+cadre-host nat forward hn_abc123 --tcp 10003 --ws 10004   # the ports your router forwards to that node
+cadre-host nat forward hn_abc123 --clear                  # forget them
 ```
 
 The UI's **Connectivity** page shows the same per node, with an "I forwarded these ports" form. A node whose public addresses change restarts to announce them to the cadre it belongs to, at most once every 10 minutes; a node that restarts or respawns keeps its ports, so the forward stays valid. If your ISP uses carrier-grade NAT, a port forward will not help and the status says so. See [docs/cadre-host.md § Manual port forwarding](../../docs/cadre-host.md#manual-port-forwarding).
@@ -210,7 +164,7 @@ If you use the DuckDNS form, the token is stored in the OS keychain when `libsec
 
 All commands except `install`, `uninstall`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
 
-The `cadre-host push` group needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json`. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so a node picks them up the next time it is spawned. Today only a storage node started without pinned owner keys carries them, which a donated node never is.
+The `cadre-host push` group needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json`. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so a node picks them up the next time it is spawned. Every storage-profile node carries them when they are configured, hosted nodes included.
 
 ### `cadre-host status`
 
@@ -226,21 +180,21 @@ Service running:   yes
 
 Print the local-UI URL (e.g. `http://127.0.0.1:8765`) and open it in the default browser. Reads `uiPort` from `host.config.json`; doesn't require the service to be running (if not, the browser will fail to connect — that's feedback enough). Pass `--no-browser` to just print the URL.
 
-### `cadre-host grant issue <label> [--max-nodes N] [--ttl <duration>] [--no-qr]`
+### `cadre-host join [--no-qr] [--no-wait]`
 
-Issue a grant token — the credential that lets one person ask this host to donate cadre nodes into *their* cadre. `<label>` is whatever human-readable name helps you track the grantee — quote it if it has spaces. `--max-nodes` caps how many donated nodes that grantee may keep running here at once (default 1); `--ttl` gives the grant an expiry (`s`/`m`/`h`/`d` suffixes, e.g. `30d`) — omit it and the grant never expires. Prints a QR code and the encoded token; `--no-qr` prints the token only.
+Start a hosted node waiting to be claimed and show the code the owner's phone scans to add it to their cadre: a QR code and the same text, then (unless `--no-wait`) wait until the phone claims it and print `✓ Claimed by owner <fingerprint> into cadre <partyId>`. `--no-qr` prints the text only, on stdout alone. See [*Join your cadre*](#3-join-your-cadre).
 
-### `cadre-host grant list`
+### `cadre-host node list`
 
-Print every issued grant token with its label, live donated nodes (`live=`), node cap (`max=`), expiry, and revoked state.
+Print every hosted node: id, status (`unclaimed`, `joined`, `error` or `spawning`), cadre, owner fingerprint (the first 8 characters of the owner key) and whether a joined node is connected.
 
-### `cadre-host grant revoke <token> [--keep-nodes]`
+### `cadre-host node remove <id>`
 
-Revoke a grant token. Every future request presenting it is denied, the grantee's own `DELETE /grants/:id` included, and every node already donated under it is shut down (stopped, working directory deleted). Prints how many were terminated. `--keep-nodes` revokes only and leaves those nodes running. See [*Manage grants*](#5-manage-grants).
+Stop one hosted node and delete its data on this machine — its record, the child and its working directory. Its cadre keeps the node's row until the owner removes it there. `<id>` is the `hn_…` id the list shows.
 
-### `cadre-host grant terminate <donation-id>`
+### `cadre-host node reset <id> [--no-qr] [--no-wait]`
 
-Shut down one donated node — stop it and delete its working directory — whatever state its grant is in. `<donation-id>` is the `grn_…` id the Nodes page shows.
+Remove a hosted node and start a fresh one with a new code, then show the code and wait as `join` does. For a node someone else claimed first, or one that failed.
 
 ### `cadre-host nat status [--json]`
 
@@ -294,11 +248,11 @@ Run cadre-host in the foreground. Normally invoked by the service unit, not dire
 
 Run the first-run wizard. See [**Install**](#install) at the top of this README.
 
-`--no-service` writes the data dir (`host.config.json`, `nat.json`) and stops there: no OS service is registered and no browser opens. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example the phone walkthrough in [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md) ("Borrowing a Node From a cadre-host"). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
+`--no-service` writes the data dir (`host.config.json`, `nat.json`) and stops there: no OS service is registered and no browser opens. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example a phone walkthrough against a host run from a checkout ([`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
 
 ### `cadre-host uninstall [--remove-data] [--yes]`
 
-Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe node identities, issued grants, donated-node records, NAT state, and update state too.
+Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe node identities, hosted-node records, NAT state, and update state too.
 
 ```bash
 cadre-host uninstall                       # stop + deregister, keep data
@@ -307,12 +261,12 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 ## What `cadre-host start` does today
 
-`start` loads `host.config.json`, brings up the orchestrator, the NAT layer, the donation grant layer, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
+`start` loads `host.config.json`, brings up the orchestrator, the NAT layer, the hosted-node service with its watcher and supervisor, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
 
-- `/grants-admin` (issue/list/revoke grants, where revoke also shuts down the grant's donated nodes unless `?keepNodes=true`, and `DELETE /grants-admin/donations/:id` to shut down one donated node — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
+- `/api/hosted-nodes` (list, start a node waiting to be claimed, its claim details, remove, reset — no bearer; same-machine admin) — the surface `cadre-host join` and `cadre-host node` drive.
 - `/update/*` (update flow) — matches the CLI's contract.
 - `/nat/*` (NAT/DDNS) — every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
-- `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a donated node through `/grants-admin`.
+- `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a hosted node through `DELETE /api/hosted-nodes/:id`.
 - `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
 
 If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
@@ -327,7 +281,7 @@ The manifest URL is overridable two ways:
 
 Manifests are signed with Ed25519; cadre-host refuses to apply any release whose signature doesn't match the embedded release key. For CI / dev signing, set `CADRE_HOST_UPDATE_DEV_KEY` to a base64-encoded raw 32-byte public key.
 
-**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read node identities, issue or revoke grants, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on grant tokens for inter-cadre auth.
+**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read node identities, start or remove hosted nodes, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and show a join code only to the person it is for.
 
 Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
 
@@ -335,20 +289,22 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 `cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
 
-Five pages cover the day-to-day operations:
+Four pages cover the day-to-day operations:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity) and a Donation tile linking to Grants.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). A donated node has **Terminate**, the same as `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node.
-- **Grants** — issue grant tokens (QR + copy), see each grant's node usage and the donated nodes under it (linked to their node pages), show an active grant's token again, revoke a grant with or without its nodes. Same `/grants-admin` surface as `cadre-host grant`.
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity), a hosted-nodes tile linking to Nodes, and the running-node count.
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). A hosted node has **Remove**, the same as `cadre-host node remove <id>`. cadre-host doesn't auto-spawn nodes, so this list is empty until you run `cadre-host join`.
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, UI port), uninstall pointer.
 - **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
-The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the grants change, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
+
+A Join page (`cadre-host-join-ui`) is coming; today the UI has no "Join a cadre" button, and `cadre-host join` is the only way to start a node.
+
+The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, a hosted node is added, claimed or removed, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 
 ### Building the SPA
 
 `yarn workspace @serfab/cadre-host build` compiles both the server (TypeScript) and the SPA (`vite build` against `ui/`). The bundle lands in `dist/ui/` and is served by the same Fastify instance that handles `/api/*` and friends. When `dist/ui/` is missing (e.g. running from source without building), the server still answers all API routes and shows a placeholder at `/` explaining how to build.
 
-For UI-only iteration: `yarn workspace @serfab/cadre-host dev:ui` starts Vite on `:5173` and proxies `/api`, `/nat`, `/update`, `/grants-admin` to `127.0.0.1:8765` (override with `CADRE_HOST_PORT`).
+For UI-only iteration: `yarn workspace @serfab/cadre-host dev:ui` starts Vite on `:5173` and proxies `/api`, `/nat`, `/update` to `127.0.0.1:8765` (override with `CADRE_HOST_PORT`).
 
 ## More
 

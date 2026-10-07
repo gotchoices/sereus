@@ -21,8 +21,7 @@
 	<div class="card">
 		{#if app.nodes.length === 0}
 			<p class="muted">
-				No managed nodes yet. cadre-host doesn't auto-spawn nodes — one
-				appears when a grantee requests a donated node.
+				No nodes yet. Run <code>cadre-host join</code> to start one and scan its code with the phone that owns the cadre.
 			</p>
 		{:else}
 			<table>

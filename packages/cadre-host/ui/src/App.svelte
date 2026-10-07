@@ -21,7 +21,6 @@
 	import Nodes from './routes/Nodes.svelte';
 	import NodeDetail from './routes/NodeDetail.svelte';
 	import Settings from './routes/Settings.svelte';
-	import Grants from './routes/Grants.svelte';
 	import StatusDot from './components/StatusDot.svelte';
 	import Toast from './components/Toast.svelte';
 
@@ -41,7 +40,6 @@
 		{ name: 'home', label: 'Home' },
 		{ name: 'connectivity', label: 'Connectivity' },
 		{ name: 'nodes', label: 'Nodes' },
-		{ name: 'grants', label: 'Grants' },
 		{ name: 'settings', label: 'Settings' },
 	];
 
@@ -112,8 +110,6 @@
 		<NodeDetail id={route.route.params['id'] ?? ''} />
 	{:else if route.route.name === 'settings'}
 		<Settings />
-	{:else if route.route.name === 'grants'}
-		<Grants />
 	{:else}
 		<Home />
 	{/if}

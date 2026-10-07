@@ -1,6 +1,6 @@
 /**
  * Contract tests for `FakeOrchestrator` itself — the handle lifecycle it borrows
- * from `HostProcessOrchestrator`. The donation suites lean on these semantics to
+ * from `HostProcessOrchestrator`. The hosted-node suites lean on these semantics to
  * express races that only exist because the real class drops and rejects
  * handles, so this file exists to stop a later relaxation of the fake from
  * quietly turning one of those tests green.
@@ -15,12 +15,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { OrchestratorCreateRequest } from '@serfab/cadre-provider';
+import type { HostedSpawnRequest } from '../../orchestrator/types.js';
 
 import { describeHandleContract } from '../../__tests__/orchestrator-handle-contract.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
 
-const request = (containerId: string): OrchestratorCreateRequest => ({
+const request = (containerId: string): HostedSpawnRequest => ({
   containerId,
   partyId: 'party-P',
   bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
@@ -38,9 +38,9 @@ describeHandleContract<FakeOrchestrator>('FakeOrchestrator', {
 describe('FakeOrchestrator handle lifecycle', () => {
   it('drops the prior handle when a re-spawn succeeds (mirrors dropStaleHandle)', async () => {
     const orch = new FakeOrchestrator();
-    const first = await orch.createContainer(request('grn_1'));
+    const first = await orch.createContainer(request('hn_1'));
     orch.crash(first.dockerId);
-    const second = await orch.createContainer(request('grn_1'));
+    const second = await orch.createContainer(request('hn_1'));
 
     await expect(orch.stopContainer(first.dockerId)).rejects.toThrow(
       `Container not found: ${first.dockerId}`,
@@ -49,7 +49,7 @@ describe('FakeOrchestrator handle lifecycle', () => {
     // calls attempted.
     expect(orch.stopped).toEqual([]);
     // …and the container now resolves only to the new spawn.
-    expect(orch.resolveDockerId('grn_1')).toBe(second.dockerId);
+    expect(orch.resolveDockerId('hn_1')).toBe(second.dockerId);
 
     await orch.stopContainer(second.dockerId);
     expect(orch.stopped).toEqual([second.dockerId]);
@@ -57,9 +57,9 @@ describe('FakeOrchestrator handle lifecycle', () => {
 
   it('keeps the prior handle live across the whole pre-drop await window', async () => {
     const orch = new FakeOrchestrator();
-    const first = await orch.createContainer(request('grn_1'));
+    const first = await orch.createContainer(request('hn_1'));
 
-    // The invariant the donation race tests rest on: a concurrent stop started
+    // The invariant the hosted-node race tests rest on: a concurrent stop started
     // from `onCreate` still finds the old handle. Deferring it onto a microtask
     // puts it strictly after `onCreate` returns and strictly before the
     // `createDelayMs` timer, so this one case pins the drop behind BOTH — with
@@ -74,25 +74,25 @@ describe('FakeOrchestrator handle lifecycle', () => {
         .then(() => 'stopped', (err: Error) => `rejected: ${err.message}`);
     };
 
-    const second = await orch.createContainer(request('grn_1'));
+    const second = await orch.createContainer(request('hn_1'));
 
     expect(await outcome).toBe('stopped');
     expect(orch.stopped).toEqual([first.dockerId]);
-    expect(orch.resolveDockerId('grn_1')).toBe(second.dockerId);
+    expect(orch.resolveDockerId('hn_1')).toBe(second.dockerId);
   });
 
   it('leaves the prior handle in place when the re-spawn fails (mirrors restoreDroppedHandles)', async () => {
     const orch = new FakeOrchestrator();
-    const first = await orch.createContainer(request('grn_1'));
+    const first = await orch.createContainer(request('hn_1'));
 
     orch.failCreate = true;
-    await expect(orch.createContainer(request('grn_1'))).rejects.toThrow('spawn boom');
+    await expect(orch.createContainer(request('hn_1'))).rejects.toThrow('spawn boom');
 
     // Host state is exactly as the failed attempt found it — which is what lets
-    // `DonationSupervisor.giveUp` still stop the child it knows about.
+    // `HostedNodeSupervisor.giveUp` still stop the child it knows about.
     await expect(orch.stopContainer(first.dockerId)).resolves.toBeUndefined();
     expect(orch.stopped).toEqual([first.dockerId]);
-    expect(orch.resolveDockerId('grn_1')).toBe(first.dockerId);
+    expect(orch.resolveDockerId('hn_1')).toBe(first.dockerId);
   });
 
   it('rejects a never-issued dockerId (mirrors requireHandle)', async () => {
@@ -106,7 +106,7 @@ describe('FakeOrchestrator handle lifecycle', () => {
 
   it('rejects a second call once a handle has been removed (mirrors removeContainer deleting it)', async () => {
     const orch = new FakeOrchestrator();
-    const { dockerId } = await orch.createContainer(request('grn_1'));
+    const { dockerId } = await orch.createContainer(request('hn_1'));
 
     await orch.removeContainer(dockerId);
     expect(orch.removed).toEqual([dockerId]);
@@ -129,41 +129,41 @@ describe('FakeOrchestrator handle lifecycle', () => {
 
   it('refuses to reclaim the workdir of a container that still resolves (mirrors the live-handle guard)', async () => {
     const orch = new FakeOrchestrator();
-    await orch.createContainer(request('grn_1'));
+    await orch.createContainer(request('hn_1'));
 
     // A live handle owns that directory; only `removeContainer` — which stops
     // the child first — may delete it.
-    expect(orch.reclaimWorkdir('grn_1')).toBe(false);
+    expect(orch.reclaimWorkdir('hn_1')).toBe(false);
     expect(orch.reclaimedWorkdirs).toEqual([]);
   });
 
   it('reclaims the workdir of a container no handle owns', async () => {
     const orch = new FakeOrchestrator();
 
-    // Never spawned — the stuck-`provisioning` record whose host died before a
+    // Never spawned — the stuck-`spawning` record whose host died before a
     // handle ever existed.
-    expect(orch.reclaimWorkdir('grn_orphan')).toBe(true);
-    expect(orch.reclaimedWorkdirs).toEqual(['grn_orphan']);
+    expect(orch.reclaimWorkdir('hn_orphan')).toBe(true);
+    expect(orch.reclaimedWorkdirs).toEqual(['hn_orphan']);
 
     // …and once the container's own handle is removed, its id becomes
     // reclaimable too.
-    const { dockerId } = await orch.createContainer(request('grn_1'));
-    expect(orch.reclaimWorkdir('grn_1')).toBe(false);
+    const { dockerId } = await orch.createContainer(request('hn_1'));
+    expect(orch.reclaimWorkdir('hn_1')).toBe(false);
     await orch.removeContainer(dockerId);
-    expect(orch.reclaimWorkdir('grn_1')).toBe(true);
-    expect(orch.reclaimedWorkdirs).toEqual(['grn_orphan', 'grn_1']);
+    expect(orch.reclaimWorkdir('hn_1')).toBe(true);
+    expect(orch.reclaimedWorkdirs).toEqual(['hn_orphan', 'hn_1']);
   });
 
   it('fires onSpawned after the drop, with the new handle live and the old one gone', async () => {
     const orch = new FakeOrchestrator();
-    const first = await orch.createContainer(request('grn_1'));
+    const first = await orch.createContainer(request('hn_1'));
     orch.crash(first.dockerId);
 
     let observed: { spawned: string; resolves: string | undefined } | undefined;
     orch.onSpawned = (dockerId) => {
-      observed = { spawned: dockerId, resolves: orch.resolveDockerId('grn_1') };
+      observed = { spawned: dockerId, resolves: orch.resolveDockerId('hn_1') };
     };
-    const second = await orch.createContainer(request('grn_1'));
+    const second = await orch.createContainer(request('hn_1'));
 
     // The post-drop world: the container already resolves to the new handle, so
     // work driven from here sees what `abandonRespawn`'s caller would see.

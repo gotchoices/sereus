@@ -3,17 +3,13 @@
  * — the control-network addresses the created node is started with as
  * `CADRE_BOOTSTRAP_NODES`, and which it hands to `@libp2p/bootstrap`.
  *
- * Its own module rather than part of `routes.ts`: the per-entry rule is a duplicate
- * of cadre-host's copy (`packages/cadre-host/src/server/routes/bootstrap-node-validation.ts`),
- * so it is worth reading, testing and changing on its own, without a routing file
- * around it. Same arrangement, and same reasons, as `owner-key-validation.ts`.
+ * Its own module rather than part of `routes.ts`: the rule is worth reading,
+ * testing and changing on its own, without a routing file around it. Same
+ * arrangement, and same reasons, as `owner-key-validation.ts`.
  *
- * The LIST-level requirement is where the two copies differ, on purpose: this one
- * still requires at least one address, while cadre-host's accepts none, because a
- * node lent by cadre-host may be dialed by its requester instead (a phone has no
- * address to give). A provider container has no such path yet, so an empty list
- * here is still a container that comes up alone. Giving the provider that shape is
- * `provider-drone-reachable-by-phone`.
+ * At least one address is required: a provider container has no dial-in path
+ * yet, so an empty list is a container that comes up alone. Giving the provider
+ * that shape is `provider-drone-reachable-by-phone`.
  *
  * ## The rule, and why each clause is there
  *
@@ -70,14 +66,8 @@
  * boundary check can tell them apart. This validates the *shape* the child must be
  * able to parse, nothing more.
  *
- * Keeping the two per-entry rules in step is **manual** — neither package can see
- * the other's rule, so no test can compare them. What the tests give instead is a
- * tripwire on each side: `__tests__/bootstrap-node-validation.test.ts` here and
- * `packages/cadre-host/src/server/__tests__/bootstrap-node-validation.test.ts`
- * there each pin their own copy to the same per-entry accept/reject table (the
- * empty-list row is the one that differs), so changing either rule fails that
- * package's own suite — and the comment above the rule you just changed is what
- * points at the other copy.
+ * `__tests__/bootstrap-node-validation.test.ts` pins the rule to a per-entry
+ * accept/reject table, so changing it fails this package's own suite.
  */
 
 import debug from 'debug';

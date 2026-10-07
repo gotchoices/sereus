@@ -1,6 +1,6 @@
 /**
  * The handle rules `HostProcessOrchestrator` and its test stand-in
- * `FakeOrchestrator` (`donation/__tests__/fake-orchestrator.ts`) must both obey,
+ * `FakeOrchestrator` (`hosted/__tests__/fake-orchestrator.ts`) must both obey,
  * written once and run against each: `orchestrator.test.ts` registers them over
  * the real class, `fake-orchestrator.test.ts` over the fake. A rule one of them
  * stops obeying fails in that file's run.
@@ -37,8 +37,8 @@ export interface HandleContractHarness<O extends ContractOrchestrator> {
   failNextCreate(orch: O, containerId: string): void;
 }
 
-const CONTAINER = 'grn_contract_a';
-const OTHER_CONTAINER = 'grn_contract_b';
+const CONTAINER = 'hn_contract_a';
+const OTHER_CONTAINER = 'hn_contract_b';
 
 export function describeHandleContract<O extends ContractOrchestrator>(
   label: string,

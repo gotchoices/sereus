@@ -35,26 +35,6 @@ export interface NodeStats {
 	memoryBytes: number;
 }
 
-/** Mirror of the server's `DonationStatus` (`src/donation/types.ts`). */
-export type DonationStatus = 'provisioning' | 'awaiting_seed' | 'seeded' | 'error' | 'terminated';
-
-/**
- * Mirror of the server's `GrantListing`. `token` is the grant's secret and the
- * key for revoking it; the page keeps it off screen until asked.
- */
-export interface GrantListing {
-	token: string;
-	label: string;
-	maxNodes: number;
-	createdAt: string;
-	expiresAt?: string;
-	revokedAt?: string;
-	/** Donations counting against `maxNodes`. */
-	liveNodes: number;
-	/** Every donation under the grant not yet terminated — what a revoke would end. */
-	donations: Array<{ id: string; status: DonationStatus }>;
-}
-
 /** Mirror of the server's `PortRoute` (`src/nat/types.ts`): how one of a node's ports is reached from outside. */
 export interface PortRoute {
 	internalPort: number;
@@ -163,25 +143,11 @@ export interface Toast {
 	expiresAt: number;
 }
 
-/**
- * The grants slice. `loaded` and `error` exist because an unfetched list is not
- * an empty one: without them the page would greet a failed fetch with "no grants
- * issued", which is a different claim entirely.
- */
-interface GrantsState {
-	list: GrantListing[];
-	/** True once a fetch has succeeded at least once. */
-	loaded: boolean;
-	/** Message from the most recent failed fetch; cleared by the next success. */
-	error: string | null;
-}
-
 interface AppState {
 	status: OverallStatus;
 	service: StatusResponse['service'] | null;
 	nodes: NodeInfo[];
 	nodeStats: Record<string, NodeStats | null>;
-	grants: GrantsState;
 	connectivity: NatStatusSnapshot | null;
 	update: UpdateState | null;
 	settings: HostConfigFile | null;
@@ -193,7 +159,6 @@ const state = $state<AppState>({
 	service: null,
 	nodes: [],
 	nodeStats: {},
-	grants: { list: [], loaded: false, error: null },
 	connectivity: null,
 	update: null,
 	settings: null,
@@ -285,7 +250,7 @@ export async function refreshNodeDetail(id: string): Promise<{ node: NodeInfo; s
 	try {
 		const r = await apiFetch<{ node: NodeInfo; stats: NodeStats | null }>(`/api/nodes/${encodeURIComponent(id)}`);
 		// Upsert: a node spawned after the last list fetch (e.g. one reached from a
-		// Grants page link) is not in the list yet, and the detail page renders from it.
+		// link elsewhere) is not in the list yet, and the detail page renders from it.
 		state.nodes = state.nodes.some((n) => n.id === id)
 			? state.nodes.map((n) => (n.id === id ? r.node : n))
 			: [...state.nodes, r.node];
@@ -294,26 +259,6 @@ export async function refreshNodeDetail(id: string): Promise<{ node: NodeInfo; s
 	} catch (err) {
 		reportError(`node ${id}`, err);
 		return null;
-	}
-}
-
-/**
- * Fetch the grant list. Called from the Grants page's own `onMount` and from the
- * events below, not at boot — nothing needs it before the page is opened.
- */
-export async function refreshGrants(): Promise<void> {
-	// NOTE: overlapping refreshes are last-response-wins. Every overlap today is
-	// post-mutation (an action's own refresh racing its SSE echo), so the result
-	// converges; if these calls ever get slow, sequence them.
-	try {
-		const r = await apiFetch<{ grants: GrantListing[] }>('/grants-admin');
-		state.grants = { list: r.grants, loaded: true, error: null };
-	} catch (err) {
-		reportError('grants', err);
-		state.grants = {
-			...state.grants,
-			error: err instanceof Error ? err.message : String(err),
-		};
 	}
 }
 
@@ -378,22 +323,8 @@ export function applyEvent(event: { type: string; data: string }): void {
 				);
 				recomputeStatus();
 			}
-			// Donations change through the grantee's own `/grants` calls and the
-			// respawn supervisor too, neither of which publishes `grants-changed`; each
-			// writes its record before spawning and after marking it terminated, so the
-			// node's state change is late enough to re-read the counts.
-			// NOTE: the supervisor's give-up writes `error` after the crash event has
-			// already fired, so an open Grants page counts that node live until the next
-			// refresh; if that shows, have the supervisor publish `grants-changed`.
-			if (state.grants.loaded) void refreshGrants();
 			break;
 		}
-		case 'grants-changed':
-			void refreshGrants();
-			// A revoke or terminate removes nodes from the orchestrator, but their last
-			// `node-state-changed` left them listed as stopped, which reads as unhealthy.
-			if (payload['kind'] !== 'issued') void refreshNodes();
-			break;
 		case 'connectivity-changed':
 			void refreshConnectivity();
 			break;

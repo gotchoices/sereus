@@ -159,8 +159,8 @@ describe('HostProcessOrchestrator node identity', () => {
   });
 
   // The failure the identity step can actually produce is a damaged key file,
-  // and `DonationService.provision` turns every such throw into an `error`
-  // record and lets the grantee retry. If the spawn path reserved its ports
+  // and `HostedNodeService.join` turns every such throw into an `error`
+  // record and lets the admin retry. If the spawn path reserved its ports
   // before the step that throws, each retry would burn four more ports out of a
   // bounded range until provisioning stopped working altogether.
   it('reserves no ports when the identity step fails', async () => {

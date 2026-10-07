@@ -1,7 +1,10 @@
 /**
- * /api/nodes — list managed cadre nodes, look up one node's details, and tail
- * its log. Read-only: every node's lifecycle belongs to the donation surface,
- * whose supervisor would undo at once a stop issued anywhere else.
+ * /api/nodes — list managed cadre nodes (orchestrator handles), look up one
+ * node's details, and tail its log. Read-only: every node's lifecycle belongs to
+ * `/api/hosted-nodes`, whose supervisor would undo at once a stop issued
+ * anywhere else. A handle's `partyId` is the placeholder an unclaimed node was
+ * started with until its first respawn after the claim; the hosted-node record
+ * carries the real party.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';

@@ -42,6 +42,7 @@ import {
   encodeDockerId,
   type Handle,
   type HostProcessConfig,
+  type HostedSpawnRequest,
   type ManagedNodeInfo,
   type NodePorts,
   type NodeStateListener,
@@ -251,18 +252,18 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Spawn a managed node — the donated-node path (the requester's cadre, pinned
-   * to the *requester's* owner key). The node is given its own protobuf
-   * identity key inside its workdir (`ensureNodeIdentity`, reused across
+   * Spawn a managed node — a hosted node for some cadre, started waiting to be
+   * claimed when the request carries a `claimSecret`. The node is given its own
+   * protobuf identity key inside its workdir (`ensureNodeIdentity`, reused across
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
    * start` opens the file-backed bootstrap-peer, trusted-owner and strand
    * network-state stores in the node's state directory, which defaults to the
    * directory holding the `cadre.json` written here — the same workdir.
-   * Terminating the loan (`removeContainer`) deletes the workdir, so the key and
+   * Removing the node (`removeContainer`) deletes the workdir, so the key and
    * every store go with it.
    */
-  async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
+  async createContainer(request: HostedSpawnRequest): Promise<OrchestratorCreateResult> {
     const workdir = this.workdirFor(request.containerId);
     // Sampled BEFORE `ensureNodeIdentity`, which brings the directory into
     // existence as a side effect of writing the key. Only a spawn that found
@@ -283,23 +284,14 @@ export class HostProcessOrchestrator implements Orchestrator {
       // node's worth of ports from a bounded range on every failed provision attempt.
       const identity = await ensureNodeIdentity(workdir);
       log('container %s identity peerId=%s', request.containerId, identity.peerId);
-      // A node started with pinned owner keys belongs to a FOREIGN cadre (the
-      // node-donation flow: it trusts the requester's owner key).
-      // The host's FCM/APNs credentials are minted for the host owner's own app
-      // and are meaningless to a foreign cadre — so donated nodes get NO push
-      // block. (Per-grantee push creds would be a future ticket; none in v1.)
-      const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
       // Only storage-profile nodes participate in strands and thus fan out push
       // wakes — a transaction-only node need not carry credentials. Resolved
       // BEFORE the drop below, which keeps the drop → launch window synchronous
       // (see restoreDroppedHandles).
-      const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
-      // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
-      // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
-      // node will accept the foreign-authority-signed seed presented via POST /seed.
-      const extraEnv = request.pinnedOwnerKeys?.length
-        ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
-        : undefined;
+      const push = request.profile === 'storage' ? await this.resolvePush() : undefined;
+      // The claim secret reaches the child as CADRE_CLAIM_SECRET and nowhere else
+      // (see HostedSpawnRequest); `cadre-cli start` then waits to be claimed.
+      const extraEnv = request.claimSecret ? { CADRE_CLAIM_SECRET: request.claimSecret } : undefined;
 
       // The last `await` on this path: checked as close to the drop as it can be.
       await this.refuseRespawnOverLiveChild(request.containerId);
@@ -343,7 +335,7 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Remove the working directory a spawn created for `containerId` when no
-   * handle owns it — the cleanup of last resort for a donation record that
+   * handle owns it — the cleanup of last resort for a hosted-node record that
    * never got a `dockerId` (the host died between `ensureNodeIdentity` and the
    * handle write, so `createContainer`'s own unwind never ran). Returns whether
    * anything was removed.
@@ -356,7 +348,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     // the child first — is the only thing allowed to delete it.
     if (this.resolveDockerId(containerId)) return false;
     const workdir = this.workdirFor(containerId);
-    // Defence, not a live case: donation ids are `grn_<base64url>` and so can
+    // Defence, not a live case: hosted-node ids are `hn_<base64url>` and so can
     // hold neither a path separator nor a dot. A caller that ever passes
     // something else must not be able to walk out of `rootDir`.
     if (!workdir.startsWith(this.rootDir + sep)) {
@@ -455,7 +447,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     ports: NodePorts;
     buildConfig: (workdir: string) => CliConfig;
     extraArgs: string[];
-    /** Extra env vars merged into the child's environment (e.g. CADRE_OWNER_KEYS). */
+    /** Extra env vars merged into the child's environment (e.g. CADRE_CLAIM_SECRET). */
     extraEnv?: Record<string, string>;
     memoryLimit?: string;
   }): OrchestratorCreateResult {
@@ -675,7 +667,7 @@ export class HostProcessOrchestrator implements Orchestrator {
   /**
    * Drop any handle left over from a previous spawn of the same `containerId`
    * and release its ports. Handles are keyed by the per-spawn `dockerId`, so
-   * without this a re-spawn (donated-node respawn) would strand the prior
+   * without this a re-spawn (a hosted node's respawn) would strand the prior
    * handle in the map forever, leaking its ports from a bounded range each
    * time.
    *
@@ -696,7 +688,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * {@link restoreDroppedHandles} when the launch throws — otherwise the caller
    * would be left holding a dockerId this orchestrator no longer knows, and the
    * node's workdir could never be reclaimed. On a *successful* spawn the drop
-   * stands: `DonationService.abandonRespawn` depends on the old handle being
+   * stands: `HostedNodeService.abandonRespawn` depends on the old handle being
    * gone by then.
    */
   private dropStaleHandle(containerId: string): Handle[] {

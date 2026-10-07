@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { NatError } from '../../nat/types.js';
 import { UpdateErrorException } from '../../update/types.js';
-import { GrantError } from '../../donation/types.js';
+import { HostedNodeError } from '../../hosted/types.js';
 import { registerErrorHandler } from '../error-handler.js';
 
 describe('error handler', () => {
@@ -20,9 +20,9 @@ describe('error handler', () => {
       const { code } = req.params as { code: string };
       throw new UpdateErrorException(code as never, `update err: ${code}`);
     });
-    app.get('/grant/:code', async (req: FastifyRequest) => {
+    app.get('/hosted/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
-      throw new GrantError(code as never, `grant err: ${code}`);
+      throw new HostedNodeError(code as never, `hosted err: ${code}`);
     });
     app.get('/unknown', async () => {
       throw new Error('mystery');
@@ -58,21 +58,16 @@ describe('error handler', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('GrantError invalid_max_nodes → 400', async () => {
-    const res = await app.inject({ method: 'GET', url: '/grant/invalid_max_nodes' });
-    expect(res.statusCode).toBe(400);
-    const body = res.json() as { error: { code: string } };
-    expect(body.error.code).toBe('invalid_max_nodes');
-  });
-
-  it('GrantError not_found → 404', async () => {
-    const res = await app.inject({ method: 'GET', url: '/grant/not_found' });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('GrantError storage_error → 500', async () => {
-    const res = await app.inject({ method: 'GET', url: '/grant/storage_error' });
-    expect(res.statusCode).toBe(500);
+  it('HostedNodeError maps each code to its status', async () => {
+    const statusOf = async (code: string): Promise<number> => (await app.inject({ method: 'GET', url: `/hosted/${code}` })).statusCode;
+    expect(await statusOf('invalid_request')).toBe(400);
+    expect(await statusOf('not_found')).toBe(404);
+    expect(await statusOf('invalid_state')).toBe(409);
+    expect(await statusOf('node_unavailable')).toBe(503);
+    expect(await statusOf('orchestrator_error')).toBe(500);
+    expect(await statusOf('storage_error')).toBe(500);
+    const body = (await app.inject({ method: 'GET', url: '/hosted/invalid_state' })).json() as { error: { code: string } };
+    expect(body.error.code).toBe('invalid_state');
   });
 
   it('unknown Error → 500 internal', async () => {

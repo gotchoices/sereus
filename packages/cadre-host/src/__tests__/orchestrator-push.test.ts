@@ -29,7 +29,7 @@ setInterval(() => {}, 1 << 30);
 
 const FCM = { projectId: 'proj', clientEmail: 'svc@proj.iam', privateKey: 'FCM-SECRET-PEM' };
 const APNS = { keyId: 'KID', teamId: 'TEAM', bundleId: 'com.example.app', privateKey: 'APNS-SECRET-P8', production: false };
-/** A storage node with no pinned owner keys — the one kind of spawn that carries push. */
+/** A storage node — the one profile whose spawn carries push. */
 const NODE = { containerId: 'n1', partyId: 'p', bootstrapNodes: [], profile: 'storage' as const };
 
 let tmpRoot: string;

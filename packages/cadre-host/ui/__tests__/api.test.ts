@@ -75,7 +75,7 @@ describe('apiFetch', () => {
 			calls.push({ url: String(input), init: init ?? {} });
 			return jsonResponse({ ok: true, data: { id: 'abc' } });
 		});
-		const r = await apiPost<{ id: string }>('/grants-admin', { label: 'Mom' });
+		const r = await apiPost<{ id: string }>('/api/hosted-nodes', { label: 'Mom' });
 		expect(r).toEqual({ id: 'abc' });
 		expect(calls).toHaveLength(1);
 		expect(calls[0]!.init.method).toBe('POST');
@@ -90,7 +90,7 @@ describe('apiFetch', () => {
 			calls.push(init ?? {});
 			return jsonResponse({ ok: true });
 		});
-		await apiDelete('/grants-admin/tkn');
+		await apiDelete('/api/hosted-nodes/hn_x');
 		expect(calls[0]!.method).toBe('DELETE');
 		expect(calls[0]!.body).toBeUndefined();
 	});

@@ -10,7 +10,7 @@
  *   connection and nothing else on it.
  * - **Phone-shaped claimant** — an in-process `CadreNode` with `listenAddrs: []`, WebSocket
  *   and circuit-relay transports only, `profile: 'transaction'`, owner genesis run on
- *   itself: the requester of `cadre-host-donation-phone-requester.integration.ts`.
+ *   itself: the claimant of `cadre-host-join-by-qr.integration.ts`.
  * - **The QR payload** — the node's peer id and addresses, read here from its `/status`, plus
  *   the secret. cadre-host's join flow will show these as a QR code
  *   (`cadre-host-hosted-nodes-join-by-qr`); here the test hands them over.
@@ -392,7 +392,7 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
 
     // NOTE: does not pin WHICH dial source the claimant used: the dial target `claimNode`
     // retained and the node's fresh signed record both survive into this step, as in the
-    // donation-phone scenario's step 6. Telling them apart would mean disabling one.
+    // join-by-qr scenario's respawn step. Telling them apart would mean disabling one.
     await waitUntil(
       () => connectionsTo(claimant!, node.peerId)
         .some((c) => c.direction === 'outbound' && c.status === 'open' && !staleConnectionIds.has(c.id)),

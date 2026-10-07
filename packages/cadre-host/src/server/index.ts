@@ -5,7 +5,7 @@
  *   - the origin guard + error handler
  *   - existing NAT / update typed handlers, mounted at `/nat/*`, `/update/*`
  *     (the CLI contract)
- *   - new UI-only routes under `/api/*` (status, nodes, settings, events)
+ *   - the `/api/*` routes (status, nodes, hosted nodes, settings, events)
  *   - the static SPA mount at `/`
  *
  * Callers (cadre-host start) own the subsystems and pass them in. The
@@ -20,8 +20,7 @@ import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
 import type { UpdateService } from '../update/index.js';
 import { createUpdateHandlers } from '../update/index.js';
-import type { GrantService, DonationService } from '../donation/index.js';
-import { createGrantAdminHandlers } from '../donation/index.js';
+import type { HostedNodeService } from '../hosted/index.js';
 
 import { EventBus } from './events/bus.js';
 import { registerSseRoute } from './events/sse-route.js';
@@ -34,8 +33,7 @@ import { registerUpdateRoutes } from './routes/update.js';
 import { registerStatusRoute } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
-import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
-import { registerGrantsRoutes } from './routes/grants.js';
+import { registerHostedNodesRoutes } from './routes/hosted-nodes.js';
 import { HostSettingsStore } from './settings-store.js';
 
 export interface LocalUiServerOptions {
@@ -50,19 +48,11 @@ export interface LocalUiServerOptions {
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
   /**
-   * Donation grant layer. When present, mounts the loopback admin surface at
-   * `/grants-admin` (issue/list/revoke, plus donated-node teardown when
-   * `donations` is wired too). Optional so existing callers/tests that don't
-   * exercise donations need not wire it.
+   * The hosted-node service. When present, mounts `/api/hosted-nodes` and
+   * forwards the service's changes to the bus as `hosted-nodes-changed`.
+   * Optional so callers/tests that don't exercise hosted nodes need not wire it.
    */
-  grants?: GrantService;
-  /**
-   * Donation lifecycle service. When present (alongside `grants`), mounts the
-   * bearer-gated grantee-facing provisioning surface at `/grants`
-   * (provision / peer / seed / terminate). Optional so callers/tests that don't
-   * exercise the donor path need not wire it.
-   */
-  donations?: DonationService;
+  hostedNodes?: HostedNodeService;
   /** Settings I/O facade. Defaults to a new one rooted at `dataDir`. */
   settingsStore?: HostSettingsStore;
   /** Bus instance — pass the same one to subsystems that publish events. */
@@ -124,13 +114,8 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
-  if (opts.grants) {
-    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants, opts.donations), events });
-    // Grantee-facing provisioning surface needs both the donation service and a
-    // grant validator (the GrantService doubles as the validator).
-    if (opts.donations) {
-      registerGrantsRoutes(app, { donations: opts.donations, grants: opts.grants });
-    }
+  if (opts.hostedNodes) {
+    registerHostedNodesRoutes(app, { hostedNodes: opts.hostedNodes });
   }
 
   // Static mount registers as the not-found handler — declared last so the
@@ -171,6 +156,14 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
       // or a lease the router dropped all change the snapshot without any
       // route being called; the SPA follows them through this.
       teardown.push(nat.onChange((snap) => { publishConnectivity(events, snap); }));
+
+      // Hosted nodes → bus adapter: a join, a claim the watcher noticed, a
+      // removal, a respawn or a give-up — the routes publish nothing themselves.
+      if (opts.hostedNodes) {
+        teardown.push(opts.hostedNodes.onChange((change) => {
+          events.publish({ type: 'hosted-nodes-changed', kind: change.kind, nodeId: change.id });
+        }));
+      }
 
       // One-shot connectivity publish — the SPA will get a sane initial
       // signal even if no settings have changed yet this session.

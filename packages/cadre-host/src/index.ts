@@ -4,10 +4,10 @@
  * This package is the sibling of @serfab/cadre-provider for self-hosted
  * basement-PC deployments. It depends on @serfab/cadre-provider for the
  * orchestration interface and container lifecycle types but ships its own
- * orchestrator (host processes, not Docker), donation grants (loopback-admin
- * tokens, not API keys), installer, NAT layer, and local management UI.
+ * orchestrator (host processes, not Docker), the hosted-node service behind
+ * "Join a cadre", installer, NAT layer, and local management UI.
  *
- * HostProcessOrchestrator, the donation grant layer, the NAT layer, the
+ * HostProcessOrchestrator, the hosted-node layer, the NAT layer, the
  * installer, and the local UI server each live in a sibling subdirectory
  * under src/.
  */
@@ -24,44 +24,51 @@ export type {
 export { HostProcessOrchestrator } from './orchestrator/index.js';
 export type {
   HostProcessConfig,
+  HostedSpawnRequest,
   PersistedHandle,
   ManagedNodeInfo,
   NodeStateListener,
   NodePorts,
 } from './orchestrator/index.js';
 
-/* ──────────────── donation grant tokens ──────────────── */
+/* ──────────────── hosted nodes ("Join a cadre") ──────────────── */
 
 export {
-  GrantStore,
-  GrantService,
-  createGrantAdminHandlers,
-  GrantError,
-  DEFAULT_MAX_NODES,
-  DonationStore,
-  DonationService,
-  DonationError,
-} from './donation/index.js';
+  HostedNodeStore,
+  HostedNodeService,
+  HostedNodeSupervisor,
+  HostedNodeError,
+  HOSTED_NODE_SPAWNING_TTL_MS,
+  HOSTED_NODE_REAP_SWEEP_MS,
+  HOSTED_NODE_CLAIM_POLL_MS,
+  HOSTED_NODE_CONNECTED_POLL_MS,
+  HOSTED_NODE_RESPAWN_BACKOFF_BASE_MS,
+  HOSTED_NODE_RESPAWN_BACKOFF_MAX_MS,
+  HOSTED_NODE_RESPAWN_MAX_ATTEMPTS,
+  HOSTED_NODE_RESPAWN_HEALTHY_MS,
+  HOSTED_NODE_RESPAWN_SWEEP_MS,
+  PLACEHOLDER_PARTY,
+} from './hosted/index.js';
 export type {
-  Grant,
-  GrantDenyReason,
-  GrantValidation,
-  GrantValidator,
-  GrantFile,
-  GrantAdminHandlers,
-  GrantErrorCode,
-  GrantServiceOptions,
-  Donation,
-  DonationView,
-  DonationStatus,
-  DonationFile,
-  DonationErrorCode,
-  DonationProvisionRequest,
-  DonationSeedResult,
-  DonationPeerInfo,
-  DonationServiceOptions,
-} from './donation/index.js';
-export { parseDuration } from './donation/duration.js';
+  ClaimDetails,
+  HostedNode,
+  HostedNodeAddressSource,
+  HostedNodeChange,
+  HostedNodeChangeKind,
+  HostedNodeChangeListener,
+  HostedNodeErrorCode,
+  HostedNodeFile,
+  HostedNodeJoin,
+  HostedNodeJoinView,
+  HostedNodeOrchestrator,
+  HostedNodeServiceOptions,
+  HostedNodeStatus,
+  HostedNodeSupervisorOptions,
+  HostedNodeView,
+  RespawnOptions,
+  RespawnResult,
+  SupervisedOrchestrator,
+} from './hosted/index.js';
 
 export { Installer, readHostConfig, updateHostConfig, writeHostConfig } from './installer/index.js';
 export type {

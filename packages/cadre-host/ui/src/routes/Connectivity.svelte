@@ -8,7 +8,6 @@
 		pushToast,
 	} from '../lib/state.svelte.js';
 	import { formatRelativeTime } from '../lib/format.js';
-	import { grantLabelFor } from '../lib/grants.js';
 	import { hrefFor } from '../lib/router.js';
 
 	import ConnectivityBadge from '../components/ConnectivityBadge.svelte';
@@ -42,14 +41,8 @@
 
 	const cgnatDetected = $derived(app.connectivity?.cgnatDetected === true);
 
-	/**
-	 * Who a node is for, where the page already knows: a donated node's grant
-	 * label, from the grant list once the Grants page has loaded it.
-	 */
-	function nodeLabel(nodeId: string): string | null {
-		const grant = grantLabelFor(nodeId, app.grants.list);
-		return grant ? `lent under grant “${grant}”` : null;
-	}
+	/** Who a node is for. Every node this host runs is a hosted node; the Join ticket adds the cadre it joined. */
+	const NODE_LABEL = 'hosted node';
 
 	onMount(() => {
 		void refreshConnectivity();
@@ -189,12 +182,11 @@
 		{:else}
 			<ul class="nodes">
 				{#each app.connectivity.nodes as n (n.nodeId)}
-					{@const label = nodeLabel(n.nodeId)}
 					<li>
 						<NodeReachabilityCard node={n} connectivity={app.connectivity}>
 							{#snippet header()}
 								<a href={hrefFor('node-detail', { id: n.nodeId })}><strong><code>{n.nodeId}</code></strong></a>
-								{#if label}<span class="muted small">{label}</span>{/if}
+								<span class="muted small">{NODE_LABEL}</span>
 							{/snippet}
 						</NodeReachabilityCard>
 					</li>

@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createLocalUiServer } from '../index.js';
 import { fakeNat } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
-import { GrantService, GrantStore } from '../../donation/index.js';
+import type { HostedNodeService } from '../../hosted/index.js';
 
 function fakeOrchestrator(): HostProcessOrchestrator {
   return {
@@ -16,6 +16,15 @@ function fakeOrchestrator(): HostProcessOrchestrator {
     resolveDockerId: () => undefined,
     onStateChange: () => () => undefined,
   } as unknown as HostProcessOrchestrator;
+}
+
+/** A hosted-node service with nothing in it; its listener is what the server wires to the bus. */
+function fakeHostedNodes(): HostedNodeService {
+  return {
+    list: () => [],
+    get: () => undefined,
+    onChange: () => () => undefined,
+  } as unknown as HostedNodeService;
 }
 
 function writeConfig(dir: string): void {
@@ -45,7 +54,7 @@ describe('createLocalUiServer smoke', () => {
       dataDir,
       orchestrator: fakeOrchestrator(),
       nat: fakeNat(),
-      grants: new GrantService({ store: new GrantStore(dataDir) }),
+      hostedNodes: fakeHostedNodes(),
       forcePort: 0,
     });
     const { url } = await server.start();
@@ -110,16 +119,10 @@ describe('createLocalUiServer smoke', () => {
     expect(body.error.code).toBe('not_found');
   });
 
-  it('serves the grant surface: POST /grants-admin issues a grant', async () => {
-    const res = await fetch(`${baseUrl}/grants-admin`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: "Alice's cadre", maxNodes: 2 }),
-    });
+  it('serves the hosted-node surface (GET /api/hosted-nodes)', async () => {
+    const res = await fetch(`${baseUrl}/api/hosted-nodes`);
     expect(res.status).toBe(200);
-    const body = await res.json() as { grant: { token: string; maxNodes: number } };
-    expect(body.grant.token).toBeTruthy();
-    expect(body.grant.maxNodes).toBe(2);
+    expect(await res.json()).toEqual({ ok: true, data: { nodes: [] } });
   });
 
   it('serves the NAT surface (GET /nat/status)', async () => {

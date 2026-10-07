@@ -3,7 +3,7 @@
  * codes and uniform `{ ok: false, error: { code, message } }` payloads.
  *
  * Codes (cross-referenced with `nat/types.ts`, `update/types.ts`,
- * `donation/types.ts`):
+ * `hosted/types.ts`):
  *   - NatError
  *       invalid_config, ddns_provider_unknown,
  *       ddns_credentials_missing                 → 400
@@ -17,21 +17,12 @@
  *       apply_in_progress                        → 409
  *       signature_invalid, unsupported_state_version,
  *       apply_failed, rollback_failed, storage_error → 500
- *   - GrantError
- *       invalid_label, invalid_max_nodes,
- *       invalid_ttl                              → 400
- *       not_found                                → 404
- *       storage_error                            → 500
- *   - DonationError
+ *   - HostedNodeError
  *       invalid_request                          → 400
- *       unauthorized                             → 401
- *       forbidden                                → 403
  *       not_found                                → 404
  *       invalid_state                            → 409
- *       quota_exceeded                           → 429
  *       orchestrator_error, storage_error        → 500
- *       seed_failed                              → 502
- *       peer_unavailable                         → 503
+ *       node_unavailable                         → 503
  *   - everything else                            → 500 (code "internal")
  */
 
@@ -40,7 +31,7 @@ import debug from 'debug';
 
 import { NatError, type NatErrorCode } from '../nat/types.js';
 import { UpdateErrorException, type UpdateErrorCode } from '../update/types.js';
-import { GrantError, type GrantErrorCode, DonationError, type DonationErrorCode } from '../donation/types.js';
+import { HostedNodeError, type HostedNodeErrorCode } from '../hosted/types.js';
 
 const log = debug('cadre:host:error-handler');
 
@@ -57,23 +48,11 @@ const NAT_STATUS: Record<NatErrorCode, number> = {
   ddns_update_failed: 500,
 };
 
-const GRANT_STATUS: Record<GrantErrorCode, number> = {
-  invalid_label: 400,
-  invalid_max_nodes: 400,
-  invalid_ttl: 400,
-  not_found: 404,
-  storage_error: 500,
-};
-
-const DONATION_STATUS: Record<DonationErrorCode, number> = {
-  unauthorized: 401,
-  forbidden: 403,
-  quota_exceeded: 429,
+const HOSTED_NODE_STATUS: Record<HostedNodeErrorCode, number> = {
   invalid_request: 400,
   not_found: 404,
   invalid_state: 409,
-  seed_failed: 502,
-  peer_unavailable: 503,
+  node_unavailable: 503,
   orchestrator_error: 500,
   storage_error: 500,
 };
@@ -118,11 +97,8 @@ function classify(err: FastifyError): Classified {
   if (err instanceof UpdateErrorException) {
     return { status: UPDATE_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }
-  if (err instanceof GrantError) {
-    return { status: GRANT_STATUS[err.code] ?? 500, code: err.code, message: err.message };
-  }
-  if (err instanceof DonationError) {
-    return { status: DONATION_STATUS[err.code] ?? 500, code: err.code, message: err.message };
+  if (err instanceof HostedNodeError) {
+    return { status: HOSTED_NODE_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }
   // Fastify body-parsing / validation errors have a statusCode we should honour.
   if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600) {

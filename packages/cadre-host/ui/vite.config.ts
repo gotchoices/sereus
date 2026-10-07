@@ -32,6 +32,5 @@ function proxyTargets(port: string): Record<string, string> {
 		'/api': target,
 		'/nat': target,
 		'/update': target,
-		'/grants-admin': target,
 	};
 }

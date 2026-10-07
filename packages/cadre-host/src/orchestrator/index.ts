@@ -1,6 +1,7 @@
 export { HostProcessOrchestrator } from './host-process-orchestrator.js';
 export type {
   HostProcessConfig,
+  HostedSpawnRequest,
   ManagedNodeInfo,
   NodeStateListener,
   NodePorts,

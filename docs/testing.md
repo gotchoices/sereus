@@ -195,11 +195,7 @@ The counting rule is covered by `test-harness/setup-failure-reporter.spec.ts`, w
 
 ## App modules in a scenario
 
-An app module that imports nothing can run inside an `integration-tests` scenario: the scenario
-imports its **source** by relative path. `cadre-host-donation-phone-requester.integration.ts` does
-this with `packages/reference-app-rn/src/host-node-request.ts`, the phone's client for cadre-host's
-`/grants` routes, so the real server meets the requests the phone actually sends rather than a
-hand-written equivalent of them.
+An app module that imports nothing may run inside an `integration-tests` scenario: the scenario imports its **source** by relative path, so the real server meets the requests the app actually sends rather than a hand-written equivalent of them. No scenario does this today; the lint rule that keeps `packages/reference-app-rn/src/host-node-request.ts` import-free stays, so that module can be run this way again.
 
 - **Why not a package dependency.** One from `reference-app-rn` on `@serfab/cadre-host` would
   install a Fastify server into the Expo app's own `node_modules` (the app sets
@@ -639,29 +635,8 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   layout as the four-machine strand line below, stopping where that one starts.
 - Two separate libp2p networks in one process (a party's network plus a standalone node,
   over TCP rather than the suite's usual WebSocket) — `deliver-seed-cross-network.integration.ts`.
-- Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
-  and the provider launch them) — `cadre-host-node-donation.integration.ts` (a host donating a
-  node into a second, externally-founded party),
-  `provider-seed-accepted.integration.ts`, `cadre-host-donation-phone-requester.integration.ts`
-  and `node-claim-by-phone.integration.ts` (the two bullets below); the identity/bootstrap/store
-  fixtures the first two share, and the spawn helpers the provider orchestrator and the claim
-  scenario use, live in `child-node-fixtures.ts`. The first two take their requester's
-  authority from `startOwnerCliNode` (`owner-cli-node.ts`): a `cadre-cli` child started with
-  `--owner`, driven over its loopback admin channel.
-- Node donation to a requester that **cannot be dialed** (the phone direction) —
-  `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as
-  `cadre-host-node-donation.integration.ts`, but the requester is an in-process `CadreNode`
-  in the shape `reference-app-rn` runs: `listenAddrs: []`, WebSocket and circuit-relay
-  transports only, no TCP, its own party owner. It borrows the node over the host's real
-  `/grants` routes with the phone's own client (`reference-app-rn/src/host-node-request.ts`,
-  imported by source path — see "App modules in a scenario"), sending no `bootstrapNodes`,
-  dials the lent node's `/ws` address itself, and keeps that connection across a node
-  respawn (same WebSocket port) and across its own restart (same identity key, control
-  storage and node-local dial-target store, and no second donation request). It and
-  `node-claim-by-phone` (below) are the scenarios that prove the dial-in direction end-to-end;
-  the two prerequisite halves are unit-tested in `cadre-host` and `cadre-core`. Strand replication onto a lent node is
-  deliberately not asserted — see
-  `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`.
+- Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer and the provider launch them) — `cadre-host-join-by-qr.integration.ts` (a real cadre-host from `createTestCadreHost`, which wires the hosted-node service and its supervisor, whose child is claimed by a phone-shaped in-process owner), `provider-seed-accepted.integration.ts` and `node-claim-by-phone.integration.ts` (the two bullets below); the identity/bootstrap/store fixtures, and the spawn helpers the provider orchestrator and the claim scenario use, live in `child-node-fixtures.ts`. `provider-seed-accepted` takes its requester's authority from `startOwnerCliNode` (`owner-cli-node.ts`): a `cadre-cli` child started with `--owner`, driven over its loopback admin channel.
+- A host's **Join a cadre** flow, claimed by a phone that **cannot be dialed** — `cadre-host-join-by-qr.integration.ts`. The host's `POST /api/hosted-nodes` starts a child waiting to be claimed, and `GET /api/hosted-nodes/:id/claim` answers a payload `decodeNodeClaimPayload` accepts, naming the child's peer id and a `/ws` address. A phone-shaped claimant (an in-process `CadreNode` in the shape `reference-app-rn` runs: `listenAddrs: []`, WebSocket and circuit-relay transports only, no TCP, its own party owner) claims it with `CadreNode.claimNode`; the record becomes `joined` with the claimant's party and owner key, observed over the SSE stream and `GET`, and the claimant holds an outbound connection. The child is then killed out from under the host and the supervisor respawns it on the same ports, the claimant reconnecting on a new connection; `GET …/claim` on the joined node answers 409; `DELETE` removes the record, the child and its workdir; and the host's own output and `GET /api/hosted-nodes` never contain the secret. It and `node-claim-by-phone` (below) are the scenarios that prove the dial-in direction end-to-end.
 - A phone **claims** a node started waiting to be claimed — `node-claim-by-phone.integration.ts`.
   A real `cadre-cli` child started with `CADRE_CLAIM_SECRET`, spawned directly with the
   helpers in `child-node-fixtures.ts`, and an in-process claimant in the phone shape of the

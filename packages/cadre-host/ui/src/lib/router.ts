@@ -14,8 +14,7 @@ export type RouteName =
 	| 'connectivity'
 	| 'nodes'
 	| 'node-detail'
-	| 'settings'
-	| 'grants';
+	| 'settings';
 
 export interface ParsedRoute {
 	name: RouteName;
@@ -39,8 +38,6 @@ export function parseHash(hash: string): ParsedRoute {
 			return { name: 'nodes', params: {} };
 		case 'settings':
 			return { name: 'settings', params: {} };
-		case 'grants':
-			return { name: 'grants', params: {} };
 		default:
 			return DEFAULT_ROUTE;
 	}
@@ -53,7 +50,6 @@ export function hrefFor(name: RouteName, params: Record<string, string> = {}): s
 		case 'nodes': return '#/nodes';
 		case 'node-detail': return `#/nodes/${encodeURIComponent(params['id'] ?? '')}`;
 		case 'settings': return '#/settings';
-		case 'grants': return '#/grants';
 	}
 }
 

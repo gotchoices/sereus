@@ -1,9 +1,8 @@
 /**
  * A real `cadre-cli` child that owns its own cadre (`cadre start --owner`), driven through its
  * loopback admin channel. Scenarios use it as the requester's authority when a party asks
- * another machine for a node and then seeds it (`provider-seed-accepted`,
- * `cadre-host-node-donation`): its key is the pin, its addresses the bootstrap, and `addDrone`
- * mints the seed.
+ * another machine for a node and then seeds it (`provider-seed-accepted`): its key is the pin,
+ * its addresses the bootstrap, and `addDrone` mints the seed.
  *
  * Spawned directly because no product code runs an owner node as a child: owner keys stay on
  * devices people hold (docs/cadre-host.md → Control-plane separation).
