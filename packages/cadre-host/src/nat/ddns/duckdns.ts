@@ -13,7 +13,8 @@ const log = debug('cadre:host:nat-ddns:duckdns');
  * Response is plain text — `OK` on success, `KO` on failure.
  *
  * `hostname` may be supplied as the bare subdomain (`foo`) or the FQDN
- * (`foo.duckdns.org`); we strip the suffix.
+ * (`foo.duckdns.org`); the update strips the suffix, and `qualifyHostname`
+ * adds it.
  */
 export const duckDnsProvider: DdnsProvider = {
   id: 'duckdns',
@@ -21,6 +22,9 @@ export const duckDnsProvider: DdnsProvider = {
   configFields: [
     { key: 'token', label: 'DuckDNS token', secret: true },
   ],
+  qualifyHostname(hostname: string): string {
+    return `${stripSuffix(hostname)}${SUFFIX}`;
+  },
   async update(
     config: Record<string, string>,
     hostname: string,

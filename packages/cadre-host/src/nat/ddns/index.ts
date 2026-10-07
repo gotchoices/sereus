@@ -19,6 +19,12 @@ export interface DdnsProvider {
   readonly id: string;
   readonly displayName: string;
   readonly configFields: ReadonlyArray<DdnsConfigField>;
+  /**
+   * The fully qualified name the provider publishes for a hostname as the user
+   * typed it. Stored in place of the typed form because hosted nodes announce the
+   * stored hostname as `/dns4/<hostname>`, so it has to resolve on its own.
+   */
+  qualifyHostname(hostname: string): string;
   /** Push `ip` for `hostname`. Throws NatError(ddns_update_failed) on failure. */
   update(
     config: Record<string, string>,

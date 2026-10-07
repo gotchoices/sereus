@@ -504,10 +504,10 @@ export class DonationService {
     // NOTE: a concurrent `respawn` also passes this check — it leaves the status
     // alone but swaps `seedEndpoint`/`seedToken`, so we would mark `seeded` a
     // record whose live child is the new one while the seed went to the old
-    // endpoint. Harmless today (respawn only fires when the supervisor believes
-    // the child is down, in which case our `fetch` would have failed; and both
-    // spawns share one workdir, so the seed the old child persisted is on disk
-    // for the new one). If a second `respawn` caller appears, or respawn ever
+    // endpoint. Harmless only because both spawns share one workdir, so the seed
+    // the old child persisted is on disk for the new one: an address restart
+    // (`DonationSupervisor.restart`) respawns a child that is still up, so our
+    // `fetch` can succeed against the old child mid-restart. If respawn ever
     // stops sharing the workdir, compare `current.seedEndpoint`/`seedToken`
     // against the ones we actually seeded and report `abandoned` on a mismatch.
     const current = this.store.get(id);

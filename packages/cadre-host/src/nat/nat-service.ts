@@ -454,7 +454,7 @@ export class NatService {
     return await this.putSettings({
       ddns: {
         providerId: provider.id,
-        hostname: body.hostname,
+        hostname: provider.qualifyHostname(body.hostname),
         externallyManaged,
         intervalMs: this.currentSettings.ddns.intervalMs,
       },

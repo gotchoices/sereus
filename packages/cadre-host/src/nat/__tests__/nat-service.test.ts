@@ -412,7 +412,7 @@ describe('NatService — public addresses', () => {
     expect(node(svc, 'a').verdict).toBe('manual');
   });
 
-  it('uses the DDNS hostname as the host part once one is configured', async () => {
+  it('uses the full DDNS name of the provider as the host part, even when typed as a bare subdomain', async () => {
     const { svc, nodes } = rig({
       secrets: makeSecrets({ [ddnsAccount('duckdns', 'token')]: 'T' }),
       fetch: okFetch(),
@@ -420,7 +420,7 @@ describe('NatService — public addresses', () => {
     nodes.add('a', { p2p: 10003, ws: 10004 });
     await startAndSettle(svc);
 
-    const status = await svc.putDdns({ providerId: 'duckdns', hostname: 'foo.duckdns.org', config: { token: 'T' } });
+    const status = await svc.putDdns({ providerId: 'duckdns', hostname: 'foo', config: { token: 'T' } });
     expect(status.ddns).toMatchObject({ providerId: 'duckdns', hostname: 'foo.duckdns.org' });
     expect(status.nodes[0]!.publicAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/10003', '/dns4/foo.duckdns.org/tcp/10004/ws']);
   });
