@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { MemoryTrustedOwnerStore } from '../src/trusted-owner-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
@@ -107,5 +107,22 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 			store: new MemoryTrustedOwnerStore('some-other-party'),
 		});
 		await expect(node.start()).rejects.toThrow(/refusing to mix trust anchors/i);
+	}, 60_000);
+
+	it('a claim secret beside a config pin fails start() closed before the pin is anchored', async () => {
+		// The refusal must precede the pin write: on a persistent anchor a pin written first
+		// would outlive the failed start and mark the node claimed by it.
+		const partyId = 'anchor-' + Math.random().toString(36).slice(2);
+		const injected = new MemoryTrustedOwnerStore(partyId);
+		const pinnedPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+		const pinned = getPublicKey(pinnedPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		const node = new CadreNode({
+			controlNetwork: { partyId, bootstrapNodes: [] },
+			profile: 'transaction',
+			trustedOwners: { store: injected, pinnedKeys: [pinned] },
+			claim: { secret: randomBytes(256, 'base64url') as string },
+		});
+		await expect(node.start()).rejects.toThrow(/`claim` and `trustedOwners.pinnedKeys`/);
+		expect(injected.all().size).toBe(0);
 	}, 60_000);
 });

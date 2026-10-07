@@ -1150,6 +1150,11 @@ export class CadreNode implements SAppIdLookup {
       // store fails closed before a node is created.
       await this.resolveIdentityKey();
 
+      // A conflicting `claim` is refused BEFORE the anchor is built: the store below
+      // writes the config pins, and on a persistent anchor a pin written ahead of
+      // this refusal would survive the failed start and mark the node claimed by it.
+      this.validateClaimConfig();
+
       // Bring up the node-local trusted-owner anchor (and seed config pins)
       // before any network bring-up: a mis-scoped injected store fails closed
       // here, and out-of-band pins are anchored before the first seed/peer
@@ -1157,8 +1162,8 @@ export class CadreNode implements SAppIdLookup {
       await this.initializeTrustedOwnerStore();
 
       // A node started with a claim secret gets its trust policy here, over the anchor
-      // just built, and a conflicting or malformed `claim` fails closed before any
-      // network bring-up, like a mis-scoped anchor above.
+      // just built; a malformed secret fails closed before any network bring-up, like
+      // a mis-scoped anchor above.
       this.initializeClaimPolicy();
 
       // Bring up the node-local cold-start bootstrap-peer store alongside the
@@ -1544,22 +1549,20 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Validate `config.claim` and build {@link claimTrustPolicy} from it, once per node
-   * (a restart keeps the policy, as {@link initializeTrustedOwnerStore} keeps the anchor
-   * it writes). Runs after the anchor exists and before any network bring-up, so a bad
-   * claim configuration fails `start()` closed with nothing to tear down.
+   * Refuse a `config.claim` that sits beside another cold-start trust source. A node
+   * has exactly ONE, so `claim` with a non-empty `trustedOwners.pinnedKeys` or a
+   * `seedTrustPolicy` is refused here rather than silently letting one of them win.
+   * Asserted at this seam, not by a type: the embedders build `CadreNodeConfig` as one
+   * object literal with every optional field present, which a discriminated union over
+   * the whole config would not express.
    *
-   * A node has exactly ONE cold-start trust source, so `claim` beside a non-empty
-   * `trustedOwners.pinnedKeys` or a `seedTrustPolicy` is refused here rather than
-   * silently letting one of them win. Asserted at this seam, not by a type: the
-   * embedders build `CadreNodeConfig` as one object literal with every optional field
-   * present, which a discriminated union over the whole config would not express.
-   * The secret itself is validated by `parseClaimSecret`, which names the problem and
-   * never echoes the value.
+   * Runs BEFORE {@link initializeTrustedOwnerStore}, which writes the config pins into
+   * the anchor: on a persistent anchor a pin written ahead of this refusal would outlive
+   * the failed start, and the node, restarted with the pin dropped from its config and
+   * `claim` kept, would read as claimed by that pin and never accept its claimant.
    */
-  private initializeClaimPolicy(): void {
-    const { claim } = this.config;
-    if (!claim || this.claimTrustPolicy) {
+  private validateClaimConfig(): void {
+    if (!this.config.claim) {
       return;
     }
     if ((this.config.trustedOwners?.pinnedKeys?.length ?? 0) > 0) {
@@ -1574,6 +1577,21 @@ export class CadreNode implements SAppIdLookup {
         'trust source; the claim secret supplies the seed trust policy itself'
       );
     }
+  }
+
+  /**
+   * Build {@link claimTrustPolicy} from `config.claim`, once per node (a restart keeps
+   * the policy, as {@link initializeTrustedOwnerStore} keeps the anchor it writes).
+   * Runs after the anchor exists and before any network bring-up, so a malformed secret
+   * fails `start()` closed with nothing to tear down; `parseClaimSecret` names the
+   * problem and never echoes the value. The conflicts with the other trust sources are
+   * {@link validateClaimConfig}'s, checked before the anchor is written.
+   */
+  private initializeClaimPolicy(): void {
+    const { claim } = this.config;
+    if (!claim || this.claimTrustPolicy) {
+      return;
+    }
     // Unreachable in practice: start() builds the store just above. Guarded so the
     // policy can never be built over a missing anchor and silently claim into nothing.
     if (!this.trustedOwnerStore) {
@@ -1584,7 +1602,7 @@ export class CadreNode implements SAppIdLookup {
       trustedOwners: this.trustedOwnerStore,
       onClaimed: (ownerKey) => this.emit('claim:accepted', { ownerKey }),
     });
-    log('Node starts awaiting a claim; the seed listener is enabled at the end of start()');
+    log('Node starts awaiting a claim; start() enables the seed listener once the control node is up');
   }
 
   /**
@@ -2221,6 +2239,12 @@ export class CadreNode implements SAppIdLookup {
    * is exactly why the relay-enabled path above exists.
    */
   private async admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict> {
+    // NOTE: a node waiting to be claimed (isAwaitingClaim) lands on this empty-anchor
+    // admission too, so a stranger can hold an idle, mute connection to it for as long
+    // as it waits on a public address; if that ever shows up as a resource problem, arm
+    // a drop deadline for unclaimed-node admissions. Not 'admit-for-relay': that
+    // deadline clears only on an admitted reservation, which an unclaimed node refuses,
+    // so it would also cut the claimant's connection after its claim.
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return 'admit';
     }
@@ -7744,7 +7768,7 @@ export class CadreNode implements SAppIdLookup {
    * Enable the seed listener for receiving seeds via the /sereus/seed/1.0.0 protocol.
    * This is for drone nodes that need to receive seeds without being an owner.
    * Does not require an owner key. Idempotent; a node started with `config.claim`
-   * calls it itself at the end of {@link start}, so an embedder's own call is a no-op.
+   * calls it itself inside {@link start}, so an embedder's own call is a no-op.
    */
   async enableSeedListener(): Promise<void> {
     if (!this.controlNode || !this.controlDatabase) {
@@ -8017,7 +8041,9 @@ export class CadreNode implements SAppIdLookup {
    * key (see `SeedTrustPolicy`). An operator-driven caller can pass a per-seed
    * `trustPolicy` override — e.g. a `pinnedKeyTrustPolicy` built from a pinned
    * owner key — so a cold-start node can accept its first seed without
-   * reconfiguring the service.
+   * reconfiguring the service. The override wins on a node started with
+   * `config.claim` as well: the claim secret is the node's default inbound policy,
+   * not a lock on its local operator, who already controls the process.
    */
   async applySeed(
     seed: ControlNetworkSeed,
