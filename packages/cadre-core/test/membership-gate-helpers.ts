@@ -70,8 +70,10 @@ export function bareRow(peerId: string): PeerRow {
 
 /**
  * How the injected solicitation service answers `hasOutstandingInvitation` —
- * the SOLE input to the formation exemption. `undefined` leaves the node with no
- * service at all (the initiator/never-registered case).
+ * the SOLE input to the formation exemption — and how the fake control DB
+ * answers `hasLiveCadreInvite`, the cadre-invitation exemption's. For the
+ * solicitation, `undefined` leaves the node with no service at all (the
+ * initiator/never-registered case).
  */
 export type Outstanding = boolean | 'throws' | 'hangs';
 
@@ -87,6 +89,11 @@ export type Outstanding = boolean | 'throws' | 'hangs';
 export interface FakeControlDatabase {
   queryCadrePeers: () => Promise<PeerRow[]>;
   queryRevokedStamps: () => Promise<Set<string>>;
+  /**
+   * The cadre-invitation exemption's sole input ("does this node hold a live
+   * `CadreInvite` row?"); a field so a test can flip it between calls.
+   */
+  hasLiveCadreInvite: () => Promise<boolean>;
   setMembershipChangeListener: (listener: ((reason: string) => Promise<void>) | null) => void;
   mutateCadrePeer: <T>(reason: string, body: () => Promise<T>) => Promise<T>;
   /** How many times the snapshot read has been issued. */
@@ -105,10 +112,19 @@ export function fakeDb(node: CadreNode): FakeControlDatabase {
  * listener exactly as `ControlDatabase.mutateCadrePeer` does after a commit — so a
  * throwing body notifies nothing.
  */
-function buildFakeDb(members: PeerRow[], revoked: Set<string>): FakeControlDatabase {
+function buildFakeDb(members: PeerRow[], revoked: Set<string>, liveInvite: Outstanding): FakeControlDatabase {
   const db: FakeControlDatabase = {
     peerQueries: 0,
     listener: null,
+    hasLiveCadreInvite: async () => {
+      if (liveInvite === 'throws') {
+        throw new Error('control DB torn down mid-invitation-check');
+      }
+      if (liveInvite === 'hangs') {
+        return await new Promise<boolean>(() => { /* never settles */ });
+      }
+      return liveInvite;
+    },
     // The real `ControlDatabase.queryCadrePeers` drops every row whose StampId is
     // retired in `CadreControl.Revocation` BEFORE any reader sees it, so both gates
     // inherit the exclusion without asking for it. The fake has to mirror that or it
@@ -135,6 +151,8 @@ export function inject(node: CadreNode, opts: {
   members?: PeerRow[];
   anchor?: TrustedOwnerStore;
   solicitation?: Outstanding;
+  /** How the fake control DB answers `hasLiveCadreInvite`; default none live. */
+  liveInvite?: Outstanding;
   revoked?: Set<string>;
 }): void {
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
@@ -142,7 +160,7 @@ export function inject(node: CadreNode, opts: {
     peerId: { toString: () => opts.selfPeerId ?? 'self-peer' }
   };
   if (opts.members) {
-    const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>());
+    const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>(), opts.liveInvite ?? false);
     (node as unknown as { controlDatabase: unknown }).controlDatabase = db;
     // Same wiring `CadreNode.start()` performs right after the control DB comes up:
     // every committed `CadrePeer` write re-materializes the gate snapshot itself.

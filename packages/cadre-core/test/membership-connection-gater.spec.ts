@@ -14,6 +14,7 @@ import {
 import { StrandSolicitationService } from '../src/strand-solicitation.js';
 import { SEED_PROTOCOL } from '../src/seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
+import { CADRE_INVITE_PROTOCOL } from '../src/cadre-invite-protocol.js';
 import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb } from './membership-gate-helpers.js';
 
 /**
@@ -119,11 +120,11 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
     settle?.(); // release the pending policy promise so the test leaves nothing dangling
   });
 
-  it('documents exactly the seed + formation protocols as stranger-open', () => {
+  it('documents exactly the seed, formation and cadre-invite protocols as stranger-open', () => {
     // Literal wire ids, not the imported constants — this locks the allowlist's
     // CONTENT, so widening it (or renaming a protocol) cannot pass silently.
-    expect(STRANGER_OPEN_PROTOCOLS).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0']);
-    expect(STRANGER_OPEN_PROTOCOLS).toEqual([SEED_PROTOCOL, FORMATION_PROTOCOL]);
+    expect(STRANGER_OPEN_PROTOCOLS).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0', '/sereus/cadre-invite/1.0.0']);
+    expect(STRANGER_OPEN_PROTOCOLS).toEqual([SEED_PROTOCOL, FORMATION_PROTOCOL, CADRE_INVITE_PROTOCOL]);
   });
 });
 
@@ -453,6 +454,38 @@ describe('CadreNode.admitInboundControlConnection', () => {
       members: [vouchedRow(MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: true
+    });
+
+    expect(await admit(node, STRANGER)).toBe(true);
+  });
+
+  it('admits a stranger while a live cadre invitation exists, and denies once none is live', async () => {
+    // The cadre-invitation exemption: a device redeems at any member, and is a stranger
+    // until the redemption writes its row. Keyed on a live `CadreInvite` row exactly as the
+    // formation exemption is keyed on an outstanding open invitation; a withdrawn, expired
+    // or exhausted row is "not live" at the read (`hasLiveCadreInvite`), so this is the
+    // whole lifecycle from the gate's point of view.
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      liveInvite: true
+    });
+
+    expect(await admit(node, STRANGER)).toBe(true);
+    fakeDb(node).hasLiveCadreInvite = async () => false;
+    expect(await admit(node, STRANGER)).toBe(false);
+    expect(await admit(node, MEMBER)).toBe(true);
+  });
+
+  it('fails open when the live-invitation read throws', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      liveInvite: 'throws'
     });
 
     expect(await admit(node, STRANGER)).toBe(true);

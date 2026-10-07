@@ -17,6 +17,7 @@ import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { CadreInviteSignedFields, RevocableTable } from './control-authorization.js';
+import type { CadreInvitation } from './cadre-invite-protocol.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 
@@ -1834,6 +1835,19 @@ export interface CadreInviteUsageRow {
 }
 
 /**
+ * One {@link CadreInviteRow} with its standing, as `ControlDatabase.listCadreInviteStatuses`
+ * (and `CadreNode.listCadreInvitations`) reports it. `live` is the redemption's own test:
+ * not withdrawn, unexpired, uses left, issuer still an owner here.
+ */
+export interface CadreInviteStatus {
+  invite: CadreInviteRow;
+  live: boolean;
+  withdrawn: boolean;
+  /** Redemptions this node holds for it (`CadreInviteUsage` rows). */
+  usesRecorded: number;
+}
+
+/**
  * What `ControlDatabase.redeemCadreInvite` did. `alreadyMember` is the idempotent
  * retry after a dropped reply: the device's row (and, for an owner-granting
  * invitation, its `OwnerKey` row) was already present, so nothing was written and
@@ -2273,6 +2287,42 @@ export interface CadreInvite {
   createdAt: number;
   /** Optional expiration timestamp */
   expiresAt?: number;
+}
+
+/**
+ * What an owner asks `CadreNode.createCadreInvitation` for. The invitation is a keypair the
+ * node mints; whoever holds the returned bundle can redeem it at any member machine.
+ */
+export interface CreateCadreInvitationOptions {
+  /** The one device that may redeem it; omit for whoever redeems first. */
+  peerId?: string;
+  /** Whether redemption also makes the device an owner (seats an `OwnerKey` row). */
+  grantsOwner: boolean;
+  /**
+   * Lifetime from now, in ms. Defaults to 15 minutes for an untargeted owner-granting
+   * invitation — a bearer credential for admin rights — and 24 hours otherwise. A negative
+   * value mints an already-expired invitation (tests).
+   */
+  expiresInMs?: number;
+  /** How many redemptions it allows; default 1. */
+  uses?: number;
+}
+
+/** What `CadreNode.createCadreInvitation` returns: the bundle, and the same encoded for sharing. */
+export interface CreateCadreInvitationResult {
+  invitation: CadreInvitation;
+  /** `encodeCadreInvitation(invitation)`: base64url JSON for a QR code, a paste or a link. */
+  encoded: string;
+}
+
+/** What `CadreNode.redeemCadreInvitation` returns once a member accepted. */
+export interface RedeemCadreInvitationResult {
+  /** The member machine that admitted this device, when its address named one. */
+  peerId: string | null;
+  /** Whether the invitation also seated this device's key as an owner. */
+  grantsOwner: boolean;
+  /** When the member accepted, ISO 8601. */
+  redeemedAt: string;
 }
 
 /**

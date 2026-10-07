@@ -19,6 +19,7 @@ import type {
   DroneInitResult,
   InviteResult,
   CadreInvite,
+  CadreInviteRow,
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
@@ -120,6 +121,32 @@ function parseDialAddrs(addrs: readonly string[]): Multiaddr[] {
     }
   }
   return parsed;
+}
+
+/**
+ * Merge a peer list's addresses into `node`'s peer store, so the node can dial them: the
+ * seed's peers after its signature and trust checks, or the dial hints a member returns on
+ * a cadre invitation redemption (`cadre-invite-protocol.ts`). Best-effort per peer — one
+ * unparsable entry costs that peer, not the rest — and a peer with no address is skipped,
+ * since there is nothing to dial. Returns how many peers were merged.
+ */
+export async function mergeSeedPeers(node: Libp2p, peers: readonly SeedPeer[]): Promise<number> {
+  let peersAdded = 0;
+  for (const peer of peers) {
+    if (peer.multiaddrs.length === 0) {
+      continue;
+    }
+    try {
+      const peerId = peerIdFromString(peer.peerId);
+      const addrs = peer.multiaddrs.map(ma => multiaddr(ma));
+      await node.peerStore.merge(peerId, { multiaddrs: addrs });
+      peersAdded++;
+      log('Added peer to store: %s with %d addrs', peer.peerId, addrs.length);
+    } catch (error) {
+      log('Failed to add peer %s: %o', peer.peerId, error);
+    }
+  }
+  return peersAdded;
 }
 
 /**
@@ -672,6 +699,42 @@ export class SeedBootstrapService {
   }
 
   /**
+   * Owner-signed INSERT of a `CadreInvite` row — an invitation any member machine can redeem
+   * on this owner's behalf ({@link ControlDatabase.insertCadreInvite}). The keypair mint, the
+   * expiry and use-count defaults, and the bundle the holder receives are
+   * `CadreNode.createCadreInvitation`'s; what stays here is the owner-key precondition and
+   * the signature, as {@link insertSelfDeviceToken} keeps them for device tokens.
+   *
+   * @returns the row as stored, which the invitation bundle carries verbatim.
+   * @throws if no owner private key is configured or the control database is not initialized.
+   */
+  async insertCadreInvite(invite: Parameters<ControlDatabase['insertCadreInvite']>[0]): Promise<CadreInviteRow> {
+    // Fail fast on a keyless service before any DB work (see removePeer).
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.insertCadreInvite(invite, ownerKey, message => this.signMessageBytes(message));
+  }
+
+  /**
+   * Owner-signed WITHDRAWAL of a `CadreInvite`: the `Revocation` tombstone over its stamp, with
+   * the row kept ({@link ControlDatabase.withdrawCadreInvite}). What stays here is the
+   * owner-key precondition.
+   *
+   * @returns `true` when this call filed the tombstone, `false` when the row is absent here or
+   *   already withdrawn.
+   * @throws if no owner private key is configured or the control database is not initialized.
+   */
+  async withdrawCadreInvite(key: string): Promise<boolean> {
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.withdrawCadreInvite(key, ownerKey, message => this.signMessageBytes(message));
+  }
+
+  /**
    * Create a seed from the current control network state.
    * The seed contains peer information and is signed by an owner.
    */
@@ -792,28 +855,7 @@ export class SeedBootstrapService {
     }
     await this.anchorAcceptedSigner(seed.signerKey, decision);
 
-    let peersAdded = 0;
-
-    // Add peers to the peer store
-    for (const peer of seed.peers) {
-      try {
-        // Import peer multiaddrs into the peer store
-        if (peer.multiaddrs.length > 0) {
-          const peerId = peerIdFromString(peer.peerId);
-          const addrs = peer.multiaddrs.map(ma => multiaddr(ma));
-
-          await this.libp2pNode.peerStore.merge(peerId, {
-            multiaddrs: addrs
-          });
-
-          peersAdded++;
-          log('Added peer to store: %s with %d addrs', peer.peerId, addrs.length);
-        }
-      } catch (error) {
-        log('Failed to add peer %s: %o', peer.peerId, error);
-      }
-    }
-
+    const peersAdded = await mergeSeedPeers(this.libp2pNode, seed.peers);
     log('Merged seed: %d peers added', peersAdded);
     return { success: true, peersAdded, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
   }
@@ -1050,52 +1092,16 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Query peers from the control database.
-   *
-   * Owner identity is sourced from the `OwnerKey` table, not from the
-   * transport peer ID. An Ed25519 libp2p PeerId embeds its public key (identity
-   * multihash), so each peer's ed25519 key is derivable from its `PeerId`; a
-   * peer is an owner iff that derived key is in the `OwnerKey` set.
-   * This makes any owner node markable — not just the local one — and ties
-   * `isOwner` to the control table rather than to `peerId === self`.
-   *
-   * Read through {@link ControlDatabase.queryCadrePeers}, not a raw `CadrePeer`
-   * select: that reader drops any row whose `StampId` is retired in
-   * `CadreControl.Revocation`, so a removed member's addresses are never packed
-   * into a seed and pushed into a joiner's peerstore (`applySeed` adds every
-   * seed peer's addrs and dials the owner-flagged ones). A revoked peer is off
-   * the addressable surface everywhere, and this is one of its exits.
-   *
-   * NOTE: this is the one owner lookup deliberately left on the REPLICATED
-   * table rather than the node-local anchor. `SeedPeer.isOwner` is a dial hint
-   * — the receiver dials owner-flagged peers first — not a trust decision, and
-   * the receiver re-derives real trust from its own anchor. So a polluted table
-   * costs at most a wasted dial, while anchoring here would silently drop
-   * legitimate co-owners this node never pinned. If `isOwner` ever gates
-   * anything the receiver TRUSTS, move it to the anchor.
+   * The peers a seed carries: the control database's own projection
+   * ({@link ControlDatabase.querySeedPeers}, shared with the cadre invitation redemption
+   * reply), which reads through the revocation filter and flags owners from the replicated
+   * `OwnerKey` table — a dial hint, not a trust decision (the NOTE at `projectSeedPeers`).
    */
   private async queryPeers(): Promise<SeedPeer[]> {
     if (!this.controlDatabase) {
       return [];
     }
-
-    const ownerKeys = await this.controlDatabase.getOwnerKeys();
-    const rows = await this.controlDatabase.queryCadrePeers();
-
-    return rows.map(({ peerId, multiaddr }) => {
-      // Derive the peer's ed25519 key from its PeerId; a non-Ed25519 peer or an
-      // unparsable id yields null and is treated as a non-owner rather than
-      // failing the whole seed creation.
-      const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
-      const isOwner = pubKeyB64 !== null && ownerKeys.has(pubKeyB64);
-
-      return {
-        peerId,
-        multiaddrs: multiaddr ? multiaddr.split(',') : [],
-        isOwner,
-        ...(isOwner ? { publicKey: pubKeyB64 } : {}),
-      };
-    });
+    return await this.controlDatabase.querySeedPeers();
   }
 
   /**

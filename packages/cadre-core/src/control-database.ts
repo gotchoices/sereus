@@ -7,12 +7,12 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, ControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
-import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
@@ -528,6 +528,56 @@ function isRevocationLedgerConflict(error: unknown): boolean {
 /** Whether any message in `error`'s cause chain matches `pattern`; false for a non-`Error`. */
 function errorChainMatches(error: unknown, pattern: RegExp): boolean {
   return error instanceof Error && chainMessages(error).some(message => pattern.test(message));
+}
+
+/**
+ * Project `CadrePeer` rows into the {@link SeedPeer} list a seed, or a cadre invitation
+ * redemption reply, carries.
+ *
+ * Owner identity is sourced from the `OwnerKey` table, not from the transport peer id. An
+ * Ed25519 libp2p peer id embeds its public key (identity multihash), so each peer's ed25519
+ * key is derivable from its `PeerId`; a peer is an owner iff that derived key is in
+ * `ownerKeys`. This makes any owner node markable — not just the local one. A non-Ed25519
+ * or unparsable id yields a non-owner rather than failing the whole projection.
+ *
+ * NOTE: this is the one owner lookup deliberately left on the REPLICATED table rather than
+ * the node-local anchor. `SeedPeer.isOwner` is a dial hint — the receiver dials owner-flagged
+ * peers first — not a trust decision, and the receiver re-derives real trust from its own
+ * anchor. So a polluted table costs at most a wasted dial, while anchoring here would
+ * silently drop legitimate co-owners this node never pinned. If `isOwner` ever gates
+ * anything the receiver TRUSTS, move it to the anchor.
+ */
+export function projectSeedPeers(rows: readonly CadrePeerRow[], ownerKeys: ReadonlySet<string>): SeedPeer[] {
+  return rows.map(({ peerId, multiaddr }) => {
+    const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
+    const isOwner = pubKeyB64 !== null && ownerKeys.has(pubKeyB64);
+    return {
+      peerId,
+      multiaddrs: multiaddr ? multiaddr.split(',') : [],
+      isOwner,
+      ...(isOwner ? { publicKey: pubKeyB64 } : {}),
+    };
+  });
+}
+
+/**
+ * The conditions a cadre invitation must still meet to be redeemed, short of its use count:
+ * not withdrawn, unexpired (`expiresAt <= now` is expired, as the redemption refuses it),
+ * and issued by a current owner. Shared by {@link ControlDatabase.hasLiveCadreInvite} and
+ * {@link ControlDatabase.listCadreInviteStatuses} so the two cannot drift from each other,
+ * or from `CadreInviteUsage.Authorized`.
+ */
+function cadreInviteStillOpen(
+  row: { stampId: string; issuerKey: string; expiresAt: string | null },
+  withdrawn: ReadonlySet<string>,
+  owners: ReadonlySet<string>,
+  nowMs: number
+): boolean {
+  if (withdrawn.has(row.stampId) || !owners.has(row.issuerKey)) {
+    return false;
+  }
+  const expiresAtMs = parseNullableStoredDatetimeMs(row.expiresAt);
+  return expiresAtMs === null || expiresAtMs > nowMs;
 }
 
 /**
@@ -1384,6 +1434,20 @@ export class ControlDatabase {
       });
     }
     return rows;
+  }
+
+  /**
+   * The cadre's peers as a seed or a redemption reply carries them: every live `CadrePeer`
+   * row with its addresses, each flagged `isOwner` when the key behind its peer id is in
+   * the replicated `OwnerKey` table ({@link projectSeedPeers}).
+   *
+   * Read through {@link queryCadrePeers}, never a raw `CadrePeer` select, so a removed
+   * member's addresses are never packed into a seed or handed to a redeeming device as a
+   * dial hint: a revoked peer is off the addressable surface everywhere, and this is one of
+   * its exits.
+   */
+  async querySeedPeers(): Promise<SeedPeer[]> {
+    return projectSeedPeers(await this.queryCadrePeers(), await this.getOwnerKeys());
   }
 
   /**
@@ -3872,11 +3936,11 @@ export class ControlDatabase {
       undefined,
       'live-cadre-invites'
     )) {
-      if (withdrawn.has(row.StampId as string) || !owners.has(row.IssuerKey as string)) {
-        continue;
-      }
-      const expiresAtMs = parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null);
-      if (expiresAtMs !== null && expiresAtMs <= nowMs) {
+      const open = cadreInviteStillOpen(
+        { stampId: row.StampId as string, issuerKey: row.IssuerKey as string, expiresAt: (row.ExpiresAt as string | null) ?? null },
+        withdrawn, owners, nowMs
+      );
+      if (!open) {
         continue;
       }
       const totalUses = (row.TotalUses as number | null) ?? null;
@@ -3898,6 +3962,32 @@ export class ControlDatabase {
       }
     }
     return false;
+  }
+
+  /**
+   * Every `CadreInvite` row this node holds with its standing: how many redemptions are
+   * recorded, whether it is withdrawn, and whether it is still redeemable — the same
+   * conditions {@link hasLiveCadreInvite} applies, answered per row for an owner's listing
+   * rather than short-circuited. One usage count per row, so this is the owner's
+   * occasional read, not a gate's.
+   */
+  async listCadreInviteStatuses(nowMs: number = Date.now()): Promise<CadreInviteStatus[]> {
+    this.ensureInitialized();
+    const [invites, withdrawnStamps, owners] = await Promise.all([
+      this.queryCadreInvites(), this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()
+    ]);
+    const statuses: CadreInviteStatus[] = [];
+    // NOTE: one retried count read per invitation, withdrawn and expired rows included, since
+    // rows are never deleted; if a long-lived cadre's listing ever shows as slow, group the
+    // usage counts in one statement or skip the count for rows that are no longer open.
+    for (const invite of invites) {
+      const usesRecorded = await this.countCadreInviteUsage(invite.key);
+      const withdrawn = withdrawnStamps.has(invite.stampId);
+      const live = cadreInviteStillOpen(invite, withdrawnStamps, owners, nowMs)
+        && (invite.totalUses === null || usesRecorded < invite.totalUses);
+      statuses.push({ invite, live, withdrawn, usesRecorded });
+    }
+    return statuses;
   }
 
   /**

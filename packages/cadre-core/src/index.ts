@@ -5,10 +5,10 @@ export * from './types.js';
 export { canonicalJson } from './canonical-json.js';
 
 // Main CadreNode class
-export { CadreNode } from './cadre-node.js';
+export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TTL_MS } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
@@ -362,6 +362,7 @@ export {
 export {
   SeedBootstrapService,
   SEED_PROTOCOL,
+  mergeSeedPeers,
   type SeedBootstrapConfig,
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
@@ -381,6 +382,8 @@ export {
   verifyCadrePeerVoucher,
   verifyFormationConsent,
   verifyInvitationAdmission,
+  verifyCadreInviteRow,
+  verifyCadreInviteRedemption,
   type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';
 
@@ -556,6 +559,35 @@ export {
   type FormationRejectionCode
 } from './strand-formation-rejection.js';
 export { formationDeadlines, type FormationDeadlines } from './strand-formation-deadlines.js';
+// Cadre invitation redemption transport: the bundle an owner hands out, the wire messages, the
+// member-side handler and the device-side dialer, and how a redemption fails
+export {
+  CadreInviteHandler,
+  redeemAtMembers,
+  signRedeemRequest,
+  verifyRedeemReply,
+  encodeCadreInvitation,
+  decodeCadreInvitation,
+  isWellFormedCadreInviteRow,
+  sanitizeAddrs,
+  CadreInviteRejectedError,
+  CadreInviteUnreachableError,
+  CadreInviteReplyInvalidError,
+  CADRE_INVITE_PROTOCOL,
+  CADRE_INVITE_REJECTION_RETRYABLE,
+  isCadreInviteRejectionCode,
+  type CadreInvitation,
+  type CadreInviteRedeemRequest,
+  type CadreInviteRedeemReply,
+  type CadreInviteAccepted,
+  type CadreInviteRejectionCode,
+  type CadreInviteAddressOutcome,
+  type CadreInviteHandlerOptions,
+  type CadreInviteStore,
+  type RedeemAtMembersOptions,
+  type RedeemSigner,
+  type CadreInviteRedemption
+} from './cadre-invite-protocol.js';
 // The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
 export { PENDING_JOIN_POLL_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
 

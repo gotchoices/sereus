@@ -8,6 +8,7 @@ import {
   canonicalSeedPayload,
   decodeLengthPrefixedFrame
 } from '../src/seed-bootstrap.js';
+import { projectSeedPeers } from '../src/control-database.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import {
   anchoredTrustPolicy,
@@ -23,6 +24,7 @@ import type {
   SeedMessage,
   SeedAckMessage,
   CadreInvite,
+  CadrePeerRow,
   DroneInitResult,
   InviteResult
 } from '../src/types.js';
@@ -37,7 +39,6 @@ import { CapturingStream, decodeFrames, duplexPair, frameMessage, NeverEndingStr
 interface SeedServiceTestInternals {
   libp2pNode: unknown;
   controlDatabase: unknown;
-  queryPeers(): Promise<SeedPeer[]>;
 }
 
 function serviceInternals(service: SeedBootstrapService): SeedServiceTestInternals {
@@ -819,31 +820,17 @@ describe('Seed trust policy', () => {
 	});
 });
 
-describe('queryPeers — owner identity from the OwnerKey table', () => {
-	/**
-	 * Build a fake control DB exposing the two surfaces queryPeers consumes.
-	 * `queryCadrePeers` stands in for the REAL reader, which already drops rows whose
-	 * StampId is retired in Revocation — hence `revoked`, applied here so the fake
-	 * cannot hand queryPeers a row the database would never have returned.
-	 */
-	function makeMockControlDb(
-		ownerKeys: string[],
-		cadrePeers: Array<{ PeerId: string; Multiaddr: string | null; StampId?: string | null }>,
-		revoked: Set<string> = new Set<string>()
-	) {
-		return {
-			getOwnerKeys: async () => new Set(ownerKeys),
-			queryCadrePeers: async () => cadrePeers
-				.filter((p) => p.StampId == null || !revoked.has(p.StampId))
-				.map((p) => ({
-					peerId: p.PeerId,
-					multiaddr: p.Multiaddr,
-					stampId: p.StampId ?? null,
-					vouchOwner: null,
-					vouchSig: null,
-					vouchUsage: null,
-				})),
-		};
+describe('projectSeedPeers — owner identity from the OwnerKey table', () => {
+	/** `CadrePeer` rows as `ControlDatabase.queryCadrePeers` returns them (already revocation-filtered). */
+	function rows(cadrePeers: Array<{ PeerId: string; Multiaddr: string | null }>): CadrePeerRow[] {
+		return cadrePeers.map((p) => ({
+			peerId: p.PeerId,
+			multiaddr: p.Multiaddr,
+			stampId: null,
+			vouchOwner: null,
+			vouchSig: null,
+			vouchUsage: null,
+		}));
 	}
 
 	async function peerIdFor(): Promise<{ id: string; keyB64: string }> {
@@ -863,17 +850,14 @@ describe('queryPeers — owner identity from the OwnerKey table', () => {
 	it('marks two distinct owner peers, even though only one could match a local peerId', async () => {
 		const a = await peerIdFor();
 		const b = await peerIdFor();
-		const service = new SeedBootstrapService({ partyId: 'p' });
-		serviceInternals(service).libp2pNode = { peerId: { toString: () => a.id } };
-		serviceInternals(service).controlDatabase = makeMockControlDb(
-			[a.keyB64, b.keyB64],
-			[
+
+		const peers: SeedPeer[] = projectSeedPeers(
+			rows([
 				{ PeerId: a.id, Multiaddr: '/ip4/1.1.1.1/tcp/4001' },
 				{ PeerId: b.id, Multiaddr: '/ip4/2.2.2.2/tcp/4001' },
-			]
+			]),
+			new Set([a.keyB64, b.keyB64])
 		);
-
-		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(2);
 		const byId = new Map(peers.map((p) => [p.peerId, p]));
 		expect(byId.get(a.id)).toMatchObject({ isOwner: true, publicKey: a.keyB64 });
@@ -883,50 +867,16 @@ describe('queryPeers — owner identity from the OwnerKey table', () => {
 	it('marks a peer whose key is absent from OwnerKey as non-owner with no publicKey', async () => {
 		const owner = await peerIdFor();
 		const plain = await peerIdFor();
-		const service = new SeedBootstrapService({ partyId: 'p' });
-		serviceInternals(service).libp2pNode = { peerId: { toString: () => owner.id } };
-		serviceInternals(service).controlDatabase = makeMockControlDb(
-			[owner.keyB64], // plain's key is NOT present
-			[{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]
-		);
 
-		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
+		// plain's key is NOT present
+		const peers: SeedPeer[] = projectSeedPeers(rows([{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]), new Set([owner.keyB64]));
 		expect(peers).toHaveLength(1);
 		expect(peers[0].isOwner).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();
 	});
 
-	it('omits a peer whose stamp is retired, so a removed member never rides out in a seed', async () => {
-		// The seed is an ADDRESS bundle: applySeed writes every peer's addrs into the
-		// joiner's peerstore and dials the owner-flagged ones. A revoked peer is off the
-		// addressable surface, so it must not ride out in a seed either — enforced by
-		// reading through queryCadrePeers rather than selecting CadrePeer raw.
-		const owner = await peerIdFor();
-		const removed = await peerIdFor();
-		const service = new SeedBootstrapService({ partyId: 'p' });
-		serviceInternals(service).libp2pNode = { peerId: { toString: () => owner.id } };
-		serviceInternals(service).controlDatabase = makeMockControlDb(
-			[owner.keyB64],
-			[
-				{ PeerId: owner.id, Multiaddr: '/ip4/1.1.1.1/tcp/4001', StampId: 'stamp-owner' },
-				{ PeerId: removed.id, Multiaddr: '/ip4/9.9.9.9/tcp/4001', StampId: 'stamp-removed' },
-			],
-			new Set(['stamp-removed'])
-		);
-
-		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
-		expect(peers.map((p) => p.peerId)).toEqual([owner.id]);
-	});
-
-	it('treats a non-Ed25519 / unparsable peerId as non-owner without throwing', async () => {
-		const service = new SeedBootstrapService({ partyId: 'p' });
-		serviceInternals(service).libp2pNode = { peerId: { toString: () => 'self' } };
-		serviceInternals(service).controlDatabase = makeMockControlDb(
-			['some-owner-key'],
-			[{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]
-		);
-
-		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
+	it('treats a non-Ed25519 / unparsable peerId as non-owner without throwing', () => {
+		const peers: SeedPeer[] = projectSeedPeers(rows([{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]), new Set(['some-owner-key']));
 		expect(peers).toHaveLength(1);
 		expect(peers[0].isOwner).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();

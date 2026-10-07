@@ -485,6 +485,88 @@ Seed includes `bootstrapAddrs` because server IS dialable. Drone initiates conne
 
 From the CLI, this flow is `cadre enroll add <peerId>` on the owner machine, which drives the owner node's `POST /admin/add-drone`, followed by `cadre start --seed <seed> --pin-owner-key <owner key>` on the new machine (see [`packages/cadre-cli/README.md`](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)).
 
+### Enrollment Flow: Invitation Redeemed at Any Member
+
+An owner mints a **cadre invitation** (`CadreNode.createCadreInvitation`) and hands it to a device out of band. The device redeems it at **any member machine** the invitation names (`CadreNode.redeemCadreInvitation`, protocol `/sereus/cadre-invite/1.0.0`, `cadre-invite-protocol.ts`): the member writes the device's membership rows on the owner's behalf, so the owner need not be online. The tables and the consent rules the member writes under are `CadreInvite` / `CadreInviteUsage` in the [control table list](#control-network).
+
+```mermaid
+sequenceDiagram
+    participant O as Owner (phone)
+    participant M as Member (always-on)
+    participant D as Device (new)
+    Note over O: 1. createCadreInvitation() — mint keypair,<br/>owner-sign CadreInvite row, bundle it
+    O-->>M: 2. CadreInvite row replicates (or not yet)
+    Note over O: 3. Owner goes offline
+    O->>D: 4. Bundle out of band (QR / paste / link)
+    Note over D: 5. Pin bundle.ownerKeys; sign request<br/>with invitation key + identity key
+    D->>M: 6. Dial /sereus/cadre-invite/1.0.0 (any named member)
+    Note over M: 7. Verify identity + both signatures;<br/>seat row from bundle if absent;<br/>redeemCadreInvite: CadrePeer (+OwnerKey) + usage row
+    M->>D: 8. Reply {partyId, row, peers}
+    Note over D: 9. Verify row against pinned keys;<br/>merge peers; retain member as dial target
+    D<<->>M: Control Network Sync (device's row admits its streams)
+```
+
+**Why the invitation is a keypair.** The `CadreInvite` row holds the invitation's ed25519 public key; the bundle holds the private half. The redeeming device proves possession by signing with it, and the member that writes the rows can *verify* that signature but never *produce* it — which is what keeps an owner-granting invitation from being an owner escalation available to every member machine. A bearer token could not give that: any member holding the token could redeem it for itself.
+
+**The bundle** (`CadreInvitation`, encoded base64url JSON by `encodeCadreInvitation` / decoded and shape-checked by `decodeCadreInvitation`, both standalone so a client without a node can decode one):
+
+```typescript
+interface CadreInvitation {
+  v: 1;
+  partyId: string;
+  invitePrivateKey: string;   // base64url ed25519 seed: the proof of possession
+  invite: CadreInviteRow;     // the owner-signed row exactly as issued
+  ownerKeys: string[];        // the issuer's anchored owner keys; the device pins them
+  members: string[];          // multiaddrs ending in /p2p/<peerId>: the issuer first,
+                              // then up to three other members, four addresses each
+}
+```
+
+Carrying the signed row is what makes redemption work at a member that has not received the row by replication: the member seats it from the bundle (`seatCadreInvite`, its own transaction) and redeems in the next. The row's signature covers every column, so an altered bundle seats nowhere. `ownerKeys` come from the issuer's node-local anchor only, never the replicated `OwnerKey` table, for the reason the seed invite gives (the device anchors whatever arrives). An untargeted owner-granting invitation is a bearer credential for admin rights and defaults to a 15-minute lifetime; every other kind to 24 hours; one use unless asked otherwise.
+
+**The exchange** is one frame each way over the shared `control-stream.ts` primitives, capped at 64 KiB:
+
+```typescript
+// Device → member
+interface CadreInviteRedeemRequest {
+  v: 1;
+  partyId: string;          // the cadre the device believes it is joining
+  invite: CadreInviteRow;   // from the bundle
+  peerKey: string;          // the device's ed25519 public key; must be the connecting identity
+  multiaddrs: string[];     // empty for a phone
+  usageStampId: string;     // minted by the device; both signatures cover it
+  inviteSig: string;        // by invitePrivateKey over the 'redeem' digest
+  peerSig: string;          // by the device's identity key over the 'consent' digest
+}
+// Member → device
+interface CadreInviteRedeemReply {
+  accepted: boolean;
+  code?: CadreInviteRejectionCode;   // iff !accepted
+  reason?: string;
+  partyId?: string;                   // iff accepted
+  invite?: CadreInviteRow;            // the row as this member holds it
+  peers?: SeedPeer[];                 // dial hints, unsigned (isOwner is a hint, as in a seed)
+}
+```
+
+The member checks in cost order so a stranger that cannot prove anything costs no database work: shape, party, the connecting identity (an ed25519 peer id embeds the key, and this layer is the only one that can check the pair), both signatures, a targeted invitation's device; then it seats and redeems. Every refusal carries a fixed code; `CADRE_INVITE_REJECTION_RETRYABLE` is the one table that says which the device retries at the next address:
+
+| Code | Retried | Sent when |
+| --- | --- | --- |
+| `issuer-unknown` | yes | the issuer's `OwnerKey` row is not on this member yet, or the issuer was removed; the member cannot tell which |
+| `invite-invalid` | no | a signature does not verify, the peer key is not the connecting identity, the request or row is malformed, or the invitation names another device |
+| `invite-spent` | no | expired, withdrawn, exhausted, or issued by a key that is no longer an owner here |
+| `party-mismatch` | no | this machine serves another cadre |
+| `busy` | yes | the member is at its cap on concurrent redemptions |
+| `conflict` | yes | the write failed transiently and nothing was recorded |
+| `internal` | yes | an unexpected member-side failure |
+
+The device (`redeemAtMembers`) tries the bundle's addresses one at a time, each under a deadline derived from the link (a relayed dial plus one request, as seed delivery's is), and stops at the first acceptance or the first final code; a dial failure, a malformed reply or a retryable code moves it to the next address, and when every address is exhausted it throws `CadreInviteUnreachableError` naming each address's outcome. Every address gets the same request with one `usageStampId`, the usage table's key, so a member the device gave up on cannot admit it twice, and a retry after a dropped reply is answered as already a member with no second usage row. On acceptance the device checks the reply's party id, invitation key and row signature against the keys it pinned (`verifyRedeemReply`); that catches a wrong-party or wrong-row answer, not a forged member — the request already carried the signed row, so a machine that is not a member can echo it. What protects the device afterwards is its anchor: every row it then syncs is judged against the pinned owner keys, so such a machine can admit nobody the device will trust. It then merges the reply's peers, retains the answering member as a cold-start dial target, refreshes its membership gate and syncs the control database over the connection it already holds — the same unified behaviour as after a seed.
+
+A device the invitation makes an owner still has to wire its own key for signing afterwards (`initializeSeedBootstrap(ownKey)`, which anchors it; never `ensureOwnerKey`, the row arrived by consent). Until [`owner-anchor-follows-owner-key-changes`](../tickets/plan/4.6-owner-anchor-follows-owner-key-changes.md) lands, other machines accept that device's vouches only after a seed from it, because their anchors do not follow `OwnerKey` additions.
+
+The owner-online path (the next section, `createInvite` / `dialInvite` / `acceptPhone` and the enrollment window) stays beside this one until [`cadre-invitations-redeemable-by-any-member`](../tickets/implement/0.7-cadre-invitations-redeemable-by-any-member.md) removes it.
+
 ### When Is a Seed Needed?
 
 | Instigator | Adding | Seed Needed? | Who Dials Whom? |
@@ -515,6 +597,7 @@ A node never joins when neither side holds an address at which it can reach the 
 | 5 | `cadre enroll add --addr <new machine's multiaddr>` (same page) | both: the owner also dials the new machine | either one |
 | 6 | A cadre-provider container ([Provider Integration](#provider-integration)) | the container dials the requester's `bootstrapNodes`, which `POST /containers` requires | the requester; a phone cannot rent a container yet, because the container listens on TCP only ([`provider-drone-reachable-by-phone`](../tickets/plan/12-provider-drone-reachable-by-phone.md)) |
 | 7 | A cadre-host founder invites a device with `cadre-host invite` ([cadre-host.md → Lifecycle](cadre-host.md#lifecycle), [Enrollment Flow: Server Adds Phone](#enrollment-flow-server-adds-phone)) | the invitee dials the host's addresses carried in the `CadreInvite` | the host's owner node |
+| 8 | A device redeems a cadre invitation at any member (`CadreNode.createCadreInvitation` / `redeemCadreInvitation`, [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member)) | the device dials the members the invitation names, in order | any one named member; the owner that minted it may be offline |
 
 Which flow fits depends on which of the two machines can accept a connection. A phone is not dialed unless it holds a relay reservation, so a phone adding a node needs that node reachable from where the phone is (rows 1 and 2). A machine that can be dialed passes its own address and the new node dials it (rows 3, 4 and 6, and the host in row 7). When it is unclear which side is reachable, give both sets of addresses (rows 3 and 5).
 
@@ -581,11 +664,11 @@ interface SeedAckMessage {
 
 - **Control-network inbound connection gate** (`membership-connection-gater.ts`, defense-in-depth): the control node composes a membership gater onto any configured `network.connectionGater` — at the encrypted-connection checkpoint (authenticated PeerId known, no protocol negotiated yet) it refuses an inbound peer that is positively NOT an authorized member, so — on a node not running the circuit-relay server — a known outsider is never even in the conversation with the control protocols.
 
-  **What it admits anyway.** A libp2p gater decides per connection, not per protocol, so the policy admits whenever a legitimate stranger interaction could be riding the connection and lets the per-stream gates decide: an un-enrolled node (empty anchor or empty authorized set — a brand-new node must accept its seed, and the rows that authorize siblings arrive by replication over these very connections), an open enrollment window (`CadreNode.createInvite` opens one for the invite's validity; `openEnrollmentWindow` serves out-of-band flows), an **outstanding open invitation** (cross-party formation is stranger-facing by design), and the configured bootstrap/relay peers.
+  **What it admits anyway.** A libp2p gater decides per connection, not per protocol, so the policy admits whenever a legitimate stranger interaction could be riding the connection and lets the per-stream gates decide: an un-enrolled node (empty anchor or empty authorized set — a brand-new node must accept its seed, and the rows that authorize siblings arrive by replication over these very connections), an open enrollment window (`CadreNode.createInvite` opens one for the invite's validity; `openEnrollmentWindow` serves out-of-band flows), an **outstanding open invitation** (cross-party formation is stranger-facing by design), a **live cadre invitation** (a `CadreInvite` row this node holds that is not withdrawn, unexpired, has uses left and whose issuer is still an owner — `ControlDatabase.hasLiveCadreInvite`; the device that redeems it is a stranger until the redemption writes its row, see [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member)), and the configured bootstrap/relay peers. On a node that runs the relay server a stranger is admitted for relay only when neither kind of invitation is live, and outright when one is.
 
   **When formation holds it open.** The formation exemption is keyed on *expectation* of a stranger, not capability to serve one: it holds only while at least one unexpired, not-fully-consumed invitation is outstanding — a token this process minted or published, or a still-redeemable `FormationInvite` row the usage recorder can see (`StrandSolicitationService.hasOutstandingInvitation`). Registering the formation responder does **not** disarm the gate, so every node keeps it live although each registers one at start ([Strand Formation → Who answers](#who-answers-formation)); the in-memory half of the answer dies with the process, so after a restart only persisted invites still hold it open.
 
-  **Scope and failure mode.** The stranger-open protocol allowlist — `/sereus/seed/1.0.0` and `/sereus/formation/1.0.0`, each carrying its own in-protocol trust check — is defined once in that module. Every ambiguous or failing state admits (fail-open) because the per-stream gates and read-time voucher predicate are the fail-closed layers; outbound dials are never gated on membership; strand cohort nodes never get this gater (their peers are legitimately cross-party).
+  **Scope and failure mode.** The stranger-open protocol allowlist — `/sereus/seed/1.0.0`, `/sereus/formation/1.0.0` and `/sereus/cadre-invite/1.0.0`, each carrying its own in-protocol trust check (the anchored seed-trust policy, the per-token check, the proof of possession) — is defined once in that module. Every ambiguous or failing state admits (fail-open) because the per-stream gates and read-time voucher predicate are the fail-closed layers; outbound dials are never gated on membership; strand cohort nodes never get this gater (their peers are legitimately cross-party).
 
   **The bring-up quiet period.** One state is decided ahead of all of that and is not about the remote peer at all — while the node's own `ControlDatabase.initialize()` is in flight the gate denies BOTH directions (`denyDialPeer` and `denyInboundEncryptedConnection`), then opens. Building that database is a long chain of cohort-consulting block probes, and any connected same-party sibling is in the cohort they consult; a sibling that has not yet replicated the booting node's `CadrePeer` row refuses them at its own fail-closed per-stream gate, so ONE connection in that window turns bring-up into `BlockUnavailableError` and `start()` rejects — and retrying cannot converge, since writing the row that would clear the refusal needs the database the retry is building. The listen-address ordering already means nothing *should* connect there (`network.relayAddrs` reserves after bring-up, the reconcile pass is scheduled post-start); the quiet period makes that a property rather than an accident; the live cases it catches are peers remembered from a previous run, which the connection manager auto-dials, and inbound dials. The control node is built with an empty `bootstrapNodes` and dials `controlNetwork.bootstrapNodes` itself once bring-up ends (`dialControlBootstrapPeers`), because Optimystic (since 1.11.0) will not treat a block as never-created until it has heard from every bootstrap peer, which the quiet period would prevent. A denial costs a retry, not a partition (the connection manager re-dials, the reservation supervisor re-drives), and the window opens on bring-up FAILURE too so teardown is never gated.
 
@@ -729,6 +812,22 @@ const { seed, encodedSeed } = await ownerPhone.addPhoneWithRelay(newPhonePeerId)
 
 // Share encodedSeed out-of-band
 // New phone applies seed and connects via relay
+```
+
+**Owner invites a device, redeemable at any member (owner may be offline)** — see [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member):
+```typescript
+// Owner mints: a keypair invitation, owner-signed, naming this machine and up to
+// three other members. Untargeted + grantsOwner defaults to a 15-minute lifetime.
+const { invitation, encoded } = await ownerNode.createCadreInvitation({ grantsOwner: false });
+// Share `encoded` via QR code, paste or link; list / withdraw later:
+await ownerNode.listCadreInvitations();          // each row with live / withdrawn / usesRecorded
+await ownerNode.withdrawCadreInvitation(invitation.invite.key);
+
+// Device (started, stable identity) redeems at the first member that accepts
+const bundle = decodeCadreInvitation(encoded);   // standalone: needs no node
+const { peerId, grantsOwner } = await deviceNode.redeemCadreInvitation(bundle);
+// Device is now a member; it syncs the control database over the held connection.
+// If grantsOwner: wire the key for signing with initializeSeedBootstrap(ownKey).
 ```
 
 ## Strand Lifecycle
@@ -2128,6 +2227,7 @@ Maestro Studio, with Appium as the documented fallback.
 - **EnrollmentService**: `createCadrePeer()` for Ed25519 keypair generation
 - **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived owner pair via `getIdentityOwnerKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The load-or-create rule itself is exported as `loadOrCreateIdentityKey` so an embedding app can resolve the identity before the node exists. The platform-secure mobile backend ships in the React Native kit as `SecureStoreKeyStore` (`@serfab/cadre-rn/key-store`).
 - **Seed Bootstrap API**: `createSeed()`, `applySeed()`, `deliverSeed()`, `encodeSeed()`/`decodeSeed()`, helper functions (`addDrone`, `createInvite`, `acceptPhone`, `addPhoneWithRelay`)
+- **Cadre Invitation API**: `createCadreInvitation()`, `listCadreInvitations()`, `withdrawCadreInvitation()` on the owner; `redeemCadreInvitation()` on the device, at any member the invitation names over `/sereus/cadre-invite/1.0.0`; `encodeCadreInvitation()`/`decodeCadreInvitation()` standalone — see [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member)
 - **Member Registration API**: `registerMember()`, `validateMemberRegistration()` with pluggable verifier/registry interfaces
 - **Strand Solicitation API**: `createOpenInvitation()`, `formStrand()` with full `StrandFormationManager` integration over the native formation transport; outside approval of a redemption (an invite's `ValidationUrl`) lives in the formation-approval client (`createHttpFormationApprover()`), not in the solicitation service, and is called from `ControlFormationUsageRecorder` — the component that performs the write, so the nonce that is signed is the nonce that is inserted — see [`docs/api.md`](api.md)
 - **Hibernation**: Activity-based lifecycle with latency hints (`realtime`, `interactive`, `background`, `archive`), configurable timeouts, exponential backoff check-in

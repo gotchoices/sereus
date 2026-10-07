@@ -299,6 +299,43 @@ function verifyB64(digestB64: string, signature: string, publicKey: string): boo
 }
 
 /**
+ * Does a `CadreInvite` row carry a valid `'add'` signature by its own `issuerKey`? The
+ * redeeming device runs this over the row a member replies with, after checking the issuer
+ * against its pinned owner keys; whether that issuer IS an owner is the caller's question.
+ * Never throws: a malformed row verifies as `false`.
+ */
+export function verifyCadreInviteRow(invite: CadreInviteRow): boolean {
+  try {
+    return verifyB64(cadreInviteAddDigest(invite), invite.issuerSig, invite.issuerKey);
+  } catch (error) {
+    log('verifyCadreInviteRow failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * The two signatures a redemption carries, checked before any database work: the holder's
+ * `'redeem'` signature with the invitation key, and the device's `'consent'` signature with
+ * its own key, both over (`inviteKey`, `usageStampId`, `peerKey`). The pre-check twin of
+ * `CadreInviteUsage.InvitePossessed` / `PeerConsented`, as `verifyFormationConsent` is for
+ * formation: the schema stays the authority, this turns a bad signature into a clean
+ * refusal instead of a constraint failure at commit. Never throws.
+ */
+export function verifyCadreInviteRedemption(
+  fields: { inviteKey: string; usageStampId: string; peerKey: string },
+  inviteSig: string,
+  peerSig: string,
+): boolean {
+  try {
+    return verifyB64(cadreInviteRedeemDigest(fields.inviteKey, fields.usageStampId, fields.peerKey), inviteSig, fields.inviteKey)
+      && verifyB64(cadreInviteConsentDigest(fields.inviteKey, fields.usageStampId, fields.peerKey), peerSig, fields.peerKey);
+  } catch (error) {
+    log('verifyCadreInviteRedemption failed: %o', error);
+    return false;
+  }
+}
+
+/**
  * Is an invitation-admitted `CadrePeer` row (`vouchSig` null, `vouchUsage` set) a
  * member this node should trust? The read-side mirror of the consent branch of
  * `CadrePeer.AuthorizedInsert`, re-checked against THIS node's anchor because the

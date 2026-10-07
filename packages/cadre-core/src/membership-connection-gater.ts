@@ -42,6 +42,18 @@
  *    handler's own trust decision remains the per-token check, which is
  *    strictly finer than this one: a peer admitted here can still be rejected
  *    in-protocol for a bogus or spent token.
+ *  - `/sereus/cadre-invite/1.0.0` ({@link CADRE_INVITE_PROTOCOL}) — redemption
+ *    of a cadre invitation at any member machine. Stranger-facing BY DESIGN:
+ *    the device is not a member until the redemption writes its row, and its
+ *    proof of possession (a signature with the invitation's private key) is
+ *    only checkable inside the protocol. Keyed on EXPECTATION of a stranger,
+ *    as formation's is: stranger denial is suspended only while this node
+ *    holds at least one LIVE `CadreInvite` row (`ControlDatabase.hasLiveCadreInvite`:
+ *    not withdrawn, unexpired, uses left, issuer still an owner). The handler
+ *    is registered on every started node, and registering suspends nothing.
+ *    On a node that runs the relay server, a stranger is admitted for relay
+ *    only when no live invitation exists, and outright when one does — as for
+ *    formation.
  *
  * There is one further connection-level carve-out, which is NOT a protocol
  * exemption and needs no stranger window:
@@ -162,6 +174,7 @@ import debug from 'debug';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
 import { SEED_PROTOCOL } from './seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
+import { CADRE_INVITE_PROTOCOL } from './cadre-invite-protocol.js';
 import { withDeadline } from './control-stream.js';
 import { PARTY_RELAY_RESERVATION_TTL_MS } from './relay-server.js';
 import { ADMISSION_DECISION_TIMEOUT_MS, relayAdmissionReserveDeadlineMs } from './link-budget.js';
@@ -174,7 +187,7 @@ const log = debug('sereus:cadre:connection-gater');
  * decision lives). Exported as the single reference point so the allowlist
  * cannot silently drift across modules.
  */
-export const STRANGER_OPEN_PROTOCOLS: readonly string[] = [SEED_PROTOCOL, FORMATION_PROTOCOL];
+export const STRANGER_OPEN_PROTOCOLS: readonly string[] = [SEED_PROTOCOL, FORMATION_PROTOCOL, CADRE_INVITE_PROTOCOL];
 
 /**
  * How long `CadreNode.createInvite` holds the inbound gate open for strangers
