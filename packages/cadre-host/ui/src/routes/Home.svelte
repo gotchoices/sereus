@@ -20,8 +20,6 @@
 
 	const updateAvailable = $derived(app.update?.available?.version ?? null);
 	const nodesRunning = $derived(app.nodes.filter((n) => n.status === 'running').length);
-	const donatedNodes = $derived(app.nodes.filter((n) => !n.owner));
-	const donatedRunning = $derived(donatedNodes.filter((n) => n.status === 'running').length);
 	const runningReachability = $derived((app.connectivity?.nodes ?? []).filter((n) => n.running));
 	const reachableNodes = $derived(runningReachability.filter((n) => n.verdict !== 'unreachable').length);
 	const allReachable = $derived(reachableNodes === runningReachability.length);
@@ -73,14 +71,11 @@
 			{/if}
 		</div>
 
-		{#if app.role === 'donor'}
-			<div class="card">
-				<h3>Donation</h3>
-				<p class="muted">This machine donates cadre nodes to other people's cadres.</p>
-				<p class="big">{donatedRunning}<span class="muted"> / {donatedNodes.length} donated nodes running</span></p>
-				<a class="link" href={hrefFor('grants')}>Manage grants →</a>
-			</div>
-		{/if}
+		<div class="card">
+			<h3>Donation</h3>
+			<p class="muted">This machine donates cadre nodes to other people's cadres.</p>
+			<a class="link" href={hrefFor('grants')}>Manage grants →</a>
+		</div>
 
 		<div class="card">
 			<h3>Nodes</h3>

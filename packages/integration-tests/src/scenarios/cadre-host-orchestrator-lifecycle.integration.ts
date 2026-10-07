@@ -2,44 +2,26 @@
  * Orchestrator lifecycle integration scenarios.
  *
  * The orchestrator is fed a test-only spawn entrypoint (idle-child.mjs) that
- * writes the startup token and idles forever. The cadre-host `/api/nodes`
- * routes are then exercised over HTTP to validate the list/detail/logs/stop
- * surface and the 501 stub for `start`.
+ * writes the startup token and idles forever. The read-only cadre-host
+ * `/api/nodes` routes are then exercised over HTTP (list, detail, logs), and a
+ * stop through the orchestrator is followed to the SSE stream.
  *
- * createContainer is invoked directly through the orchestrator handle since
- * there is no HTTP route for it in v1 (the auto-spawn path is deliberately
- * deferred — `/api/nodes/:id/start` is the stub that documents this).
+ * createContainer and stopContainer are invoked directly through the
+ * orchestrator handle: `/api/nodes` has no lifecycle routes.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { OWNER_CONTAINER_ID } from '@serfab/cadre-host';
-
 import { createTestCadreHost, type TestCadreHost } from '../harness/index.js';
-
-function freePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.once('error', reject);
-		srv.listen(0, '127.0.0.1', () => {
-			const addr = srv.address();
-			const port = typeof addr === 'object' && addr ? addr.port : 0;
-			srv.close(() => resolve(port));
-		});
-	});
-}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const IDLE_CHILD = join(HERE, '..', 'harness', 'fixtures', 'idle-child.mjs');
 
 describe('cadre-host orchestrator lifecycle', () => {
 	let host: TestCadreHost;
-	const ownerDirs: string[] = [];
 
 	beforeEach(async () => {
 		host = await createTestCadreHost({ spawnEntrypoint: IDLE_CHILD, sseHeartbeatMs: 200 });
@@ -52,7 +34,6 @@ describe('cadre-host orchestrator lifecycle', () => {
 			try { await host.orchestrator.removeContainer(node.dockerId); } catch { /* ignore */ }
 		}
 		await host.stop();
-		for (const dir of ownerDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
 
 	async function spawnNode(id: string): Promise<{ dockerId: string }> {
@@ -103,18 +84,8 @@ describe('cadre-host orchestrator lifecycle', () => {
 		expect(body.data.lines).toEqual(['first line', 'second line']);
 	});
 
-	// Only the owner node's lifecycle belongs to this route; any other node is a
-	// donated one, which the donation surface owns (see routes/nodes.ts).
-	async function spawnOwnerNode(): Promise<void> {
-		const dir = mkdtempSync(join(tmpdir(), 'cadre-host-owner-'));
-		ownerDirs.push(dir);
-		const identityPath = join(dir, 'identity.key');
-		writeFileSync(identityPath, '', 'utf8'); // the idle child never reads it
-		await host.orchestrator.ensureOwnerNode({ identityPath, partyId: 'party-owner', libp2pPort: await freePort() });
-	}
-
-	it('POST /api/nodes/:id/stop transitions the owner node to stopped and emits node-state-changed', async () => {
-		await spawnOwnerNode();
+	it('a stop through the orchestrator reaches GET /api/nodes/:id and emits node-state-changed', async () => {
+		const { dockerId } = await spawnNode('node-d');
 		const baseline = host.server.events.listenerCount();
 		const stream = await host.openEventStream();
 		try {
@@ -124,36 +95,20 @@ describe('cadre-host orchestrator lifecycle', () => {
 				await new Promise<void>((r) => setTimeout(r, 20));
 			}
 
-			const stop = await host.request({ method: 'POST', path: `/api/nodes/${OWNER_CONTAINER_ID}/stop` });
-			expect(stop.status).toBe(200);
+			await host.orchestrator.stopContainer(dockerId);
 			const ev = await stream.next(
-				(e) => e.type === 'node-state-changed' && e.nodeId === OWNER_CONTAINER_ID && e.status === 'stopped',
+				(e) => e.type === 'node-state-changed' && e.nodeId === 'node-d' && e.status === 'stopped',
 				{ timeoutMs: 10_000 },
 			);
-			expect(ev).toMatchObject({ type: 'node-state-changed', nodeId: OWNER_CONTAINER_ID, status: 'stopped' });
+			expect(ev).toMatchObject({ type: 'node-state-changed', nodeId: 'node-d', status: 'stopped' });
 
-			const after = await host.request({ method: 'GET', path: `/api/nodes/${OWNER_CONTAINER_ID}` });
+			const after = await host.request({ method: 'GET', path: '/api/nodes/node-d' });
 			expect(after.status).toBe(200);
 			const body = after.body as { data: { node: { status: string } } };
 			expect(body.data.node.status).toBe('stopped');
 		} finally {
 			stream.close();
 		}
-	});
-
-	it('POST /api/nodes/:id/stop refuses a non-owner node with 501 and leaves it running', async () => {
-		await spawnNode('node-d');
-		const res = await host.request({ method: 'POST', path: '/api/nodes/node-d/stop' });
-		expect(res.status).toBe(501);
-		expect(res.body).toMatchObject({ ok: false, error: { code: 'not_implemented' } });
-		expect(host.orchestrator.getNode('node-d')?.status).toBe('running');
-	});
-
-	it('POST /api/nodes/:id/start returns 501 not_implemented', async () => {
-		await spawnNode('node-e');
-		const res = await host.request({ method: 'POST', path: '/api/nodes/node-e/start' });
-		expect(res.status).toBe(501);
-		expect(res.body).toMatchObject({ ok: false, error: { code: 'not_implemented' } });
 	});
 
 	it('GET /api/nodes/unknown returns 404 with not_found', async () => {

@@ -1,15 +1,12 @@
 # @serfab/cadre-host
 
-Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose primary job is to **donate cadre nodes to other people's cadres**: a friend or family member keeps their own device as the authority for their cadre, and your box contributes always-on capacity by running an extra node that joins *theirs*. It exposes a localhost web UI to manage that, and can optionally also run a personal cadre of your own.
+Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **donate cadre nodes to other people's cadres**: a friend or family member keeps their own device as the authority for their cadre, and your box contributes always-on capacity by running an extra node that joins *theirs*. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
 
 The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider donates nodes to paying tenants with API keys, billing, and Docker; cadre-host donates them for free to a handful of people you trust, as native child processes, with a one-shot installer.
 
-cadre-host has **two independent roles**, and only the first is on by default:
+Who may ask for a node is gated by **grant tokens** you hand out. The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
 
-- **Node donor (primary, always on).** Contribute nodes to cadres *other people* own. Who may ask is gated by **grant tokens** you hand out. Needs no cadre of your own.
-- **Founder (opt-in — `ownCadre.enabled` in `host.config.json`, default `false`).** *Also* run your own personal cadre on this machine. This is what spawns the owner node and turns on the strand page (`/api/strands`), which is unmounted and 404s until you enable it. The NAT/DDNS layer (`/nat/*`) runs in both roles: every node this machine runs gets its ports mapped.
-
-[docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth for both roles.
+[docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth.
 
 ## Install
 
@@ -43,13 +40,12 @@ If you'd rather skip `npx` and the symlink, the explicit path `./node_modules/.b
 
 The wizard (run either way):
 
-1. Prompts for the data directory, UI port, libp2p port, UPnP toggle, and whether to **also run your own personal cadre on this machine** — the opt-in founder role, default **no** (defaults shown in `[...]`).
-2. Generates a fresh Ed25519 node identity (`<dataDir>/identity.key`, mode 600 on POSIX).
-3. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the UPnP choice.
-4. Registers a per-user service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
-5. Opens `http://127.0.0.1:<uiPort>/` in your browser.
+1. Prompts for the data directory, UI port, UPnP toggle and whether to configure DDNS now (defaults shown in `[...]`).
+2. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the UPnP choice.
+3. Registers a per-user service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
+4. Opens `http://127.0.0.1:<uiPort>/` in your browser.
 
-Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning; add `--own-cadre` to enable the founder role without prompting.
+Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning.
 
 ### Root requirements
 
@@ -85,9 +81,7 @@ See [`service/README.md`](./service/README.md) for templates, manual-smoke instr
 
 `cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one materializes when someone you trust asks for one. This walkthrough goes from "install just finished" to "first donated node is running."
 
-It assumes the **default install — donor-only**, i.e. you answered *no* to the wizard's *"Also run your own personal cadre on this machine?"*. In that mode this host's whole job is to lend always-on capacity to *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs an extra node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Node donation](../../docs/cadre-host.md#node-donation-the-primary-role) for the full lifecycle.
-
-If you answered *yes*, everything below still applies — you additionally get the opt-in **founder** surfaces, covered in [the founder section](#the-founder-role--running-your-own-cadre-here-opt-in) after step 5.
+This host's whole job is to lend always-on capacity to *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs an extra node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Node donation](../../docs/cadre-host.md#node-donation) for the full lifecycle.
 
 ### 1. Verify the service is running
 
@@ -184,7 +178,7 @@ A donated node's page in the UI offers **Terminate** (the same call) rather than
 
 ## Reachability — can people actually reach your nodes?
 
-Every node this machine runs — the ones it lends out and, in the founder role, your own — needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). cadre-host asks your router to map both over UPnP as each node starts, and reports per node whether that worked. After installing (and any time your network changes):
+Every node this machine runs needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). cadre-host asks your router to map both over UPnP as each node starts, and reports per node whether that worked. After installing (and any time your network changes):
 
 ```bash
 cadre-host nat status     # UPnP and router state, external IP, and per node: mapped / forwarded by hand / unreachable, with what to do
@@ -212,31 +206,11 @@ cadre-host nat ddns external --hostname mybox.example.com
 
 If you use the DuckDNS form, the token is stored in the OS keychain when `libsecret` is installed (`sudo apt install libsecret-1-0` on Debian/Ubuntu), and unencrypted in `<dataDir>/nat-secrets.json` otherwise. The service logs a warning at startup when it falls back to unencrypted storage.
 
-## The founder role — running your own cadre here (opt-in)
-
-Everything above needs no cadre of your own. If you *also* want this machine to run your **own** personal cadre — your devices, your data — that is the **founder** role. It is opt-in: answer *yes* to the wizard's *"Also run your own personal cadre on this machine?"*, or install with `cadre-host install --own-cadre`. It is stored as `ownCadre.enabled` in `<dataDir>/host.config.json` (default **false**) and is install-time only — to change it later, edit that file and restart the service.
-
-Until it is enabled, the founder-only surface is **not mounted** and returns **404**:
-
-| Surface | Commands | Local UI page |
-| --- | --- | --- |
-| `/api/strands` | — | Strands |
-
-So if you followed the default install and `/api/strands` reports a 404, nothing is broken — it belongs to a role you didn't turn on. The UI leaves that page out of its nav on a donor-only install. NAT/DDNS (`/nat/*`, `cadre-host nat …`, the Connectivity page) is not founder-only: see [Reachability](#reachability--can-people-actually-reach-your-nodes) above.
-
-The rest of this section applies **only** with the founder role enabled.
-
-### Enrolling your own devices (founder role)
-
-cadre-host has no enrollment surface of its own. Until the ticket `cadre-host-join-a-cadre` lands, an operator adds a device to a host-founded cadre with `cadre enroll invite` from `@serfab/cadre-cli`, run against the owner node's loopback admin port. The port and bearer token are the ones the orchestrator spawned the owner node with (`--admin-port` and `CADRE_STARTUP_TOKEN`). The device then joins with `cadre start --invitation <encoded>` or the reference apps' "Join cadre" input.
-
 ## CLI reference
 
 All commands except `install`, `uninstall`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
 
-Commands marked **founder role only** additionally need `ownCadre.enabled`; on a donor-only install their routes are unmounted and the command reports a 404.
-
-The `cadre-host push` group is the exception on both counts. It needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json` — and it is **not** founder-role only, because donated nodes get push credentials too. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so restart cadre-host to apply them immediately.
+The `cadre-host push` group needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json`. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so a node picks them up the next time it is spawned. Today only a storage node started without pinned owner keys carries them, which a donated node never is.
 
 ### `cadre-host status`
 
@@ -294,7 +268,7 @@ Tell cadre-host that some other tool (your router firmware, a separate `ddclient
 
 ### `cadre-host push fcm --project-id <id> --client-email <email> [--private-key-file <path>] [--private-key <pem>] [--data-dir <path>]`
 
-Store Firebase Cloud Messaging (Android) service-account credentials so the owner/storage node can wake suspended mobile apps. The three values come from the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Supply the key either as a file (`--private-key-file`, preferred) or inline (`--private-key`); with neither, the command exits with an error. See [docs/cadre-host.md § Push credentials](../../docs/cadre-host.md#push-credentials-fcmapns) for how to mint the credentials and how they reach the spawned node.
+Store Firebase Cloud Messaging (Android) service-account credentials so a storage node can wake suspended mobile apps. The three values come from the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Supply the key either as a file (`--private-key-file`, preferred) or inline (`--private-key`); with neither, the command exits with an error. See [docs/cadre-host.md § Push credentials](../../docs/cadre-host.md#push-credentials-fcmapns) for how to mint the credentials and how they reach the spawned node.
 
 ### `cadre-host push apns --key-id <id> --team-id <id> --bundle-id <id> [--private-key-file <path>] [--private-key <pem>] [--production] [--data-dir <path>]`
 
@@ -320,11 +294,11 @@ Run cadre-host in the foreground. Normally invoked by the service unit, not dire
 
 Run the first-run wizard. See [**Install**](#install) at the top of this README.
 
-`--no-service` writes the data dir (identity, `host.config.json`, `nat.json`) and stops there: no OS service is registered and no browser opens. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example the phone walkthrough in [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md) ("Borrowing a Node From a cadre-host"). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
+`--no-service` writes the data dir (`host.config.json`, `nat.json`) and stops there: no OS service is registered and no browser opens. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example the phone walkthrough in [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md) ("Borrowing a Node From a cadre-host"). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
 
 ### `cadre-host uninstall [--remove-data] [--yes]`
 
-Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe identity, issued grants, donated-node records, NAT state, and update state too.
+Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe node identities, issued grants, donated-node records, NAT state, and update state too.
 
 ```bash
 cadre-host uninstall                       # stop + deregister, keep data
@@ -333,13 +307,12 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 ## What `cadre-host start` does today
 
-`start` loads `host.config.json` + the identity, brings up the orchestrator, the donation grant layer, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). It brings up the NAT layer in every role, and only when `ownCadre.enabled` does it also spawn the host's own owner node and bring up the strand service. Routes:
+`start` loads `host.config.json`, brings up the orchestrator, the NAT layer, the donation grant layer, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
 
 - `/grants-admin` (issue/list/revoke grants, where revoke also shuts down the grant's donated nodes unless `?keepNodes=true`, and `DELETE /grants-admin/donations/:id` to shut down one donated node — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
 - `/update/*` (update flow) — matches the CLI's contract.
-- `/nat/*` (NAT/DDNS) — every role: every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
-- `/api/strands` — **founder role only**; left unmounted and 404 on a donor-only install.
-- `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}` (stop/start/restart act on the owner node only; a donated node answers 501), `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
+- `/nat/*` (NAT/DDNS) — every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
+- `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a donated node through `/grants-admin`.
 - `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
 
 If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
@@ -354,7 +327,7 @@ The manifest URL is overridable two ways:
 
 Manifests are signed with Ed25519; cadre-host refuses to apply any release whose signature doesn't match the embedded release key. For CI / dev signing, set `CADRE_HOST_UPDATE_DEV_KEY` to a base64-encoded raw 32-byte public key.
 
-**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read identity, issue or revoke grants, drive the owner node's admin channel, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on grant tokens — plus, in the founder role, cadre membership — for inter-cadre auth.
+**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read node identities, issue or revoke grants, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on grant tokens for inter-cadre auth.
 
 Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
 
@@ -362,17 +335,13 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 `cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
 
-Six pages cover the day-to-day operations. One of them belongs to the opt-in founder role and is marked as such:
+Five pages cover the day-to-day operations:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, and a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity). A donor-only install adds a Donation tile linking to Grants.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). Your own owner node (founder role) has start/stop/restart; a donated node has **Terminate** instead, the same as `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity) and a Donation tile linking to Grants.
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). A donated node has **Terminate**, the same as `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node.
 - **Grants** — issue grant tokens (QR + copy), see each grant's node usage and the donated nodes under it (linked to their node pages), show an active grant's token again, revoke a grant with or without its nodes. Same `/grants-admin` surface as `cadre-host grant`.
-- **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
+- **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, UI port), uninstall pointer.
 - **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
-- **Strands** *(founder role only)* — the shared SQL databases your own cadre belongs to.
-
-On a donor-only install the founder-only page is left out of the nav, and opening it by its address shows a note instead of the page.
-
 The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the grants change, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 
 ### Building the SPA

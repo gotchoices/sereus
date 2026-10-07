@@ -1,20 +1,12 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 
-	import { typedConfirmationMatches } from '../lib/typed-confirm.js';
-
 	interface Props {
 		open: boolean;
 		title: string;
 		message: string;
 		/** Extra advisory line, rendered as a warning block below the message. */
 		note?: string;
-		/**
-		 * When set, the operator must type this exact text before Confirm enables.
-		 * Reserved for actions that destroy something unrecreatable — a checkbox
-		 * costs one reflexive click, typing costs deliberate attention.
-		 */
-		requireText?: string;
 		/** Extra controls the caller owns (e.g. an option checkbox), shown above the buttons. */
 		children?: Snippet;
 		confirmLabel?: string;
@@ -29,7 +21,6 @@
 		title,
 		message,
 		note,
-		requireText,
 		children,
 		confirmLabel = 'Confirm',
 		cancelLabel = 'Cancel',
@@ -39,22 +30,9 @@
 	}: Props = $props();
 
 	let pending = $state(false);
-	let typed = $state('');
-
-	const gated = $derived(typeof requireText === 'string' && requireText.trim() !== '');
-	const matched = $derived(gated && typedConfirmationMatches(requireText ?? '', typed));
-	const canConfirm = $derived(!pending && (!gated || matched));
-
-	$effect(() => {
-		// Re-runs whenever the dialog opens/closes or targets a different value, so
-		// text typed for one target never carries into the next one's field.
-		void open;
-		void requireText;
-		typed = '';
-	});
 
 	async function handleConfirm(): Promise<void> {
-		if (!canConfirm) return;
+		if (pending) return;
 		pending = true;
 		try {
 			await onConfirm();
@@ -65,13 +43,6 @@
 
 	function onKey(event: KeyboardEvent): void {
 		if (event.key === 'Escape') onCancel();
-	}
-
-	function onConfirmInputKey(event: KeyboardEvent): void {
-		// Enter is a shortcut for the button, so it must obey the same gate.
-		if (event.key !== 'Enter') return;
-		event.preventDefault();
-		if (canConfirm) void handleConfirm();
 	}
 </script>
 
@@ -90,28 +61,13 @@
 		{#if note}
 			<p class="note">⚠ {note}</p>
 		{/if}
-		{#if gated}
-			<div class="gate">
-				<label for="confirm-typed">Type <code>{requireText}</code> to confirm:</label>
-				<input
-					id="confirm-typed"
-					type="text"
-					autocomplete="off"
-					autocapitalize="off"
-					spellcheck="false"
-					bind:value={typed}
-					onkeydown={onConfirmInputKey}
-					disabled={pending}
-				/>
-			</div>
-		{/if}
 		{@render children?.()}
 		<div class="actions">
 			<button onclick={onCancel} disabled={pending}>{cancelLabel}</button>
 			<button
 				class={danger ? 'danger' : 'primary'}
 				onclick={handleConfirm}
-				disabled={!canConfirm}
+				disabled={pending}
 			>{pending ? 'Working…' : confirmLabel}</button>
 		</div>
 	</div>
@@ -135,7 +91,7 @@
 		box-shadow: var(--shadow-lg);
 		padding: var(--space-5);
 		min-width: min(24rem, calc(100vw - 2rem));
-		/* Caps growth so a long strand id wraps instead of widening the dialog. */
+		/* Caps growth so a long node id wraps instead of widening the dialog. */
 		max-width: min(32rem, calc(100vw - 2rem));
 		overflow-wrap: anywhere;
 		z-index: 1010;
@@ -146,11 +102,6 @@
 		border-radius: var(--radius);
 		padding: var(--space-2) var(--space-3);
 		font-size: 0.9rem;
-	}
-	.gate {
-		margin-top: var(--space-3);
-		/* A long, opaque id must wrap rather than widen the dialog. */
-		overflow-wrap: anywhere;
 	}
 	.actions {
 		display: flex;

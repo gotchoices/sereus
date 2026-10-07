@@ -12,7 +12,7 @@
 		pushToast,
 		type OverallStatus,
 	} from './lib/state.svelte.js';
-	import { hrefFor, isFounderRoute, type RouteName } from './lib/router.js';
+	import { hrefFor, type RouteName } from './lib/router.js';
 	import { routeState, startRouter, stopRouter } from './lib/router.svelte.js';
 	import { subscribeEvents } from './lib/events.js';
 
@@ -21,7 +21,6 @@
 	import Nodes from './routes/Nodes.svelte';
 	import NodeDetail from './routes/NodeDetail.svelte';
 	import Settings from './routes/Settings.svelte';
-	import Strands from './routes/Strands.svelte';
 	import Grants from './routes/Grants.svelte';
 	import StatusDot from './components/StatusDot.svelte';
 	import Toast from './components/Toast.svelte';
@@ -44,12 +43,7 @@
 		{ name: 'nodes', label: 'Nodes' },
 		{ name: 'grants', label: 'Grants' },
 		{ name: 'settings', label: 'Settings' },
-		{ name: 'strands', label: 'Strands' },
 	];
-
-	// Founder-only items stay hidden while the role is still unknown, so a donor
-	// dashboard never flashes links that would 404.
-	const nav = $derived(NAV.filter((item) => app.role === 'founder' || !isFounderRoute(item.name)));
 
 	function isActive(name: RouteName): boolean {
 		if (name === 'nodes') {
@@ -62,7 +56,6 @@
 		startRouter();
 		void refreshStatus();
 		void refreshNodes();
-		// Connectivity exists in every role: every hosted node is mapped.
 		void refreshConnectivity();
 		void refreshUpdate();
 		void refreshSettings();
@@ -98,7 +91,7 @@
 		<StatusDot status={app.status} label={statusBadgeLabel(app.status)} size={10} />
 	</div>
 	<nav aria-label="Primary">
-		{#each nav as item (item.name)}
+		{#each NAV as item (item.name)}
 			<a
 				href={hrefFor(item.name)}
 				class:active={isActive(item.name)}
@@ -111,17 +104,7 @@
 </header>
 
 <main id="main">
-	{#if isFounderRoute(route.route.name) && app.role !== 'founder'}
-		<!-- The page component is not mounted: its own fetch would 404 in the donor role. -->
-		<div class="card">
-			{#if app.role === null}
-				<p class="muted">Loading…</p>
-			{:else}
-				<p>This page is for running your own cadre, which is turned off on this machine.</p>
-				<a href={hrefFor('home')}>← Back to Home</a>
-			{/if}
-		</div>
-	{:else if route.route.name === 'connectivity'}
+	{#if route.route.name === 'connectivity'}
 		<Connectivity />
 	{:else if route.route.name === 'nodes'}
 		<Nodes />
@@ -129,8 +112,6 @@
 		<NodeDetail id={route.route.params['id'] ?? ''} />
 	{:else if route.route.name === 'settings'}
 		<Settings />
-	{:else if route.route.name === 'strands'}
-		<Strands />
 	{:else if route.route.name === 'grants'}
 		<Grants />
 	{:else}

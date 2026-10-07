@@ -45,14 +45,13 @@ describe('Installer smoke', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('install creates config + identity + invokes service-host', async () => {
+  it('install creates config + invokes service-host', async () => {
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux', installerVersion: 'test-1.0.0' });
     const result = await installer.install({
       nonInteractive: true,
       dataDir: tmp,
       uiPort: 19999,
-      libp2pPort: 14001,
       openBrowser: false,
       serviceHost: fake,
     });
@@ -63,7 +62,8 @@ describe('Installer smoke', () => {
     expect(result.configPath).toBe(join(tmp, 'host.config.json'));
 
     expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
-    expect(existsSync(join(tmp, 'identity.key'))).toBe(true);
+    // The host holds no identity of its own; each node writes its own key in its workdir.
+    expect(existsSync(join(tmp, 'identity.key'))).toBe(false);
     expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
     expect(existsSync(join(tmp, 'logs'))).toBe(true);
 
@@ -78,7 +78,6 @@ describe('Installer smoke', () => {
       nonInteractive: true,
       dataDir: tmp,
       uiPort: 19995,
-      libp2pPort: 14005,
       noService: true,
       serviceHost: fake,
     });
@@ -87,7 +86,6 @@ describe('Installer smoke', () => {
     expect(result.serviceName).toBeUndefined();
     expect(result.uiUrl).toBe('http://127.0.0.1:19995/');
     expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
-    expect(existsSync(join(tmp, 'identity.key'))).toBe(true);
     expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
   });
 
@@ -98,7 +96,6 @@ describe('Installer smoke', () => {
       nonInteractive: true,
       dataDir: tmp,
       uiPort: 19998,
-      libp2pPort: 14002,
       openBrowser: false,
       serviceHost: fake,
     });
@@ -134,12 +131,11 @@ describe('Installer smoke', () => {
     // returned answers stand on their own.
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
-    let seenDefaults: { dataDir: string; uiPort: number; libp2pPort: number; upnpEnabled: boolean; ownCadre: boolean } | undefined;
+    let seenDefaults: { dataDir: string; uiPort: number; upnpEnabled: boolean } | undefined;
     await installer.install({
       nonInteractive: false,
       dataDir: tmp,
       uiPort: 19997,
-      libp2pPort: 14003,
       noUpnp: true,
       openBrowser: false,
       serviceHost: fake,
@@ -149,10 +145,8 @@ describe('Installer smoke', () => {
         return {
           dataDir: defaults.dataDir,
           uiPort: defaults.uiPort,
-          libp2pPort: defaults.libp2pPort,
           upnpEnabled: defaults.upnpEnabled,
           configureDdns: false,
-          ownCadre: defaults.ownCadre,
         };
       },
     });
@@ -160,9 +154,7 @@ describe('Installer smoke', () => {
     expect(seenDefaults).toEqual({
       dataDir: tmp,
       uiPort: 19997,
-      libp2pPort: 14003,
       upnpEnabled: false,
-      ownCadre: false,
     });
     expect(fake.installCalls).toHaveLength(1);
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
@@ -180,54 +172,11 @@ describe('Installer smoke', () => {
       wizard: async () => ({
         dataDir: tmp,
         uiPort: 19996,
-        libp2pPort: 14004,
         upnpEnabled: true,
         configureDdns: false,
-        ownCadre: false,
       }),
     });
     expect(fake.installCalls).toHaveLength(1);
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
-  });
-
-  it('writes ownCadre.enabled=false by default and true when opted in', async () => {
-    const { readHostConfig } = await import('../config.js');
-
-    // Default (donor-only): --own-cadre absent → ownCadre.enabled false.
-    const fakeA = new FakeServiceHost();
-    const installerA = new Installer({ platform: 'linux' });
-    await installerA.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fakeA,
-    });
-    const donorCfg = readHostConfig(join(tmp, 'host.config.json'));
-    expect(donorCfg.ownCadre).toEqual({ enabled: false });
-
-    // Opt-in: ownCadre:true (the --own-cadre flag) → ownCadre.enabled true.
-    const tmp2 = mkdtempSync(join(tmpdir(), 'cadre-host-installer-owncadre-'));
-    try {
-      const fakeB = new FakeServiceHost();
-      const installerB = new Installer({ platform: 'linux' });
-      await installerB.install({
-        nonInteractive: true, dataDir: tmp2, ownCadre: true, openBrowser: false, serviceHost: fakeB,
-      });
-      const founderCfg = readHostConfig(join(tmp2, 'host.config.json'));
-      expect(founderCfg.ownCadre).toEqual({ enabled: true });
-    } finally {
-      rmSync(tmp2, { recursive: true, force: true });
-    }
-  });
-
-  it('re-running install preserves the existing identity', async () => {
-    const fake = new FakeServiceHost();
-    const installer = new Installer({ platform: 'linux' });
-    await installer.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fake,
-    });
-    const idBefore = (await import('node:fs')).readFileSync(join(tmp, 'identity.key'));
-    await installer.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fake,
-    });
-    const idAfter = (await import('node:fs')).readFileSync(join(tmp, 'identity.key'));
-    expect(Buffer.from(idBefore).equals(Buffer.from(idAfter))).toBe(true);
   });
 });

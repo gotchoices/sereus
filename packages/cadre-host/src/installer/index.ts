@@ -5,8 +5,8 @@
  * `tickets/implement/6.4.1-cadre-host-installer.md`.
  *
  * The class is purposefully thin — heavy lifting lives in the focused
- * subsystem modules (wizard.ts, identity.ts, config.ts,
- * service-host/{systemd,launchd,nssm}.ts, browser.ts).
+ * subsystem modules (wizard.ts, config.ts, service-host/{systemd,launchd,nssm}.ts,
+ * browser.ts).
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -17,12 +17,10 @@ import { NatStore } from '../nat/index.js';
 
 import { openBrowser } from './browser.js';
 import { writeHostConfig, type HostConfigFile } from './config.js';
-import { generateIdentity } from './identity.js';
 import {
   configPath,
   defaultHostJs,
   defaultServiceDir,
-  identityPath,
   logsDir,
 } from './paths.js';
 import {
@@ -35,7 +33,6 @@ import {
   runWizard,
   runWizardWith,
   DEFAULT_UI_PORT,
-  DEFAULT_LIBP2P_PORT,
   type WizardAnswers,
   type WizardDefaults,
 } from './wizard.js';
@@ -54,12 +51,8 @@ export interface InstallOptions {
   dataDir?: string;
   /** Override the UI port. */
   uiPort?: number;
-  /** Override the libp2p port. */
-  libp2pPort?: number;
   /** Disable UPnP probing on first run. */
   noUpnp?: boolean;
-  /** Also run the host's own personal cadre here (founder persona). Default false. */
-  ownCadre?: boolean;
   /** Open browser at end (default true; suppressed by --no-browser or non-TTY). */
   openBrowser?: boolean;
   /** System-wide install — v1 emits a not-yet-supported error. */
@@ -67,7 +60,7 @@ export interface InstallOptions {
   /** Path to node.exe / node binary used by the service-host unit. */
   nodePath?: string;
   /**
-   * Write the data dir (identity, config, NAT seed) but register no OS service.
+   * Write the data dir (config, NAT seed) but register no OS service.
    * The host is then run by hand with `cadre-host start`. Nothing is listening
    * after such an install, so the browser-open step is skipped too.
    */
@@ -88,7 +81,7 @@ export interface InstallResult {
 }
 
 export interface UninstallOptions {
-  /** Also remove the data dir (default false — preserve grants + identity). */
+  /** Also remove the data dir (default false — preserve grants, node identities and NAT state). */
   removeData: boolean;
   /** Skip the confirmation prompt (for scripts). */
   yes: boolean;
@@ -128,27 +121,16 @@ export class Installer {
     mkdirSync(answers.dataDir, { recursive: true });
     mkdirSync(logsDir(answers.dataDir), { recursive: true });
 
-    // 3. Identity + config. Don't overwrite an existing key — re-running
-    //    install on a populated data dir must preserve the host's peer ID.
-    const idPath = identityPath(answers.dataDir);
-    if (existsSync(idPath)) {
-      log('identity already exists at %s — leaving it', idPath);
-    } else {
-      await generateIdentity(idPath);
-    }
-
+    // 3. Config.
     const cfg: HostConfigFile = {
-      version: 2,
+      version: 3,
       installId: randomInstallId(),
       uiPort: answers.uiPort,
-      libp2pPort: answers.libp2pPort,
       dataDir: answers.dataDir,
-      identityPath: idPath,
       upnpEnabled: answers.upnpEnabled,
       installedAt: new Date().toISOString(),
       installerVersion: this.installerVersion,
       updates: { autoApply: false },
-      ownCadre: { enabled: answers.ownCadre },
     };
     const cfgPath = configPath(answers.dataDir);
     writeHostConfig(cfgPath, cfg);
@@ -224,10 +206,8 @@ export class Installer {
     return {
       dataDir: opts.dataDir ?? defaults.dataDir,
       uiPort: opts.uiPort ?? defaults.uiPort,
-      libp2pPort: opts.libp2pPort ?? defaults.libp2pPort,
       upnpEnabled: opts.noUpnp ? false : defaults.upnpEnabled,
       configureDdns: false,
-      ownCadre: opts.ownCadre ?? defaults.ownCadre,
     };
   }
 
@@ -244,16 +224,14 @@ export class Installer {
     const defaults: WizardDefaults = {
       dataDir: opts.dataDir ?? platformDefaults.dataDir,
       uiPort: opts.uiPort ?? platformDefaults.uiPort,
-      libp2pPort: opts.libp2pPort ?? platformDefaults.libp2pPort,
       upnpEnabled: opts.noUpnp ? false : platformDefaults.upnpEnabled,
-      ownCadre: opts.ownCadre ?? platformDefaults.ownCadre,
     };
     const wizard = opts.wizard ?? runWizard;
     return await wizard(defaults);
   }
 }
 
-export { runWizardWith, defaultsForPlatform, DEFAULT_UI_PORT, DEFAULT_LIBP2P_PORT };
+export { runWizardWith, defaultsForPlatform, DEFAULT_UI_PORT };
 
 function seedNatSettings(dataDir: string, upnpEnabled: boolean): void {
   const store = new NatStore(dataDir);

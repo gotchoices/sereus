@@ -6,7 +6,6 @@
  */
 
 import type {
-	HostRole,
 	NatStatusSnapshot,
 	NodeInfo,
 	OverallStatus,
@@ -14,24 +13,19 @@ import type {
 } from './state.svelte.js';
 
 /**
- * Connectivity counts in every role: every node the host runs, donated ones
- * included, is mapped through the router, so a host whose nodes cannot be
- * reached from outside is a warning whoever it donates to. Until the role and
- * the connectivity are known nothing is decided.
- *
- * A donor ignores its owner node: one left stopped by an earlier founder run
- * stays listed (its state persists on disk) but is off by the owner's choice.
+ * Every node the host runs is mapped through the router, so a host whose nodes
+ * cannot be reached from outside is a warning, and so is any stopped node. Until
+ * the connectivity is known nothing is decided.
  */
 export function deriveOverallStatus(
-	role: HostRole | null,
 	connectivity: NatStatusSnapshot | null,
 	nodes: NodeInfo[],
 	update: UpdateState | null,
 ): OverallStatus {
-	if (role === null || !connectivity) return 'loading';
+	if (!connectivity) return 'loading';
 	const reachability = connectivity.directReachability;
 	if (reachability === 'unreachable' || reachability === 'cgnat') return 'warn';
-	if (nodes.some((n) => n.status !== 'running' && !(role === 'donor' && n.owner))) return 'warn';
+	if (nodes.some((n) => n.status !== 'running')) return 'warn';
 	if (update?.lastError) return 'warn';
 	return 'ok';
 }

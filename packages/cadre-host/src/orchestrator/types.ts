@@ -52,7 +52,7 @@ export interface HostProcessConfig {
 export type PushCredentialsResolver = () => Promise<PushCredentials | undefined>;
 
 /**
- * Per-child allocated ports. `admin` carries the loopback admin channel (6.6).
+ * Per-child allocated ports.
  *
  * A handle read back from a `state.json` written by an older build lacks every key
  * added since, whatever this type says — the node-set helpers in `port-allocator.ts`
@@ -63,8 +63,6 @@ export interface NodePorts {
   metrics: number;
   /** libp2p TCP listener. */
   p2p: number;
-  /** Loopback admin-channel port. Bound only by the owner node. */
-  admin: number;
   /**
    * libp2p WebSocket listener. The one a phone dials: a phone's node has no TCP
    * transport, so the `p2p` port is unreachable to it.
@@ -83,8 +81,6 @@ export interface Handle {
   spawnedAt: string;
   partyId: string;
   profile: 'storage' | 'transaction';
-  /** True for the admin's owner node (binds the admin channel). */
-  owner?: boolean;
   /** The public addresses the child was started announcing ({@link HostProcessConfig.announceAddrs}). */
   announcedAddrs: string[];
   /** Live ChildProcess reference; absent after re-attach via init(). */
@@ -106,30 +102,12 @@ export interface ManagedNodeInfo {
   spawnedAt: string;
   workdir: string;
   ports: NodePorts;
-  /** True for the admin's owner node. */
-  owner?: boolean;
   /**
    * The public addresses the node was started announcing. It learns them only at start,
    * so `NatService` compares this with the node's current public addresses and asks for
    * a restart when they differ.
    */
   announcedAddrs: string[];
-}
-
-/**
- * Persisted spawn parameters for the admin's owner node. Stored alongside
- * the handles so an orchestrator restart can re-spawn the owner node from
- * `/api/nodes/:id/{start,restart}` without the caller re-supplying them.
- */
-export interface OwnerSpawnConfig {
-  /** Absolute path to the host's libp2p protobuf identity (`identity.key`). */
-  identityPath: string;
-  /** Control-network partyId (the host's installId). */
-  partyId: string;
-  /** External libp2p port — mapped to the child's listen address. */
-  libp2pPort: number;
-  /** Node profile. Defaults to `storage` (the household node holds strands). */
-  profile?: 'storage' | 'transaction';
 }
 
 /**

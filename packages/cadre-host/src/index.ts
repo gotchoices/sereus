@@ -21,32 +21,14 @@ export type {
   ContainerResources,
 } from '@serfab/cadre-provider';
 
-export { HostProcessOrchestrator, OWNER_CONTAINER_ID } from './orchestrator/index.js';
+export { HostProcessOrchestrator } from './orchestrator/index.js';
 export type {
   HostProcessConfig,
   PersistedHandle,
   ManagedNodeInfo,
   NodeStateListener,
   NodePorts,
-  OwnerAdminEndpoint,
-  OwnerSpawnConfig,
 } from './orchestrator/index.js';
-
-export { OwnerNodeClient, OwnerNodeUnavailableError } from './owner/index.js';
-export type { OwnerNodeClientOptions } from './owner/index.js';
-
-/* ──────────────── strand management ──────────────── */
-
-export { StrandService, StrandError, createStrandHandlers } from './strands/index.js';
-export type {
-  StrandServiceOptions,
-  CadreNodeLike as StrandCadreNodeLike,
-  StrandSummary,
-  StrandListSnapshot,
-  StrandRemovalResult,
-  StrandHandlers,
-  StrandErrorCode,
-} from './strands/index.js';
 
 /* ──────────────── donation grant tokens ──────────────── */
 
@@ -227,8 +209,6 @@ export {
   HostSettingsStore,
 } from './server/index.js';
 export type {
-  FounderServices,
-  HostRole,
   LocalUiServer,
   LocalUiServerOptions,
   LocalUiEvent,

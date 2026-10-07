@@ -17,7 +17,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { ManagedNodeInfo } from '../../orchestrator/types.js';
 import { DonationService } from '../donation-service.js';
 import { DonationStore } from '../donation-store.js';
 import {
@@ -510,40 +509,6 @@ describe('DonationSupervisor start/stop', () => {
       h.orch.crash('dock_2');
       await flush();
       expect(requireDonation(h.store, view.id).dockerId).toBe('dock_3');
-    } finally {
-      h.supervisor.stop();
-    }
-  });
-
-  it('ignores owner-node exits — bin/host.ts owns re-spawning that one', async () => {
-    const h = makeHarness();
-    const view = await h.provision();
-    setStatus(h.store, view.id, 'seeded');
-
-    h.supervisor.start();
-    try {
-      await h.supervisor.reconcile(); // drain the startup pass (node is running)
-      // Take the node down WITHOUT an exit event, so the only event in play is
-      // the owner's.
-      await h.orch.stopContainer(dockerIdOf(view));
-
-      const ownerExit: ManagedNodeInfo = {
-        id: 'owner',
-        dockerId: 'dock_owner',
-        partyId: 'host-party',
-        profile: 'storage',
-        status: 'stopped',
-        spawnedAt: new Date(START_MS).toISOString(),
-        workdir: '/fake/owner',
-        ports: { health: 0, metrics: 0, p2p: 0, admin: 0, ws: 0 },
-        announcedAddrs: [],
-        owner: true,
-      };
-      h.orch.emit(ownerExit);
-      await flush();
-
-      expect(h.orch.createCalls).toHaveLength(1);
-      expect(requireDonation(h.store, view.id).dockerId).toBe(view.dockerId);
     } finally {
       h.supervisor.stop();
     }

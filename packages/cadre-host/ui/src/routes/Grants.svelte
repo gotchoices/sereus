@@ -39,7 +39,7 @@
 	// that expires while the page sits open keeps its badge until the next refresh.
 	const grants = $derived(sortGrants(app.grants.list));
 
-	/** Same reasoning as the Strands page: an unfetched list is not an empty one. */
+	/** An unfetched list is not an empty one (see the grants slice in `state.svelte.ts`). */
 	const listView = $derived.by((): 'loading' | 'empty' | 'list' | 'none' => {
 		if (app.grants.loaded) return app.grants.list.length === 0 ? 'empty' : 'list';
 		return app.grants.error ? 'none' : 'loading';
@@ -111,7 +111,7 @@
 	</header>
 
 	<div class="card">
-		<!-- As on the Strands page, a failed refresh keeps the last list that loaded. -->
+		<!-- A failed refresh keeps the last list that loaded. -->
 		{#if app.grants.error}
 			<p class="error">Couldn’t load grants: {app.grants.error}</p>
 		{/if}

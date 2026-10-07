@@ -1,10 +1,10 @@
 /**
- * Identity persistence for cadre-host.
+ * Identity persistence for the nodes cadre-host runs.
  *
- * The host's libp2p peer identity is an Ed25519 keypair generated at
- * install time. The protobuf-encoded private key is written to
- * `<dataDir>/identity.key` with mode 0600 on POSIX. `cadre-host start`
- * later loads it with `privateKeyFromProtobuf`.
+ * Each managed node's libp2p peer identity is an Ed25519 keypair generated on
+ * its first spawn (`orchestrator/node-identity.ts`). The protobuf-encoded
+ * private key is written with mode 0600 on POSIX and loaded with
+ * `privateKeyFromProtobuf`.
  *
  * We persist the protobuf form (not raw bytes) because that's the format
  * libp2p's `privateKeyFromProtobuf` consumes directly and it preserves the

@@ -641,11 +641,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   over TCP rather than the suite's usual WebSocket) — `deliver-seed-cross-network.integration.ts`.
 - Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
   and the provider launch them) — `cadre-host-node-donation.integration.ts` (a host donating a
-  node into a second, externally-founded party), `cadre-host-owner-node.integration.ts`,
+  node into a second, externally-founded party),
   `provider-seed-accepted.integration.ts`, `cadre-host-donation-phone-requester.integration.ts`
   and `node-claim-by-phone.integration.ts` (the two bullets below); the identity/bootstrap/store
-  fixtures the first three share, and the spawn helpers the provider orchestrator and the claim
-  scenario use, live in `child-node-fixtures.ts`.
+  fixtures the first two share, and the spawn helpers the provider orchestrator and the claim
+  scenario use, live in `child-node-fixtures.ts`. The first two take their requester's
+  authority from `startOwnerCliNode` (`owner-cli-node.ts`): a `cadre-cli` child started with
+  `--owner`, driven over its loopback admin channel.
 - Node donation to a requester that **cannot be dialed** (the phone direction) —
   `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as
   `cadre-host-node-donation.integration.ts`, but the requester is an in-process `CadreNode`

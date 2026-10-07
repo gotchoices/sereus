@@ -32,6 +32,23 @@ function fakeUpdate(): { svc: UpdateService; calls: UpdateSettings[] } {
   return { svc: stub, calls };
 }
 
+function writeConfig(dir: string): string {
+  const cfg = {
+    version: 3,
+    installId: 'inst-x',
+    uiPort: 8765,
+    dataDir: dir,
+    upnpEnabled: true,
+    installedAt: '2025-01-01T00:00:00Z',
+    installerVersion: '0.6.0',
+    updates: { autoApply: false },
+  };
+  const path = join(dir, 'host.config.json');
+  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  return path;
+}
+
+/** A founder-era file: refused on read, never migrated. */
 function writeV2Config(dir: string): string {
   const cfg = {
     version: 2,
@@ -44,23 +61,7 @@ function writeV2Config(dir: string): string {
     installedAt: '2025-01-01T00:00:00Z',
     installerVersion: '0.6.0',
     updates: { autoApply: false },
-  };
-  const path = join(dir, 'host.config.json');
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-  return path;
-}
-
-function writeV1Config(dir: string): string {
-  const cfg = {
-    version: 1,
-    installId: 'inst-x',
-    uiPort: 8765,
-    libp2pPort: 4001,
-    dataDir: dir,
-    identityPath: join(dir, 'identity.key'),
-    upnpEnabled: true,
-    installedAt: '2025-01-01T00:00:00Z',
-    installerVersion: '0.6.0',
+    ownCadre: { enabled: true },
   };
   const path = join(dir, 'host.config.json');
   writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
@@ -81,7 +82,7 @@ describe('/api/settings routes', () => {
   });
 
   it('GET returns the persisted config', async () => {
-    writeV2Config(dataDir);
+    writeConfig(dataDir);
     app = Fastify();
     registerErrorHandler(app);
     registerSettingsRoutes(app, {
@@ -96,7 +97,7 @@ describe('/api/settings routes', () => {
   });
 
   it('PUT propagates upnpEnabled to nat service and host.config.json', async () => {
-    writeV2Config(dataDir);
+    writeConfig(dataDir);
     const nat = fakeNat();
     app = Fastify();
     registerErrorHandler(app);
@@ -114,7 +115,7 @@ describe('/api/settings routes', () => {
   });
 
   it('PUT updates.autoApply propagates to update service', async () => {
-    writeV2Config(dataDir);
+    writeConfig(dataDir);
     const nat = fakeNat();
     const update = fakeUpdate();
     app = Fastify();
@@ -133,7 +134,7 @@ describe('/api/settings routes', () => {
   });
 
   it('PUT uiPort returns 400 invalid_setting', async () => {
-    writeV2Config(dataDir);
+    writeConfig(dataDir);
     app = Fastify();
     registerErrorHandler(app);
     registerSettingsRoutes(app, { settingsStore: new HostSettingsStore({ dataDir }), nat: fakeNat().svc });
@@ -149,25 +150,8 @@ describe('/api/settings routes', () => {
     expect(body.error.message).toMatch(/uiPort/);
   });
 
-  it('PUT ownCadre returns 400 invalid_setting (install-time only)', async () => {
-    writeV2Config(dataDir);
-    app = Fastify();
-    registerErrorHandler(app);
-    registerSettingsRoutes(app, { settingsStore: new HostSettingsStore({ dataDir }), nat: fakeNat().svc });
-    const res = await app.inject({
-      method: 'PUT',
-      url: '/api/settings',
-      headers: { 'content-type': 'application/json' },
-      payload: JSON.stringify({ ownCadre: { enabled: true } }),
-    });
-    expect(res.statusCode).toBe(400);
-    const body = res.json() as { error: { code: string; message: string } };
-    expect(body.error.code).toBe('invalid_setting');
-    expect(body.error.message).toMatch(/ownCadre/);
-  });
-
   it('PUT unknown setting returns 400', async () => {
-    writeV2Config(dataDir);
+    writeConfig(dataDir);
     app = Fastify();
     registerErrorHandler(app);
     registerSettingsRoutes(app, { settingsStore: new HostSettingsStore({ dataDir }), nat: fakeNat().svc });
@@ -180,8 +164,8 @@ describe('/api/settings routes', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('rejects a v1 host.config.json without rewriting it', async () => {
-    const path = writeV1Config(dataDir);
+  it('rejects a v2 host.config.json without rewriting it', async () => {
+    const path = writeV2Config(dataDir);
     const raw = readFileSync(path, 'utf8');
     app = Fastify();
     registerErrorHandler(app);
@@ -189,7 +173,7 @@ describe('/api/settings routes', () => {
     const res = await app.inject({ method: 'GET', url: '/api/settings' });
     expect(res.statusCode).toBe(500);
     const body = res.json() as { error: { message: string } };
-    expect(body.error.message).toMatch(/unsupported version=1/);
+    expect(body.error.message).toMatch(/unsupported version=2/);
     expect(readFileSync(path, 'utf8')).toBe(raw);
   });
 });

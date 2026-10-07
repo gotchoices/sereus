@@ -15,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createLocalUiServer } from '../index.js';
 import { EventBus } from '../events/bus.js';
 import type { LocalUiEvent } from '../events/types.js';
-import { fakeFounder, fakeNat } from './fakes.js';
+import { fakeNat } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../../orchestrator/types.js';
 import type { UpdateService } from '../../update/index.js';
@@ -46,12 +46,10 @@ class FakeUpdate {
 
 function writeConfig(dir: string): void {
   const cfg = {
-    version: 2,
+    version: 3,
     installId: 'inst-x',
     uiPort: 8765,
-    libp2pPort: 4001,
     dataDir: dir,
-    identityPath: join(dir, 'identity.key'),
     upnpEnabled: true,
     installedAt: '2025-01-01T00:00:00Z',
     installerVersion: '0.6.0',
@@ -87,7 +85,6 @@ describe('publisher wiring', () => {
       dataDir,
       orchestrator,
       nat: fakeNat(),
-      founder: fakeFounder(),
       events: bus,
       forcePort: 0,
     });
@@ -100,7 +97,7 @@ describe('publisher wiring', () => {
       status: 'stopped',
       spawnedAt: 'x',
       workdir: '/tmp',
-      ports: { health: 1, metrics: 2, p2p: 3, admin: 4, ws: 5 },
+      ports: { health: 1, metrics: 2, p2p: 3, ws: 5 },
       announcedAddrs: [],
     });
     expect(received).toContainEqual({
@@ -117,7 +114,6 @@ describe('publisher wiring', () => {
       dataDir,
       orchestrator,
       nat: fakeNat(),
-      founder: fakeFounder(),
       events: bus,
       forcePort: 0,
     });
@@ -135,7 +131,6 @@ describe('publisher wiring', () => {
       dataDir,
       orchestrator,
       nat,
-      founder: fakeFounder(),
       events: bus,
       forcePort: 0,
     });
@@ -153,7 +148,6 @@ describe('publisher wiring', () => {
       dataDir,
       orchestrator,
       nat: fakeNat(),
-      founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,
       forcePort: 0,
@@ -179,7 +173,6 @@ describe('publisher wiring', () => {
       dataDir,
       orchestrator,
       nat: fakeNat(),
-      founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,
       forcePort: 0,

@@ -12,7 +12,6 @@ import type { DirectReachability } from '../../nat/index.js';
 
 export type LocalUiEvent =
   | { type: 'node-state-changed'; nodeId: string; status: ContainerStatus }
-  | { type: 'strands-changed'; kind: 'removed' }
   | { type: 'grants-changed'; kind: 'issued' | 'revoked' | 'terminated' }
   | { type: 'connectivity-changed'; directReachability: DirectReachability }
   | { type: 'update-available'; version: string; releaseNotesUrl?: string };

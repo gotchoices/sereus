@@ -27,13 +27,13 @@ function portsWithoutWs(ports: Omit<NodePorts, 'ws'>): NodePorts {
 }
 
 describe('allocateNodePorts', () => {
-  it('allocates the five ports in a fixed order, the newest key last', () => {
+  it('allocates the four ports in a fixed order', () => {
     const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a)).toEqual({ health: 10000, metrics: 10001, p2p: 10002, admin: 10003, ws: 10004 });
+    expect(allocateNodePorts(a)).toEqual({ health: 10000, metrics: 10001, p2p: 10002, ws: 10003 });
   });
 
   // A partial set left reserved would leak from a bounded range on every failed
-  // provision — the whole reason this helper exists rather than five allocates.
+  // provision — the whole reason this helper exists rather than four allocates.
   it('is all-or-nothing: an exhausted range releases everything it took', () => {
     const a = new PortAllocator(13000, 13002);
     expect(() => allocateNodePorts(a)).toThrow(/No available ports/);
@@ -42,41 +42,22 @@ describe('allocateNodePorts', () => {
     expect(a.has(13002)).toBe(false);
   });
 
-  // Four ports used to be one node's worth. A range sized for that now fails on the
-  // fifth, and must neither hand back a set missing `ws` nor keep the four it took.
-  it('fails cleanly on a range with room for four ports but not five', () => {
-    const a = new PortAllocator(13000, 13003);
-    expect(() => allocateNodePorts(a)).toThrow(/No available ports/);
-    for (let port = 13000; port <= 13003; port++) expect(a.has(port)).toBe(false);
-  });
-
-  // The owner node's p2p port is pinned by the NAT mapping, not allocated.
   it('honours an override and reserves it', () => {
     const a = new PortAllocator(10000, 10010);
     expect(allocateNodePorts(a, { p2p: 10005 })).toEqual({
       health: 10000,
       metrics: 10001,
       p2p: 10005,
-      admin: 10002,
-      ws: 10003,
+      ws: 10002,
     });
     // Reserved, so no later allocation can hand it out again.
     expect(a.has(10005)).toBe(true);
   });
 
-  // An out-of-range override is the production case for the owner node: its
-  // libp2p port is chosen by NAT config, not by the allocator, so reserving it
-  // is a documented no-op rather than an error.
-  it('accepts an override outside the managed range without reserving it', () => {
-    const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a, { p2p: 40000 })).toMatchObject({ p2p: 40000, health: 10000 });
-    expect(a.has(40000)).toBe(false);
-  });
-
   // A re-spawn passes its previous set as overrides; every one must come back exactly.
   it('returns a full set of overrides exactly, allocating nothing', () => {
     const a = new PortAllocator(10000, 10010);
-    const previous = { health: 10006, metrics: 10007, p2p: 10008, admin: 10009, ws: 10010 };
+    const previous = { health: 10006, metrics: 10007, p2p: 10008, ws: 10009 };
     expect(allocateNodePorts(a, previous)).toEqual(previous);
     expect(a.allocate()).toBe(10000);
   });
@@ -85,7 +66,7 @@ describe('allocateNodePorts', () => {
 describe('reserveNodePorts / releaseNodePorts', () => {
   it('hold and then release every key of the set', () => {
     const a = new PortAllocator(10000, 10010);
-    const ports = { health: 10000, metrics: 10001, p2p: 10002, admin: 10003, ws: 10004 };
+    const ports = { health: 10000, metrics: 10001, p2p: 10002, ws: 10003 };
     reserveNodePorts(a, ports);
     for (const port of Object.values(ports)) expect(a.has(port)).toBe(true);
     releaseNodePorts(a, ports);
@@ -95,18 +76,18 @@ describe('reserveNodePorts / releaseNodePorts', () => {
   // Rehydrating, or dropping, a `state.json` handle written before `ws` existed.
   it('skip a key the set lacks', () => {
     const a = new PortAllocator(10000, 10010);
-    const ports = portsWithoutWs({ health: 10000, metrics: 10001, p2p: 10002, admin: 10003 });
+    const ports = portsWithoutWs({ health: 10000, metrics: 10001, p2p: 10002 });
     reserveNodePorts(a, ports);
     expect(a.has(undefined as unknown as number)).toBe(false);
-    expect(a.allocate()).toBe(10004);
+    expect(a.allocate()).toBe(10003);
     releaseNodePorts(a, ports);
     expect(a.has(10000)).toBe(false);
-    expect(a.has(10004)).toBe(true);
+    expect(a.has(10003)).toBe(true);
   });
 });
 
 describe('reusedNodePorts', () => {
-  const previous = { health: 10005, metrics: 10006, p2p: 10007, admin: 10008, ws: 10009 };
+  const previous = { health: 10005, metrics: 10006, p2p: 10007, ws: 10008 };
 
   it("returns the dropped handle's whole port set", () => {
     expect(reusedNodePorts([{ ports: previous }])).toEqual(previous);
@@ -118,17 +99,17 @@ describe('reusedNodePorts', () => {
 
   // A handle persisted before `ws` existed: its other ports come back, `ws` is new.
   it('omits a key the dropped handle lacks', () => {
-    const legacy = portsWithoutWs({ health: 10005, metrics: 10006, p2p: 10007, admin: 10008 });
+    const legacy = portsWithoutWs({ health: 10005, metrics: 10006, p2p: 10007 });
     const reused = reusedNodePorts([{ ports: legacy }]);
-    expect(reused).toEqual({ health: 10005, metrics: 10006, p2p: 10007, admin: 10008 });
+    expect(reused).toEqual({ health: 10005, metrics: 10006, p2p: 10007 });
     expect('ws' in reused).toBe(false);
 
     const a = new PortAllocator(10000, 10010);
-    expect(allocateNodePorts(a, reused)).toEqual({ health: 10005, metrics: 10006, p2p: 10007, admin: 10008, ws: 10000 });
+    expect(allocateNodePorts(a, reused)).toEqual({ health: 10005, metrics: 10006, p2p: 10007, ws: 10000 });
   });
 
   it('takes the last handle when a state holding duplicates dropped several', () => {
-    const older = { health: 10000, metrics: 10001, p2p: 10002, admin: 10003, ws: 10004 };
+    const older = { health: 10000, metrics: 10001, p2p: 10002, ws: 10003 };
     expect(reusedNodePorts([{ ports: older }, { ports: previous }])).toEqual(previous);
   });
 });

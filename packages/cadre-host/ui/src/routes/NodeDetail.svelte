@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 
-	import { apiDelete, apiPost, ApiError } from '../lib/api.js';
+	import { apiDelete, ApiError } from '../lib/api.js';
 	import {
 		appState,
 		refreshNodeDetail,
@@ -20,7 +20,6 @@
 
 	const app = appState();
 
-	let confirmStop = $state(false);
 	let confirmTerminate = $state(false);
 	let busyAction: string | null = $state(null);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -55,19 +54,6 @@
 		const code = err instanceof ApiError ? err.code : 'error';
 		const msg = err instanceof Error ? err.message : String(err);
 		pushToast('error', `${action} failed: ${msg} (${code})`);
-	}
-
-	async function postAction(action: 'start' | 'stop' | 'restart'): Promise<void> {
-		busyAction = action;
-		try {
-			await apiPost(`/api/nodes/${encodeURIComponent(id)}/${action}`);
-			pushToast('success', `${action} requested`);
-			await refreshNodeDetail(id);
-		} catch (err) {
-			reportActionFailure(action, err);
-		} finally {
-			busyAction = null;
-		}
 	}
 
 	/**
@@ -122,45 +108,16 @@
 				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.memoryBytes)}</dd></div>
 			</dl>
 
-			<!-- Only the owner node has a lifecycle here; a donated node's belongs to its grant. -->
-			{#if node.owner && app.role === 'founder'}
-				<div class="actions">
-					<button
-						disabled={busyAction !== null || node.status === 'running'}
-						onclick={() => postAction('start')}
-					>
-						{busyAction === 'start' ? 'Starting…' : 'Start'}
-					</button>
-					<button
-						disabled={busyAction !== null || node.status === 'running'}
-						onclick={() => postAction('restart')}
-					>
-						{busyAction === 'restart' ? 'Restarting…' : 'Restart'}
-					</button>
-					<button
-						class="danger"
-						disabled={busyAction !== null || node.status !== 'running'}
-						onclick={() => (confirmStop = true)}
-					>
-						Stop
-					</button>
-				</div>
-			{:else if node.owner}
-				{#if app.role === 'donor'}
-					<p class="muted">Your own cadre is turned off on this machine, so this node is not run here.</p>
-				{/if}
-			{:else}
-				<div class="actions">
-					<!-- Enabled even while stopped: a crashed node awaiting respawn is ended the same way. -->
-					<button
-						class="danger"
-						disabled={busyAction !== null}
-						onclick={() => (confirmTerminate = true)}
-					>
-						{busyAction === 'terminate' ? 'Terminating…' : 'Terminate'}
-					</button>
-				</div>
-			{/if}
+			<div class="actions">
+				<!-- Enabled even while stopped: a crashed node awaiting respawn is ended the same way. -->
+				<button
+					class="danger"
+					disabled={busyAction !== null}
+					onclick={() => (confirmTerminate = true)}
+				>
+					{busyAction === 'terminate' ? 'Terminating…' : 'Terminate'}
+				</button>
+			</div>
 		</div>
 
 		<div class="card stack">
@@ -177,19 +134,6 @@
 		<LogTail nodeId={node.id} />
 	{/if}
 </section>
-
-<ConfirmDialog
-	open={confirmStop}
-	title="Stop node"
-	message={`Stop node ${id}? In-flight requests will be terminated.`}
-	confirmLabel="Stop"
-	danger
-	onConfirm={async () => {
-		confirmStop = false;
-		await postAction('stop');
-	}}
-	onCancel={() => (confirmStop = false)}
-/>
 
 <ConfirmDialog
 	open={confirmTerminate}

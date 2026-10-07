@@ -41,8 +41,7 @@ export interface GrantServiceOptions {
  * the count as a parameter so the two never drift.
  *
  * All methods are synchronous: issuance/validation/revocation are pure local
- * store operations with no node round-trip (unlike the NAT and strand
- * services, which delegate to the owner node).
+ * store operations with no node round-trip.
  */
 export class GrantService implements GrantValidator {
   private readonly store: GrantStore;

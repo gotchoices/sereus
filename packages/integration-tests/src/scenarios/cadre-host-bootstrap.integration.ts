@@ -7,15 +7,14 @@
  * failure.
  *
  * Exercises:
- *   - Installer.install() writes host.config.json, identity.key, nat.json, logs/
+ *   - Installer.install() writes host.config.json, nat.json, logs/
  *   - createLocalUiServer.start() binds an ephemeral port and serves /api/status
  *   - /api/settings reflects the installer's host.config.json
  *   - /  serves text/html (placeholder when dist/ui is missing)
- *   - Re-running install preserves identity.key bytes
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,7 +23,6 @@ import {
 	HostProcessOrchestrator,
 	Installer,
 	type NatService,
-	StrandService,
 	createLocalUiServer,
 	readHostConfig,
 	type LocalUiServer,
@@ -33,7 +31,7 @@ import {
 	type ServiceHostStatus,
 } from '@serfab/cadre-host';
 
-import { emptyStrandNode, startOfflineNatService } from '../harness/index.js';
+import { startOfflineNatService } from '../harness/index.js';
 
 class StubServiceHost implements ServiceHost {
 	readonly name = 'cadre-host-test';
@@ -82,7 +80,6 @@ describe('cadre-host bootstrap', () => {
 			nonInteractive: true,
 			dataDir,
 			uiPort: await pickFreePort(),
-			libp2pPort: await pickFreePort(),
 			openBrowser: false,
 			serviceHost: new StubServiceHost(),
 		});
@@ -98,7 +95,6 @@ describe('cadre-host bootstrap', () => {
 			dataDir,
 			orchestrator,
 			nat,
-			founder: { strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 			forcePort: 0,
 		});
 		const started = await server.start();
@@ -126,11 +122,10 @@ describe('cadre-host bootstrap', () => {
 		const { baseUrl } = await bootHost();
 		const res = await fetch(`${baseUrl}/api/settings`);
 		expect(res.status).toBe(200);
-		const body = await res.json() as { ok: true; data: { uiPort: number; libp2pPort: number; upnpEnabled: boolean; dataDir: string; installId: string; installerVersion: string } };
+		const body = await res.json() as { ok: true; data: { uiPort: number; upnpEnabled: boolean; dataDir: string; installId: string; installerVersion: string } };
 		expect(body.ok).toBe(true);
 		expect(body.data.dataDir).toBe(dataDir);
 		expect(typeof body.data.uiPort).toBe('number');
-		expect(typeof body.data.libp2pPort).toBe('number');
 		expect(body.data.upnpEnabled).toBe(true);
 		expect(typeof body.data.installId).toBe('string');
 		expect(body.data.installId.length).toBeGreaterThan(0);
@@ -144,30 +139,5 @@ describe('cadre-host bootstrap', () => {
 		expect((res.headers.get('content-type') ?? '')).toContain('text/html');
 		const text = await res.text();
 		expect(text.length).toBeGreaterThan(0);
-	});
-
-	it('install is idempotent on identity.key', async () => {
-		const installer = new Installer({ platform: 'linux' });
-		const uiPort1 = await pickFreePort();
-		const libp2pPort1 = await pickFreePort();
-		await installer.install({
-			nonInteractive: true,
-			dataDir,
-			uiPort: uiPort1,
-			libp2pPort: libp2pPort1,
-			openBrowser: false,
-			serviceHost: new StubServiceHost(),
-		});
-		const before = readFileSync(join(dataDir, 'identity.key'));
-		await installer.install({
-			nonInteractive: true,
-			dataDir,
-			uiPort: await pickFreePort(),
-			libp2pPort: await pickFreePort(),
-			openBrowser: false,
-			serviceHost: new StubServiceHost(),
-		});
-		const after = readFileSync(join(dataDir, 'identity.key'));
-		expect(Buffer.from(before).equals(Buffer.from(after))).toBe(true);
 	});
 });

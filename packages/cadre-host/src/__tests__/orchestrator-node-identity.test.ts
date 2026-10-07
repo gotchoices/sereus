@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
+import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { loadIdentity } from '../installer/identity.js';
 import { removeAllNodes } from './orchestrator-teardown.js';
 
@@ -161,12 +161,12 @@ describe('HostProcessOrchestrator node identity', () => {
   // The failure the identity step can actually produce is a damaged key file,
   // and `DonationService.provision` turns every such throw into an `error`
   // record and lets the grantee retry. If the spawn path reserved its ports
-  // before the step that throws, each retry would burn five more ports out of a
+  // before the step that throws, each retry would burn four more ports out of a
   // bounded range until provisioning stopped working altogether.
   it('reserves no ports when the identity step fails', async () => {
     const rootDir = join(tmpRoot, 'd');
-    // Exactly one node's worth of ports (health, metrics, p2p, admin, ws).
-    const orch = makeOrchestrator(rootDir, { start: 18100, end: 18104 });
+    // Exactly one node's worth of ports (health, metrics, p2p, ws).
+    const orch = makeOrchestrator(rootDir, { start: 18100, end: 18103 });
     await orch.init();
 
     mkdirSync(join(rootDir, 'donated-bad'), { recursive: true });
@@ -180,24 +180,8 @@ describe('HostProcessOrchestrator node identity', () => {
     };
     await expect(orch.createContainer({ ...request, containerId: 'donated-bad' })).rejects.toThrow();
 
-    // The whole range is still free, so a healthy container still gets its five.
+    // The whole range is still free, so a healthy container still gets its four.
     const ok = await orch.createContainer({ ...request, containerId: 'donated-good' });
     expect(ok.p2pPort).toBeGreaterThanOrEqual(18100);
-  });
-
-  // The owner node carries the HOST's installer identity from <dataDir>, not a
-  // per-workdir key — a second key in its workdir would mean the host's own
-  // cadre node quietly changed peer id.
-  it('leaves the owner node on its own installer identity', async () => {
-    const rootDir = join(tmpRoot, 'e');
-    const orch = makeOrchestrator(rootDir);
-    await orch.init();
-
-    const hostIdentity = join(tmpRoot, 'host-identity.key');
-    await orch.ensureOwnerNode({ identityPath: hostIdentity, partyId: 'host-P', libp2pPort: 4101 });
-
-    const ownerWorkdir = join(rootDir, OWNER_CONTAINER_ID);
-    expect(await waitForFile(join(ownerWorkdir, 'identity-arg.txt'))).toBe(hostIdentity);
-    expect(existsSync(join(ownerWorkdir, 'identity.key'))).toBe(false);
   });
 });

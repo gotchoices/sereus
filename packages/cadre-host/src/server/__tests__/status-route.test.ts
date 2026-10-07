@@ -30,7 +30,6 @@ describe('GET /api/status', () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
-      role: 'founder',
       orchestrator: fakeOrchestrator([
         {
           id: 'alice',
@@ -40,7 +39,7 @@ describe('GET /api/status', () => {
           status: 'running',
           spawnedAt: '2025-01-01T00:00:00Z',
           workdir: '/tmp/alice',
-          ports: { health: 1, metrics: 2, p2p: 3, admin: 4, ws: 5 },
+          ports: { health: 1, metrics: 2, p2p: 3, ws: 5 },
           announcedAddrs: [],
         },
       ]),
@@ -51,47 +50,21 @@ describe('GET /api/status', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as {
       service: { name: string; version: string; uptimeSeconds: number };
-      role: string;
       nodes: Array<{ id: string; status: string }>;
       connectivity: { directReachability: string };
       update?: { available?: string };
     };
     expect(body.service.name).toBe('cadre-host');
-    expect(body.role).toBe('founder');
     expect(body.nodes).toHaveLength(1);
     expect(body.nodes[0]).toMatchObject({ id: 'alice', status: 'running' });
     expect(body.connectivity.directReachability).toBe('reachable');
     expect(body.update).toBeUndefined();
   });
 
-  it('includes connectivity in the donor role too (every role maps its nodes)', async () => {
-    app = Fastify();
-    registerErrorHandler(app);
-    registerStatusRoute(app, {
-      role: 'donor',
-      orchestrator: fakeOrchestrator([]),
-      nat: fakeNat(SAMPLE_CONNECTIVITY),
-    });
-
-    const res = await app.inject({ method: 'GET', url: '/api/status' });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as {
-      service: { name: string };
-      role: string;
-      nodes: unknown[];
-      connectivity: { directReachability: string };
-    };
-    expect(body.service.name).toBe('cadre-host');
-    expect(body.role).toBe('donor');
-    expect(body.nodes).toEqual([]);
-    expect(body.connectivity.directReachability).toBe('reachable');
-  });
-
   it('includes update info when service is present', async () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
-      role: 'founder',
       orchestrator: fakeOrchestrator([]),
       nat: fakeNat(SAMPLE_CONNECTIVITY),
       update: fakeUpdate({

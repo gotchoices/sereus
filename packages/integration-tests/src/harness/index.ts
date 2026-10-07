@@ -12,6 +12,7 @@ export * from './node-fixtures.js';
 export * from './formation-mocks.js';
 export * from './slow-raw-storage.js';
 export * from './child-node-fixtures.js';
+export * from './owner-cli-node.js';
 export * from './peer-dial-gate.js';
 export * from './control-trio.js';
 export * from './test-cadre-host.js';

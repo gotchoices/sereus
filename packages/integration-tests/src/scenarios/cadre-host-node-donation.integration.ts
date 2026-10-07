@@ -1,20 +1,17 @@
 /**
  * Cross-package node-donation integration.
  *
- * This is the **donate-a-node (donor) scenario**: cadre-host contributes a node
- * to an *external* requester's cadre. The complementary own-cadre (founder)
- * flow — where the host spawns a node that founds *its own* cadre — is covered
- * by `cadre-host-owner-node.integration.ts`.
+ * cadre-host contributes a node to an *external* requester's cadre.
  *
  * The requester's authority ("phone") is a **second real `@serfab/cadre-cli`
- * child** that founds its own cadre (party `P`). cadre-host then donates a node
+ * child** (`startOwnerCliNode`) that founds its own cadre (party `P`). cadre-host then donates a node
  * *into* `P`, and we assert the full lifecycle over the real wire:
  *
  *   1. requester authority node up (its owner key + dialable multiaddrs become
  *      the donation's `ownerKeys` + `bootstrapNodes`)
  *   2. host donates a node via `DonationService.provision` → `awaiting_seed`
  *   3. `getPeer` reports the donated node's real peerId + multiaddrs
- *   4. the requester mints a seed for it (`OwnerNodeClient.addDrone`)
+ *   4. the requester mints a seed for it (`addDrone`)
  *   5. `applySeed` → `peersAdded >= 1` (the gate proving the pinned-owner-key
  *      trust wiring works — a cold node with no pin rejects here)
  *   6. the donated node syncs into party `P` (a live control connection), NOT a
@@ -42,18 +39,22 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 
 import { ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import {
-  OWNER_CONTAINER_ID,
-  OwnerNodeClient,
   HostProcessOrchestrator,
   GrantService,
   GrantStore,
   DonationService,
   DonationStore,
   type DonationSeedResult,
-  type OwnerSpawnConfig,
 } from '@serfab/cadre-host';
 
-import { readNodeLocalStore, waitUntil, withPeerId, writeIdentity } from '../harness/index.js';
+import {
+  readNodeLocalStore,
+  startOwnerCliNode,
+  waitUntil,
+  withPeerId,
+  writeIdentity,
+  type OwnerCliNode,
+} from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
@@ -62,9 +63,8 @@ const OP_MS = 30_000;
 
 describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)', () => {
   let tmpRoot: string;
-  let requesterOrch: HostProcessOrchestrator;
+  let requester: OwnerCliNode;
   let hostOrch: HostProcessOrchestrator;
-  let requesterClient: OwnerNodeClient;
   let donationService: DonationService;
   let requesterPeerId: string;
   /** The requester owner's base64url public key — pinned on the donated node. */
@@ -89,46 +89,21 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
     // The donated node must pin THIS key to accept the requester-signed seed.
     requesterOwnerKey = ed25519KeyPairFromLibp2p(key).publicKeyB64;
 
-    requesterOrch = new HostProcessOrchestrator({
-      // Dedicated high band (distinct from the owner-node scenario's 19600–19899).
-      rootDir: join(tmpRoot, 'requester-orchestrator'),
-      portRange: { start: 19900, end: 20039 },
-      stopTimeoutMs: 5_000,
-    });
-    await requesterOrch.init();
-
-    const cfg: OwnerSpawnConfig = {
+    requester = await startOwnerCliNode({
+      workdir: join(tmpRoot, 'requester'),
       identityPath,
+      peerId: requesterPeerId,
       partyId,
-      // Ephemeral libp2p port — OS-assigned, so getMultiaddrs() reports the real
-      // bound address and cross-suite TCP collisions are avoided.
-      libp2pPort: 0,
-      profile: 'storage',
-    };
-    const requesterNode = await requesterOrch.ensureOwnerNode(cfg);
-    expect(requesterNode.id).toBe(OWNER_CONTAINER_ID);
-
-    requesterClient = new OwnerNodeClient(() => requesterOrch.getOwnerAdminEndpoint());
-    try {
-      await waitUntil(
-        async () => (await requesterClient.getPeerId()) === requesterPeerId,
-        { timeoutMs: STARTUP_MS, intervalMs: 250, description: 'requester admin channel ready' },
-      );
-    } catch (err) {
-      let nodeLog = '';
-      try { nodeLog = await requesterOrch.getLogs(requesterNode.dockerId, 200); } catch { /* ignore */ }
-      throw new Error(
-        `requester node never became ready: ${(err as Error).message}\n--- node.log ---\n${nodeLog}`,
-        { cause: err },
-      );
-    }
+      startupMs: STARTUP_MS,
+    });
 
     // Requester's dialable control-network addrs → the donated node's bootstrap.
-    const addrs = await requesterClient.getMultiaddrs();
+    const addrs = await requester.getMultiaddrs();
     bootstrapNodes = addrs.map((a) => withPeerId(a, requesterPeerId));
 
     // (2 setup) Donor host: its own orchestrator + grant/donation services.
     hostOrch = new HostProcessOrchestrator({
+      // Dedicated high band, clear of the other cadre-host suites' ranges.
       rootDir: join(tmpRoot, 'host-orchestrator'),
       portRange: { start: 20040, end: 20199 },
       stopTimeoutMs: 5_000,
@@ -145,13 +120,12 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
   }, STARTUP_MS + 15_000);
 
   afterAll(async () => {
-    for (const orch of [hostOrch, requesterOrch]) {
-      if (!orch) continue;
-      try { await orch.stopOwnerNode(); } catch { /* ignore */ }
-      for (const n of orch.listNodes()) {
-        try { await orch.removeContainer(n.dockerId); } catch { /* ignore */ }
+    if (hostOrch) {
+      for (const n of hostOrch.listNodes()) {
+        try { await hostOrch.removeContainer(n.dockerId); } catch { /* ignore */ }
       }
     }
+    if (requester) await requester.stop();
     try { rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
     catch { /* ignore — Windows can lag on workdir release */ }
   });
@@ -192,7 +166,7 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
   }, STARTUP_MS);
 
   it('step 4–5: requester mints a seed (addDrone), donated node accepts it (peersAdded ≥ 1)', async () => {
-    const drone = await requesterClient.addDrone({
+    const drone = await requester.addDrone({
       dronePeerId: peerInfo.peerId,
       droneMultiaddrs: peerInfo.multiaddrs,
     });

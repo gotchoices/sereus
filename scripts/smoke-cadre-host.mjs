@@ -10,7 +10,6 @@ import {
   Installer,
   HostProcessOrchestrator,
   NatService,
-  StrandService,
   UpdateService,
   createLocalUiServer,
   HostSettingsStore,
@@ -25,17 +24,6 @@ class NoopServiceHost {
   renderUnit() { return null; }
 }
 
-function missingNatNodeStub() {
-  return { getPeerId: () => '', getMultiaddrs: () => [] };
-}
-
-function missingStrandNodeStub() {
-  return {
-    listStrands: async () => ({ strands: [], controlConnections: 0 }),
-    removeStrand: async (strandId) => ({ strandId, published: false, type: null, removed: false, alone: false }),
-  };
-}
-
 const dataDir = mkdtempSync(join(tmpdir(), 'cadre-host-smoke-'));
 const uiPort = Number(process.env.SMOKE_UI_PORT ?? 18765);
 console.log(`[smoke] data dir: ${dataDir}`);
@@ -46,7 +34,6 @@ const installResult = await installer.install({
   nonInteractive: true,
   dataDir,
   uiPort,
-  libp2pPort: 14001,
   openBrowser: false,
   serviceHost: new NoopServiceHost(),
 });
@@ -57,13 +44,8 @@ const cfg = JSON.parse(readFileSync(installResult.configPath, 'utf8'));
 const orchestrator = new HostProcessOrchestrator({ rootDir: join(cfg.dataDir, 'orchestrator') });
 await orchestrator.init();
 
-const natService = new NatService({
-  rootDir: cfg.dataDir,
-  cadreNode: missingNatNodeStub(),
-});
+const natService = new NatService({ rootDir: cfg.dataDir, nodeSource: orchestrator });
 try { await natService.start(); } catch (err) { console.error(`[smoke] NAT start failed: ${err.message}`); }
-
-const strandService = new StrandService({ cadreNode: missingStrandNodeStub() });
 
 const updateService = new UpdateService({
   dataDir: cfg.dataDir,
@@ -82,7 +64,7 @@ const server = createLocalUiServer({
   uiPort: cfg.uiPort,
   dataDir: cfg.dataDir,
   orchestrator,
-  founder: { nat: natService, strands: strandService },
+  nat: natService,
   update: updateService,
   settingsStore,
 });

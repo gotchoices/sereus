@@ -875,7 +875,7 @@ function validateForwardPatch(patch: ManualForwardPatch): void {
 
 /**
  * Wrap a NatService into the typed handler shape consumed by the local UI
- * server. Same shape as `createStrandHandlers`.
+ * server. Same shape as `createUpdateHandlers`.
  */
 export function createNatHandlers(service: NatService): NatHandlers {
   return {

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { readHostConfig, updateHostConfig, writeHostConfig, hostOwnsCadre, type HostConfigFile } from '../config.js';
+import { readHostConfig, updateHostConfig, writeHostConfig, type HostConfigFile } from '../config.js';
 
 describe('host.config.json round-trip', () => {
   let tmp: string;
@@ -18,12 +18,10 @@ describe('host.config.json round-trip', () => {
 
   function makeCfg(overrides: Partial<HostConfigFile> = {}): HostConfigFile {
     return {
-      version: 2,
+      version: 3,
       installId: 'abc123',
       uiPort: 8765,
-      libp2pPort: 4001,
       dataDir: tmp,
-      identityPath: join(tmp, 'identity.key'),
       upnpEnabled: true,
       installedAt: '2026-01-01T00:00:00.000Z',
       installerVersion: '0.6.0',
@@ -39,10 +37,11 @@ describe('host.config.json round-trip', () => {
     expect(readHostConfig(path)).toEqual(cfg);
   });
 
-  it('rejects v1 files without rewriting them', () => {
+  // A version-2 file is a founder-era install: it is refused, never migrated.
+  it('rejects v2 files without rewriting them', () => {
     const path = join(tmp, 'host.config.json');
-    const v1 = {
-      version: 1,
+    const v2 = {
+      version: 2,
       installId: 'abc123',
       uiPort: 8765,
       libp2pPort: 4001,
@@ -51,10 +50,12 @@ describe('host.config.json round-trip', () => {
       upnpEnabled: true,
       installedAt: '2026-01-01T00:00:00.000Z',
       installerVersion: '0.6.0',
+      updates: { autoApply: false },
+      ownCadre: { enabled: true },
     };
-    const raw = JSON.stringify(v1);
+    const raw = JSON.stringify(v2);
     writeFileSync(path, raw);
-    expect(() => readHostConfig(path)).toThrow(/unsupported version=1/);
+    expect(() => readHostConfig(path)).toThrow(/unsupported version=2/);
     expect(readFileSync(path, 'utf8')).toBe(raw);
   });
 
@@ -79,20 +80,20 @@ describe('host.config.json round-trip', () => {
 
   it('rejects missing required fields', () => {
     const path = join(tmp, 'host.config.json');
-    writeFileSync(path, JSON.stringify({ version: 2, uiPort: 1234 }));
+    writeFileSync(path, JSON.stringify({ version: 3, uiPort: 1234 }));
     expect(() => readHostConfig(path)).toThrow(/missing required fields/);
   });
 
   it('refuses to write the wrong version', () => {
     const path = join(tmp, 'host.config.json');
-    expect(() => writeHostConfig(path, { ...makeCfg(), version: 3 as never })).toThrow(/version=3/);
+    expect(() => writeHostConfig(path, { ...makeCfg(), version: 2 as never })).toThrow(/version=2/);
   });
 
   it('update patches fields and re-stamps the current version', () => {
     const path = join(tmp, 'host.config.json');
     writeHostConfig(path, makeCfg());
     const next = updateHostConfig(path, { updates: { autoApply: true } });
-    expect(next.version).toBe(2);
+    expect(next.version).toBe(3);
     expect(next.updates).toEqual({ autoApply: true });
     expect(next.installId).toBe('abc123');
     expect(readHostConfig(path)).toEqual(next);
@@ -102,33 +103,7 @@ describe('host.config.json round-trip', () => {
     const path = join(tmp, 'host.config.json');
     writeHostConfig(path, makeCfg());
     const patch = { version: 1 } as unknown as Partial<Omit<HostConfigFile, 'version'>>;
-    expect(updateHostConfig(path, patch).version).toBe(2);
-    expect(readHostConfig(path).version).toBe(2);
-  });
-
-  it('round-trips ownCadre and hostOwnsCadre reflects it', () => {
-    const path = join(tmp, 'host.config.json');
-    const cfg = makeCfg({ ownCadre: { enabled: true } });
-    writeHostConfig(path, cfg);
-    const read = readHostConfig(path);
-    expect(read.ownCadre).toEqual({ enabled: true });
-    expect(hostOwnsCadre(read)).toBe(true);
-  });
-
-  it('treats an absent ownCadre as donor-only (hostOwnsCadre false)', () => {
-    // A pre-ownCadre v2 config (field absent) must read back cleanly and be
-    // donor-only — no migration, field stays absent.
-    const path = join(tmp, 'host.config.json');
-    const cfg = makeCfg();
-    writeHostConfig(path, cfg);
-    const read = readHostConfig(path);
-    expect(read.ownCadre).toBeUndefined();
-    expect(hostOwnsCadre(read)).toBe(false);
-  });
-
-  it('rejects a malformed ownCadre shape', () => {
-    const path = join(tmp, 'host.config.json');
-    writeFileSync(path, JSON.stringify({ ...makeCfg(), ownCadre: { enabled: 'yes' } }));
-    expect(() => readHostConfig(path)).toThrow(/missing required fields/);
+    expect(updateHostConfig(path, patch).version).toBe(3);
+    expect(readHostConfig(path).version).toBe(3);
   });
 });

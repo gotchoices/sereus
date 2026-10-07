@@ -222,8 +222,8 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     requesterStorage = captureRawStorage();
     requesterPeerStore = new MemoryBootstrapPeerStore(partyId);
 
-    // A port band no other scenario uses (19600–20339 are taken by the owner-node,
-    // donation and provider scenarios — `grep -rn "portRange: { start" src`).
+    // A port band no other scenario uses (20040–20199 is the donation scenario's —
+    // `grep -rn "portRange: { start" src`).
     hostOrch = new HostProcessOrchestrator({
       rootDir: join(tmpRoot, 'host-orchestrator'),
       portRange: { start: 20340, end: 20499 },
@@ -239,9 +239,8 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
       store: new DonationStore(join(tmpRoot, 'donations')),
     });
 
-    // Donor-only, like a host with `ownCadre` off. Not `createTestCadreHost`: that brings
-    // up the founder role's strand service, which nothing here needs. The NAT layer
-    // runs in every role; here it is the harness's offline one (no router, no probe).
+    // Not `createTestCadreHost`: that wires no grant or donation service. The NAT layer is
+    // the harness's offline one (no router, no probe).
     nat = await startOfflineNatService(join(tmpRoot, 'nat'), hostOrch);
     server = createLocalUiServer({
       uiPort: 0, // unused: `forcePort` binds whatever port the OS hands out

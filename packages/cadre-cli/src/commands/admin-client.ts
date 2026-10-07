@@ -1,7 +1,7 @@
 /**
  * Client for a running node's loopback admin channel (`src/server/admin-server.ts`).
  *
- * NOTE: cadre-host's `OwnerNodeClient` speaks the same envelope over the same routes. Two thin
+ * NOTE: integration-tests' `owner-cli-node.ts` harness speaks the same envelope over the same routes. Two thin
  * clients of one small contract are cheaper than a shared package; if a third client appears,
  * one of them should become the shared one.
  */

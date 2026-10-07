@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { createLocalUiServer } from '../index.js';
-import { fakeFounder, fakeNat } from './fakes.js';
+import { fakeNat } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import { GrantService, GrantStore } from '../../donation/index.js';
 
@@ -20,12 +20,10 @@ function fakeOrchestrator(): HostProcessOrchestrator {
 
 function writeConfig(dir: string): void {
   const cfg = {
-    version: 2,
+    version: 3,
     installId: 'inst-x',
     uiPort: 8765,
-    libp2pPort: 4001,
     dataDir: dir,
-    identityPath: join(dir, 'identity.key'),
     upnpEnabled: true,
     installedAt: '2025-01-01T00:00:00Z',
     installerVersion: '0.6.0',
@@ -47,7 +45,7 @@ describe('createLocalUiServer smoke', () => {
       dataDir,
       orchestrator: fakeOrchestrator(),
       nat: fakeNat(),
-      founder: fakeFounder(),
+      grants: new GrantService({ store: new GrantStore(dataDir) }),
       forcePort: 0,
     });
     const { url } = await server.start();
@@ -59,13 +57,18 @@ describe('createLocalUiServer smoke', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('serves /api/status and respects the origin guard', async () => {
+  it('serves /api/status, with connectivity and no nodes', async () => {
     // Without host header: undici's fetch sets it; this is the happy path.
     const res = await fetch(`${baseUrl}/api/status`);
     expect(res.status).toBe(200);
-    const body = await res.json() as { service: { name: string }; role: string };
+    const body = await res.json() as {
+      service: { name: string };
+      nodes: unknown[];
+      connectivity: { directReachability: string };
+    };
     expect(body.service.name).toBe('cadre-host');
-    expect(body.role).toBe('founder');
+    expect(body.nodes).toEqual([]);
+    expect(body.connectivity.directReachability).toBe('reachable');
   });
 
   it('rejects requests with a foreign Host header', async () => {
@@ -106,52 +109,8 @@ describe('createLocalUiServer smoke', () => {
     const body = await res.json() as { error: { code: string } };
     expect(body.error.code).toBe('not_found');
   });
-});
 
-// Donor-only mode: the common case (ownCadre.enabled=false). No owner node and
-// no strand service, but the NAT layer runs in every role: donated nodes get
-// their ports mapped too, so /nat/* and the status's connectivity are present.
-describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
-  let dataDir: string;
-  let server: ReturnType<typeof createLocalUiServer>;
-  let baseUrl: string;
-
-  beforeEach(async () => {
-    dataDir = mkdtempSync(join(tmpdir(), 'cadre-host-donor-'));
-    writeConfig(dataDir);
-    server = createLocalUiServer({
-      uiPort: 8765,
-      dataDir,
-      orchestrator: fakeOrchestrator(),
-      nat: fakeNat(),
-      grants: new GrantService({ store: new GrantStore(dataDir) }),
-      forcePort: 0,
-    });
-    const { url } = await server.start();
-    baseUrl = url;
-  });
-
-  afterEach(async () => {
-    await server.stop();
-    rmSync(dataDir, { recursive: true, force: true });
-  });
-
-  it('serves /api/status as role donor, with connectivity and no nodes', async () => {
-    const res = await fetch(`${baseUrl}/api/status`);
-    expect(res.status).toBe(200);
-    const body = await res.json() as {
-      service: { name: string };
-      role: string;
-      nodes: unknown[];
-      connectivity: { directReachability: string };
-    };
-    expect(body.service.name).toBe('cadre-host');
-    expect(body.role).toBe('donor');
-    expect(body.nodes).toEqual([]);
-    expect(body.connectivity.directReachability).toBe('reachable');
-  });
-
-  it('serves the donor surface: POST /grants-admin issues a grant', async () => {
+  it('serves the grant surface: POST /grants-admin issues a grant', async () => {
     const res = await fetch(`${baseUrl}/grants-admin`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -163,17 +122,10 @@ describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
     expect(body.grant.maxNodes).toBe(2);
   });
 
-  it('serves the NAT surface in the donor role (GET /nat/status)', async () => {
+  it('serves the NAT surface (GET /nat/status)', async () => {
     const res = await fetch(`${baseUrl}/nat/status`);
     expect(res.status).toBe(200);
     const body = await res.json() as { directReachability: string };
     expect(body.directReachability).toBe('reachable');
-  });
-
-  it('404s the founder-only strand surface (GET /api/strands)', async () => {
-    const res = await fetch(`${baseUrl}/api/strands`);
-    expect(res.status).toBe(404);
-    const body = await res.json() as { error: { code: string } };
-    expect(body.error.code).toBe('not_found');
   });
 });

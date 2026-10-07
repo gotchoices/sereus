@@ -2,7 +2,7 @@
  * Test harness that boots a complete cadre-host stack in-process:
  *   - Installer.install() into a fresh temp data dir
  *   - HostProcessOrchestrator + NatService (offline: no router, no IP probe)
- *     + StrandService + (optional) UpdateService
+ *     + (optional) UpdateService
  *   - createLocalUiServer wired against the real subsystems on an ephemeral port
  *
  * Scenarios drive the host over its public HTTP/SSE surface to exercise the
@@ -26,7 +26,6 @@ import {
 	Installer,
 	NatError,
 	NatService,
-	StrandService,
 	UpdateService,
 	createLocalUiServer,
 	readHostConfig,
@@ -35,19 +34,8 @@ import {
 	type LocalUiServer,
 	type NatNodeSource,
 	type PortMapper,
-	type StrandCadreNodeLike,
 	type UpdateSettings,
 } from '@serfab/cadre-host';
-
-/** Strand-admin CadreNodeLike for a party that takes part in no strands. */
-export function emptyStrandNode(): StrandCadreNodeLike {
-	return {
-		async listStrands() { return { strands: [], controlConnections: 0 }; },
-		async removeStrand(strandId) {
-			return { strandId, published: false, type: null, removed: false, alone: false };
-		},
-	};
-}
 
 /** A router that is never found, so no test sends SSDP searches or SOAP calls. */
 function offlinePortMapper(): PortMapper {
@@ -137,11 +125,8 @@ export interface TestCadreHost {
 export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Promise<TestCadreHost> {
 	const dataDir = mkdtempSync(join(tmpdir(), 'integration-cadre-host-'));
 
-	// nat.json validation requires 1..65535 — port 0 is rejected. Grab two
-	// real free ports from the OS for ui + libp2p so the install passes
-	// (the local UI is rebound on forcePort:0 below; the libp2p port is
-	// stored in nat.json but never actually bound by this harness).
-	const libp2pPort = await pickFreePort();
+	// A real free port for the config's UI port; the local UI is rebound on
+	// forcePort:0 below.
 	const uiPort = await pickFreePort();
 
 	const platform = opts.installerPlatform ?? 'linux';
@@ -153,7 +138,6 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		nonInteractive: true,
 		dataDir,
 		uiPort,
-		libp2pPort,
 		openBrowser: false,
 		noService: true,
 	});
@@ -189,7 +173,6 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		dataDir,
 		orchestrator,
 		nat,
-		founder: { strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 		forcePort: 0,
 	};
 	if (update) serverOpts.update = update;

@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { PushCredentials } from '@serfab/cadre-core';
-import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
+import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { removeAllNodes } from './orchestrator-teardown.js';
 
 const FAKE_CLI = `
@@ -29,7 +29,8 @@ setInterval(() => {}, 1 << 30);
 
 const FCM = { projectId: 'proj', clientEmail: 'svc@proj.iam', privateKey: 'FCM-SECRET-PEM' };
 const APNS = { keyId: 'KID', teamId: 'TEAM', bundleId: 'com.example.app', privateKey: 'APNS-SECRET-P8', production: false };
-const CFG = { identityPath: 'C:/fake/identity.key', partyId: 'install-id-123', libp2pPort: 4655 };
+/** A storage node with no pinned owner keys — the one kind of spawn that carries push. */
+const NODE = { containerId: 'n1', partyId: 'p', bootstrapNodes: [], profile: 'storage' as const };
 
 let tmpRoot: string;
 let scriptPath: string;
@@ -63,7 +64,7 @@ function makeOrchestrator(rootDir: string, pushResolver?: () => Promise<PushCred
   return orch;
 }
 
-function readChildConfig(rootDir: string, containerId = OWNER_CONTAINER_ID): Record<string, unknown> {
+function readChildConfig(rootDir: string, containerId = NODE.containerId): Record<string, unknown> {
   const raw = readFileSync(join(rootDir, containerId, 'cadre.json'), 'utf8');
   return JSON.parse(raw) as Record<string, unknown>;
 }
@@ -73,21 +74,11 @@ function sleep(ms: number): Promise<void> {
 }
 
 describe('HostProcessOrchestrator push injection', () => {
-  it('writes config.push into cadre.json when the resolver yields credentials', async () => {
-    const rootDir = join(tmpRoot, 'a');
-    const orch = makeOrchestrator(rootDir, async () => ({ fcm: FCM, apns: APNS, cooldownMs: 1000 }));
-    await orch.init();
-    await orch.ensureOwnerNode(CFG);
-
-    const cfg = readChildConfig(rootDir);
-    expect(cfg.push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
-  });
-
   it('omits config.push when no resolver is configured', async () => {
     const rootDir = join(tmpRoot, 'b');
     const orch = makeOrchestrator(rootDir);
     await orch.init();
-    await orch.ensureOwnerNode(CFG);
+    await orch.createContainer(NODE);
 
     const cfg = readChildConfig(rootDir);
     expect(cfg.push).toBeUndefined();
@@ -97,7 +88,7 @@ describe('HostProcessOrchestrator push injection', () => {
     const rootDir = join(tmpRoot, 'c');
     const orch = makeOrchestrator(rootDir, async () => undefined);
     await orch.init();
-    await orch.ensureOwnerNode(CFG);
+    await orch.createContainer(NODE);
 
     expect(readChildConfig(rootDir).push).toBeUndefined();
   });
@@ -107,8 +98,8 @@ describe('HostProcessOrchestrator push injection', () => {
     const orch = makeOrchestrator(rootDir, async () => { throw new Error('partial creds'); });
     await orch.init();
     // Spawn still succeeds.
-    const node = await orch.ensureOwnerNode(CFG);
-    expect(node.id).toBe(OWNER_CONTAINER_ID);
+    const created = await orch.createContainer(NODE);
+    expect(orch.getNode(created.dockerId)?.status).toBe('running');
     expect(readChildConfig(rootDir).push).toBeUndefined();
   });
 
@@ -117,16 +108,17 @@ describe('HostProcessOrchestrator push injection', () => {
     let current: PushCredentials | undefined = { fcm: FCM };
     const orch = makeOrchestrator(rootDir, async () => current);
     await orch.init();
-    await orch.ensureOwnerNode(CFG);
+    const first = await orch.createContainer(NODE);
     expect(readChildConfig(rootDir).push).toEqual({ fcm: FCM });
 
     // state.json must not carry the raw key — only re-resolvable references.
     const stateRaw = readFileSync(join(rootDir, 'state.json'), 'utf8');
     expect(stateRaw).not.toContain('FCM-SECRET-PEM');
 
-    // Rotate the resolver's answer, then restart — the new spawn must pick it up.
+    // Rotate the resolver's answer, then re-spawn — the new spawn must pick it up.
     current = { apns: APNS };
-    await orch.restartOwnerNode();
+    await orch.stopContainer(first.dockerId);
+    await orch.createContainer(NODE);
     const cfg2 = readChildConfig(rootDir);
     expect(cfg2.push).toEqual({ apns: APNS });
     expect((cfg2.push as PushCredentials).fcm).toBeUndefined();
@@ -134,11 +126,11 @@ describe('HostProcessOrchestrator push injection', () => {
 
   it('injects push for a storage-profile managed node but not a transaction node', async () => {
     const rootDir = join(tmpRoot, 'f');
-    const orch = makeOrchestrator(rootDir, async () => ({ fcm: FCM }));
+    const orch = makeOrchestrator(rootDir, async () => ({ fcm: FCM, apns: APNS, cooldownMs: 1000 }));
     await orch.init();
 
     await orch.createContainer({ containerId: 'storage-1', partyId: 'p', bootstrapNodes: [], profile: 'storage' });
-    expect(readChildConfig(rootDir, 'storage-1').push).toEqual({ fcm: FCM });
+    expect(readChildConfig(rootDir, 'storage-1').push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
 
     await orch.createContainer({ containerId: 'txn-1', partyId: 'p', bootstrapNodes: [], profile: 'transaction' });
     expect(readChildConfig(rootDir, 'txn-1').push).toBeUndefined();

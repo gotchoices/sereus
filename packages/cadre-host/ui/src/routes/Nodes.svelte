@@ -22,8 +22,7 @@
 		{#if app.nodes.length === 0}
 			<p class="muted">
 				No managed nodes yet. cadre-host doesn't auto-spawn nodes — one
-				appears when a grantee requests a donated node (or, with your own
-				cadre enabled, when your owner node starts).
+				appears when a grantee requests a donated node.
 			</p>
 		{:else}
 			<table>

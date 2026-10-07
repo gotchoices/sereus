@@ -124,7 +124,7 @@ describe('HostProcessOrchestrator pinned owner keys', () => {
     });
     expect(readChildConfig(rootDir, 'donated-2').push).toBeUndefined();
 
-    // Control: a host-own storage node (no pinned keys) DOES get push.
+    // Control: a storage node with no pinned keys DOES get push.
     await orch.createContainer({
       containerId: 'own-1',
       partyId: 'host-P',

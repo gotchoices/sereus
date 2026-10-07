@@ -40,7 +40,6 @@ import type { PushCredentials } from '@serfab/cadre-core';
 import { strandFilterConfigFromText, type CliConfig } from '@serfab/cadre-cli';
 import {
   encodeDockerId,
-  type OwnerSpawnConfig,
   type Handle,
   type HostProcessConfig,
   type ManagedNodeInfo,
@@ -103,28 +102,15 @@ export function childListenAddrs(ports: Pick<NodePorts, 'p2p' | 'ws'>): string[]
 /**
  * Every TCP port a managed child binds, on the address it binds it to: health and
  * metrics (`cadre-cli`'s `HealthServer`) and the libp2p TCP and WebSocket listeners
- * ({@link childListenAddrs}) on every interface, plus the loopback admin channel —
- * for the owner node only, the one child started with `--admin-port`. A key the
- * set lacks (a handle persisted by an older build) is skipped.
+ * ({@link childListenAddrs}), all on every interface. A key the set lacks (a handle
+ * persisted by an older build) is skipped.
  */
-function childPortBindings(ports: Partial<NodePorts>, owner: boolean): PortBinding[] {
+function childPortBindings(ports: Partial<NodePorts>): PortBinding[] {
   const bindings: PortBinding[] = [];
   for (const port of [ports.health, ports.metrics, ports.p2p, ports.ws]) {
     if (port !== undefined) bindings.push({ port, host: '0.0.0.0' });
   }
-  if (owner && ports.admin !== undefined) bindings.push({ port: ports.admin, host: '127.0.0.1' });
   return bindings;
-}
-
-/** Fixed friendly id for the admin's owner node. */
-export const OWNER_CONTAINER_ID = 'owner';
-
-/** Endpoint + bearer for the owner node's loopback admin channel (6.6). */
-export interface OwnerAdminEndpoint {
-  /** e.g. `http://127.0.0.1:<adminPort>`. */
-  baseUrl: string;
-  /** The child's `CADRE_STARTUP_TOKEN`, used as the admin bearer secret. */
-  token: string;
 }
 
 /**
@@ -173,8 +159,6 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly announceAddrs?: HostProcessConfig['announceAddrs'];
   /** State-change listeners — invoked when a handle's alive state changes. */
   private readonly stateListeners = new Set<NodeStateListener>();
-  /** Persisted spawn config for the owner node (re-spawn on demand). */
-  private ownerConfig?: OwnerSpawnConfig;
 
   constructor(private readonly cfg: HostProcessConfig) {
     this.rootDir = resolvePath(cfg.rootDir);
@@ -201,7 +185,6 @@ export class HostProcessOrchestrator implements Orchestrator {
    */
   async init(): Promise<void> {
     const state = this.stateStore.load();
-    this.ownerConfig = state.ownerConfig;
     for (const persisted of state.handles) {
       const handle: Handle = {
         containerId: persisted.containerId,
@@ -213,7 +196,6 @@ export class HostProcessOrchestrator implements Orchestrator {
         spawnedAt: persisted.spawnedAt,
         partyId: persisted.partyId,
         profile: persisted.profile,
-        ...(persisted.owner ? { owner: true } : {}),
         announcedAddrs: persisted.announcedAddrs ?? [],
         alive: false,
       };
@@ -269,8 +251,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Spawn a generic managed node — the donated-node path (the requester's cadre,
-   * pinned to the *requester's* owner key). The node is given its own protobuf
+   * Spawn a managed node — the donated-node path (the requester's cadre, pinned
+   * to the *requester's* owner key). The node is given its own protobuf
    * identity key inside its workdir (`ensureNodeIdentity`, reused across
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
@@ -302,7 +284,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       const identity = await ensureNodeIdentity(workdir);
       log('container %s identity peerId=%s', request.containerId, identity.peerId);
       // A node started with pinned owner keys belongs to a FOREIGN cadre (the
-      // node-donation flow: it trusts the requester's owner key, not the host's).
+      // node-donation flow: it trusts the requester's owner key).
       // The host's FCM/APNs credentials are minted for the host owner's own app
       // and are meaningless to a foreign cadre — so donated nodes get NO push
       // block. (Per-grantee push creds would be a future ticket; none in v1.)
@@ -320,7 +302,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         : undefined;
 
       // The last `await` on this path: checked as close to the drop as it can be.
-      await this.refuseRespawnOverLiveChild(request.containerId, {}, false);
+      await this.refuseRespawnOverLiveChild(request.containerId);
 
       // Nothing from here to the launch is `await`ed — which is what keeps
       // `restoreDroppedHandles`'s documented precondition true even though the
@@ -336,7 +318,6 @@ export class HostProcessOrchestrator implements Orchestrator {
         partyId: request.partyId,
         profile: request.profile,
         ports,
-        owner: false,
         buildConfig: () => this.buildChildConfig(request, workdir, push),
         extraArgs: ['--identity-file', identity.path],
         ...(extraEnv ? { extraEnv } : {}),
@@ -371,10 +352,6 @@ export class HostProcessOrchestrator implements Orchestrator {
    * to await.
    */
   reclaimWorkdir(containerId: string): boolean {
-    // The admin's own node is never reclaimed by this route: its workdir is a
-    // single fixed path reused by every restart and it holds the host's own
-    // control-DB storage.
-    if (containerId === OWNER_CONTAINER_ID) return false;
     // A live handle owns that directory, and `removeContainer` — which stops
     // the child first — is the only thing allowed to delete it.
     if (this.resolveDockerId(containerId)) return false;
@@ -457,123 +434,10 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Ensure the admin's owner node is running, spawning it if absent or
-   * dead. Idempotent: a second call with the node already alive returns the
-   * existing handle without launching a second child. The spawn parameters
-   * are persisted so a later `/api/nodes/:id/{start,restart}` (or an
-   * orchestrator restart) can re-spawn it without re-supplying them.
-   *
-   * The owner node is spawned as `cadre-cli start --owner
-   * --admin-port <p> --identity-file <identityPath>` so it carries the
-   * host's libp2p identity, founds/joins the control network, and exposes the
-   * loopback admin channel the manager delegates to.
-   */
-  async ensureOwnerNode(cfg?: OwnerSpawnConfig): Promise<ManagedNodeInfo> {
-    const config = cfg ?? this.ownerConfig;
-    if (!config) {
-      throw new Error('ensureOwnerNode: no owner config supplied and none persisted');
-    }
-    this.ownerConfig = config;
-
-    const existing = this.findOwnerHandle();
-    if (existing && isHandleLive(existing)) {
-      this.persist();
-      return toNodeInfo(existing);
-    }
-
-    const profile = config.profile ?? 'storage';
-    // Re-resolve push credentials from the secret store on every (re-)spawn so a
-    // restart picks up rotated keys and nothing raw is replayed from state.json.
-    // Resolved BEFORE the drop below so the drop → launch window stays
-    // synchronous (see restoreDroppedHandles).
-    const push = await this.resolvePush();
-    // The last `await` before the drop — same guard as in createContainer.
-    await this.refuseRespawnOverLiveChild(OWNER_CONTAINER_ID, { p2p: config.libp2pPort }, true);
-
-    // NOTE: the short-circuit above matches via `findOwnerHandle` (owner flag OR
-    // containerId), this drop only by containerId. Equivalent today — every
-    // owner handle is launched with OWNER_CONTAINER_ID. If an owner spawn ever
-    // takes a different containerId, the two would disagree and the handle the
-    // short-circuit found would survive here, leaking it and its ports.
-    const dropped = this.dropStaleHandle(OWNER_CONTAINER_ID);
-    let ports: NodePorts | undefined;
-    try {
-      // The owner node must listen on the configured libp2p port so the NAT
-      // mapping (external → internal) lands on it — hence the p2p override, which
-      // wins over the dropped handle's. Every other port comes back as it was, for
-      // the same reason as in createContainer.
-      ports = allocateNodePorts(this.portAllocator, { ...reusedNodePorts(dropped), p2p: config.libp2pPort });
-      const result = this.launchChild({
-        containerId: OWNER_CONTAINER_ID,
-        partyId: config.partyId,
-        profile,
-        ports,
-        owner: true,
-        buildConfig: (workdir) => this.buildOwnerChildConfig(config, profile, workdir, push),
-        extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-file', config.identityPath],
-      });
-      const handle = this.handles.get(result.dockerId)!;
-      return toNodeInfo(handle);
-    } catch (err) {
-      // Release before restoring — see the same note in createContainer.
-      if (ports) this.releasePorts(ports);
-      this.restoreDroppedHandles(dropped);
-      // Deliberately NOT `discardWorkdir` — the asymmetry with createContainer
-      // is the point. `<rootDir>/owner` is a single fixed path reused by every
-      // restart and holds the host's own control-DB storage, so it neither
-      // grows without bound nor is safe to delete on a failed spawn.
-      throw err;
-    }
-  }
-
-  /** Endpoint + bearer for the owner node's admin channel, if spawned. */
-  getOwnerAdminEndpoint(): OwnerAdminEndpoint | undefined {
-    const handle = this.findOwnerHandle();
-    if (!handle) return undefined;
-    return {
-      baseUrl: `http://127.0.0.1:${handle.ports.admin}`,
-      token: handle.startupToken,
-    };
-  }
-
-  /** Whether spawn parameters for the owner node are known (persisted). */
-  hasOwnerConfig(): boolean {
-    return this.ownerConfig !== undefined;
-  }
-
-  /** Whether the given friendly/docker id refers to the owner node. */
-  isOwnerNode(idOrDockerId: string): boolean {
-    if (idOrDockerId === OWNER_CONTAINER_ID) return true;
-    const direct = this.handles.get(idOrDockerId);
-    if (direct?.owner) return true;
-    for (const h of this.handles.values()) {
-      if (h.owner && h.containerId === idOrDockerId) return true;
-    }
-    return false;
-  }
-
-  /** Stop the owner node (if running). Used on graceful shutdown. */
-  async stopOwnerNode(): Promise<void> {
-    const handle = this.findOwnerHandle();
-    if (handle && isPidAlive(handle.pid)) {
-      await this.stopContainer(handle.dockerId);
-    }
-  }
-
-  /** Stop the owner node (if running), then re-spawn it from saved config. */
-  async restartOwnerNode(): Promise<ManagedNodeInfo> {
-    const handle = this.findOwnerHandle();
-    if (handle && isPidAlive(handle.pid)) {
-      await this.stopContainer(handle.dockerId);
-    }
-    return this.ensureOwnerNode();
-  }
-
-  /**
-   * Core spawn mechanics shared by `createContainer` and `ensureOwnerNode`.
+   * Core spawn mechanics behind `createContainer`.
    *
    * The caller has already allocated `ports` and **owns their lifetime**: this
-   * method never releases them, so every caller must release on any throw out
+   * method never releases them, so the caller must release on any throw out
    * of here (it has to unwind its handle drop on the same path anyway — see
    * `restoreDroppedHandles`).
    *
@@ -589,7 +453,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     partyId: string;
     profile: 'storage' | 'transaction';
     ports: NodePorts;
-    owner: boolean;
     buildConfig: (workdir: string) => CliConfig;
     extraArgs: string[];
     /** Extra env vars merged into the child's environment (e.g. CADRE_OWNER_KEYS). */
@@ -711,7 +574,6 @@ export class HostProcessOrchestrator implements Orchestrator {
       spawnedAt: new Date().toISOString(),
       partyId: opts.partyId,
       profile: opts.profile,
-      ...(opts.owner ? { owner: true } : {}),
       announcedAddrs,
       child,
       alive: true,
@@ -756,7 +618,7 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Refuse to re-spawn `containerId` while a previous child of it may still be
-   * running. Both spawn paths call this as their last `await` before the handle
+   * running. `createContainer` calls this as its last `await` before the handle
    * drop, so a refusal happens while nothing has been released, no token rotated
    * and no child launched — the caller sees an ordinary failed spawn.
    *
@@ -774,9 +636,6 @@ export class HostProcessOrchestrator implements Orchestrator {
    *   is already bound, refuse. The pid is never killed on that evidence — it may
    *   not be ours.
    *
-   * `overrides` are the ports the caller will override on top of the reused ones
-   * (the owner node's configured p2p port); `owner` adds the admin channel.
-   *
    * NOTE: the probe cannot see a re-attached child still loading its modules —
    * `cadre-cli start` writes its token and only then binds, so a child in that
    * window shows neither, and a re-spawn launched then races it for the ports.
@@ -791,17 +650,13 @@ export class HostProcessOrchestrator implements Orchestrator {
    * child is ever seen dying on its own port right after a host restart, probe by
    * connecting instead of binding.
    */
-  private async refuseRespawnOverLiveChild(
-    containerId: string,
-    overrides: Partial<NodePorts>,
-    owner: boolean,
-  ): Promise<void> {
+  private async refuseRespawnOverLiveChild(containerId: string): Promise<void> {
     const previous = this.handlesFor(containerId);
     if (previous.some(isHandleLive)) {
       throw new Error(`container ${containerId} is still running`);
     }
     if (!previous.some((h) => isPidAlive(h.pid))) return;
-    const bindings = childPortBindings({ ...reusedNodePorts(previous), ...overrides }, owner);
+    const bindings = childPortBindings(reusedNodePorts(previous));
     try {
       await Promise.all(bindings.map(assertPortFree));
     } catch (err) {
@@ -822,7 +677,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * and release its ports. Handles are keyed by the per-spawn `dockerId`, so
    * without this a re-spawn (donated-node respawn) would strand the prior
    * handle in the map forever, leaking its ports from a bounded range each
-   * time. Mirrors the same cleanup in `ensureOwnerNode`.
+   * time.
    *
    * DO NOT delete the workdir: the identity key and node-local stores
    * (trusted-owner anchor, retained cold-start dial targets) live there and are
@@ -832,12 +687,12 @@ export class HostProcessOrchestrator implements Orchestrator {
    * Releasing the ports hands them straight back to the allocator, and the
    * re-spawn then takes those same ports as overrides (`reusedNodePorts`), so a
    * re-spawn while the *previous* child is still listening would bind-clash.
-   * Callers must therefore never drop a live child, and both do so only after
+   * The caller must therefore never drop a live child, and does so only after
    * {@link refuseRespawnOverLiveChild} has passed. A caller that needs to replace
    * a live child must stop it first.
    *
    * **The drop is reversible.** It happens before the launch can fail, so the
-   * dropped handles are returned and every caller restores them via
+   * dropped handles are returned and the caller restores them via
    * {@link restoreDroppedHandles} when the launch throws — otherwise the caller
    * would be left holding a dockerId this orchestrator no longer knows, and the
    * node's workdir could never be reclaimed. On a *successful* spawn the drop
@@ -861,10 +716,10 @@ export class HostProcessOrchestrator implements Orchestrator {
    *
    * **Precondition: the drop → launch window is synchronous.** Restoring is
    * sound only because nothing can have taken those ports or run cleanup
-   * against the handle in between — `launchChild` contains no `await` and both
-   * callers resolve push credentials *before* their drop. `launchChild`'s half
+   * against the handle in between — `launchChild` contains no `await` and the
+   * caller resolves push credentials *before* its drop. `launchChild`'s half
    * is enforced: its declared return type is not a Promise, so adding an
-   * `await` there is a compile error. The callers' half is not — an `await`
+   * `await` there is a compile error. The caller's half is not — an `await`
    * slipped between a drop and its launch silently breaks this.
    *
    * No `persist()` here: `state.json` is rewritten only by `launchChild` and
@@ -890,14 +745,6 @@ export class HostProcessOrchestrator implements Orchestrator {
   /** A managed node's own directory under `rootDir` — config, log, storage, identity. */
   private workdirFor(containerId: string): string {
     return join(this.rootDir, containerId);
-  }
-
-  /** Locate the owner node's handle, if one has been spawned. */
-  private findOwnerHandle(): Handle | undefined {
-    for (const h of this.handles.values()) {
-      if (h.owner || h.containerId === OWNER_CONTAINER_ID) return h;
-    }
-    return undefined;
   }
 
   /**
@@ -1071,51 +918,10 @@ export class HostProcessOrchestrator implements Orchestrator {
     return cfg;
   }
 
-  /**
-   * Child config for the **host's own personal cadre** owner node — the opt-in
-   * "founder" persona spawned only when `ownCadre.enabled` (see
-   * docs/cadre-host.md § Two roles: donor and founder). It founds/joins the
-   * control network for the host's own `partyId` (no bootstrap peers — it is the
-   * founding node of the host's *own* cadre) and carries the host identity via
-   * `--identity-file` (passed as a spawn arg).
-   *
-   * This is NOT the node cadre-host donates to a requester. Donated nodes are
-   * generic (`createContainer` / `buildChildConfig`): they join the
-   * **requester's** cadre via bootstrap peers and pin the *requester's* owner
-   * key — they never run a host genesis.
-   */
-  private buildOwnerChildConfig(
-    cfg: OwnerSpawnConfig,
-    profile: 'storage' | 'transaction',
-    workdir: string,
-    push?: PushCredentials,
-  ): CliConfig {
-    const config: CliConfig = {
-      controlNetwork: {
-        partyId: cfg.partyId,
-        bootstrapNodes: [],
-      },
-      profile,
-      strandFilter: 'all',
-    };
-    if (profile === 'storage') {
-      config.storage = { type: 'file', path: join(workdir, 'storage') };
-    }
-    // The host-own-cadre owner/storage node participates in strands, so it owns
-    // the push-wake fan-out when credentials are configured. (Donated nodes
-    // belong to foreign cadres and get NO host push block — see the donor path.)
-    // Written into cadre.json (same host trust boundary as the workdir's
-    // control-DB); keys are never logged — only the redacted presence line in
-    // resolvePush.
-    if (push) config.push = push;
-    return config;
-  }
-
   private persist(): void {
     const state: PersistedState = {
       version: 1,
       handles: [...this.handles.values()].map((h) => this.toPersisted(h)),
-      ...(this.ownerConfig ? { ownerConfig: this.ownerConfig } : {}),
     };
     this.stateStore.save(state);
   }
@@ -1143,7 +949,6 @@ export class HostProcessOrchestrator implements Orchestrator {
       spawnedAt: h.spawnedAt,
       partyId: h.partyId,
       profile: h.profile,
-      ...(h.owner ? { owner: true } : {}),
       announcedAddrs: h.announcedAddrs,
     };
   }
@@ -1159,7 +964,6 @@ function toNodeInfo(h: Handle): ManagedNodeInfo {
     spawnedAt: h.spawnedAt,
     workdir: h.workdir,
     ports: { ...h.ports },
-    ...(h.owner ? { owner: true } : {}),
     announcedAddrs: [...h.announcedAddrs],
   };
 }
@@ -1184,8 +988,8 @@ function resolveCadreCliBin(): string {
 
 /**
  * Whether the process a handle names is still the child it was launched as — the
- * one liveness rule behind `init`, `isRunning`, `ensureOwnerNode`'s short-circuit
- * and the pre-spawn guard, so they cannot drift apart.
+ * one liveness rule behind `init`, `isRunning` and the pre-spawn guard, so they
+ * cannot drift apart.
  *
  * A handle this process spawned carries its `ChildProcess`, and that answer is
  * exact from the moment of spawn: no exit seen, and the pid still answering. (The

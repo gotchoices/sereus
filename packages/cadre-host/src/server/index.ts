@@ -18,8 +18,6 @@ import type { FastifyInstance } from 'fastify';
 import type { HostProcessOrchestrator } from '../orchestrator/index.js';
 import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
-import type { StrandService } from '../strands/index.js';
-import { createStrandHandlers } from '../strands/index.js';
 import type { UpdateService } from '../update/index.js';
 import { createUpdateHandlers } from '../update/index.js';
 import type { GrantService, DonationService } from '../donation/index.js';
@@ -32,24 +30,13 @@ import { registerOriginGuard } from './origin-guard.js';
 import { registerStaticMount } from './static.js';
 import { buildFastify, startListening, stopListening } from './server.js';
 import { registerNatRoutes, publishConnectivity } from './routes/nat.js';
-import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
-import { registerStatusRoute, type HostRole } from './routes/status.js';
+import { registerStatusRoute } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
 import { registerGrantsRoutes } from './routes/grants.js';
 import { HostSettingsStore } from './settings-store.js';
-
-/**
- * The host's own-cadre services: present iff `ownCadre.enabled` (the founder
- * role), so the role `/api/status` reports cannot disagree with the surfaces
- * actually mounted. Strand management asks the owner node, which only a
- * founder runs.
- */
-export interface FounderServices {
-  strands: StrandService;
-}
 
 export interface LocalUiServerOptions {
   /** Configured UI port from host.config.json. May be re-bound on collision. */
@@ -58,18 +45,8 @@ export interface LocalUiServerOptions {
   dataDir: string;
   /** Wired dependencies — all owned by the caller. */
   orchestrator: HostProcessOrchestrator;
-  /**
-   * The NAT layer. Present in every role: every node the host runs — donated
-   * ones included — gets its ports mapped, so `/nat/*` always mounts.
-   */
+  /** The NAT layer: every node the host runs gets its ports mapped, so `/nat/*` always mounts. */
   nat: NatService;
-  /**
-   * The host's own-cadre services — present iff `ownCadre.enabled` (the
-   * founder role). Absent in donor-only mode, where `/api/strands` stays
-   * unmounted and 404s through the static handler, and `/api/status` reports
-   * `role: 'donor'`.
-   */
-  founder?: FounderServices;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
   /**
@@ -119,8 +96,7 @@ export interface LocalUiServer {
 const UPDATE_OBSERVER_INTERVAL_MS = 60_000;
 
 export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
-  const { founder, nat } = opts;
-  const role: HostRole = founder ? 'founder' : 'donor';
+  const { nat } = opts;
   const events = opts.events ?? new EventBus();
   const settingsStore = opts.settingsStore ?? new HostSettingsStore({ dataDir: opts.dataDir });
 
@@ -139,20 +115,12 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
 
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
-    role,
     nat,
     ...(opts.update ? { update: opts.update } : {}),
   });
-  registerNodesRoutes(app, { orchestrator: opts.orchestrator, role });
+  registerNodesRoutes(app, { orchestrator: opts.orchestrator });
   registerSettingsRoutes(app, { settingsStore, nat, ...(opts.update ? { update: opts.update } : {}) });
   registerNatRoutes(app, { handlers: createNatHandlers(nat), events });
-
-  // The strand surface exists only when the host runs its own personal cadre.
-  // In donor-only mode it is left unmounted, so `/api/strands` falls through
-  // to the static not-found handler and 404s (see static.ts).
-  if (founder) {
-    registerStrandRoutes(app, { handlers: createStrandHandlers(founder.strands), events });
-  }
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
@@ -260,4 +228,3 @@ export { EventBus } from './events/bus.js';
 export type { LocalUiEventListener } from './events/bus.js';
 export type { LocalUiEvent, LocalUiEventType } from './events/types.js';
 export { HostSettingsStore } from './settings-store.js';
-export type { HostRole } from './routes/status.js';

@@ -5,7 +5,6 @@
  * This route is a thin passthrough plus a write-whitelist:
  *
  *   - uiPort        rejected (restart required; only edit at install time)
- *   - libp2pPort    rejected (restart required)
  *   - upnpEnabled   accepted → also propagated to NatService.putSettings
  *   - updates.autoApply  accepted → propagated to UpdateService.putSettings
  *   - updates.manifestUrl accepted → propagated to UpdateService.putSettings
@@ -21,14 +20,14 @@ import type { NatService } from '../../nat/index.js';
 import type { UpdateService } from '../../update/index.js';
 import type { HostSettingsStore } from '../settings-store.js';
 
-const FORBIDDEN_KEYS = new Set<string>(['uiPort', 'libp2pPort', 'dataDir', 'identityPath', 'installId', 'installedAt', 'installerVersion', 'version', 'ownCadre']);
+const FORBIDDEN_KEYS = new Set<string>(['uiPort', 'dataDir', 'installId', 'installedAt', 'installerVersion', 'version']);
 
 const WRITABLE_TOP_KEYS = new Set<string>(['upnpEnabled', 'updates']);
 const WRITABLE_UPDATES_KEYS = new Set<string>(['autoApply', 'manifestUrl']);
 
 export interface SettingsRoutesOptions {
   settingsStore: HostSettingsStore;
-  /** Present in every role; an `upnpEnabled` write takes effect on it at once. */
+  /** An `upnpEnabled` write takes effect on it at once. */
   nat: NatService;
   update?: UpdateService;
 }

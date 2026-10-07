@@ -75,11 +75,6 @@ export function configPath(dataDir: string): string {
   return join(dataDir, 'host.config.json');
 }
 
-/** Where the wizard writes the Ed25519 identity. */
-export function identityPath(dataDir: string): string {
-  return join(dataDir, 'identity.key');
-}
-
 /** Logs directory (used by launchd / NSSM unit templates). */
 export function logsDir(dataDir: string): string {
   return join(dataDir, 'logs');

@@ -2,10 +2,8 @@
  * Shared fakes for the local-UI server tests. Holds no tests of its own.
  */
 
-import type { FounderServices } from '../index.js';
 import type { NatService, NatChangeListener } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
-import type { StrandService } from '../../strands/index.js';
 
 export const SAMPLE_CONNECTIVITY: NatStatusSnapshot = {
   upnpEnabled: true,
@@ -39,16 +37,4 @@ export function fakeNat(snapshot: NatStatusSnapshot = SAMPLE_CONNECTIVITY): NatS
     putSettings: async () => snapshot,
     emit: (snap: NatStatusSnapshot) => { for (const l of listeners) l(snap); },
   } as unknown as NatService & { emit(snap: NatStatusSnapshot): void };
-}
-
-/**
- * A founder-role service set whose members answer only the reads the server
- * makes on its own: no strands. Pass the service a test exercises as an
- * override.
- */
-export function fakeFounder(overrides: Partial<FounderServices> = {}): FounderServices {
-  return {
-    strands: { list: async () => ({ strands: [], controlConnections: 0 }) } as unknown as StrandService,
-    ...overrides,
-  };
 }

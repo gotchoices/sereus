@@ -64,7 +64,7 @@ class FakeNodes implements NatNodeSource {
       status,
       spawnedAt: '2026-01-01T00:00:00Z',
       workdir: `/w/${id}`,
-      ports: { health: 1, metrics: 2, p2p: ports.p2p, admin: 3, ws: ports.ws as number },
+      ports: { health: 1, metrics: 2, p2p: ports.p2p, ws: ports.ws as number },
       announcedAddrs: this.announce(id, ports),
     };
     this.nodes.set(id, info);
@@ -187,7 +187,7 @@ async function waitUntil(check: () => boolean, timeoutMs = 2_000): Promise<void>
 describe('NatService — mapping table', () => {
   it('maps both ports of every running node, and stop() unmaps nothing', async () => {
     const { svc, mapper, nodes } = rig({ detector: makeDetector({ router: '203.0.113.10', pub: '203.0.113.10' }) });
-    nodes.add('owner', { p2p: 4001, ws: 10001 });
+    nodes.add('grn_b', { p2p: 4001, ws: 10001 });
     nodes.add('grn_a', { p2p: 10003, ws: 10004 });
     await startAndSettle(svc);
 
@@ -200,7 +200,7 @@ describe('NatService — mapping table', () => {
       ws: { internalPort: 10004, externalPort: 10004, source: 'upnp' },
       publicAddrs: ['/ip4/203.0.113.10/tcp/10003', '/ip4/203.0.113.10/tcp/10004/ws'],
     });
-    expect(node(svc, 'owner').tcp.externalPort).toBe(4001);
+    expect(node(svc, 'grn_b').tcp.externalPort).toBe(4001);
     expect(mapper.mapped.size).toBe(4);
 
     await svc.stop();

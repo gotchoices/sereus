@@ -5,7 +5,7 @@
  * orchestrator) each own their own files under `<dataDir>/`; this is NOT
  * an umbrella config.
  *
- * Schema version: 2. `version` is a forward guard — a file whose version
+ * Schema version: 3. `version` is a forward guard — a file whose version
  * does not match `CURRENT_VERSION` is rejected on read rather than
  * reinterpreted, so a future incompatible layout fails loudly instead of
  * being silently misread.
@@ -19,21 +19,6 @@ export interface UpdatesConfig {
   autoApply: boolean;
   /** Optional override for the manifest URL (env var still wins). */
   manifestUrl?: string;
-}
-
-/**
- * Whether this host also runs its own personal cadre (the opt-in "founder"
- * persona), on top of the always-on node-donor role.
- *
- * Default (absent or `enabled: false`) is donor-only: `cadre-host start` brings
- * up the donation surface but spawns **no** owner node, so the NAT and strand
- * surfaces stay inactive. Set `enabled: true` (install-time choice) to also
- * spawn the host's own owner node and enable `/nat` + `/api/strands`. See
- * docs/cadre-host.md § Two roles: donor and founder.
- */
-export interface OwnCadreConfig {
-  /** When true, `start` spawns the host-owned owner node + NAT + strands. */
-  enabled: boolean;
 }
 
 /**
@@ -57,17 +42,13 @@ export interface PushSettings {
 }
 
 export interface HostConfigFile {
-  version: 2;
-  /** A stable per-install id; useful for log correlation and the control-network partyId. */
+  version: 3;
+  /** A stable per-install id, for log correlation. */
   installId: string;
   /** Localhost-only management UI + API listener port. */
   uiPort: number;
-  /** External cadre libp2p port (NAT will map to this). */
-  libp2pPort: number;
   /** Self-reference (convenient for service-host ExecStart). */
   dataDir: string;
-  /** Absolute path to the Ed25519 protobuf identity. */
-  identityPath: string;
   /** Whether UPnP/NAT-PMP should be attempted at start time. */
   upnpEnabled: boolean;
   /** ISO timestamp the wizard wrote this file. */
@@ -77,12 +58,6 @@ export interface HostConfigFile {
   /** Update-flow settings; defaults: { autoApply: false }. */
   updates: UpdatesConfig;
   /**
-   * Host-own-cadre (founder persona) opt-in. Optional — absent is treated as
-   * `{ enabled: false }` (donor-only). Written by the installer; read via
-   * `hostOwnsCadre()`. Not editable through /api/settings (install-time only).
-   */
-  ownCadre?: OwnCadreConfig;
-  /**
    * Non-secret push settings (bundle id, sandbox/prod toggle, cooldown/debounce).
    * Optional — absent when push is not configured. Private keys never live here;
    * they are read from the secret store at node-spawn time (`src/push/`).
@@ -90,16 +65,7 @@ export interface HostConfigFile {
   push?: PushSettings;
 }
 
-/**
- * Whether this host runs its own personal cadre (founder persona). Absent
- * `ownCadre` ⇒ donor-only (false). The single source of truth for the
- * founder/donor gate in `bin/host.ts start`.
- */
-export function hostOwnsCadre(cfg: HostConfigFile): boolean {
-  return cfg.ownCadre?.enabled === true;
-}
-
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 export function writeHostConfig(filePath: string, cfg: HostConfigFile): void {
   if (cfg.version !== CURRENT_VERSION) {
@@ -154,9 +120,7 @@ function isHostConfigShape(v: unknown): v is HostConfigFile {
   if (
     typeof o.installId !== 'string' ||
     typeof o.uiPort !== 'number' ||
-    typeof o.libp2pPort !== 'number' ||
     typeof o.dataDir !== 'string' ||
-    typeof o.identityPath !== 'string' ||
     typeof o.upnpEnabled !== 'boolean' ||
     typeof o.installedAt !== 'string' ||
     typeof o.installerVersion !== 'string'
@@ -167,9 +131,5 @@ function isHostConfigShape(v: unknown): v is HostConfigFile {
   if (!updates || typeof updates !== 'object') return false;
   if (typeof updates.autoApply !== 'boolean') return false;
   if (updates.manifestUrl !== undefined && typeof updates.manifestUrl !== 'string') return false;
-  if (o.ownCadre !== undefined) {
-    const own = o.ownCadre as Record<string, unknown>;
-    if (!own || typeof own !== 'object' || typeof own.enabled !== 'boolean') return false;
-  }
   return true;
 }

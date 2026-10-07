@@ -18,9 +18,8 @@
  *     `CADRE_OWNER_KEYS` pin it was started with (untrusted signer → 400).
  *
  * Steps:
- *   1. owner authority node up (a real cadre-cli child via cadre-host's
- *      HostProcessOrchestrator — its key is the pin, its multiaddrs the
- *      bootstrap)
+ *   1. owner authority node up (a real cadre-cli child, `startOwnerCliNode` —
+ *      its key is the pin, its multiaddrs the bootstrap)
  *   2. `ContainerService.createContainer` provisions node A pinned to the
  *      owner; the store record reaches `running` via the service's real
  *      enrollment loop
@@ -46,20 +45,16 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 
 import { ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
-import {
-  OWNER_CONTAINER_ID,
-  OwnerNodeClient,
-  HostProcessOrchestrator,
-  type OwnerSpawnConfig,
-} from '@serfab/cadre-host';
 import { ContainerService, MemoryStore } from '@serfab/cadre-provider';
 
 import {
   ProviderProcessOrchestrator,
   readNodeLocalStore,
+  startOwnerCliNode,
   waitUntil,
   withPeerId,
   writeIdentity,
+  type OwnerCliNode,
 } from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
@@ -69,8 +64,7 @@ const OP_MS = 30_000;
 
 describe('provider-started node accepts the seed the provider delivers (real cadre-cli)', () => {
   let tmpRoot: string;
-  let ownerOrch: HostProcessOrchestrator;
-  let ownerClient: OwnerNodeClient;
+  let owner: OwnerCliNode;
   let orchestrator: ProviderProcessOrchestrator;
   let store: MemoryStore;
   let containers: ContainerService;
@@ -158,7 +152,7 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     try {
       await waitUntil(async () => {
         try {
-          const drone = await ownerClient.addDrone({
+          const drone = await owner.addDrone({
             dronePeerId: peer.peerId,
             droneMultiaddrs: peer.multiaddrs,
           });
@@ -198,42 +192,16 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     // The provider-hosted node must pin THIS key to accept the owner's seed.
     ownerKey = ed25519KeyPairFromLibp2p(key).publicKeyB64;
 
-    ownerOrch = new HostProcessOrchestrator({
-      // Dedicated high band — 19600–20199 are claimed by the cadre-host suites.
-      rootDir: join(tmpRoot, 'owner-orchestrator'),
-      portRange: { start: 20200, end: 20339 },
-      stopTimeoutMs: 5_000,
-    });
-    await ownerOrch.init();
-
-    const cfg: OwnerSpawnConfig = {
+    owner = await startOwnerCliNode({
+      workdir: join(tmpRoot, 'owner'),
       identityPath,
+      peerId: ownerPeerId,
       partyId,
-      // Ephemeral libp2p port — OS-assigned, so getMultiaddrs() reports the real
-      // bound address and cross-suite TCP collisions are avoided.
-      libp2pPort: 0,
-      profile: 'storage',
-    };
-    const ownerNode = await ownerOrch.ensureOwnerNode(cfg);
-    expect(ownerNode.id).toBe(OWNER_CONTAINER_ID);
-
-    ownerClient = new OwnerNodeClient(() => ownerOrch.getOwnerAdminEndpoint());
-    try {
-      await waitUntil(
-        async () => (await ownerClient.getPeerId()) === ownerPeerId,
-        { timeoutMs: STARTUP_MS, intervalMs: 250, description: 'owner admin channel ready' },
-      );
-    } catch (err) {
-      let nodeLog = '';
-      try { nodeLog = await ownerOrch.getLogs(ownerNode.dockerId, 200); } catch { /* ignore */ }
-      throw new Error(
-        `owner node never became ready: ${(err as Error).message}\n--- node.log ---\n${nodeLog}`,
-        { cause: err },
-      );
-    }
+      startupMs: STARTUP_MS,
+    });
 
     // The owner's dialable control-network addrs → the hosted nodes' bootstrap.
-    const addrs = await ownerClient.getMultiaddrs();
+    const addrs = await owner.getMultiaddrs();
     bootstrapNodes = addrs.map((a) => withPeerId(a, ownerPeerId));
 
     // (2 setup) The provider, wired exactly as production wires it — real
@@ -250,18 +218,13 @@ describe('provider-started node accepts the seed the provider delivers (real cad
         try { await orchestrator.stopContainer(handle.dockerId); } catch { /* ignore */ }
       }
     }
-    if (ownerOrch) {
-      try { await ownerOrch.stopOwnerNode(); } catch { /* ignore */ }
-      for (const n of ownerOrch.listNodes()) {
-        try { await ownerOrch.removeContainer(n.dockerId); } catch { /* ignore */ }
-      }
-    }
+    if (owner) await owner.stop();
     try { rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
     catch { /* ignore — Windows can lag on workdir release */ }
   });
 
   it('step 1: owner authority is up with a dialable identity', async () => {
-    expect(await ownerClient.getPeerId()).toBe(ownerPeerId);
+    expect(await owner.getPeerId()).toBe(ownerPeerId);
     expect(bootstrapNodes.length).toBeGreaterThanOrEqual(1);
   }, OP_MS);
 

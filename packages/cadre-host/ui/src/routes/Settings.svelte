@@ -131,7 +131,6 @@
 				<div><dt>Installed at</dt><dd>{formatRelativeTime(app.settings.installedAt)}</dd></div>
 				<div><dt>Installer version</dt><dd>{app.settings.installerVersion ?? '—'}</dd></div>
 				<div><dt>UI port</dt><dd>{app.settings.uiPort}</dd></div>
-				<div><dt>libp2p port</dt><dd>{app.settings.libp2pPort}</dd></div>
 				<div>
 					<dt>Data dir</dt>
 					<dd class="copy-row">
@@ -141,17 +140,8 @@
 						</button>
 					</dd>
 				</div>
-				<div>
-					<dt>Identity</dt>
-					<dd class="copy-row">
-						<code>{app.settings.identityPath}</code>
-						<button type="button" class="ghost" aria-label="Copy identity path" onclick={() => copyText(app.settings!.identityPath)}>
-							<CopyIcon />
-						</button>
-					</dd>
-				</div>
 			</dl>
-			<p class="muted small">UI port, libp2p port, and data dir are set at install time and can only be changed by editing <code>host.config.json</code> and restarting the service.</p>
+			<p class="muted small">UI port and data dir are set at install time and can only be changed by editing <code>host.config.json</code> and restarting the service.</p>
 		{:else}
 			<p class="muted">Loading…</p>
 		{/if}

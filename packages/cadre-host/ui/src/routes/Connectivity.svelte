@@ -43,12 +43,10 @@
 	const cgnatDetected = $derived(app.connectivity?.cgnatDetected === true);
 
 	/**
-	 * Who a node is for, where the page already knows: the owner flag comes from
-	 * the node list, a donated node's grant label from the grant list once the
-	 * Grants page has loaded it.
+	 * Who a node is for, where the page already knows: a donated node's grant
+	 * label, from the grant list once the Grants page has loaded it.
 	 */
 	function nodeLabel(nodeId: string): string | null {
-		if (app.nodes.find((n) => n.id === nodeId)?.owner) return 'your own node';
 		const grant = grantLabelFor(nodeId, app.grants.list);
 		return grant ? `lent under grant “${grant}”` : null;
 	}

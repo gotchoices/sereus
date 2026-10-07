@@ -57,22 +57,18 @@ export class PortAllocator {
  * Allocate one port per key atomically, in `keys` order — a mid-way failure (an
  * exhausted range) releases everything already taken rather than stranding the
  * ports it got before the throw. `overrides` supply a port instead of allocating
- * one (in cadre-host: the owner node's p2p port, fixed by NAT config, and a
- * re-spawn's previous ports).
+ * one (in cadre-host: a re-spawn's previous ports).
  *
  * Overrides are reserved FIRST, before any allocation, so an override that
  * happens to sit inside the managed range cannot also be handed out to another
- * key. Reserving is `markUsed`, a documented no-op outside the range — which is
- * the production case for cadre-host's owner `libp2pPort`, and why reserving
- * first leaves every real port assignment unchanged.
+ * key. Reserving is `markUsed`, a documented no-op outside the range.
  *
  * NOTE: an override is trusted, not checked — `markUsed` does not refuse a port
  * another holder already has, nor two keys naming the same port. Safe for
- * today's callers: a cadre-host re-spawn's overrides were released by its own
- * handle drop with no `await` in between, and the owner's `libp2pPort` can only
- * collide if an operator configures it inside the range onto a port a node
- * already holds. If a caller ever passes ports it did not just release, refuse an
- * override that `allocator.has()` or that repeats another key's port.
+ * today's caller: a cadre-host re-spawn's overrides were released by its own
+ * handle drop with no `await` in between. If a caller ever passes ports it did
+ * not just release, refuse an override that `allocator.has()` or that repeats
+ * another key's port.
  */
 export function allocatePortSet<K extends string>(
   allocator: PortAllocator,

@@ -26,13 +26,12 @@ import { Command, InvalidArgumentError } from 'commander';
 
 import { parseDuration } from '../donation/duration.js';
 import { Installer } from '../installer/index.js';
-import { readHostConfig, updateHostConfig, hostOwnsCadre } from '../installer/config.js';
+import { readHostConfig, updateHostConfig } from '../installer/config.js';
 import {
   configPath as resolveConfigPath,
   defaultDataDir,
   defaultHostJs,
   defaultServiceDir,
-  identityPath as resolveIdentityPath,
 } from '../installer/paths.js';
 import { detectPlatform } from '../installer/platform.js';
 import { createServiceHost } from '../installer/service-host/index.js';
@@ -59,9 +58,7 @@ import {
   clearPushSecret,
   pushStatus,
 } from '../push/index.js';
-import { StrandService } from '../strands/index.js';
-import { OwnerNodeClient } from '../owner/index.js';
-import { createLocalUiServer, HostSettingsStore, type FounderServices } from '../server/index.js';
+import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 import { printForwardResult, printNatStatus, type NatStatusLike } from './nat-output.js';
 
@@ -93,10 +90,8 @@ program
   .option('--non-interactive', 'Use defaults / CLI flags only; never prompt')
   .option('--data-dir <path>', 'Override the data directory')
   .option('--ui-port <port>', 'Override the management UI port', parseIntArg)
-  .option('--libp2p-port <port>', 'Override the cadre libp2p port', parseIntArg)
   .option('--no-upnp', 'Disable UPnP/NAT-PMP probing on first run')
   .option('--no-browser', 'Do not open a browser after install')
-  .option('--own-cadre', 'Also run the host\'s own personal cadre here (founder persona; default: donor-only)')
   .option('--system', 'System-wide install (not yet supported in v1)')
   .option('--node-path <path>', 'Override the node binary embedded in the service unit')
   .option('--no-service', 'Write the data dir only; register no OS service (run the host with `cadre-host start`)')
@@ -104,10 +99,8 @@ program
     nonInteractive?: boolean;
     dataDir?: string;
     uiPort?: number;
-    libp2pPort?: number;
     upnp?: boolean;
     browser?: boolean;
-    ownCadre?: boolean;
     system?: boolean;
     nodePath?: string;
     service?: boolean;
@@ -118,10 +111,8 @@ program
         nonInteractive: Boolean(opts.nonInteractive),
         ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
         ...(typeof opts.uiPort === 'number' ? { uiPort: opts.uiPort } : {}),
-        ...(typeof opts.libp2pPort === 'number' ? { libp2pPort: opts.libp2pPort } : {}),
         noUpnp: opts.upnp === false,
         openBrowser: opts.browser !== false,
-        ownCadre: opts.ownCadre === true,
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
         noService: opts.service === false,
@@ -155,8 +146,8 @@ program
   .action(async (opts: { yes?: boolean; removeData?: boolean; dataDir?: string }) => {
     const installer = new Installer();
     try {
-      // --remove-data is destructive and irreversible (identity, grants and
-      // NAT state are wiped). Require explicit --yes when stdin isn't a TTY, and prompt
+      // --remove-data is destructive and irreversible (node identities, grants
+      // and NAT state are wiped). Require explicit --yes when stdin isn't a TTY, and prompt
       // confirmation when it is.
       if (opts.removeData && !opts.yes) {
         if (!process.stdin.isTTY) {
@@ -166,7 +157,7 @@ program
         }
         const dataDir = opts.dataDir ?? '(default data directory)';
         const confirmed = await confirmDestructive(
-          `This will permanently delete ${dataDir} (identity, grants, NAT state). Continue? [y/N] `,
+          `This will permanently delete ${dataDir} (node identities, grants, NAT state). Continue? [y/N] `,
         );
         if (!confirmed) {
           console.error('uninstall aborted.');
@@ -208,7 +199,7 @@ program
   });
 
 // ============================================================================
-// start — load config + identity, bind management API listener, wait
+// start — load config, bind management API listener, wait
 // ============================================================================
 
 program
@@ -231,12 +222,6 @@ program
         return;
       }
       const cfg = readHostConfig(cfgPath);
-      const idPath = resolveIdentityPath(cfg.dataDir);
-      if (!existsSync(idPath)) {
-        console.error(`cadre-host start: identity file not found at ${idPath}. Re-run \`cadre-host install\`.`);
-        process.exit(1);
-        return;
-      }
       console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
 
       // Update flow: notify-by-default; auto-apply opt-in via host.config.json.
@@ -275,15 +260,11 @@ program
       void updateService.check();
       updateService.start();
 
-      // Wire the long-lived HTTP management server. cadre-host's primary role
-      // is **node donor**: it spawns generic cadre nodes for *other people's*
-      // cadres on request (the donation grant layer below) and never needs an
-      // owner node of its own for that. Running the host's **own** personal
-      // cadre here — the "founder" persona — is opt-in via `ownCadre.enabled`
-      // (see docs/cadre-host.md § Two roles: donor and founder). Only when it
-      // is enabled do we spawn the owner node and bring up the strand service.
-      // The manager never joins the control network (docs/cadre-host.md
-      // § Control-plane separation).
+      // Wire the long-lived HTTP management server. cadre-host spawns cadre
+      // nodes for cadres that live on people's phones (the donation grant layer
+      // below); it holds no owner key and never founds a cadre. The manager
+      // never joins the control network (docs/cadre-host.md § Control-plane
+      // separation).
       // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
       // restart re-reads the secret store (rotated keys) and nothing raw is
       // persisted in state.json. The non-secret bits (bundle id / sandbox toggle,
@@ -299,10 +280,9 @@ program
       });
       await orchestrator.init();
 
-      // NAT layer — in every role: every node the host runs, donated ones
-      // included, gets its two libp2p ports mapped on the router (or the
-      // user's manual forward recorded for them). Started before anything is
-      // spawned so the first spawns see a discovered gateway. `start()` awaits
+      // NAT layer: every node the host runs gets its two libp2p ports mapped
+      // on the router (or the user's manual forward recorded for them). Started
+      // before anything is spawned so the first spawns see a discovered gateway. `start()` awaits
       // only gateway discovery and IP detection (both bounded); the mappings
       // for re-attached nodes land in the background. Best-effort: a failure
       // here leaves the management API up.
@@ -314,10 +294,9 @@ program
         console.error(`NAT start failed: ${(err as Error).message}`);
       }
 
-      // Donation grant layer — the always-on donor surface. Local-only:
-      // issue/validate/revoke are pure store ops (no node round-trip), so it
-      // needs no owner-node handle. The loopback `/grants-admin` surface is
-      // mounted by createLocalUiServer regardless of the founder persona.
+      // Donation grant layer. Local-only: issue/validate/revoke are pure store
+      // ops (no node round-trip). createLocalUiServer mounts its loopback
+      // `/grants-admin` surface.
       const grantService = new GrantService({ store: new GrantStore(cfg.dataDir) });
 
       // Donation lifecycle service — consumes a validated grant to actually
@@ -343,16 +322,8 @@ program
 
       // A node learns its public addresses only at start, so one whose addresses
       // changed (a mapping on another port, a forward, the DDNS hostname, the external
-      // IP) is restarted, at most once per node per 10 minutes. The owner node only in
-      // the founder role: on a donor host a leftover owner child is being stopped
-      // below, and `restartOwnerNode` would spawn it again.
-      // NOTE: a failed owner restart leaves the owner node down, and nothing else
-      // re-spawns it (the supervisor covers donated nodes only); if that is ever seen,
-      // retry `ensureOwnerNode` on a timer while the founder role is on.
-      natService.onNodeAddressesStale(async (id) => {
-        if (!orchestrator.isOwnerNode(id)) await donationSupervisor.restart(id);
-        else if (hostOwnsCadre(cfg)) await orchestrator.restartOwnerNode();
-      });
+      // IP) is restarted, at most once per node per 10 minutes.
+      natService.onNodeAddressesStale((id) => donationSupervisor.restart(id));
 
       // Reap orphaned donations: a requester that provisioned a node but never
       // presented a seed leaves an `awaiting_seed` child holding host ports,
@@ -372,54 +343,12 @@ program
       const reapTimer = setInterval(reapStale, DONATION_REAP_SWEEP_MS);
       reapTimer.unref();
 
-      // Founder stack (opt-in). Absent `ownCadre.enabled`, cadre-host is a pure
-      // donor: no owner node, and the /api/strands surface stays unmounted (it
-      // 404s). The NAT layer above runs either way.
-      let founder: FounderServices | undefined;
-      if (hostOwnsCadre(cfg)) {
-        // Spawn the owner node. Best-effort: a spawn failure leaves the
-        // management API up (owner ops return 503) rather than taking down the
-        // whole process.
-        try {
-          await orchestrator.ensureOwnerNode({
-            identityPath: idPath,
-            partyId: cfg.installId,
-            libp2pPort: cfg.libp2pPort,
-          });
-          console.log('cadre-host: owner node spawned (host-own-cadre enabled)');
-        } catch (err) {
-          console.error(`owner node spawn failed: ${(err as Error).message}`);
-        }
-
-        // The client reads the admin endpoint lazily so a node restart's fresh
-        // bearer token is picked up automatically.
-        const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
-
-        // Strand management is founder-only: it asks the owner node, and
-        // donor-only mode has none.
-        founder = { strands: new StrandService({ cadreNode: owner }) };
-      } else {
-        // Donor-only. If ownCadre was toggled off after a prior founder run,
-        // orchestrator.init() re-attaches the still-running owner child (it would
-        // otherwise linger in listNodes with no strand service wired, serving
-        // the host's own cadre despite being disabled). Reap it now so a disabled
-        // own-cadre is actually stopped — its workdir + control-DB persist on
-        // disk, so toggling ownCadre back on re-spawns it from saved config.
-        try {
-          await orchestrator.stopOwnerNode();
-        } catch (err) {
-          console.error(`owner node reap failed: ${(err as Error).message}`);
-        }
-        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /api/strands inactive)');
-      }
-
       const settingsStore = new HostSettingsStore({ dataDir: cfg.dataDir });
       const server = createLocalUiServer({
         uiPort: cfg.uiPort,
         dataDir: cfg.dataDir,
         orchestrator,
         nat: natService,
-        ...(founder ? { founder } : {}),
         update: updateService,
         grants: grantService,
         donations: donationService,
@@ -436,7 +365,6 @@ program
       donationSupervisor.stop();
       try { await server.stop(); } catch { /* ignore */ }
       try { await natService.stop(); } catch { /* ignore */ }
-      try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');
       process.exit(0);
@@ -910,8 +838,7 @@ ddns
 // do NOT go through the running management API). Private keys land in the OS
 // keychain (keytar) or the 0600 file-store fallback; the non-secret bits (APNs
 // bundle id / sandbox toggle, cooldown/debounce) land in host.config.json. New
-// credentials take effect on the next owner-node (re)spawn — run
-// `cadre-host` restart (or restart the service) to apply them immediately.
+// credentials reach a node the next time it is spawned.
 
 const push = program
   .command('push')
@@ -940,7 +867,7 @@ push
       clientEmail: opts.clientEmail,
       privateKey,
     });
-    console.log('✓ FCM credentials stored. Restart cadre-host to apply on the owner node.');
+    console.log('✓ FCM credentials stored. A node picks them up the next time it is spawned.');
     process.exit(0);
   });
 
@@ -977,7 +904,7 @@ push
     });
     console.log(
       `✓ APNs credentials stored (${opts.production ? 'production' : 'sandbox'}). ` +
-      `Restart cadre-host to apply on the owner node.`,
+      `A node picks them up the next time it is spawned.`,
     );
     process.exit(0);
   });
@@ -1021,7 +948,7 @@ push
         updateHostConfig(cfgPath, { push: rest });
       }
     }
-    console.log(`✓ Cleared push credentials: ${target}. Restart cadre-host to apply.`);
+    console.log(`✓ Cleared push credentials: ${target}. A node stops carrying them the next time it is spawned.`);
     process.exit(0);
   });
 

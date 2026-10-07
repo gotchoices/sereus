@@ -231,7 +231,7 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
   // and gain a WebSocket port rather than trip over the missing key.
   it('re-spawns a handle persisted without a ws port on its old ports plus a fresh ws', async () => {
     const rootDir = join(tmpRoot, 'legacy');
-    const legacyPorts = { health: 18010, metrics: 18011, p2p: 18012, admin: 18013 };
+    const legacyPorts = { health: 18010, metrics: 18011, p2p: 18012 };
     new StateStore(rootDir).save({
       version: 1,
       handles: [{
@@ -330,48 +330,16 @@ describe('HostProcessOrchestrator failed launch', () => {
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;
 
     await orch.createContainer(makeRequest('c1'));
-    expect(orch.getNode('c1')!.ports).toEqual({ health: 12000, metrics: 12001, p2p: 12002, admin: 12003, ws: 12004 });
+    expect(orch.getNode('c1')!.ports).toEqual({ health: 12000, metrics: 12001, p2p: 12002, ws: 12003 });
 
-    // No prior handle to restore here — the five ports are simply released.
+    // No prior handle to restore here — the four ports are simply released.
     mkdirSync(join(rootDir, 'c2'), { recursive: true });
     writeFileSync(join(rootDir, 'c2', 'storage'), 'not-a-directory', 'utf8');
     await expect(orch.createContainer(makeRequest('c2'))).rejects.toThrow();
 
     await orch.createContainer(makeRequest('c3'));
-    // With the leak these would start at 12010.
-    expect(orch.getNode('c3')!.ports).toEqual({ health: 12005, metrics: 12006, p2p: 12007, admin: 12008, ws: 12009 });
-  });
-
-  it('leaves the owner node addressable on its original ports', async () => {
-    const orch = makeOrchestrator();
-    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
-    const ownerConfig = {
-      identityPath: join(tmpRoot, 'identity.key'),
-      partyId: 'party-owner',
-      libp2pPort: 14001,
-    };
-
-    const owner = await orch.ensureOwnerNode(ownerConfig);
-    await waitFor(() => orch.isRunning(owner.dockerId));
-    const endpointBefore = orch.getOwnerAdminEndpoint();
-
-    // ensureOwnerNode short-circuits on a live child, so kill it first.
-    const { pid } = decodeDockerId(owner.dockerId);
-    process.kill(pid, 'SIGKILL');
-    await waitFor(() => !isPidAlive(pid));
-
-    const storage = sabotageWorkdir(join(rootDir, 'owner'));
-    await expect(orch.ensureOwnerNode()).rejects.toThrow();
-
-    // The admin channel still resolves — a manager that lost this endpoint
-    // could no longer delegate to its own node.
-    expect(orch.getOwnerAdminEndpoint()).toEqual(endpointBefore);
-    expect(orch.listNodes().some((n) => n.dockerId === owner.dockerId)).toBe(true);
-
-    rmSync(storage, { force: true });
-    const respawned = await orch.ensureOwnerNode();
-    expect(respawned.ports).toEqual(owner.ports);
-    expect(orch.listNodes().filter((n) => n.owner)).toHaveLength(1);
+    // With the leak these would start at 12008.
+    expect(orch.getNode('c3')!.ports).toEqual({ health: 12004, metrics: 12005, p2p: 12006, ws: 12007 });
   });
 
   // The caller's unwind is only correct for failures that happen BEFORE the
@@ -500,18 +468,6 @@ describe('HostProcessOrchestrator.reclaimWorkdir', () => {
     expect(orch.reclaimWorkdir('c1')).toBe(false);
     expect(existsSync(join(rootDir, 'c1'))).toBe(true);
     expect(orch.resolveDockerId('c1')).toBe(created.dockerId);
-  });
-
-  it('refuses the owner node', async () => {
-    const orch = makeOrchestrator();
-    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
-    // No owner handle exists, so only the id check can save this directory —
-    // which holds the host's own control-DB storage.
-    const workdir = join(rootDir, 'owner');
-    mkdirSync(workdir, { recursive: true });
-
-    expect(orch.reclaimWorkdir('owner')).toBe(false);
-    expect(existsSync(workdir)).toBe(true);
   });
 
   it('reports false for a workdir that is already gone', () => {

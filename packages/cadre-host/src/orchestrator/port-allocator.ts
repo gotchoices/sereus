@@ -8,18 +8,16 @@ import {
 import type { NodePorts } from './types.js';
 
 /**
- * Allocation order for a node's port set. Fixed so that swapping a caller onto
- * {@link allocateNodePorts} does not shift the ports an existing deployment
- * already handed out — which is also why a key added later goes on the end
- * (`ws` came after the first four).
+ * Allocation order for a node's port set. A node already running keeps its
+ * ports whatever this order says ({@link reusedNodePorts}); the order decides
+ * only where a fresh allocation lands.
  */
-const NODE_PORT_KEYS = ['health', 'metrics', 'p2p', 'admin', 'ws'] as const satisfies readonly (keyof NodePorts)[];
+const NODE_PORT_KEYS = ['health', 'metrics', 'p2p', 'ws'] as const satisfies readonly (keyof NodePorts)[];
 
 /**
  * Allocate a full NodePorts set atomically, in {@link NODE_PORT_KEYS} order.
- * `overrides` supply a port instead of allocating one (the owner node's p2p
- * port, which is fixed by NAT config; a re-spawn's previous ports, see
- * {@link reusedNodePorts}). Overrides are reserved before anything is allocated
+ * `overrides` supply a port instead of allocating one (a re-spawn's previous
+ * ports, see {@link reusedNodePorts}). Overrides are reserved before anything is allocated
  * and are trusted, not checked — see `allocatePortSet`.
  */
 export function allocateNodePorts(

@@ -5,9 +5,7 @@ import { runWizardWith, type WizardDefaults } from '../wizard.js';
 const defaults: WizardDefaults = {
   dataDir: '/data/cadre-host',
   uiPort: 8765,
-  libp2pPort: 4001,
   upnpEnabled: true,
-  ownCadre: false,
 };
 
 function scripted(answers: ReadonlyArray<string>): (label: string, fallback: string) => Promise<string> {
@@ -20,14 +18,12 @@ function scripted(answers: ReadonlyArray<string>): (label: string, fallback: str
 
 describe('runWizardWith', () => {
   it('returns the defaults when every answer is blank', async () => {
-    const out = await runWizardWith(defaults, scripted(['', '', '', '', '', '']));
+    const out = await runWizardWith(defaults, scripted(['', '', '', '']));
     expect(out).toEqual({
       dataDir: '/data/cadre-host',
       uiPort: 8765,
-      libp2pPort: 4001,
       upnpEnabled: true,
       configureDdns: false,
-      ownCadre: false,
     });
   });
 
@@ -35,30 +31,26 @@ describe('runWizardWith', () => {
     const out = await runWizardWith(defaults, scripted([
       '/srv/host',
       '9000',
-      '5000',
       'n',
-      'y',
       'y',
     ]));
     expect(out).toEqual({
       dataDir: '/srv/host',
       uiPort: 9000,
-      libp2pPort: 5000,
       upnpEnabled: false,
       configureDdns: true,
-      ownCadre: true,
     });
   });
 
   it('rejects invalid port input', async () => {
     await expect(
-      runWizardWith(defaults, scripted(['', 'banana', '', '', ''])),
+      runWizardWith(defaults, scripted(['', 'banana', '', ''])),
     ).rejects.toThrow(/Invalid port/);
   });
 
   it('rejects unrecognized yes/no answers', async () => {
     await expect(
-      runWizardWith(defaults, scripted(['', '', '', 'maybe', ''])),
+      runWizardWith(defaults, scripted(['', '', 'maybe', ''])),
     ).rejects.toThrow(/Invalid yes\/no/);
   });
 });

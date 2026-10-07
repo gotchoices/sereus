@@ -90,9 +90,8 @@ export interface DonationSupervisorOptions {
  * DonationSupervisor — owns the invariant *a non-terminal donation is expected
  * to be running*.
  *
- * Nothing else re-spawns a donated node: `bin/host.ts` re-spawns only the host's
- * own owner node, the `/api/nodes/:id/{start,restart}` routes refuse non-owner
- * ids, and the stale-`awaiting_seed` reap only terminates. So without this class
+ * Nothing else re-spawns a donated node: `/api/nodes` is read-only and the
+ * stale-`awaiting_seed` reap only terminates. So without this class
  * a crashed, OOM-killed, or reboot-killed donated node stays dead with its
  * record still reading `seeded`, silently costing the borrower a node and their
  * grant a quota slot.
@@ -212,11 +211,10 @@ export class DonationSupervisor {
 
   /**
    * Exit-event trigger. Deliberately cheap: it does not map the handle back to a
-   * donation (that needs a store read per event), it just asks for a pass. Owner
-   * node exits are not ours — `bin/host.ts` owns re-spawning that one.
+   * donation (that needs a store read per event), it just asks for a pass.
    */
   private onNodeState(info: ManagedNodeInfo): void {
-    if (info.owner || info.status !== 'stopped') return;
+    if (info.status !== 'stopped') return;
     if (this.exitPassQueued) return;
     this.exitPassQueued = true;
     void this.reconcile()
