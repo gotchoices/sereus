@@ -121,6 +121,8 @@ Anyone who scans the code claims the node: the secret is the only check, so show
 
 The claim secret is in four places: the record in `hosted-nodes.json`, which every respawn replays; the child's environment (`CADRE_CLAIM_SECRET`, set by the orchestrator, never passed as an argument and never written to the orchestrator's `state.json`); the claim route's payload; and the `cadre-host join` output that prints that payload. An invitation is a credential too (it carries the invitation's private key): it is in the record, which a `joining` respawn replays, and in the child's environment (`CADRE_INVITATION`), and nowhere the host sends it. The record on the wire (`HostedNodeView`: `id`, `join: { kind: 'claim' | 'invitation' }`, `partyId`, `profile`, `status`, `dockerId?`, `statusEndpoint?`, `peerId?`, `ownerKey?`, `memberPeerId?`, `connected?`, `respawn?`, `createdAt`, `updatedAt`, `error?`, `retryable?`) carries neither, so `GET /api/hosted-nodes`, the node list and the event stream can be shown freely. The node checks a presented secret against the one it was started with, and the owner's device signs nothing on the host.
 
+`hosted-nodes.json` is written with the process's default file mode, like everything in the data directory except the identity keys and the secrets fallback file, so another local account that can read the data directory can read a pending claim secret or an invitation (`bug-cadre-host-data-dir-readable-by-other-accounts`).
+
 ### Reachability from outside
 
 The claim details carry the NAT layer's verdict for the node (`reachability`: its `NodeReachability` entry, or `null` before the NAT layer has one; see [Reachability verdict](#reachability-verdict)), and the CLI and the Join page warn when it reads `unreachable`.
@@ -470,11 +472,11 @@ cadre-host is a same-machine management surface. Any local process running as th
 | Path | Method | Purpose | Errors |
 |---|---|---|---|
 | `/api/hosted-nodes` | GET | Every hosted node, credentials stripped → `{ nodes }` ([Join a cadre](#join-a-cadre)) | — |
-| `/api/hosted-nodes` | POST | Start a node waiting to be claimed (empty body), or one that redeems `{ invitation }` → 201 `{ node }` | 400 invalid_request for an invitation that does not decode; 500 orchestrator_error / storage_error |
+| `/api/hosted-nodes` | POST | Start a node waiting to be claimed (empty body), or one that redeems `{ invitation }` → 201 `{ node }` | 400 invalid_request for an invitation that does not decode; 409 invalid_state or 404 not_found when the node is removed while it starts; 500 orchestrator_error / storage_error |
 | `/api/hosted-nodes/:id` | GET | One hosted node → `{ node }` | 404 not_found |
 | `/api/hosted-nodes/:id/claim` | GET | The QR payload → `{ payload, peerId, multiaddrs, reachability }` | 404 not_found; 409 invalid_state unless `unclaimed`; 503 node_unavailable until the child answers |
 | `/api/hosted-nodes/:id` | DELETE | Remove the node: its record, child and working directory → 204 | 404 not_found |
-| `/api/hosted-nodes/:id/reset` | POST | Remove the node and start a fresh one with a new code → 201 `{ node }` | 404 not_found |
+| `/api/hosted-nodes/:id/reset` | POST | Remove the node and start a fresh one with a new code → 201 `{ node }` | 404 not_found; 500 orchestrator_error when the fresh node fails to start (the old one is already removed) |
 | `/api/hosted-nodes/:id/retry` | POST | Start an invitation node again after no member could be reached → `{ node }` | 404 not_found; 409 invalid_state unless `error` with `retryable` |
 | `/api/status` | GET | Dashboard snapshot: service name, version and uptime, a summary per orchestrator handle (`id`, `partyId`, `status`, `profile`), `connectivity` (the NAT snapshot), and the update state | — |
 | `/api/nodes` | GET | Every orchestrator handle (one per running or stopped child). Read-only: a node's lifecycle belongs to `/api/hosted-nodes`, whose supervisor would undo at once a stop issued anywhere else | — |
@@ -546,7 +548,7 @@ graph TD
     HNS -->|spawn, stop, remove| Orch
     NAT -. "public addresses at spawn" .-> Orch
     NAT -. "addresses changed" .-> Sup
-    Orch -->|spawns| NN["hosted nodes<br/>(cadre-cli children, each a member of its own cadre)"]
+    Orch -->|spawns| NN["hosted nodes<br/>(cadre-cli children, each a member of the cadre that claimed or admitted it)"]
     W -. "GET /status" .-> NN
     NAT -. "maps each node's TCP + WebSocket ports on the router" .-> NN
     Upd -. "npm install -g + ServiceHost.restart" .-> Install
