@@ -7,15 +7,18 @@ import type { PushCredentials } from '@serfab/cadre-core';
 import type { OrchestratorCreateRequest } from '@serfab/cadre-provider';
 
 /**
- * What `HostProcessOrchestrator.createContainer` takes: the shared create request plus
- * the claim secret of a node started waiting to be claimed (`cadre-cli start` with
- * `CADRE_CLAIM_SECRET`). The secret reaches the child through its environment only:
- * never as an argument (an argument shows in the process list), never in `state.json`,
- * never in a log line.
+ * What `HostProcessOrchestrator.createContainer` takes: the shared create request plus how
+ * the node gets into its cadre — the claim secret of a node started waiting to be claimed
+ * (`cadre-cli start` with `CADRE_CLAIM_SECRET`), or the cadre invitation it redeems
+ * (`CADRE_INVITATION`). At most one of the two. Each is a credential and reaches the child
+ * through its environment only: never as an argument (an argument shows in the process
+ * list), never in `state.json`, never in a log line.
  */
 export type HostedSpawnRequest = OrchestratorCreateRequest & {
   /** The node's one-time claim secret, base64url. Absent, the child starts with no claim. */
   claimSecret?: string;
+  /** An encoded cadre invitation the child redeems right after it starts. */
+  invitation?: string;
 };
 
 /** User-facing configuration for `HostProcessOrchestrator`. */

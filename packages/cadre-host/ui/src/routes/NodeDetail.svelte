@@ -8,15 +8,19 @@
 		removeHostedNode,
 		reportError,
 		resetHostedNode,
+		retryHostedNode,
 		pushToast,
 	} from '../lib/state.svelte.js';
 	import {
+		canRetryInvitation,
 		claimedCadre,
 		connectedText,
+		isPending,
 		isWaiting,
 		ownerFingerprint,
 		stateLine,
 		STATUS_BADGE,
+		UNREACHABLE_HINT,
 	} from '../lib/hosted-nodes.js';
 	import { hrefFor, navigate } from '../lib/router.js';
 	import { formatBytes, formatRelativeTime } from '../lib/format.js';
@@ -52,7 +56,7 @@
 	const app = appState();
 
 	let confirming: ConfirmedAction | null = $state(null);
-	let busyAction: ConfirmedAction | 'cancel' | null = $state(null);
+	let busyAction: ConfirmedAction | 'cancel' | 'rejoin' | null = $state(null);
 	/** The first read of the orchestrator handle has answered, found or not. */
 	let handleRead = $state(false);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -106,13 +110,28 @@
 		}
 	}
 
+	/**
+	 * Start a failed invitation node again with the same invitation. No confirmation: unlike
+	 * a reset it deletes nothing, and the page stays on the same node.
+	 */
+	async function rejoin(): Promise<void> {
+		busyAction = 'rejoin';
+		try {
+			await retryHostedNode(id);
+		} catch (err) {
+			reportError('Retry', err);
+		} finally {
+			busyAction = null;
+		}
+	}
+
 	async function confirmed(action: ConfirmedAction): Promise<void> {
 		confirming = null;
 		if (action === 'remove') await remove('remove');
 		else await reset(action);
 	}
 
-	function busyLabel(action: ConfirmedAction | 'cancel', idle: string, busy: string): string {
+	function busyLabel(action: ConfirmedAction | 'cancel' | 'rejoin', idle: string, busy: string): string {
 		return busyAction === action ? busy : idle;
 	}
 </script>
@@ -184,17 +203,28 @@
 					<div><dt>Connected</dt><dd>{connectedText(hosted)}</dd></div>
 				</dl>
 
-				{#if isWaiting(hosted.status)}
-					<ClaimCode node={hosted} />
+				{#if isPending(hosted)}
+					{#if isWaiting(hosted)}
+						<ClaimCode node={hosted} />
+					{/if}
 					<div class="actions">
 						<button disabled={busyAction !== null} onclick={() => remove('cancel')}>
 							{busyLabel('cancel', 'Cancel', 'Cancelling…')}
 						</button>
 					</div>
 				{:else}
+					{#if canRetryInvitation(hosted)}
+						<p class="small">{UNREACHABLE_HINT}</p>
+					{/if}
 					<!-- Enabled even while stopped: a crashed node awaiting respawn is removed the same way. -->
 					<div class="actions">
-						{#if hosted.status === 'error'}
+						{#if canRetryInvitation(hosted)}
+							<button class="primary" disabled={busyAction !== null} onclick={rejoin}>
+								{busyLabel('rejoin', 'Retry', 'Retrying…')}
+							</button>
+						{:else if hosted.join.kind === 'invitation'}
+							<!-- A refused invitation or a give-up: Remove, then join again with a fresh invitation or the code. -->
+						{:else if hosted.status === 'error'}
 							<button disabled={busyAction !== null} onclick={() => (confirming = 'retry')}>
 								{busyLabel('retry', 'Retry', 'Retrying…')}
 							</button>
@@ -254,6 +284,7 @@
 	.card-head { display: flex; align-items: center; gap: 0.5rem; }
 	.card-head h3 { margin: 0; }
 	.state { margin: 0; font-weight: 500; }
+	.small { font-size: 0.85rem; margin: 0; }
 	.error { color: var(--color-danger); }
 	.kv {
 		margin: var(--space-3) 0;

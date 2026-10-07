@@ -6,7 +6,8 @@
  *
  * Covers: join → unclaimed (claim secret threaded to the child, persisted,
  * redacted), the claim details, the status watcher (claim → joined, liveness, and
- * a row removed mid-poll), respawn (same party, same secret, same ports), remove,
+ * a row removed mid-poll), a join by invitation through a failure, Retry and the
+ * member's acceptance, respawn (same party, same secret, same ports), remove,
  * reset, and the stuck-spawning reap.
  *
  * A recurring theme: **an ending that lands mid-operation wins.** `join`,
@@ -25,15 +26,13 @@ import { join } from 'node:path';
 import { decodeNodeClaimPayload } from '@serfab/cadre-core';
 
 import type { NodeReachability } from '../../nat/types.js';
-import {
-  HostedNodeService,
-  HOSTED_NODE_SPAWNING_TTL_MS,
-  type HostedNodeAddressSource,
-} from '../hosted-node-service.js';
+import type { HostedNodeAddressSource } from '../claim-details.js';
+import { HostedNodeService, HOSTED_NODE_SPAWNING_TTL_MS } from '../hosted-node-service.js';
 import { HostedNodeStore } from '../hosted-node-store.js';
 import type { HostedNode, HostedNodeChange } from '../types.js';
 import { HostedNodeError } from '../types.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
+import { ISSUER_KEY, MEMBER_PEER_ID, encodedTestInvitation } from './test-invitation.js';
 
 /** A peer id the child reports; the payload codec checks it parses. */
 const PEER_ID = '12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp';
@@ -79,6 +78,7 @@ interface StatusAnswer {
   partyId?: string;
   claimedBy?: string;
   connections?: number;
+  invitation?: { state: 'pending' | 'accepted' | 'failed'; memberPeerId?: string; error?: string; retryable?: boolean };
 }
 
 function statusBody(answer: StatusAnswer): unknown {
@@ -96,6 +96,7 @@ function statusBody(answer: StatusAnswer): unknown {
       connectionPaths: { total: answer.connections ?? 0, relayed: 0, direct: answer.connections ?? 0, stuckOnRelay: 0, byTransport: {} },
       claim: answer.claim ?? 'awaiting',
       ...(answer.claimedBy ? { claimedBy: answer.claimedBy } : {}),
+      ...(answer.invitation ? { invitation: answer.invitation } : {}),
     },
   };
 }
@@ -143,6 +144,11 @@ function requireNode(store: HostedNodeStore, id: string): HostedNode {
   return node;
 }
 
+function secretOf(node: HostedNode): string {
+  if (node.join.kind !== 'claim') throw new Error(`hosted node ${node.id} joins by ${node.join.kind}, not by claim`);
+  return node.join.secret;
+}
+
 describe('HostedNodeService.join', () => {
   it('spawns a storage node under the placeholder party with a fresh claim secret, then records it unclaimed', async () => {
     const { orch, store, svc, changes } = makeHarness();
@@ -155,7 +161,7 @@ describe('HostedNodeService.join', () => {
     expect((view.join as Record<string, unknown>).secret).toBeUndefined();
 
     const stored = requireNode(store, view.id);
-    expect(stored.join.secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secretOf(stored)).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(stored.statusEndpoint).toBe('http://127.0.0.1:9001/status');
     // The child got exactly the record's secret, through the request and nothing else.
     expect(orch.createCalls).toEqual([{
@@ -163,7 +169,7 @@ describe('HostedNodeService.join', () => {
       partyId: 'unclaimed',
       bootstrapNodes: [],
       profile: 'storage',
-      claimSecret: stored.join.secret,
+      claimSecret: secretOf(stored),
     }]);
     expect(changes).toEqual([{ kind: 'added', id: view.id }]);
   });
@@ -175,7 +181,7 @@ describe('HostedNodeService.join', () => {
     const [a, b] = await Promise.all([svc.join(), svc.join()]);
 
     expect(a.id).not.toBe(b.id);
-    expect(requireNode(store, a.id).join.secret).not.toBe(requireNode(store, b.id).join.secret);
+    expect(secretOf(requireNode(store, a.id))).not.toBe(secretOf(requireNode(store, b.id)));
     expect(orch.createCalls.map((c) => c.containerId).sort()).toEqual([a.id, b.id].sort());
   });
 
@@ -259,7 +265,7 @@ describe('HostedNodeService.claimDetails', () => {
     expect(decodeNodeClaimPayload(details.payload)).toEqual({
       peerId: PEER_ID,
       multiaddrs: details.multiaddrs,
-      secret: requireNode(store, view.id).join.secret,
+      secret: secretOf(requireNode(store, view.id)),
     });
     // The peer id is cached on the record; the view carries it.
     expect(svc.get(view.id)?.peerId).toBe(PEER_ID);
@@ -342,13 +348,55 @@ describe('HostedNodeService status watcher', () => {
   });
 });
 
+describe('HostedNodeService join by invitation', () => {
+  it('follows the node from joining through a failure no member answered, a Retry, and the member\'s acceptance', async () => {
+    const { orch, store, svc, changes } = makeHarness();
+    const invitation = encodedTestInvitation('party-P');
+
+    const view = await svc.join({ invitation });
+
+    // The invitation's party from the start; the bundle reaches the child and nothing else.
+    expect(view).toMatchObject({ status: 'joining', partyId: 'party-P', join: { kind: 'invitation' } });
+    expect(JSON.stringify(view)).not.toContain(invitation);
+    expect(orch.createCalls).toEqual([{ containerId: view.id, partyId: 'party-P', bootstrapNodes: [], profile: 'storage', invitation }]);
+
+    stubStatusFetch({ partyId: 'party-P', invitation: { state: 'pending' } });
+    await svc.pollStatuses();
+    expect(requireNode(store, view.id).status).toBe('joining');
+
+    // No member reachable: `error`, kept for Retry, its child stopped but not reclaimed.
+    stubStatusFetch({ partyId: 'party-P', invitation: { state: 'failed', error: 'No member named in the invitation could be reached.', retryable: true } });
+    await svc.pollStatuses();
+    expect(requireNode(store, view.id)).toMatchObject({ status: 'error', error: 'No member named in the invitation could be reached.', retryable: true });
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual([]);
+
+    // The new child starts its redemption over.
+    stubStatusFetch({ partyId: 'party-P', invitation: { state: 'pending' } });
+    const retried = await svc.retry(view.id);
+    expect(retried).toMatchObject({ status: 'joining', dockerId: 'dock_2' });
+    expect(retried.error).toBeUndefined();
+    expect(retried.retryable).toBeUndefined();
+    expect(orch.createCalls[1]).toMatchObject({ containerId: view.id, invitation });
+    // An explicit Retry spends no respawn attempt.
+    expect(requireNode(store, view.id).respawn).toBeUndefined();
+
+    stubStatusFetch({ partyId: 'party-P', connections: 1, invitation: { state: 'accepted', memberPeerId: MEMBER_PEER_ID } });
+    await svc.pollStatuses();
+    expect(requireNode(store, view.id)).toMatchObject({
+      status: 'joined', partyId: 'party-P', ownerKey: ISSUER_KEY, memberPeerId: MEMBER_PEER_ID, peerId: PEER_ID, connected: true,
+    });
+    expect(changes.map((c) => c.kind)).toEqual(['added', 'changed', 'changed', 'changed', 'joined']);
+  });
+});
+
 // The orchestrator refuses to re-spawn a container whose child is still running, so
 // each case that expects a spawn has the first child (`dock_1`) go down first.
 describe('HostedNodeService.respawn', () => {
   it('replays the record\'s party and secret, comes back on the same ports, swaps the handles and leaves status alone', async () => {
     const { orch, store, svc, changes } = makeHarness();
     const view = await svc.join();
-    const secret = requireNode(store, view.id).join.secret;
+    const secret = secretOf(requireNode(store, view.id));
     store.put({ ...requireNode(store, view.id), status: 'joined', partyId: 'party-P', ownerKey: OWNER_KEY, connected: true });
     const portsBefore = orch.getNode(view.id)!.ports;
     changes.length = 0;
@@ -446,8 +494,9 @@ describe('HostedNodeService.respawn', () => {
     const { orch, store, svc } = makeHarness();
     const view = await svc.join();
 
-    // A give-up write landing inside the spawn window. Both spawns share one
-    // workdir, so reclaiming here would delete the identity key `error` keeps.
+    // An `error` write landing inside the spawn window. Both spawns share one
+    // workdir, so reclaiming here would delete the identity key `error` keeps;
+    // the record is pointed at the new child instead, so a later remove reclaims it.
     orch.createDelayMs = 20;
     orch.onCreate = () => {
       store.put({ ...requireNode(store, view.id), status: 'error', error: 'gave up' });
@@ -459,7 +508,7 @@ describe('HostedNodeService.respawn', () => {
     expect(result).toEqual({ outcome: 'abandoned', status: 'error' });
     expect(orch.stopped).toContain('dock_2');
     expect(orch.removed).toEqual([]);
-    expect(requireNode(store, view.id)).toMatchObject({ status: 'error', dockerId: 'dock_1' });
+    expect(requireNode(store, view.id)).toMatchObject({ status: 'error', dockerId: 'dock_2' });
   });
 });
 
@@ -515,14 +564,14 @@ describe('HostedNodeService.reset', () => {
   it('removes the node and starts a fresh one with a new id and secret', async () => {
     const { orch, store, svc } = makeHarness();
     const first = await svc.join();
-    const firstSecret = requireNode(store, first.id).join.secret;
+    const firstSecret = secretOf(requireNode(store, first.id));
 
     const second = await svc.reset(first.id);
 
     expect(second.id).not.toBe(first.id);
     expect(second.status).toBe('unclaimed');
     expect(store.get(first.id)).toBeUndefined();
-    expect(requireNode(store, second.id).join.secret).not.toBe(firstSecret);
+    expect(secretOf(requireNode(store, second.id))).not.toBe(firstSecret);
     expect(orch.removed).toEqual(['dock_1']);
     expect(orch.createCalls[1]?.containerId).toBe(second.id);
   });

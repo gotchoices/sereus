@@ -124,15 +124,24 @@ If the page or the command warns that the node cannot be reached from outside yo
 
 To host a node for a friend, join again and let the friend scan the new code. **Anyone who scans the code claims the node**, so show it only to the person it is for; if the wrong person claimed it, **Reset** on the node's page (or `cadre-host node reset <id>`) removes that node and starts a fresh one with a new code.
 
+**The second way: paste an invitation.** Once the cadre already has a member this machine can reach (an always-on node, here or elsewhere), the owner's app can copy a cadre invitation instead of scanning anything. Paste it under **Or paste a cadre invitation** on the Join page, or run:
+
+```bash
+cadre-host join --invitation "<the invitation text>"
+```
+
+The node starts in the cadre the invitation names and redeems it at one of the cadre's members; the line under it reads `Joining cadre <partyId>…`, then `Joined cadre <partyId> at member <peerId>`. This does not work for a cadre's **first** always-on node: its only members are phones, which nothing can dial, so the join fails with "No member … could be reached". Use the QR code for that one. When no member could be reached because the member is offline for a while, **Retry** on the node (or `cadre-host node retry <id>`) starts it again with the same invitation; an invitation the cadre refused (expired, used up, or made for another device) cannot be retried, so remove the node and join with a fresh one.
+
 ### 4. Manage hosted nodes
 
 ```bash
 cadre-host node list              # id, status, cadre, owner fingerprint, connected
 cadre-host node remove <id>       # stop the node and delete its data on this machine
 cadre-host node reset <id>        # remove it and start a fresh one with a new code
+cadre-host node retry <id>        # start an invitation node again once a member is reachable
 ```
 
-`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset) rather than Stop: the respawn supervisor treats a claimed or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
+`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset) rather than Stop: the respawn supervisor treats a claimed, joining or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
 
 ## Reachability — can people actually reach your nodes?
 
@@ -188,9 +197,13 @@ Print the local-UI URL (e.g. `http://127.0.0.1:8765`) and open it in the default
 
 Start a hosted node waiting to be claimed and show the code the owner's phone scans to add it to their cadre: a QR code and the same text, then (unless `--no-wait`) wait until the phone claims it and print `✓ Claimed by owner <fingerprint> into cadre <partyId>`. `--no-qr` prints the text only, on stdout alone. See [*Join your cadre*](#3-join-your-cadre).
 
+### `cadre-host join --invitation <encoded> [--no-wait]`
+
+Start a hosted node that redeems a cadre invitation the owner's app copied, instead of showing a code: `Joining cadre <partyId> through the invitation…`, then (unless `--no-wait`) wait and print `✓ Joined cadre <partyId> at member <peerId>`, or `✗ Could not join: <message>` and exit 1. When no member could be reached, it says what to do: for the cadre's first always-on node, use `cadre-host join` without `--invitation` and scan the QR code instead; otherwise `cadre-host node retry <id>` once a member is online. An invitation that does not decode is refused before any node starts. See [*Join your cadre*](#3-join-your-cadre).
+
 ### `cadre-host node list`
 
-Print every hosted node: id, status (`unclaimed`, `joined`, `error` or `spawning`), cadre, owner fingerprint (the first 8 characters of the owner key) and whether a joined node is connected.
+Print every hosted node: id, status (`spawning`, `unclaimed`, `joining`, `joined` or `error`), cadre, owner fingerprint (the first 8 characters of the owner key) and whether a joined node is connected.
 
 ### `cadre-host node remove <id>`
 
@@ -198,7 +211,11 @@ Stop one hosted node and delete its data on this machine — its record, the chi
 
 ### `cadre-host node reset <id> [--no-qr] [--no-wait]`
 
-Remove a hosted node and start a fresh one with a new code, then show the code and wait as `join` does. For a node someone else claimed first, or one that failed.
+Remove a hosted node and start a fresh one with a new code, then show the code and wait as `join` does. For a node someone else claimed first, or one that failed. An invitation node is replaced by one waiting to be claimed too.
+
+### `cadre-host node retry <id> [--no-wait]`
+
+Start an invitation node again after no member of its cadre could be reached, with the same invitation and the same identity, then wait as `join --invitation` does. Refused (409) for any other node, including one whose invitation the cadre refused.
 
 ### `cadre-host nat status [--json]`
 
@@ -267,7 +284,7 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 `start` loads `host.config.json`, brings up the orchestrator, the NAT layer, the hosted-node service with its watcher and supervisor, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
 
-- `/api/hosted-nodes` (list, start a node waiting to be claimed, its claim details, remove, reset — no bearer; same-machine admin) — the surface `cadre-host join` and `cadre-host node` drive.
+- `/api/hosted-nodes` (list, start a node waiting to be claimed or one that redeems an invitation, its claim details, remove, reset, retry — no bearer; same-machine admin) — the surface `cadre-host join` and `cadre-host node` drive.
 - `/update/*` (update flow) — matches the CLI's contract.
 - `/nat/*` (NAT/DDNS) — every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
 - `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a hosted node through `DELETE /api/hosted-nodes/:id`.
@@ -296,12 +313,12 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 Five pages cover the day-to-day operations:
 
 - **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity), a hosted-nodes tile ("N joined, M waiting", plus failed ones when there are any, linking to Join), and the running-node count.
-- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node, labelled with the cadre it joined or "waiting to be claimed", with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
-- **Nodes** — one row per hosted node with its status, cadre, owner fingerprint and whether it is connected. A node's page adds recent stats, the log tail (last 200 lines, "Refresh" pulls again) and a **Cadre** card: the code and **Cancel** while it waits to be claimed, **Reset** and **Remove** once joined, **Retry** and **Remove** when it failed. cadre-host doesn't auto-spawn nodes, so this list is empty until you join a cadre.
-- **Join** — the **Join a cadre** button, then each node waiting to be claimed with its QR code, its text, its reachability and a live line that follows the claim (see [*After install*, step 3](#3-join-your-cadre)).
+- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node, labelled with the cadre it joined, "waiting to be claimed" or "joining cadre <partyId>", with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
+- **Nodes** — one row per hosted node with its status, cadre, owner fingerprint and whether it is connected. A node's page adds recent stats, the log tail (last 200 lines, "Refresh" pulls again) and a **Cadre** card: the code and **Cancel** while it waits to be claimed, **Cancel** while it redeems an invitation, **Reset** and **Remove** once joined (**Remove** alone for an invitation node), **Retry** and **Remove** when it failed (for an invitation node, **Retry** only when no member could be reached). cadre-host doesn't auto-spawn nodes, so this list is empty until you join a cadre.
+- **Join** — the **Join a cadre** button and the **Or paste a cadre invitation** field, then each node waiting to be claimed with its QR code, its text, its reachability and a live line that follows the claim, and each node redeeming an invitation with its live line, or its error, the first-node hint and **Retry** when no member could be reached (see [*After install*, step 3](#3-join-your-cadre)).
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, UI port), uninstall pointer.
 
-The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, a hosted node is added, claimed or removed, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
+The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, a hosted node is added, claimed, joins, fails or is removed, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 
 ### Building the SPA
 

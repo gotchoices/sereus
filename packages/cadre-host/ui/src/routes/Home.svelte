@@ -7,7 +7,7 @@
 		refreshStatus,
 		refreshUpdate,
 	} from '../lib/state.svelte.js';
-	import { isWaiting } from '../lib/hosted-nodes.js';
+	import { isPending } from '../lib/hosted-nodes.js';
 	import { formatUptime, formatRelativeTime } from '../lib/format.js';
 	import { hrefFor } from '../lib/router.js';
 	import StatusDot from '../components/StatusDot.svelte';
@@ -27,7 +27,8 @@
 	const reachableNodes = $derived(runningReachability.filter((n) => n.verdict !== 'unreachable').length);
 	const allReachable = $derived(reachableNodes === runningReachability.length);
 	const hostedJoined = $derived(app.hostedNodes.list.filter((n) => n.status === 'joined').length);
-	const hostedWaiting = $derived(app.hostedNodes.list.filter((n) => isWaiting(n.status)).length);
+	// Waiting to be claimed, or redeeming an invitation.
+	const hostedWaiting = $derived(app.hostedNodes.list.filter((n) => isPending(n)).length);
 	const hostedFailed = $derived(app.hostedNodes.list.filter((n) => n.status === 'error').length);
 </script>
 

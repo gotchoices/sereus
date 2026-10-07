@@ -1,12 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
-import { multiaddr, CODE_IP4, CODE_IP6, CODE_P2P_CIRCUIT } from '@multiformats/multiaddr';
 
-import { CLAIM_SECRET_BYTES, encodeNodeClaimPayload } from '@serfab/cadre-core';
+import { CLAIM_SECRET_BYTES, decodeCadreInvitation, type CadreInvitation } from '@serfab/cadre-core';
 import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provider';
 
-import type { NodeReachability } from '../nat/types.js';
 import type { HostedSpawnRequest, ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
+import { buildClaimDetails, type ClaimDetails, type HostedNodeAddressSource } from './claim-details.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
 import { HostedNodeWatcher } from './hosted-node-watcher.js';
 import { PLACEHOLDER_PARTY, errorMessage, readNodeStatus, statusUrlFor } from './node-status.js';
@@ -14,6 +13,7 @@ import type {
   HostedNode,
   HostedNodeChange,
   HostedNodeChangeListener,
+  HostedNodeJoin,
   HostedNodeStatus,
   HostedNodeView,
 } from './types.js';
@@ -32,6 +32,7 @@ const log = debug('cadre:host:hosted-node-service');
  */
 const RESPAWNABLE_STATUSES: ReadonlySet<HostedNodeStatus> = new Set<HostedNodeStatus>([
   'unclaimed',
+  'joining',
   'joined',
 ]);
 
@@ -48,17 +49,6 @@ export const HOSTED_NODE_SPAWNING_TTL_MS = 5 * 60 * 1000;
 
 /** How often the stuck-`spawning` reap runs while cadre-host is up. 5 minutes. */
 export const HOSTED_NODE_REAP_SWEEP_MS = 5 * 60 * 1000;
-
-/** What `claimDetails` answers: the QR payload and its parts. */
-export interface ClaimDetails {
-  /** `encodeNodeClaimPayload` of the three fields below — the text the QR code carries. */
-  payload: string;
-  peerId: string;
-  /** Public addresses first (TCP, then WebSocket), then the node's own non-loopback LAN addresses. */
-  multiaddrs: string[];
-  /** The NAT layer's verdict for the node, or null when it has no entry yet. A phone at home reaches the LAN address either way. */
-  reachability: NodeReachability | null;
-}
 
 /**
  * Outcome of {@link HostedNodeService.respawn}:
@@ -126,11 +116,10 @@ export interface HostedNodeOrchestrator extends Orchestrator {
   onStateChange?(listener: NodeStateListener): () => void;
 }
 
-/** The NAT layer's two answers the claim details need. `NatService` satisfies this. */
-export interface HostedNodeAddressSource {
-  /** The node's public multiaddrs (no `/p2p/` suffix), TCP then WebSocket. */
-  publicAddressesFor(nodeId: string, ports: { p2p: number; ws?: number }): string[];
-  getStatus(): { nodes: NodeReachability[] };
+/** What `join` takes: nothing for a node waiting to be claimed, or the invitation the node redeems. */
+export interface JoinOptions {
+  /** An encoded cadre invitation (`encodeCadreInvitation`), as the owner's app copies it. */
+  invitation?: string;
 }
 
 /** Constructor options. */
@@ -148,12 +137,13 @@ export interface HostedNodeServiceOptions {
 /**
  * HostedNodeService — the host's one action, "Join a cadre", and what follows from it.
  *
- * `join` starts a child waiting to be claimed; `claimDetails` reads the node's
- * addresses and builds the QR payload; the status watcher ({@link startWatching})
- * notices the claim and the node's liveness; `respawn` brings a dead child back as
- * the same node with the same secret and ports; `remove` and `reset` end it. The
- * host contributes capacity only: it never holds an owner key, and the node
- * belongs to whoever claims it.
+ * `join` starts a child waiting to be claimed, or one that redeems a cadre invitation;
+ * `claimDetails` reads a waiting node's addresses and builds the QR payload; the status
+ * watcher ({@link startWatching}) notices the claim or the redemption's outcome, and the
+ * node's liveness; `respawn` brings a dead child back as the same node with the same
+ * secret and ports; `retry` starts an invitation node again after no member could be
+ * reached; `remove` and `reset` end it. The host contributes capacity only: it never
+ * holds an owner key.
  *
  * **An ending that lands mid-operation wins.** Spawning a child takes seconds, and
  * a `remove` can land inside that window. `hosted-nodes.json` is written a whole row
@@ -161,10 +151,9 @@ export interface HostedNodeServiceOptions {
  * against what is actually stored, and merges forward only the fields it itself
  * produced — never the entry-time copy.
  *
- * NOTE: about 760 lines, mostly the comments that carry the re-read rule above; when
- * the invitation join kind lands (`cadre-host-join-by-invitation`), move the claim
- * details and address building (`claimDetails` through `isDialableFromLan`) into
- * their own module rather than growing this one.
+ * **Respawns run one at a time** ({@link serializeRespawns}): the supervisor's passes and
+ * restarts and `retry` share one queue, since two overlapping respawns of one id both spawn
+ * a child and the second drops the first's orchestrator handle.
  */
 export class HostedNodeService {
   private readonly orchestrator: HostedNodeOrchestrator;
@@ -175,6 +164,8 @@ export class HostedNodeService {
   private readonly watcher: HostedNodeWatcher;
   /** Serialization tail for `join`, so two joins at once cannot interleave their store writes. */
   private joinTail: Promise<void> = Promise.resolve();
+  /** Serialization tail for every respawn — see {@link serializeRespawns}. */
+  private respawnTail: Promise<void> = Promise.resolve();
 
   constructor(opts: HostedNodeServiceOptions) {
     this.orchestrator = opts.orchestrator;
@@ -225,23 +216,30 @@ export class HostedNodeService {
   }
 
   /**
-   * Start a node waiting to be claimed: mint its claim secret, write the record,
-   * spawn the child with the placeholder party, and record its handles. On any
-   * orchestrator failure the reserved resources are reclaimed and the record is
-   * marked `error`. Resolves once the child is spawned; its `/status` may take a
-   * few seconds more, which `claimDetails` reports as `node_unavailable`.
+   * Start a node: write the record, spawn the child, and record its handles. Without an
+   * invitation the node waits to be claimed — a fresh claim secret, the placeholder
+   * party, `unclaimed`. With one it redeems the invitation — the invitation's party,
+   * `joining` — and an invitation that does not decode is `invalid_request` before
+   * anything is written. On any orchestrator failure the reserved resources are
+   * reclaimed and the record is marked `error`. Resolves once the child is spawned; its
+   * `/status` may take a few seconds more, which `claimDetails` reports as
+   * `node_unavailable`.
    */
-  join(): Promise<HostedNodeView> {
-    return this.serializeJoin(() => this.joinLocked());
+  async join(opts: JoinOptions = {}): Promise<HostedNodeView> {
+    const invitation = opts.invitation === undefined ? undefined : decodeInvitation(opts.invitation);
+    return this.serializeJoin(() => this.joinLocked(invitation));
   }
 
-  private async joinLocked(): Promise<HostedNodeView> {
+  private async joinLocked(invitation: DecodedInvitation | undefined): Promise<HostedNodeView> {
     const id = generateHostedNodeId();
     const nowIso = this.now().toISOString();
+    const join: HostedNodeJoin = invitation
+      ? { kind: 'invitation', encoded: invitation.encoded }
+      : { kind: 'claim', secret: generateClaimSecret() };
     const record: HostedNode = {
       id,
-      join: { kind: 'claim', secret: generateClaimSecret() },
-      partyId: PLACEHOLDER_PARTY,
+      join,
+      partyId: invitation ? invitation.decoded.partyId : PLACEHOLDER_PARTY,
       profile: 'storage',
       status: 'spawning',
       createdAt: nowIso,
@@ -280,14 +278,14 @@ export class HostedNodeService {
         : new HostedNodeError('not_found', `No such hosted node: ${id}`);
     }
 
-    const unclaimed: HostedNode = {
+    const started: HostedNode = {
       ...current,
       ...handlesOf(result),
-      status: 'unclaimed',
+      status: invitation ? 'joining' : 'unclaimed',
       updatedAt: this.now().toISOString(),
     };
     try {
-      this.store.put(unclaimed);
+      this.store.put(started);
     } catch (err) {
       const message = errorMessage(err);
       log('recording hosted node %s failed: %s', id, message);
@@ -295,10 +293,10 @@ export class HostedNodeService {
       this.markSpawnFailed(id, message);
       throw new HostedNodeError('orchestrator_error', `Failed to start hosted node: ${message}`);
     }
-    log('hosted node %s is up and waiting to be claimed', id);
+    log(invitation ? 'hosted node %s is up and redeeming its invitation' : 'hosted node %s is up and waiting to be claimed', id);
     this.emit({ kind: 'added', id });
     this.watcher.poke(id);
-    return redact(unclaimed);
+    return redact(started);
   }
 
   /**
@@ -328,24 +326,16 @@ export class HostedNodeService {
    */
   async claimDetails(id: string): Promise<ClaimDetails> {
     const node = this.requireNode(id);
-    if (node.status !== 'unclaimed') {
+    if (node.status !== 'unclaimed' || node.join.kind !== 'claim') {
       throw new HostedNodeError('invalid_state', `Hosted node ${id} is ${node.status}; only a node waiting to be claimed has claim details`);
     }
     if (!node.statusEndpoint) {
       throw new HostedNodeError('node_unavailable', `Hosted node ${id} has no status endpoint yet`);
     }
+    const { secret } = node.join;
     const status = await readNodeStatus(node.statusEndpoint);
     this.recordPeerId(id, status.peerId);
-    const multiaddrs = this.dialAddressesFor(id, status.peerId, status.multiaddrs);
-    if (multiaddrs.length === 0) {
-      throw new HostedNodeError('node_unavailable', `Hosted node ${id} reports no address a phone could dial yet`);
-    }
-    return {
-      payload: encodeNodeClaimPayload({ peerId: status.peerId, multiaddrs, secret: node.join.secret }),
-      peerId: status.peerId,
-      multiaddrs,
-      reachability: this.addresses.getStatus().nodes.find((n) => n.nodeId === id) ?? null,
-    };
+    return buildClaimDetails({ id, secret, status, ports: this.orchestrator.getNode?.(id)?.ports, addresses: this.addresses });
   }
 
   /** Cache the peer id on the record, once. Best-effort: the claim details do not depend on it. */
@@ -361,34 +351,18 @@ export class HostedNodeService {
   }
 
   /**
-   * The addresses the QR code names, in dial order: the node's public addresses
-   * from the NAT layer with the peer id appended (a phone away from home needs
-   * these), then the node's own non-loopback addresses as `/status` reports them
-   * (they already carry `/p2p/`; a phone at home dials these). Loopback and relay
-   * entries are dropped — nothing off this machine can use the former, and no
-   * hosted node holds a relay reservation today.
-   */
-  private dialAddressesFor(id: string, peerId: string, reported: string[]): string[] {
-    const ports = this.orchestrator.getNode?.(id)?.ports;
-    const publicAddrs = ports
-      ? this.addresses.publicAddressesFor(id, ports).map((a) => `${a}/p2p/${peerId}`)
-      : [];
-    const lanAddrs = reported.filter((a) => isDialableFromLan(a));
-    return [...new Set([...publicAddrs, ...lanAddrs])];
-  }
-
-  /**
    * Re-spawn a node that is no longer running, replaying the record's party and
-   * claim secret. The node keeps its workdir — and with it its identity key and
-   * node-local stores — and comes back on the same ports, so it is the *same*
-   * peer at the same addresses: a QR code already shown stays valid, and a claimed
-   * node's cadre finds it where it was. Keeping the secret after the claim is
-   * deliberate: `cadre-cli` honours `claim.json` and, with the secret still set,
-   * answers a rival `already-claimed`.
+   * claim secret, or its invitation while it is still `joining`. The node keeps its
+   * workdir — and with it its identity key and node-local stores — and comes back on
+   * the same ports, so it is the *same* peer at the same addresses: a QR code already
+   * shown stays valid, and a joined node's cadre finds it where it was. Keeping the
+   * secret after the claim is deliberate: `cadre-cli` honours `claim.json` and, with the
+   * secret still set, answers a rival `already-claimed`. A joined invitation node comes
+   * back without its invitation ({@link spawnRequestFor} says why).
    *
    * **Status is deliberately unchanged.** A `joined` node stays `joined`; an
-   * `unclaimed` one keeps waiting. `connected` is dropped until the watcher reads
-   * the new child.
+   * `unclaimed` one keeps waiting, a `joining` one redeems again. `connected` is
+   * dropped until the watcher reads the new child.
    *
    * **An ending that lands mid-spawn wins.** The record is re-read after the
    * orchestrator returns; if it was removed (or went `error`) while the child was
@@ -397,9 +371,9 @@ export class HostedNodeService {
    * sweep over the store keeps going. Orchestrator failures DO throw; the caller
    * owns backoff/give-up.
    *
-   * NOTE: not serialized. Two overlapping calls for the same id both spawn a
-   * child, and the second spawn drops the first's orchestrator handle — leaving
-   * an unmanaged process. The supervisor serializes its passes for this reason.
+   * Not serialized itself: callers run it on {@link serializeRespawns}. Two overlapping
+   * calls for the same id both spawn a child, and the second spawn drops the first's
+   * orchestrator handle — leaving an unmanaged process.
    */
   async respawn(id: string, opts: RespawnOptions = {}): Promise<RespawnResult> {
     const node = this.requireNode(id);
@@ -425,7 +399,7 @@ export class HostedNodeService {
       // spawn was in flight must stand.
       const current = this.store.get(id);
       if (!current || !RESPAWNABLE_STATUSES.has(current.status)) {
-        return this.abandonRespawn(id, result.dockerId, current);
+        return this.abandonRespawn(id, spawned, current);
       }
 
       const { connected: _connected, ...rest } = current;
@@ -454,6 +428,48 @@ export class HostedNodeService {
   }
 
   /**
+   * Start an invitation node again after no member of its cadre could be reached: the
+   * `error` record goes back to `joining` and is respawned with its invitation, without
+   * spending a respawn attempt. On the respawn queue, so it never overlaps the
+   * supervisor's handling of the same node. `409 invalid_state` unless the node is `error`
+   * with `retryable` — a refused invitation stays refused, and the supervisor's give-up and
+   * the other failures are a reset's.
+   */
+  retry(id: string): Promise<HostedNodeView> {
+    return this.serializeRespawns(() => this.retryLocked(id));
+  }
+
+  private async retryLocked(id: string): Promise<HostedNodeView> {
+    const node = this.requireNode(id);
+    if (node.status !== 'error' || node.retryable !== true) {
+      throw new HostedNodeError('invalid_state', `Hosted node ${id} is ${node.status}${node.status === 'error' ? ' and not retryable' : ''}; only an invitation no member could be reached for can be retried`);
+    }
+    // The watcher stops a child whose redemption failed; one still running (that stop
+    // failed, or a host restart re-attached it) would make the spawn below refuse.
+    if (node.dockerId && await this.orchestrator.isRunning(node.dockerId)) await this.safeStop(node.dockerId);
+    // Re-read: the stop is an await, and a removal may have landed in it.
+    const current = this.store.get(id);
+    if (current?.status !== 'error') {
+      throw current
+        ? new HostedNodeError('invalid_state', `Hosted node ${id} went ${current.status} before its retry started`)
+        : new HostedNodeError('not_found', `No such hosted node: ${id}`);
+    }
+    const { error: _error, retryable: _retryable, ...rest } = current;
+    this.store.put({ ...rest, status: 'joining', updatedAt: this.now().toISOString() });
+    log('retrying the invitation of hosted node %s', id);
+    this.emit({ kind: 'changed', id });
+    // A respawn that throws leaves the record `joining` with no child, which the
+    // supervisor's next pass respawns, counting the attempt.
+    const result = await this.respawn(id, { countAttempt: false });
+    if (result.outcome === 'abandoned') {
+      throw result.status
+        ? new HostedNodeError('invalid_state', `Hosted node ${id} went ${result.status} while its retry was starting`)
+        : new HostedNodeError('not_found', `No such hosted node: ${id}`);
+    }
+    return result.node;
+  }
+
+  /**
    * Give up on a respawn whose record ended while the child was starting: stop
    * the new child and, unless the record went `error`, reclaim it.
    *
@@ -470,18 +486,17 @@ export class HostedNodeService {
    * (`<rootDir>/<containerId>`), reclaiming here would delete exactly what
    * `giveUp` meant to keep.
    *
-   * NOTE: that skipped reclaim leaks the new spawn's ports — the record still
-   * names the *previous* `dockerId`, so a later `remove` cleans up the old
-   * handle, not this one. Unreachable today (`giveUp` is only called from the
-   * supervisor's serialized pass, so it cannot overlap a respawn); if a second
-   * `respawn` caller ever appears, write the new `dockerId` onto the `error`
-   * record here so that later `remove` reclaims the right child.
+   * The `error` record is then pointed at the new child, the one that exists, so a
+   * later `remove` reclaims its ports and workdir. `giveUp` runs on the respawn queue
+   * and cannot overlap a respawn; the watcher's write of a failed invitation can, when
+   * a poll of the old child answers while the new one is starting.
    */
-  private async abandonRespawn(id: string, dockerId: string, current: HostedNode | undefined): Promise<RespawnResult> {
+  private async abandonRespawn(id: string, spawned: SpawnedHandles, current: HostedNode | undefined): Promise<RespawnResult> {
     const status = current?.status;
-    log('hosted node %s went %s during respawn — abandoning new child %s', id, status ?? 'missing', dockerId);
-    await this.safeStop(dockerId);
-    if (status !== 'error') await this.safeReclaim(dockerId);
+    log('hosted node %s went %s during respawn — abandoning new child %s', id, status ?? 'missing', spawned.dockerId);
+    await this.safeStop(spawned.dockerId);
+    if (status === 'error') this.storeRespawnAttempt(id, undefined, spawned);
+    else await this.safeReclaim(spawned.dockerId);
     return status ? { outcome: 'abandoned', status } : { outcome: 'abandoned' };
   }
 
@@ -537,9 +552,11 @@ export class HostedNodeService {
   }
 
   /**
-   * Remove a node and start a fresh one with a new secret and identity. For the
-   * case where someone else photographed the QR code and claimed the node first,
-   * and for an `error` node the admin wants to try again.
+   * Remove a node and start a fresh one waiting to be claimed, with a new secret and
+   * identity. For the case where someone else photographed the QR code and claimed the
+   * node first, and for an `error` node the admin wants to try again. An invitation node
+   * is replaced by one waiting to be claimed too: its invitation may be spent, and the
+   * admin can join with a fresh one instead.
    */
   async reset(id: string): Promise<HostedNodeView> {
     await this.remove(id);
@@ -700,6 +717,17 @@ export class HostedNodeService {
     this.joinTail = run.then(() => undefined, () => undefined);
     return run;
   }
+
+  /**
+   * Run `fn` after every respawn already queued. Every caller of {@link respawn} goes
+   * through here: the supervisor's reconcile passes and restarts, and {@link retry}.
+   */
+  serializeRespawns<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.respawnTail.then(fn, fn);
+    // As in `serializeJoin`: a failed pass only sequences the next one, never rejects it.
+    this.respawnTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
 }
 
 /** `hn_<high-entropy base64url>` — also the node's orchestrator containerId and workdir name. */
@@ -711,15 +739,39 @@ function generateClaimSecret(): string {
   return randomBytes(CLAIM_SECRET_BYTES).toString('base64url');
 }
 
-/** The spawn a record describes: its party (the placeholder until the claim), profile and claim secret. Used by `join` and `respawn` alike. */
+/** An invitation `join` was given, with what decoding it found. */
+interface DecodedInvitation {
+  encoded: string;
+  decoded: CadreInvitation;
+}
+
+/** Decode a pasted invitation; one that does not decode is `invalid_request` with the decoder's reason. */
+function decodeInvitation(encoded: string): DecodedInvitation {
+  const trimmed = encoded.trim();
+  try {
+    return { encoded: trimmed, decoded: decodeCadreInvitation(trimmed) };
+  } catch (err) {
+    throw new HostedNodeError('invalid_request', `The invitation does not decode: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * The spawn a record describes: its party, profile, and how it gets into its cadre. Used
+ * by `join` and `respawn` alike.
+ *
+ * An invitation is passed until the node has joined, and never after: a joined node is a
+ * member whose rows are in its own control database, and an invitation that expired
+ * meanwhile must not turn a healthy member's restart into a refusal.
+ */
 function spawnRequestFor(node: HostedNode): HostedSpawnRequest {
-  return {
+  const base: HostedSpawnRequest = {
     containerId: node.id,
     partyId: node.partyId,
     bootstrapNodes: [],
     profile: node.profile,
-    claimSecret: node.join.secret,
   };
+  if (node.join.kind === 'claim') return { ...base, claimSecret: node.join.secret };
+  return node.status === 'joined' ? base : { ...base, invitation: node.join.encoded };
 }
 
 /** The record fields a spawn result lands. `seedToken` and `seedEndpoint` are the provider's shape; cadre-host ignores both. */
@@ -727,7 +779,7 @@ function handlesOf(result: OrchestratorCreateResult): SpawnedHandles {
   return { dockerId: result.dockerId, statusEndpoint: statusUrlFor(result.healthEndpoint) };
 }
 
-/** Strip the claim secret. */
+/** Strip the claim secret or the invitation. */
 function redact(node: HostedNode): HostedNodeView {
   const { join, ...rest } = node;
   return { ...rest, join: { kind: join.kind } };
@@ -740,26 +792,4 @@ function redact(node: HostedNode): HostedNodeView {
  */
 function isStuckSpawning(node: HostedNode | undefined, cutoff: number): boolean {
   return node?.status === 'spawning' && Date.parse(node.updatedAt) < cutoff;
-}
-
-/**
- * Whether an address the node reports is one a phone on the host's LAN can dial:
- * not loopback, not the unspecified address (libp2p expands a `0.0.0.0` listen into
- * interface addresses, but a raw one names nothing to dial), not a relay circuit,
- * and parsable. A DNS address passes (it names something off this machine); an
- * address with no host component at all is dropped.
- */
-function isDialableFromLan(addr: string): boolean {
-  let components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>;
-  try {
-    components = multiaddr(addr).getComponents();
-  } catch {
-    return false;
-  }
-  if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return false;
-  const host = components[0];
-  if (!host?.value) return false;
-  if (host.code === CODE_IP4) return !host.value.startsWith('127.') && host.value !== '0.0.0.0';
-  if (host.code === CODE_IP6) return host.value !== '::1' && host.value !== '::';
-  return true;
 }

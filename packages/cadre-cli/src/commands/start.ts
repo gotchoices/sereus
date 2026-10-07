@@ -8,7 +8,6 @@ import {
   type ControlNetworkSeed,
   type NodeClaimRecord,
   type SeedTrustPolicy,
-  decodeCadreInvitation,
   type CadreInvitation,
 } from '@serfab/cadre-core';
 import { fromString } from 'uint8arrays';
@@ -17,7 +16,14 @@ import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record.js';
 import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor } from './start-node.js';
-import { HealthServer } from '../server/health.js';
+import {
+  decodeInvitationFor,
+  redeemStartupInvitation,
+  refuseInvitationConflicts,
+  startupInvitation,
+  type StartupInvitation,
+} from './start-invitation.js';
+import { HealthServer, type InvitationStatus } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
 
 const log = debug('cadre:cli:start');
@@ -51,49 +57,6 @@ export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkS
     );
   }
   return decoded as ControlNetworkSeed;
-}
-
-/**
- * Decode `--invitation` and check that it names this node's party, throwing when either fails.
- * `redeemCadreInvitation` repeats the party check, but like {@link decodeSeedFor} this runs
- * before anything starts, so a bundle for another cadre stops start-up instead of leaving the
- * node running un-admitted.
- */
-export function decodeInvitationFor(encoded: string, partyId: string): CadreInvitation {
-  let decoded: CadreInvitation;
-  try {
-    decoded = decodeCadreInvitation(encoded);
-  } catch (err) {
-    throw new Error(
-      `--invitation does not decode as a cadre invitation: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err }
-    );
-  }
-  if (decoded.partyId !== partyId) {
-    throw new Error(
-      `--invitation was minted for party ${decoded.partyId}, but this node's config names party ${partyId} `
-      + '(controlNetwork.partyId). Use an invitation minted by this party\'s owner, or correct the config.'
-    );
-  }
-  return decoded;
-}
-
-/**
- * The start-up options that cannot be combined with `--invitation`, each with why. A seed is
- * the owner-online way to the same end. `--owner` runs the founder's genesis insert on a fresh
- * store, which on a node that is joining somebody else's cadre would seat a second founding
- * key beside theirs; an invitation that grants ownership seats this node's key by consent
- * instead, and the node wires it for signing on a later start with `--owner` once the
- * invitation flag is dropped.
- */
-export function refuseInvitationConflicts(options: { seed?: string; owner?: boolean }): void {
-  if (options.seed) {
-    throw new Error('--invitation and --seed cannot be combined: a seed is the owner-online way to join, an invitation the owner-offline way. Pass one of them.');
-  }
-  if (options.owner) {
-    throw new Error('--invitation and --owner cannot be combined: --owner founds a cadre on this node, --invitation joins one. '
-      + 'Join first; if the invitation granted ownership, restart with --owner and without --invitation to wire the key for signing.');
-  }
 }
 
 /** Commander collector for the repeatable `--pin-owner-key` option. */
@@ -134,21 +97,22 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * Refuse every start-up option that cannot be combined with a claim, all named in one error.
  * A node waiting to be claimed takes its owner from the claim, and a claimed node took it from
  * the claim on record; each of these is another way in: `--owner` founds a cadre on this node,
- * `--seed` and `--invitation` join one, and a pinned owner key (`--pin-owner-key`,
- * `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node refuses a pin beside a
+ * `--seed` and an invitation (`--invitation`, `CADRE_INVITATION`) join one, and a pinned owner
+ * key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node
+ * refuses a pin beside a
  * claim itself (`CadreNodeConfig.claim`), but its message names the config field; this check
  * runs first — for the secret, before the config is loaded — and names the options the
  * operator actually passed. `subject` is what the message blames: the secret, or the record.
  */
 export function refuseClaimConflicts(
-  options: { owner?: boolean; seed?: string; invitation?: string; pinOwnerKey?: string[] },
+  options: { owner?: boolean; seed?: string; invitation?: StartupInvitation; pinOwnerKey?: string[] },
   ownerKeysEnv: string | undefined,
   subject: string = 'CADRE_CLAIM_SECRET',
 ): void {
   const conflicts = [
     options.owner ? '--owner' : undefined,
     options.seed ? '--seed' : undefined,
-    options.invitation ? '--invitation' : undefined,
+    options.invitation?.source,
     collectPinnedOwnerKeys(options.pinOwnerKey, undefined).length > 0 ? '--pin-owner-key' : undefined,
     collectPinnedOwnerKeys(undefined, ownerKeysEnv).length > 0 ? 'CADRE_OWNER_KEYS' : undefined,
   ].filter((name): name is string => name !== undefined);
@@ -211,7 +175,7 @@ export const startCommand = new Command('start')
   // Each seed peer is a few hundred bytes of JSON before base64. If cadres grow to dozens of
   // machines, add a --seed-file.
   .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup — what `cadre enroll add` prints on the owner machine. Start-up fails if it does not decode or names a party other than the config\'s controlNetwork.partyId')
-  .option('--invitation <encoded>', 'Redeem a cadre invitation on startup — what `cadre enroll invite` prints on the owner machine — at any member of the cadre it names, so this node can join while the owner is offline. Needs a node identity (the redemption is signed with it); cannot be combined with --seed or --owner. Start-up fails if it does not decode or names another party')
+  .option('--invitation <encoded>', 'Redeem a cadre invitation on startup — what `cadre enroll invite` prints on the owner machine — at any member of the cadre it names, so this node can join while the owner is offline. CADRE_INVITATION is the same, kept out of the process list; pass one of the two. Needs a node identity (the redemption is signed with it); cannot be combined with --seed or --owner. Start-up fails if it does not decode or names another party')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
@@ -233,7 +197,9 @@ export const startCommand = new Command('start')
       // Env only, never a flag: a flag value shows in the process list. Set-but-empty is unset,
       // as for every other variable.
       const claimSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
-      if (claimSecret !== undefined) refuseClaimConflicts(options, commandEnv('CADRE_OWNER_KEYS'));
+      const startup = startupInvitation(options.invitation, commandEnv('CADRE_INVITATION'));
+      const conflictOptions = { owner: options.owner, seed: options.seed, invitation: startup, pinOwnerKey: options.pinOwnerKey };
+      if (claimSecret !== undefined) refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'));
 
       // A --identity-file flag overrides the config file's identity. Route it through the env
       // mapping (CADRE_KEY_FILE -> identity.keyFile) so the loader resolves it exactly as the
@@ -253,21 +219,23 @@ export const startCommand = new Command('start')
       // does, whether or not the secret is still set.
       const { partyId, claim: claimOnRecord } = await partyOnRecord(config);
       if (claimOnRecord) {
-        refuseClaimConflicts(options, commandEnv('CADRE_OWNER_KEYS'), `The claim on record (${claimRecordPath(config.nodeStateDir)})`);
+        refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'), `The claim on record (${claimRecordPath(config.nodeStateDir)})`);
         reportClaimOnRecord(claimOnRecord, config.controlNetwork.partyId);
       }
 
       // The conflict check comes before either decode, so an operator who passed both flags
       // is told that, not that one of the two values failed to decode.
-      if (options.invitation) refuseInvitationConflicts(options);
+      if (startup) refuseInvitationConflicts(startup, options);
       const seed = options.seed ? decodeSeedFor(options.seed, partyId) : undefined;
       let invitation: CadreInvitation | undefined;
-      if (options.invitation) {
+      if (startup) {
         if (!config.privateKey) {
-          throw new Error('--invitation requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it');
+          throw new Error(`${startup.source} requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it`);
         }
-        invitation = decodeInvitationFor(options.invitation, partyId);
+        invitation = decodeInvitationFor(startup, partyId);
       }
+      // How the redemption below stands, as `/status` reports it to a launcher following the join.
+      let invitationStatus: InvitationStatus | undefined = invitation ? { state: 'pending' } : undefined;
 
       // Operator-pinned owner keys anchor cold-start seed trust. Build the
       // policy BEFORE constructing CadreNode so every later service-construction
@@ -313,6 +281,7 @@ export const startCommand = new Command('start')
           profile: config.profile,
           seedToken,
           claim: () => ({ secretConfigured: claimSecret !== undefined, claimedBy: claimRecord?.ownerKey }),
+          invitation: () => invitationStatus,
         });
         healthServer.attach(node);
         await healthServer.start();
@@ -384,24 +353,8 @@ export const startCommand = new Command('start')
       }
 
       // Join by invitation, right after the node is up: the redemption dials the members the
-      // bundle names and the node then syncs the control database over the connection it
-      // holds. A node that is already a member (a restart with the flag still in its service
-      // file) is answered as accepted by the member's idempotent redemption; the log line
-      // cannot tell the two apart, and neither needs to. A failure is reported and the node
-      // keeps running, as a failed --seed does: nothing was written here, and the operator
-      // can re-run with a fresh invitation.
-      // NOTE: a retryable refusal (`err.retryable`: no member reachable, or a member that
-      // answered busy/conflict in the window after the owner left its cohort) is not retried
-      // here; the operator re-runs. If headless joins in that window become common, add a
-      // bounded retry on `retryable` before giving up.
-      if (invitation) {
-        try {
-          const joined = await node.redeemCadreInvitation(invitation);
-          console.log(`✓ Invitation accepted by member ${joined.peerId ?? '(unnamed address)'}: this node is a member of party ${invitation.partyId}${joined.grantsOwner ? ', and an owner' : ''}`);
-        } catch (err) {
-          console.error('✗ Failed to redeem the invitation:', err instanceof Error ? err.message : err);
-        }
-      }
+      // bundle names and the node then syncs the control database over the connection it holds.
+      if (invitation) invitationStatus = await redeemStartupInvitation(node, invitation);
 
       // Owner init: bridge the libp2p identity into a base64url owner
       // keypair, run the idempotent genesis insert on a fresh party, then bring

@@ -18,6 +18,7 @@ const EPHEMERAL_PORT = 0;
 // concrete health/metrics ports — so the child-process scenarios each hard-code
 // a disjoint band by convention, and nothing enforces the split:
 //   20040-20199  cadre-host-join-by-qr (the host's orchestrator)
+//   20200-20359  cadre-host-join-by-invitation (the host's orchestrator)
 // Disjoint today. If a new child-process scenario lands, or two of these ever
 // run in the same worker window on overlapping ranges, move the claim into a
 // single exported table here so the bands are allocated rather than remembered.

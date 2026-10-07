@@ -87,6 +87,11 @@ export interface HealthServerOptions {
    * accepted in this process shows at once. Absent: no claim secret, `node.claim` is `none`.
    */
   claim?: () => ClaimFacts;
+  /**
+   * How the start-up invitation's redemption stands, read on every `/status`. Absent, or
+   * answering undefined: the node was started without one, and `node.invitation` is omitted.
+   */
+  invitation?: () => InvitationStatus | undefined;
 }
 
 /**
@@ -110,6 +115,21 @@ export interface ClaimFacts {
  * and no claim on record, `claimed` once a claim is on record (a restarted claimed node included).
  */
 export type ClaimState = 'awaiting' | 'claimed' | 'none';
+
+/**
+ * The redemption of the invitation the node was started with (`--invitation`,
+ * `CADRE_INVITATION`): `pending` from start until it settles, then `accepted` or `failed`.
+ * cadre-host's join by invitation polls it.
+ */
+export interface InvitationStatus {
+  state: 'pending' | 'accepted' | 'failed';
+  /** `accepted` only: the member that admitted the node, when the address it answered at named one. */
+  memberPeerId?: string;
+  /** `failed` only: what went wrong; a member's refusal carries its code in parentheses (`invite-spent`). */
+  error?: string;
+  /** `failed` only: whether starting again with the same invitation may succeed (no member was reachable). */
+  retryable?: boolean;
+}
 
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy' | 'starting';
@@ -142,6 +162,8 @@ export interface HealthStatus {
      * `claimed`. With `partyId`, what cadre-host shows as "claimed by <key> into cadre <party>".
      */
     claimedBy?: string;
+    /** Present only when the node was started with an invitation. */
+    invitation?: InvitationStatus;
   };
 }
 
@@ -187,6 +209,7 @@ export class HealthServer {
       profile: options.profile ?? '',
       seedToken: options.seedToken ?? '',
       claim: options.claim ?? (() => ({ secretConfigured: false })),
+      invitation: options.invitation ?? (() => undefined),
     };
   }
 
@@ -238,6 +261,7 @@ export class HealthServer {
     const { paths: _paths, ...connectionPaths } =
       this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
     const claim = this.options.claim();
+    const invitation = this.options.invitation();
 
     return {
       status: isRunning ? 'healthy' : 'starting',
@@ -254,6 +278,7 @@ export class HealthServer {
         connectionPaths,
         claim: claimState(claim),
         ...(claim.claimedBy !== undefined ? { claimedBy: claim.claimedBy } : {}),
+        ...(invitation ? { invitation } : {}),
       },
     };
   }

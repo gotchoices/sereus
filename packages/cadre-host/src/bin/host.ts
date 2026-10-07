@@ -58,6 +58,7 @@ import { printForwardResult, printNatStatus, type NatStatusLike } from './nat-ou
 import {
   printClaimPayload,
   printClaimed,
+  printInvitationOutcome,
   printNodeList,
   type ClaimDetailsLike,
   type HostedNodeLike,
@@ -445,37 +446,49 @@ async function confirmDestructive(message: string): Promise<boolean> {
 }
 
 // ============================================================================
-// join — start a node waiting to be claimed and show the QR code
+// join — start a node waiting to be claimed and show the QR code, or one that
+// redeems a cadre invitation
 // ============================================================================
 //
 // The host's one action. The owner's phone scans the code (or takes the pasted
 // text), claims the node, and the node joins that phone's cadre. To put up a
-// node for a friend, run it again and let the friend scan. These commands are
-// thin HTTP clients of the loopback `/api/hosted-nodes` surface — no bearer
-// (same-machine admin), same posture as `nat`.
+// node for a friend, run it again and let the friend scan. With `--invitation`
+// the node instead redeems an invitation the owner's app copied, at whichever
+// member of the cadre it can reach. These commands are thin HTTP clients of the
+// loopback `/api/hosted-nodes` surface — no bearer (same-machine admin), same
+// posture as `nat`.
 
 /** How long `join` waits for the new child's `/status` before giving up on the claim details. */
 const CLAIM_DETAILS_WAIT_MS = 60_000;
 const CLAIM_DETAILS_POLL_MS = 500;
-/** How often `join` re-reads the node while waiting for the claim. */
+/** How often `join` re-reads the node while waiting for the claim or the redemption. */
 const CLAIM_WAIT_POLL_MS = 2_000;
 
 interface JoinOptions {
   qr?: boolean;
   wait?: boolean;
+  invitation?: string;
   port: string;
   host: string;
 }
 
 program
   .command('join')
-  .description('Start a node waiting to be claimed and show the code the owner\'s phone scans to add it to their cadre')
+  .description('Start a node waiting to be claimed and show the code the owner\'s phone scans to add it to their cadre, or with --invitation one that redeems a cadre invitation')
+  .option('--invitation <encoded>', 'Join with a cadre invitation the owner\'s app copied instead of showing a code; a member of the cadre must be reachable from this machine')
   .option('--no-qr', 'Print only the join text, no QR code')
-  .option('--no-wait', 'Exit once the code is shown instead of waiting for the claim')
+  .option('--no-wait', 'Exit once the code is shown (or the node started) instead of waiting for it to join')
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
   .action(async (opts: JoinOptions) => {
     const base = `http://${opts.host}:${resolvePort(opts.port)}`;
+    if (opts.invitation !== undefined) {
+      const { node } = await callApi<{ node: HostedNodeLike }>(
+        `${base}/api/hosted-nodes`, 'POST', { invitation: opts.invitation },
+        (error) => `cadre-host refused the invitation: ${error.message} (${error.code})`,
+      );
+      process.exit(await followInvitationJoin(base, node, opts));
+    }
     const { node } = await callApi<{ node: HostedNodeLike }>(`${base}/api/hosted-nodes`, 'POST', {});
     await showClaimAndWait(base, node, opts);
     process.exit(0);
@@ -492,7 +505,24 @@ async function showClaimAndWait(base: string, node: HostedNodeLike, opts: JoinOp
   printClaimPayload(details, { qr: opts.qr !== false });
   if (opts.wait === false) return;
   console.error('Waiting for a phone to claim this node (Ctrl-C leaves it waiting)…');
-  printClaimed(await waitForClaim(base, id));
+  const settled = await waitUntilSettled(base, id);
+  if (settled.status === 'error') {
+    console.error(`✗ Hosted node ${id} failed: ${settled.error ?? 'unknown error'}`);
+    process.exit(1);
+  }
+  printClaimed(settled);
+}
+
+/**
+ * Follow a node redeeming its invitation until a member admits it or the redemption fails,
+ * unless `--no-wait`. Returns the exit code: 1 when it failed. Ctrl-C leaves the node joining.
+ */
+async function followInvitationJoin(base: string, node: HostedNodeLike, opts: { wait?: boolean }): Promise<number> {
+  console.error(`Joining cadre ${node.partyId ?? '?'} through the invitation…`);
+  if (opts.wait === false) return 0;
+  const settled = await waitUntilSettled(base, node.id ?? '');
+  printInvitationOutcome(settled);
+  return settled.status === 'joined' ? 0 : 1;
 }
 
 /** Poll `GET …/:id/claim` until the child answers (503 meanwhile), up to `CLAIM_DETAILS_WAIT_MS`. */
@@ -511,16 +541,12 @@ async function waitForClaimDetails(base: string, id: string): Promise<ClaimDetai
   }
 }
 
-/** Poll `GET …/:id` until the node is `joined`; an `error` node ends the wait with its message. */
-async function waitForClaim(base: string, id: string): Promise<HostedNodeLike> {
+/** Poll `GET …/:id` until the node is `joined` or `error`. */
+async function waitUntilSettled(base: string, id: string): Promise<HostedNodeLike> {
   const url = `${base}/api/hosted-nodes/${encodeURIComponent(id)}`;
   while (true) {
     const { node } = await callApi<{ node: HostedNodeLike }>(url, 'GET');
-    if (node.status === 'joined') return node;
-    if (node.status === 'error') {
-      console.error(`✗ Hosted node ${id} failed: ${node.error ?? 'unknown error'}`);
-      process.exit(1);
-    }
+    if (node.status === 'joined' || node.status === 'error') return node;
     await sleep(CLAIM_WAIT_POLL_MS);
   }
 }
@@ -531,7 +557,7 @@ async function waitForClaim(base: string, id: string): Promise<HostedNodeLike> {
 
 const node = program
   .command('node')
-  .description('List, remove or reset the nodes this host runs');
+  .description('List, remove, reset or retry the nodes this host runs');
 
 node
   .command('list')
@@ -579,6 +605,24 @@ node
     console.error(`Removed hosted node ${id}.`);
     await showClaimAndWait(base, fresh, opts);
     process.exit(0);
+  });
+
+node
+  .command('retry')
+  .description('Start an invitation node again after no member of its cadre could be reached, and wait until it joins or fails')
+  .argument('<id>', 'Hosted node id (hn_…) whose invitation failed')
+  .option('--no-wait', 'Exit once the node is started again instead of waiting for it to join')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (id: string, opts: { wait?: boolean; port: string; host: string }) => {
+    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
+    const { node: retried } = await callApi<{ node: HostedNodeLike }>(
+      `${base}/api/hosted-nodes/${encodeURIComponent(id)}/retry`, 'POST', {},
+      (error) => (error.code === 'not_found'
+        ? `No hosted node with id "${id}". Run \`cadre-host node list\` to list them.`
+        : `cadre-host refused the retry: ${error.message} (${error.code})`),
+    );
+    process.exit(await followInvitationJoin(base, retried, opts));
   });
 
 function sleep(ms: number): Promise<void> {

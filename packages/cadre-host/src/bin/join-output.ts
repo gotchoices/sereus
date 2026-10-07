@@ -1,7 +1,8 @@
 /**
  * Human-readable output of the `cadre-host join` and `cadre-host node` commands:
  * the claim payload as a terminal QR code and as text, the warning when the node
- * is not reachable from outside, the claimed line, and the node list.
+ * is not reachable from outside, the claimed line, the outcome of a join by
+ * invitation, and the node list.
  *
  * The types are loose mirrors of `ClaimDetails` and `HostedNodeView`
  * (`../hosted/`): the body arrives over HTTP from whichever cadre-host version is
@@ -24,11 +25,14 @@ export interface ClaimDetailsLike {
 
 export interface HostedNodeLike {
   id?: string;
+  join?: { kind?: string };
   status?: string;
   partyId?: string;
   ownerKey?: string;
+  memberPeerId?: string;
   connected?: boolean;
   error?: string;
+  retryable?: boolean;
 }
 
 const requireForQr = createRequire(import.meta.url);
@@ -62,6 +66,25 @@ export function printClaimed(node: HostedNodeLike): void {
   console.error(`✓ Claimed by owner ${ownerFingerprint(node.ownerKey)} into cadre ${node.partyId ?? '?'}`);
 }
 
+/**
+ * How a join by invitation ended: the member that admitted the node, or the failure. A
+ * retryable failure means no member could be reached, which is the usual case for a cadre's
+ * first always-on node: its only members are phones, which nothing can dial.
+ */
+export function printInvitationOutcome(node: HostedNodeLike): void {
+  if (node.status === 'joined') {
+    console.error(`✓ Joined cadre ${node.partyId ?? '?'} at member ${node.memberPeerId ?? '(unnamed)'}`);
+    return;
+  }
+  console.error(`✗ Could not join: ${node.error ?? 'unknown error'}`);
+  if (!node.retryable) return;
+  console.error(
+    'If this is the cadre\'s first always-on node, no member can be reached yet: use `cadre-host join` without '
+    + '`--invitation` and scan the QR code from the phone instead. Otherwise, once a member is online, run '
+    + `\`cadre-host node retry ${node.id ?? '<id>'}\`.`,
+  );
+}
+
 /** One line per hosted node: id, status, party, owner fingerprint, connected. */
 export function printNodeList(nodes: HostedNodeLike[]): void {
   if (nodes.length === 0) {
@@ -70,7 +93,8 @@ export function printNodeList(nodes: HostedNodeLike[]): void {
   }
   console.log('Hosted nodes:');
   for (const node of nodes) {
-    const party = node.status === 'joined' ? `cadre ${node.partyId ?? '?'}` : (node.status ?? '?');
+    // An invitation node names its cadre from the start; a claim node only once claimed.
+    const party = node.status === 'joined' || node.join?.kind === 'invitation' ? `cadre ${node.partyId ?? '?'}` : (node.status ?? '?');
     const owner = node.ownerKey ? `  owner ${ownerFingerprint(node.ownerKey)}` : '';
     const connected = node.status === 'joined' ? `  ${node.connected ? 'connected' : 'not connected'}` : '';
     const error = node.error ? `  (${node.error})` : '';

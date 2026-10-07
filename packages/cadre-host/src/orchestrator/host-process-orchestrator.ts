@@ -85,6 +85,17 @@ function scrubbedParentEnv(): NodeJS.ProcessEnv {
 }
 
 /**
+ * The env carrying how the child gets into its cadre, and nowhere else (see
+ * `HostedSpawnRequest`): `CADRE_CLAIM_SECRET` makes `cadre-cli start` wait to be
+ * claimed, `CADRE_INVITATION` makes it redeem the invitation once it is up.
+ */
+function joinEnv(request: HostedSpawnRequest): Record<string, string> | undefined {
+  if (request.claimSecret) return { CADRE_CLAIM_SECRET: request.claimSecret };
+  if (request.invitation) return { CADRE_INVITATION: request.invitation };
+  return undefined;
+}
+
+/**
  * The libp2p listen addresses a managed child binds — its `CADRE_LISTEN_ADDRS`, one
  * entry per element: TCP on the `p2p` port and WebSocket on the `ws` port, both on
  * every interface.
@@ -253,7 +264,8 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Spawn a managed node — a hosted node for some cadre, started waiting to be
-   * claimed when the request carries a `claimSecret`. The node is given its own
+   * claimed when the request carries a `claimSecret`, or redeeming the cadre
+   * invitation it carries as `invitation`. The node is given its own
    * protobuf identity key inside its workdir (`ensureNodeIdentity`, reused across
    * re-spawns of the same containerId), which is what makes its peer id stable
    * across restarts AND what makes its node-local stores durable: `cadre-cli
@@ -264,6 +276,11 @@ export class HostProcessOrchestrator implements Orchestrator {
    * every store go with it.
    */
   async createContainer(request: HostedSpawnRequest): Promise<OrchestratorCreateResult> {
+    // Before anything is allocated: `cadre-cli start` refuses the pair anyway, and a child
+    // that exits at once would only surface as a crash loop.
+    if (request.claimSecret && request.invitation) {
+      throw new Error(`container ${request.containerId}: a spawn carries a claim secret or an invitation, not both`);
+    }
     const workdir = this.workdirFor(request.containerId);
     // Sampled BEFORE `ensureNodeIdentity`, which brings the directory into
     // existence as a side effect of writing the key. Only a spawn that found
@@ -289,9 +306,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       // BEFORE the drop below, which keeps the drop → launch window synchronous
       // (see restoreDroppedHandles).
       const push = request.profile === 'storage' ? await this.resolvePush() : undefined;
-      // The claim secret reaches the child as CADRE_CLAIM_SECRET and nowhere else
-      // (see HostedSpawnRequest); `cadre-cli start` then waits to be claimed.
-      const extraEnv = request.claimSecret ? { CADRE_CLAIM_SECRET: request.claimSecret } : undefined;
+      const extraEnv = joinEnv(request);
 
       // The last `await` on this path: checked as close to the drop as it can be.
       await this.refuseRespawnOverLiveChild(request.containerId);

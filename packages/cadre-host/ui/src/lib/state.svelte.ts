@@ -91,20 +91,29 @@ export interface NatStatusSnapshot {
 }
 
 /** Mirror of the server's `HostedNodeStatus` (`src/hosted/types.ts`). */
-export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joined' | 'error';
+export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joining' | 'joined' | 'error';
 
-/** Mirror of the server's `HostedNodeView`, the fields the UI shows. The wire shape never carries the claim secret. */
+/**
+ * Mirror of the server's `HostedNodeView`, the fields the UI shows. The wire shape never
+ * carries the claim secret or the invitation.
+ */
 export interface HostedNodeView {
 	id: string;
-	/** The placeholder `unclaimed` until the claim names the party. */
+	/** `claim`: started waiting for a phone to scan its code; `invitation`: started redeeming a pasted invitation. */
+	join: { kind: 'claim' | 'invitation' };
+	/** A claim node: the placeholder `unclaimed` until the claim names the party. An invitation node: its cadre from the start. */
 	partyId: string;
 	status: HostedNodeStatus;
 	peerId?: string;
-	/** Set by the claim, together with the claimed `partyId`. */
+	/** Set when the node joins: the claimant's key, or the invitation's issuer. */
 	ownerKey?: string;
+	/** An invitation node, once joined: the member that admitted it. */
+	memberPeerId?: string;
 	/** The node holds at least one control connection. */
 	connected?: boolean;
 	error?: string;
+	/** Set with `error` when an invitation failed: true when no member could be reached and Retry may help. */
+	retryable?: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -345,11 +354,20 @@ function refreshAfterHostedChange(): Promise<unknown> {
 }
 
 /**
- * "Join a cadre": start a node waiting to be claimed. Resolves with the new
- * record once the child is spawned (seconds); errors reach the caller as `ApiError`.
+ * "Join a cadre": start a node waiting to be claimed, or, given a pasted invitation, one
+ * that redeems it. Resolves with the new record once the child is spawned (seconds);
+ * errors reach the caller as `ApiError` (`invalid_request` for an invitation that does
+ * not decode).
  */
-export async function joinCadre(): Promise<HostedNodeView> {
-	const r = await apiPost<{ node: HostedNodeView }>('/api/hosted-nodes');
+export async function joinCadre(invitation?: string): Promise<HostedNodeView> {
+	const r = await apiPost<{ node: HostedNodeView }>('/api/hosted-nodes', invitation === undefined ? undefined : { invitation });
+	await refreshAfterHostedChange();
+	return r.node;
+}
+
+/** Start an invitation node again after no member could be reached. Errors reach the caller as `ApiError`. */
+export async function retryHostedNode(id: string): Promise<HostedNodeView> {
+	const r = await apiPost<{ node: HostedNodeView }>(`/api/hosted-nodes/${encodeURIComponent(id)}/retry`);
 	await refreshAfterHostedChange();
 	return r.node;
 }

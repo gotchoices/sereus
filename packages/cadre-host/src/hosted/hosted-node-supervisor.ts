@@ -56,11 +56,12 @@ export const HOSTED_NODE_RESPAWN_SWEEP_MS = 60_000;
 
 /**
  * Statuses the supervisor considers. `spawning` is a join still in flight (its
- * own code path owns the child); `error` is a node the host gave up on, which
- * may not come back on its own.
+ * own code path owns the child); `error` is a node the host gave up on, or whose
+ * invitation failed, which comes back only by an explicit Retry or reset.
  */
 const SUPERVISED_STATUSES: ReadonlySet<HostedNodeStatus> = new Set<HostedNodeStatus>([
   'unclaimed',
+  'joining',
   'joined',
 ]);
 
@@ -88,8 +89,8 @@ export interface HostedNodeSupervisorOptions {
 }
 
 /**
- * HostedNodeSupervisor — owns the invariant *an `unclaimed` or `joined` node is
- * expected to be running*.
+ * HostedNodeSupervisor — owns the invariant *an `unclaimed`, `joining` or `joined`
+ * node is expected to be running*.
  *
  * Nothing else re-spawns a hosted node: `/api/nodes` is read-only. So without
  * this class a crashed, OOM-killed, or reboot-killed node stays dead with its
@@ -106,9 +107,9 @@ export interface HostedNodeSupervisorOptions {
  *
  * Passes are serialized: `HostedNodeService.respawn` is not itself serialized, and
  * two overlapping respawns of one id both spawn a child while the second drops
- * the first's orchestrator handle (see its docstring). Since two of the three
- * triggers can fire at once, the serialization lives here. A deliberate
- * {@link restart} runs on the same serialization tail.
+ * the first's orchestrator handle (see its docstring). Every pass, and a deliberate
+ * {@link restart}, runs on the service's respawn queue
+ * (`HostedNodeService.serializeRespawns`), which the service's Retry shares.
  *
  * The supervisor reconciles records to handles, never handles to records: a
  * handle no record names (`hosted-nodes.json` lost, or a handle an older build
@@ -121,8 +122,6 @@ export class HostedNodeSupervisor {
   private readonly orchestrator: SupervisedOrchestrator;
   private readonly now: () => Date;
 
-  /** Serialization tail — see the class docstring. */
-  private tail: Promise<void> = Promise.resolve();
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   /** At most one exit-triggered pass queued at a time (crash storms coalesce). */
@@ -144,7 +143,7 @@ export class HostedNodeSupervisor {
    * it respawned in *its own* pass.
    */
   reconcile(): Promise<string[]> {
-    return this.serialize(() => this.reconcileOnce());
+    return this.service.serializeRespawns(() => this.reconcileOnce());
   }
 
   /**
@@ -152,7 +151,7 @@ export class HostedNodeSupervisor {
    * only at start — its public addresses (`NatService.onNodeAddressesStale`).
    * Serialized with the reconcile passes, so it never overlaps a respawn or a
    * give-up of the same record, and it re-reads the record first: a record that
-   * is no longer `unclaimed`/`joined`, has no handle, or whose node is not
+   * is no longer supervised, has no handle, or whose node is not
    * running is left alone (a node that is down is the crash path's).
    *
    * Does not spend the record's respawn budget. A restart whose respawn throws
@@ -160,16 +159,7 @@ export class HostedNodeSupervisor {
    * a reconcile pass that takes it over through the crash path, with its counting.
    */
   restart(id: string): Promise<void> {
-    return this.serialize(() => this.restartOnce(id));
-  }
-
-  /** Run `fn` after every pass and restart already queued. */
-  private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.tail.then(fn, fn);
-    // The stored tail swallows outcomes — a failed pass must not reject the
-    // next caller's wait, only sequence after it.
-    this.tail = next.then(() => undefined, () => undefined);
-    return next;
+    return this.service.serializeRespawns(() => this.restartOnce(id));
   }
 
   /**

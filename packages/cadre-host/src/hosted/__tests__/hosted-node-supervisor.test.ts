@@ -26,6 +26,7 @@ import {
 import type { HostedNode, HostedNodeChange, HostedNodeView } from '../types.js';
 import { HostedNodeError } from '../types.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
+import { encodedTestInvitation } from './test-invitation.js';
 
 let tmpRoot: string;
 
@@ -128,7 +129,8 @@ describe('HostedNodeSupervisor.reconcile', () => {
   it('respawns an unclaimed node whose handle is dead with the record\'s secret, on the previous handle\'s ports', async () => {
     const h = makeHarness();
     const view = await h.join();
-    const secret = requireNode(h.store, view.id).join.secret;
+    const { join: joinedBy } = requireNode(h.store, view.id);
+    const secret = joinedBy.kind === 'claim' ? joinedBy.secret : undefined;
     const portsBefore = h.orch.getNode(view.id)!.ports;
     // A host restart that found the child dead: the handle is there, the process is not.
     h.orch.crash(dockerIdOf(view));
@@ -139,6 +141,25 @@ describe('HostedNodeSupervisor.reconcile', () => {
     expect(h.orch.createCalls[1]).toMatchObject({ containerId: view.id, partyId: 'unclaimed', claimSecret: secret });
     expect(h.orch.getNode(view.id)!.ports).toEqual(portsBefore);
     expect(requireNode(h.store, view.id)).toMatchObject({ status: 'unclaimed', dockerId: 'dock_2' });
+  });
+
+  it('respawns a joining invitation node with its invitation, and a joined one without it', async () => {
+    const h = makeHarness();
+    const invitation = encodedTestInvitation('party-P');
+    const view = await h.service.join({ invitation });
+    h.orch.crash(dockerIdOf(view));
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([view.id]);
+    // Still joining: the child redeems again, and a member answers a node that already got in as accepted.
+    expect(h.orch.createCalls[1]).toMatchObject({ containerId: view.id, partyId: 'party-P', invitation });
+
+    // Joined: a member whose rows are in its own database, and whose invitation may since have expired.
+    h.store.put({ ...requireNode(h.store, view.id), status: 'joined' });
+    h.orch.crash(dockerIdOf(requireNode(h.store, view.id)));
+    h.advance(HOSTED_NODE_RESPAWN_HEALTHY_MS);
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([view.id]);
+    expect(h.orch.createCalls[2]).toEqual({ containerId: view.id, partyId: 'party-P', bootstrapNodes: [], profile: 'storage' });
   });
 
   it('leaves a running node alone', async () => {

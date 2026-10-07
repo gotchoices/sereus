@@ -1,10 +1,11 @@
 /**
  * Hosted-node types for cadre-host.
  *
- * A **hosted node** is a child process the host runs for some cadre. The host starts it
- * waiting to be claimed and shows its addresses and claim secret as a QR code; the
- * owner's phone scans it, claims the node (`CadreNode.claimNode`), and the node becomes
- * part of that phone's cadre. The node belongs to whoever claims it; the host holds no
+ * A **hosted node** is a child process the host runs for some cadre. It gets into its
+ * cadre one of two ways: the host starts it waiting to be claimed and shows its addresses
+ * and claim secret as a QR code, which the owner's phone scans to claim the node
+ * (`CadreNode.claimNode`); or the host starts it with a cadre invitation the owner's app
+ * minted, which the node redeems at a member of the cadre. Either way the host holds no
  * owner key and is not an owner of any cadre its nodes serve.
  *
  * Records live in `<dataDir>/hosted-nodes.json` (`HostedNodeStore`). A record's id is also
@@ -14,18 +15,19 @@
 /**
  * Lifecycle of one hosted node:
  *   spawning   → the record is written, the child not yet spawned.
- *   unclaimed  → the child is up with a claim secret, waiting for a phone to claim it.
- *   joined     → claimed; the claim named the party and the owner.
- *   error      → the supervisor gave up on it, or the stuck-`spawning` reap found it.
+ *   unclaimed  → (claim) the child is up with a claim secret, waiting for a phone to claim it.
+ *   joining    → (invitation) the child is up, its redemption of the invitation not yet settled.
+ *   joined     → in its cadre: claimed, or the invitation accepted by a member.
+ *   error      → the supervisor gave up on it, the stuck-`spawning` reap found it, or the
+ *                invitation was refused or no member could be reached (`retryable` says which).
  *
  * Removal deletes the row; there is no terminal "removed" status. An `error` record keeps
  * its working directory (its identity key) until it is removed or reset.
  */
-export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joined' | 'error';
+export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joining' | 'joined' | 'error';
 
 /**
- * How a node gets into its cadre. `claim`: the node was started with a claim secret and
- * waits for a phone to present it. (`cadre-host-join-by-invitation` adds a second kind.)
+ * The node was started with a claim secret and waits for a phone to present it.
  */
 export interface HostedNodeClaimJoin {
   kind: 'claim';
@@ -33,7 +35,22 @@ export interface HostedNodeClaimJoin {
   secret: string;
 }
 
-export type HostedNodeJoin = HostedNodeClaimJoin;
+/**
+ * The node was started with a cadre invitation and redeems it at a member of the cadre.
+ * Kept for a respawn while `joining`: the child redeems again, and a member answers a node
+ * that already got in as accepted.
+ */
+export interface HostedNodeInvitationJoin {
+  kind: 'invitation';
+  /**
+   * The bundle as the owner's app encoded it (`encodeCadreInvitation`). It carries the
+   * invitation's private key, so it is redacted like the claim secret.
+   */
+  encoded: string;
+}
+
+/** How a node gets into its cadre. */
+export type HostedNodeJoin = HostedNodeClaimJoin | HostedNodeInvitationJoin;
 
 /** One hosted node, as persisted in `hosted-nodes.json`. */
 export interface HostedNode {
@@ -41,8 +58,9 @@ export interface HostedNode {
   id: string;
   join: HostedNodeJoin;
   /**
-   * `unclaimed` (the placeholder party the child's config names) until the claim reports
-   * the party; the claimant's party after.
+   * A claim node: `unclaimed` (the placeholder party the child's config names) until the
+   * claim reports the party; the claimant's party after. An invitation node: the
+   * invitation's party from the start.
    */
   partyId: string;
   /** Hosted nodes run the `storage` profile: they participate in strands and are dialable. */
@@ -54,8 +72,13 @@ export interface HostedNode {
   statusEndpoint?: string;
   /** Read once from `/status`; the claim details need it before the claim. */
   peerId?: string;
-  /** `/status.node.claimedBy` once claimed; the UI shows its first 8 characters. */
+  /**
+   * Set when the node joins: `/status.node.claimedBy` for a claim, the invitation's issuer
+   * key for an invitation. The UI shows its first 8 characters.
+   */
   ownerKey?: string;
+  /** An invitation node, once joined: the member that admitted it, when its address named one. */
+  memberPeerId?: string;
   /** From the last status poll: the node holds at least one control connection. */
   connected?: boolean;
   /**
@@ -67,12 +90,18 @@ export interface HostedNode {
   updatedAt: string;
   /** Failure detail when `status === 'error'`. */
   error?: string;
+  /**
+   * Set with `error` when an invitation failed: whether Retry may start the node again with
+   * the same invitation (no member could be reached), or the invitation itself was refused.
+   * Absent on every other `error`.
+   */
+  retryable?: boolean;
 }
 
 /** `join` without its secret: what `list`, `get`, the routes and the events carry. */
 export type HostedNodeJoinView = { kind: HostedNodeJoin['kind'] };
 
-/** The wire shape of a hosted node: the record with the claim secret stripped. */
+/** The wire shape of a hosted node: the record with the claim secret or the invitation stripped. */
 export interface HostedNodeView extends Omit<HostedNode, 'join'> {
   join: HostedNodeJoinView;
 }
@@ -104,12 +133,13 @@ export class HostedNodeError extends Error {
 }
 
 /**
- * What changed about a hosted node: `added` (a join finished and the node waits to be
- * claimed), `claimed` (the watcher saw the claim), `removed`, or `changed` (anything else:
- * a respawn, a liveness change, a give-up). The server publishes each as the
- * `hosted-nodes-changed` SSE event.
+ * What changed about a hosted node: `added` (a join started the node), `claimed` (the
+ * watcher saw the claim), `joined` (the watcher saw a member accept the invitation),
+ * `removed`, or `changed` (anything else: a respawn, a liveness change, a refused
+ * invitation, a retry, a give-up). The server publishes each as the `hosted-nodes-changed`
+ * SSE event.
  */
-export type HostedNodeChangeKind = 'added' | 'claimed' | 'removed' | 'changed';
+export type HostedNodeChangeKind = 'added' | 'claimed' | 'joined' | 'removed' | 'changed';
 
 export interface HostedNodeChange {
   kind: HostedNodeChangeKind;

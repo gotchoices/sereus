@@ -1,7 +1,8 @@
 /**
  * Hosted nodes: the host's "Join a cadre" action and what follows from it. See
- * ./types.ts for the record, ./hosted-node-service.ts for the lifecycle and the
- * status watcher, and ./hosted-node-supervisor.ts for the respawn invariant.
+ * ./types.ts for the record, ./hosted-node-service.ts for the lifecycle,
+ * ./hosted-node-watcher.ts for following each node's `/status`, ./claim-details.ts for
+ * the QR payload, and ./hosted-node-supervisor.ts for the respawn invariant.
  */
 
 export { HostedNodeStore } from './hosted-node-store.js';
@@ -11,13 +12,13 @@ export {
   HOSTED_NODE_REAP_SWEEP_MS,
 } from './hosted-node-service.js';
 export type {
-  ClaimDetails,
-  HostedNodeAddressSource,
   HostedNodeOrchestrator,
   HostedNodeServiceOptions,
+  JoinOptions,
   RespawnOptions,
   RespawnResult,
 } from './hosted-node-service.js';
+export type { ClaimDetails, HostedNodeAddressSource } from './claim-details.js';
 export {
   HOSTED_NODE_CLAIM_POLL_MS,
   HOSTED_NODE_CONNECTED_POLL_MS,
@@ -42,7 +43,9 @@ export type {
   HostedNodeChangeKind,
   HostedNodeChangeListener,
   HostedNodeErrorCode,
+  HostedNodeClaimJoin,
   HostedNodeFile,
+  HostedNodeInvitationJoin,
   HostedNodeJoin,
   HostedNodeJoinView,
   HostedNodeStatus,

@@ -66,6 +66,7 @@ export const COMMAND_ENV = [
   'CADRE_SEED_TOKEN',
   'CADRE_STARTUP_TOKEN',
   'CADRE_CLAIM_SECRET',
+  'CADRE_INVITATION',
 ] as const;
 
 export type CommandEnvName = (typeof COMMAND_ENV)[number];
