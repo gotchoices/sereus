@@ -225,7 +225,7 @@ export class HealthServer {
 
   /**
    * `isAwaitingClaim()` is false until `start()` has built the node's trusted-owner anchor, so
-   * a node still starting reads as `awaiting`, never `claimed`: a poller told `claimed` early
+   * a node still starting (or already stopping) reads as `awaiting`, never `claimed`: a poller told `claimed` early
    * would report a claim nobody made, while a claimed node that reads `awaiting` for its
    * start-up refuses any other claimant all the same.
    */

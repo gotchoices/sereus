@@ -642,9 +642,10 @@ scenarios whose subject is a protocol or a service rather than a network shape a
 - Cross-process nodes (real `@serfab/cadre-cli` child processes launched the way the installer
   and the provider launch them) — `cadre-host-node-donation.integration.ts` (a host donating a
   node into a second, externally-founded party), `cadre-host-owner-node.integration.ts`,
-  `provider-seed-accepted.integration.ts` and `cadre-host-donation-phone-requester.integration.ts`
-  (the bullet below); the identity/bootstrap/store fixtures the first three share
-  live in `child-node-fixtures.ts`.
+  `provider-seed-accepted.integration.ts`, `cadre-host-donation-phone-requester.integration.ts`
+  and `node-claim-by-phone.integration.ts` (the two bullets below); the identity/bootstrap/store
+  fixtures the first three share, and the spawn helpers the provider orchestrator and the claim
+  scenario use, live in `child-node-fixtures.ts`.
 - Node donation to a requester that **cannot be dialed** (the phone direction) —
   `cadre-host-donation-phone-requester.integration.ts`. Same host-side machinery as
   `cadre-host-node-donation.integration.ts`, but the requester is an in-process `CadreNode`
@@ -654,9 +655,9 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   imported by source path — see "App modules in a scenario"), sending no `bootstrapNodes`,
   dials the lent node's `/ws` address itself, and keeps that connection across a node
   respawn (same WebSocket port) and across its own restart (same identity key, control
-  storage and node-local dial-target store, and no second donation request). It is the only
-  scenario that proves the dial-in direction end-to-end; the two prerequisite halves are
-  unit-tested in `cadre-host` and `cadre-core`. Strand replication onto a lent node is
+  storage and node-local dial-target store, and no second donation request). It and
+  `node-claim-by-phone` (below) are the scenarios that prove the dial-in direction end-to-end;
+  the two prerequisite halves are unit-tested in `cadre-host` and `cadre-core`. Strand replication onto a lent node is
   deliberately not asserted — see
   `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`.
 - A phone **claims** a node started waiting to be claimed — `node-claim-by-phone.integration.ts`.
