@@ -78,7 +78,7 @@ const identity = objectOf<Block<'identity'>>(
 const controlNetwork = objectOf<Block<'controlNetwork'>>(
   {
     partyId: nonEmptyString,
-    // May be empty: cadre-host's owner node, the founding node of its own cadre, writes `[]`.
+    // May be empty: a cadre's founding node (`start --owner` on a fresh party) has no one to dial.
     bootstrapNodes: arrayOf(nonEmptyString),
   },
   { required: ['partyId', 'bootstrapNodes'] },

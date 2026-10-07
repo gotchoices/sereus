@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
-import { loadIdentity } from '../installer/identity.js';
+import { loadIdentity } from '../orchestrator/identity-file.js';
 import { removeAllNodes } from './orchestrator-teardown.js';
 
 // Writes the --identity-file argument (as seen on its own command line) next

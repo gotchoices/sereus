@@ -20,7 +20,7 @@ import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 
-/** Write the installer-style protobuf identity.key and return the libp2p key. */
+/** Write a protobuf identity key (the format cadre-host gives each node) and return the libp2p key. */
 export async function writeIdentity(path: string): Promise<{ key: PrivateKey; peerId: string }> {
   const key = await generateKeyPair('Ed25519');
   writeFileSync(path, privateKeyToProtobuf(key));

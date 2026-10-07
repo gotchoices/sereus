@@ -207,8 +207,7 @@ export class FakeOrchestrator implements Orchestrator {
     this.emit(toNodeInfo(dockerId, child));
   }
 
-  /** Emit an arbitrary state change (e.g. the owner node stopping). */
-  emit(info: ManagedNodeInfo): void {
+  private emit(info: ManagedNodeInfo): void {
     for (const listener of this.listeners) listener(info);
   }
 

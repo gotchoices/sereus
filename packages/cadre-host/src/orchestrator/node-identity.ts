@@ -18,7 +18,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { generateIdentity, loadIdentity, type IdentityRecord } from '../installer/identity.js';
+import { generateIdentity, loadIdentity, type IdentityRecord } from './identity-file.js';
 
 const IDENTITY_FILE = 'identity.key';
 

@@ -159,7 +159,7 @@ describe('enroll create → loadIdentityKey', () => {
 
     const keyPath = join(dir, 'node.key');
     expect(peerIdFromPrivateKey(loadIdentityKey(keyPath)).toString()).toBe(printed);
-    // Binary, not hex text: byte-identical in format to cadre-host's installer `identity.key`.
+    // Binary, not hex text: byte-identical in format to a cadre-host node's `identity.key`.
     expect(readFileSync(keyPath)[0]).toBe(0x08);
   });
 

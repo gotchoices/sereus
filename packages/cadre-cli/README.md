@@ -269,7 +269,7 @@ says so rather than starting without it.
 | `CADRE_PARTY_ID` | `controlNetwork.partyId` | Party/control network UUID. A placeholder (`unclaimed`) on a node waiting to be claimed, and ignored once a claim is on record ([Waiting to be claimed](#waiting-to-be-claimed)) |
 | `CADRE_BOOTSTRAP_NODES` | `controlNetwork.bootstrapNodes` | Comma-separated multiaddrs |
 | `CADRE_PROFILE` | `profile` | Node profile (transaction/storage) |
-| `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create` and by cadre-host's installer as `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
+| `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create`, and by cadre-host as each node's `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_STORAGE_QUOTA` | `storage.quotaBytes` | Storage quota in bytes (a whole number) |

@@ -18,7 +18,7 @@ import { rotateOnDisk } from '../orchestrator/log-rotator.js';
 import { decodeDockerId, encodeDockerId, type NodePorts } from '../orchestrator/types.js';
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
-import { loadIdentity } from '../installer/identity.js';
+import { loadIdentity } from '../orchestrator/identity-file.js';
 import { describeHandleContract } from './orchestrator-handle-contract.js';
 import { removeAllNodes } from './orchestrator-teardown.js';
 

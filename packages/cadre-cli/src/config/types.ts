@@ -27,7 +27,7 @@ export interface CliConfig {
      * Path to the node's private key file: a **libp2p protobuf-encoded private key**
      * (`privateKeyToProtobuf` output, raw binary — no hex or base64 layer). This is the one
      * on-disk identity format in the repo; both writers emit exactly it — `cadre enroll create`
-     * as `<name>.key`, and cadre-host's installer as `identity.key`. A file in any other shape
+     * as `<name>.key`, and cadre-host as each managed node's `identity.key`. A file in any other shape
      * fails to load rather than being guessed at.
      */
     keyFile?: string;

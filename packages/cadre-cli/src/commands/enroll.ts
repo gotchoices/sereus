@@ -49,7 +49,7 @@ export const enrollCommand = new Command('enroll')
 
         // `result.privateKey` is already `privateKeyToProtobuf` output. Write those bytes
         // verbatim — no hex or base64 layer — so this file is byte-identical in format to the
-        // `identity.key` cadre-host's installer writes, and is what `identity.keyFile` accepts.
+        // `identity.key` cadre-host writes for each node it runs, and is what `identity.keyFile` accepts.
         fs.writeFileSync(keyPath, result.privateKey);
         fs.chmodSync(keyPath, 0o600); // Restrict permissions
         fs.writeFileSync(idPath, peerId, 'utf-8');

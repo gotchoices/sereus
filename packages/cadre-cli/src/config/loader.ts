@@ -63,9 +63,9 @@ function logOverride(envVar: string, value: string): void {
 /**
  * Load the node identity from a libp2p protobuf-encoded private key file.
  *
- * This is the ONE on-disk identity format: what `cadre enroll create` writes, what cadre-host's
- * installer writes to `identity.key`, and what the docker entrypoint mints into `cadre-peer.key`.
- * See `@serfab/cadre-host`'s `installer/identity.ts` for why the protobuf form rather than raw
+ * This is the ONE on-disk identity format: what `cadre enroll create` writes, what cadre-host
+ * writes to each managed node's `identity.key`, and what the docker entrypoint mints into `cadre-peer.key`.
+ * See `@serfab/cadre-host`'s `orchestrator/identity-file.ts` for why the protobuf form rather than raw
  * key bytes.
  */
 export function loadIdentityKey(keyPath: string): PrivateKey {

@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateIdentity, loadIdentity } from '../identity.js';
+import { generateIdentity, loadIdentity } from '../identity-file.js';
 
-describe('installer identity', () => {
+describe('identity file', () => {
   let tmp: string;
 
   beforeEach(() => {

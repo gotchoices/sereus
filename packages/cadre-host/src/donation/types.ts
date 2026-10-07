@@ -12,8 +12,8 @@
  * *live-node tally* it checks the quota against is owned by the donation
  * service, not by the grant layer — see `GrantValidator.validateForProvision`.
  *
- * **Grant ≠ cadre membership.** A cadre invitation (minted by the owner node)
- * authorises a device to join *the host's own* cadre. A donation grant
+ * **Grant ≠ cadre membership.** A cadre invitation (minted by a cadre's owner)
+ * authorises a device to join *that* cadre. A donation grant
  * authorises an external cadre authority to ask the host to spawn a node that
  * joins *the grantee's* cadre. The two token flows are deliberately separate;
  * a grant is long-lived and reusable up to a quota, never one-time-redeemed.
