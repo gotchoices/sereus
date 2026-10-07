@@ -43,3 +43,7 @@ difficulty: hard
 - Rename and trim the donation layer; delete grants.
 - Rewrite docs.
 - Integration test: `cadre-host join` → a phone-shaped claimant takes the payload string → claims → syncs, and the connection survives a respawn. Replaces `cadre-host-donation-phone-requester.integration.ts` and `cadre-host-node-donation.integration.ts`.
+
+## Note from planning `cadre-invitations-redeemable-by-any-member`
+
+That ticket chain deletes the cadre-host trust circle (service, store, routes, UI page, `invite`/`trust` CLI commands) because its only mechanism (`createInvite`/`acceptPhone`) is removed, and adds `cadre start --invitation <encoded>` for "join by invitation". Plan the rest of the founder-role removal on top of that.

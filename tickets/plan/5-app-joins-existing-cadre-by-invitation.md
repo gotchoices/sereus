@@ -42,3 +42,7 @@ In both flows B pins the owner keys the invitation carries (the existing invite-
 - Request and invitation encodings and the app-facing calls.
 - Document the flows in docs/architecture.md beside the invitation mechanism.
 - Integration test: two phone-shaped nodes plus one reachable node; B joins A's cadre as an owner through each flow and can publish a `JoinedStrand`.
+
+## Note from planning `cadre-invitations-redeemable-by-any-member`
+
+Final names in cadre-core: `createCadreInvitation({ peerId?, grantsOwner, expiresInMs?, uses? })`, `redeemCadreInvitation(invitation)`, `listCadreInvitations()`, `withdrawCadreInvitation(key)`, and standalone `encodeCadreInvitation`/`decodeCadreInvitation`. The invitation is a keypair (the bundle carries the private half and the owner-signed row), so the bundle is larger than a token; it already carries the issuer's anchored owner keys and up to four members' addresses. The reference apps get a thin "Paste cadre invitation → Join" input in that chain; this ticket owns the request/response flows.
