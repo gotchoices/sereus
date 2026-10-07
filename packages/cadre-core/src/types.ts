@@ -16,7 +16,7 @@ import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
-import type { RevocableTable } from './control-authorization.js';
+import type { CadreInviteSignedFields, RevocableTable } from './control-authorization.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 
@@ -1762,30 +1762,88 @@ export interface PeerAddressRecord {
 
 /**
  * One `CadreControl.CadrePeer` row as read by `ControlDatabase.queryCadrePeers`:
- * the addressing columns plus the persisted membership voucher.
+ * the addressing columns plus the persisted membership proof.
  *
- * The voucher triple (`stampId`, `vouchOwner`, `vouchSig`) is what
+ * A row carries exactly one proof. An owner-vouched row has `vouchSig`, the owner's
+ * signature over the row's (`peerId`, `stampId`), which
  * {@link CadreNode.listAuthorizedMembers} re-checks against the node-local
- * trusted-owner anchor — it is null on a row written before the voucher columns
- * existed, and all three must be present for the row to be authorizable. Named
- * (rather than restated inline at each read site) so a future column addition
- * cannot reach the query without the predicate seeing it.
+ * trusted-owner anchor. An invitation-admitted row has `vouchSig` null and
+ * `vouchUsage` naming the `CadreInviteUsage` row that admitted it; the reader
+ * verifies the chain row → usage → invitation instead (`verifyInvitationAdmission`),
+ * with `vouchOwner` the invitation's issuer. All columns are null on a row written
+ * before they existed, and such a row is never authorizable. Named (rather than
+ * restated inline at each read site) so a future column addition cannot reach the
+ * query without the predicate seeing it.
  */
 export interface CadrePeerRow {
   /** libp2p peer ID (base58btc) — the row key. */
   peerId: string;
   /** Comma-joined dialable multiaddrs as stored, or null when unpublished. */
   multiaddr: string | null;
-  /** Single-use anti-replay nonce the voucher signature is bound to. */
+  /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
   stampId: string | null;
-  /** ed25519 public key (base64url) of the owner that vouched this row. */
+  /** ed25519 public key (base64url) of the owner that vouched this row, or that issued the invitation that admitted it. */
   vouchOwner: string | null;
-  /** That owner's signature over `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`, base64url. */
+  /** That owner's signature over `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`, base64url; null on an invitation-admitted row. */
   vouchSig: string | null;
+  /** The `CadreInviteUsage.UsageStampId` that admitted this row; null on an owner-vouched row. */
+  vouchUsage: string | null;
 }
 
-/** The voucher-bearing subset of a {@link CadrePeerRow} — what the authorized-membership predicate reads. */
-export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | 'vouchOwner' | 'vouchSig'>;
+/** The proof-bearing subset of a {@link CadrePeerRow} — what the authorized-membership predicate reads. */
+export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | 'vouchOwner' | 'vouchSig' | 'vouchUsage'>;
+
+/**
+ * One `CadreControl.CadreInvite` row: an owner-signed invitation to join the cadre,
+ * as `ControlDatabase.insertCadreInvite` returns it and `queryCadreInvite` reads it.
+ * Every column is here because the row travels: the holder carries it inside the
+ * invitation bundle and a member re-seats it verbatim (`seatCadreInvite`), so
+ * `expiresAt` is the engine-canonical `datetime` string the row stores, not epoch
+ * ms — the `'add'` signature covers that exact text. The signed subset is
+ * `CadreInviteSignedFields` (`control-authorization.ts`).
+ */
+export interface CadreInviteRow extends CadreInviteSignedFields {
+  /** The owner that signed the row (`IssuerKey`, base64url ed25519); a reader checks it against its anchor. */
+  issuerKey: string;
+  /** That owner's `'add'` signature over the row (`IssuerSig`, base64url). */
+  issuerSig: string;
+}
+
+/**
+ * One `CadreControl.CadreInviteUsage` row: a redemption of a {@link CadreInviteRow},
+ * as `ControlDatabase.queryCadreInviteUsages` reads it. The two signatures are
+ * stored so any reader can re-verify the admission chain (`verifyInvitationAdmission`).
+ */
+export interface CadreInviteUsageRow {
+  /** The redemption's single-use nonce (the row key), signed into both signatures. */
+  usageStampId: string;
+  /** The `CadreInvite.Key` redeemed. */
+  inviteKey: string;
+  /** The admitted device's libp2p peer id — the identity multihash of `peerKey`. */
+  peerId: string;
+  /** The admitted device's ed25519 public key (base64url). */
+  peerKey: string;
+  /** The `CadrePeer.StampId` this redemption seated (or found seated). */
+  peerStampId: string;
+  /** The `OwnerKey.StampId` this redemption seated, when the invitation grants ownership; else null. */
+  ownerStampId: string | null;
+  /** The invitation private key's signature over the `'redeem'` digest, base64url. */
+  inviteSig: string;
+  /** The device's signature over the `'consent'` digest, base64url. */
+  peerSig: string;
+}
+
+/**
+ * What `ControlDatabase.redeemCadreInvite` did. `alreadyMember` is the idempotent
+ * retry after a dropped reply: the device's row (and, for an owner-granting
+ * invitation, its `OwnerKey` row) was already present, so nothing was written and
+ * no seat was spent. The stamps are the live rows' either way.
+ */
+export interface CadreInviteRedemptionResult {
+  alreadyMember: boolean;
+  peerStampId: string;
+  ownerStampId: string | null;
+}
 
 /**
  * One `CadreControl.Revocation` tombstone as read by

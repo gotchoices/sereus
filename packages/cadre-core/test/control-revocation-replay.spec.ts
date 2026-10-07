@@ -133,11 +133,12 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     key: string,
     stampId: string,
   ): Promise<void> {
+    // VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
     return rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId)
+      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?)`,
-      [contextOwner, signature, key, stampId],
+         values (?, ?, ?, ?)`,
+      [contextOwner, signature, key, stampId, contextOwner, signature],
     );
   }
 

@@ -6,11 +6,18 @@
 -- against the one rule it was minted for.
 --
 -- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey, JoinedStrand,
--- JoinRequest, CadrePeer, DeviceToken) carry a one-off StampId bound into their add and
--- remove digests. `unique` holds over live rows only, so a delete retires the stamp into
--- Revocation in the same transaction (RevocationRecorded) and an insert refuses a retired
+-- JoinRequest, CadrePeer, DeviceToken, CadreInvite) carry a one-off StampId bound into their
+-- add and remove digests. `unique` holds over live rows only, so a delete retires the stamp
+-- into Revocation in the same transaction (RevocationRecorded) and an insert refuses a retired
 -- stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row. A
--- legitimate re-add mints a fresh stamp and a fresh signature.
+-- legitimate re-add mints a fresh stamp and a fresh signature. CadreInvite is the one guarded
+-- table that is never deleted: its tombstone withdraws the invitation while the row stays,
+-- because the rows it admitted prove their membership through it.
+--
+-- A check whose expression evaluates to null passes (SQL three-valued logic), so every
+-- comparison over a nullable column that is meant to pin a value is written null-safe
+-- (`coalesce(col, '')` or an explicit `is null`); a bare `new.Col = context.X` over a null
+-- column would pass with nothing pinned.
 --
 -- A check with a subquery defers to commit, so a sibling row written in the same transaction
 -- is visible to it; `committed.<Table>` reads the pre-transaction snapshot instead. Every
@@ -19,10 +26,18 @@
 -- ControlDatabase drops retired stamps on the reads that matter (queryCadrePeers,
 -- queryPendingJoins).
 declare schema CadreControl {
-    -- A key that can authorize control changes.
+    -- A key that can authorize control changes. A row is seated one of three ways, told apart
+    -- by the vouch columns: the founding row (all three null), an owner-signed add (VouchOwner
+    -- and VouchSig pinned to the insert context, VouchUsage null), or an owner-granting
+    -- invitation redeemed by consent (VouchOwner = the invitation's IssuerKey, VouchSig null,
+    -- VouchUsage = the CadreInviteUsage row that admitted it). A reader judges the stored proof
+    -- against its node-local anchor, never against this replicated table.
     table OwnerKey (
         Key text primary key,
         StampId text unique,
+        VouchOwner text null,
+        VouchSig text null,
+        VouchUsage text null,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = new.StampId)
         ),
@@ -46,9 +61,26 @@ declare schema CadreControl {
         -- count keeps a same-transaction swap of the sole owner off that branch. An owner cannot
         -- sign its own removal. The domain tag scopes an approval to a table and an action, not to
         -- a party: two parties sharing an owner key would accept each other's approvals.
+        -- The consent branch seats an owner with no signature at all: a CadreInviteUsage row
+        -- written in the same transaction names this exact row (Key and stamp), and the
+        -- invitation it redeemed grants ownership and was issued by the stored VouchOwner. The
+        -- invitation is read from committed.CadreInvite, so an invitation cannot be seated and
+        -- redeemed in one transaction; the usage row carries the liveness conditions.
         constraint Authorized check on insert, delete (
-            (old.Key is null and (select count(1) from committed.OwnerKey) = 0)
-                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
+            (old.Key is null and (select count(1) from committed.OwnerKey) = 0
+                and new.VouchOwner is null and new.VouchSig is null and new.VouchUsage is null)
+                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+                    and coalesce(new.VouchOwner, '') = context.OwnerKey
+                    and coalesce(new.VouchSig, '') = context.Signature
+                    and new.VouchUsage is null)
+                or (old.Key is null and new.VouchSig is null and new.VouchUsage is not null
+                    and exists (
+                        select 1 from CadreInviteUsage U
+                            where U.UsageStampId = new.VouchUsage
+                                and U.PeerKey = new.Key
+                                and U.OwnerStampId = new.StampId
+                                and exists (select 1 from committed.CadreInvite I where I.Key = U.InviteKey and I.GrantsOwner = 1 and I.IssuerKey = new.VouchOwner)
+                    ))
                 or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and verify(digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
     ) with context (OwnerKey text null, Signature text null);
@@ -308,10 +340,14 @@ declare schema CadreControl {
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update
         Sig text null,                  -- self-signature over the 'publish' digest; null until self-published
         StampId text unique,
-        VouchOwner text null,           -- the owner key that vouched this membership (== insert context.OwnerKey)
-        VouchSig text null,             -- that owner's 'vouch' signature (== insert context.Signature). A reader checks
-                                        -- VouchOwner against its node-local trusted-owner anchor, not against this
-                                        -- replicated table, which a self-owner can pollute.
+        VouchOwner text null,           -- the owner key that vouched this membership (== insert context.OwnerKey), or
+                                        -- the issuer of the invitation that admitted it (CadreInvite.IssuerKey)
+        VouchSig text null,             -- that owner's 'vouch' signature (== insert context.Signature); null on an
+                                        -- invitation-admitted row. A reader checks VouchOwner against its node-local
+                                        -- trusted-owner anchor, not against this replicated table, which a self-owner
+                                        -- can pollute.
+        VouchUsage text null,           -- the CadreInviteUsage.UsageStampId that admitted this row; null on an
+                                        -- owner-vouched row. A row carries exactly one proof: a signature or a usage.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
         ),
@@ -322,10 +358,35 @@ declare schema CadreControl {
         -- PublicKey from PeerId) over (PeerId, StampId); the stored voucher must be the pair
         -- verified here. The same 'vouch' digest serves the owner branch of AuthorizedUpdate:
         -- both mean "this owner vouches this membership row".
+        -- Or admitted by consent: a CadreInviteUsage row written in the same transaction names
+        -- this exact row incarnation (PeerId, StampId and PublicKey), and the invitation it
+        -- redeemed, read from committed.CadreInvite, was issued by the stored VouchOwner. The
+        -- usage row carries the liveness conditions (unexpired, not withdrawn, uses left,
+        -- issuer still an owner); this branch only requires that it exists. A reader verifies
+        -- the chain row -> usage -> invitation against its anchor (cadre-core
+        -- verifyInvitationAdmission), so the invitation row must outlive the rows it admitted.
+        -- A removed device may redeem a still-live invitation again and come back: keeping a
+        -- device out is removing its row AND withdrawing the invitation.
         constraint AuthorizedInsert check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
-            and new.VouchOwner = context.OwnerKey
-            and new.VouchSig = context.Signature
+            (
+                exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                and coalesce(new.VouchOwner, '') = context.OwnerKey
+                and coalesce(new.VouchSig, '') = context.Signature
+                and new.VouchUsage is null
+            )
+                or (
+                    new.VouchSig is null
+                    and new.VouchOwner is not null
+                    and new.VouchUsage is not null
+                    and exists (
+                        select 1 from CadreInviteUsage U
+                            where U.UsageStampId = new.VouchUsage
+                                and U.PeerId = new.PeerId
+                                and U.PeerStampId = new.StampId
+                                and U.PeerKey = new.PublicKey
+                                and exists (select 1 from committed.CadreInvite I where I.Key = U.InviteKey and I.IssuerKey = new.VouchOwner)
+                    )
+                )
         ),
         -- The stored 'vouch' voucher never authorizes a delete; the 'remove' signature rides in
         -- context and is never stored. Or a reap (ValidationKey.AuthorizedDelete).
@@ -335,16 +396,20 @@ declare schema CadreControl {
         ),
         -- A peer re-publishes its own addrs and freshness under its own key (cadre-core
         -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
-        -- re-vouches the row over its current stamp. StampId never changes on update: an update
-        -- that rotated it would leave the old stamp free and untombstoned, so retiring a stamp is
-        -- delete plus tombstone.
+        -- re-vouches the row over its current stamp, which also clears VouchUsage: the row then
+        -- stands on the signature and its invitation is no longer consulted for it. StampId never
+        -- changes on update: an update that rotated it would leave the old stamp free and
+        -- untombstoned, so retiring a stamp is delete plus tombstone. The proof columns are
+        -- compared null-safe: VouchSig and VouchUsage are null on one of the two row kinds, and a
+        -- bare `new.X = old.X` over a null would let a self-publish fill the column in.
         constraint AuthorizedUpdate check on update (
             (
                 new.PeerId = old.PeerId
                 and new.PublicKey = old.PublicKey
                 and new.StampId = old.StampId
                 and new.VouchOwner = old.VouchOwner
-                and new.VouchSig = old.VouchSig
+                and coalesce(new.VouchSig, '') = coalesce(old.VouchSig, '')
+                and coalesce(new.VouchUsage, '') = coalesce(old.VouchUsage, '')
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and verify(
                         digest('CadreControl.CadrePeer', 'publish', new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
@@ -353,8 +418,9 @@ declare schema CadreControl {
                 or (
                     new.StampId = old.StampId
                     and exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
-                    and new.VouchOwner = context.OwnerKey
-                    and new.VouchSig = context.Signature
+                    and coalesce(new.VouchOwner, '') = context.OwnerKey
+                    and coalesce(new.VouchSig, '') = context.Signature
+                    and new.VouchUsage is null
                 )
         )
     ) with context (OwnerKey text null, Signature text);
@@ -513,16 +579,137 @@ declare schema CadreControl {
     -- convergence is guarded by the integration scenario strand-formation-concurrent-redemption.
     index FormationUsageByToken on FormationUsage (Token);
 
+    -- An owner-signed invitation to join this cadre, redeemable on the owner's behalf by any
+    -- member machine (ControlDatabase.redeemCadreInvite). The invitation is a keypair, not a
+    -- bearer token: the row holds the public half and the holder proves possession by signing
+    -- with the private half (CadreInviteUsage.InvitePossessed), so the member that redeems it
+    -- can verify but never redeem it for itself. Rows are never deleted: a device admitted
+    -- through one carries no owner signature of its own, and its membership is the chain
+    -- invitation -> usage -> peer row, verified at read time, so the row must outlive every
+    -- device it admitted. Withdrawing an invitation is an owner-signed Revocation tombstone
+    -- over the row's stamp with the row kept (Revocation.RowIsGone); liveness is read as no
+    -- tombstone, unexpired, uses left, issuer still an owner (CadreInviteUsage.Authorized).
+    -- NOTE: expired and withdrawn rows accumulate for the life of the party; the same tripwire
+    -- as hasOutstandingFormationInvite applies (ControlDatabase.hasLiveCadreInvite). An owner
+    -- retires a device's dependency on its invitation by re-vouching the row (the owner branch
+    -- of CadrePeer.AuthorizedUpdate).
+    table CadreInvite (
+        Key text primary key,       -- the invitation's ed25519 public key (base64url)
+        PeerId text null,           -- the device this invitation is for; null: whoever redeems first designates it
+        GrantsOwner integer check (GrantsOwner = 0 or GrantsOwner = 1),   -- 1: redemption also seats an OwnerKey row
+        ExpiresAt datetime null,
+        TotalUses int null check (TotalUses >= 0),
+        IssuerKey text,             -- the owner that signed the row (== insert context.OwnerKey). A reader checks it
+                                    -- against its node-local anchor, never against the replicated OwnerKey table.
+        IssuerSig text,             -- that owner's 'add' signature (== insert context.Signature), stored so any reader
+                                    -- can re-verify the row from the holder's copy or the replicated one
+        StampId text unique,
+        -- A withdrawn invitation cannot be re-seated from the signed copy its holder keeps, on
+        -- any node that holds the tombstone (schema header for the node that does not).
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'CadreInvite' and R.StampId = new.StampId)
+        ),
+        -- The owner signs the whole row, nullable columns as '' (cadre-core cadreInviteRowFields),
+        -- and the stored issuer pair must be the pair verified here, as CadrePeer pins its voucher.
+        constraint AuthorizedInsert check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest(
+                    'CadreControl.CadreInvite', 'add',
+                    new.Key,
+                    coalesce(new.PeerId, ''),
+                    cast(new.GrantsOwner as text),
+                    coalesce(cast(new.ExpiresAt as text), ''),
+                    coalesce(cast(new.TotalUses as text), ''),
+                    new.StampId
+                ),
+                context.Signature, A.Key, 'ed25519'))
+            and coalesce(new.IssuerKey, '') = context.OwnerKey
+            and coalesce(new.IssuerSig, '') = context.Signature
+        ),
+        constraint NoUpdate check on update (false),
+        -- Never deleted (table comment). Withdrawal is the tombstone alone.
+        constraint NoDelete check on delete (false)
+    ) with context (OwnerKey text, Signature text);
+
+    -- Append-only record of cadre invitation redemptions, one row per redemption: the proof a
+    -- CadrePeer row (and, for an owner-granting invitation, an OwnerKey row) was admitted by
+    -- consent rather than by an owner signature.
+    table CadreInviteUsage (
+        UsageStampId text primary key,  -- nonce minted by the redeeming device and signed into both signatures
+                                        -- below. The primary key: this table never deletes, so the key alone
+                                        -- makes a nonce permanent and there is no NotRevoked pair here. Two nodes
+                                        -- that have not converged can each admit the same nonce (FormationUsage).
+        InviteKey text,                 -- the CadreInvite redeemed
+        PeerId text,                    -- the redeeming device: the identity multihash of PeerKey. The writer
+                                        -- asserts the pair and a reader re-derives it (verifyInvitationAdmission);
+                                        -- the schema cannot unwrap a multihash.
+        PeerKey text,                   -- the redeeming device's ed25519 public key (base64url)
+        PeerStampId text,               -- the CadrePeer.StampId this usage seats: one row incarnation, not a peer id
+                                        -- forever. Minted by the writer inside the redeeming transaction and not
+                                        -- signed (FormationUsage.StrandStampId).
+        OwnerStampId text null,         -- the OwnerKey.StampId this usage seats when the invitation grants ownership
+        InviteSig text,                 -- by the invitation's private key over the 'redeem' digest: proof of possession
+        PeerSig text,                   -- by PeerKey over the 'consent' digest: the device agreed to join
+        constraint InsertOnly check on update, delete (false),
+        -- The invitation is read from the pre-transaction snapshot, so an invitation cannot be
+        -- seated and redeemed in one transaction (the OwnerKey consent branch rests on that).
+        -- NOTE: accepted tradeoff — the use cap counts committed usage, so two redeemers racing
+        -- for a single-use invitation on different machines may both be admitted until merge,
+        -- and after merge both rows stand (FormationUsage.Authorized), for owner grants too.
+        -- Serializing would need cross-machine coordination the control plane does not have;
+        -- the mitigations are the defaults the redemption protocol sets (untargeted owner
+        -- invitations single-use with a short expiry), the targeted form for owner grants, and
+        -- the owner seeing the extra owner and removing it. Revisit if the control plane gains
+        -- a cross-machine sequencer. An issuer removed since issuing takes its outstanding
+        -- invitations with it (the committed.OwnerKey clause); devices it already admitted
+        -- stay members.
+        constraint Authorized check on insert (
+            exists (
+                select 1 from committed.CadreInvite I
+                    where I.Key = new.InviteKey
+                        and not exists (select 1 from Revocation R where R.TableName = 'CadreInvite' and R.StampId = I.StampId)
+                        and (I.ExpiresAt is null or I.ExpiresAt > context.Now)
+                        and (I.TotalUses is null or I.TotalUses > (select count(1) from committed.CadreInviteUsage U where U.InviteKey = new.InviteKey))
+                        and (I.PeerId is null or I.PeerId = new.PeerId)
+                        and exists (select 1 from committed.OwnerKey K where K.Key = I.IssuerKey)
+            )
+        ),
+        -- Verified against the invitation key itself: the member writing the row can check this
+        -- signature but, holding only the public half, cannot produce it.
+        constraint InvitePossessed check on insert (
+            verify(digest('CadreControl.CadreInviteUsage', 'redeem', new.InviteKey, new.UsageStampId, new.PeerKey),
+                   new.InviteSig, new.InviteKey, 'ed25519')
+        ),
+        -- The device proves it agreed (FormationUsage.PeerConsented).
+        constraint PeerConsented check on insert (
+            verify(digest('CadreControl.CadreInviteUsage', 'consent', new.InviteKey, new.UsageStampId, new.PeerKey),
+                   new.PeerSig, new.PeerKey, 'ed25519')
+        ),
+        -- Deferred, so the same-transaction peer insert counts: a usage row can never be held in
+        -- reserve to seat a row later (FormationUsage.StrandExists).
+        constraint PeerExists check (exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and P.StampId = new.PeerStampId)),
+        constraint OwnerExists check (
+            new.OwnerStampId is null
+                or exists (select 1 from OwnerKey K where K.Key = new.PeerKey and K.StampId = new.OwnerStampId)
+        )
+    ) with context (Now datetime);
+
+    -- Serves the cap count above and the liveness reads (cadre-core countCadreInviteUsage,
+    -- hasLiveCadreInvite) on an append-only table, as FormationUsageByToken does.
+    index CadreInviteUsageByInvite on CadreInviteUsage (InviteKey);
+
     -- Append-only retirement record for the stamps of removed rows of every guarded table, with
     -- the removed row's key. Every append is owner-signed, so the growth surface is the owner
     -- keys. One singleton marker row, ('Revocation', 'ledger', 'opened'), retires nothing: an
     -- owner's connected reconcile pass files it (ControlDatabase.openRevocationLedger) so this
     -- table is never a never-written block, which the storage layer would consult the cohort
     -- for on every guarded insert and membership lookup. Readers filter on their own guarded
-    -- TableName, and queryRevocations skips it.
+    -- TableName, and queryRevocations skips it. A 'CadreInvite' row withdraws an invitation
+    -- whose row stays (CadreInvite table comment).
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' |
-                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken', or 'Revocation' for the marker
+                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken' | 'CadreInvite', or 'Revocation'
+                                    -- for the marker
         RowKey text,                -- primary key of the removed row
         StampId text,               -- the retired stamp
         ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
@@ -541,8 +728,10 @@ declare schema CadreControl {
         -- A stamp is retired only once its row is gone (deferred, so the same-transaction delete
         -- counts). Keyed on the stamp, not RowKey: a node that converges on a re-admission before
         -- the earlier removal's tombstone must still accept that tombstone. Retiring a stamp that
-        -- never existed is harmless: stamps carry 128 random bits (generateStampId). The last
-        -- branch admits the marker row and nothing else under 'Revocation'.
+        -- never existed is harmless: stamps carry 128 random bits (generateStampId). For
+        -- 'CadreInvite' there is no row-gone test: a tombstone there is a withdrawal, and the
+        -- row stays (CadreInvite table comment). The last branch admits the marker row and
+        -- nothing else under 'Revocation'.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -552,6 +741,7 @@ declare schema CadreControl {
                 or (new.TableName = 'JoinedStrand' and not exists (select 1 from JoinedStrand J where J.StampId = new.StampId))
                 or (new.TableName = 'JoinRequest' and not exists (select 1 from JoinRequest J where J.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
+                or (new.TableName = 'CadreInvite')
                 or (new.TableName = 'Revocation' and new.RowKey = 'ledger' and new.StampId = 'opened')
         ),
         -- Owner-signed over the whole row under its own domain tag, so the delete's 'remove'

@@ -78,11 +78,12 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   }
 
   function rawInsertOwnerKey(sig: string | null, key: string, stampId: string): Promise<void> {
+    // VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
     return rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId)
+      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?)`,
-      [ownerPublicKey, sig, key, stampId],
+         values (?, ?, ?, ?)`,
+      [ownerPublicKey, sig, key, stampId, ownerPublicKey, sig],
     );
   }
 

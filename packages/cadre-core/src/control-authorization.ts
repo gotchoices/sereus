@@ -47,6 +47,8 @@ export const CONTROL_TABLES = [
   'DeviceToken',
   'FormationInvite',
   'FormationUsage',
+  'CadreInvite',
+  'CadreInviteUsage',
   'Revocation',
 ] as const;
 
@@ -64,11 +66,17 @@ export type ControlTable = typeof CONTROL_TABLES[number];
  * {@link ControlTable} rather than a fresh literal list, so a renamed table is a
  * compile error here instead of a silently dead branch.
  *
+ * `CadreInvite` is the one member whose rows are never deleted: its tombstone is a
+ * withdrawal over a row that stays (`NotRevoked` refuses re-seating the withdrawn
+ * row; there is no `RevocationRecorded`, since nothing is ever removed), so it is
+ * revocable without being removable — `control-database.ts`'s `RemovableTable`
+ * excludes it.
+ *
  * Lives in this import-free module rather than beside its main consumer
  * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
  * `revocationDigest` — can type against it without pulling in the runtime.
  */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken'>;
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken' | 'CadreInvite'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for
@@ -91,16 +99,55 @@ export type ControlDomain = `CadreControl.${ControlTable}` | 'Cadre.Enrollment';
  *  - `'publish'` — a peer self-signs its OWN record (the `CadrePeer` /
  *    `DeviceToken` self-update branches), with its own key rather than an
  *    owner key.
- *  - `'consent'` — a peer self-signs its OWN `FormationUsage` redemption (the
- *    joiner proving it agreed to join), with its own key. Distinct from the
- *    approver's `'vouch'` over the same table so the two stored signatures are
- *    never interchangeable.
+ *  - `'consent'` — a peer self-signs its OWN `FormationUsage` or
+ *    `CadreInviteUsage` redemption (the joiner proving it agreed to join), with
+ *    its own key. Distinct from the approver's `'vouch'` over the same table so
+ *    the two stored signatures are never interchangeable.
+ *  - `'redeem'` — the holder of a `CadreInvite`'s private key proves possession
+ *    on a `CadreInviteUsage` row. Distinct from the device's `'consent'` over the
+ *    same fields: the two signatures are by different keys and neither may stand
+ *    in for the other.
  *  - `'reissue'` — an owner re-writes an existing `Revocation` tombstone,
  *    bumping its `ReissuedAt` counter so a tombstone committed while the node
  *    was alone can be re-broadcast. Distinct from `'remove'` so a tombstone
  *    append approval can never be replayed as a re-issue and vice versa.
  */
-export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent' | 'reissue';
+export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent' | 'redeem' | 'reissue';
+
+/**
+ * The `CadreInvite` columns its `'add'` signature binds, in the schema's order and
+ * with the row's stored forms: `expiresAt` is the engine-canonical `datetime` string
+ * (`canonicalDatetime`), never epoch ms, because the SQL side digests
+ * `cast(new.ExpiresAt as text)` after coercion. Structurally satisfied by a
+ * `CadreInviteRow` (`types.ts`), which adds the issuer pair the signature does not cover.
+ */
+export interface CadreInviteSignedFields {
+  key: string;
+  peerId: string | null;
+  grantsOwner: boolean;
+  expiresAt: string | null;
+  totalUses: number | null;
+  stampId: string;
+}
+
+/**
+ * The row-field half of a `CadreInvite` `'add'` digest, shared by the signer
+ * (`control-database.ts`'s `cadreInviteAddMessage`, raw bytes) and the verifier
+ * (`peer-authorization.ts`'s `cadreInviteAddDigest`, base64url) so the two cannot
+ * drift. SQL mirror, in `CadreInvite.AuthorizedInsert`:
+ * `new.Key, coalesce(new.PeerId, ''), cast(new.GrantsOwner as text),
+ * coalesce(cast(new.ExpiresAt as text), ''), coalesce(cast(new.TotalUses as text), ''), new.StampId`.
+ */
+export function cadreInviteRowFields(row: CadreInviteSignedFields): string[] {
+  return [
+    row.key,
+    row.peerId ?? '',
+    row.grantsOwner ? '1' : '0',
+    row.expiresAt ?? '',
+    row.totalUses === null ? '' : String(row.totalUses),
+    row.stampId,
+  ];
+}
 
 /**
  * The full ordered field vector a control-plane signature covers. Digest this

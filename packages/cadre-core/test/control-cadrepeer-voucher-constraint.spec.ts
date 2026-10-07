@@ -3,16 +3,23 @@ import { Database } from '@quereus/quereus';
 
 /**
  * Crypto-free behavioral guard for the `CadrePeer` voucher-binding predicates added
- * with the `membership-cadrepeer-voucher-persist` ticket.
+ * with the `membership-cadrepeer-voucher-persist` ticket, and the null-safety the
+ * `cadre-invite-schema-and-chain` ticket added when `VouchSig` gained a legitimate null.
  *
  * The real `CadrePeer.AuthorizedInsert` / `AuthorizedUpdate` constraints ALSO carry a
  * crypto `verify(digest(...))` branch (covered by the real-crypto replication specs), but
  * the voucher-binding portion — "the stored (VouchOwner, VouchSig) MUST equal the
- * insert context pair" and "the voucher is immutable on self-update" — is pure equality,
- * no crypto. This spec applies a MINIMAL schema carrying only those predicates and
+ * insert context pair" and "the proof columns are immutable on self-update" — is pure
+ * equality, no crypto. This spec applies a MINIMAL schema carrying only those predicates and
  * exercises the truth table directly, exactly as `control-member-key-constraint.spec.ts`
  * does for `MemberKeyClosedOnly`. The `control-schema-drift` guard separately pins that
  * this predicate text is what the real table carries.
+ *
+ * Null matters here because a CHECK that evaluates to null PASSES: a bare
+ * `new.VouchSig = old.VouchSig` over a null column would let a self-update fill the column
+ * in, and `new.VouchOwner = context.OwnerKey` with nothing stored would pin nothing. The
+ * consent shape (`VouchSig` null, `VouchUsage` set) stands in for the real consent branch
+ * so an invitation-admitted row can be seated and its self-update rules exercised.
  *
  * Keep the predicates below textually aligned with `control-schema.ts` / `schemas/control.qsql`.
  */
@@ -26,11 +33,20 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
           StampId text not null unique,
           VouchOwner text null,
           VouchSig text null,
+          VouchUsage text null,
           constraint VoucherBind check on insert (
-            new.VouchOwner = context.OwnerKey and new.VouchSig = context.Signature
+            (
+              coalesce(new.VouchOwner, '') = context.OwnerKey
+              and coalesce(new.VouchSig, '') = context.Signature
+              and new.VouchUsage is null
+            )
+              or (new.VouchSig is null and new.VouchOwner is not null and new.VouchUsage is not null)
           ),
           constraint Immutable check on update (
-            new.StampId = old.StampId and new.VouchOwner = old.VouchOwner and new.VouchSig = old.VouchSig
+            new.StampId = old.StampId
+            and new.VouchOwner = old.VouchOwner
+            and coalesce(new.VouchSig, '') = coalesce(old.VouchSig, '')
+            and coalesce(new.VouchUsage, '') = coalesce(old.VouchUsage, '')
           )
         ) with context (OwnerKey text null, Signature text null);
       }
@@ -47,12 +63,13 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     ctxSig: string | null,
     vouchOwner: string | null,
     vouchSig: string | null,
+    vouchUsage: string | null = null,
   ): Promise<void> {
     await db.exec(
-      `insert into Probe.CadrePeer (PeerId, StampId, VouchOwner, VouchSig)
+      `insert into Probe.CadrePeer (PeerId, StampId, VouchOwner, VouchSig, VouchUsage)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?)`,
-      [ctxOwner, ctxSig, peerId, stampId, vouchOwner, vouchSig],
+         values (?, ?, ?, ?, ?)`,
+      [ctxOwner, ctxSig, peerId, stampId, vouchOwner, vouchSig, vouchUsage],
     );
   }
 
@@ -126,5 +143,44 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
          set VouchOwner = VouchOwner where PeerId = 'p1'`,
     );
     expect(await count(db)).toBe(1);
+  });
+
+  it('rejects an owner-signed insert that stores a null voucher (the pin is null-safe)', async () => {
+    const db = await freshDb();
+    // A bare `new.VouchOwner = context.OwnerKey` is null here, and a null CHECK passes.
+    await expect(insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', null, null)).rejects.toThrow();
+    expect(await count(db)).toBe(0);
+  });
+
+  it('admits a self-update of an invitation-admitted row that leaves its null VouchSig null', async () => {
+    const db = await freshDb();
+    await insert(db, 'p1', 'stamp-1', null, null, 'ISSUER', null, 'usage-1');
+    // The null-safe compare is what lets such a row self-publish at all: `null = null` is
+    // null, and with the consent branch absent on update that null would be the whole check.
+    await db.exec(
+      `update Probe.CadrePeer with context OwnerKey = null, Signature = null
+         set VouchOwner = VouchOwner where PeerId = 'p1'`,
+    );
+    expect(await count(db)).toBe(1);
+  });
+
+  it('rejects a self-update that fills in a null VouchSig or clears VouchUsage', async () => {
+    const db = await freshDb();
+    await insert(db, 'p1', 'stamp-1', null, null, 'ISSUER', null, 'usage-1');
+    await expect(
+      db.exec(
+        `update Probe.CadrePeer with context OwnerKey = null, Signature = null
+           set VouchSig = 'FORGED' where PeerId = 'p1'`,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      db.exec(
+        `update Probe.CadrePeer with context OwnerKey = null, Signature = null
+           set VouchUsage = null where PeerId = 'p1'`,
+      ),
+    ).rejects.toThrow();
+    const row = await db.get(`select VouchSig, VouchUsage from Probe.CadrePeer where PeerId = 'p1'`);
+    expect(row?.VouchSig).toBeNull();
+    expect(row?.VouchUsage).toBe('usage-1');
   });
 });

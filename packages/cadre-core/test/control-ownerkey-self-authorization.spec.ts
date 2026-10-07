@@ -86,17 +86,23 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     return String(row?.StampId);
   }
 
+  /**
+   * Stores the context pair as the row's `VouchOwner`/`VouchSig` (the owner-signed branch pins
+   * them equal), so a genesis insert (both null) and a signed enrollment both ride their own
+   * branch. `storedVouch` lets a case present a valid signature while storing something else.
+   */
   function rawInsertOwnerKey(
     contextOwner: string | null,
     signature: string | null,
     key: string,
     stampId: string,
+    storedVouch: { owner: string | null; sig: string | null } = { owner: contextOwner, sig: signature },
   ): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId)
+      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?)`,
-      [contextOwner, signature, key, stampId],
+         values (?, ?, ?, ?)`,
+      [contextOwner, signature, key, stampId, storedVouch.owner, storedVouch.sig],
     );
   }
 
@@ -234,6 +240,34 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await enrollByFounder(second);
 
     expect(await ownerKeys()).toEqual([founder.publicKey, second.publicKey].sort());
+    // The approval is stored on the row, pinned to the verified context pair, so a reader can
+    // later re-check who approved this owner (the anchor extension builds on it).
+    const row = await rawDb.get('select VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey where Key = ?', [second.publicKey]);
+    expect(row?.VouchOwner).toBe(founder.publicKey);
+    expect(typeof row?.VouchSig).toBe('string');
+    expect(row?.VouchUsage).toBeNull();
+  }, 60_000);
+
+  it('rejects: an owner-signed add that stores no VouchOwner/VouchSig (the pin is null-safe)', async () => {
+    // A valid founder signature in context, nothing stored on the row. A bare
+    // `new.VouchOwner = context.OwnerKey` would evaluate to null and PASS (a null CHECK is not
+    // a violation), leaving a signed owner row with no stored approval; the schema compares
+    // through coalesce so the pin holds.
+    const before = await ownerKeys();
+    const second = freshKeyPair();
+    const stamp = freshStamp();
+
+    await expectConstraintFailure(
+      rawInsertOwnerKey(
+        founder.publicKey,
+        signAs(founder, enrollMessage(second.publicKey, stamp)),
+        second.publicKey,
+        stamp,
+        { owner: null, sig: null },
+      ),
+      'Authorized',
+    );
+    expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
   it('accepts: an owner enrolled by the founder can itself enroll a third owner', async () => {

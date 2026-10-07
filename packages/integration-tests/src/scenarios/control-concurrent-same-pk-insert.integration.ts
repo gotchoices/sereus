@@ -96,11 +96,12 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 		const signature = pair.ownerSign(
 			buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [bOwnerKey, stampId]),
 		);
+		// VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
 		await dbA().execWrite(`
-			insert into CadreControl.OwnerKey (Key, StampId)
+			insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
 				with context OwnerKey = ?, Signature = ?
-				values (?, ?)
-		`, [pair.ownerPublicKey, signature, bOwnerKey, stampId], 'second-owner-enroll');
+				values (?, ?, ?, ?)
+		`, [pair.ownerPublicKey, signature, bOwnerKey, stampId, pair.ownerPublicKey, signature], 'second-owner-enroll');
 
 		// B validates its own writes against ITS view, so B must see the row before case 3
 		// signs anything with that key.

@@ -107,7 +107,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-01';
+const MEASURED_ON = '2026-10-06';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -131,16 +131,19 @@ const MEASURED_ON = '2026-10-01';
  * Re-measured whole at `461a01bc` on 2026-10-01 (its working tree then carried uncommitted
  * dial-deadline edits): no figure moved from `cadcb919` except the cold start, whose growth is
  * the two control tables Sereus added since (see {@link COLD}).
+ *
+ * Re-measured whole at `5a5661b0` on 2026-10-06 (clean tree): no figure moved except the cold
+ * start, whose growth is the two cadre-invitation tables (see {@link COLD}).
  */
-const BASELINE_UPSTREAM = 'optimystic 461a01bc';
+const BASELINE_UPSTREAM = 'optimystic 5a5661b0';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 31 consults over 23 blocks, 1 commit. Every
+ * watcher's first poll it leaves running. 37 consults over 29 blocks, 1 commit. Every
  * control table and index block is consulted once as the schema is applied (all missing),
  * the schema catalog (`optimystic/schema`) 5 times, and four never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` and
- * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 18 + 5 + 4×2 = 31.
+ * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 28 + 5 + 4 = 37.
  * History: 24 over 18 blocks in the trace that motivated this spec (snapshotted at `start()`'s
  * return, before the seed and the poll), 30 on 2026-09-15, 25 over 18 at optimystic
  * `03ffadc4` — the catalog went 7 → 5 and each of the three never-written tables 3 → 2 — 26
@@ -148,9 +151,12 @@ const BASELINE_UPSTREAM = 'optimystic 461a01bc';
  * (`restore-formation-usage-token-index`), one more block consulted once as the schema is
  * applied, then 31 over 23 with `JoinedStrand` (its table and stamp index, and the watcher's
  * read: +3 over 2 blocks) and `PendingJoin` (its table and stamp index, read by nothing at
- * start: +2 over 2 blocks).
+ * start: +2 over 2 blocks), 33 over 25 once `PendingJoin` became `JoinRequest` with its two
+ * index-less outcome tables (`JoinSuccess`, `JoinFailure`: +2 over 2, recorded here late),
+ * then 37 over 29 with `CadreInvite` (its table and stamp index) and `CadreInviteUsage` (its
+ * table and the `CadreInviteUsageByInvite` index), read by nothing at start: +4 over 4.
  */
-const COLD: Budget = { consults: 31, blocks: 23, commits: 1, consultBudget: 35, blockBudget: 26, commitBudget: 2 };
+const COLD: Budget = { consults: 37, blocks: 29, commits: 1, consultBudget: 41, blockBudget: 32, commitBudget: 2 };
 /**
  * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 2 commits:
  * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and

@@ -52,8 +52,10 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * test is the schema apply over optimystic storage, not how a node is configured.
  */
 
-/** The thirteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
+/** The fifteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
 const CONTROL_TABLE_NAMES = [
+	'CadreInvite',
+	'CadreInviteUsage',
 	'CadrePeer',
 	'DeviceToken',
 	'FormationInvite',
@@ -212,12 +214,12 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			await internals.loadSchema();
 
 			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
-			// that appeared uninvited both fail here: eleven tables and the one index
+			// that appeared uninvited both fail here: the fifteen tables and the two indexes
 			// `schemas/control.qsql` declares, and nothing of the plugin's own alongside them
-			// (measured 2026-09-25).
+			// (measured 2026-09-25; the cadre-invitation table pair and its index added 2026-10-06).
 			expect(await readCatalog(internals.db!)).toEqual(new Map([
 				['table', [...CONTROL_TABLE_NAMES]],
-				['index', ['FormationUsageByToken']]
+				['index', ['CadreInviteUsageByInvite', 'FormationUsageByToken']]
 			]));
 		} finally {
 			// Nested, not sequential: a `close()` that throws must not strand the libp2p node

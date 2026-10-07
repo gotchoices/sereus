@@ -28,6 +28,7 @@ import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -79,27 +80,9 @@ export function decodeLengthPrefixedFrame(data: Uint8Array, maxLength = MAX_SEED
   return data.subarray(4, 4 + length);
 }
 
-/**
- * Derive the base64url ed25519 public key embedded in an Ed25519 libp2p PeerId.
- *
- * An Ed25519 PeerId is an identity multihash of the public key, so
- * `peerIdFromString(id).publicKey.raw` is the 32-byte ed25519 key whose
- * base64url form matches the `OwnerKey.Key` representation (and
- * `ed25519KeyPairFromLibp2p().publicKeyB64`). Returns null for a non-Ed25519
- * id, a missing embedded key, or any parse failure — callers treat null as
- * "not an owner" rather than throwing.
- */
-export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
-  try {
-    const parsed = peerIdFromString(peerId);
-    if (parsed.type !== 'Ed25519' || !parsed.publicKey) {
-      return null;
-    }
-    return uint8ArrayToString(parsed.publicKey.raw, 'base64url');
-  } catch {
-    return null;
-  }
-}
+// Re-exported from its new home so the callers that learned it here keep resolving; the
+// lightweight verifiers in peer-authorization.ts needed it without this module's runtime.
+export { ed25519PublicKeyB64FromPeerId };
 
 /**
  * Canonical byte representation of the authenticated seed fields.

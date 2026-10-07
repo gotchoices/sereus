@@ -38,6 +38,7 @@ export type PeerRow = {
   stampId: string | null;
   vouchOwner: string | null;
   vouchSig: string | null;
+  vouchUsage: string | null;
 };
 
 export interface Owner { privateKey: string; publicKey: string }
@@ -59,12 +60,12 @@ export function vouchedRow(peerId: string, owner: Owner): PeerRow {
     'base64url',
     'base64url'
   ) as string;
-  return { peerId, multiaddr: null, stampId, vouchOwner: owner.publicKey, vouchSig };
+  return { peerId, multiaddr: null, stampId, vouchOwner: owner.publicKey, vouchSig, vouchUsage: null };
 }
 
 /** A row with no voucher (addressable but never authorizable). */
 export function bareRow(peerId: string): PeerRow {
-  return { peerId, multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null };
+  return { peerId, multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null, vouchUsage: null };
 }
 
 /**

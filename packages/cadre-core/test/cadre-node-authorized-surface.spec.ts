@@ -40,6 +40,7 @@ type PeerRow = {
   stampId: string | null;
   vouchOwner: string | null;
   vouchSig: string | null;
+  vouchUsage: string | null;
 };
 
 interface Owner { privateKey: string; publicKey: string }
@@ -61,12 +62,12 @@ function vouchedRow(peerId: string, owner: Owner, overrides: Partial<PeerRow> = 
     'base64url',
     'base64url'
   ) as string;
-  return { peerId, multiaddr: null, stampId, vouchOwner: owner.publicKey, vouchSig, ...overrides };
+  return { peerId, multiaddr: null, stampId, vouchOwner: owner.publicKey, vouchSig, vouchUsage: null, ...overrides };
 }
 
 /** A row with no voucher at all (e.g. written before the voucher columns existed). */
 function bareRow(peerId: string, multiaddr: string | null = null): PeerRow {
-  return { peerId, multiaddr, stampId: null, vouchOwner: null, vouchSig: null };
+  return { peerId, multiaddr, stampId: null, vouchOwner: null, vouchSig: null, vouchUsage: null };
 }
 
 /**

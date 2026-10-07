@@ -37,7 +37,7 @@ import {
  */
 
 /** Every table whose stamps `Revocation` retires — the `TableName` values a reader may ask about. */
-const REVOCABLE_TABLES: readonly RevocableTable[] = ['OwnerKey', 'CadrePeer', 'ValidationKey', 'Strand', 'StrandPartyKey', 'JoinedStrand', 'JoinRequest', 'DeviceToken'];
+const REVOCABLE_TABLES: readonly RevocableTable[] = ['OwnerKey', 'CadrePeer', 'ValidationKey', 'Strand', 'StrandPartyKey', 'JoinedStrand', 'JoinRequest', 'DeviceToken', 'CadreInvite'];
 
 const { tableName: MARKER_TABLE, rowKey: MARKER_ROW_KEY, stampId: MARKER_STAMP } = REVOCATION_LEDGER_MARKER;
 

@@ -1,5 +1,6 @@
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { peerIdFromString } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 
 /**
@@ -66,6 +67,32 @@ export function ed25519KeyPairFromLibp2p(privateKey: PrivateKey): Ed25519KeyPair
  */
 export function ed25519PublicKeyFromPrivate(privateKeyB64: string): string {
   return getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
+}
+
+/**
+ * Derive the base64url ed25519 public key embedded in an Ed25519 libp2p PeerId.
+ *
+ * An Ed25519 PeerId is an identity multihash of the public key, so
+ * `peerIdFromString(id).publicKey.raw` is the 32-byte ed25519 key whose
+ * base64url form matches the `OwnerKey.Key` representation (and
+ * `ed25519KeyPairFromLibp2p().publicKeyB64`). Returns null for a non-Ed25519
+ * id, a missing embedded key, or any parse failure — callers treat null as
+ * "not an owner" rather than throwing.
+ *
+ * Lives here, beside the other key bridges, so the lightweight verifiers in
+ * `peer-authorization.ts` can check a stored `PeerKey` against a row's `PeerId`
+ * without importing the seed-bootstrap runtime.
+ */
+export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
+  try {
+    const parsed = peerIdFromString(peerId);
+    if (parsed.type !== 'Ed25519' || !parsed.publicKey) {
+      return null;
+    }
+    return uint8ArrayToString(parsed.publicKey.raw, 'base64url');
+  } catch {
+    return null;
+  }
 }
 
 /** Longest rejected key value echoed back in an error — a real key is 43 base64url chars. */

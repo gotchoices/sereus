@@ -35,6 +35,8 @@ import type {
   DeviceTokenRecord,
   CadrePeerVoucherFields,
   CadrePeerRow,
+  CadreInviteRow,
+  CadreInviteUsageRow,
   PeerAddressRecord,
   ResolveDeviceTokenOpts,
   PendingJoin,
@@ -69,7 +71,7 @@ import {
 } from './joined-strand-store.js';
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
-import { verifyCadrePeerVoucher } from './peer-authorization.js';
+import { verifyCadrePeerVoucher, verifyInvitationAdmission } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
   signPeerRecord,
@@ -234,6 +236,20 @@ function unionAddrs(primary: readonly string[], extra: readonly string[]): strin
  * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
  * them directly (no pre-hash) with the owner private key, returning a base64url signature.
  */
+/**
+ * The usage and invitation rows an invitation-admitted `CadrePeer` row is verified through
+ * (`CadreNode.hasAnchoredProof`), keyed by `UsageStampId` and `CadreInvite.Key`.
+ */
+interface InvitationChain {
+  usages: Map<string, CadreInviteUsageRow>;
+  invites: Map<string, CadreInviteRow>;
+}
+
+/** Whether a `CadrePeer` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`). */
+function isInvitationAdmitted(row: CadrePeerVoucherFields): boolean {
+  return row.vouchSig === null && row.vouchUsage !== null;
+}
+
 function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
   return (message: Uint8Array): string =>
     sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
@@ -3900,7 +3916,7 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     this.pendingRevocations.set(revocation.stampId, revocation);
-    log('%s delete of %s committed while alone (0 control connections); Revocation tombstone ' +
+    log('%s tombstone for %s committed while alone (0 control connections); Revocation tombstone ' +
       '(stamp %s) queued for re-issue on cohort growth', revocation.tableName, revocation.rowKey, revocation.stampId);
   }
 
@@ -7372,14 +7388,19 @@ export class CadreNode implements SAppIdLookup {
    *  1. it is not this node itself — a node publishes its own `CadrePeer` address
    *     row so its dialable address rides in seeds, but "self" is not a peer this
    *     node authorized;
-   *  2. its `CadrePeer` row carries a complete voucher (`StampId`, `VouchOwner`,
-   *     `VouchSig` all non-null);
+   *  2. its `CadrePeer` row carries a complete proof: EITHER an owner voucher
+   *     (`StampId`, `VouchOwner`, `VouchSig` all non-null) OR an invitation admission
+   *     (`VouchSig` null, `VouchUsage` naming a `CadreInviteUsage` row);
    *  3. `VouchOwner` is in the NODE-LOCAL trusted-owner anchor
    *     ({@link getTrustedOwnerStore}) — never the replicated `OwnerKey` table,
    *     which any stranger can genesis-pollute; and
-   *  4. `VouchSig` verifies as that owner's signature over the row's voucher
-   *     digest ({@link verifyCadrePeerVoucher}), so the anchored owner really
-   *     vouched THIS peer id under THIS row's nonce; and
+   *  4. the proof verifies: for a voucher, `VouchSig` is that owner's signature over
+   *     the row's voucher digest ({@link verifyCadrePeerVoucher}), so the anchored
+   *     owner really vouched THIS peer id under THIS row's nonce; for an admission,
+   *     the chain row → usage → invitation → anchored issuer verifies link by link
+   *     ({@link verifyInvitationAdmission} — the issuer is `VouchOwner`, the invitation's
+   *     own owner signature, the holder's and the device's signatures, and the stored
+   *     peer key really is the key behind the peer id); and
    *  5. the row's `StampId` is NOT retired in `CadreControl.Revocation` — enforced
    *     upstream in {@link ControlDatabase.queryCadrePeers}, which drops retired rows
    *     before ANY reader (this predicate included) sees them, so a row resurrected
@@ -7388,10 +7409,14 @@ export class CadreNode implements SAppIdLookup {
    *     local rows) is still inert to every reader that has the tombstone.
    *
    * Fail-closed at every step: a missing anchor (pre-start), an empty anchor (a
-   * not-yet-enrolled node authorizes no one), a null/partial voucher, an
-   * unanchored `VouchOwner`, or a bad signature all yield "not authorized" —
-   * having an address row is NOT membership. The control-network wake and
-   * strand-address gates consult this set, NOT the addressable one.
+   * not-yet-enrolled node authorizes no one), a null/partial proof, an
+   * unanchored `VouchOwner`, a bad signature, or a usage or invitation row this node
+   * does not hold all yield "not authorized" — having an address row is NOT
+   * membership. The control-network wake and strand-address gates consult this set,
+   * NOT the addressable one.
+   *
+   * The usage and invitation tables are read only when at least one row needs them,
+   * so a cadre with no invitation-admitted member stays at one read per call.
    *
    * NOTE (rotation): if a party owner rotates keys and only the NEW key is pinned
    * in the anchor, rows the OLD key vouched fail check 3 until re-vouched — a
@@ -7399,7 +7424,7 @@ export class CadreNode implements SAppIdLookup {
    * rotation handling (re-vouch on rotate) is the
    * `flip-strand-membership-rotation-known-gap` work, not this predicate's.
    *
-   * @param retry - Whether the underlying membership read may retry a transient cluster
+   * @param retry - Whether the underlying membership reads may retry a transient cluster
    *   failure. Only {@link refreshAuthorizedControlPeers} passes `false`, because it runs
    *   as the control database's membership listener with that database's write lock held;
    *   see its comment.
@@ -7410,8 +7435,11 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.peerId?.toString();
     const rows = await this.controlDatabase.queryCadrePeers(retry);
+    const chain = rows.some(isInvitationAdmitted)
+      ? await this.loadInvitationChain(this.controlDatabase, retry)
+      : null;
     const authorized = rows
-      .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
+      .filter(row => row.peerId !== selfPeerId && this.hasAnchoredProof(row, chain))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
     // A node whose anchor was never seeded (no invite pin, no operator pin, not a
     // founder) refuses every wake and strand-addr request, which from the outside
@@ -7425,9 +7453,44 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Checks 2–4 of the authorized-membership predicate (see
-   * {@link listAuthorizedMembers}) for one `CadrePeer` row: complete voucher,
-   * `VouchOwner` in the node-local anchor, signature valid over the row's
-   * (PeerId, StampId) voucher digest.
+   * {@link listAuthorizedMembers}) for one `CadrePeer` row, by the kind of proof it
+   * carries: an owner voucher ({@link hasAnchoredVoucher}) or an invitation admission
+   * ({@link verifyInvitationAdmission} over the usage and invitation rows in `chain`,
+   * loaded only when some row needs them). A row with a `VouchSig` is judged as a
+   * voucher even if it also names a usage — the signature is the stronger proof and the
+   * one an owner re-vouch leaves behind.
+   */
+  private hasAnchoredProof(row: CadrePeerVoucherFields, chain: InvitationChain | null): boolean {
+    if (!isInvitationAdmitted(row)) {
+      return this.hasAnchoredVoucher(row);
+    }
+    const usage = chain?.usages.get(row.vouchUsage!);
+    const invite = usage === undefined ? undefined : chain?.invites.get(usage.inviteKey);
+    if (usage === undefined || invite === undefined) {
+      return false;
+    }
+    return verifyInvitationAdmission(row, usage, invite, key => this.trustedOwnerStore?.has(key) ?? false);
+  }
+
+  /**
+   * The usage and invitation rows {@link hasAnchoredProof} resolves an invitation-admitted
+   * row through, keyed for lookup. Both reads honour `retry` for
+   * {@link listAuthorizedMembers}' reason.
+   */
+  private async loadInvitationChain(controlDatabase: ControlDatabase, retry: boolean): Promise<InvitationChain> {
+    const [usages, invites] = await Promise.all([
+      controlDatabase.queryCadreInviteUsages(retry),
+      controlDatabase.queryCadreInvites(retry),
+    ]);
+    return {
+      usages: new Map(usages.map(usage => [usage.usageStampId, usage])),
+      invites: new Map(invites.map(invite => [invite.key, invite])),
+    };
+  }
+
+  /**
+   * The owner-voucher half of {@link hasAnchoredProof}: complete voucher, `VouchOwner` in
+   * the node-local anchor, signature valid over the row's (PeerId, StampId) voucher digest.
    *
    * NOTE: verifies the ed25519 signature on every call (no memo of already-
    * verified (peerId, stampId, vouchSig) triples). Cadres are a handful of

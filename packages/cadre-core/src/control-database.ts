@@ -7,11 +7,11 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
-import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
-import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
+import { controlAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
+import type { ControlTable, RevocableTable, ControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
@@ -94,13 +94,15 @@ export class FormationAbortedError extends Error {
 }
 
 /**
- * The invitation's seat budget is already spent: the count of recorded `FormationUsage` rows
- * for the token has reached `FormationInvite.TotalUses`, so this redemption cannot be given a
- * seat.
+ * The invitation's seat budget is already spent: the count of recorded usage rows for the
+ * invitation has reached its `TotalUses`, so this redemption cannot be given a seat. `token`
+ * is the `FormationInvite.Token` or the `CadreInvite.Key`, whichever table the caller
+ * redeemed against.
  *
  * Raised off the committed-count check ({@link ControlDatabase.assertSeatRemains}) ahead of
  * the write, inside {@link ControlDatabase.redeemInvitation} /
- * {@link ControlDatabase.recordFormationUsage}, and off the unlocked pre-check
+ * {@link ControlDatabase.recordFormationUsage}, off the same check for a cadre invitation
+ * ({@link ControlDatabase.redeemCadreInvite}), and off the unlocked pre-check
  * `ControlFormationUsageRecorder.authorizeUsage` runs before the manager issues a membership
  * pass — and off nothing else. It exists because
  * without it the refusal surfaces as a generic `CHECK constraint failed: Authorized` from the
@@ -123,6 +125,30 @@ export class InvitationExhaustedError extends Error {
     this.name = 'InvitationExhaustedError';
   }
 }
+
+/**
+ * {@link ControlDatabase.seatCadreInvite} was refused by `CadreInvite.AuthorizedInsert`: the
+ * row's `IssuerKey` is not an owner on THIS node, or its `IssuerSig` does not verify. The
+ * common cause is the first — the issuing owner's `OwnerKey` row has not replicated here yet,
+ * or that owner has since been removed — which is why the redemption protocol maps this to a
+ * retryable code; a tampered row fails the same way and simply never succeeds.
+ */
+export class CadreInviteIssuerUnknownError extends Error {
+  constructor(
+    readonly inviteKey: string,
+    readonly issuerKey: string,
+    options?: { cause?: unknown }
+  ) {
+    super(
+      `Cadre invitation ${inviteKey} cannot be seated here: its issuer ${issuerKey} is not an owner on this node, or its signature does not verify`,
+      options
+    );
+    this.name = 'CadreInviteIssuerUnknownError';
+  }
+}
+
+/** The refusal {@link CadreInviteIssuerUnknownError} wraps — the constraint named, as the engine words it. */
+const CADRE_INVITE_UNAUTHORIZED = /CHECK constraint failed: AuthorizedInsert\b/;
 
 /**
  * What a recorded `FormationUsage` row came out as.
@@ -252,6 +278,51 @@ export function formationConsentMessage(fields: {
 }
 
 /**
+ * The exact bytes an owner signs to seat a `CadreInvite` row — the TS mirror of the `'add'`
+ * digest in `CadreInvite.AuthorizedInsert`, over the whole row in the schema's order with
+ * nullable columns as `''` (`cadreInviteRowFields`, shared with the base64url verifier
+ * `peer-authorization.ts`'s `cadreInviteAddDigest`). `expiresAt` must already be the stored
+ * canonical `datetime` string ({@link canonicalDatetime}), as {@link ControlDatabase.insertCadreInvite}
+ * produces it, or the signed segment will not match what the CHECK sees after coercion.
+ */
+export function cadreInviteAddMessage(row: CadreInviteSignedFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInvite', 'add', cadreInviteRowFields(row));
+}
+
+/** The fields both redemption signatures cover; see {@link cadreInviteRedeemMessage}. */
+export interface CadreInviteRedemptionFields {
+  inviteKey: string;
+  /** The single-use nonce the redeeming device minted for this redemption (`generateStampId`). */
+  usageStampId: string;
+  /** The redeeming device's own ed25519 public key (base64url). */
+  peerKey: string;
+}
+
+/**
+ * The exact bytes the HOLDER of a cadre invitation signs, with the invitation's private key,
+ * to redeem it once — the TS mirror of the `'redeem'` digest `CadreInviteUsage.InvitePossessed`
+ * verifies against the invitation's public key. Binding the device and the nonce means a
+ * captured redemption can admit no other device and spend no other use.
+ */
+export function cadreInviteRedeemMessage(fields: CadreInviteRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'redeem', [
+    fields.inviteKey, fields.usageStampId, fields.peerKey,
+  ]);
+}
+
+/**
+ * The exact bytes the DEVICE signs, with its own key, to consent to being admitted by one
+ * redemption — the TS mirror of the `'consent'` digest `CadreInviteUsage.PeerConsented`
+ * verifies against `PeerKey`. Same fields as {@link cadreInviteRedeemMessage} under a
+ * distinct action tag, so neither signature can stand in for the other.
+ */
+export function cadreInviteConsentMessage(fields: CadreInviteRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'consent', [
+    fields.inviteKey, fields.usageStampId, fields.peerKey,
+  ]);
+}
+
+/**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
  * We only need the methods we actually use.
  */
@@ -298,10 +369,16 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   JoinedStrand: 'Id',
   JoinRequest: 'Id',
   DeviceToken: 'PeerId',
+  CadreInvite: 'Key',
 };
 
-/** A guarded table an owner may remove a row from (no production `OwnerKey` removal path exists yet). */
-type RemovableTable = Exclude<RevocableTable, 'OwnerKey'>;
+/**
+ * A guarded table an owner may remove a row from. `OwnerKey` is excluded only because no
+ * production removal path exists yet; `CadreInvite` is excluded by design — its rows are
+ * never deleted (`NoDelete`), and withdrawing one is a tombstone alone
+ * ({@link ControlDatabase.withdrawCadreInvite}).
+ */
+type RemovableTable = Exclude<RevocableTable, 'OwnerKey' | 'CadreInvite'>;
 
 /**
  * One row incarnation's owner-signed removal, ready for {@link ControlDatabase.execGuardedRemoval}:
@@ -452,7 +529,8 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  * hold, so a reaped row is recoverable by re-forming. `JoinRequest` is reapable for the same
  * reason: the inviting party and the user also hold its invitation. `OwnerKey` has no
  * production removal path and `MinOneOwner` makes an automated owner-key reap a
- * party-bricking hazard.
+ * party-bricking hazard. `CadreInvite` is never deleted at all (its tombstone is a
+ * withdrawal over a row that stays), so there is nothing to reap.
  */
 export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand', 'JoinRequest'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
@@ -460,12 +538,47 @@ export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 /**
  * Runtime membership test for {@link REAPABLE_TABLES}, narrowing a tombstone's
  * `TableName` to the subset {@link ControlDatabase.reapRevokedRow} accepts. A tombstone
- * naming an excluded table (`Strand`, `OwnerKey`) is skipped silently — `Strand`
- * tombstones are the common case in a party that has unpublished a strand, so a log line
- * per skip would be per-pass noise.
+ * naming an excluded table (`Strand`, `OwnerKey`, `CadreInvite`) is skipped silently —
+ * `Strand` tombstones are the common case in a party that has unpublished a strand, so a
+ * log line per skip would be per-pass noise.
  */
 const REAPABLE_TABLE_SET: ReadonlySet<RevocableTable> = new Set<RevocableTable>(REAPABLE_TABLES);
 const isReapableTable = (table: RevocableTable): table is ReapableTable => REAPABLE_TABLE_SET.has(table);
+
+/** Every `CadreInvite` column, in the order {@link cadreInviteRowOf} reads them; callers append their `where`. */
+const CADRE_INVITE_SELECT_SQL = 'select Key, PeerId, GrantsOwner, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
+
+/**
+ * A stored `CadreInvite` row as a {@link CadreInviteRow}. `ExpiresAt` is kept as the
+ * engine-canonical string it reads back as — the form the `'add'` signature covers — never
+ * parsed to ms here; `GrantsOwner` is the schema's 0/1 integer.
+ */
+function cadreInviteRowOf(row: Record<string, SqlValue>): CadreInviteRow {
+  return {
+    key: row.Key as string,
+    peerId: (row.PeerId as string | null) ?? null,
+    grantsOwner: Number(row.GrantsOwner) === 1,
+    expiresAt: row.ExpiresAt == null ? null : String(row.ExpiresAt),
+    totalUses: (row.TotalUses as number | null) ?? null,
+    issuerKey: row.IssuerKey as string,
+    issuerSig: row.IssuerSig as string,
+    stampId: row.StampId as string,
+  };
+}
+
+/** A stored `CadreInviteUsage` row as a {@link CadreInviteUsageRow}. */
+function cadreInviteUsageRowOf(row: Record<string, SqlValue>): CadreInviteUsageRow {
+  return {
+    usageStampId: row.UsageStampId as string,
+    inviteKey: row.InviteKey as string,
+    peerId: row.PeerId as string,
+    peerKey: row.PeerKey as string,
+    peerStampId: row.PeerStampId as string,
+    ownerStampId: (row.OwnerStampId as string | null) ?? null,
+    inviteSig: row.InviteSig as string,
+    peerSig: row.PeerSig as string,
+  };
+}
 
 /** A `JoinedStrand` row as a {@link StrandRow}; the schema's `KnownType` check backs the `Type` cast. */
 function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
@@ -1244,7 +1357,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer', retry);
     const rows: CadrePeerRow[] = [];
-    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer', undefined, 'cadre-peers', retry)) {
+    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.CadrePeer', undefined, 'cadre-peers', retry)) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
         continue;
@@ -1255,6 +1368,7 @@ export class ControlDatabase {
         stampId,
         vouchOwner: (row.VouchOwner as string | null) ?? null,
         vouchSig: (row.VouchSig as string | null) ?? null,
+        vouchUsage: (row.VouchUsage as string | null) ?? null,
       });
     }
     return rows;
@@ -2207,6 +2321,11 @@ export class ControlDatabase {
    * change the member set. Keeping the rule uniform ("every CadrePeer mutator notifies")
    * beats a per-method exception the next reader has to relearn.
    *
+   * Also clears `VouchUsage`: a row carries exactly one proof (the owner branch of
+   * `AuthorizedUpdate` requires it null), so re-vouching an invitation-admitted row moves it
+   * onto the signature and its invitation is no longer consulted for it — the way an owner
+   * retires a device's dependency on an invitation it may later withdraw.
+   *
    * NOTE: this rebinds VouchOwner to the CALLING owner's key, and the authorized-membership
    * predicate (`CadreNode.listAuthorizedMembers`) now judges rows by that column against each
    * reader's node-local anchor. Benign today because the only caller — the write-while-alone
@@ -2243,7 +2362,7 @@ export class ControlDatabase {
       await this.db!.exec(`
         update CadreControl.CadrePeer
           with context OwnerKey = ?, Signature = ?
-          set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?
+          set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?, VouchUsage = null
           where PeerId = ?
       `, [ownerKey, signature, updatedAt, ownerKey, signature, peerId]);
     });
@@ -2379,14 +2498,25 @@ export class ControlDatabase {
         with context OwnerKey = ?, Signature = ?
         where ${GUARDED_KEY_COLUMN[tableName]} = ? and StampId = ?
     `, [ownerKey, removal.signature, rowKey, stampId]);
-    // ReissuedAt named explicitly at 0 (the only value FreshTombstone accepts) rather
-    // than leaning on the column default — the seat-at-zero rule is load-bearing for
-    // reissueRevocations' monotonic bump, so state it at the write site.
+    await this.execTombstone(removal.ref, removal.revocationSignature, ownerKey);
+  }
+
+  /**
+   * File the owner-signed `Revocation` tombstone retiring one row incarnation — the second
+   * statement of every guarded removal ({@link execGuardedRemoval}) and the whole of a
+   * `CadreInvite` withdrawal ({@link withdrawCadreInvite}), whose row stays. The caller
+   * supplies the lock and, where one is needed, the transaction.
+   *
+   * `ReissuedAt` is named explicitly at 0 (the only value `FreshTombstone` accepts) rather
+   * than leaning on the column default — the seat-at-zero rule is load-bearing for
+   * {@link reissueRevocations}' monotonic bump, so state it at the write site.
+   */
+  private async execTombstone(ref: RevokedRowRef, revocationSignature: string, ownerKey: string): Promise<void> {
     await this.db!.exec(`
       insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, 0)
-    `, [ownerKey, removal.revocationSignature, tableName, rowKey, stampId]);
+    `, [ownerKey, revocationSignature, ref.tableName, ref.rowKey, ref.stampId]);
   }
 
   /**
@@ -3544,6 +3674,396 @@ export class ControlDatabase {
       }
     }
     return false;
+  }
+
+  // ── Cadre invitations (CadreInvite / CadreInviteUsage) ─────────────────────────────────
+
+  /**
+   * Mint and insert an owner-signed `CadreInvite`: an invitation to join THIS cadre that any
+   * member machine can later redeem on the owner's behalf ({@link redeemCadreInvite}).
+   *
+   * The owner signs the whole row ({@link cadreInviteAddMessage}) — `ExpiresAt` through
+   * {@link canonicalDatetime} so the signed segment byte-matches the stored `datetime`, as
+   * {@link insertFormationInvite} does — and the stored `IssuerKey`/`IssuerSig` are pinned to
+   * that signer by `CadreInvite.AuthorizedInsert`. The signature is part of the row because
+   * the row travels: the returned {@link CadreInviteRow} is what the invitation bundle
+   * carries to the holder, and {@link seatCadreInvite} re-inserts it verbatim on a member
+   * that has not received it by replication.
+   *
+   * `key` is the invitation's ed25519 PUBLIC key; the caller minted the pair and hands the
+   * private half to the invitee out of band. It is never stored here (`Strand.Invite` has the
+   * same shape).
+   *
+   * @param invite.key - the invitation public key (base64url ed25519), the row's primary key
+   * @param invite.peerId - the device the invitation is for, or null for whoever redeems first
+   * @param invite.grantsOwner - whether redemption also seats an `OwnerKey` row for the device
+   * @param invite.expiresAtMs - epoch ms after which it cannot be redeemed; omit for never
+   * @param invite.totalUses - how many redemptions it allows; omit for unlimited
+   * @returns the row as stored, `expiresAt` in its canonical form
+   */
+  async insertCadreInvite(
+    invite: {
+      key: string;
+      peerId?: string | null;
+      grantsOwner: boolean;
+      expiresAtMs?: number | null;
+      totalUses?: number | null;
+    },
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<CadreInviteRow> {
+    this.ensureInitialized();
+    const key = requireEd25519PublicKeyB64(invite.key, 'cadre invitation key');
+    const signed: CadreInviteSignedFields = {
+      key,
+      peerId: invite.peerId ?? null,
+      grantsOwner: invite.grantsOwner,
+      expiresAt: invite.expiresAtMs == null ? null : await canonicalDatetime(this.db!, invite.expiresAtMs),
+      totalUses: invite.totalUses ?? null,
+      stampId: generateStampId(this.config.libp2pNode.peerId.toString()),
+    };
+    const row: CadreInviteRow = {
+      ...signed,
+      issuerKey: ownerKey,
+      issuerSig: signMessage(cadreInviteAddMessage(signed)),
+    };
+    await this.lockedWithRetry(() => this.execCadreInviteInsert(row), {}, 'cadre-invite-insert');
+    log('Cadre invitation inserted: %s (peer=%s owner=%s)', key, row.peerId ?? 'any', row.grantsOwner);
+    return row;
+  }
+
+  /**
+   * Seat an owner-signed `CadreInvite` row received inside an invitation bundle, under its own
+   * stored `IssuerKey`/`IssuerSig` as the write context — insert-if-absent, so a member that
+   * already holds the row (by replication, or from an earlier redemption attempt) is a no-op.
+   *
+   * @returns `true` when this call inserted the row, `false` when it was already present.
+   * @throws {CadreInviteIssuerUnknownError} when `CadreInvite.AuthorizedInsert` refuses it: the
+   *   issuer is not an owner on this node (not replicated yet, or removed), or the signature does
+   *   not verify. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   */
+  async seatCadreInvite(row: CadreInviteRow): Promise<boolean> {
+    this.ensureInitialized();
+    try {
+      return await this.lockedWithRetry(async () => {
+        // retry: false — inside the locked write body (see queryStampId's NOTE).
+        if (await this.queryStampId('CadreInvite', row.key, false) !== null) {
+          log('CadreInvite %s already seated; seat skipped', row.key);
+          return false;
+        }
+        await this.execCadreInviteInsert(row);
+        log('Cadre invitation seated from its bundle: %s', row.key);
+        return true;
+      }, {}, 'cadre-invite-seat');
+    } catch (error) {
+      if (errorChainMatches(error, CADRE_INVITE_UNAUTHORIZED)) {
+        throw new CadreInviteIssuerUnknownError(row.key, row.issuerKey, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  /** Bare `CadreInvite` insert shared by {@link insertCadreInvite} and {@link seatCadreInvite}; the caller holds the lock. */
+  private async execCadreInviteInsert(row: CadreInviteRow): Promise<void> {
+    await this.db!.exec(`
+      insert into CadreControl.CadreInvite (Key, PeerId, GrantsOwner, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      row.issuerKey, row.issuerSig,
+      row.key, row.peerId, row.grantsOwner ? 1 : 0, row.expiresAt, row.totalUses,
+      row.issuerKey, row.issuerSig, row.stampId,
+    ]);
+  }
+
+  /**
+   * Read one `CadreInvite` row by key, or null when absent. Withdrawn rows are returned too —
+   * the row is the holder's proof and never goes away; liveness is {@link hasLiveCadreInvite}'s
+   * question, and `CadreInviteUsage.Authorized`'s at redemption.
+   *
+   * `retry: false` is passed by {@link redeemCadreInvite}, which reads INSIDE its locked write
+   * body — the same per-call opt-out, for the same reason, as {@link queryStampId}'s.
+   */
+  async queryCadreInvite(key: string, retry = true): Promise<CadreInviteRow | null> {
+    this.ensureInitialized();
+    for (const row of await this.readRows(`${CADRE_INVITE_SELECT_SQL} where Key = ?`, [key], 'cadre-invite', retry)) {
+      return cadreInviteRowOf(row);
+    }
+    return null;
+  }
+
+  /**
+   * Every `CadreInvite` row this node holds, withdrawn and expired ones included (see
+   * {@link queryCadreInvite}). Read by the membership predicate when at least one `CadrePeer`
+   * row is invitation-admitted; `retry: false` is forwarded from
+   * {@link CadreNode.listAuthorizedMembers} on the membership-gate refresh path for
+   * {@link queryCadrePeers}' reason.
+   */
+  async queryCadreInvites(retry = true): Promise<CadreInviteRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows(CADRE_INVITE_SELECT_SQL, undefined, 'cadre-invites', retry);
+    return rows.map(cadreInviteRowOf);
+  }
+
+  /**
+   * Every `CadreInviteUsage` row this node holds — the redemption records the membership
+   * predicate verifies invitation-admitted rows against. Same `retry` contract as
+   * {@link queryCadreInvites}.
+   */
+  async queryCadreInviteUsages(retry = true): Promise<CadreInviteUsageRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows(
+      'select UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, OwnerStampId, InviteSig, PeerSig from CadreControl.CadreInviteUsage',
+      undefined, 'cadre-invite-usages', retry
+    );
+    return rows.map(cadreInviteUsageRowOf);
+  }
+
+  /**
+   * How many times a cadre invitation has been redeemed (its `CadreInviteUsage` rows), served
+   * through the `CadreInviteUsageByInvite` index. As {@link countFormationUsage}: a permissive
+   * PRE-check, not the cap — the cap is `CadreInviteUsage.Authorized`'s own committed count.
+   *
+   * `retry: false` is passed by {@link assertCadreInviteSeatRemains}, inside the locked body.
+   */
+  async countCadreInviteUsage(key: string, retry = true): Promise<number> {
+    this.ensureInitialized();
+    const sql = 'select count(1) as Count from CadreControl.CadreInviteUsage where InviteKey = ?';
+    for (const row of await this.readRows(sql, [key], 'cadre-invite-usage-count', retry)) {
+      return (row.Count as number) ?? 0;
+    }
+    return 0;
+  }
+
+  /**
+   * Is any cadre invitation still redeemable — not withdrawn, unexpired, with uses below its
+   * `TotalUses`, and issued by a current owner? The conditions `CadreInviteUsage.Authorized`
+   * applies, read ahead of time so the control-network connection gate can answer "does this
+   * node expect a stranger?" with no key to ask about, exactly as
+   * {@link hasOutstandingFormationInvite} answers it for strand formation. The expiry
+   * comparison is `expiresAtMs <= now`, so an invitation the redemption would refuse never
+   * holds the gate open.
+   *
+   * Withdrawal is read through {@link queryRevokedStamps}, the per-table retired-stamp seam
+   * every other revocation-aware reader uses (and the one an isolated node can still answer).
+   */
+  async hasLiveCadreInvite(nowMs: number = Date.now()): Promise<boolean> {
+    this.ensureInitialized();
+    const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
+    // NOTE: scans every CadreInvite row (expired and withdrawn ones included, since rows are
+    // never deleted) on the stranger path of an inbound connection. Cadre-scale invitation
+    // counts make that free today; if a long-lived cadre accumulates thousands and inbound
+    // upgrades slow down, add an expiry-ordered index or prune withdrawn/expired rows (which
+    // first needs every device they admitted re-vouched, so the chain no longer needs them).
+    const metered: Array<{ key: string; totalUses: number }> = [];
+    let unlimitedLive = false;
+    for (const row of await this.readRows(
+      'select Key, ExpiresAt, TotalUses, IssuerKey, StampId from CadreControl.CadreInvite',
+      undefined,
+      'live-cadre-invites'
+    )) {
+      if (withdrawn.has(row.StampId as string) || !owners.has(row.IssuerKey as string)) {
+        continue;
+      }
+      const expiresAtMs = parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null);
+      if (expiresAtMs !== null && expiresAtMs <= nowMs) {
+        continue;
+      }
+      const totalUses = (row.TotalUses as number | null) ?? null;
+      if (totalUses === null) {
+        unlimitedLive = true;
+      } else {
+        metered.push({ key: row.Key as string, totalUses });
+      }
+    }
+    if (unlimitedLive) {
+      return true;
+    }
+    // NOTE: one retried read per metered invitation, each with its own read budget, on a path
+    // the admission gate awaits under a 2 s fail-open deadline — the same shape and the same
+    // revisit condition as hasOutstandingFormationInvite's loop.
+    for (const invite of metered) {
+      if (await this.countCadreInviteUsage(invite.key) < invite.totalUses) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Owner-signed WITHDRAWAL of a cadre invitation: file the `Revocation` tombstone retiring its
+   * stamp, with the row kept. The row stays because every device the invitation admitted
+   * proves its membership through it (`CadrePeer.AuthorizedInsert`'s consent branch,
+   * `verifyInvitationAdmission`); `CadreInvite.NoDelete` refuses a delete, and
+   * `Revocation.RowIsGone` admits a `'CadreInvite'` tombstone while the row lives. Afterwards
+   * `CadreInviteUsage.Authorized` refuses every further redemption, and `CadreInvite.NotRevoked`
+   * refuses re-seating the row from the holder's signed copy on any node holding the
+   * tombstone.
+   *
+   * Idempotent: a no-op (no throw, nothing written) when the row is absent locally or already
+   * withdrawn — `false` then, `true` when this call filed the tombstone. The owner must hold the
+   * row to withdraw it, since the tombstone names the row's stamp.
+   *
+   * Fires the guarded-delete listener like a removal does, so a withdrawal committed while the
+   * node was alone is queued for re-issue on cohort growth ({@link CadreNode.noteGuardedDelete}).
+   */
+  async withdrawCadreInvite(
+    key: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    const filed = await this.lockedWithRetry(async (): Promise<RevokedRowRef | null> => {
+      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
+      const stampId = await this.queryStampId('CadreInvite', key, false);
+      if (stampId === null) {
+        log('withdrawCadreInvite: no CadreInvite row for %s (nothing to withdraw)', key);
+        return null;
+      }
+      if ((await this.queryRevokedStamps('CadreInvite', false)).has(stampId)) {
+        log('withdrawCadreInvite: %s already withdrawn (stamp %s retired)', key, stampId);
+        return null;
+      }
+      const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
+      const signature = signMessage(buildAuthorizationMessage('CadreControl.Revocation', 'remove', [ref.tableName, ref.rowKey, ref.stampId]));
+      await this.execTombstone(ref, signature, ownerKey);
+      return ref;
+    }, {}, 'cadre-invite-withdraw');
+    if (filed === null) {
+      return false;
+    }
+    log('Cadre invitation withdrawn: %s (stamp %s retired, row kept)', key, filed.stampId);
+    this.notifyGuardedDelete(filed);
+    return true;
+  }
+
+  /**
+   * Redeem a seated `CadreInvite` on the owner's behalf: admit `peerId` as a cadre member and,
+   * when the invitation grants ownership, as an owner — with NO owner signature. One
+   * transaction writes the `CadrePeer` row (consent branch of `AuthorizedInsert`), the
+   * `OwnerKey` row when granted (consent branch of `Authorized`), and last the
+   * `CadreInviteUsage` row that authorizes both; the usage row's own checks (`PeerExists`,
+   * `OwnerExists`) read the rows back, so the three are mutually bound to this exact
+   * redemption and none can be held in reserve. The invitation must already be committed
+   * ({@link seatCadreInvite}): every consent branch reads `committed.CadreInvite`.
+   *
+   * The two signatures are the holder's and the device's, minted on the device over
+   * {@link cadreInviteRedeemMessage} / {@link cadreInviteConsentMessage}; this machine only
+   * verifies them (by writing the row). `peerId` must be the identity multihash of `peerKey`:
+   * the schema cannot derive it, so a writer asserts the pair and every reader re-derives it
+   * (`verifyInvitationAdmission`) — a mismatched pair is written and then never trusted.
+   *
+   * Idempotent for a retry after a dropped reply: when the device's row is already present
+   * (and its `OwnerKey` row too, when granted) nothing is written and no seat is spent —
+   * `alreadyMember: true`. A present row whose `OwnerKey` row is missing under an
+   * owner-granting invitation is completed: the usage row then names the existing peer stamp.
+   * The seat check ({@link assertCadreInviteSeatRemains}) runs after that, so the retry of a
+   * single-use redemption is answered `alreadyMember` rather than refused as exhausted.
+   *
+   * Through {@link mutateCadrePeer}, so the membership hub is notified; inside the locked body
+   * every read passes `retry: false` and every stamp is minted per attempt, so a
+   * {@link lockedWithRetry} re-run starts clean.
+   *
+   * @throws {InvitationExhaustedError} when the invitation's seats are all spent (by name,
+   *   ahead of the schema's generic `Authorized` refusal — see {@link assertSeatRemains}).
+   */
+  async redeemCadreInvite(params: {
+    inviteKey: string;
+    peerId: string;
+    /** The device's ed25519 public key (base64url); `peerId` is its identity multihash. */
+    peerKey: string;
+    /** The device's dialable addresses, if known; stored comma-joined as `authorizePeer` does. */
+    multiaddrs?: string[];
+    /** Single-use nonce minted by the device; both signatures cover it. */
+    usageStampId: string;
+    /** The holder's signature with the invitation private key over the `'redeem'` digest. */
+    inviteSig: string;
+    /** The device's signature with its own key over the `'consent'` digest. */
+    peerSig: string;
+    nowMs?: number;
+  }): Promise<CadreInviteRedemptionResult> {
+    this.ensureInitialized();
+    const { inviteKey, peerId, peerKey, usageStampId, inviteSig, peerSig } = params;
+    const nowMs = params.nowMs ?? Date.now();
+    const multiaddr = params.multiaddrs?.length ? params.multiaddrs.join(',') : '';
+    log('Redeeming cadre invitation %s for %s', inviteKey, peerId);
+
+    return this.mutateCadrePeer('cadre-invite-redeem', async () => {
+      const invite = await this.queryCadreInvite(inviteKey, false);
+      if (invite === null) {
+        throw new Error(`Cannot redeem cadre invitation ${inviteKey}: no CadreInvite row is seated on this node (seatCadreInvite first)`);
+      }
+      const seated = await this.readSeatedAdmission(peerId, peerKey, invite.grantsOwner);
+      if (seated.peerStampId !== null && (!invite.grantsOwner || seated.ownerStampId !== null)) {
+        log('redeemCadreInvite: %s already admitted; nothing written', peerId);
+        return { alreadyMember: true, peerStampId: seated.peerStampId, ownerStampId: seated.ownerStampId };
+      }
+      await this.assertCadreInviteSeatRemains(invite);
+
+      // Stamps minted from the ADMITTED device's id, as insertCadrePeer does: the nonce names
+      // the row it seats. Minted inside the body, so a re-run mints afresh over a rolled-back
+      // attempt rather than re-presenting a stamp the usage row may already name.
+      const peerStampId = seated.peerStampId ?? generateStampId(peerId);
+      const ownerStampId = invite.grantsOwner ? (seated.ownerStampId ?? generateStampId(peerId)) : null;
+      const nowCanonical = await canonicalDatetime(this.db!, nowMs);
+      await this.inTransaction('cadre-invite-redeem', async () => {
+        if (seated.peerStampId === null) {
+          await this.db!.exec(`
+            insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig, VouchUsage)
+              with context OwnerKey = null, Signature = null
+              values (?, ?, ?, ?, null, ?, ?, null, ?)
+          `, [peerId, peerKey, multiaddr, nowMs, peerStampId, invite.issuerKey, usageStampId]);
+        }
+        if (ownerStampId !== null && seated.ownerStampId === null) {
+          await this.db!.exec(`
+            insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig, VouchUsage)
+              with context OwnerKey = null, Signature = null
+              values (?, ?, ?, null, ?)
+          `, [peerKey, ownerStampId, invite.issuerKey, usageStampId]);
+        }
+        await this.db!.exec(`
+          insert into CadreControl.CadreInviteUsage (UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, OwnerStampId, InviteSig, PeerSig)
+            with context Now = ?
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+        `, [nowCanonical, usageStampId, inviteKey, peerId, peerKey, peerStampId, ownerStampId, inviteSig, peerSig]);
+      });
+      log('Redeemed cadre invitation %s: %s admitted (owner=%s, usage %s)', inviteKey, peerId, ownerStampId !== null, usageStampId);
+      return { alreadyMember: false, peerStampId, ownerStampId };
+    });
+  }
+
+  /**
+   * The rows a redemption would seat that are already present: the device's `CadrePeer`
+   * stamp, and — only when the invitation grants ownership — its `OwnerKey` stamp. Raw stamp
+   * reads ({@link queryStampId}), so a physically present row counts; inside the locked
+   * body, so never retried.
+   */
+  private async readSeatedAdmission(
+    peerId: string,
+    peerKey: string,
+    grantsOwner: boolean
+  ): Promise<{ peerStampId: string | null; ownerStampId: string | null }> {
+    return {
+      peerStampId: await this.queryStampId('CadrePeer', peerId, false),
+      ownerStampId: grantsOwner ? await this.queryStampId('OwnerKey', peerKey, false) : null,
+    };
+  }
+
+  /**
+   * Refuse a redemption that would consume a seat the cadre invitation does not have, by
+   * name ({@link InvitationExhaustedError}) — the cadre-invitation twin of
+   * {@link assertSeatRemains}, for the same reason: the schema's cap clause refuses as a
+   * generic `Authorized` failure a caller would otherwise report as retryable. Reads the
+   * committed count inside the locked body, so on a same-node race the loser is refused here.
+   */
+  private async assertCadreInviteSeatRemains(invite: CadreInviteRow): Promise<void> {
+    if (invite.totalUses === null) {
+      return;
+    }
+    const used = await this.countCadreInviteUsage(invite.key, false);
+    if (used >= invite.totalUses) {
+      throw new InvitationExhaustedError(invite.key, used, invite.totalUses);
+    }
   }
 
   /**

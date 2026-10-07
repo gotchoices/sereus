@@ -1,7 +1,9 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
-import { controlAuthorizationFields } from './control-authorization.js';
-import type { ControlAction, ControlDomain, RevocableTable } from './control-authorization.js';
+import { controlAuthorizationFields, cadreInviteRowFields } from './control-authorization.js';
+import type { CadreInviteSignedFields, ControlAction, ControlDomain, RevocableTable } from './control-authorization.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
+import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields } from './types.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
@@ -254,6 +256,95 @@ export function verifyFormationConsent(row: {
     );
   } catch (error) {
     log('verifyFormationConsent failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * Canonical digest an owner signs to seat a `CadreInvite` row — the read-side mirror
+ * of `cadreInviteAddMessage` in control-database.ts, base64url instead of raw bytes
+ * (see {@link taggedDigest}). The whole row is bound, nullable columns as `''` and
+ * `ExpiresAt` in its stored canonical form, through the one field builder both sides
+ * share (`cadreInviteRowFields`). SQL mirror: `CadreInvite.AuthorizedInsert`.
+ */
+export function cadreInviteAddDigest(row: CadreInviteSignedFields): string {
+  return taggedDigest('CadreControl.CadreInvite', 'add', cadreInviteRowFields(row));
+}
+
+/**
+ * Canonical digest the HOLDER of a `CadreInvite`'s private key signs to redeem it once:
+ * proof of possession, verified against the invitation key itself
+ * (`CadreInviteUsage.InvitePossessed`). Binds the redemption's single-use nonce and the
+ * device being admitted, so one redemption cannot be re-presented for another device
+ * or another use. Mirror of `cadreInviteRedeemMessage` in control-database.ts.
+ */
+export function cadreInviteRedeemDigest(inviteKey: string, usageStampId: string, peerKey: string): string {
+  return taggedDigest('CadreControl.CadreInviteUsage', 'redeem', [inviteKey, usageStampId, peerKey]);
+}
+
+/**
+ * Canonical digest the DEVICE signs to consent to being admitted by one redemption
+ * (`CadreInviteUsage.PeerConsented`), over the same fields as
+ * {@link cadreInviteRedeemDigest} under a distinct action tag, so the holder's and
+ * the device's signatures are never interchangeable. Mirror of
+ * `cadreInviteConsentMessage` in control-database.ts.
+ */
+export function cadreInviteConsentDigest(inviteKey: string, usageStampId: string, peerKey: string): string {
+  return taggedDigest('CadreControl.CadreInviteUsage', 'consent', [inviteKey, usageStampId, peerKey]);
+}
+
+/** ed25519 verify over a base64url digest, with the siblings' never-throws contract left to the caller. */
+function verifyB64(digestB64: string, signature: string, publicKey: string): boolean {
+  return verify(digestB64, signature, publicKey, 'ed25519', 'base64url', 'base64url', 'base64url');
+}
+
+/**
+ * Is an invitation-admitted `CadrePeer` row (`vouchSig` null, `vouchUsage` set) a
+ * member this node should trust? The read-side mirror of the consent branch of
+ * `CadrePeer.AuthorizedInsert`, re-checked against THIS node's anchor because the
+ * replicated `OwnerKey` table can be polluted: the chain is
+ *
+ *   row --vouchUsage--> usage --inviteKey--> invitation --issuerKey--> anchored owner
+ *
+ * and every link is verified: the issuer is anchored (`isAnchored`) and is the row's
+ * `vouchOwner`; the invitation's stored `'add'` signature verifies over the row rebuilt
+ * from its columns; the usage names this invitation, this peer id and this exact row
+ * incarnation (`peerStampId`); the stored `peerKey` really is the key behind
+ * `row.peerId` (the schema cannot unwrap a multihash, so a writer could assert any pair);
+ * the holder's `'redeem'` signature verifies with the invitation key and the device's
+ * `'consent'` signature with its own key; and a targeted invitation names this peer.
+ *
+ * Expiry, use count and withdrawal are deliberately NOT re-checked: they were conditions
+ * at redemption (`CadreInviteUsage.Authorized`), and membership persists until an owner
+ * removes the row — exactly as an owner-vouched row's membership does. Keeping a device
+ * out is removing its row AND withdrawing the invitation.
+ *
+ * Returns a boolean and never throws (the siblings' contract): malformed input or any
+ * crypto failure resolves to `false`, logged at debug.
+ */
+export function verifyInvitationAdmission(
+  row: CadrePeerVoucherFields,
+  usage: CadreInviteUsageRow,
+  invite: CadreInviteRow,
+  isAnchored: (ownerKey: string) => boolean,
+): boolean {
+  try {
+    return row.stampId !== null
+      && row.vouchOwner !== null
+      && row.vouchUsage !== null
+      && isAnchored(row.vouchOwner)
+      && invite.issuerKey === row.vouchOwner
+      && usage.usageStampId === row.vouchUsage
+      && usage.inviteKey === invite.key
+      && usage.peerStampId === row.stampId
+      && usage.peerId === row.peerId
+      && (invite.peerId === null || invite.peerId === row.peerId)
+      && ed25519PublicKeyB64FromPeerId(row.peerId) === usage.peerKey
+      && verifyB64(cadreInviteAddDigest(invite), invite.issuerSig, invite.issuerKey)
+      && verifyB64(cadreInviteRedeemDigest(invite.key, usage.usageStampId, usage.peerKey), usage.inviteSig, invite.key)
+      && verifyB64(cadreInviteConsentDigest(invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
+  } catch (error) {
+    log('verifyInvitationAdmission failed: %o', error);
     return false;
   }
 }

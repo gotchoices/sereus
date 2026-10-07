@@ -841,6 +841,7 @@ describe('queryPeers — owner identity from the OwnerKey table', () => {
 					stampId: p.StampId ?? null,
 					vouchOwner: null,
 					vouchSig: null,
+					vouchUsage: null,
 				})),
 		};
 	}
