@@ -2403,11 +2403,13 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Per-stream authorization for the four Optimystic control-DB protocols
-   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`),
-   * wired as `authorizeInboundStream` in {@link createControlNode} — the
-   * fail-closed layer behind the fail-open connection gater. Control node
-   * ONLY: strand cohort nodes legitimately serve cross-party peers.
+   * Per-stream authorization for the protocol guard's `members-snapshot` class
+   * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
+   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
+   * five, and any protocol nobody classed. Also wired as Optimystic's
+   * `authorizeInboundStream` in {@link createControlNode} for the four DB
+   * protocols. The fail-closed layer behind the fail-open connection gater.
+   * Control node ONLY: strand cohort nodes legitimately serve cross-party peers.
    *
    * The STRICT SUBSET of {@link admitInboundControlConnection}: the same
    * "no basis to judge" admissions (shared via

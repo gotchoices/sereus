@@ -1,5 +1,5 @@
 description: Should someone with no account be able to read an open workspace, for example a public view of an election? Today the only way to find a workspace's machines is members-only, and strangers are turned away before they can ask. The maintainer needs to decide whether to allow this at all yet, and which approach to take. Requested as gotchoices/sereus#23.
-files: packages/cadre-core/src/strand-addr-protocol.ts, packages/cadre-core/src/membership-connection-gater.ts (STRANGER_OPEN_PROTOCOLS)
+files: packages/cadre-core/src/strand-addr-protocol.ts, packages/cadre-core/src/control-protocol-guard.ts (controlProtocolClasses, which replaced STRANGER_OPEN_PROTOCOLS)
 ----
 
 # Decide: public read-only access to open strands

@@ -50,6 +50,11 @@
  * `getHandler` for stream limits (`findIncomingStreamLimit`, `findOutgoingStreamLimit`) and for
  * `runOnLimitedConnection`.
  *
+ * NOTE: a libp2p that stopped dispatching through `getHandler` would leave this guard installed
+ * and inert, and the class-completeness spec would still pass. Only the stranger probe in
+ * `control-stream-authz.integration.ts` (step 5) observes dispatch, so run it on every libp2p
+ * upgrade.
+ *
  * libp2p's own stream middleware (`libp2p.use`) is NOT used. In libp2p 3.3.11 `onIncomingStream`
  * pushes the handler call onto the very array `registrar.getMiddleware` returns, so every inbound
  * stream appends another handler call to the stored chain and outbound streams then run those
