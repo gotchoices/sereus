@@ -1,5 +1,5 @@
 description: The phone app adds a home machine's node to its cadre by scanning the QR code the machine shows, replacing the Settings screen that asks for a host address and a grant token.
-prereq: cadre-host-join-a-cadre
+prereq: cadre-host-hosted-nodes-join-by-qr
 files: packages/reference-app-rn/src/host-node-request.ts, packages/reference-app-rn/app/settings.tsx, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
 difficulty: medium
 ----

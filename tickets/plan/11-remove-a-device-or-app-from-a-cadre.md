@@ -17,7 +17,7 @@ difficulty: medium
 - A node that learns it has been removed stops serving the party and deletes the party's local data. Check whether "a node that learns it has been revoked should shut itself down" (named as distinct behaviour in docs/architecture.md) exists; build it if not.
 - **Strand consequences.** A removed machine still holds strand read secrets it already synced. Removal stops future sync and membership; it cannot unlearn data. Say so in docs and UI. Rotating a strand's keys after removing a device is out of scope; file a backlog ticket if it is not already covered by "Removing Members" in docs/strands.md.
 - **UI** (reference apps): "Devices and nodes" lists every `CadrePeer` with its kind (phone app, always-on node), its owner flag, last seen and key fingerprint, plus a Remove action with confirmation. Pending device authorizations (ticket 5) appear in the same list.
-- **Replacing a dead host:** remove the old node, then claim a new one (`cadre-host-join-a-cadre`). Document that sequence; nothing more is needed.
+- **Replacing a dead host:** remove the old node, then claim a new one (`cadre-host-hosted-nodes-join-by-qr`). Document that sequence; nothing more is needed.
 
 ## Edge cases & interactions
 

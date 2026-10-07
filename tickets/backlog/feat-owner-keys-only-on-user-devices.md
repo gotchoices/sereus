@@ -6,7 +6,7 @@ files: packages/cadre-cli/src/commands/start.ts, packages/cadre-cli/src/commands
 
 ## Principle (from the project owner)
 
-Keeping owner signing entirely on phones or hardware keys is the more secure design. A server that holds an owner key can act as the user without the user being present, so no server process should hold one: not cadre-host (handled by `cadre-host-join-a-cadre`), not a provider container, not a headless cadre-cli node.
+Keeping owner signing entirely on phones or hardware keys is the more secure design. A server that holds an owner key can act as the user without the user being present, so no server process should hold one: not cadre-host (handled by `cadre-host-remove-founder-role`), not a provider container, not a headless cadre-cli node.
 
 ## Where the code still contradicts it
 
