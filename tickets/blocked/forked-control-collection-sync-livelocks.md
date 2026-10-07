@@ -235,6 +235,16 @@ This run's log has no `DEBUG` output (none was set), so the exact interleaving w
 
 Net effect: the fix in `control-delete-while-alone-quiesce-before-stop` is real and large (roughly 50% → 6% observed), but does not close this ticket's underlying class — a lone node can still land in a state where its own storage refuses its own next write to a collection, reachable by at least two distinct paths now (a torn commit from a departed peer, and possibly a self-registration/foreground write race on a freshly restarted node). Whoever next re-measures this file should capture `DEBUG=sereus:cadre:node` across enough parallel load to catch this fingerprint again, specifically checking for a `registerSelf: refreshed own CadrePeer record` line landing within the same handful of milliseconds as the `removePeer` call.
 
+## Third trigger: a redemption torn on a lone member, then the owner returns (added 2026-10-07)
+
+Found by `fix/redemption-write-tears-on-a-member-whose-cohort-just-shrank`; the shape and the fix that prevents it are in that ticket (now in `implement/`). Measured 3 of 3 in a one-member copy of `cadre-invite-any-member.integration.ts` (`tickets/.logs/redemption-write-tears.lone.run2.log`, `...run4.log`).
+
+**How it happens.** Owner A stops; member M is alone; device P connects to redeem an invitation and is placed in M's control cohort while holding no control block. M's three-collection admission write commits locally but is refused as `commit-not-durable` (1 of 2 holders: P refuses `missing-base-revision`), re-driven for about 20 s, and settled torn. M's storage now holds `CadrePeer` revision 6 with no cohort commit proof, and M pushes it to P once M's membership snapshot includes P. A restarts holding revision 5. Run 4: A's startup self-record update committed at revision 6 on A's own lineage before M's push arrived, and the collection reported `lineage-divergence forkRev=6 heldAction=<M's> readAction=<A's> heldRev=6 readRev=8`; a second restart of A over the same storage did not change anything. Run 2: M rejected A's self-record update with `content-digest-mismatch`, and although M's push then landed revision 6 in A's raw store, A's membership read still did not show P after 90 s. In both runs the owner never listed the device.
+
+**What is new about this trigger.** Nothing is committed while alone and no peer stops mid-commit. A write that never reached a durable majority is still a committed revision on the writer's own storage, and spreads from there by the writer's own block push, so a node that was away for one write can come back onto a history the cohort never certified. Optimystic's `backlog/debt-repair-cannot-tell-a-fork-from-a-lagging-cohort` describes the repair side of the same gap.
+
+**Why it is not worked here.** The sereus-side fix keeps the write from tearing (the member hands the device the blocks before writing, so the commit is durable on both). The fork needs the tear, so preventing the tear prevents this trigger; what a node should do with a locally committed, never-acknowledged revision remains upstream's call.
+
 ## Cross-cutting obligations
 
 None triggered on the sereus side: no schema, byte format, golden fixture, or determinism
