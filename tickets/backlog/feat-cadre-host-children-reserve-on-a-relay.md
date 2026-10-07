@@ -31,3 +31,7 @@ Deploying relays (regions, dnsaddr discovery, abuse limits) is `4-relay-bootstra
 ## Docs that change when this lands
 
 The `cadre-host` row of `docs/architecture.md` → "Which nodes can be reached through a relay" (and the sentence under that table naming cadre-host), item 2 of `docs/cadre-host.md` → "NAT and DDNS" plus the other "not wired yet" mentions in that file (the comparison table, the public-surface bullet, item 1, the invite address resolver's third bullet), the matching comment in `packages/cadre-host/src/nat/address-resolver.ts`, and the `NOTE:` in the child env block of `host-process-orchestrator.ts` that says children hold no relay reservation.
+
+## Note from planning `cadre-host-node-reachability`
+
+`cadre-host-nat-per-node-mappings` removes `NatService.getInviteAddresses` and the invite-address push. Each hosted node instead gets its public addresses at spawn as `CADRE_APPEND_ANNOUNCE_ADDRS` (`cadre-host-nodes-announce-public-addresses`), computed by `buildPublicAddresses` in `address-resolver.ts`, and status reports a per-node verdict with a CGNAT reason that points here. So the "invite addresses include the relayed address" bullet above becomes: a node holding a reservation publishes its `/p2p-circuit` address through cadre-core's own `collectSelfAddrs` (no host involvement), and the per-node verdict in `/nat/status` counts a held reservation as reachable.
