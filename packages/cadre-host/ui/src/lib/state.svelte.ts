@@ -7,7 +7,7 @@
  * are co-located with the API calls that triggered them.
  */
 
-import { apiFetch, apiPut, ApiError } from './api.js';
+import { apiDelete, apiFetch, apiPost, apiPut, ApiError } from './api.js';
 import { deriveOverallStatus } from './overall-status.js';
 
 // --- Mirrors of server-side types (kept narrow on purpose) ---
@@ -90,6 +90,37 @@ export interface NatStatusSnapshot {
 	};
 }
 
+/** Mirror of the server's `HostedNodeStatus` (`src/hosted/types.ts`). */
+export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joined' | 'error';
+
+/** Mirror of the server's `HostedNodeView`, the fields the UI shows. The wire shape never carries the claim secret. */
+export interface HostedNodeView {
+	id: string;
+	/** The placeholder `unclaimed` until the claim names the party. */
+	partyId: string;
+	status: HostedNodeStatus;
+	peerId?: string;
+	/** Set by the claim, together with the claimed `partyId`. */
+	ownerKey?: string;
+	/** The node holds at least one control connection. */
+	connected?: boolean;
+	error?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/**
+ * Mirror of the server's `ClaimDetails`. `payload` carries the claim secret, so
+ * this lives in the state of the component showing the code, never in the
+ * global slice and never in browser storage.
+ */
+export interface ClaimDetails {
+	payload: string;
+	peerId: string;
+	multiaddrs: string[];
+	reachability: NodeReachability | null;
+}
+
 export interface StatusResponse {
 	service: { name: 'cadre-host'; version: string; uptimeSeconds: number };
 	nodes: Array<{
@@ -143,11 +174,24 @@ export interface Toast {
 	expiresAt: number;
 }
 
+/**
+ * The hosted-nodes slice. `loaded` and `error` exist because an unfetched list
+ * is not an empty one: without them a failed fetch would read as "no nodes".
+ */
+interface HostedNodesState {
+	list: HostedNodeView[];
+	/** True once a fetch has succeeded at least once. */
+	loaded: boolean;
+	/** Message from the most recent failed fetch; cleared by the next success. */
+	error: string | null;
+}
+
 interface AppState {
 	status: OverallStatus;
 	service: StatusResponse['service'] | null;
 	nodes: NodeInfo[];
 	nodeStats: Record<string, NodeStats | null>;
+	hostedNodes: HostedNodesState;
 	connectivity: NatStatusSnapshot | null;
 	update: UpdateState | null;
 	settings: HostConfigFile | null;
@@ -159,6 +203,7 @@ const state = $state<AppState>({
 	service: null,
 	nodes: [],
 	nodeStats: {},
+	hostedNodes: { list: [], loaded: false, error: null },
 	connectivity: null,
 	update: null,
 	settings: null,
@@ -246,6 +291,11 @@ export async function refreshNodes(): Promise<void> {
 	}
 }
 
+/**
+ * One node's orchestrator handle and stats. A 404 is an answer, not a failure: a
+ * hosted node with no child (a spawn that failed) or one removed meanwhile has no
+ * handle, and its page renders from the hosted-node record alone.
+ */
 export async function refreshNodeDetail(id: string): Promise<{ node: NodeInfo; stats: NodeStats | null } | null> {
 	try {
 		const r = await apiFetch<{ node: NodeInfo; stats: NodeStats | null }>(`/api/nodes/${encodeURIComponent(id)}`);
@@ -257,9 +307,73 @@ export async function refreshNodeDetail(id: string): Promise<{ node: NodeInfo; s
 		state.nodeStats = { ...state.nodeStats, [id]: r.stats };
 		return r;
 	} catch (err) {
-		reportError(`node ${id}`, err);
+		if (err instanceof ApiError && err.status === 404) {
+			state.nodes = state.nodes.filter((n) => n.id !== id);
+		} else {
+			reportError(`node ${id}`, err);
+		}
 		return null;
 	}
+}
+
+// Sequence numbers so an older list answer landing after a newer one is
+// dropped: events, page mounts and mutations each start a fetch, and the Join
+// page's state line must not step back to "waiting" after the claim.
+let hostedNodesRequested = 0;
+let hostedNodesApplied = 0;
+
+export async function refreshHostedNodes(): Promise<void> {
+	const seq = ++hostedNodesRequested;
+	try {
+		const r = await apiFetch<{ nodes: HostedNodeView[] }>('/api/hosted-nodes');
+		if (seq < hostedNodesApplied) return;
+		hostedNodesApplied = seq;
+		state.hostedNodes = { list: r.nodes, loaded: true, error: null };
+	} catch (err) {
+		reportError('hosted nodes', err);
+		if (seq < hostedNodesApplied) return;
+		state.hostedNodes = { ...state.hostedNodes, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/**
+ * Re-read what a hosted-node change touches: the records, the orchestrator
+ * handles, and the NAT snapshot, which gains or loses the node's reachability entry.
+ */
+function refreshAfterHostedChange(): Promise<unknown> {
+	return Promise.all([refreshHostedNodes(), refreshNodes(), refreshConnectivity()]);
+}
+
+/**
+ * "Join a cadre": start a node waiting to be claimed. Resolves with the new
+ * record once the child is spawned (seconds); errors reach the caller as `ApiError`.
+ */
+export async function joinCadre(): Promise<HostedNodeView> {
+	const r = await apiPost<{ node: HostedNodeView }>('/api/hosted-nodes');
+	await refreshAfterHostedChange();
+	return r.node;
+}
+
+/** Stop a hosted node and delete its data on this machine. Errors reach the caller as `ApiError`. */
+export async function removeHostedNode(id: string): Promise<void> {
+	await apiDelete(`/api/hosted-nodes/${encodeURIComponent(id)}`);
+	await refreshAfterHostedChange();
+}
+
+/** Remove a hosted node and start a fresh one with a new code. Resolves with the fresh record, which has a new id. */
+export async function resetHostedNode(id: string): Promise<HostedNodeView> {
+	const r = await apiPost<{ node: HostedNodeView }>(`/api/hosted-nodes/${encodeURIComponent(id)}/reset`);
+	await refreshAfterHostedChange();
+	return r.node;
+}
+
+/**
+ * The code for an unclaimed node. Throws `ApiError`: `node_unavailable` (503)
+ * while the child is starting, which callers retry; `invalid_state` (409) once
+ * the node is no longer waiting to be claimed.
+ */
+export function fetchClaimDetails(id: string): Promise<ClaimDetails> {
+	return apiFetch<ClaimDetails>(`/api/hosted-nodes/${encodeURIComponent(id)}/claim`);
 }
 
 export async function refreshConnectivity(): Promise<void> {
@@ -323,15 +437,18 @@ export function applyEvent(event: { type: string; data: string }): void {
 				);
 				recomputeStatus();
 			}
+			// A respawn drops the record's `connected` until the watcher reads the new child.
+			void refreshHostedNodes();
 			break;
 		}
 		case 'connectivity-changed':
 			void refreshConnectivity();
 			break;
-		// A join adds an orchestrator handle and a removal drops one, so the node list
-		// is re-read. The hosted-node records themselves get a slice in `cadre-host-join-ui`.
+		// A join adds an orchestrator handle and a NAT entry and a removal drops them, so
+		// all three are re-read. The event's id is not looked up: a `removed` for an id
+		// the slice never held (a handle no record named) is just another refresh.
 		case 'hosted-nodes-changed':
-			void refreshNodes();
+			void refreshAfterHostedChange();
 			break;
 		case 'update-available': {
 			const version = payload['version'] as string | undefined;

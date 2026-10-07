@@ -3,9 +3,11 @@
 
 	import {
 		appState,
+		refreshHostedNodes,
 		refreshStatus,
 		refreshUpdate,
 	} from '../lib/state.svelte.js';
+	import { isWaiting } from '../lib/hosted-nodes.js';
 	import { formatUptime, formatRelativeTime } from '../lib/format.js';
 	import { hrefFor } from '../lib/router.js';
 	import StatusDot from '../components/StatusDot.svelte';
@@ -16,6 +18,7 @@
 	onMount(() => {
 		void refreshStatus();
 		void refreshUpdate();
+		void refreshHostedNodes();
 	});
 
 	const updateAvailable = $derived(app.update?.available?.version ?? null);
@@ -23,6 +26,9 @@
 	const runningReachability = $derived((app.connectivity?.nodes ?? []).filter((n) => n.running));
 	const reachableNodes = $derived(runningReachability.filter((n) => n.verdict !== 'unreachable').length);
 	const allReachable = $derived(reachableNodes === runningReachability.length);
+	const hostedJoined = $derived(app.hostedNodes.list.filter((n) => n.status === 'joined').length);
+	const hostedWaiting = $derived(app.hostedNodes.list.filter((n) => isWaiting(n.status)).length);
+	const hostedFailed = $derived(app.hostedNodes.list.filter((n) => n.status === 'error').length);
 </script>
 
 <section class="stack">
@@ -73,8 +79,15 @@
 
 		<div class="card">
 			<h3>Hosted nodes</h3>
-			<p class="muted">This machine runs cadre nodes for the cadres that claim them.</p>
-			<a class="link" href={hrefFor('nodes')}>Details →</a>
+			{#if app.hostedNodes.loaded}
+				<p class="big">{hostedJoined} <span class="muted">joined, {hostedWaiting} waiting</span></p>
+				{#if hostedFailed > 0}
+					<p class="none">{hostedFailed} failed; <a href={hrefFor('nodes')}>see Nodes</a></p>
+				{/if}
+			{:else}
+				<p class="muted">This machine runs cadre nodes for the cadres that claim them.</p>
+			{/if}
+			<a class="link" href={hrefFor('join')}>Join a cadre →</a>
 		</div>
 
 		<div class="card">

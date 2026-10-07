@@ -6,6 +6,7 @@
 		applyEvent,
 		refreshStatus,
 		refreshNodes,
+		refreshHostedNodes,
 		refreshConnectivity,
 		refreshUpdate,
 		refreshSettings,
@@ -20,6 +21,7 @@
 	import Connectivity from './routes/Connectivity.svelte';
 	import Nodes from './routes/Nodes.svelte';
 	import NodeDetail from './routes/NodeDetail.svelte';
+	import Join from './routes/Join.svelte';
 	import Settings from './routes/Settings.svelte';
 	import StatusDot from './components/StatusDot.svelte';
 	import Toast from './components/Toast.svelte';
@@ -40,6 +42,7 @@
 		{ name: 'home', label: 'Home' },
 		{ name: 'connectivity', label: 'Connectivity' },
 		{ name: 'nodes', label: 'Nodes' },
+		{ name: 'join', label: 'Join' },
 		{ name: 'settings', label: 'Settings' },
 	];
 
@@ -54,6 +57,7 @@
 		startRouter();
 		void refreshStatus();
 		void refreshNodes();
+		void refreshHostedNodes();
 		void refreshConnectivity();
 		void refreshUpdate();
 		void refreshSettings();
@@ -107,7 +111,12 @@
 	{:else if route.route.name === 'nodes'}
 		<Nodes />
 	{:else if route.route.name === 'node-detail'}
-		<NodeDetail id={route.route.params['id'] ?? ''} />
+		<!-- Keyed: a reset moves the page to the fresh node's id, which must not inherit the old page's state. -->
+		{#key route.route.params['id']}
+			<NodeDetail id={route.route.params['id'] ?? ''} />
+		{/key}
+	{:else if route.route.name === 'join'}
+		<Join />
 	{:else if route.route.name === 'settings'}
 		<Settings />
 	{:else}

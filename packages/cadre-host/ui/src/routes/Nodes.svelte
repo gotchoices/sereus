@@ -1,64 +1,86 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	import { appState, refreshNodes } from '../lib/state.svelte.js';
+	import { appState, refreshHostedNodes, refreshNodes } from '../lib/state.svelte.js';
+	import { claimedCadre, connectedText, joinNodeRows, ownerFingerprint, STATUS_BADGE } from '../lib/hosted-nodes.js';
 	import { hrefFor } from '../lib/router.js';
 	import { formatRelativeTime, shortPeerId } from '../lib/format.js';
 
 	const app = appState();
 
+	const rows = $derived(joinNodeRows(app.hostedNodes.list, app.nodes));
+
 	onMount(() => {
 		void refreshNodes();
+		void refreshHostedNodes();
 	});
 </script>
 
 <section class="stack">
 	<header>
 		<h2>Nodes</h2>
-		<p class="muted">Cadre nodes managed by this host.</p>
+		<p class="muted">Cadre nodes this machine runs, and the cadre each one joined.</p>
 	</header>
 
 	<div class="card">
-		{#if app.nodes.length === 0}
+		{#if rows.length === 0 && !app.hostedNodes.loaded && !app.hostedNodes.error}
+			<p class="muted">Loading…</p>
+		{:else if rows.length === 0}
 			<p class="muted">
-				No nodes yet. Run <code>cadre-host join</code> to start one and scan its code with the phone that owns the cadre.
+				No nodes yet. <a href={hrefFor('join')}>Join a cadre</a> to start one, then scan its code with the phone that owns the cadre.
 			</p>
 		{:else}
-			<table>
-				<thead>
-					<tr>
-						<th scope="col">ID</th>
-						<th scope="col">Profile</th>
-						<th scope="col">Status</th>
-						<th scope="col">Party</th>
-						<th scope="col">Spawned</th>
-						<th scope="col"></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each app.nodes as node (node.id)}
+			<div class="scroll">
+				<table>
+					<thead>
 						<tr>
-							<td><code>{node.id}</code></td>
-							<td>{node.profile}</td>
-							<td>
-								<span class={`badge ${node.status === 'running' ? 'ok' : 'err'}`}>
-									{node.status}
-								</span>
-							</td>
-							<td><code title={node.partyId}>{shortPeerId(node.partyId)}</code></td>
-							<td class="muted">{formatRelativeTime(node.spawnedAt)}</td>
-							<td>
-								<a href={hrefFor('node-detail', { id: node.id })}>Details →</a>
-							</td>
+							<th scope="col">ID</th>
+							<th scope="col">Status</th>
+							<th scope="col">Cadre</th>
+							<th scope="col">Owner</th>
+							<th scope="col">Connected</th>
+							<th scope="col">Spawned</th>
+							<th scope="col"></th>
 						</tr>
-					{/each}
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						{#each rows as row (row.id)}
+							{@const cadre = row.hosted ? claimedCadre(row.hosted) : null}
+							<tr>
+								<td><code>{row.id}</code></td>
+								<td>
+									<span class="badges">
+										{#if row.hosted}
+											<span class="badge {STATUS_BADGE[row.hosted.status].tone}">{STATUS_BADGE[row.hosted.status].text}</span>
+										{/if}
+										{#if !row.handle}
+											<span class="badge">no process</span>
+										{:else if row.handle.status !== 'running'}
+											<span class="badge err">{row.handle.status}</span>
+										{/if}
+									</span>
+								</td>
+								<td>
+									{#if cadre}<code title={cadre}>{shortPeerId(cadre)}</code>{:else}—{/if}
+								</td>
+								<td><code title={row.hosted?.ownerKey}>{ownerFingerprint(row.hosted?.ownerKey)}</code></td>
+								<td>{row.hosted ? connectedText(row.hosted) : '—'}</td>
+								<td class="muted">{formatRelativeTime(row.handle?.spawnedAt ?? row.hosted?.createdAt)}</td>
+								<td>
+									<a href={hrefFor('node-detail', { id: row.id })}>Details →</a>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	</div>
 </section>
 
 <style>
+	/* The table scrolls inside its card on a narrow screen rather than widening the page. */
+	.scroll { overflow-x: auto; }
 	table {
 		width: 100%;
 		border-collapse: collapse;
@@ -68,6 +90,7 @@
 		padding: 0.5rem 0.75rem;
 		text-align: left;
 		border-bottom: 1px solid var(--color-border);
+		white-space: nowrap;
 	}
 	th {
 		font-weight: 600;
@@ -78,4 +101,5 @@
 		border-bottom-color: var(--color-border-strong);
 	}
 	tr:last-child td { border-bottom: none; }
+	.badges { display: inline-flex; gap: 0.25rem; }
 </style>

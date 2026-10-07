@@ -1,16 +1,27 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 
-	import { apiDelete, ApiError } from '../lib/api.js';
 	import {
 		appState,
+		refreshHostedNodes,
 		refreshNodeDetail,
-		refreshNodes,
+		removeHostedNode,
+		reportError,
+		resetHostedNode,
 		pushToast,
 	} from '../lib/state.svelte.js';
+	import {
+		claimedCadre,
+		connectedText,
+		isWaiting,
+		ownerFingerprint,
+		stateLine,
+		STATUS_BADGE,
+	} from '../lib/hosted-nodes.js';
 	import { hrefFor, navigate } from '../lib/router.js';
-	import { formatBytes, formatRelativeTime, shortPeerId } from '../lib/format.js';
+	import { formatBytes, formatRelativeTime } from '../lib/format.js';
 
+	import ClaimCode from '../components/ClaimCode.svelte';
 	import ConfirmDialog from '../components/ConfirmDialog.svelte';
 	import LogTail from '../components/LogTail.svelte';
 	import NodeReachabilityCard from '../components/NodeReachabilityCard.svelte';
@@ -18,59 +29,91 @@
 	interface Props { id: string }
 	const { id }: Props = $props();
 
+	type ConfirmedAction = 'remove' | 'reset' | 'retry';
+
+	const CONFIRM: Record<ConfirmedAction, { title: string; label: string; message: (nodeId: string) => string }> = {
+		remove: {
+			title: 'Remove hosted node',
+			label: 'Remove',
+			message: (nodeId) => `Remove ${nodeId}? This stops the node and deletes its data on this machine. The cadre keeps the node's row until its owner removes it there.`,
+		},
+		reset: {
+			title: 'Reset hosted node',
+			label: 'Reset',
+			message: (nodeId) => `Reset ${nodeId}? Use this if someone you did not intend claimed the node. The node is stopped, its data on this machine deleted, and a fresh node with a new code starts.`,
+		},
+		retry: {
+			title: 'Retry hosted node',
+			label: 'Retry',
+			message: (nodeId) => `Retry ${nodeId}? The failed node is removed and its data on this machine deleted, and a fresh node with a new code starts for the phone that owns the cadre to scan.`,
+		},
+	};
+
 	const app = appState();
 
-	let confirmRemove = $state(false);
-	let busyAction: string | null = $state(null);
+	let confirming: ConfirmedAction | null = $state(null);
+	let busyAction: ConfirmedAction | 'cancel' | null = $state(null);
+	/** The first read of the orchestrator handle has answered, found or not. */
+	let handleRead = $state(false);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
-	// A remove outlives the page if the user leaves mid-request; its
-	// follow-ups (restart the poll, navigate) must not act on a page that is gone.
+	// A mutation outlives the page if the user leaves mid-request; its
+	// navigation must not act on a page that is gone.
 	let destroyed = false;
 
+	/** The orchestrator handle: absent for a node whose spawn failed. */
 	const node = $derived(app.nodes.find((n) => n.id === id) ?? null);
+	/** The hosted-node record: absent for a handle whose record was lost. */
+	const hosted = $derived(app.hostedNodes.list.find((n) => n.id === id) ?? null);
 	const stats = $derived(app.nodeStats[id] ?? null);
 	const reachability = $derived(app.connectivity?.nodes.find((n) => n.nodeId === id) ?? null);
+	const missing = $derived(!node && !hosted && handleRead && app.hostedNodes.loaded);
 
 	onMount(() => {
-		void refreshNodeDetail(id);
-		startPolling();
+		void refreshHostedNodes();
+		void refreshNodeDetail(id).then(() => (handleRead = true));
+		pollTimer = setInterval(() => void refreshNodeDetail(id), 5_000);
 	});
 
 	onDestroy(() => {
 		destroyed = true;
-		stopPolling();
+		if (pollTimer) clearInterval(pollTimer);
 	});
 
-	function startPolling(): void {
-		pollTimer = setInterval(() => void refreshNodeDetail(id), 5_000);
-	}
-
-	function stopPolling(): void {
-		if (pollTimer) clearInterval(pollTimer);
-		pollTimer = undefined;
-	}
-
-	function reportActionFailure(action: string, err: unknown): void {
-		const code = err instanceof ApiError ? err.code : 'error';
-		const msg = err instanceof Error ? err.message : String(err);
-		pushToast('error', `${action} failed: ${msg} (${code})`);
-	}
-
-	/** Remove a hosted node through the same loopback surface as `cadre-host node remove`: stop it and delete its data on this machine. A removed node leaves `/api/nodes`, so the poll is paused for the request — a tick landing after the teardown would toast "not found" — and the page leaves for the list on success. */
-	async function remove(): Promise<void> {
-		busyAction = 'remove';
-		stopPolling();
+	/** Remove, then leave for the list: the node is gone. Through the same route as `cadre-host node remove`. */
+	async function remove(action: 'remove' | 'cancel'): Promise<void> {
+		busyAction = action;
 		try {
-			await apiDelete(`/api/hosted-nodes/${encodeURIComponent(id)}`);
+			await removeHostedNode(id);
 		} catch (err) {
-			reportActionFailure('remove', err);
-			if (!destroyed) startPolling();
+			reportError(action === 'cancel' ? 'Cancel' : 'Remove', err);
 			busyAction = null;
 			return;
 		}
 		pushToast('success', `Removed hosted node ${id}`);
-		await refreshNodes();
 		if (!destroyed) navigate(hrefFor('nodes'));
+	}
+
+	/** Reset (or retry a failed node): a fresh node with a new id replaces this one, so the page moves to it. */
+	async function reset(action: 'reset' | 'retry'): Promise<void> {
+		busyAction = action;
+		try {
+			const fresh = await resetHostedNode(id);
+			pushToast('success', `Started ${fresh.id} in place of ${id}; show its code only to the person it is for`);
+			if (!destroyed) navigate(hrefFor('node-detail', { id: fresh.id }));
+		} catch (err) {
+			reportError(action === 'retry' ? 'Retry' : 'Reset', err);
+			busyAction = null;
+		}
+	}
+
+	async function confirmed(action: ConfirmedAction): Promise<void> {
+		confirming = null;
+		if (action === 'remove') await remove('remove');
+		else await reset(action);
+	}
+
+	function busyLabel(action: ConfirmedAction | 'cancel', idle: string, busy: string): string {
+		return busyAction === action ? busy : idle;
 	}
 </script>
 
@@ -79,7 +122,11 @@
 		<a href={hrefFor('nodes')} class="back">← Back to nodes</a>
 	</header>
 
-	{#if !node}
+	{#if missing}
+		<div class="card">
+			<p class="muted">There is no node {id} on this machine. It may have been removed.</p>
+		</div>
+	{:else if !node && !hosted}
 		<div class="card">
 			<p class="muted">Loading node {id}…</p>
 		</div>
@@ -87,61 +134,112 @@
 		<div class="card">
 			<div class="page-header">
 				<div>
-					<h2><code>{node.id}</code></h2>
-					<p class="muted">{node.profile} · party <code title={node.partyId}>{shortPeerId(node.partyId)}</code></p>
+					<h2><code>{id}</code></h2>
+					<p class="muted">Hosted node · {node?.profile ?? 'storage'} profile</p>
 				</div>
-				<span class={`badge ${node.status === 'running' ? 'ok' : 'err'}`}>
-					{node.status}
-				</span>
+				{#if node}
+					<span class={`badge ${node.status === 'running' ? 'ok' : 'err'}`}>{node.status}</span>
+				{:else}
+					<span class="badge">no process</span>
+				{/if}
 			</div>
 
-			<dl class="kv">
-				<div><dt>Workdir</dt><dd><code>{node.workdir || '—'}</code></dd></div>
-				<div><dt>Spawned</dt><dd>{formatRelativeTime(node.spawnedAt)}</dd></div>
-				<div><dt>Ports</dt><dd>health {node.ports.health} · metrics {node.ports.metrics} · p2p {node.ports.p2p} · ws {node.ports.ws}</dd></div>
-				<div><dt>CPU</dt><dd>{stats ? stats.cpuPercent.toFixed(1) + '%' : '—'}</dd></div>
-				<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.memoryBytes)}</dd></div>
-			</dl>
-
-			<div class="actions">
-				<!-- Enabled even while stopped: a crashed node awaiting respawn is removed the same way. -->
-				<button
-					class="danger"
-					disabled={busyAction !== null}
-					onclick={() => (confirmRemove = true)}
-				>
-					{busyAction === 'remove' ? 'Removing…' : 'Remove'}
-				</button>
-			</div>
-		</div>
-
-		<div class="card stack">
-			<h3>Reachable from outside</h3>
-			{#if !app.connectivity}
-				<p class="muted">Loading…</p>
-			{:else if !reachability}
-				<p class="muted">The port mapping table has no entry for this node yet.</p>
+			{#if node}
+				<dl class="kv">
+					<div><dt>Workdir</dt><dd><code>{node.workdir || '—'}</code></dd></div>
+					<div><dt>Spawned</dt><dd>{formatRelativeTime(node.spawnedAt)}</dd></div>
+					<div><dt>Ports</dt><dd>health {node.ports.health} · metrics {node.ports.metrics} · p2p {node.ports.p2p} · ws {node.ports.ws}</dd></div>
+					<div><dt>CPU</dt><dd>{stats ? stats.cpuPercent.toFixed(1) + '%' : '—'}</dd></div>
+					<div><dt>Memory (RSS)</dt><dd>{formatBytes(stats?.memoryBytes)}</dd></div>
+				</dl>
 			{:else}
-				<NodeReachabilityCard node={reachability} connectivity={app.connectivity} />
+				<p class="muted">No process is running for this node on this machine.</p>
 			{/if}
 		</div>
 
-		<LogTail nodeId={node.id} />
+		<div class="card stack">
+			<div class="card-head">
+				<h3>Cadre</h3>
+				{#if hosted}
+					<span class="badge {STATUS_BADGE[hosted.status].tone}">{STATUS_BADGE[hosted.status].text}</span>
+				{/if}
+			</div>
+
+			{#if !hosted}
+				{#if app.hostedNodes.loaded}
+					<p class="muted">No hosted-node record names this node, so its cadre is unknown. Remove stops it and deletes its data on this machine.</p>
+					<div class="actions">
+						<button class="danger" disabled={busyAction !== null} onclick={() => (confirming = 'remove')}>
+							{busyLabel('remove', 'Remove', 'Removing…')}
+						</button>
+					</div>
+				{:else}
+					<p class="muted">Loading…</p>
+				{/if}
+			{:else}
+				<p class="state" class:error={hosted.status === 'error'}>{stateLine(hosted)}</p>
+				<dl class="kv">
+					<div><dt>Cadre ID</dt><dd><code>{claimedCadre(hosted) ?? '—'}</code></dd></div>
+					<div><dt>Owner</dt><dd><code title={hosted.ownerKey}>{ownerFingerprint(hosted.ownerKey)}</code></dd></div>
+					<div><dt>Connected</dt><dd>{connectedText(hosted)}</dd></div>
+				</dl>
+
+				{#if isWaiting(hosted.status)}
+					<ClaimCode node={hosted} />
+					<div class="actions">
+						<button disabled={busyAction !== null} onclick={() => remove('cancel')}>
+							{busyLabel('cancel', 'Cancel', 'Cancelling…')}
+						</button>
+					</div>
+				{:else}
+					<!-- Enabled even while stopped: a crashed node awaiting respawn is removed the same way. -->
+					<div class="actions">
+						{#if hosted.status === 'error'}
+							<button disabled={busyAction !== null} onclick={() => (confirming = 'retry')}>
+								{busyLabel('retry', 'Retry', 'Retrying…')}
+							</button>
+						{:else}
+							<button disabled={busyAction !== null} onclick={() => (confirming = 'reset')}>
+								{busyLabel('reset', 'Reset', 'Resetting…')}
+							</button>
+						{/if}
+						<button class="danger" disabled={busyAction !== null} onclick={() => (confirming = 'remove')}>
+							{busyLabel('remove', 'Remove', 'Removing…')}
+						</button>
+					</div>
+				{/if}
+			{/if}
+		</div>
+
+		{#if node}
+			<div class="card stack">
+				<h3>Reachable from outside</h3>
+				{#if !app.connectivity}
+					<p class="muted">Loading…</p>
+				{:else if !reachability}
+					<p class="muted">The port mapping table has no entry for this node yet.</p>
+				{:else}
+					<NodeReachabilityCard node={reachability} connectivity={app.connectivity} />
+				{/if}
+			</div>
+
+			<LogTail nodeId={node.id} />
+		{/if}
 	{/if}
 </section>
 
-<ConfirmDialog
-	open={confirmRemove}
-	title="Remove hosted node"
-	message={`Remove hosted node ${id}? It is stopped and its data on this machine deleted. The cadre it joined keeps the node's row until its owner removes it there.`}
-	confirmLabel="Remove"
-	danger
-	onConfirm={async () => {
-		confirmRemove = false;
-		await remove();
-	}}
-	onCancel={() => (confirmRemove = false)}
-/>
+{#if confirming}
+	{@const action = confirming}
+	<ConfirmDialog
+		open
+		title={CONFIRM[action].title}
+		message={CONFIRM[action].message(id)}
+		confirmLabel={CONFIRM[action].label}
+		danger
+		onConfirm={() => confirmed(action)}
+		onCancel={() => (confirming = null)}
+	/>
+{/if}
 
 <style>
 	.back { font-size: 0.92rem; }
@@ -152,6 +250,11 @@
 		flex-wrap: wrap;
 		gap: var(--space-3);
 	}
+	.page-header h2 code { word-break: break-all; }
+	.card-head { display: flex; align-items: center; gap: 0.5rem; }
+	.card-head h3 { margin: 0; }
+	.state { margin: 0; font-weight: 500; }
+	.error { color: var(--color-danger); }
 	.kv {
 		margin: var(--space-3) 0;
 		display: grid;
@@ -161,6 +264,6 @@
 	}
 	.kv > div { display: contents; }
 	.kv dt { color: var(--color-text-muted); }
-	.kv dd { margin: 0; }
-	.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+	.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+	.actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
 </style>

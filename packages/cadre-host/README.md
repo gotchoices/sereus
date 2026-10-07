@@ -79,7 +79,7 @@ See [`service/README.md`](./service/README.md) for templates, manual-smoke instr
 
 ## After install — joining your first cadre
 
-`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one starts when you run `cadre-host join`. This walkthrough goes from "install just finished" to "first hosted node is claimed."
+`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one starts when you click **Join a cadre** in the local UI or run `cadre-host join`. This walkthrough goes from "install just finished" to "first hosted node is claimed."
 
 This host's whole job is to run always-on nodes for *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs a node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Hosted nodes: Join a cadre](../../docs/cadre-host.md#hosted-nodes-join-a-cadre) for the full lifecycle.
 
@@ -108,17 +108,21 @@ The UI listens on `http://127.0.0.1:<uiPort>/` (default port 8765) on the host m
 
 ### 3. Join your cadre
 
-Decide whose cadre this node is for — a family member, a friend, or your own phone. That person already has **their own** cadre on their phone; you are adding a node to it, not enrolling them into anything of yours. There is no button for this in the local UI yet, so run:
+Decide whose cadre this node is for — a family member, a friend, or your own phone. That person already has **their own** cadre on their phone; you are adding a node to it, not enrolling them into anything of yours.
+
+In the local UI, open **Join** and click **Join a cadre**. The page starts the node and shows a QR code and the same text with a copy button. Scan the code with the Sereus app on the phone that owns the cadre, or paste the text into it. The line under the node changes to `Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed it, then to `Connected to the cadre`, and the code gives way to a link to the node's page. **Cancel** removes a node nobody has claimed yet. Closing the tab loses nothing: the Join page lists every node still waiting to be claimed.
+
+From a shell instead:
 
 ```bash
 cadre-host join
 ```
 
-The command starts the node and prints a QR code and the same text under it. Scan the code with the Sereus app on the phone that owns the cadre, or paste the text into it. The command then waits and prints `✓ Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed the node; the node now appears on the Nodes page as claimed. `--no-qr` prints only the text (on stdout, alone, so it can be piped); `--no-wait` exits once the code is shown, and the node keeps waiting. Ctrl-C while waiting also leaves the node waiting.
+The command starts the node and prints a QR code and the same text under it, then waits and prints `✓ Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed the node; the node now appears on the Nodes page as claimed. `--no-qr` prints only the text (on stdout, alone, so it can be piped); `--no-wait` exits once the code is shown, and the node keeps waiting. Ctrl-C while waiting also leaves the node waiting.
 
-If the command warns that the node cannot be reached from outside your home network, a phone on your home network can still claim it; see [Reachability](#reachability--can-people-actually-reach-your-nodes) for the ports to forward.
+If the page or the command warns that the node cannot be reached from outside your home network, a phone on your home network can still claim it; see [Reachability](#reachability--can-people-actually-reach-your-nodes) for the ports to forward.
 
-To host a node for a friend, run `cadre-host join` again and let the friend scan it. **Anyone who scans the code claims the node**, so show it only to the person it is for; if the wrong person claimed it, `cadre-host node reset <id>` removes that node and starts a fresh one with a new code.
+To host a node for a friend, join again and let the friend scan the new code. **Anyone who scans the code claims the node**, so show it only to the person it is for; if the wrong person claimed it, **Reset** on the node's page (or `cadre-host node reset <id>`) removes that node and starts a fresh one with a new code.
 
 ### 4. Manage hosted nodes
 
@@ -128,7 +132,7 @@ cadre-host node remove <id>       # stop the node and delete its data on this ma
 cadre-host node reset <id>        # remove it and start a fresh one with a new code
 ```
 
-`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** (the same call) rather than Stop: the respawn supervisor treats a claimed or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
+`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset) rather than Stop: the respawn supervisor treats a claimed or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
 
 ## Reachability — can people actually reach your nodes?
 
@@ -289,14 +293,13 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 `cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
 
-Four pages cover the day-to-day operations:
+Five pages cover the day-to-day operations:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity), a hosted-nodes tile linking to Nodes, and the running-node count.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). A hosted node has **Remove**, the same as `cadre-host node remove <id>`. cadre-host doesn't auto-spawn nodes, so this list is empty until you run `cadre-host join`.
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity), a hosted-nodes tile ("N joined, M waiting", plus failed ones when there are any, linking to Join), and the running-node count.
+- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node, labelled with the cadre it joined or "waiting to be claimed", with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
+- **Nodes** — one row per hosted node with its status, cadre, owner fingerprint and whether it is connected. A node's page adds recent stats, the log tail (last 200 lines, "Refresh" pulls again) and a **Cadre** card: the code and **Cancel** while it waits to be claimed, **Reset** and **Remove** once joined, **Retry** and **Remove** when it failed. cadre-host doesn't auto-spawn nodes, so this list is empty until you join a cadre.
+- **Join** — the **Join a cadre** button, then each node waiting to be claimed with its QR code, its text, its reachability and a live line that follows the claim (see [*After install*, step 3](#3-join-your-cadre)).
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, UI port), uninstall pointer.
-- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
-
-A Join page (`cadre-host-join-ui`) is coming; today the UI has no "Join a cadre" button, and `cadre-host join` is the only way to start a node.
 
 The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, a hosted node is added, claimed or removed, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 

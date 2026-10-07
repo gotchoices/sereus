@@ -5,9 +5,11 @@
 	import {
 		appState,
 		refreshConnectivity,
+		refreshHostedNodes,
 		pushToast,
 	} from '../lib/state.svelte.js';
 	import { formatRelativeTime } from '../lib/format.js';
+	import { hostedLabel } from '../lib/hosted-nodes.js';
 	import { hrefFor } from '../lib/router.js';
 
 	import ConnectivityBadge from '../components/ConnectivityBadge.svelte';
@@ -41,11 +43,9 @@
 
 	const cgnatDetected = $derived(app.connectivity?.cgnatDetected === true);
 
-	/** Who a node is for. Every node this host runs is a hosted node; the Join ticket adds the cadre it joined. */
-	const NODE_LABEL = 'hosted node';
-
 	onMount(() => {
 		void refreshConnectivity();
+		void refreshHostedNodes();
 		void loadProviders();
 	});
 
@@ -186,7 +186,7 @@
 						<NodeReachabilityCard node={n} connectivity={app.connectivity}>
 							{#snippet header()}
 								<a href={hrefFor('node-detail', { id: n.nodeId })}><strong><code>{n.nodeId}</code></strong></a>
-								<span class="muted small">{NODE_LABEL}</span>
+								<span class="muted small">{hostedLabel(app.hostedNodes.list.find((h) => h.id === n.nodeId))}</span>
 							{/snippet}
 						</NodeReachabilityCard>
 					</li>
