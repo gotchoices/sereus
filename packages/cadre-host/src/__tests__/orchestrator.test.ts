@@ -169,7 +169,7 @@ describe('HostProcessOrchestrator.createContainer', () => {
 });
 
 describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
-  // The donated-node respawn path calls createContainer again with the id of a
+  // The hosted-node respawn path calls createContainer again with the id of a
   // container the host still holds a (now dead) handle for. Handles are keyed by
   // the per-spawn dockerId, so without an explicit drop the old one would linger
   // forever and its ports would never come back.
@@ -261,7 +261,7 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
 /**
  * A launch that fails must leave host state exactly as it found it. The drop of
  * the previous handle happens before the child is launched, so without an
- * explicit restore a failed re-spawn would leave the donation record naming a
+ * explicit restore a failed re-spawn would leave the hosted-node record naming a
  * dockerId the orchestrator can no longer resolve — and the node's workdir
  * (identity key, node-local stores, storage) stranded on disk with nothing able
  * to delete it.
@@ -442,7 +442,7 @@ describe('HostProcessOrchestrator failed launch', () => {
 });
 
 /**
- * The cleanup of last resort: a donation record that never got a `dockerId`
+ * The cleanup of last resort: a hosted-node record that never got a `dockerId`
  * because the host died mid-spawn. `createContainer`'s own unwind cannot help —
  * it was never reached — so the reap falls back to reclaiming by container name.
  */
@@ -554,7 +554,7 @@ describe('HostProcessOrchestrator.isRunning', () => {
  * token write moved to the front, and of any child that is slow to reach it. Dies
  * on a port clash the way `cadre-cli start` does.
  *
- * The incident this guards against: the donation supervisor asked `isRunning`
+ * The incident this guards against: the respawn supervisor asked `isRunning`
  * during that window, got `false`, and re-spawned the container. The re-spawn
  * released and reused the same ports, rotated the seed token, and returned
  * success; the second child then died on the port the first still held, leaving

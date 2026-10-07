@@ -37,7 +37,7 @@ describe('ensureNodeIdentity', () => {
   });
 
   it('creates the workdir when it does not exist yet', async () => {
-    const workdir = join(tmp, 'nested', 'donated-1');
+    const workdir = join(tmp, 'nested', 'hn_1');
     const { path, peerId } = await ensureNodeIdentity(workdir);
     expect(path).toBe(join(workdir, 'identity.key'));
     expect(peerId).toMatch(/^12D3Koo/);

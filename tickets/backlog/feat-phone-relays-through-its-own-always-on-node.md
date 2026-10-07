@@ -28,7 +28,7 @@ Two defects block it outright, and each is filed separately because each is a re
 
 Beyond those, this ticket has its own design questions:
 
-- **How does the phone learn the relay address?** The lent node's address is already in the phone's control database as a `CadrePeer` row, so it could be discovered rather than configured — but that is a *runtime* source, and the config field that reaches a phone's strand nodes (`network.relayAddrs`) is read when the node is built. Either the relay set becomes something that can change while the node is running and propagate into strand instances, or the phone restarts its node when it acquires one. Both are real designs with real costs.
+- **How does the phone learn the relay address?** The always-on node's address is already in the phone's control database as a `CadrePeer` row, so it could be discovered rather than configured — but that is a *runtime* source, and the config field that reaches a phone's strand nodes (`network.relayAddrs`) is read when the node is built. Either the relay set becomes something that can change while the node is running and propagate into strand instances, or the phone restarts its node when it acquires one. Both are real designs with real costs.
 - **A phone with no always-on node of its own.** It must fall back cleanly to a configured relay, or say plainly that it is not reachable yet.
 - **More than one always-on node.** Which one, or all of them? A second relay is a second reservation per node per strand.
 - **The home machine's reachability.** It has to be dialable from the wider internet for an outsider to hop through it; today only its own TCP port is mapped (`cadre-host-node-reachability`), and a machine reachable only on a home network makes this work on that network and nowhere else.
@@ -36,9 +36,9 @@ Beyond those, this ticket has its own design questions:
 
 ## Expected behaviour
 
-- A phone that has been lent a node by a machine at home becomes reachable through that node, with no relay configured anywhere.
+- A phone whose cadre has a node on a machine at home (a cadre-host hosted node) becomes reachable through that node, with no relay configured anywhere.
 - An invitation minted on such a phone carries addresses that route through the home machine, and an outsider can redeem it.
-- A phone with neither a lent node nor a configured relay says so in plain language instead of failing.
+- A phone with neither an always-on node nor a configured relay says so in plain language instead of failing.
 
 ## Related
 

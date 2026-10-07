@@ -65,4 +65,4 @@ reason the first two are insufficient.
 - Whatever check is added does not itself become a new way to fail: a missing or stale companion
   record must not brick a node that has a perfectly good key.
 - All three identity writers stay consistent — `enroll create`, cadre-host's installer, and the
-  per-node identity the orchestrator writes for donated nodes.
+  per-node identity the orchestrator writes for hosted nodes.

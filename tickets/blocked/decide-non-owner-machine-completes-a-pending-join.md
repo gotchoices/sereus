@@ -1,4 +1,4 @@
-description: Decide whether a party's always-on machines that hold no owner key (donated or hosted nodes) may finish a join on the party's behalf while its phone is offline, which needs them to write two kinds of record that today only an owner may sign.
+description: Decide whether a party's always-on machines that hold no owner key (cadre-host nodes or provider containers) may finish a join on the party's behalf while its phone is offline, which needs them to write two kinds of record that today only an owner may sign.
 prereq: pending-join-retry-loop
 files: schemas/control.qsql (JoinedStrand.AuthorizedInsert, StrandPartyKey.AuthorizedInsert, JoinSuccess.AuthorizedInsert), packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/pending-join-runner.ts (from pending-join-retry-loop), packages/cadre-core/src/cadre-node.ts (ensureStrandPartyKey ~5558, enrolledOwnerSigningKey ~2441), docs/architecture.md (JoinedStrand row ~40; cadre-host "holds no owner keys" ~1094, ~2112), docs/cadre-host.md
 ----
@@ -12,13 +12,13 @@ The maintainer, on gotchoices/sereus#25: "In an ideal world, your entire cadre w
 
 The architecture says the machines most likely to be "your other nodes" cannot do this:
 
-- A party's always-on machine is usually **donated**: a cadre-host grant, or a cadre-provider container. Both are documented as holding **no owner key** ("the recipient's device is the authority and the host never holds owner keys", `docs/architecture.md` → Provider Integration and cadre-host).
+- A party's always-on machine is usually **hosted**: a cadre-host hosted node, or a cadre-provider container. Both are documented as holding **no owner key** ("the recipient's device is the authority and the host never holds owner keys", `docs/architecture.md` → Provider Integration and cadre-host).
 - Finishing a join writes owner-signed control rows:
   - `JoinedStrand`. Its schema comment says it is "deliberately NOT self-signable by an enrolled CadrePeer: every always-on machine of the party downloads the strands this table names, so a non-owner machine could otherwise make them all host an arbitrary strand."
   - For a closed strand, `StrandPartyKey`, the party's membership identity, which `formStrand` seats via `ensureStrandPartyKey` and which throws without an owner key.
   - The outcome row itself, `JoinSuccess` or `JoinFailure` (`pending-join-control-table`).
 
-`pending-join-retry-loop` therefore runs the retries on **owner** machines only: the phone while its node runs, and an always-on machine only when it is an owner (a founding cadre-cli node, a cadre-host running its own cadre). For the common phone-plus-donated-node party, the phone still has to be running for the join to finish.
+`pending-join-retry-loop` therefore runs the retries on **owner** machines only: the phone while its node runs, and an always-on machine only when it is an owner (a founding cadre-cli node; cadre-host never runs its own cadre). For the common phone-plus-hosted-node party, the phone still has to be running for the join to finish.
 
 That gap is smaller than it sounds, because of the inviter-side tickets (`formation-responder-installed-at-start`, `invitation-names-every-party-machine`): when the **inviter** has an always-on machine, the joiner's phone finishes the join as soon as it is itself online. What remains is the case where **both** parties' only always-on machines are missing on the inviter's side and the invitee's phone is closed.
 
@@ -42,7 +42,7 @@ The machine runs the formation, keeps the join machine-local (as `formStrand` on
 
 **C. Owner machines only (what `pending-join-retry-loop` ships).**
 
-No schema change. Donated machines never help. The maintainer's "entire cadre trying" holds only for parties with an owner always-on machine.
+No schema change. Hosted machines never help. The maintainer's "entire cadre trying" holds only for parties with an owner always-on machine.
 
 ## If nothing is decided
 

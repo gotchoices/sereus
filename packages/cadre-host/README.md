@@ -1,10 +1,10 @@
 # @serfab/cadre-host
 
-Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **run always-on nodes for cadres whose owners claim them from their phones**: you, a friend or a family member keeps their own device as the authority for their cadre, and your box runs a node that joins *theirs*. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
+Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **run always-on nodes for cadres that live on people's phones**: your own cadre first, and a friend's or a family member's if they scan a code you show them. The phone stays the authority for its cadre, and your box runs a node that joins it. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
 
 The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider hosts nodes for paying tenants with API keys, billing, and Docker; cadre-host hosts them for free for a handful of people you trust, as native child processes, with a one-shot installer.
 
-`cadre-host join` starts a node and shows a QR code; the phone that owns the cadre scans it to claim the node. The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
+`cadre-host join` starts a node and shows a QR code; the phone that owns the cadre scans it to claim the node. A cadre that already has a member this machine can reach can instead hand the node an invitation (`cadre-host join --invitation`). The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
 
 [docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth.
 
@@ -81,7 +81,7 @@ See [`service/README.md`](./service/README.md) for templates, manual-smoke instr
 
 `cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one starts when you click **Join a cadre** in the local UI or run `cadre-host join`. This walkthrough goes from "install just finished" to "first hosted node is claimed."
 
-This host's whole job is to run always-on nodes for *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs a node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Hosted nodes: Join a cadre](../../docs/cadre-host.md#hosted-nodes-join-a-cadre) for the full lifecycle.
+Each node this host runs joins a cadre that lives on a phone — yours, or a friend's — and that phone stays the authority for the cadre. Your host never holds an owner key and never becomes the authority for anyone's data. See [docs/cadre-host.md § Join a cadre](../../docs/cadre-host.md#join-a-cadre) for the full lifecycle.
 
 ### 1. Verify the service is running
 
@@ -175,7 +175,7 @@ If you use the DuckDNS form, the token is stored in the OS keychain when `libsec
 
 ## CLI reference
 
-All commands except `install`, `uninstall`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
+All commands except `install`, `uninstall`, `status`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
 
 The `cadre-host push` group needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json`. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so a node picks them up the next time it is spawned. Every storage-profile node carries them when they are configured, hosted nodes included.
 
@@ -288,7 +288,7 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 - `/update/*` (update flow) — matches the CLI's contract.
 - `/nat/*` (NAT/DDNS) — every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
 - `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a hosted node through `DELETE /api/hosted-nodes/:id`.
-- `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
+- `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see [Building the SPA](#building-the-spa)).
 
 If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
 
@@ -328,5 +328,5 @@ For UI-only iteration: `yarn workspace @serfab/cadre-host dev:ui` starts Vite on
 
 ## More
 
-- [docs/cadre-host.md](../../docs/cadre-host.md) — persona, package boundary, deployment model, security posture.
+- [docs/cadre-host.md](../../docs/cadre-host.md) — persona, deployment model, both ways to join a cadre, hosted-node lifecycle, NAT, security posture.
 - [docs/architecture.md](../../docs/architecture.md) — overall cadre architecture.

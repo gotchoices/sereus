@@ -1,4 +1,4 @@
-description: A phone cannot connect to a node rented from the multi-tenant hosting service, for the same two reasons a self-hosted machine's lent node was unreachable: the rented node only accepts plain TCP connections, and creating it demands an address for the phone. The architecture guide calls a phone adding a hosted node "the most common case".
+description: A phone cannot connect to a node rented from the multi-tenant hosting service, for the same two reasons a cadre-host node once was: the rented node only accepts plain TCP connections, and creating it demands an address for the phone. The architecture guide calls a phone adding a hosted node "the most common case".
 files: packages/cadre-provider/src/service/container-env.ts, packages/cadre-provider/src/server/bootstrap-node-validation.ts, packages/cadre-provider/src/types.ts, docs/architecture.md
 tradeoffs: The provider product is a multi-tenant Docker service with no phone customers in this repo yet, and each container would need one more published port, so a maintainer may reasonably wait until a phone actually rents a node.
 ----
@@ -13,13 +13,13 @@ tradeoffs: The provider product is a multi-tenant Docker service with no phone c
 
 ## Template
 
-cadre-host fixes the same pair for its lent nodes in `implement/donated-node-reachable-by-phone`: a second listen entry `/ip4/0.0.0.0/tcp/<ws>/ws` with its own allocated port, and an optional `bootstrapNodes` (the per-entry address rule unchanged; only the list-level requirement relaxed). The phone side (`owner-keeps-dialing-node-it-added`) is shared cadre-core code and already covers a provider node.
+cadre-host fixed the same pair for its nodes in `donated-node-reachable-by-phone`: a second listen entry `/ip4/0.0.0.0/tcp/<ws>/ws` with its own allocated port (`childListenAddrs` in `host-process-orchestrator.ts`), and an optional `bootstrapNodes` (the per-entry address rule unchanged; only the list-level requirement relaxed). cadre-host has since dropped the request path altogether, since its nodes are claimed by the phone (`cadre-host-hosted-nodes-join-by-qr`), but the provider keeps a request, so the relaxed list is still the template here. The phone side (`owner-keeps-dialing-node-it-added`) is shared cadre-core code and already covers a provider node.
 
 Provider-specific parts to work out when picked up:
 
 - Docker port publishing for the extra WebSocket port, and the provider's own port allocator (`backlog/debt-duplicate-port-allocator-across-orchestrators` and `backlog/bug-provider-port-allocator-forgets-live-ports-on-restart` touch the same code).
 - Whether an empty `CADRE_BOOTSTRAP_NODES=` reaches cadre-cli as "no bootstrap nodes" (its env loader treats an all-empty split as unspecified).
-- `provider-seed-accepted.integration.ts` uses a TCP-dialable requester; a phone-shaped variant would mirror `donation-scenario-phone-shaped-requester`.
+- `provider-seed-accepted.integration.ts` uses a TCP-dialable requester; a phone-shaped variant would mirror the phone-shaped claimant in `cadre-host-join-by-qr.integration.ts`.
 
 ## Provenance
 

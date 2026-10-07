@@ -308,7 +308,7 @@ Each watched table registers on every node build, and a cold-start registration 
 
 A party becomes a member of a closed strand through the signed invite handshake in [architecture.md → Invite → join handshake (closed strands)](architecture.md#invite--join-handshake-closed-strands).
 
-An invitation names the inviting machine and up to three of its party's other machines, and the joiner tries each in turn. An always-on machine of the party (cadre-host, cadre-cli, a donated node) therefore answers the joiner while the inviting phone is offline, provided it holds the replicated invitation; one that does not yet answers `token-unknown`, and the joiner moves on. See [architecture.md → Which machines an invitation names](architecture.md#which-machines-an-invitation-names).
+An invitation names the inviting machine and up to three of its party's other machines, and the joiner tries each in turn. An always-on machine of the party (a cadre-host or cadre-cli node, a cadre-provider container) therefore answers the joiner while the inviting phone is offline, provided it holds the replicated invitation; one that does not yet answers `token-unknown`, and the joiner moves on. See [architecture.md → Which machines an invitation names](architecture.md#which-machines-an-invitation-names).
 
 Attaching a human-readable legal agreement to a strand — reviewed before joining, executed
 as a separate in-strand signing act — is a design-stage plan: see
@@ -468,7 +468,7 @@ Every attempt is a fresh `formStrand`, with a fresh consent key and nonce, which
 
 **While cut off from the party.** A request and its outcomes are written even when the machine has no control connection, because keeping the request across a restart is the point. Such a write reaches no other machine ([Writes made while alone](architecture.md#writes-made-while-alone)), so the machine re-writes it, unchanged under a fresh stamp, when its next control connection opens. A process that stops before that leaves the row to reach the party with its next write.
 
-**Owner machines only.** Every pending-join write is owner-signed, so a machine without an owner key (a donated cadre-host or cadre-provider node) neither retries nor records outcomes, and `requestJoin` throws there. Whether such a machine may finish a join is [`tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md`](../tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md).
+**Owner machines only.** Every pending-join write is owner-signed, so a machine without an owner key (a cadre-host hosted node or a cadre-provider container) neither retries nor records outcomes, and `requestJoin` throws there. Whether such a machine may finish a join is [`tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md`](../tickets/blocked/decide-non-owner-machine-completes-a-pending-join.md).
 
 **Stopping during an attempt.** `formStrand` takes no abort signal, so `stop()` does not wait for an attempt in flight. An approval that lands while the node stops can lose its local records; the row stays pending, and the next start's attempt is refused as `token-spent`, which fails the row after its confirming attempt.
 

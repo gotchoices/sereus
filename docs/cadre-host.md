@@ -1,78 +1,164 @@
 # @serfab/cadre-host
 
-`@serfab/cadre-host` is a self-hosted manager for running cadre nodes on a single always-on machine — the basement PC, the closet NAS, the family server in a spare bedroom. Its one job is to **run always-on nodes for cadres whose owners claim them from their phones**: the owner keeps their own device as the authority for their cadre, and this host runs a node that joins *their* cadre. `@serfab/cadre-provider` hosts nodes for paying tenants in Docker; here the nodes are OS-managed child processes, and the owners are the household and its trust circle rather than customers. cadre-host is a sibling of `@serfab/cadre-provider`, not a mode of it, and ships its own orchestrator, hosted-node layer, installer, NAT layer, and local management UI.
+`@serfab/cadre-host` is a self-hosted manager that runs always-on nodes for cadres that live on people's phones. It runs on one always-on machine — the basement PC, the closet NAS, the family server in a spare bedroom — and its one action is **Join a cadre**: it starts a node and shows a QR code, the phone that owns a cadre scans it, and the node becomes a member of that cadre. Your own cadre comes first; a friend's gets a node here when they scan a code you show them. The phone stays the authority for its cadre: the host holds no owner key, admits no one to anything, and never runs a cadre of its own.
 
-This document describes the persona, the package boundary, and the deployment model. Sibling tickets (`cadre-host-process-orchestrator`, `cadre-host-nat`, `cadre-host-installer`, `cadre-host-local-ui`) implement the named subsystems.
+`@serfab/cadre-provider` hosts nodes for paying tenants in Docker; cadre-host runs its nodes as OS-managed child processes, for free. It is a sibling of cadre-provider, not a mode of it, and ships its own orchestrator, hosted-node layer, installer, NAT layer and local management UI.
 
 ## Who it's for
 
-The self-host persona is a technically curious, non-operator user who runs one always-on box and wants to **contribute nodes to the cadres of people they trust** — family, friends, a hobby group — without paying a provider and without learning Docker. They have:
+A technically curious user who is not an operator: they run one always-on box and want the cadre on their phone, and maybe a friend's or a family member's, to have a node that is up when the phones are not, without paying a provider and without learning Docker. They have:
 
-- One always-on machine (desktop, laptop in a dock, mini-PC, NAS). It is *not* a server in the operations sense — no monitoring stack, no firewall they understand, no spare hands at 3am.
-- A small number of people they trust completely — the people they will show a join code to so those people's cadres get a node here. The trust boundary is social, not cryptographic — these are people who could call them on the phone.
-- A residential internet connection: probably NAT, possibly CGNAT, occasionally dynamic IP.
+- One always-on machine (desktop, laptop in a dock, mini-PC, NAS). It is *not* a server in the operations sense: no monitoring stack, no firewall they understand, no spare hands at 3am.
+- A residential internet connection: probably NAT, possibly carrier-grade NAT (CGNAT), occasionally a dynamic IP.
 - A willingness to install one app and answer a few setup questions, but no patience for ongoing maintenance.
 
-This persona is the opposite of `@serfab/cadre-provider`'s persona, which is a multi-tenant hosting service with API keys, billing, customer isolation, and Docker. The two packages share the `Orchestrator` contract but diverge in nearly every operational concern — and where the provider hosts nodes for paying strangers, cadre-host hosts them for a small social trust circle for free.
+Nothing on the host is configured per person. A node belongs to whoever scans its code, or to the cadre whose invitation the admin pastes, so the only decision the admin makes is whom to show a code to.
+
+This persona is the opposite of `@serfab/cadre-provider`'s, a multi-tenant hosting service with API keys, billing, customer isolation and Docker. The two packages share the `Orchestrator` contract and diverge in nearly every operational concern.
 
 ## Package boundary
 
 `@serfab/cadre-host` depends on `@serfab/cadre-provider` only for:
 
-- The `Orchestrator` interface and its request/result/stats types — cadre-host implements its own `HostProcessOrchestrator` that spawns cadre nodes as child processes (no Docker).
-- Container lifecycle types (`ContainerStatus`, `ContainerResources`) — reused as-is for status and resource accounting, even though "container" here means "managed child process."
+- The `Orchestrator` interface and its request/result/stats types. cadre-host implements its own `HostProcessOrchestrator`, which spawns cadre nodes as child processes (no Docker).
+- Container lifecycle types (`ContainerStatus`, `ContainerResources`), reused as-is for status and resource accounting, even though "container" here means "managed child process."
 
 Everything else is bespoke to cadre-host:
 
 | Concern | cadre-provider | cadre-host |
 |---|---|---|
 | Orchestration | Docker | Native child processes |
-| Auth | API keys, JWT | Peer identity (libp2p), admitted by cadre invitation |
-| Tenancy | Multi-tenant with customer isolation | Single household |
+| Auth | API keys, JWT | None on the loopback management surface; admission to a cadre is a claim or an invitation, checked by the cadre's own nodes, never by anything the host holds |
+| Tenancy | Multi-tenant with customer isolation | One household's machine; each node belongs to the cadre that claimed or admitted it |
 | Storage | Per-customer billing-aware quotas | Shared volumes on the host filesystem |
 | Install | Operator runs Docker | One-shot installer + service-host integration |
 | UI | None (API only) | Localhost web UI |
 | NAT | Operator's problem | First-class DDNS + UPnP mapping of every hosted node's ports, with manual forwards; relay fallback not wired yet (see [NAT and DDNS](#nat-and-ddns)) |
 
-The shared types are too thin to warrant a third package (no `@serfab/cadre-orchestration-core`). If sibling tickets discover a real shared concern, it can be hoisted then.
+The shared types are too thin to warrant a third package (no `@serfab/cadre-orchestration-core`). A real shared concern can be hoisted when one appears.
 
 ## Deployment model
 
-One host machine runs the `cadre-host` service. That service is a **management plane only** — a loopback REST/UI control surface. It does **not** itself join any cadre control network and holds no in-process `CadreNode`. Instead it *spawns cadre nodes as child processes* and drives them over a local management channel, exactly as `@serfab/cadre-provider` spawns Docker drones and drives them over its REST API (see [architecture.md § Provider Integration](architecture.md#provider-integration)). The household admin manages everything through a localhost web UI; friends and family connect to the cadre over libp2p from their phones, laptops, etc.
+One host machine runs the `cadre-host` service. That service is a **management plane only**: a loopback REST API and web UI, with a CLI that is a client of the same API. It joins no cadre control network and holds no in-process `CadreNode`. It *spawns cadre nodes as child processes* and follows them over their own `/status` endpoints, as `@serfab/cadre-provider` spawns Docker drones and drives them over its REST API (see [architecture.md → Provider Integration](architecture.md#provider-integration)).
 
-### Hosted nodes: Join a cadre
+**The host holds no owner key and never founds a cadre.** Owner signing happens only on devices people hold (phones, hardware keys), never on a server, because a server holding an owner key could act as the user without the user present (`feat-owner-keys-only-on-user-devices`). Every node the host runs is a member of a cadre whose owner is a phone; the host is, like a provider, a place where nodes run, and "never has access to user keys."
 
-This is what cadre-host is for: run an always-on node for a cadre whose owner holds the authority on their phone. The host's one action is **Join a cadre**: the button on the local UI's Join page, `cadre-host join`, or `POST /api/hosted-nodes`. It starts a **hosted node** — a `cadre-cli` child process in the `storage` profile, started waiting to be claimed with a one-time claim secret. The host reads the node's peer id and addresses from its `/status` and shows them with the secret as a QR code and as text; the owner's phone scans it and calls `CadreNode.claimNode`, and the node records the claim and restarts into the claimant's party. A node belongs to whoever claims it: the host holds no owner key and is not an owner of any cadre its nodes serve. To put up a node for a friend, join again and let the friend scan the new code. A cadre that already has a member this machine can reach has a second way in, [Join by invitation](#join-by-invitation). A hosted node keeps a storage replica of every strand its party publishes, with no quota yet, so its disk use grows with that party's shared data (see [architecture.md → Strand Filtering](architecture.md#strand-filtering)). [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this flow, in which the phone dials the node, with the other ways to add a machine to a cadre.
+**One kind of node: the hosted node.** Each [Join a cadre](#join-a-cadre) starts one `cadre-cli` child in the `storage` profile, which belongs to the cadre that claims it, or that admits it by invitation. The host runs as many as the admin joins, each in its own working directory with its own identity, ports and cadre ([Hosted nodes](#hosted-nodes)).
 
-#### The flow
+```mermaid
+graph LR
+    subgraph Host["Host machine"]
+        Mgr["cadre-host manager<br/>(loopback UI + API, NAT layer)"]
+        N1["hosted node hn_a<br/>(member of cadre A)"]
+        N2["hosted node hn_b<br/>(member of cadre B)"]
+    end
+    Admin["Admin's browser or shell<br/>(same machine, or an SSH forward)"] -->|"loopback HTTP"| Mgr
+    Mgr -->|"spawns, reads /status"| N1
+    Mgr -->|"spawns, reads /status"| N2
+    PA["Phone that owns cadre A"] -->|"dials, claims, syncs"| N1
+    PB["Friend's phone, owns cadre B"] -->|"dials, claims, syncs"| N2
+```
 
-1. **Start.** `POST /api/hosted-nodes` (empty body) writes the record as `spawning`, spawns the child with the secret in its environment as `CADRE_CLAIM_SECRET`, and answers `201 { node }` once the child is up, the record now `unclaimed`. The child's config names the placeholder party `unclaimed`; it joins nothing until claimed.
-2. **Show the code.** `GET /api/hosted-nodes/:id/claim` reads the child's `/status` and answers `{ payload, peerId, multiaddrs, reachability }`. The payload is cadre-core's `encodeNodeClaimPayload`: text of the form `sereus-join:1.<base64url JSON>`, which the CLI prints as a QR code and as text. The address list is the node's public addresses from the NAT layer (TCP, then WebSocket, each with `/p2p/<peerId>` appended) followed by the node's own non-loopback LAN addresses. The route answers `503 node_unavailable` until the child reports an address, so clients poll it.
-3. **Claim.** The owner's phone dials an address from the code and presents the secret with `CadreNode.claimNode`; the node records the claim and restarts in-process into the claimant's party. The host polls each unclaimed node's `/status` every 2 seconds, and when it reports `claim: 'claimed'` and the claimed party the record becomes `joined` with `partyId` (from the claim) and `ownerKey` (`/status.node.claimedBy`). The party rows that authorize the owner arrive over the connection the claim opened; the host takes no part in that.
-4. **Joined.** A joined node is polled every 15 seconds for `connected` (whether it holds a control connection). A crash respawns it from its record with the same party, claim secret, identity key and ports ([Respawn](#respawn-keeping-a-hosted-node-up)), so the cadre finds it where it was.
-5. **Remove.** `cadre-host node remove <id>` (`DELETE /api/hosted-nodes/:id`) deletes the record first, then stops the child and deletes its working directory. The cadre keeps the node's row until its owner removes it there.
-6. **Reset.** `cadre-host node reset <id>` (`POST /api/hosted-nodes/:id/reset`) removes the node and starts a fresh one with a new code: for a node someone else claimed first, or one that failed.
+The phones dial the nodes, never the reverse: a phone listens on nothing. At home a phone dials a node's LAN address; away from home it dials the public address the NAT layer maps through the router ([Reachability from outside](#reachability-from-outside)).
 
-The orchestrator's own handle list (`/api/nodes`) keeps a hosted node's `partyId` at the placeholder `unclaimed` until the first respawn after the claim; the hosted-node record carries the real party.
+### Control-plane separation
 
-#### Join by invitation
+There are two distinct planes, and conflating them is the mistake this section exists to prevent:
 
-The second way in: the owner's app mints a cadre invitation and copies it, and the host starts a node that redeems it at a member of the cadre ([architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). `POST /api/hosted-nodes` with `{ invitation }` (the Join page's paste field, or `cadre-host join --invitation <encoded>`) decodes the bundle with cadre-core's `decodeCadreInvitation` and answers `400 invalid_request` with the decoder's reason before anything is written or spawned. Otherwise it writes the record under the invitation's party, spawns the child with the bundle in its environment as `CADRE_INVITATION`, and answers `201 { node }` with the record `joining`. `cadre-cli start` redeems right after the node is up and reports the outcome as `/status.node.invitation`; the watcher polls a `joining` node every 2 seconds, as it polls an unclaimed one.
+- **Management plane** — how you talk *to* cadre-host: the loopback HTTP API, the Svelte UI and the `cadre-host` CLI. It is *not* a cadre control network. It carries no owner key and admits no one to a cadre; it is same-machine admin access (see [Security posture](#security-posture)).
+- **Cadre control network** — the party's private Optimystic network (`CadreControl` schema), which only cadre nodes join. Each hosted node joins the control network of the cadre that claimed or admitted it, and only the hosted nodes do: the manager joins none. Owner operations (minting an invitation, `authorizePeer`, `removePeer`) are signed on the owner's devices. A hosted node writes only what a member without an owner key may: its own addresses, and rows that an owner-signed invitation or a joiner's consent authorizes.
 
-- **Accepted.** The record becomes `joined`, with `memberPeerId` (the member that admitted the node) and `ownerKey` set to the invitation's issuer key, which the bundle carries. The node is a member of the cadre: the member wrote its rows on the owner's behalf, and they reach the node's own control database over the connection the redemption opened.
+Two external surfaces:
+
+- **Local UI on `http://localhost:<port>`** — admin-only, no auth beyond "you are on the host." Join a cadre, follow each node's status and connectivity, and remove or reset a node.
+- **Public libp2p surface** — each hosted node's TCP and WebSocket ports, mapped by the NAT layer (UPnP or manual port forwards, with DDNS; a relay fallback is not wired yet). Each node accepts connections from the devices of its cadre and from peers in that party's strands.
+
+The manager process itself is not addressable from the public internet. The NAT layer exposes each hosted node, not the manager.
+
+## Join a cadre
+
+The host's one action: the **Join a cadre** button on the local UI's Join page, `cadre-host join`, or `POST /api/hosted-nodes`. There are two ways in, and they differ in which machine dials:
+
+- **By QR code** (claim). The phone that owns the cadre dials the new node and claims it. Works for any cadre, including one whose only member is that phone.
+- **By invitation.** The new node dials a member of the cadre and redeems an invitation the owner's app minted. Works only when a member is reachable from this machine, so not for a cadre's first always-on node.
+
+[architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares both with the other ways to add a machine to a cadre.
+
+### Join by QR code
+
+1. **Start.** `POST /api/hosted-nodes` (empty body) writes the record as `spawning`, spawns the child with a fresh one-time claim secret (32 random bytes) in its environment as `CADRE_CLAIM_SECRET`, and answers `201 { node }` once the child is up, the record now `unclaimed`. The child's config names the placeholder party `unclaimed`; it joins nothing until claimed.
+2. **Show the code.** `GET /api/hosted-nodes/:id/claim` reads the child's `/status` and answers `{ payload, peerId, multiaddrs, reachability }`. The payload is cadre-core's `encodeNodeClaimPayload`: text of the form `sereus-join:1.<base64url of JSON naming the peer id, the addresses and the secret>`, which `decodeNodeClaimPayload` reads back and refuses unless every address names that peer id as its destination. The address list is the node's public addresses from the NAT layer (TCP, then WebSocket, each with `/p2p/<peerId>` appended) followed by the node's own non-loopback LAN addresses. The route answers `503 node_unavailable` until the child reports an address, so clients poll it. The CLI prints the payload as a QR code and as text; the Join page shows both, with a copy button.
+3. **Scan and claim.** The owner's phone scans the code (or pastes the text), dials an address from it, and presents the secret with `CadreNode.claimNode`. The claim names the cadre: the claim seed carries the claimant's party and owner key, and the node records the claim in its workdir (`claim.json`) and restarts in-process into that party. The rows that authorize the owner arrive over the connection the claim opened; the host takes no part in that.
+4. **Joined.** The host polls each unclaimed node's `/status` every 2 seconds. When it reports `claim: 'claimed'` and the claimed party, the record becomes `joined` with `partyId` (from the claim) and `ownerKey` (`/status.node.claimedBy`). A joined node is polled every 15 seconds for `connected` (whether it holds a control connection).
+
+The live states the UI and CLI show follow those reads: waiting for a phone to claim the node, claimed by owner `<first 8 characters of the owner key>` into cadre `<partyId>`, then connected to the cadre.
+
+**A respawn keeps the code valid.** A crash respawns the node from its record with the same party, claim secret, identity key and ports ([Respawn](#respawn-keeping-a-hosted-node-up)), so a code shown before the crash still names a node that answers, and a claimed node comes back as the same peer at the same addresses. Keeping the secret after the claim is deliberate: `cadre-cli` honours `claim.json`, and with the secret still set it answers a rival claimant `already-claimed`.
+
+The orchestrator's own handle list (`/api/nodes`) keeps a node's `partyId` at the placeholder `unclaimed` until its first respawn after the claim; the hosted-node record carries the real party.
+
+### Join by invitation
+
+The owner's app mints a cadre invitation and copies it, and the host starts a node that redeems it at a member of the cadre ([architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). `POST /api/hosted-nodes` with `{ invitation }` (the Join page's paste field, or `cadre-host join --invitation <encoded>`) decodes the bundle with cadre-core's `decodeCadreInvitation` and answers `400 invalid_request` with the decoder's reason before anything is written or spawned. Otherwise it writes the record under the invitation's party, spawns the child with the bundle in its environment as `CADRE_INVITATION`, and answers `201 { node }` with the record `joining`. `cadre-cli start` redeems right after the node is up and reports the outcome as `/status.node.invitation`; the host polls a `joining` node every 2 seconds, as it polls an unclaimed one.
+
+- **Accepted.** The record becomes `joined`, with `memberPeerId` (the member that admitted the node) and `ownerKey` set to the invitation's issuer key, which the bundle carries. The member wrote the node's rows on the owner's behalf, and they reach the node's own control database over the connection the redemption opened.
 - **Refused or unreachable.** The record becomes `error` with the reason and `retryable`, and the child is stopped but kept, workdir and all. A member's refusal keeps its code in the reason (`… (invite-spent)` for an expired, withdrawn or used-up invitation; `invite-invalid` for one made for another device): `retryable: false`, final. `retryable: true` means no member named in the bundle answered.
 - **When it does not work.** The bundle names the issuer's own addresses and up to three other members, so redemption needs one of those reachable from this machine. A cadre's first always-on node is the usual case where none is: its only members are phones, which nothing can dial. The CLI and the UI then say to join with the QR code instead, where the phone dials the node.
 - **Retry.** `POST /api/hosted-nodes/:id/retry` (**Retry** in the UI, `cadre-host node retry <id>`) takes an `error` record with `retryable: true` back to `joining` and respawns it with its invitation, without spending a respawn attempt; anything else answers `409 invalid_state`. The supervisor never respawns an `error` record on its own, so a node whose member was offline waits for this.
-- **Respawn.** A `joining` node is respawned with its invitation, and the member's redemption is idempotent for a node that already got in. A `joined` invitation node is respawned without it: it is a member, its rows are in its own control database, and an invitation that expired meanwhile must not turn a healthy member's restart into a refusal. The child that redeemed the invitation keeps reporting it on `/status` while it runs; the watcher reads that report only on a `joining` record.
-- **Reset.** `reset` on an invitation node removes it and starts a node waiting to be claimed, since the invitation may be spent; the UI offers Remove instead, after which the admin joins again with a fresh invitation or the code.
+- **Respawn.** A `joining` node is respawned with its invitation, and the member's redemption is idempotent for a node that already got in. A `joined` invitation node is respawned without it: it is a member, its rows are in its own control database, and an invitation that expired meanwhile must not turn a healthy member's restart into a refusal. The child that redeemed the invitation keeps reporting it on `/status` while it runs; the host reads that report only on a `joining` record.
 
-#### Records and statuses
+### Claimed by someone else
+
+Anyone who scans the code claims the node: the secret is the only check, so show the code only to the person it is for. A node someone else claimed first reads `joined` with an owner fingerprint the admin does not recognise, and the intended owner's phone is refused `already-claimed`. **Reset** on the node's page (`cadre-host node reset <id>`) removes that node and starts a fresh one with a new code; the other cadre keeps a row for a node that no longer answers.
+
+### Remove, reset and a lost host
+
+- **Remove.** `cadre-host node remove <id>` (`DELETE /api/hosted-nodes/:id`) deletes the record first, then stops the child and deletes its working directory, identity key and node-local stores included. The cadre keeps the node's row until its owner removes it there.
+- **Reset.** `cadre-host node reset <id>` (`POST /api/hosted-nodes/:id/reset`) removes the node and starts a fresh one waiting to be claimed, with a new id and a new code: for a node someone else claimed, or one that failed. Reset on an invitation node also starts a node waiting to be claimed, since the invitation may be spent; the UI offers Remove there instead, after which the admin joins again with a fresh invitation or the code.
+- **A host lost for good.** A dead disk or a replaced machine takes the nodes' identity keys with it, and nothing on another machine can come back as those peers. The owner removes the old node from the cadre (`CadreNode.removePeer`; no reference app offers this yet, `remove-a-device-or-app-from-a-cadre`) and joins a node on the replacement machine.
+
+### Where the credentials go
+
+The claim secret is in four places: the record in `hosted-nodes.json`, which every respawn replays; the child's environment (`CADRE_CLAIM_SECRET`, set by the orchestrator, never passed as an argument and never written to the orchestrator's `state.json`); the claim route's payload; and the `cadre-host join` output that prints that payload. An invitation is a credential too (it carries the invitation's private key): it is in the record, which a `joining` respawn replays, and in the child's environment (`CADRE_INVITATION`), and nowhere the host sends it. The record on the wire (`HostedNodeView`: `id`, `join: { kind: 'claim' | 'invitation' }`, `partyId`, `profile`, `status`, `dockerId?`, `statusEndpoint?`, `peerId?`, `ownerKey?`, `memberPeerId?`, `connected?`, `respawn?`, `createdAt`, `updatedAt`, `error?`, `retryable?`) carries neither, so `GET /api/hosted-nodes`, the node list and the event stream can be shown freely. The node checks a presented secret against the one it was started with, and the owner's device signs nothing on the host.
+
+### Reachability from outside
+
+The claim details carry the NAT layer's verdict for the node (`reachability`: its `NodeReachability` entry, or `null` before the NAT layer has one; see [Reachability verdict](#reachability-verdict)), and the CLI and the Join page warn when it reads `unreachable`.
+
+- **At home the code still works.** Every hosted node listens on its WebSocket port on all interfaces, and the code carries the LAN addresses, so a phone on the host's network claims an unreachable node.
+- **Away from home** a phone reaches the node only through its public addresses, which the NAT layer maps through the router over UPnP or the user forwards by hand ([NAT and DDNS](#nat-and-ddns)). Whether those addresses answer is up to the router: the verdict is a heuristic, not a dial-back.
+- **Behind CGNAT** neither a mapping nor a forward helps; the node needs a relay reservation, which cadre-host does not give its nodes yet (`feat-cadre-host-children-reserve-on-a-relay`).
+
+### From the CLI
+
+The CLI is a client of the `/api/hosted-nodes` routes ([API surface](#api-surface)), like `nat`.
+
+- `cadre-host join [--no-qr] [--no-wait]` POSTs, polls the claim route (503 until the child answers, up to 60 s), prints the QR code and the reachability warning on stderr and the payload text alone on stdout, then unless `--no-wait` polls the node every 2 s and prints `✓ Claimed by owner <first 8 characters of the owner key> into cadre <partyId>`. Ctrl-C leaves the node waiting.
+- `cadre-host join --invitation <encoded> [--no-wait]` POSTs the invitation and prints `Joining cadre <partyId> through the invitation…`, then unless `--no-wait` polls the node every 2 s and prints `✓ Joined cadre <partyId> at member <peerId>`, or `✗ Could not join: <reason>` (exit 1) followed, when the failure is retryable, by the first-node hint and the retry command.
+- `cadre-host node list` prints id, status, cadre, owner fingerprint and connected; `cadre-host node remove <id>`, `cadre-host node reset <id> [--no-qr] [--no-wait]` and `cadre-host node retry <id> [--no-wait]` call the remove, reset and retry routes.
+
+### In the local UI
+
+The SPA reads the records into a hosted-nodes slice (`GET /api/hosted-nodes`) and re-reads it, with the node list and the NAT snapshot, on every `hosted-nodes-changed` event; a `node-state-changed` event re-reads it too, since a respawn drops `connected` until the host reads the new child.
+
+- **Join page** (`#/join`). The **Join a cadre** button POSTs and the page shows the new node: the QR code and the payload text with a copy button, the instruction to scan it with the Sereus app on the phone that owns the cadre, the node's reachability entry with its forwarding form, a warning when the verdict is `unreachable`, and **Cancel**, which removes the node. A live line follows the record through the states of [Join by QR code](#join-by-qr-code); after the claim the code is replaced by a link to the node's page. The page lists every node waiting to be claimed, so a reload or a closed tab loses none.
+- **Paste an invitation.** Below the button, **Or paste a cadre invitation** takes the text the owner's app copied; **Join** POSTs it and clears the field once the node has started. The node's card follows it: joining cadre `<partyId>`, then joined at member `<peerId>`, or the reason it could not join. When no member could be reached the card adds the first-node hint (use the code instead) and **Retry**. Joining nodes are listed with the waiting ones.
+- **Reading the code.** Each waiting node's code is fetched from the claim route on demand, retried every second while it answers 503 for up to 60 s as the CLI does (then the server's reason is shown with **Try again**), and fetched again when the node's public addresses in the NAT snapshot change, so a mapping that completes after the node starts reaches the QR code. The payload carries the claim secret, so it is held only in the component that shows it, never in the shared state or browser storage, and dropped once the node leaves `unclaimed`.
+- **Nodes list.** One row per hosted-node record joined by id with the orchestrator handles: the record's status, its cadre (the claimed party, not the handle's placeholder), the owner fingerprint, connected, and a badge when the node has no process or it is stopped. A record with no handle and a handle with no record both get a row.
+- **Node page.** A **Cadre** card with the status line, cadre, owner fingerprint and connected. A waiting node shows its code and **Cancel**, and a joining node **Cancel**; a joined node offers **Reset** and **Remove**, each behind a confirmation (an invitation node **Remove** only); a failed node shows its error and offers **Retry** (a reset) and **Remove**. A failed invitation node offers **Retry** (the retry route, no confirmation, since it deletes nothing) with the first-node hint only when no member could be reached, and **Remove**. A reset moves the page to the fresh node, which has a new id. A handle no record names offers **Remove** alone. No page offers Stop: the supervisor would bring a stopped node straight back.
+- **Home and Connectivity.** The Home tile counts joined and waiting nodes (waiting includes joining; failed ones are counted when there are any) and links to the Join page; the Connectivity page labels each node "hosted node for cadre `<partyId>`", "waiting to be claimed" or "joining cadre `<partyId>`".
+
+## Hosted nodes
+
+Every node the host runs is a hosted node: a `cadre-cli` child in the `storage` profile, started by one join. It keeps a storage replica of every strand its party publishes, with no quota yet, so its disk use grows with that party's shared data (see [architecture.md → Strand Filtering](architecture.md#strand-filtering)).
+
+### Records and statuses
 
 Records live in `<dataDir>/hosted-nodes.json` (`HostedNodeStore`). A record's id, `hn_<base64url of 12 random bytes>`, is also its orchestrator container id and the name of its working directory.
 
 | Status | Meaning |
 |---|---|
-| `spawning` | The record is written and the child not yet spawned. A record stuck here past 5 minutes is reaped to `error`. |
+| `spawning` | The record is written and the child not yet spawned. A record stuck here past 5 minutes is reaped to `error` ([The stuck-`spawning` reap](#the-stuck-spawning-reap)). |
 | `unclaimed` | The child is up with a claim secret, waiting. It waits indefinitely: nobody can claim it without the secret. |
 | `joining` | The child is up with an invitation, its redemption not yet settled ([Join by invitation](#join-by-invitation)). |
 | `joined` | In its cadre: claimed (the record carries the claimant's party and owner key), or admitted by a member (the invitation's party, issuer key and the admitting member). |
@@ -80,95 +166,58 @@ Records live in `<dataDir>/hosted-nodes.json` (`HostedNodeStore`). A record's id
 
 Removal deletes the record; there is no terminal "removed" status.
 
-#### Where the secret goes
+### Identity and node-local state
 
-The claim secret is in exactly three places: the claim route's payload, the `cadre-host join` output that prints that payload, and the child's environment (`CADRE_CLAIM_SECRET`, set by the orchestrator, never passed as an argument and never written to `state.json`). An invitation is a credential too (it carries the invitation's private key): it is in the record on disk, which a `joining` respawn replays, and the child's environment (`CADRE_INVITATION`), and nowhere the host sends it. The record on the wire (`HostedNodeView`: `id`, `join: { kind: 'claim' | 'invitation' }`, `partyId`, `profile`, `status`, `dockerId?`, `statusEndpoint?`, `peerId?`, `ownerKey?`, `memberPeerId?`, `connected?`, `respawn?`, `createdAt`, `updatedAt`, `error?`, `retryable?`) carries neither, so `GET /api/hosted-nodes`, the node list and the SSE stream can be shown freely. Anyone who scans the code claims the node, so show it only to the person it is for; `cadre-host node reset` replaces a node the wrong person claimed. The host holds no owner key: the node checks the presented secret against the one it was started with, and the owner's device signs nothing on the host.
+**Each node has its own identity, in its own workdir.** Every node the orchestrator spawns is written its own `identity.key` in `<rootDir>/<containerId>/` (generated on first spawn, reused on every later one) and launched with `--identity-file` pointing at it; its `cadre.json` is written into that same workdir, so cadre-cli's node-state directory (`ResolvedConfig.nodeStateDir`, which defaults to the directory holding the config file) coincides with its identity. That directory holds the claim record (`claim.json`), the node-local trusted-owner anchor (`trusted-owners.<partyId>.json`, see [architecture.md → Seed Delivery Protocol](architecture.md#seed-delivery-protocol)) and the node-local bootstrap-peer store (`bootstrap-peers.<partyId>.json`). The per-node identity is required for two reasons: the owner's cadre claimed a specific peer id, so a per-process keypair would make the node a stranger to it after any restart; and without a stable node-state directory a node would lose its claim and the dial addresses it holds on every restart. Removing a node deletes the workdir (`removeContainer`), and everything the node knew goes with it.
 
-#### Reachability
+**A child's configuration comes only from its own config file and the variables the orchestrator sets for it.** `cadre-cli` treats `CADRE_*` environment variables as config overrides that *beat* the config file, and children would otherwise inherit the manager's whole environment, so one `CADRE_PARTY_ID` (or `CADRE_STORAGE_PATH`, …) set on the `cadre-host` process would silently reconfigure every node it spawns. `HostProcessOrchestrator` therefore strips **all** `CADRE_`-prefixed keys from the inherited environment before adding the per-child ones (startup and seed tokens, health and metrics ports, listen addresses, node-state dir, announced public addresses, the claim secret or the invitation). Everything else (`PATH`, `NODE_OPTIONS`, proxy and TLS settings) passes through untouched. A new `CADRE_*` variable added to `cadre-cli` is covered automatically; there is no list to keep in sync.
 
-The claim details carry the NAT layer's verdict for the node (`reachability`: its `NodeReachability` entry, or `null` before the NAT layer has one; see [Reachability verdict](#reachability-verdict)), and the CLI prints a warning when it reads `unreachable`. A phone on the host's LAN still claims an unreachable node: every hosted node listens on its WebSocket port on all interfaces, and the code carries the LAN addresses. A phone away from home reaches the node only through its public addresses, which the NAT layer maps through the router or the user forwards by hand ([NAT and DDNS](#nat-and-ddns)). Whether those addresses answer is up to the router: the verdict is a heuristic, not a dial-back, and behind CGNAT no node is reachable until relay support lands.
+### Ports
 
-#### API
+Every node holds four ports from the orchestrator's range (default 10000–20000): health, metrics, libp2p TCP and WebSocket, all bound on every interface. Only the TCP and WebSocket ports are mapped through the router ([Port mapping](#port-mapping)); the WebSocket port is the one a phone dials. A respawn keeps them ([Respawn](#respawn-keeping-a-hosted-node-up)).
 
-The routes are on the loopback management server, no bearer, `/api/*` envelope `{ ok, data }`. Errors are `HostedNodeError` codes, mapped by `src/server/error-handler.ts`: `invalid_request` 400, `not_found` 404, `invalid_state` 409, `node_unavailable` 503, `orchestrator_error` and `storage_error` 500.
+### Push
 
-| Route | Answers | Errors |
-|---|---|---|
-| `GET /api/hosted-nodes` | `{ nodes }` | — |
-| `POST /api/hosted-nodes` (empty body, or `{ invitation }`) | 201 `{ node }`, the record `unclaimed`, or `joining` with an invitation | 400 invalid_request for an invitation that does not decode; 500 orchestrator_error / storage_error |
-| `GET /api/hosted-nodes/:id` | `{ node }` | 404 not_found |
-| `GET /api/hosted-nodes/:id/claim` | `{ payload, peerId, multiaddrs, reachability }` | 404 not_found; 409 invalid_state unless `unclaimed`; 503 node_unavailable until the child answers |
-| `DELETE /api/hosted-nodes/:id` | 204 | 404 not_found |
-| `POST /api/hosted-nodes/:id/reset` | 201 `{ node }`, the fresh record | 404 not_found |
-| `POST /api/hosted-nodes/:id/retry` | `{ node }`, the record `joining` again | 404 not_found; 409 invalid_state unless `error` with `retryable` |
+Every hosted node is a storage node and gets the `push` block in its `cadre.json` when push credentials are configured ([Push credentials](#push-credentials-fcmapns)).
 
-The CLI is a client of these routes, like `nat`: `cadre-host join [--no-qr] [--no-wait]` POSTs, polls the claim route (503 until the child answers, up to 60 s), prints the QR code and the reachability warning on stderr and the payload text alone on stdout, then unless `--no-wait` polls the node every 2 s and prints `✓ Claimed by owner <first 8 characters of the owner key> into cadre <partyId>`; Ctrl-C leaves the node waiting. `cadre-host join --invitation <encoded> [--no-wait]` POSTs the invitation, prints `Joining cadre <partyId> through the invitation…`, then unless `--no-wait` polls the node every 2 s and prints `✓ Joined cadre <partyId> at member <peerId>`, or `✗ Could not join: <reason>` (exit 1) with, when the failure is retryable, the first-node hint and the retry command. `cadre-host node list` prints id, status, cadre, owner fingerprint and connected; `cadre-host node remove <id>`, `cadre-host node reset <id> [--no-qr] [--no-wait]` and `cadre-host node retry <id> [--no-wait]` call the remove, reset and retry routes. The local UI is the other client ([In the local UI](#in-the-local-ui)).
+### Strand formation on a hosted node
 
-#### In the local UI
-
-The SPA reads the records into a hosted-nodes slice (`GET /api/hosted-nodes`) and re-reads it, with the node list and the NAT snapshot, on every `hosted-nodes-changed` event; a `node-state-changed` event re-reads it too, since a respawn drops `connected` until the watcher reads the new child.
-
-- **Join page** (`#/join`). The **Join a cadre** button POSTs and the page shows the new node: the QR code and the payload text with a copy button, the instruction to scan it with the Sereus app on the phone that owns the cadre, the node's reachability entry with its forwarding form, a warning when the verdict is `unreachable`, and **Cancel**, which removes the node. A live line follows the record: waiting for a phone to claim the node, then claimed by owner `<first 8 characters>` into cadre `<partyId>`, then connected to the cadre; after the claim the code is replaced by a link to the node's page. The page lists every node waiting to be claimed, so a reload or a closed tab loses none.
-- **Paste an invitation.** Below the button, **Or paste a cadre invitation** takes the text the owner's app copied; **Join** POSTs it and clears the field once the node has started. The node's card follows it: joining cadre `<partyId>`, then joined at member `<peerId>`, or the reason it could not join. When no member could be reached the card adds the first-node hint (use the code instead) and **Retry**. Joining nodes are listed with the waiting ones.
-- **Reading the code.** Each waiting node's code is fetched from the claim route on demand, retried every second while it answers 503 for up to 60 s as the CLI does (then the server's reason is shown with **Try again**), and fetched again when the node's public addresses in the NAT snapshot change, so a mapping that completes after the node starts reaches the QR code. The payload carries the claim secret, so it is held only in the component that shows it, never in the shared state or browser storage, and dropped once the node leaves `unclaimed`.
-- **Nodes list.** One row per hosted-node record joined by id with the orchestrator handles: the record's status, its cadre (the claimed party, not the handle's placeholder), the owner fingerprint, connected, and a badge when the node has no process or it is stopped. A record with no handle and a handle with no record both get a row.
-- **Node page.** A **Cadre** card with the status line, cadre, owner fingerprint and connected. A waiting node shows its code and **Cancel**, and a joining node **Cancel**; a joined node offers **Reset** and **Remove**, each behind a confirmation (an invitation node **Remove** only); a failed node shows its error and offers **Retry** (a reset) and **Remove**. A failed invitation node offers **Retry** (the retry route, no confirmation, since it deletes nothing) with the first-node hint only when no member could be reached, and **Remove**. A reset moves the page to the fresh node, which has a new id. A handle no record names offers **Remove** alone.
-- **Home and Connectivity.** The Home tile counts joined and waiting nodes (and failed ones, when there are any) and links to the Join page; the Connectivity page labels each node "hosted node for cadre `<partyId>`", "waiting to be claimed" or "joining cadre `<partyId>`". The Home tile's waiting count includes joining nodes.
-
-#### Strand formation on a hosted node
-
-Every cadre node the host spawns answers strand formation for its party ([architecture.md → Who answers formation](architecture.md#who-answers-formation)). It checks a joiner's token against the party's replicated invitation rows, so an invitation can be redeemed there while the owner's phone is offline, and it needs no owner key to do so: the rows it writes are authorized by the joiner's own consent.
+Every hosted node answers strand formation for its party ([architecture.md → Who answers formation](architecture.md#who-answers-formation)). It checks a joiner's token against the party's replicated invitation rows, so an invitation can be redeemed there while the owner's phone is offline, and it needs no owner key to do so: the rows it writes are authorized by the joiner's own consent.
 
 - **Reachability.** A joiner dials only the addresses the invitation carries, and an invitation carries the addresses of the machine that minted it.
-- **Closed strands.** An invitation bound to a closed strand also needs that strand running on the answering node, which a `storage`-profile node has; any other node answers `host-strand-unavailable`, which is retryable.
+- **Closed strands.** An invitation bound to a closed strand also needs that strand running on the answering node, which a `storage`-profile node has.
 
-#### Respawn (keeping a hosted node up)
+### Respawn (keeping a hosted node up)
 
-A hosted node is a child process on someone's home PC — it can crash, get OOM-killed, or die in a reboot. Nothing about the flow above brings it back on its own, so the **`HostedNodeSupervisor`** owns that invariant: *an `unclaimed`, `joining` or `joined` node is expected to be running.* It supervises every record in one of those statuses **and** that already has an orchestrator handle (`dockerId`) — a record still mid-`join` is left alone, since `join` itself owns the child until it writes that handle. The supervisor never touches a `spawning` record, and `error` is never respawned. But a `spawning` record can also get stuck with no in-flight `join` call left to advance it — the host crashed or was killed between writing the row and finishing the spawn — and nothing above reaches that case, so a separate **stuck-`spawning` reap** (below) handles it. An `unclaimed` node is never reaped: it waits indefinitely, and nobody can claim it without the secret.
+A hosted node is a child process on someone's home PC: it can crash, get OOM-killed, or die in a reboot. The **`HostedNodeSupervisor`** owns the invariant *an `unclaimed`, `joining` or `joined` node is expected to be running.* It supervises every record in one of those statuses **and** that already has an orchestrator handle (`dockerId`); a record still mid-join is left alone, since the join itself owns the child until it writes that handle. The supervisor never touches a `spawning` record, and never respawns an `error` one. An `unclaimed` node is never reaped: it waits indefinitely, and nobody can claim it without the secret.
 
-Three triggers run the same reconcile pass, on the service's respawn queue (`HostedNodeService.serializeRespawns`), which a Retry shares, so no two respawns of one id ever overlap:
+Three triggers run the same reconcile pass, on the service's respawn queue (`HostedNodeService.serializeRespawns`), which Retry shares, so no two respawns of one id ever overlap:
 
 - **host startup** — one pass right after the orchestrator initializes, catching every node that died while the host was down;
 - **child exit** — the orchestrator's exit event, so a crash is noticed in milliseconds;
 - **periodic sweep** — a 1-minute backstop for deaths no exit event covered.
 
-A crash respawn replays the record's party and claim secret (or, while `joining`, its invitation; see [Join by invitation](#join-by-invitation)) through `HostedNodeService.respawn`, gets a fresh `dockerId`, and leaves the record's status untouched — a `joined` node is still joined, an `unclaimed` node still waits, a `joining` one redeems again, just against the new endpoint. Keeping the secret after the claim is deliberate: `cadre-cli` honours `claim.json`, and with the secret still set it answers a rival `already-claimed`. Attempts back off exponentially — 10s before the first retry, doubling each time, so the wait before the fifth and last attempt is 80s (the code also carries a 5-minute ceiling, which a 5-attempt budget never climbs high enough to hit) — and give up after 5 consecutive attempts. **Every attempt counts, whether its spawn failed or succeeded:** a node that spawns and then dies at once (a crash on boot, a port clash) never makes the spawn call fail, so the supervisor also gives up when a pass finds the node down with 5 attempts already recorded. On give-up the record moves to `error` and the still-named child is stopped (but not removed, so the workdir and the identity key inside it survive for a later `remove` or `reset`). A node that stays up for 10 minutes after a respawn has its attempt budget refilled, so the next crash starts from a clean slate rather than inheriting an old crash loop's count. A handle the orchestrator holds that no record names is logged at startup and left running; `cadre-host node remove <id>` reclaims it.
+A crash respawn replays the record's party and claim secret (or, while `joining`, its invitation) through `HostedNodeService.respawn`, gets a fresh `dockerId`, and leaves the record's status untouched: a `joined` node is still joined, an `unclaimed` node still waits, a `joining` one redeems again. Attempts back off exponentially, 10 s before the first retry and doubling each time, so the wait before the fifth and last attempt is 80 s (the code also carries a 5-minute ceiling, which a 5-attempt budget never reaches), and give up after 5 consecutive attempts. **Every attempt counts, whether its spawn failed or succeeded:** a node that spawns and then dies at once (a crash on boot, a port clash) never makes the spawn call fail, so the supervisor also gives up when a pass finds the node down with 5 attempts already recorded. On give-up the record moves to `error` and the child is stopped but not removed, so the workdir and the identity key inside it survive for a later `remove` or `reset`. A node that stays up for 10 minutes after a respawn has its attempt budget refilled, so the next crash starts from a clean slate. A handle the orchestrator holds that no record names is logged at startup and left running; `cadre-host node remove <id>` reclaims it.
 
-**An address restart is not a crash.** A running node restarted because its public addresses changed ([Public addresses reach the node](#public-addresses-reach-the-node)) goes through `HostedNodeSupervisor.restart`, on the same serialized queue as the passes above. It leaves the attempt count and the record's `updatedAt` alone, so it does not spend the give-up budget. A restart whose respawn fails leaves the node down, and the next pass takes it over as an ordinary crash, with counting.
+**An address restart is not a crash.** A running node restarted because its public addresses changed ([Public addresses reach the node](#public-addresses-reach-the-node)) goes through `HostedNodeSupervisor.restart`, on the same serialized queue. It leaves the attempt count and the record's `updatedAt` alone, so it does not spend the give-up budget. A restart whose respawn fails leaves the node down, and the next pass takes it over as an ordinary crash, with counting.
 
-**"Running" means the child is alive, not that it has finished starting.** The orchestrator answers from the `ChildProcess` it spawned (no exit seen, pid still alive), which is exact from the moment of spawn. Only a handle re-attached from `state.json` after a host restart falls back to the pid plus the `.startup-token` file, which is what tells the child apart from an unrelated process that inherited its pid — and `cadre-cli start` writes that file as its very first step, before it binds any port. This matters because a hosted node can take many seconds to start, and a node read as dead during that time would be re-spawned over itself: the second child dies on the ports the first still holds, and the record is left naming the dead child rather than the live one. As a second line of defence, a spawn refuses to re-spawn a container whose previous child is still alive (or, for a re-attached handle with a live but unverified pid, whose ports are still bound), before releasing anything; the attempt fails and counts toward the give-up budget above, and the record keeps its old handle.
+**"Running" means the child is alive, not that it has finished starting.** The orchestrator answers from the `ChildProcess` it spawned (no exit seen, pid still alive), which is exact from the moment of spawn. Only a handle re-attached from `state.json` after a host restart falls back to the pid plus the `.startup-token` file, which tells the child apart from an unrelated process that inherited its pid; `cadre-cli start` writes that file as its very first step, before it binds any port. A node can take many seconds to start, and a node read as dead during that time would be re-spawned over itself: the second child dies on the ports the first still holds, and the record is left naming the dead child. As a second line of defence, a spawn refuses to re-spawn a container whose previous child is still alive (or, for a re-attached handle with a live but unverified pid, whose ports are still bound), before releasing anything; the attempt fails and counts toward the give-up budget, and the record keeps its old handle.
 
-**A respawned node keeps its addresses.** Its identity key survives in the working directory, so its peer id is unchanged, and the orchestrator hands the re-spawn the very ports the previous handle held rather than the lowest free ones. The phone that claimed the node knows it by the addresses in the code it scanned, so a moved port would strand a cadre whose only other device is that phone, and a code shown before the crash would name a node that no longer answers. The ports come from the previous handle as recorded in the orchestrator's `state.json`, so a respawn with no surviving handle (that file lost) gets fresh ports, and such a cadre then cannot find its node again. Every managed node holds four ports from the orchestrator's range (default 10000–20000): health, metrics, TCP and WebSocket.
+**A respawned node keeps its addresses.** Its identity key survives in the working directory, so its peer id is unchanged, and the orchestrator hands the re-spawn the very ports the previous handle held rather than the lowest free ones. The phone that claimed the node knows it by the addresses in the code it scanned, so a moved port would strand a cadre whose only other device is that phone, and a code shown before the crash would name a node that no longer answers. The ports come from the previous handle as recorded in the orchestrator's `state.json`, so a respawn with no surviving handle (that file lost) gets fresh ports, and such a cadre then cannot find its node again.
 
-**A respawn attempt that fails leaves the host exactly as it found it.** Spawning starts by dropping the orchestrator's leftover handle for that node and freeing its ports (which is what stops repeated respawns from leaking ports; the launch then takes those same ports straight back). If the launch then throws, that drop is undone: the previous handle goes back, still owning its ports, so the hosted-node record's `dockerId` still resolves and a later `remove` still stops the child and deletes its working directory. If instead the child started but writing the record failed, the record is updated to name the child that actually exists, for the same reason. Either way nothing is left on disk that no id can reach. A *first* `join` that fails to launch has no prior handle to restore, so it unwinds the other way: the working directory that spawn brought into existence is deleted again. The test is simply whether the directory was already there when the spawn started — a re-spawn finds one and never touches it, because that directory (identity key, node-local stores) is exactly what makes the node come back as the same peer. The last gap — a host that dies mid-spawn, before any handle exists to unwind — is closed by the stuck-`spawning` reap and by `remove`, both of which fall back to reclaiming that directory by container name when the record names no handle.
+**A respawn attempt that fails leaves the host exactly as it found it.** Spawning starts by dropping the orchestrator's leftover handle for that node and freeing its ports (which stops repeated respawns from leaking ports; the launch then takes those same ports straight back). If the launch then throws, that drop is undone: the previous handle goes back, still owning its ports, so the record's `dockerId` still resolves and a later `remove` still stops the child and deletes its working directory. If instead the child started but writing the record failed, the record is updated to name the child that actually exists. Either way nothing is left on disk that no id can reach. A *first* join that fails to launch has no prior handle to restore, so it unwinds the other way: the working directory that spawn brought into existence is deleted again. The test is whether the directory was already there when the spawn started: a re-spawn finds one and never touches it, because that directory (identity key, node-local stores) is what makes the node come back as the same peer. The last gap, a host that dies mid-spawn before any handle exists to unwind, is closed by the stuck-`spawning` reap and by `remove`, both of which fall back to reclaiming that directory by container name when the record names no handle.
 
-**An ending that lands mid-operation wins.** This is a rule of the whole hosted-node surface, not just of respawn. Spawning a child takes seconds, and a `remove` can land inside that window. `hosted-nodes.json` is written a whole row at a time, so any operation that holds a copy of the record across such a wait and then writes that copy back would silently undo the ending — resurrecting a node the admin just removed. Every long operation therefore **re-reads the record after the wait, decides against what is actually stored, and merges forward only the fields it itself produced**:
+### The stuck-`spawning` reap
 
-- **`respawn`** — if the record is no longer `unclaimed`, `joining` or `joined`, the spawn is abandoned: the terminal record stands exactly as the ending wrote it, and the brand-new child is stopped **and reclaimed** — reclaimed because the ending's own cleanup already ran against the previous handle, which the in-flight spawn had dropped, so the new child is the only thing still holding that node's ports and workdir. (The one exception is a record that went `error`: both spawns share one workdir, so reclaiming there would delete the identity key the give-up path deliberately keeps — the new child is stopped only, and the record is pointed at it, so a later `remove` reclaims its ports. A give-up cannot land there, being on the respawn queue; the watcher's write of a failed invitation can, when a poll of the old child answers while the new one starts.) An abandoned respawn is not a failed attempt — nothing throws, so no attempt is recorded and the backoff/give-up path is never entered.
-- **`join`** (step 1 above) — if the record is no longer `spawning`, the request fails with 409 (or 404) and the just-spawned child is **reclaimed**. This is the one case where the ending cleaned up *nothing*: the record had no `dockerId` yet when the `DELETE` ran, so `remove` had nothing to stop. A failing spawn is likewise only allowed to mark the record `error` while it is still `spawning` — a host fault must never overwrite the admin's own ending, and a deleted row must never be recreated.
-- **the stuck-`spawning` reap sweep** — it collects its candidates in one pass, then re-reads each record immediately before writing it `error`, so an in-flight `joinLocked` call for that same record (still running in this same process) that advances it past `spawning` in the meantime is not clobbered by the sweep's stale snapshot.
+A `spawning` record can be left with no in-flight join to advance it: the host crashed or was killed between writing the row and finishing the spawn. `cadre-host start` sweeps once at startup and every 5 minutes (`HostedNodeService.reapStuckSpawning`); a record `spawning` for more than 5 minutes becomes `error`, and whatever the orchestrator can still find for it is stopped and reclaimed, or, with no handle, its working directory is reclaimed by container name.
 
-### Control-plane separation (load-bearing principle)
+### An ending that lands mid-operation wins
 
-There are two distinct planes, and conflating them is the mistake this section exists to prevent:
+This is a rule of the whole hosted-node surface. Spawning a child takes seconds, and a `remove` can land inside that window. `hosted-nodes.json` is written a whole row at a time, so any operation that holds a copy of the record across such a wait and then writes that copy back would silently undo the ending, resurrecting a node the admin just removed. Every long operation therefore **re-reads the record after the wait, decides against what is actually stored, and merges forward only the fields it itself produced**:
 
-- **Management plane** — how you talk *to* cadre-host: the loopback HTTP API + Svelte UI (and the `cadre-host` CLI, which is a thin HTTP client of that same API). This is *not* a cadre control network. It carries no owner keys on the wire and grants no cadre membership; it is same-machine admin access (see [Security posture](#security-posture)).
-- **Cadre control network** — the party's private Optimystic network (`CadreControl` schema) that only *cadre nodes* join. Owner operations (mint a cadre invitation, `authorizePeer`, `removePeer`, report multiaddrs) happen **inside a cadre node**, never inside the manager process.
-
-**cadre-host holds no owner key and never founds a cadre.** Owner signing stays on devices people hold (phones, hardware keys), never on a server. Every node the host runs joins the control network of the cadre whose owner claimed it — the owner's device is the cadre authority, and the host is exactly like a provider, which "never has access to user keys" (see [architecture.md § Provider Integration](architecture.md#provider-integration)). Nor does the *manager* join any control network — only the spawned cadre nodes do.
-
-Two external surfaces:
-
-- **Local UI on `http://localhost:<port>`** — admin-only, no auth beyond "you are on the host." Join a cadre, view node status and connectivity, and remove or reset a hosted node.
-- **Public libp2p surface** — managed by the NAT layer (DDNS, UPnP or manual port forwards; a relay fallback is not wired yet). Each cadre node accepts inbound connections from the devices of the cadre it joined, plus connections from peers in that party's strands.
-
-The host process itself is not addressable from the public internet. The NAT layer exposes each cadre node, not the manager.
-
-### Per-node identity and configuration
-
-**Each node has its own identity, in its own workdir.** Every node the orchestrator spawns is written its own `identity.key` in `<rootDir>/<containerId>/` (generated on first spawn, reused on every later one) and launched with `--identity-file` pointing at it; its `cadre.json` is written into that same workdir, so cadre-cli's node-state directory (`ResolvedConfig.nodeStateDir`, which defaults to the directory holding the config file) coincides with its identity. That directory holds the claim record (`claim.json`), the node-local trusted-owner anchor (`trusted-owners.<partyId>.json`, see [architecture → Seed Delivery Protocol](architecture.md#seed-delivery-protocol)) and the node-local bootstrap-peer store (`bootstrap-peers.<partyId>.json`). Two reasons this per-node identity is load-bearing: the owner's cadre claimed a specific peer id, so a per-process keypair would make the node a stranger to it after any restart; and without a stable node-state directory a hosted node would lose its claim and the dial addresses it holds on every restart. Its identity and those stores therefore live inside its workdir — and are destroyed with it when the node is removed (`removeContainer` deletes the workdir), which is the containment property the hosted-node flow wants.
-
-**A child's configuration comes only from its own config file and the vars the orchestrator sets for it.** `cadre-cli` treats `CADRE_*` environment variables as config overrides that *beat* the config file, and children would otherwise inherit the manager's whole environment — so one `CADRE_PARTY_ID` (or `CADRE_STORAGE_PATH`, `CADRE_ADMIN_PORT`, …) set on the `cadre-host` process would silently reconfigure every node it spawns. `HostProcessOrchestrator` therefore strips **all** `CADRE_`-prefixed keys from the inherited environment before adding the per-child ones (startup and seed tokens, health/metrics ports, listen addrs, node-state dir, the claim secret). Everything else — `PATH`, `NODE_OPTIONS`, proxy/TLS settings — passes through untouched. A new `CADRE_*` var added to `cadre-cli` is covered automatically; there is no list to keep in sync.
+- **respawn** — if the record is no longer `unclaimed`, `joining` or `joined`, the spawn is abandoned: the terminal record stands exactly as the ending wrote it, and the brand-new child is stopped **and reclaimed**, because the ending's own cleanup already ran against the previous handle, which the in-flight spawn had dropped, so the new child is the only thing still holding that node's ports and workdir. The one exception is a record that went `error`: both spawns share one workdir, so reclaiming there would delete the identity key the give-up path deliberately keeps; the new child is stopped only, and the record is pointed at it, so a later `remove` reclaims its ports. (A give-up cannot land there, being on the respawn queue; the host's write of a failed invitation can, when a poll of the old child answers while the new one starts.) An abandoned respawn is not a failed attempt: nothing throws, so no attempt is recorded.
+- **join** (step 1 of [Join by QR code](#join-by-qr-code)) — if the record is no longer `spawning`, the request fails with 409 (or 404) and the just-spawned child is **reclaimed**. This is the one case where the ending cleaned up *nothing*: the record had no `dockerId` yet when the `DELETE` ran, so `remove` had nothing to stop. A failing spawn is likewise only allowed to mark the record `error` while it is still `spawning`: a host fault must never overwrite the admin's own ending, and a deleted row must never be recreated.
+- **the stuck-`spawning` reap** — it collects its candidates in one pass, then re-reads each record immediately before writing it `error`, so a join in this same process that advances the record past `spawning` in the meantime is not clobbered by the sweep's stale snapshot.
 
 ## Security posture
 
@@ -176,15 +225,15 @@ The host process itself is not addressable from the public internet. The NAT lay
 
 1. **Anyone with shell access to the host machine fully controls cadre-host.** This is the same threat model as any desktop application — Spotify, the Steam client, your password manager's desktop app. We do not defend against the household admin's own user account, and we do not pretend to. Disk encryption, OS user accounts, and physical security are the user's responsibility.
 
-2. **Cadre devices are authenticated cryptographically.** Each device has a libp2p peer identity inherited from cadre-core, and joins a cadre by redeeming an invitation its owner minted (out of band: scan a QR code while sitting on the couch together). No passwords. No API keys. No central account.
+2. **Admission to a cadre is checked by the cadre's nodes, never by the host.** Each device has a libp2p peer identity inherited from cadre-core. A phone claims a hosted node by proving it holds the node's claim secret, which the node checks; a hosted node joins by invitation by presenting an owner-signed invitation, which a member of the cadre checks. No passwords. No API keys. No central account. The host authenticates no one itself; its management surface is same-machine admin access.
 
 ## NAT and DDNS
 
 Cadre-host runs on machines that are typically behind NAT. For the nodes it runs to be dialable from the open internet it composes three layers, each fail-safe and independent:
 
 1. **Port mapping per hosted node.** `NatService` keeps one mapping table keyed by node id (the hosted node's id) with a route per port: the node's libp2p TCP port and its WebSocket port, the one a phone dials. Health and metrics ports are never mapped. See [Port mapping](#port-mapping) for the rules.
-2. **Circuit-relay reservation (not wired).** When the host is unreachable directly (CGNAT or stubborn router), a relay reservation would give its nodes a `/p2p-circuit` address phones can still dial. The pieces exist below cadre-host: cadre-core runs relay servers (`network.enableRelay`) and can reserve on a relay (`network.relayAddrs`), and cadre-cli exposes the reservation as `CADRE_RELAY_ADDRS`. What is missing is in cadre-host itself: host settings have no field for a relay address, and the spawn removes every `CADRE_*` variable from the environment its nodes inherit, then never sets `CADRE_RELAY_ADDRS`. So no node cadre-host runs is reachable through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)). Until then, hosts behind CGNAT will need either IPv6 or manual port forwarding.
-3. **Dynamic DNS.** When a stable hostname is desired, cadre-host pushes the current external IP to a DDNS provider. v1 ships **DuckDNS** only; additional providers (Cloudflare, No-IP, Dynu, …) are filed as backlog work and drop into `nat/ddns/` as one file each plus a registry entry.
+2. **Circuit-relay reservation (not wired).** When the host is unreachable directly (CGNAT or stubborn router), a relay reservation would give its nodes a `/p2p-circuit` address phones can still dial. The pieces exist below cadre-host: cadre-core runs relay servers (`network.enableRelay`) and can reserve on a relay (`network.relayAddrs`), and cadre-cli exposes the reservation as `CADRE_RELAY_ADDRS`. What is missing is in cadre-host itself: host settings have no field for a relay address, and the spawn removes every `CADRE_*` variable from the environment its nodes inherit, then never sets `CADRE_RELAY_ADDRS`. So no node cadre-host runs is reachable through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)), and a host behind CGNAT cannot make its nodes reachable from outside its network (`feat-cadre-host-children-reserve-on-a-relay`). Nodes listen and announce on IPv4 only, so IPv6 is no way around it either.
+3. **Dynamic DNS.** When a stable hostname is desired, cadre-host pushes the current external IP to a DDNS provider. It ships **DuckDNS** only; another provider (Cloudflare, No-IP, Dynu, …) is one file in `nat/ddns/` plus a registry entry.
 
 ### Port mapping
 
@@ -259,7 +308,7 @@ If you'd rather manage DNS yourself (e.g. via the router's built-in DuckDNS clie
 cadre-host nat ddns external --hostname foo.duckdns.org
 ```
 
-cadre-host then surfaces the hostname in invitations and status but never makes an update request.
+cadre-host then uses the hostname in every node's public addresses and shows it in status, but never makes an update request.
 
 ### Public addresses per node
 
@@ -298,9 +347,17 @@ DDNS tokens are stored in the OS keychain via `keytar` (service: `sereus-cadre-h
 
 On Windows POSIX permission bits don't apply, so the file is readable by any account on the same machine — install keytar's native dependency to avoid that.
 
+### Process integration
+
+`NatService` is constructed and owned by the manager process (`cadre-host start`). Its node source is the orchestrator (`listNodes()` plus `onStateChange`); it holds no node client. The wiring:
+
+1. Constructs `new NatService({ rootDir, nodeSource: orchestrator })` right after `orchestrator.init()`, before anything is spawned, and awaits `service.start()` — which awaits only gateway discovery (bounded at 10 s) and external-IP detection, then maps the re-attached running nodes in the background — so the first spawns see a discovered gateway. A start failure is logged; the management API comes up regardless.
+2. Mounts `createNatHandlers(service)` on Fastify under `/nat/*`, and wires `service.onChange` to publish `connectivity-changed`, so the UI follows a mapping that completes after a spawn.
+3. Calls `await service.stop()` on shutdown, which clears timers and releases nothing on the router.
+
 ## Push credentials (FCM/APNs)
 
-To wake a suspended mobile app — one whose OS has frozen its process so a control-network dial can't reach it — an always-on storage node delivers a `strand-wake` data message over the platform push channel (FCM for Android, APNs for iOS). cadre-core's push fan-out (`PushFanoutService` + `PushNotifier`) does the delivery; it is constructed **only when** the spawned node's `cadre.json` carries a `push` block (`CadreNodeConfig.push`). This section covers how cadre-host gets the FCM/APNs credentials into that block. Push is **opt-in**: with no credentials configured, no `push` block is written and the node behaves exactly as before (control-network push-wake only).
+To wake a suspended mobile app — one whose OS has frozen its process so a control-network dial can't reach it — an always-on storage node delivers a `strand-wake` data message over the platform push channel (FCM for Android, APNs for iOS). cadre-core's push fan-out (`PushFanoutService` + `PushNotifier`) does the delivery; it is constructed **only when** the spawned node's `cadre.json` carries a `push` block (`CadreNodeConfig.push`). This section covers how cadre-host gets the FCM/APNs credentials into that block. Push is **opt-in**: with no credentials configured, no `push` block is written and the node wakes phones by control-network push-wake only.
 
 ### Out-of-agent infra steps (do these first)
 
@@ -329,17 +386,13 @@ Secret hygiene mirrors the DDNS-token precedent:
 
 ### Injection into the spawned node
 
-At spawn time `HostProcessOrchestrator` calls its `pushResolver` (wired in `cadre-host start`), which reads the secret store + `host.config.json` and validates the result. The resolved `PushCredentials` are written into the child's `cadre.json` under `push` for every **storage**-profile node, hosted nodes included — a transaction-only node gets no block. A *partial* set (a present platform missing required fields, e.g. an APNs key with no `bundleId`) is rejected: the resolver logs the error and spawns the node **without** push rather than failing the spawn, so the node stays reachable.
+At spawn time `HostProcessOrchestrator` calls its `pushResolver` (wired in `cadre-host start`), which reads the secret store + `host.config.json` and validates the result. The resolved `PushCredentials` are written into the child's `cadre.json` under `push` for every **storage**-profile node, which is every hosted node; a transaction-only node would get no block.
+
+**These are the operator's app credentials.** An FCM service account or an APNs key belongs to one app's publisher and wakes only that app's installs, and every hosted node gets the same set. Configure them only when the hosted nodes serve cadres of that app's users. Without them a node falls back to control-network push-wake.
+
+A *partial* set (a present platform missing required fields, e.g. an APNs key with no `bundleId`) is rejected: the resolver logs the error and spawns the node **without** push rather than failing the spawn, so the node stays reachable.
 
 > **On-device validation is still a human prerequisite.** Once creds are provisioned, push-wake is end-to-end at the server, but confirming a real device actually wakes (correct bundle id, sandbox-vs-production match for the build under test, a registered `DeviceToken`) must be verified on a physical device — it is out-of-agent.
-
-### Process integration
-
-`NatService` is constructed and owned by the manager process (`cadre-host start`). Its node source is the orchestrator (`listNodes()` plus `onStateChange`); it holds no node client. The wiring:
-
-1. Constructs `new NatService({ rootDir, nodeSource: orchestrator })` right after `orchestrator.init()`, before anything is spawned, and awaits `service.start()` — which awaits only gateway discovery (bounded at 10 s) and external-IP detection, then maps the re-attached running nodes in the background — so the first spawns see a discovered gateway. A start failure is logged; the management API comes up regardless.
-2. Mounts `createNatHandlers(service)` on Fastify under `/nat/*`, and wires `service.onChange` to publish `connectivity-changed`, so the UI follows a mapping that completes after a spawn.
-3. Calls `await service.stop()` on shutdown, which clears timers and releases nothing on the router.
 
 ## Updates
 
@@ -400,7 +453,7 @@ The repo provides the full pipeline; the operator runs a couple of mechanical co
 
 ## Local UI server
 
-The local-UI server (`6.5.1-cadre-host-local-ui-server`) is the long-lived HTTP listener launched by `cadre-host start`. The Svelte SPA that consumes it ships in `6.5.2-cadre-host-local-ui-spa`.
+The local-UI server is the long-lived HTTP listener `cadre-host start` binds. It serves the management API, which the CLI and the SPA both use, and the Svelte 5 SPA itself from `<package>/dist/ui/`: Home, Connectivity, Nodes with a page per node, Join, and Settings, hash-routed so the server needs no fallback rewrite, and live through the event stream below. The SPA's hosted-node pages are described under [In the local UI](#in-the-local-ui).
 
 ### Binding & origin policy
 
@@ -416,25 +469,25 @@ cadre-host is a same-machine management surface. Any local process running as th
 
 | Path | Method | Purpose | Errors |
 |---|---|---|---|
-| `/api/status` | GET | Aggregated dashboard snapshot; `connectivity` is the NAT snapshot | — |
-| `/api/nodes` | GET | List managed cadre nodes (orchestrator handles) | — |
-| `/api/nodes/:id` | GET | One node's detail + stats | 404 unknown |
-| `/api/nodes/:id/logs?lines=N` | GET | Tail of `node.log` (default 200, max 2000) | 404 unknown |
-| `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted) | 400 invalid_setting |
-| `/api/events` | GET | Server-Sent Events stream | — |
-| `/nat/*` | various | NAT/DDNS (matches CLI) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings` | mapped from `NatError.code` |
-| `/nat/nodes/:nodeId/forward` | PUT | Record the external ports forwarded by hand for one node — `{ tcp?, ws? }`, `null` clears a port, both cleared removes the entry → the NAT snapshot ([Manual port forwarding](#manual-port-forwarding)) | 404 unknown_node for a node the host does not run; 400 invalid_config for a body that is not an object or a port outside 1–65535 |
-| `/update/*` | various | Update flow — `GET /update`, `POST /update/apply`, `GET/PUT /update/settings` | mapped from `UpdateErrorException.code` |
-| `/api/hosted-nodes` | GET | Every hosted node, claim secret stripped → `{ nodes }` ([Hosted nodes: Join a cadre](#hosted-nodes-join-a-cadre)) | — |
+| `/api/hosted-nodes` | GET | Every hosted node, credentials stripped → `{ nodes }` ([Join a cadre](#join-a-cadre)) | — |
 | `/api/hosted-nodes` | POST | Start a node waiting to be claimed (empty body), or one that redeems `{ invitation }` → 201 `{ node }` | 400 invalid_request for an invitation that does not decode; 500 orchestrator_error / storage_error |
 | `/api/hosted-nodes/:id` | GET | One hosted node → `{ node }` | 404 not_found |
 | `/api/hosted-nodes/:id/claim` | GET | The QR payload → `{ payload, peerId, multiaddrs, reachability }` | 404 not_found; 409 invalid_state unless `unclaimed`; 503 node_unavailable until the child answers |
 | `/api/hosted-nodes/:id` | DELETE | Remove the node: its record, child and working directory → 204 | 404 not_found |
 | `/api/hosted-nodes/:id/reset` | POST | Remove the node and start a fresh one with a new code → 201 `{ node }` | 404 not_found |
 | `/api/hosted-nodes/:id/retry` | POST | Start an invitation node again after no member could be reached → `{ node }` | 404 not_found; 409 invalid_state unless `error` with `retryable` |
+| `/api/status` | GET | Dashboard snapshot: service name, version and uptime, a summary per orchestrator handle (`id`, `partyId`, `status`, `profile`), `connectivity` (the NAT snapshot), and the update state | — |
+| `/api/nodes` | GET | Every orchestrator handle (one per running or stopped child). Read-only: a node's lifecycle belongs to `/api/hosted-nodes`, whose supervisor would undo at once a stop issued anywhere else | — |
+| `/api/nodes/:id` | GET | One handle's detail + stats | 404 unknown |
+| `/api/nodes/:id/logs?lines=N` | GET | Tail of `node.log` (default 200, max 2000) | 404 unknown |
+| `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted, below) | 400 invalid_setting |
+| `/api/events` | GET | Server-Sent Events stream | — |
+| `/nat/*` | various | NAT/DDNS (matches CLI) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings` | mapped from `NatError.code` |
+| `/nat/nodes/:nodeId/forward` | PUT | Record the external ports forwarded by hand for one node — `{ tcp?, ws? }`, `null` clears a port, both cleared removes the entry → the NAT snapshot ([Manual port forwarding](#manual-port-forwarding)) | 404 unknown_node for a node the host does not run; 400 invalid_config for a body that is not an object or a port outside 1–65535 |
+| `/update/*` | various | Update flow — `GET /update`, `POST /update/apply`, `GET/PUT /update/settings` | mapped from `UpdateErrorException.code` |
 | `/` (any GET) | — | SPA bundle (or placeholder HTML when `dist/ui/` is absent) | — |
 
-Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { code, message } }`. Status mapping is encoded in `src/server/error-handler.ts`.
+Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { code, message } }`. Status mapping is encoded in `src/server/error-handler.ts`; for `/api/hosted-nodes` it maps the `HostedNodeError` codes: `invalid_request` 400, `not_found` 404, `invalid_state` 409, `node_unavailable` 503, `orchestrator_error` and `storage_error` 500.
 
 **An empty JSON body counts as no body.** A request that declares `content-type: application/json` but sends nothing reaches its route with no body, instead of Fastify's default `400 FST_ERR_CTP_EMPTY_JSON_BODY` (`buildFastify` in `src/server/server.ts`). A body-less `POST /api/hosted-nodes` and a body-less `DELETE /api/hosted-nodes/:id` are the norm, and sending the JSON content type on every request is a common client habit, so a request refused here would be a node left running or never started. Routes read `request.body ?? {}`, so one that needs a field still answers its own `400 invalid_request` naming it. A non-empty body goes through Fastify's own parser, so malformed JSON and prototype-poisoning payloads are still `400 FST_ERR_CTP_INVALID_JSON_BODY`.
 
@@ -464,51 +517,56 @@ The SPA's settings page reads the full `host.config.json` (so it can show read-o
 
 Unknown keys → 400 `invalid_setting`.
 
+The file is `version: 3` (`installer/config.ts`): `version`, `installId`, `installedAt`, `installerVersion`, `dataDir`, `uiPort`, `upnpEnabled`, `updates`, and `push` when push settings are stored. A file of any other version is refused on read, never migrated.
+
 ### Honest gaps
 
-- The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`. It ships into `<package>/dist/ui/` and is mounted by the static handler. When `dist/ui/` is absent (e.g. running from a source checkout without `yarn build`), `/` returns a placeholder HTML pointing at the build instructions; the API continues to answer.
+- **No component tests for the SPA** (`debt-cadre-host-ui-component-tests`). The pages' template branches are checked by reading them; the routes they call are covered by the server's route tests and the integration scenarios.
+- **An unbuilt checkout serves a placeholder.** When `dist/ui/` is absent (a source checkout without `yarn build`), `/` answers a placeholder page pointing at the build instructions; the API still answers.
 
 ## Architecture sketch
 
 ```mermaid
 graph TD
-    subgraph MP["Management plane (manager process — no control network)"]
-        UI["Local UI<br/>(fastify on 127.0.0.1)"]
-        Mgmt["Management API"]
+    subgraph MP["Manager process (management plane; joins no control network)"]
+        UI["Local UI server + management API<br/>(Fastify on 127.0.0.1)"]
+        HNS["HostedNodeService<br/>(join, claim details, remove, reset, retry, respawn, reap)"]
+        W["Status watcher<br/>(polls each child's /status)"]
+        Sup["HostedNodeSupervisor"]
         Orch["HostProcessOrchestrator"]
-        NAT["NAT layer<br/>(DDNS · UPnP/PCP · relay)"]
+        NAT["NatService<br/>(UPnP, manual forwards, DDNS)"]
         Upd["UpdateService<br/>(signed manifest)"]
-        Install["Installer + service-host"]
+        Install["Installer + service host"]
     end
-    UI --> Mgmt
-    Mgmt --> Orch
-    Mgmt --> NAT
-    Mgmt --> Upd
+    UI --> HNS
+    UI --> NAT
+    UI --> Upd
+    HNS --> W
+    Sup -->|respawn, restart| HNS
+    HNS -->|spawn, stop, remove| Orch
+    NAT -. "public addresses at spawn" .-> Orch
+    NAT -. "addresses changed" .-> Sup
+    Orch -->|spawns| NN["hosted nodes<br/>(cadre-cli children, each a member of its own cadre)"]
+    W -. "GET /status" .-> NN
+    NAT -. "maps each node's TCP + WebSocket ports on the router" .-> NN
     Upd -. "npm install -g + ServiceHost.restart" .-> Install
-    Orch -->|spawns| NN["cadre node(s)<br/>(child processes — each joins its cadre's control network)"]
-    NAT -. "maps each child's TCP + WebSocket ports" .-> NN
-    Install -.-> Mgmt
+    Phone["Owner's phone"] -->|"dials, claims, syncs"| NN
 ```
 
-The dotted lines from `NAT` to the nodes are router mappings, not channels: the NAT layer talks to the router and to the orchestrator's node list, never to a node. Only the spawned cadre nodes (`NN`) join control networks. The named subsystems are each owned by a sibling ticket; this package establishes the surface they plug into.
+Only the hosted nodes (`NN`) join control networks. The dotted line from `NAT` to the nodes is a router mapping, not a channel: the NAT layer talks to the router and to the orchestrator's node list, never to a node.
 
 ## Status
 
-**v0.x foundation.** This release contains:
-
-- Workspace package skeleton (`packages/cadre-host/`).
-- `HostProcessOrchestrator` — runs cadre nodes as native child processes.
-- `NatService` + `NatStore` — per-node UPnP port mapping (the TCP and WebSocket ports of every hosted node) with manual forwards, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and per-node public addresses.
-- CLI: `join [--no-qr] [--no-wait]`, `node list`, `node remove <id>`, `node reset <id> [--no-qr] [--no-wait]` (the hosted-node surface, talking to `/api/hosted-nodes`); `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, `host.config.json`, and service-host registration (systemd/launchd/NSSM; `install --no-service` skips registration so the host runs by hand under `start`). `start` loads config, brings up the orchestrator and the hosted-node service with its watcher and supervisor, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`). `ui` prints + opens the local-UI URL.
-- `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
-- Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
-- Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Connectivity / Nodes + per-node detail / Join / Settings) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. The Join page starts a node and shows its code until a phone claims it; a hosted node's page offers **Remove** and **Reset**, never Start/Stop ([In the local UI](#in-the-local-ui)). ≈ 45 KB gzipped.
-- Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
-
-**Hosted nodes.** cadre-host runs nodes for *external* cadres and none of its own (see [Hosted nodes: Join a cadre](#hosted-nodes-join-a-cadre) and [Control-plane separation](#control-plane-separation-load-bearing-principle)). The `HostedNodeService` (join, claim details, remove, reset, respawn), its `/status` watcher, the `HostedNodeSupervisor` with the stuck-`spawning` reap, the `/api/hosted-nodes` routes, the `hosted-nodes-changed` event and the `cadre-host join` / `cadre-host node` CLI have landed, proven end-to-end against a real `cadre-cli` child and a phone-shaped claimant by `cadre-host-join-by-qr.integration.ts`. Join by invitation (the `joining` status, Retry, the respawn rule) is proven against a real child and an in-process owner by `cadre-host-join-by-invitation.integration.ts`. The local UI's Join page drives the same routes; no automated test covers the UI's components (`debt-cadre-host-ui-component-tests`). Per-node NAT mapping covers every hosted node (`cadre-host-nat-per-node-mappings`), and each node announces its public addresses and is restarted when they change (`cadre-host-nodes-announce-public-addresses`).
+- **Hosted nodes.** Join by QR code and by invitation, the `/status` watcher, the supervisor and its respawn rules, the stuck-`spawning` reap, the `/api/hosted-nodes` routes, the `hosted-nodes-changed` event and the `join` / `node` CLI. Proven end-to-end against a real `cadre-cli` child by `cadre-host-join-by-qr.integration.ts` (a phone-shaped claimant, a respawn on the same ports, removal) and `cadre-host-join-by-invitation.integration.ts` (admission, an unreachable member then Retry, an expired invitation).
+- **Local UI.** The SPA (about 45 KB gzipped) drives the same routes; it has no component tests (see [Honest gaps](#honest-gaps)).
+- **NAT.** Per-node UPnP mapping with manual forwards, external-IP detection with the CGNAT flag, per-node reachability verdicts, DuckDNS, and nodes that announce their public addresses and restart when they change. Not yet: a relay reservation for nodes behind CGNAT (`feat-cadre-host-children-reserve-on-a-relay`), NAT-PMP (`feat-cadre-host-nat-pmp-mapping`), and a real dial-back test of reachability.
+- **Install and updates.** The installer wizard, `host.config.json` version 3 and service-host registration (`systemd --user`, LaunchAgent, NSSM; `install --no-service` skips it); the signed-manifest update service with npm apply, rollback and service restart.
+- **CLI.** `install`, `uninstall`, `status`, `start`, `ui`; `join [--invitation]`; `node list|remove|reset|retry`; `nat status|test|settings|forward|ddns set|ddns external`; `push fcm|apns|options|clear|status`. The [package README](../packages/cadre-host/README.md#cli-reference) documents each command.
+- **Not yet.** The phone side of the scan flow in the React Native reference app (`rn-app-joins-host-node-by-qr`); strand reactivity on hosted nodes (`feat-cadre-host-and-provider-nodes-carry-strand-reactivity`); a storage quota per node.
 
 ## See also
 
 - [architecture.md](architecture.md) — overall cadre architecture, control network, and strand lifecycle.
+- [@serfab/cadre-host README](../packages/cadre-host/README.md) — install, walkthrough and CLI reference.
 - [@serfab/cadre-provider](../packages/cadre-provider/README.md) — the multi-tenant sibling.
 - [@serfab/cadre-core](../packages/cadre-core/README.md) — the underlying cadre node library.
