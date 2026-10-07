@@ -57,3 +57,7 @@ So a hop-connecting outsider has in practice been surviving — until its own li
 ## Status at triage (2026-09-28, after 1.7.0)
 
 The half-open abort fix (8c1acc44) landed, so the 5.5 s drop now really happens. Re-grade severity when `feat-phone-relays-through-its-own-always-on-node` is scheduled.
+
+## Moving site (2026-10-07)
+
+`implement/stranger-connections-admitted-provisionally` replaces `'admit-for-relay'` with a provisional admission on every enrolled member, relay server or not. Its deadline becomes `relayedRequestBudgetMs` (28.5 s at the default declaration). At expiry the deadline re-asks the admission policy, where today it closes outright. A hop-connecting outsider is still dropped at expiry, so this defect stands; the fix point (disarm on a hop stream) moves to that provisional deadline. Read this ticket against the renamed code once that lands.

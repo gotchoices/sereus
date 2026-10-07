@@ -29,3 +29,5 @@ One real-network scenario:
 - A second party's node calls `formStrand` with the invitation. It succeeds, the result comes from the always-on machine, and the `FormationUsage` row is on the always-on machine's control database.
 
 An open (unbound) invite keeps this off the closed-strand path, where the sibling would also need to run the host strand.
+
+**Note (2026-10-07):** once `implement/stranger-connections-admitted-provisionally` lands, the sibling admits the stranger's connection whether or not the `FormationInvite` row has replicated. The replicated row then only decides whether the connection is kept past the provisional deadline and whether the responder accepts the token.

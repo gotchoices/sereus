@@ -35,3 +35,5 @@ Recommendation at triage: (b) now, documented, with (c) replacing it when FRET s
 ## Status (2026-09-28)
 
 Not decided yet. Triage facts and the lighter route were posted on #23 (issuecomment-5878780666) without committing to a route.
+
+**Note (2026-10-07):** `implement/control-protocol-guard` replaces the unenforced `STRANGER_OPEN_PROTOCOLS` with a per-stream protocol guard on the control node. Every protocol is declared stranger-open, transport or members-only, and is enforced at stream dispatch. A public-observer protocol would be one more entry in that class table.
