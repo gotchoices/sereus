@@ -107,14 +107,14 @@ describe('E2E control-database bring-up holds no control connections', () => {
 			// longer take the cold-start admit-everyone carve-out. Without this A
 			// would happily serve C and there would be no refusal to order around.
 			await A.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString());
-			// ...but an ENROLLMENT WINDOW is open, which is how a real invitee gets in:
-			// the owner minted an invite, so A admits a stranger's CONNECTION for seed
-			// delivery while its fail-closed per-stream gate still refuses that stranger
+			// ...but a LIVE CADRE INVITATION is held, which is how a real device gets in:
+			// the owner minted one, so A admits a stranger's CONNECTION for the redemption
+			// protocol while its fail-closed per-stream gate still refuses that stranger
 			// every control-DB protocol. That combination — connection admitted, streams
 			// refused — is precisely what makes a mid-bring-up connection fatal, and
 			// without it A would simply deny C's connection and there would be nothing to
 			// order around.
-			A.openEnrollmentWindow(Date.now() + 5 * 60_000);
+			await A.createCadreInvitation({ grantsOwner: false });
 			const aAddr = controlAddrs(A)[0];
 			expect(aAddr).toBeDefined();
 

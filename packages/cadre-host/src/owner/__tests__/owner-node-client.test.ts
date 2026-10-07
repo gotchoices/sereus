@@ -58,31 +58,6 @@ function makeClient(): OwnerNodeClient {
 }
 
 describe('OwnerNodeClient', () => {
-  it('createInvite POSTs /admin/invites with bearer + body and unwraps data', async () => {
-    responder = () => ({
-      status: 200,
-      payload: { ok: true, data: { invite: { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 }, encodedInvite: 'enc' } },
-    });
-    const client = makeClient();
-    const result = await client.createInvite('t', 60_000);
-
-    expect(result.encodedInvite).toBe('enc');
-    expect(last?.method).toBe('POST');
-    expect(last?.path).toBe('/admin/invites');
-    expect(last?.auth).toBe(`Bearer ${TOKEN}`);
-    expect(JSON.parse(last!.body)).toEqual({ token: 't', expiresInMs: 60_000 });
-  });
-
-  it('acceptPhone POSTs /admin/accept-phone', async () => {
-    const client = makeClient();
-    await client.acceptPhone({ phonePeerId: '12D3KooWX', token: 't' }, { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 });
-    expect(last?.method).toBe('POST');
-    expect(last?.path).toBe('/admin/accept-phone');
-    const body = JSON.parse(last!.body);
-    expect(body.phonePeerId).toBe('12D3KooWX');
-    expect(body.issuedInvite.token).toBe('t');
-  });
-
   it('removePeer DELETEs /admin/members/:peerId (url-encoded)', async () => {
     const client = makeClient();
     await client.removePeer('12D3KooWMember');
@@ -154,14 +129,6 @@ describe('OwnerNodeClient', () => {
     expect(last?.path).toBe('/admin/add-drone');
     expect(last?.auth).toBe(`Bearer ${TOKEN}`);
     expect(JSON.parse(last!.body)).toEqual({ dronePeerId: '12D3KooWDrone', droneMultiaddrs: ['/ip4/10.0.0.9/tcp/4001'] });
-  });
-
-  it('encodeInvite mirrors cadre-core base64url(JSON)', () => {
-    const client = makeClient();
-    const invite = { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 };
-    const encoded = client.encodeInvite(invite);
-    const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
-    expect(decoded).toEqual(invite);
   });
 
   it('maps a non-2xx response to OwnerNodeUnavailableError carrying the code', async () => {

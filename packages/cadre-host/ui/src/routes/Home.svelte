@@ -19,8 +19,6 @@
 	});
 
 	const updateAvailable = $derived(app.update?.available?.version ?? null);
-	const memberCount = $derived(app.trustCircle.members.length);
-	const pendingCount = $derived(app.trustCircle.pending.length);
 	const nodesRunning = $derived(app.nodes.filter((n) => n.status === 'running').length);
 	const donatedNodes = $derived(app.nodes.filter((n) => !n.owner));
 	const donatedRunning = $derived(donatedNodes.filter((n) => n.status === 'running').length);
@@ -67,15 +65,6 @@
 				{:else}
 					<p class="muted">Loading connectivity…</p>
 				{/if}
-			</div>
-
-			<div class="card">
-				<h3>Trust circle</h3>
-				<p class="big">{memberCount}<span class="muted"> members</span></p>
-				{#if pendingCount > 0}
-					<p class="muted">{pendingCount} pending invite{pendingCount === 1 ? '' : 's'}</p>
-				{/if}
-				<a class="link" href={hrefFor('trust-circle')}>Manage →</a>
 			</div>
 		{:else if app.role === 'donor'}
 			<div class="card">

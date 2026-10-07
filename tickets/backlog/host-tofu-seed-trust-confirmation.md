@@ -1,13 +1,13 @@
 ----
 description: Let a self-hosted node's operator approve an unknown control-network invitation from the app's own screen the first time it appears, instead of having to paste the sender's key in ahead of time.
-files: packages/cadre-host/src/auth/trust-circle.ts, packages/cadre-core/src/seed-trust-policy.ts, packages/cadre-core/src/cadre-node.ts
+files: packages/cadre-core/src/seed-trust-policy.ts, packages/cadre-core/src/cadre-node.ts
 ----
 
 ## Why deferred
 
 The cold-start enrollment use cases (`wire-pinned-trust-into-coldstart-seed-callers`) are fully served by the **pinned** path:
 
-- The cadre-host **inviter** side already embeds owner keys in every invite — `TrustCircleService.issueInvite` → `CadreNode.createInvite` → `SeedBootstrapService.createInvite` populates `invite.ownerKeys` from the issuer's node-local trusted-owner anchor. No host change is needed for an invitee to pin.
+- The **inviter** side already embeds owner keys in every cadre invitation — `CadreNode.createCadreInvitation` populates the bundle's `ownerKeys` from the issuer's node-local trusted-owner anchor, and the device pins them at redemption (the cadre-host trust circle that once wrapped this is gone; `cadre-invitations-redeemable-by-any-member`). No host change is needed for an invitee to pin.
 - The host's owner node is the seed **creator/inviter**, not a cold-start **receiver**, so it does not normally `applySeed` a foreign seed.
 
 `tofuTrustPolicy` (`seed-trust-policy.ts:93`) already exists as an opt-in interactive policy (`confirm(ctx) => Promise<boolean>`). Wiring it to a real trust-circle confirmation prompt is a genuine but **non-blocking** enhancement: it lets a host operator accept an unknown signer once interactively rather than pre-pinning. It is not required for any current use case, so it is parked here rather than emitted as an implement ticket.

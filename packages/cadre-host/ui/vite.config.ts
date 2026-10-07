@@ -30,7 +30,6 @@ function proxyTargets(port: string): Record<string, string> {
 	const target = `http://127.0.0.1:${port}`;
 	return {
 		'/api': target,
-		'/auth': target,
 		'/nat': target,
 		'/update': target,
 		'/grants-admin': target,

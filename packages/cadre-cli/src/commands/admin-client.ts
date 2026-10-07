@@ -6,9 +6,31 @@
  * one of them should become the shared one.
  */
 
+import fs from 'node:fs';
 import debug from 'debug';
+import { commandEnv } from '../config/env.js';
 
 const log = debug('cadre:cli:admin-client');
+
+/** The admin channel binds loopback only, so there is no host to choose. */
+export const ADMIN_HOST = '127.0.0.1';
+
+export const DEFAULT_ADMIN_TIMEOUT_MS = '30000';
+
+/** A refusal of a command-line option, with the message already written for the operator. */
+export class AdminOptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdminOptionError';
+  }
+}
+
+/** The options every command that talks to the admin channel takes. */
+export interface AdminConnectionOptions {
+  adminPort?: string;
+  tokenFile?: string;
+  timeout: string;
+}
 
 /**
  * The subset of the global `fetch` this client depends on — the same seam as
@@ -52,6 +74,93 @@ interface AdminEnvelope {
   ok?: boolean;
   data?: unknown;
   error?: { code?: string; message?: string };
+}
+
+/**
+ * Resolve where the admin channel is and how to talk to it from the command's options and
+ * environment, refusing with an {@link AdminOptionError} that names the fix. `port` is
+ * returned beside the connection so a failure message can name it.
+ */
+export function resolveAdminConnection(
+  options: AdminConnectionOptions,
+  env: NodeJS.ProcessEnv,
+  fetchImpl: AdminFetch
+): { connection: AdminConnection; port: number } {
+  const port = resolveAdminPort(options.adminPort, commandEnv('CADRE_ADMIN_PORT', env));
+  return {
+    port,
+    connection: {
+      baseUrl: `http://${ADMIN_HOST}:${port}`,
+      token: resolveAdminToken(options.tokenFile, commandEnv('CADRE_STARTUP_TOKEN', env)),
+      fetch: fetchImpl,
+      timeoutMs: resolveTimeout(options.timeout),
+    },
+  };
+}
+
+function resolveAdminPort(flag: string | undefined, env: string | undefined): number {
+  const raw = flag ?? (env && env.trim().length > 0 ? env : undefined);
+  if (raw === undefined) {
+    throw new AdminOptionError('The owner node\'s admin port is required: pass --admin-port <port> or set CADRE_ADMIN_PORT');
+  }
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new AdminOptionError(`Invalid admin port: ${raw}`);
+  }
+  return port;
+}
+
+/**
+ * The bearer token, from `--token-file` or else `CADRE_STARTUP_TOKEN`. Never a flag value: it
+ * would show in the process list. The file is what `cadre start --startup-token-file` writes,
+ * verbatim; only a trailing line ending is dropped, for a file written by hand.
+ */
+function resolveAdminToken(tokenFile: string | undefined, env: string | undefined): string {
+  const token = tokenFile !== undefined ? readTokenFile(tokenFile) : env ?? '';
+  if (token.length === 0) {
+    throw new AdminOptionError(tokenFile !== undefined
+      ? `--token-file ${tokenFile} is empty`
+      : 'The admin token is required: pass --token-file <path> or set CADRE_STARTUP_TOKEN to the token the owner node was started with');
+  }
+  return token;
+}
+
+function readTokenFile(path: string): string {
+  try {
+    return fs.readFileSync(path, 'utf8').replace(/\r?\n$/, '');
+  } catch (err) {
+    throw new AdminOptionError(`Cannot read --token-file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+function resolveTimeout(raw: string): number {
+  const timeoutMs = Number(raw);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new AdminOptionError(`Invalid --timeout: ${raw} (a positive number of milliseconds)`);
+  }
+  return timeoutMs;
+}
+
+/**
+ * The operator-facing reason an admin request failed, naming the fix where there is one.
+ * `ownerFlag` names what the node must be started with for this request to be served.
+ */
+export function describeAdminFailure(err: unknown, port: number): string {
+  if (!(err instanceof AdminRequestError)) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  if (err.kind === 'unreachable') {
+    return `No admin channel answered on ${ADMIN_HOST}:${port} (${err.message}). `
+      + `Start the owner node with --owner --admin-port ${port} and CADRE_STARTUP_TOKEN set.`;
+  }
+  switch (err.code) {
+    case 'not_authorized':
+      return 'The owner node refused the admin token: it does not match the CADRE_STARTUP_TOKEN the node was started with.';
+    case 'not_ready':
+      return `The node on ${ADMIN_HOST}:${port} is not running as the cadre's owner (${err.message}). Restart it with --owner.`;
+    default:
+      return `The owner node refused the request [${err.code ?? `HTTP ${err.status}`}]: ${err.message}`;
+  }
 }
 
 /** Send one request and unwrap the `{ ok, data }` envelope, or throw {@link AdminRequestError}. */

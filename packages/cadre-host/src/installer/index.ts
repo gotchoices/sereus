@@ -62,8 +62,6 @@ export interface InstallOptions {
   ownCadre?: boolean;
   /** Open browser at end (default true; suppressed by --no-browser or non-TTY). */
   openBrowser?: boolean;
-  /** Skip the enrollment-invite step (no QR printed). */
-  noInvite?: boolean;
   /** System-wide install — v1 emits a not-yet-supported error. */
   system?: boolean;
   /** Path to node.exe / node binary used by the service-host unit. */
@@ -71,8 +69,7 @@ export interface InstallOptions {
   /**
    * Write the data dir (identity, config, NAT seed) but register no OS service.
    * The host is then run by hand with `cadre-host start`. Nothing is listening
-   * after such an install, so the browser-open and enrollment-invite steps are
-   * skipped too.
+   * after such an install, so the browser-open step is skipped too.
    */
   noService?: boolean;
   /** Test-only: stub the service-host registration. */
@@ -88,15 +85,10 @@ export interface InstallResult {
   serviceName?: string;
   /** Path to the rendered config file. */
   configPath: string;
-  /** Generated enrollment invite, unless --no-invite. */
-  enrollmentInvite?: {
-    encodedInvite: string;
-    expiresAt?: string;
-  };
 }
 
 export interface UninstallOptions {
-  /** Also remove the data dir (default false — preserve trust circle + identity). */
+  /** Also remove the data dir (default false — preserve grants + identity). */
   removeData: boolean;
   /** Skip the confirmation prompt (for scripts). */
   yes: boolean;
@@ -169,7 +161,7 @@ export class Installer {
 
     // 5. Service-host registration.
     if (opts.noService) {
-      log('--no-service: skipping service registration, browser open and enrollment invite');
+      log('--no-service: skipping service registration and browser open');
       return { dataDir: answers.dataDir, uiUrl, configPath: cfgPath };
     }
     const serviceHost = opts.serviceHost ?? createServiceHost(this.platform);
@@ -187,21 +179,11 @@ export class Installer {
       openBrowser(uiUrl);
     }
 
-    // 7. Enrollment invite (best-effort — the listener may not be up yet).
-    let invite: InstallResult['enrollmentInvite'];
-    if (!opts.noInvite && !opts.nonInteractive) {
-      invite = await fetchEnrollmentInvite(answers.uiPort).catch((err) => {
-        log('enrollment-invite fetch failed: %s', (err as Error).message);
-        return undefined;
-      });
-    }
-
     return {
       dataDir: answers.dataDir,
       uiUrl,
       serviceName: serviceHost.name,
       configPath: cfgPath,
-      ...(invite ? { enrollmentInvite: invite } : {}),
     };
   }
 
@@ -295,31 +277,6 @@ function readPackageVersion(): string {
     return parsed.version ?? '0.0.0-unknown';
   } catch {
     return '0.0.0-unknown';
-  }
-}
-
-async function fetchEnrollmentInvite(uiPort: number): Promise<InstallResult['enrollmentInvite']> {
-  const url = `http://127.0.0.1:${uiPort}/auth/invites`;
-  // Node 18+'s fetch has no default timeout. Bound it so a slow / hung
-  // local-UI listener can't wedge `cadre-host install` indefinitely.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: 'Install — first device', ttlMs: 24 * 60 * 60 * 1000 }),
-      signal: controller.signal,
-    });
-    if (!response.ok) return undefined;
-    const body = await response.json() as { encodedInvite?: string; expiresAt?: string };
-    if (!body.encodedInvite) return undefined;
-    return {
-      encodedInvite: body.encodedInvite,
-      ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
-    };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

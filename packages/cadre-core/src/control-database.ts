@@ -3033,8 +3033,8 @@ export class ControlDatabase {
    * ({@link updateSelfPeerRecord}, which cannot change the snapshot) — that is what makes
    * the party-membership snapshot refresh automatic rather than a caller obligation. A
    * writer necessarily holds the target node's ControlDatabase (the `SeedBootstrapService`'s
-   * event callbacks are NOT a viable seam: the temp services `CadreNode.applySeed`/
-   * `dialInvite` build, and services constructed outside `CadreNode` entirely, never get
+   * event callbacks are NOT a viable seam: the temp service `CadreNode.applySeed`
+   * builds, and services constructed outside `CadreNode` entirely, never get
    * callbacks wired), so this is the one point on the write path that cannot be bypassed.
    *
    * `body` owns its own transaction if it needs one and must COMMIT before returning, so

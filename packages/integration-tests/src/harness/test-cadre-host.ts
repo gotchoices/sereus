@@ -1,7 +1,7 @@
 /**
  * Test harness that boots a complete cadre-host stack in-process:
  *   - Installer.install() into a fresh temp data dir
- *   - HostProcessOrchestrator + TrustCircleService + NatService + (optional) UpdateService
+ *   - HostProcessOrchestrator + NatService + StrandService + (optional) UpdateService
  *   - createLocalUiServer wired against the real subsystems on an ephemeral port
  *
  * Scenarios drive the host over its public HTTP/SSE surface to exercise the
@@ -13,7 +13,6 @@
  * directly when there is no equivalent HTTP route (v1 stubs out a few).
  */
 
-import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
@@ -25,45 +24,15 @@ import {
 	Installer,
 	NatService,
 	StrandService,
-	TrustCircleService,
-	TrustCircleStore,
 	UpdateService,
 	createLocalUiServer,
-	ensureSelfLabel,
 	readHostConfig,
-	type CadreNodeLike,
 	type HostConfigFile,
 	type LocalUiEvent,
 	type LocalUiServer,
 	type StrandCadreNodeLike,
 	type UpdateSettings,
 } from '@serfab/cadre-host';
-
-/** Default CadreNodeLike for trust-circle — issue/encode tokens without libp2p. */
-export function defaultFakeCadreNode(): CadreNodeLike {
-	return {
-		async createInvite(token?: string, _expiresIn?: number) {
-			const t = token ?? randomBytes(16).toString('base64url');
-			// CadreInvite shape from cadre-core; integration tests only care about the encoded form.
-			return {
-				invite: {
-					partyId: '',
-					ownerAddrs: [],
-					token: t,
-					createdAt: Date.now(),
-				} as never,
-				encodedInvite: `cadre://invite/${t}`,
-			};
-		},
-		async acceptPhone() { /* no-op */ },
-		async removePeer() { /* no-op */ },
-		encodeInvite() { return 'cadre://invite/test'; },
-		async listMembers() { return []; },
-		async isMember() { return false; },
-		async listAuthorizedMembers() { return []; },
-		async isAuthorizedMember() { return false; },
-	};
-}
 
 /** Strand-admin CadreNodeLike for a party that takes part in no strands. */
 export function emptyStrandNode(): StrandCadreNodeLike {
@@ -89,15 +58,6 @@ export interface TestCadreHostOptions {
 	updateSettings?: UpdateSettings;
 	/** Fetcher override for UpdateService (default: node fetch). */
 	updateFetcher?: typeof fetch;
-	/** Inject a custom CadreNodeLike for trust-circle (e.g. a real CadreNode). */
-	cadreNodeForTrustCircle?: CadreNodeLike;
-	/**
-	 * Resolves the owner node's peer ID, mirroring `bin/host.ts`'s
-	 * `ensureSelfLabel({ getPeerId: () => owner.getPeerId() })` startup step.
-	 * Without it the trust-circle listing cannot show the owner's own device,
-	 * because the authorized set excludes the node's self-published row.
-	 */
-	ownerPeerId?: () => Promise<string>;
 	/** Test-only orchestrator spawn entrypoint (defaults to the cadre-cli bin). */
 	spawnEntrypoint?: string;
 	/** SSE heartbeat interval (ms) — forwarded to createLocalUiServer. */
@@ -135,7 +95,6 @@ export interface TestCadreHost {
 	readonly baseUrl: string;
 	readonly config: HostConfigFile;
 	readonly orchestrator: HostProcessOrchestrator;
-	readonly trustCircle: TrustCircleService;
 	readonly nat: NatService;
 	readonly update?: UpdateService;
 	readonly server: LocalUiServer;
@@ -165,7 +124,6 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		uiPort,
 		libp2pPort,
 		openBrowser: false,
-		noInvite: true,
 		noService: true,
 	});
 
@@ -180,18 +138,6 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 	}
 	const orchestrator = new HostProcessOrchestrator(orchestratorOpts);
 	await orchestrator.init();
-
-	const trustCircleStore = new TrustCircleStore(dataDir);
-	const trustCircle = new TrustCircleService({
-		cadreNode: opts.cadreNodeForTrustCircle ?? defaultFakeCadreNode(),
-		store: trustCircleStore,
-	});
-
-	// Same self-labelling step bin/host.ts runs at startup — the listing splices
-	// the `self: true` row back in, since the authorized set never contains it.
-	if (opts.ownerPeerId) {
-		await ensureSelfLabel({ store: trustCircleStore, getPeerId: opts.ownerPeerId });
-	}
 
 	const nat = new NatService({
 		rootDir: dataDir,
@@ -220,7 +166,7 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		uiPort: config.uiPort,
 		dataDir,
 		orchestrator,
-		founder: { trustCircle, nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
+		founder: { nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 		forcePort: 0,
 	};
 	if (update) serverOpts.update = update;
@@ -235,7 +181,6 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		baseUrl: url,
 		config,
 		orchestrator,
-		trustCircle,
 		nat,
 		...(update ? { update } : {}),
 		server,

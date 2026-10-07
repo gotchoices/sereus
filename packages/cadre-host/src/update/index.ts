@@ -305,8 +305,8 @@ export class UpdateService {
 }
 
 /**
- * Typed handler facade — mirrors `createTrustCircleHandlers` /
- * `createNatHandlers`. The local-UI ticket consumes these.
+ * Typed handler facade — same shape as `createNatHandlers`. The local-UI
+ * server consumes these.
  */
 export function createUpdateHandlers(service: UpdateService): UpdateHandlers {
   return {

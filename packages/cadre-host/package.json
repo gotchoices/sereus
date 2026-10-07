@@ -29,8 +29,7 @@
     "cadre",
     "host",
     "self-hosted",
-    "p2p",
-    "trust-circle"
+    "p2p"
   ],
   "scripts": {
     "clean": "rimraf dist",

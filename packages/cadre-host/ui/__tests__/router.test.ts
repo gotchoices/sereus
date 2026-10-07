@@ -11,7 +11,6 @@ describe('parseHash', () => {
 	});
 
 	it('parses simple routes', () => {
-		expect(parseHash('#/trust-circle').name).toBe('trust-circle');
 		expect(parseHash('#/connectivity').name).toBe('connectivity');
 		expect(parseHash('#/nodes').name).toBe('nodes');
 		expect(parseHash('#/settings').name).toBe('settings');
@@ -36,7 +35,6 @@ describe('parseHash', () => {
 describe('hrefFor', () => {
 	it('produces stable hrefs', () => {
 		expect(hrefFor('home')).toBe('#/');
-		expect(hrefFor('trust-circle')).toBe('#/trust-circle');
 		expect(hrefFor('connectivity')).toBe('#/connectivity');
 		expect(hrefFor('nodes')).toBe('#/nodes');
 		expect(hrefFor('settings')).toBe('#/settings');
@@ -45,7 +43,7 @@ describe('hrefFor', () => {
 	});
 
 	it('round-trips every simple route through parseHash', () => {
-		for (const name of ['home', 'trust-circle', 'connectivity', 'nodes', 'settings', 'strands', 'grants'] as const) {
+		for (const name of ['home', 'connectivity', 'nodes', 'settings', 'strands', 'grants'] as const) {
 			expect(parseHash(hrefFor(name)).name).toBe(name);
 		}
 	});

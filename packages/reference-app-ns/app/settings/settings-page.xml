@@ -59,11 +59,16 @@
 					<TextView text="{{ seedInput }}" hint="base64url seed string" class="input textarea"
 						automationText="input-seed" />
 					<Label class="hint" textWrap="true"
-						text="Optional: paste an enrollment invite (CadreInvite) to pin its owner keys as the trust anchor for this seed. A cold node rejects a seed signed by another cadre unless its key is pinned." />
-					<Label text="Paste enrollment invite (for trust)" class="label" />
-					<TextView text="{{ enrollInviteInput }}" hint="base64url CadreInvite (optional)"
-						class="input textarea" automationText="input-enroll-invite" />
+						text="A seed only works when this phone already trusts its signer: it founded the cadre, or the signer's key was pinned. To join someone else's cadre, paste a cadre invitation below instead." />
 					<Button text="Apply Seed" tap="onApplySeed" isEnabled="{{ canApplySeed }}" class="btn" automationText="btn-apply-seed" />
+
+					<Label text="Join a Cadre" class="section-title" />
+					<Label class="hint" textWrap="true"
+						text="Paste an invitation an owner of the cadre issued. Joining pins that owner's keys and admits this phone at one of the members the invitation names." />
+					<Label text="Paste cadre invitation" class="label" />
+					<TextView text="{{ cadreInvitationInput }}" hint="base64url cadre invitation"
+						class="input textarea" automationText="input-cadre-invitation" />
+					<Button text="Join cadre" tap="onJoinCadre" isEnabled="{{ canJoinCadre }}" class="btn" automationText="btn-join-cadre" />
 
 					<Label text="Strands" class="section-title" />
 					<Repeater items="{{ cadre.strandItems }}">

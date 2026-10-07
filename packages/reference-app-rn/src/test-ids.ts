@@ -17,8 +17,10 @@ export const TEST_IDS = {
 		connectBtn: 'btn-connect',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
-		enrollInviteInput: 'input-enroll-invite',
 		applySeedBtn: 'btn-apply-seed',
+		/** A pasted cadre invitation, redeemed by `btn-join-cadre`. */
+		cadreInvitationInput: 'input-cadre-invitation',
+		joinCadreBtn: 'btn-join-cadre',
 		addPeerInput: 'input-add-peer',
 		addPeerBtn: 'btn-add-peer',
 		createStrandBtn: 'btn-create-strand',

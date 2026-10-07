@@ -99,17 +99,19 @@ async function main() {
 	// Seed bootstrap — allows creating + delivering seeds
 	await node.initializeSeedBootstrap(ownerPrivateKey);
 
-	// Enroll the drone's own owner key into the replicated OwnerKey table, which
-	// is what marks the drone as an owner peer in the seeds it mints (the dial
-	// hint). The invite's pinned `ownerKeys` come from the node-local anchor,
-	// which `initializeSeedBootstrap` above already seeded with this same key.
+	// Enroll the drone's own owner key into the replicated OwnerKey table: the
+	// member that redeems the invitation below checks the row's issuer against it.
+	// The invitation's `ownerKeys` come from the node-local anchor, which
+	// `initializeSeedBootstrap` above already seeded with this same key.
 	const ownerPublicKey = ed25519PublicKeyFromPrivate(ownerPrivateKey);
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone owner');
 	await controlDb.ensureOwnerKey(ownerPublicKey);
 
-	// Mint an enrollment invite carrying the drone owner key out-of-band.
-	const { encodedInvite } = await node.createInvite();
+	// Mint the cadre invitation the phone redeems at this drone (`_setup.yaml`
+	// pastes it into `input-cadre-invitation`). Its member address is the ws
+	// listener above, so the phone dials the drone directly.
+	const { encoded: cadreInvitation } = await node.createCadreInvitation({ grantsOwner: false });
 
 	// Create pre-configured chat strand
 	const strand = await node.addStrand({
@@ -130,10 +132,6 @@ async function main() {
 	const bootstrapAddr = multiaddrs.find((a) => a.includes('/ws')) ?? multiaddrs[0];
 	console.log(`  Bootstrap addr: ${bootstrapAddr}`);
 
-	// Create initial seed
-	const seed = await node.createSeed();
-	const encodedSeed = node.encodeSeed(seed);
-
 	// Start HTTP sidecar
 	const sidecar = createSidecar(node, CHAT_SAPP_CONFIG);
 	await new Promise((resolve) => {
@@ -145,9 +143,8 @@ async function main() {
 	const testData = {
 		partyId: PARTY_ID,
 		droneBootstrapAddr: bootstrapAddr,
-		seed: encodedSeed,
 		strandId,
-		enrollInvite: encodedInvite,
+		cadreInvitation,
 	};
 	const testDataPath = join(__dirname, 'test-data.json');
 	await writeFile(testDataPath, JSON.stringify(testData, null, '\t'));

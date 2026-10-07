@@ -21,8 +21,9 @@
 	<div class="card">
 		{#if app.nodes.length === 0}
 			<p class="muted">
-				No managed nodes yet. cadre-host v1 doesn't auto-spawn nodes — they
-				come up once you complete an invite redemption.
+				No managed nodes yet. cadre-host doesn't auto-spawn nodes — one
+				appears when a grantee requests a donated node (or, with your own
+				cadre enabled, when your owner node starts).
 			</p>
 		{:else}
 			<table>

@@ -23,10 +23,8 @@ import type {
   SeedPeer,
   SeedMessage,
   SeedAckMessage,
-  CadreInvite,
   CadrePeerRow,
-  DroneInitResult,
-  InviteResult
+  DroneInitResult
 } from '../src/types.js';
 import { CapturingStream, decodeFrames, duplexPair, frameMessage, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
 
@@ -398,34 +396,6 @@ describe('Seed Types', () => {
     });
   });
 
-  describe('CadreInvite', () => {
-    it('should have required fields', () => {
-      const invite: CadreInvite = {
-        partyId: 'test-party',
-        ownerAddrs: ['/ip4/1.2.3.4/tcp/4001'],
-        createdAt: Date.now()
-      };
-
-      expect(invite.partyId).toBe('test-party');
-      expect(invite.ownerAddrs).toHaveLength(1);
-      expect(invite.createdAt).toBeGreaterThan(0);
-    });
-
-    it('should allow optional token and expiration', () => {
-      const now = Date.now();
-      const invite: CadreInvite = {
-        partyId: 'test-party',
-        ownerAddrs: [],
-        token: 'secret-token',
-        createdAt: now,
-        expiresAt: now + 3600000
-      };
-
-      expect(invite.token).toBe('secret-token');
-      expect(invite.expiresAt).toBe(now + 3600000);
-    });
-  });
-
   describe('DroneInitResult', () => {
     it('should contain seed and encoded seed', () => {
       const result: DroneInitResult = {
@@ -440,22 +410,6 @@ describe('Seed Types', () => {
 
       expect(result.seed.partyId).toBe('test-party');
       expect(result.encodedSeed).toBe('base64url-encoded-seed');
-    });
-  });
-
-  describe('InviteResult', () => {
-    it('should contain invite and encoded invite', () => {
-      const result: InviteResult = {
-        invite: {
-          partyId: 'test-party',
-          ownerAddrs: ['/ip4/1.2.3.4/tcp/4001'],
-          createdAt: Date.now()
-        },
-        encodedInvite: 'base64url-encoded-invite'
-      };
-
-      expect(result.invite.partyId).toBe('test-party');
-      expect(result.encodedInvite).toBe('base64url-encoded-invite');
     });
   });
 });
@@ -894,81 +848,6 @@ describe('SeedBootstrapService Helper Methods', () => {
     ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
 
-  describe('encodeInvite / decodeInvite', () => {
-    it('should encode and decode an invite', () => {
-      const service = new SeedBootstrapService({ partyId });
-
-      const invite: CadreInvite = {
-        partyId,
-        ownerAddrs: ['/ip4/192.168.1.1/tcp/4001', '/ip4/10.0.0.1/tcp/4001'],
-        token: 'my-secret-token',
-        createdAt: 1700000000000,
-        expiresAt: 1700003600000
-      };
-
-      const encoded = service.encodeInvite(invite);
-      expect(typeof encoded).toBe('string');
-      expect(encoded.length).toBeGreaterThan(0);
-
-      const decoded = service.decodeInvite(encoded);
-      expect(decoded).toEqual(invite);
-    });
-
-    it('should handle invites without optional fields', () => {
-      const service = new SeedBootstrapService({ partyId });
-
-      const invite: CadreInvite = {
-        partyId,
-        ownerAddrs: [],
-        createdAt: 1700000000000
-      };
-
-      const encoded = service.encodeInvite(invite);
-      const decoded = service.decodeInvite(encoded);
-      expect(decoded).toEqual(invite);
-      expect(decoded.token).toBeUndefined();
-      expect(decoded.expiresAt).toBeUndefined();
-    });
-  });
-
-  describe('acceptPhone', () => {
-    it('should reject expired invite', async () => {
-      const service = new SeedBootstrapService({
-        partyId,
-        ownerPrivateKey
-      });
-
-      const expiredInvite: CadreInvite = {
-        partyId,
-        ownerAddrs: [],
-        createdAt: Date.now() - 7200000,
-        expiresAt: Date.now() - 3600000  // Expired 1 hour ago
-      };
-
-      await expect(
-        service.acceptPhone({ phonePeerId: '12D3KooWTestPhone' }, expiredInvite)
-      ).rejects.toThrow('Invite has expired');
-    });
-
-    it('should reject invalid token', async () => {
-      const service = new SeedBootstrapService({
-        partyId,
-        ownerPrivateKey
-      });
-
-      const invite: CadreInvite = {
-        partyId,
-        ownerAddrs: [],
-        token: 'correct-token',
-        createdAt: Date.now()
-      };
-
-      await expect(
-        service.acceptPhone({ phonePeerId: '12D3KooWTestPhone', token: 'wrong-token' }, invite)
-      ).rejects.toThrow('Invalid invite token');
-    });
-  });
-
   describe('removePeer', () => {
     it('requires an owner private key', async () => {
       const service = new SeedBootstrapService({ partyId });
@@ -1161,103 +1040,6 @@ describe('SeedBootstrapService Helper Methods', () => {
         await node.stop();
       }
     }, 60_000);
-  });
-
-  describe('createInvite — inviteAddressResolver hook', () => {
-    function makeMockLibp2p(rawAddrs: string[]) {
-      return {
-        getMultiaddrs: () => rawAddrs.map((a) => ({ toString: () => a })),
-      };
-    }
-
-    it('uses libp2pNode.getMultiaddrs() when no resolver is configured', async () => {
-      const service = new SeedBootstrapService({ partyId });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
-    });
-
-    it('uses the resolver when configured (NAT host substitutes DDNS hostname)', async () => {
-      const resolver = async () => ['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost'];
-      const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
-    });
-
-    it('falls back to libp2pNode.getMultiaddrs() when the resolver throws', async () => {
-      const resolver = async () => { throw new Error('boom'); };
-      const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
-    });
-
-    /** A node-local anchor holding out-of-band-trusted owner keys. */
-    function anchor(keys: string[]): MemoryTrustedOwnerStore {
-      const store = new MemoryTrustedOwnerStore(partyId);
-      for (const key of keys) {
-        void store.trust(key, 'operator');
-      }
-      return store;
-    }
-
-    it('carries the node-local anchor as invite.ownerKeys', async () => {
-      const service = new SeedBootstrapService({
-        partyId,
-        trustedOwners: anchor([ownerPublicKey, 'second-owner-key']),
-      });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerKeys).toBeDefined();
-      expect(new Set(invite.ownerKeys)).toEqual(
-        new Set([ownerPublicKey, 'second-owner-key'])
-      );
-    });
-
-    it('does NOT hand out a replicated-only owner key as an invite pin', async () => {
-      // The invitee anchors whatever arrives in invite.ownerKeys, so a key that
-      // only reached the replicated OwnerKey table (a stranger's genesis insert)
-      // must not ride an otherwise-legitimate invite into the new node's anchor.
-      const service = new SeedBootstrapService({
-        partyId,
-        trustedOwners: anchor([ownerPublicKey]),
-      });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-      serviceInternals(service).controlDatabase = {
-        getOwnerKeys: async () => new Set([ownerPublicKey, 'attacker-genesis-key']),
-      };
-
-      const { invite } = await service.createInvite();
-      expect(new Set(invite.ownerKeys)).toEqual(new Set([ownerPublicKey]));
-    });
-
-    it('omits ownerKeys when the anchor is empty', async () => {
-      const service = new SeedBootstrapService({ partyId, trustedOwners: anchor([]) });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerKeys).toBeUndefined();
-    });
-
-    it('hands out NO pins when no anchor is wired, even with a populated OwnerKey table', async () => {
-      // A directly-constructed service (no CadreNode) has no anchor. It must not
-      // degrade to the replicated table: an invite with no `ownerKeys` costs the
-      // invitee an extra out-of-band step, a table-sourced one silently anchors a
-      // key nobody vouched for out of band.
-      const service = new SeedBootstrapService({ partyId });
-      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-      serviceInternals(service).controlDatabase = {
-        getOwnerKeys: async () => new Set([ownerPublicKey]),
-      };
-
-      const { invite } = await service.createInvite();
-      expect(invite.ownerKeys).toBeUndefined();
-    });
   });
 });
 

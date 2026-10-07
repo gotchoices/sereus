@@ -3,7 +3,7 @@
 /**
  * CLI entrypoint for cadre-host — the self-hosted cadre node manager.
  *
- * Most subcommands (`status`, `invite`, `trust`, `grant`, `nat`) are thin HTTP
+ * Most subcommands (`status`, `grant`, `nat`) are thin HTTP
  * clients against the running cadre-host management API on loopback — they
  * don't spin up an inline service, so cadre-host must be running.
  *
@@ -21,7 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { Command } from 'commander';
 
-import { parseDuration } from '../auth/duration.js';
+import { parseDuration } from '../donation/duration.js';
 import { Installer } from '../installer/index.js';
 import { readHostConfig, updateHostConfig, hostOwnsCadre } from '../installer/config.js';
 import {
@@ -35,7 +35,6 @@ import { detectPlatform } from '../installer/platform.js';
 import { createServiceHost } from '../installer/service-host/index.js';
 import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
-import { TrustCircleService, TrustCircleStore, ensureSelfLabel } from '../auth/index.js';
 import {
   GrantService,
   GrantStore,
@@ -62,13 +61,6 @@ import { createLocalUiServer, HostSettingsStore, type FounderServices } from '..
 import { openBrowser } from '../installer/browser.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
-
-/** libp2p peer-ID prefixes by key type: Ed25519, secp256k1, legacy RSA. */
-const PEER_ID_PREFIXES = ['12D3Koo', '16Uiu2HAm', 'Qm'] as const;
-
-function looksLikePeerId(id: string): boolean {
-  return PEER_ID_PREFIXES.some((p) => id.startsWith(p));
-}
 
 function resolvePort(raw: string): number {
   const n = Number(raw);
@@ -99,7 +91,6 @@ program
   .option('--libp2p-port <port>', 'Override the cadre libp2p port', parseIntArg)
   .option('--no-upnp', 'Disable UPnP/NAT-PMP probing on first run')
   .option('--no-browser', 'Do not open a browser after install')
-  .option('--no-invite', 'Skip generating the first enrollment invite')
   .option('--own-cadre', 'Also run the host\'s own personal cadre here (founder persona; default: donor-only)')
   .option('--system', 'System-wide install (not yet supported in v1)')
   .option('--node-path <path>', 'Override the node binary embedded in the service unit')
@@ -111,7 +102,6 @@ program
     libp2pPort?: number;
     upnp?: boolean;
     browser?: boolean;
-    invite?: boolean;
     ownCadre?: boolean;
     system?: boolean;
     nodePath?: string;
@@ -126,7 +116,6 @@ program
         ...(typeof opts.libp2pPort === 'number' ? { libp2pPort: opts.libp2pPort } : {}),
         noUpnp: opts.upnp === false,
         openBrowser: opts.browser !== false,
-        noInvite: opts.invite === false,
         ownCadre: opts.ownCadre === true,
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
@@ -140,9 +129,6 @@ program
       } else {
         console.log('  Service:      not registered (--no-service)');
         console.log(`  Run the host: cadre-host start --data-dir "${result.dataDir}"`);
-      }
-      if (result.enrollmentInvite) {
-        printEnrollmentInvite(result.enrollmentInvite);
       }
       process.exit(0);
     } catch (err) {
@@ -164,8 +150,8 @@ program
   .action(async (opts: { yes?: boolean; removeData?: boolean; dataDir?: string }) => {
     const installer = new Installer();
     try {
-      // --remove-data is destructive and irreversible (identity + trust circle
-      // are wiped). Require explicit --yes when stdin isn't a TTY, and prompt
+      // --remove-data is destructive and irreversible (identity, grants and
+      // NAT state are wiped). Require explicit --yes when stdin isn't a TTY, and prompt
       // confirmation when it is.
       if (opts.removeData && !opts.yes) {
         if (!process.stdin.isTTY) {
@@ -175,7 +161,7 @@ program
         }
         const dataDir = opts.dataDir ?? '(default data directory)';
         const confirmed = await confirmDestructive(
-          `This will permanently delete ${dataDir} (identity, trust circle, NAT state). Continue? [y/N] `,
+          `This will permanently delete ${dataDir} (identity, grants, NAT state). Continue? [y/N] `,
         );
         if (!confirmed) {
           console.error('uninstall aborted.');
@@ -290,7 +276,7 @@ program
       // owner node of its own for that. Running the host's **own** personal
       // cadre here — the "founder" persona — is opt-in via `ownCadre.enabled`
       // (see docs/cadre-host.md § Two roles: donor and founder). Only when it
-      // is enabled do we spawn the owner node and bring up trust-circle + NAT.
+      // is enabled do we spawn the owner node and bring up NAT + strands.
       // The manager never joins the control network (docs/cadre-host.md
       // § Control-plane separation).
       // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
@@ -350,15 +336,15 @@ program
       reapTimer.unref();
 
       // Founder stack (opt-in). Absent `ownCadre.enabled`, cadre-host is a pure
-      // donor: no owner node, and the /auth + /nat surfaces stay unmounted
+      // donor: no owner node, and the /nat + /api/strands surfaces stay unmounted
       // (they 404). Per-donated-node WAN reachability is deferred to
       // backlog/feat-cadre-host-wan-grant-reachability, so v1 donor mode is
       // loopback-only — nothing for NatService to map without an owner node.
       let founder: FounderServices | undefined;
       if (hostOwnsCadre(cfg)) {
         // Spawn the owner node. Best-effort: a spawn failure leaves the
-        // management API up (trust-circle listing degrades to local labels,
-        // owner ops return 503) rather than taking down the whole process.
+        // management API up (owner ops return 503) rather than taking down the
+        // whole process.
         try {
           await orchestrator.ensureOwnerNode({
             identityPath: idPath,
@@ -374,25 +360,18 @@ program
         // bearer token is picked up automatically.
         const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
-        const trustCircleStore = new TrustCircleStore(cfg.dataDir);
-        const trustCircle = new TrustCircleService({
-          cadreNode: owner,
-          store: trustCircleStore,
-        });
-
         const natService = new NatService({
           rootDir: cfg.dataDir,
           cadreNode: owner,
         });
 
-        // Strand management is founder-only for the same reason as the trust
-        // circle: it asks the owner node, and donor-only mode has none.
+        // Strand management is founder-only for the same reason as NAT: it
+        // asks the owner node, and donor-only mode has none.
         const strandService = new StrandService({ cadreNode: owner });
 
         // Push NAT-resolved invite addresses to the node on every NAT change.
         // NatService.start() also fires this once as an initial push, retried
-        // until the freshly spawned owner node accepts it (bounded; the
-        // management API that mints invites comes up only after start() resolves).
+        // until the freshly spawned owner node accepts it (bounded).
         natService.onAddressesChanged(async (addresses) => {
           if (addresses.length === 0) return;
           try {
@@ -403,30 +382,18 @@ program
         });
 
         // Best-effort NAT start. Failures here aren't fatal — the local UI
-        // can still serve the trust circle, settings, etc.
+        // can still serve settings, strands, etc.
         try {
           await natService.start();
         } catch (err) {
           console.error(`NAT start failed: ${(err as Error).message}`);
         }
 
-        // Label the owner's own device so it shows up in the trust-circle
-        // listing (see auth/self-label.ts for why the listing can't get it for
-        // free). Runs after natService.start(), which already waits out a
-        // freshly spawned node's warm-up, so the peer ID is normally there on
-        // the first try. Best-effort: a failure logs and the next start heals
-        // it — the listing gap is cosmetic, not a security boundary.
-        try {
-          await ensureSelfLabel({ store: trustCircleStore, getPeerId: () => owner.getPeerId() });
-        } catch (err) {
-          console.error(`self trust-circle label failed: ${(err as Error).message}`);
-        }
-
-        founder = { trustCircle, nat: natService, strands: strandService };
+        founder = { nat: natService, strands: strandService };
       } else {
         // Donor-only. If ownCadre was toggled off after a prior founder run,
         // orchestrator.init() re-attaches the still-running owner child (it would
-        // otherwise linger in listNodes with no trustCircle/nat wired, serving
+        // otherwise linger in listNodes with no nat/strand services wired, serving
         // the host's own cadre despite being disabled). Reap it now so a disabled
         // own-cadre is actually stopped — its workdir + control-DB persist on
         // disk, so toggling ownCadre back on re-spawns it from saved config.
@@ -435,7 +402,7 @@ program
         } catch (err) {
           console.error(`owner node reap failed: ${(err as Error).message}`);
         }
-        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /auth + /nat inactive)');
+        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /nat + /api/strands inactive)');
       }
 
       const settingsStore = new HostSettingsStore({ dataDir: cfg.dataDir });
@@ -549,23 +516,6 @@ async function confirmDestructive(message: string): Promise<boolean> {
 
 const requireForQr = createRequire(import.meta.url);
 
-function printEnrollmentInvite(invite: { encodedInvite: string; expiresAt?: string }): void {
-  // Best-effort QR render — fall back to the bare token if the lib chokes.
-  console.log('\nEnroll your first device with this invite:');
-  try {
-    const qr = requireForQr('qrcode-terminal') as { generate: (text: string, opts?: { small?: boolean }, cb?: (s: string) => void) => void };
-    qr.generate(invite.encodedInvite, { small: true }, (rendered) => {
-      console.log(rendered);
-    });
-  } catch (err) {
-    console.error(`(qrcode-terminal unavailable: ${(err as Error).message})`);
-  }
-  console.log(`  ${invite.encodedInvite}`);
-  if (invite.expiresAt) {
-    console.log(`  (expires ${invite.expiresAt})`);
-  }
-}
-
 function printGrantToken(token: string, withQr: boolean): void {
   if (withQr) {
     // Best-effort QR render — fall back to the bare token if the lib chokes.
@@ -582,146 +532,6 @@ function printGrantToken(token: string, withQr: boolean): void {
   console.log(token);
 }
 
-program
-  .command('invite')
-  .description('Generate an invite to add a member to the trust circle')
-  .argument('<label>', 'Display label for the new member (e.g. "Mom\'s phone")')
-  .option('--ttl <duration>', 'Invite lifetime (e.g. 24h, 7d, 30m)', '24h')
-  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
-  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
-  .action(async (label: string, opts: { ttl: string; port: string; host: string }) => {
-    let ttlMs: number;
-    try {
-      ttlMs = parseDuration(opts.ttl);
-    } catch (err) {
-      console.error(`Invalid --ttl: ${(err as Error).message}`);
-      process.exit(1);
-      return;
-    }
-
-    const port = resolvePort(opts.port);
-
-    const url = `http://${opts.host}:${port}/auth/invites`;
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label, ttlMs }),
-      });
-    } catch (err) {
-      console.error(
-        `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
-        `Hint: is cadre-host running? Try \`cadre-host start\`.`,
-      );
-      process.exit(2);
-      return;
-    }
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
-      process.exit(1);
-      return;
-    }
-
-    const body = await response.json() as { encodedInvite?: string; expiresAt?: string; token?: string };
-    if (!body.encodedInvite) {
-      console.error('cadre-host returned malformed response (missing encodedInvite)');
-      process.exit(1);
-      return;
-    }
-
-    console.log(body.encodedInvite);
-    if (body.expiresAt) {
-      console.error(`(expires at ${body.expiresAt})`);
-    }
-    process.exit(0);
-  });
-
-const trust = program
-  .command('trust')
-  .description('Manage the trust circle (list members, revoke invites/members)');
-
-trust
-  .command('list')
-  .description('List trust-circle members and pending invites')
-  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
-  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
-  .action(async (opts: { port: string; host: string }) => {
-    const url = `http://${opts.host}:${resolvePort(opts.port)}/auth/trust-circle`;
-    let response: Response;
-    try {
-      response = await fetch(url);
-    } catch (err) {
-      console.error(`Failed to reach cadre-host at ${url}: ${(err as Error).message}`);
-      process.exit(2);
-      return;
-    }
-    if (!response.ok) {
-      console.error(`cadre-host returned ${response.status}: ${response.statusText}`);
-      process.exit(1);
-      return;
-    }
-    const body = await response.json() as {
-      members: Array<{ peerId: string; label: string; addedAt: string; self?: boolean }>;
-      pending: Array<{ token: string; label: string; createdAt: string; expiresAt?: string }>;
-    };
-    console.log('Members:');
-    if (body.members.length === 0) {
-      console.log('  (none)');
-    } else {
-      for (const m of body.members) {
-        const self = m.self ? ' [self]' : '';
-        console.log(`  ${m.peerId}  ${m.label}${self}`);
-      }
-    }
-    console.log('\nPending invites:');
-    if (body.pending.length === 0) {
-      console.log('  (none)');
-    } else {
-      for (const p of body.pending) {
-        const expires = p.expiresAt ? ` (expires ${p.expiresAt})` : '';
-        console.log(`  ${p.token}  ${p.label}${expires}`);
-      }
-    }
-    process.exit(0);
-  });
-
-trust
-  .command('revoke')
-  .description('Revoke a pending invite (by token) or remove a member (by peerId)')
-  .argument('<id>', 'Token (pending invite) or peerId (existing member) to remove')
-  .option('--kind <kind>', 'Force interpretation: "invite" | "member" (default: auto)', 'auto')
-  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
-  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
-  .action(async (id: string, opts: { kind: string; port: string; host: string }) => {
-    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
-    const kind = opts.kind === 'auto'
-      ? (looksLikePeerId(id) ? 'member' : 'invite')
-      : opts.kind;
-    const path = kind === 'member'
-      ? `/auth/members/${encodeURIComponent(id)}`
-      : `/auth/invites/${encodeURIComponent(id)}`;
-
-    let response: Response;
-    try {
-      response = await fetch(`${base}${path}`, { method: 'DELETE' });
-    } catch (err) {
-      console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
-      process.exit(2);
-      return;
-    }
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
-      process.exit(1);
-      return;
-    }
-    console.log(`revoked ${kind}: ${id}`);
-    process.exit(0);
-  });
-
 // ============================================================================
 // grant subcommands — donation grant tokens (who may ask this host for a node)
 // ============================================================================
@@ -729,7 +539,7 @@ trust
 // A grant token lets one grantee (friend/family) present a Bearer credential to
 // ask this host to donate cadre nodes, up to a per-grantee cap. These commands
 // are thin HTTP clients of the loopback `/grants-admin` admin surface — no
-// bearer (same-machine admin), same posture as `invite` / `trust`.
+// bearer (same-machine admin), same posture as `nat`.
 
 const grant = program
   .command('grant')

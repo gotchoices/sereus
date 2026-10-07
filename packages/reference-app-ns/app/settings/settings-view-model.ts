@@ -7,7 +7,9 @@
  */
 
 import { Observable, type EventData, type PropertyChangeData } from '@nativescript/core';
+import type { RedeemCadreInvitationResult } from '@serfab/cadre-core';
 import { getCadreVm, type CadreViewModel } from '../../src/cadre-vm';
+import { describeJoinFailure } from '../../src/join-failure';
 import type { PhoneNodeOptions } from '../../src/start-options';
 
 /** RFC-4122-ish v4 UUID (Math.random — good enough for the demo, matches RN). */
@@ -23,6 +25,13 @@ function splitAddrs(field: string): string[] {
 	return field.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0);
 }
 
+/** The "Joined cadre" modal body: who admitted this phone, and with what standing. */
+function joinedCadreMessage(result: RedeemCadreInvitationResult): string {
+	const member = result.peerId ?? 'a member';
+	const standing = result.grantsOwner ? 'This device is now an owner.' : 'This device is a member, not an owner.';
+	return `Admitted by ${member}. ${standing}`;
+}
+
 export class SettingsViewModel extends Observable {
 	/** Shared cadre VM — bound as `{{ cadre.* }}`. */
 	readonly cadre: CadreViewModel;
@@ -30,7 +39,7 @@ export class SettingsViewModel extends Observable {
 	private _partyId = '';
 	private _bootstrapAddr = '';
 	private _seedInput = '';
-	private _enrollInviteInput = '';
+	private _cadreInvitationInput = '';
 	private _peerAddr = '';
 	private _modalVisible = false;
 	private _modalTitle = '';
@@ -97,18 +106,14 @@ export class SettingsViewModel extends Observable {
 		this.notifyPropertyChange('canApplySeed', this.canApplySeed);
 	}
 
-	/**
-	 * Optional enrollment invite pasted alongside the seed. Deliberately NOT part
-	 * of `canApplySeed` — the seed alone gates the button, matching RN's
-	 * `disabled={!seedInput.trim()}`.
-	 */
-	get enrollInviteInput(): string {
-		return this._enrollInviteInput;
+	get cadreInvitationInput(): string {
+		return this._cadreInvitationInput;
 	}
-	set enrollInviteInput(value: string) {
-		if (value === this._enrollInviteInput) return;
-		this._enrollInviteInput = value;
-		this.notifyPropertyChange('enrollInviteInput', value);
+	set cadreInvitationInput(value: string) {
+		if (value === this._cadreInvitationInput) return;
+		this._cadreInvitationInput = value;
+		this.notifyPropertyChange('cadreInvitationInput', value);
+		this.notifyPropertyChange('canJoinCadre', this.canJoinCadre);
 	}
 
 	get peerAddr(): string {
@@ -124,6 +129,11 @@ export class SettingsViewModel extends Observable {
 	/** `isEnabled` for the Apply Seed button — mirrors RN's `disabled={!seedInput.trim()}`. */
 	get canApplySeed(): boolean {
 		return this._seedInput.trim().length > 0;
+	}
+
+	/** `isEnabled` for the Join cadre button — mirrors RN's `disabled={!cadreInvitationInput.trim()}`. */
+	get canJoinCadre(): boolean {
+		return this._cadreInvitationInput.trim().length > 0;
 	}
 
 	/** `isEnabled` for the Dial Peer button — mirrors RN's `disabled={!peerAddr.trim()}`. */
@@ -176,31 +186,37 @@ export class SettingsViewModel extends Observable {
 	}
 
 	/**
-	 * Apply a cold-start seed, optionally anchoring trust on the owner keys carried
-	 * by a pasted `CadreInvite`. A cold node has nothing in its trusted-owner
-	 * anchor, so the default `anchoredTrustPolicy` rejects a seed signed by another
-	 * cadre; pinning the invite's keys lets that first seed through. A blank or
-	 * older invite yields no pins — the modal says so rather than implying a pin
-	 * succeeded. Both fields are cleared on success only, so a mistyped seed does
-	 * not cost the user the pasted invite.
+	 * Apply a cold-start seed. The node accepts it only when its anchor already
+	 * holds the signer's key (the hint beside the field says so); the modal on
+	 * refusal carries the node's own reason. The field is cleared on success only.
 	 */
 	async onApplySeed(): Promise<void> {
 		const seed = this._seedInput.trim();
 		if (!seed) return;
 		try {
-			const enrollInvite = this._enrollInviteInput.trim();
-			const pins = enrollInvite ? this.cadre.ownerKeysFromInvite(enrollInvite) : undefined;
-			await this.cadre.applySeed(seed, pins);
+			await this.cadre.applySeed(seed);
 			this.seedInput = '';
-			this.enrollInviteInput = '';
-			this.showAlert(
-				'Seed applied',
-				pins?.length
-					? `Pinned ${pins.length} owner key(s); peer cache updated`
-					: 'Peer cache updated (no owner keys pinned)',
-			);
+			this.showAlert('Seed applied', 'Peer cache updated');
 		} catch (err) {
 			this.showAlert('Seed failed', String(err));
+		}
+	}
+
+	/**
+	 * Redeem a pasted cadre invitation. The field is cleared on success only: a
+	 * failed join keeps the paste, so the retry the modal may suggest costs no
+	 * re-paste. The failure modal speaks in plain words (`describeJoinFailure`),
+	 * not the error's own text.
+	 */
+	async onJoinCadre(): Promise<void> {
+		const encoded = this._cadreInvitationInput.trim();
+		if (!encoded) return;
+		try {
+			const result = await this.cadre.joinCadre(encoded);
+			this.cadreInvitationInput = '';
+			this.showAlert('Joined cadre', joinedCadreMessage(result));
+		} catch (err) {
+			this.showAlert('Join failed', describeJoinFailure(err));
 		}
 	}
 

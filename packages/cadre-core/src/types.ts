@@ -567,7 +567,7 @@ export interface NetworkConfig {
     /**
      * Limit on dialing ONE peer — all of its candidate addresses together — in
      * ms. Bounds a reconcile pass at (dialed siblings) × this. The same limit
-     * applies to the owner dials of `applySeed` and to `dialInvite`. Defaults to
+     * applies to the owner dials of `applySeed`. Defaults to
      * {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS}.
      */
     dialTimeoutMs?: number;
@@ -932,7 +932,7 @@ export interface CadreNodeConfig {
    * inside SeedBootstrapService when unset — a node whose node-local trusted-owner
    * anchor was never seeded then rejects every seed. A per-call
    * `applySeed(seed, { trustPolicy })` override still wins over this default for
-   * callers that hold out-of-band material (e.g. a pinned key from a CadreInvite).
+   * callers that hold out-of-band material (e.g. an operator-pinned owner key).
    */
   seedTrustPolicy?: SeedTrustPolicy;
 
@@ -956,8 +956,9 @@ export interface CadreNodeConfig {
     /**
      * Owner keys (base64url ed25519) established out of band and seeded into
      * the store during start(): operator pins (e.g. cadre-cli
-     * `--pin-owner-key` / `CADRE_OWNER_KEYS`) or a `CadreInvite.ownerKeys`
-     * already known at config time. Seeding is idempotent across restarts.
+     * `--pin-owner-key` / `CADRE_OWNER_KEYS`). A cadre invitation's `ownerKeys`
+     * are pinned at redemption instead (`CadreNode.redeemCadreInvitation`).
+     * Seeding is idempotent across restarts.
      */
     pinnedKeys?: string[];
     /**
@@ -2263,33 +2264,6 @@ export interface ApplySeedResult {
 export type NodeTopology = 'public' | 'nat';
 
 /**
- * Invite code for phone-to-server enrollment.
- * Used when a server invites a phone to join the cadre.
- */
-export interface CadreInvite {
-  /** Party ID of the cadre */
-  partyId: string;
-  /** Multiaddrs to dial the owner */
-  ownerAddrs: string[];
-  /**
-   * Owner ed25519 public keys (base64url) of the cadre, carried out-of-band
-   * so a cold-start invitee can pin the trusted owner set before applying
-   * any seed (the seed itself cannot vouch for its own signer). Populated by
-   * `createInvite` from the issuer's OWN node-local trusted-owner anchor —
-   * not its replicated `OwnerKey` table, because the invitee anchors whatever
-   * arrives here and a stranger's genesis-inserted key must not ride an
-   * otherwise-legitimate invite into a fresh node's anchor.
-   */
-  ownerKeys?: string[];
-  /** Optional invite token for validation */
-  token?: string;
-  /** Timestamp when invite was created */
-  createdAt: number;
-  /** Optional expiration timestamp */
-  expiresAt?: number;
-}
-
-/**
  * What an owner asks `CadreNode.createCadreInvitation` for. The invitation is a keypair the
  * node mints; whoever holds the returned bundle can redeem it at any member machine.
  */
@@ -2336,16 +2310,6 @@ export interface AddDroneOptions {
 }
 
 /**
- * Options for adding a phone via invite flow.
- */
-export interface AddPhoneOptions {
-  /** Peer ID of the phone (sent by phone when it connects) */
-  phonePeerId: string;
-  /** Invite token for validation (must match issued invite) */
-  token?: string;
-}
-
-/**
  * Result of preparing a seed for drone initialization.
  */
 export interface DroneInitResult {
@@ -2354,14 +2318,3 @@ export interface DroneInitResult {
   /** Base64url encoded seed for transport */
   encodedSeed: string;
 }
-
-/**
- * Result of creating an invite for a phone.
- */
-export interface InviteResult {
-  /** The invite to share out-of-band */
-  invite: CadreInvite;
-  /** Base64url encoded invite for QR/link */
-  encodedInvite: string;
-}
-

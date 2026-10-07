@@ -100,7 +100,7 @@ const REJECTED_VALUE_ECHO_LIMIT = 64;
 
 /**
  * Render a rejected value for an error message, capped: owner keys now reach this check
- * from remote-supplied fields (a `CadreInvite`'s `ownerKeys`, a donation request's
+ * from remote-supplied fields (a cadre invitation's `ownerKeys`, a donation request's
  * `ownerKeys`), so an unbounded echo would let a peer turn one junk string into a
  * megabyte of log line.
  */

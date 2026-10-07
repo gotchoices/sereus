@@ -1,7 +1,7 @@
 /**
  * Thin fetch wrapper that understands cadre-host's mixed response shapes.
  *
- * Many routes (status, nat, auth/trust-circle, update) return the bare object.
+ * Many routes (status, nat, update) return the bare object.
  * Newer routes (nodes, settings) wrap responses in `{ ok, data, error }`.
  * Error responses always use the wrapped form. `apiFetch` unwraps when it
  * sees the envelope, throws `ApiError` on `ok:false`, and returns the bare

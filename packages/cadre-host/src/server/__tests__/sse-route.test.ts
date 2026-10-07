@@ -87,8 +87,8 @@ describe('GET /api/events (SSE)', () => {
 
     // Give the connection a beat to settle on the server, then publish.
     await new Promise<void>((r) => setTimeout(r, 30));
-    bus.publish({ type: 'trust-circle-changed', kind: 'invited' });
-    bus.publish({ type: 'trust-circle-changed', kind: 'redeemed' });
+    bus.publish({ type: 'grants-changed', kind: 'issued' });
+    bus.publish({ type: 'grants-changed', kind: 'revoked' });
     bus.publish({ type: 'connectivity-changed', portMode: 'auto-upnp', directReachability: 'reachable' });
 
     // Wait until at least 3 events have arrived (or 1s).
@@ -99,12 +99,12 @@ describe('GET /api/events (SSE)', () => {
 
     expect(events.length).toBeGreaterThanOrEqual(3);
     expect(events.slice(0, 3).map((e) => e.type)).toEqual([
-      'trust-circle-changed',
-      'trust-circle-changed',
+      'grants-changed',
+      'grants-changed',
       'connectivity-changed',
     ]);
     const first = JSON.parse(events[0]!.data) as { kind: string };
-    expect(first.kind).toBe('invited');
+    expect(first.kind).toBe('issued');
 
     expect(bus.listenerCount()).toBe(1);
     req.destroy();

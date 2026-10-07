@@ -5,6 +5,7 @@ import debug from 'debug';
 import { EnrollmentService, verifyPeerAuthorization } from '@serfab/cadre-core';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { enrollAddCommand } from './enroll-add.js';
+import { enrollInviteCommand } from './enroll-invite.js';
 
 const log = debug('cadre:cli:enroll');
 
@@ -58,14 +59,19 @@ export const enrollCommand = new Command('enroll')
         console.log(`  Private key:  ${keyPath}`);
         console.log(`  ID file:      ${idPath}`);
         console.log('');
-        console.log('Next steps:');
-        console.log('1. On the owner machine, admit this peer and capture its seed:');
+        console.log('Next steps, either way:');
+        console.log('A. The owner is running: on the owner machine, admit this peer and capture its seed,');
         console.log(`     cadre enroll add ${peerId} --admin-port <port> > ${options.name}.seed`);
-        console.log('2. Start this node with that seed and the owner key it names:');
+        console.log('   then start this node with that seed and the owner key it names:');
         console.log(`     cadre start -c cadre.yaml --identity-file ${keyPath} --pin-owner-key <owner key> --seed <contents of ${options.name}.seed>`);
+        console.log('B. The owner may be offline when this node joins: on the owner machine, mint an invitation,');
+        console.log(`     cadre enroll invite --peer-id ${peerId} --admin-port <port> > ${options.name}.invitation`);
+        console.log('   then start this node with it; any member of the cadre admits it:');
+        console.log(`     cadre start -c cadre.yaml --identity-file ${keyPath} --invitation <contents of ${options.name}.invitation>`);
       })
   )
   .addCommand(enrollAddCommand)
+  .addCommand(enrollInviteCommand)
   .addCommand(
     new Command('register')
       .description('Verify an owner-signed peer authorization (offline check — does not contact the control network or register the peer)')

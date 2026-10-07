@@ -2,9 +2,8 @@
  * Vitest global setup — runs once before the whole cadre-host suite.
  *
  * `src/update/manifest.ts` and `src/push/index.ts` import real symbols from
- * `@serfab/cadre-core` (`canonicalJson`, `validatePushCredentials`), and
- * `trust-circle-integration.test.ts` imports and drives a real `CadreNode` from
- * it too. `@serfab/cadre-core`'s compiled entry point in turn imports
+ * `@serfab/cadre-core` (`canonicalJson`, `validatePushCredentials`).
+ * `@serfab/cadre-core`'s compiled entry point in turn imports
  * `@serfab/quereus-plugin-sereus`, which imports the `@optimystic/*` and
  * `@quereus/quereus` packages linked in from their sibling checkouts.
  * `host-process-orchestrator.ts` also resolves `@serfab/cadre-cli`'s bin path at

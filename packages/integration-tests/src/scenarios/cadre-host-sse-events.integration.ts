@@ -3,8 +3,6 @@
  *
  * Verifies the seam between route adapters, the EventBus, and the
  * `/api/events` SSE endpoint:
- *   - trust-circle invite POST → `trust-circle-changed: invited`
- *   - trust-circle invite DELETE → `trust-circle-changed: revoked`
  *   - settings PUT does NOT emit a connectivity-changed (no route adapter
  *     exists today — see events/types.ts)
  *   - SSE close releases the listener slot in the bus
@@ -47,50 +45,6 @@ describe('cadre-host SSE events', () => {
 			host.server.events.publish({ type: 'connectivity-changed', portMode: 'disabled', directReachability: 'unknown' });
 			const ev = await stream.next((e) => e.type === 'connectivity-changed');
 			expect(ev).toMatchObject({ type: 'connectivity-changed', portMode: 'disabled', directReachability: 'unknown' });
-		} finally {
-			stream.close();
-		}
-	});
-
-	it('emits trust-circle-changed: invited when POST /auth/invites succeeds', async () => {
-		const baseline = host.server.events.listenerCount();
-		const stream = await host.openEventStream();
-		try {
-			await awaitSubscribed(baseline + 1);
-			const post = await host.request({
-				method: 'POST',
-				path: '/auth/invites',
-				body: { label: 'Test phone' },
-			});
-			expect(post.status).toBe(200);
-			const ev = await stream.next((e) => e.type === 'trust-circle-changed' && e.kind === 'invited');
-			expect(ev).toMatchObject({ type: 'trust-circle-changed', kind: 'invited' });
-		} finally {
-			stream.close();
-		}
-	});
-
-	it('emits trust-circle-changed: revoked when DELETE /auth/invites/:token succeeds', async () => {
-		const post = await host.request({
-			method: 'POST',
-			path: '/auth/invites',
-			body: { label: 'To-be-revoked' },
-		});
-		expect(post.status).toBe(200);
-		const token = (post.body as { token: string }).token;
-		expect(typeof token).toBe('string');
-
-		const baseline = host.server.events.listenerCount();
-		const stream = await host.openEventStream();
-		try {
-			await awaitSubscribed(baseline + 1);
-			const del = await host.request({
-				method: 'DELETE',
-				path: `/auth/invites/${encodeURIComponent(token)}`,
-			});
-			expect(del.status).toBe(200);
-			const ev = await stream.next((e) => e.type === 'trust-circle-changed' && e.kind === 'revoked');
-			expect(ev).toMatchObject({ type: 'trust-circle-changed', kind: 'revoked' });
 		} finally {
 			stream.close();
 		}

@@ -9,9 +9,8 @@ import { join } from 'node:path';
 import {
   Installer,
   HostProcessOrchestrator,
-  TrustCircleService,
-  TrustCircleStore,
   NatService,
+  StrandService,
   UpdateService,
   createLocalUiServer,
   HostSettingsStore,
@@ -26,19 +25,15 @@ class NoopServiceHost {
   renderUnit() { return null; }
 }
 
-function missingTrustCircleNodeStub(label) {
-  const err = () => { throw new Error(`smoke: ${label} requires a real cadre node`); };
-  return {
-    createInvite: err,
-    acceptPhone: err,
-    removePeer: err,
-    encodeInvite: () => { throw new Error(`smoke: ${label} encodeInvite unavailable`); },
-    getControlDatabase: () => null,
-  };
-}
-
 function missingNatNodeStub() {
   return { getPeerId: () => '', getMultiaddrs: () => [] };
+}
+
+function missingStrandNodeStub() {
+  return {
+    listStrands: async () => ({ strands: [], controlConnections: 0 }),
+    removeStrand: async (strandId) => ({ strandId, published: false, type: null, removed: false, alone: false }),
+  };
 }
 
 const dataDir = mkdtempSync(join(tmpdir(), 'cadre-host-smoke-'));
@@ -53,7 +48,6 @@ const installResult = await installer.install({
   uiPort,
   libp2pPort: 14001,
   openBrowser: false,
-  noInvite: true,
   serviceHost: new NoopServiceHost(),
 });
 console.log(`[smoke] installed: ${installResult.configPath}`);
@@ -63,16 +57,13 @@ const cfg = JSON.parse(readFileSync(installResult.configPath, 'utf8'));
 const orchestrator = new HostProcessOrchestrator({ rootDir: join(cfg.dataDir, 'orchestrator') });
 await orchestrator.init();
 
-const trustCircle = new TrustCircleService({
-  cadreNode: missingTrustCircleNodeStub('trust-circle'),
-  store: new TrustCircleStore(cfg.dataDir),
-});
-
 const natService = new NatService({
   rootDir: cfg.dataDir,
   cadreNode: missingNatNodeStub(),
 });
 try { await natService.start(); } catch (err) { console.error(`[smoke] NAT start failed: ${err.message}`); }
+
+const strandService = new StrandService({ cadreNode: missingStrandNodeStub() });
 
 const updateService = new UpdateService({
   dataDir: cfg.dataDir,
@@ -91,8 +82,7 @@ const server = createLocalUiServer({
   uiPort: cfg.uiPort,
   dataDir: cfg.dataDir,
   orchestrator,
-  trustCircle,
-  nat: natService,
+  founder: { nat: natService, strands: strandService },
   update: updateService,
   settingsStore,
 });

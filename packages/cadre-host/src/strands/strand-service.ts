@@ -14,8 +14,8 @@ const log = debug('cadre:host:strands');
 /**
  * Minimal slice of the owner node that StrandService uses. Declared here (rather
  * than reaching into `OwnerNodeClient`) so unit tests can inject a fake without
- * standing up an admin channel — the third such trimmed interface the client
- * satisfies, alongside the trust-circle and NAT ones.
+ * standing up an admin channel — the second such trimmed interface the client
+ * satisfies, alongside the NAT one.
  */
 export interface CadreNodeLike {
   listStrands(): Promise<StrandListSnapshot>;
@@ -95,11 +95,11 @@ function validateStrandId(rawId: string): string {
  *
  * Declared to return `never` so callers can `.catch((err) => toDomainError(err))`.
  *
- * NOTE: the trust-circle and NAT services translate the SAME error blanket-style —
- * every `OwnerNodeUnavailableError` becomes `node_unavailable` — because neither has
- * a code worth distinguishing yet. If a second surface ever needs a code-aware
+ * NOTE: the NAT service translates the SAME error blanket-style — every
+ * `OwnerNodeUnavailableError` becomes `node_unavailable` — because neither service
+ * has a code worth distinguishing yet. If a surface ever needs a code-aware
  * mapping, hoist this switch into a shared owner-error translator instead of growing
- * a third copy.
+ * another copy.
  */
 function toDomainError(err: unknown): never {
   if (!(err instanceof OwnerNodeUnavailableError)) {

@@ -9,7 +9,7 @@
  * analogous to cadre-provider's per-customer ownership check).
  *
  * Reachability is out of scope here: in v1 this mounts on the loopback
- * management server, same as the trust-circle / NAT surfaces. Physically exposing
+ * management server, same as the NAT surface. Physically exposing
  * it to a remote phone is `backlog/feat-cadre-host-wan-grant-reachability`.
  *
  * Errors: handlers either send a `{ ok:false, error:{code,message} }` envelope

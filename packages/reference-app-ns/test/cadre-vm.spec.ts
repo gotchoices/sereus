@@ -1,18 +1,19 @@
 /**
  * `cadre-vm.ts` — the shared view model both NativeScript screens bind to.
  *
- * The behaviour this suite exists for is an ORDERING. When the user pastes an
- * enrollment invite alongside a cold-start seed, the invite's owner keys must be
- * written into the node-local trusted-owner anchor BEFORE the seed is applied,
- * so the anchor already holds them when seed trust consults it. Asserting that
- * both calls merely happened would not catch a tidy-up that folds them together
- * or reorders them, so every node call is appended to one shared `H.calls` array
- * (see `test/stubs/fake-cadre-node.ts`) and the tests assert that array whole.
+ * What this suite exists for is what the view model puts in FRONT of the node:
+ * the 'Node not started' guards, the rewrap of an unreadable seed or invitation
+ * paste with copy naming the field, and the join path's order — decode first, so
+ * a bad paste never reaches `redeemCadreInvitation`. Every node call is appended
+ * to one shared `H.calls` array (see `test/stubs/fake-cadre-node.ts`) and the
+ * tests assert that array whole, so a call that moved fails as surely as one
+ * that never happened.
  *
- * `@serfab/cadre-core` is left REAL: `cadre-vm.ts` uses `pinnedKeyTrustPolicy`
- * as a runtime value, and the point of the pinned-key tests is that a working
- * policy object — one that really trusts the pasted keys — reaches `applySeed`.
- * `test/global-setup.ts`'s stale-build guard therefore covers this file too.
+ * `@serfab/cadre-core` is left REAL: `cadre-vm.ts` calls `decodeCadreInvitation`
+ * as a runtime value, and the join tests feed it a bundle the real
+ * `encodeCadreInvitation` rendered, so the shape check between the two is the one
+ * the app ships with. `test/global-setup.ts`'s stale-build guard therefore covers
+ * this file too.
  *
  * `getCadreVm()` caches a module-level singleton, so every test loads the module
  * fresh through `loadModule()` (`vi.resetModules()` + dynamic import) rather than
@@ -43,7 +44,6 @@ vi.mock('../src/chat-strand', async () => (await stubs).chatStrandMock());
 type Stubs = typeof import('./stubs/fake-cadre-node');
 
 const SEED = 'encoded-seed';
-const INVITE = 'encoded-invite';
 
 /**
  * A fresh view-model module over a fresh fake node. Both halves matter:
@@ -181,118 +181,47 @@ describe('getCadreVm', () => {
 	});
 });
 
-// ── ownerKeysFromInvite ───────────────────────────────────────────────────────
+// ── joinCadre ─────────────────────────────────────────────────────────────────
 
-describe('ownerKeysFromInvite', () => {
-	it('returns the invite owner keys in order', async () => {
+describe('joinCadre', () => {
+	it('decodes the paste, redeems the bundle at the node and returns its result', async () => {
+		// The decode is the real one, so what reaches the node is the bundle the
+		// encoder was given, not the string the user pasted.
 		const { vm, H } = await adoptedVm();
-		H.state.node.invite = { partyId: 'party-x', ownerAddrs: [], createdAt: 0, ownerKeys: [H.KEY_A, H.KEY_B] };
 
-		expect(vm.ownerKeysFromInvite(INVITE)).toEqual([H.KEY_A, H.KEY_B]);
-		expect(H.state.node.decodedInvites).toEqual([INVITE]);
+		const result = await vm.joinCadre(H.ENCODED_INVITATION);
+
+		expect(result).toBe(H.state.node.redeemResult);
+		expect(H.calls).toEqual(['redeemCadreInvitation']);
+		expect(H.state.node.redeemed).toEqual([H.invitation()]);
 	});
 
-	it('returns an empty list for an older invite carrying no owner keys', async () => {
-		// Not `undefined`, and not a throw: the Settings screen branches on
-		// `pins?.length`, and an older invite is an ordinary case, not an error.
-		const { vm } = await adoptedVm();
-
-		expect(vm.ownerKeysFromInvite(INVITE)).toEqual([]);
-	});
-
-	it('rewraps an unreadable invite with copy naming the enrollment invite', async () => {
-		// `CadreNode.decodeInvite` is base64url → JSON.parse → cast, so a typo'd
-		// paste would otherwise surface as a bare `SyntaxError: Unexpected token …`.
-		// Matched on a distinctive substring, not the whole sentence — this is UI
-		// copy, and a wording tweak should not fail the suite.
+	it('rewraps an unreadable paste naming the invitation, and never reaches the node', async () => {
+		// `decodeCadreInvitation` says what was wrong with the bundle; the modal
+		// renders `String(err)`, so the message must also say which paste it was.
+		// Matched on a distinctive substring — this is UI copy, and a wording tweak
+		// should not fail the suite. The decoder's own error rides along as `cause`.
 		const { vm, H } = await adoptedVm();
-		const parseFailure = new SyntaxError('Unexpected token < in JSON at position 0');
-		H.state.node.decodeInviteError = parseFailure;
 
-		expect(() => vm.ownerKeysFromInvite('not-an-invite')).toThrow(/enrollment invite/i);
-		try {
-			vm.ownerKeysFromInvite('not-an-invite');
-			expect.unreachable('ownerKeysFromInvite should have thrown');
-		} catch (err) {
-			// The original rides along so a developer can still see the parse failure.
-			expect((err as Error).cause).toBe(parseFailure);
-		}
+		await expect(vm.joinCadre('not-an-invitation')).rejects.toThrow(/cadre invitation could not be read/i);
+		await expect(vm.joinCadre('not-an-invitation')).rejects.toMatchObject({ cause: expect.any(Error) });
+		expect(H.calls).toEqual([]);
 	});
 
 	it('refuses before the node is started, without touching the node', async () => {
+		// Guard order matches `applySeed`: the throw comes before any node call.
 		const { vm, H } = await coldVm();
 
-		expect(() => vm.ownerKeysFromInvite(INVITE)).toThrow('Node not started');
-		// Guard order matches `applySeed`: the throw comes before any node call.
-		expect(H.state.node.decodedInvites).toEqual([]);
+		await expect(vm.joinCadre(H.ENCODED_INVITATION)).rejects.toThrow('Node not started');
+		expect(H.state.node.redeemed).toEqual([]);
 		expect(H.calls).toEqual([]);
 	});
 });
 
-// ── applySeed: the enrollment ordering ────────────────────────────────────────
+// ── applySeed ─────────────────────────────────────────────────────────────────
 
-describe('applySeed with pinned owner keys', () => {
-	it('anchors the invite keys BEFORE applying the seed', async () => {
-		// The reason this suite exists. The anchor has to already hold the keys when
-		// seed trust consults it, so `trustOwnerKeys` must precede `applySeed`.
-		// Asserting the whole call log — rather than two `toHaveBeenCalled`s — is
-		// what makes a reorder, or a fold of the two calls into one, fail here.
-		const { vm, H } = await adoptedVm();
-
-		await vm.applySeed(SEED, [H.KEY_A, H.KEY_B]);
-
-		expect(H.calls).toEqual(['decodeSeed', 'trustOwnerKeys', 'applySeed']);
-	});
-
-	it('anchors the keys under the invite provenance', async () => {
-		const { vm, H } = await adoptedVm();
-
-		await vm.applySeed(SEED, [H.KEY_A, H.KEY_B]);
-
-		expect(H.state.node.trusted).toEqual([{ keys: [H.KEY_A, H.KEY_B], source: 'invite' }]);
-	});
-
-	it('hands applySeed a trust policy that accepts the pinned keys', async () => {
-		// A real `pinnedKeyTrustPolicy` built from THESE keys, not merely some object
-		// parked under a `trustPolicy` property — a policy built from the wrong list
-		// is still an object, and the cold-start seed would then be rejected on
-		// device with the pin apparently in place.
-		const { vm, H } = await adoptedVm();
-
-		await vm.applySeed(SEED, [H.KEY_A]);
-
-		const policy = H.state.node.applied[0]!.options?.trustPolicy;
-		expect(policy).toBeDefined();
-		expect(await policy!.evaluate({ partyId: 'party-x', signerKey: H.KEY_A, knownOwnerKeys: new Set() }))
-			.toEqual({ trusted: true, anchorAs: 'invite' });
-		expect(await policy!.evaluate({ partyId: 'party-x', signerKey: H.KEY_B, knownOwnerKeys: new Set() }))
-			.toMatchObject({ trusted: false });
-	});
-
-	it('forwards the decoded seed, not the encoded string', async () => {
-		const { vm, H } = await adoptedVm();
-
-		await vm.applySeed(SEED, [H.KEY_A]);
-
-		expect(H.state.node.decodedSeeds).toEqual([SEED]);
-		expect(H.state.node.applied[0]!.seed).toBe(H.sentinels.decodedSeed);
-	});
-
-	it('keeps the pin when the node refuses the seed', async () => {
-		// Pasting the invite is itself the out-of-band trust act; the seed is a
-		// separate artifact that may be stale, for another party, or corrupt.
-		// Rolling the anchor back here would cost the user a re-paste on every retry.
-		const { vm, H } = await adoptedVm();
-		H.state.node.applySeedResult = H.refusal('not for this party');
-
-		await expect(vm.applySeed(SEED, [H.KEY_A])).rejects.toThrow('not for this party');
-		expect(H.state.node.trusted).toEqual([{ keys: [H.KEY_A], source: 'invite' }]);
-		expect(H.calls).toEqual(['decodeSeed', 'trustOwnerKeys', 'applySeed']);
-	});
-});
-
-describe('applySeed without pinned owner keys', () => {
-	it('never touches the anchor and overrides no trust policy', async () => {
+describe('applySeed', () => {
+	it('decodes then applies, overriding no trust policy', async () => {
 		// The node's configured `anchoredTrustPolicy` must stay in force — passing an
 		// options object here would silently widen trust for every ordinary seed.
 		const { vm, H } = await adoptedVm();
@@ -300,20 +229,16 @@ describe('applySeed without pinned owner keys', () => {
 		await vm.applySeed(SEED);
 
 		expect(H.calls).toEqual(['decodeSeed', 'applySeed']);
-		expect(H.state.node.trusted).toEqual([]);
 		expect(H.state.node.applied[0]!.options).toBeUndefined();
 	});
 
-	it('treats an empty pin list exactly as no pins at all', async () => {
-		// `ownerKeysFromInvite` returns `[]` for an older invite, and that reaches
-		// here directly from the Settings screen.
+	it('forwards the decoded seed, not the encoded string', async () => {
 		const { vm, H } = await adoptedVm();
 
-		await vm.applySeed(SEED, []);
+		await vm.applySeed(SEED);
 
-		expect(H.calls).toEqual(['decodeSeed', 'applySeed']);
-		expect(H.state.node.trusted).toEqual([]);
-		expect(H.state.node.applied[0]!.options).toBeUndefined();
+		expect(H.state.node.decodedSeeds).toEqual([SEED]);
+		expect(H.state.node.applied[0]!.seed).toBe(H.sentinels.decodedSeed);
 	});
 });
 
@@ -335,31 +260,21 @@ describe('applySeed failures', () => {
 	it('refuses before the node is started, without decoding the seed', async () => {
 		const { vm, H } = await coldVm();
 
-		await expect(vm.applySeed(SEED, [H.KEY_A])).rejects.toThrow('Node not started');
+		await expect(vm.applySeed(SEED)).rejects.toThrow('Node not started');
 		expect(H.state.node.decodedSeeds).toEqual([]);
 		expect(H.calls).toEqual([]);
 	});
 
 	it('rewraps an unreadable seed with copy naming the seed', async () => {
-		// Same raw base64url → `JSON.parse` → cast as `decodeInvite`, so the same
-		// bare `SyntaxError` would otherwise reach the Settings modal.
+		// `CadreNode.decodeSeed` is a raw base64url → `JSON.parse` → cast, so a bare
+		// `SyntaxError` would otherwise reach the Settings modal.
 		const { vm, H } = await adoptedVm();
 		const parseFailure = new SyntaxError('Unexpected token < in JSON at position 0');
 		H.state.node.decodeSeedError = parseFailure;
 
 		await expect(vm.applySeed('not-a-seed')).rejects.toThrow(/cold-start seed/i);
 		await expect(vm.applySeed('not-a-seed')).rejects.toMatchObject({ cause: parseFailure });
-	});
-
-	it('anchors nothing when the seed cannot even be decoded', async () => {
-		// The pin sticks past an APPLY rejection (above), but a seed that never
-		// decoded is not an apply attempt — nothing about it was trusted.
-		const { vm, H } = await adoptedVm();
-		H.state.node.decodeSeedError = new SyntaxError('Unexpected token < in JSON at position 0');
-
-		await expect(vm.applySeed('not-a-seed', [H.KEY_A])).rejects.toThrow(/cold-start seed/i);
-		expect(H.state.node.trusted).toEqual([]);
-		expect(H.calls).toEqual(['decodeSeed']);
+		expect(H.calls).toEqual(['decodeSeed', 'decodeSeed']);
 	});
 });
 

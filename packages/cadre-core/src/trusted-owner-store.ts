@@ -6,7 +6,7 @@
  * row replicates into every peer's copy, so "is this key in `OwnerKey`?" can be
  * made true by a stranger. This store is the anchor that CAN be trusted — a
  * per-party, on-device record of owner keys established OUT OF BAND: founding
- * the party (genesis self-trust), the pinned keys carried by the `CadreInvite`
+ * the party (genesis self-trust), the pinned keys carried by the cadre invitation
  * that enrolled this node, or an explicit operator pin. It is never written
  * from replicated control state; that is the whole point.
  *

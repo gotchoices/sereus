@@ -6,7 +6,6 @@
 		applyEvent,
 		refreshStatus,
 		refreshNodes,
-		refreshTrustCircle,
 		refreshConnectivity,
 		refreshUpdate,
 		refreshSettings,
@@ -18,7 +17,6 @@
 	import { subscribeEvents } from './lib/events.js';
 
 	import Home from './routes/Home.svelte';
-	import TrustCircle from './routes/TrustCircle.svelte';
 	import Connectivity from './routes/Connectivity.svelte';
 	import Nodes from './routes/Nodes.svelte';
 	import NodeDetail from './routes/NodeDetail.svelte';
@@ -42,7 +40,6 @@
 
 	const NAV: Array<{ name: RouteName; label: string }> = [
 		{ name: 'home', label: 'Home' },
-		{ name: 'trust-circle', label: 'Trust Circle' },
 		{ name: 'connectivity', label: 'Connectivity' },
 		{ name: 'nodes', label: 'Nodes' },
 		{ name: 'grants', label: 'Grants' },
@@ -60,7 +57,6 @@
 	$effect(() => {
 		if (app.role !== 'founder') return;
 		untrack(() => {
-			void refreshTrustCircle();
 			void refreshConnectivity();
 		});
 	});
@@ -133,8 +129,6 @@
 				<a href={hrefFor('home')}>← Back to Home</a>
 			{/if}
 		</div>
-	{:else if route.route.name === 'trust-circle'}
-		<TrustCircle />
 	{:else if route.route.name === 'connectivity'}
 		<Connectivity />
 	{:else if route.route.name === 'nodes'}

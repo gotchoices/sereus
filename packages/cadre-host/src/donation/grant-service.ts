@@ -16,7 +16,7 @@ import { GrantError } from './types.js';
 
 const log = debug('cadre:host:grant-service');
 
-/** Token byte length (base64url-encoded; ~43 chars). Matches trust-circle. */
+/** Token byte length (base64url-encoded; ~43 chars). */
 const TOKEN_BYTES = 32;
 
 /** Default node cap when the admin doesn't specify one. */
@@ -41,8 +41,8 @@ export interface GrantServiceOptions {
  * the count as a parameter so the two never drift.
  *
  * All methods are synchronous: issuance/validation/revocation are pure local
- * store operations with no node round-trip (unlike the trust-circle flow,
- * which delegates to the owner node).
+ * store operations with no node round-trip (unlike the NAT and strand
+ * services, which delegate to the owner node).
  */
 export class GrantService implements GrantValidator {
   private readonly store: GrantStore;

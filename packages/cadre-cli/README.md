@@ -120,7 +120,7 @@ cadre enroll register \
 
 ### Add a Machine to the Cadre
 
-A new machine joins in three steps: it makes an identity, the owner admits it and prints a seed, and it starts with that seed.
+A new machine joins in three steps: it makes an identity, the owner admits it and prints a seed, and it starts with that seed. This is the owner-online way; [Join by invitation](#join-by-invitation-the-owner-may-be-offline) is the way that works when the owner is not running at the moment the machine joins.
 
 ```bash
 # 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
@@ -147,6 +147,33 @@ The seed carries whatever addresses the owner advertises; `enroll add` does not 
 When the seed carries no owner address and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized leaves its authorization as it is and mints a fresh seed, so it is the way to pick up changed owner addresses; any `--addr` given on the re-run replaces the address the owner dials.
 
 [docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this flow with the other ways to add a machine to a cadre, by which machine opens the connection.
+
+### Join by invitation (the owner may be offline)
+
+An owner mints a **cadre invitation** while it is running, hands the bundle to the new machine out of band, and can then go offline: the new machine redeems the bundle at **any member** of the cadre the bundle names, and that member writes the new machine's membership on the owner's behalf ([docs/architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](../../docs/architecture.md#enrollment-flow-invitation-redeemed-at-any-member)).
+
+```bash
+# 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
+cadre enroll create --output . --name node-b
+
+# 2. On the owner machine A, running as `cadre start --owner --admin-port 7070 …` with CADRE_STARTUP_TOKEN set
+CADRE_STARTUP_TOKEN=<token> cadre enroll invite --peer-id "$(cat node-b.id)" --admin-port 7070 > node-b.invitation
+
+# 3. On machine B, whose config names the same controlNetwork.partyId as A's — A may be offline by now
+cadre start -c cadre.yaml --identity-file node-b.key --invitation "$(cat node-b.invitation)"
+```
+
+`cadre enroll invite` takes the same admin port and token options as `enroll add`. Its flags:
+
+- `--peer-id <id>` admits only that device; without it, whichever device redeems first is admitted.
+- `--owner` also makes the device an owner. **Without `--peer-id` this is a bearer credential for admin rights**: whoever holds the bundle becomes an owner, which is why such an invitation expires after 15 minutes unless `--ttl` says otherwise, and why the command prints a warning. Hand it over directly, and withdraw it (`DELETE /admin/invites/<key>` on the owner's admin channel) if it goes astray.
+- `--ttl <duration>` (`30m`, `24h`, `7d`; default 24 hours, or 15 minutes for an untargeted `--owner` invitation) and `--uses <n>` (default 1).
+
+Only the bundle goes to stdout, so `>` and `$(…)` capture exactly what `--invitation` takes; stderr names the party, the key, what it admits and grants, when it expires, and the member addresses the device will try in order. `--json` prints `{ invitation, encoded, warnings }` instead. The owner's admin channel also lists the invitations the node holds (`GET /admin/invites`, each with whether it is still live and how many times it was redeemed) and withdraws one (`DELETE /admin/invites/<key>`).
+
+On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one; an invitation that grants ownership seats this node's key by consent, and the node wires that key for signing on a later start with `--owner` and without `--invitation`). A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
+
+The bundle names the owner's own addresses first and then up to three other members, taken from their signed address records. A member that has not yet received the invitation's row by replication refuses the connection, and the device moves on to the next address; mint the invitation while the owner is connected to at least one always-on member, and give that member a moment to receive it before the owner goes offline.
 
 ### Strands
 
@@ -242,8 +269,8 @@ says so rather than starting without it.
 | `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
 | `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
-| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` presents it (or reads it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
-| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` connects to when it is not given `--admin-port` |
+| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` and `cadre enroll invite` present it (or read it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
+| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` and `cadre enroll invite` connect to when they are not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
 
 Environment variables override config file values. A variable that is **set but

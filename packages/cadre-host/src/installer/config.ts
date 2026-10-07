@@ -1,7 +1,7 @@
 /**
  * `host.config.json` schema + I/O.
  *
- * This file captures the wizard's output. Subsystems (trust-circle, NAT,
+ * This file captures the wizard's output. Subsystems (donation grants, NAT,
  * orchestrator) each own their own files under `<dataDir>/`; this is NOT
  * an umbrella config.
  *
@@ -26,13 +26,13 @@ export interface UpdatesConfig {
  * persona), on top of the always-on node-donor role.
  *
  * Default (absent or `enabled: false`) is donor-only: `cadre-host start` brings
- * up the donation surface but spawns **no** owner node, so the trust-circle and
- * NAT surfaces stay inactive. Set `enabled: true` (install-time choice) to also
- * spawn the host's own owner node and enable `/auth` + `/nat`. See
+ * up the donation surface but spawns **no** owner node, so the NAT and strand
+ * surfaces stay inactive. Set `enabled: true` (install-time choice) to also
+ * spawn the host's own owner node and enable `/nat` + `/api/strands`. See
  * docs/cadre-host.md § Two roles: donor and founder.
  */
 export interface OwnCadreConfig {
-  /** When true, `start` spawns the host-owned owner node + trust-circle + NAT. */
+  /** When true, `start` spawns the host-owned owner node + NAT + strands. */
   enabled: boolean;
 }
 

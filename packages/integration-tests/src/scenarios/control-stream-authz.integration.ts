@@ -5,7 +5,7 @@
  * connection gater).
  *
  * The hole this gate closes: the connection gater must admit strangers while
- * an enrollment window is open (`createInvite` — the invitee dials in before
+ * a cadre invitation is live (`createCadreInvitation` — the device dials in before
  * it is authorized), and a connection-level decision cannot say "allow seed,
  * deny repo". So during that window an outsider HOLDS an admitted connection
  * to the owner — and without the stream gate it could speak the four
@@ -76,7 +76,7 @@ function peerNetworkOver(node: Libp2p): IPeerNetwork {
 }
 
 describe('E2E per-stream control-DB stream authorization', () => {
-	it('admits a member and refuses an enrollment-window outsider on the raw repo protocol, without dropping its connection', async () => {
+	it('admits a member and refuses an invitation-admitted outsider on the raw repo protocol, without dropping its connection', async () => {
 		let A: CadreNode | undefined;
 		let M: CadreNode | undefined;
 		let O: CadreNode | undefined;
@@ -106,14 +106,14 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			await M.getControlNode()!.dial(aAddr);
 			await waitForControlConnection(A, mPeerId, 'owner admits its authorized member');
 
-			// ── Outsider O: enrollment window open → connection ADMITTED ──────────
-			const { invite } = await A.createInvite('stream-authz-invite', 60_000);
-			expect(invite.token).toBe('stream-authz-invite');
+			// ── Outsider O: a live cadre invitation is held → connection ADMITTED ──
+			const { invitation } = await A.createCadreInvitation({ grantsOwner: false });
+			expect(invitation.invite.grantsOwner).toBe(false);
 			O = new CadreNode(nodeConfig({ partyId: 'stream-authz-outsider' }));
 			await O.start();
 			const oPeerId = O.peerId!.toString();
 			await O.getControlNode()!.dial(aAddr);
-			await waitForControlConnection(A, oPeerId, 'owner admits the outsider during the invite window');
+			await waitForControlConnection(A, oPeerId, 'owner admits the outsider while an invitation is live');
 
 			// ── Raw repo-protocol clients (bypass every cadre-core surface) ───────
 			const protocolPrefix = `/optimystic/control-${partyId}`;

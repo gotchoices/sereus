@@ -1,6 +1,6 @@
 description: A new device holding a cadre invitation is refused at the door by any member machine that has not yet received that invitation's record, even though the invitation itself carries the record. Decide whether such a member should let the device in anyway, or whether joining at a member simply waits until the record has reached it.
 architecture: docs/architecture.md#enrollment-flow-invitation-redeemed-at-any-member
-files: packages/cadre-core/src/cadre-node.ts (admitInboundControlConnection check 7, createCadreInvitation), packages/cadre-core/src/membership-connection-gater.ts, packages/cadre-core/src/cadre-invite-protocol.ts (CadreInviteHandler.seatAndRedeem, seatCadreInvite), docs/architecture.md
+files: packages/cadre-core/src/cadre-node.ts (admitInboundControlConnection check 6, createCadreInvitation), packages/cadre-core/src/membership-connection-gater.ts, packages/cadre-core/src/cadre-invite-protocol.ts (CadreInviteHandler.seatAndRedeem, seatCadreInvite), docs/architecture.md
 repro: static
 ----
 

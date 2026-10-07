@@ -60,7 +60,7 @@ export async function runWizardWith(
   );
   const configureDdns = parseBool(await ask('Configure DDNS now? [y/N]', 'N'), false);
   // Founder persona (opt-in). Most installs just donate nodes to friends and
-  // answer no — a no leaves cadre-host donor-only (no owner node, no /auth+/nat).
+  // answer no — a no leaves cadre-host donor-only (no owner node, no /nat).
   const ownCadre = parseBool(
     await ask('Also run your own personal cadre on this machine? (most people just donating nodes to friends say no) [y/N]', defaults.ownCadre ? 'Y' : 'N'),
     defaults.ownCadre,

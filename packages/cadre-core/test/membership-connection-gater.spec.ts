@@ -5,7 +5,6 @@ import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/inter
 import { CadreNode } from '../src/cadre-node.js';
 import {
   createMembershipConnectionGater,
-  DEFAULT_ENROLLMENT_WINDOW_MS,
   STRANGER_OPEN_PROTOCOLS,
   UnauthorizedReservationBudget,
   type InboundAdmissionPolicy,
@@ -23,11 +22,10 @@ import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject,
  * BOTH composed hooks (`denyInboundEncryptedConnection` and
  * `denyInboundRelayReservation`), the admit-for-relay not-reserving deadline,
  * the `UnauthorizedReservationBudget`, the
- * `CadreNode.admitInboundControlConnection` decision matrix (enrollment
- * windows, anchor state, bootstrap infra, formation-responder mode, the
- * authorized-member set, the relay-enabled verdict), the
- * `CadreNode.admitControlRelayReservation` decision matrix, and the
- * `createInvite` → enrollment-window wiring. The wire-level effect (an
+ * `CadreNode.admitInboundControlConnection` decision matrix (anchor state,
+ * bootstrap infra, formation-responder mode, the live cadre invitation, the
+ * authorized-member set, the relay-enabled verdict) and the
+ * `CadreNode.admitControlRelayReservation` decision matrix. The wire-level effect (an
  * outsider's dial actually failing / an unauthorized reservation landing) is
  * proven in the integration scenarios `membership-connection-gater.integration.ts`
  * and `relay-only-control-addr.integration.ts`. The fail-closed per-stream
@@ -425,28 +423,6 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(true);
   });
 
-  it('admits a stranger while an enrollment window is open, denies again once it lapses', async () => {
-    const node = new CadreNode(createConfig());
-    const owner = makeOwner();
-    inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
-      anchor: await anchorWith('p', owner.publicKey)
-    });
-
-    expect(await admit(node, STRANGER)).toBe(false);
-    node.openEnrollmentWindow(Date.now() + 60_000);
-    expect(await admit(node, STRANGER)).toBe(true);
-
-    // A window in the past never re-opens (and cannot shrink an open one).
-    const fresh = new CadreNode(createConfig());
-    inject(fresh, {
-      members: [vouchedRow(MEMBER, owner)],
-      anchor: await anchorWith('p', owner.publicKey)
-    });
-    fresh.openEnrollmentWindow(Date.now() - 1);
-    expect(await admit(fresh, STRANGER)).toBe(false);
-  });
-
   it('admits a stranger while an open invitation is outstanding (expectation of a stranger)', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
@@ -767,69 +743,5 @@ describe('CadreNode.admitControlRelayReservation', () => {
     inject(stopped, { running: false, members: [], anchor: await anchorWith('p', makeOwner().publicKey) });
 
     expect(await admitReservation(stopped, STRANGER)).toBe(true);
-  });
-});
-
-// ── createInvite → enrollment window wiring ─────────────────────────────────
-
-/** Stub the seed-bootstrap service so `createInvite` runs without a real node. */
-function injectInviteIssuer(node: CadreNode, expiresAt: number | undefined): void {
-  (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
-    createInvite: async (token?: string) => ({
-      invite: { token: token ?? 'tok', ...(expiresAt === undefined ? {} : { expiresAt }) },
-      encodedInvite: 'encoded'
-    })
-  };
-}
-
-function windowUntil(node: CadreNode): number {
-  return (node as unknown as { enrollmentWindowUntil: number }).enrollmentWindowUntil;
-}
-
-describe('CadreNode.createInvite enrollment window', () => {
-  async function establishedNode(): Promise<CadreNode> {
-    const node = new CadreNode(createConfig());
-    const owner = makeOwner();
-    inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
-      anchor: await anchorWith('p', owner.publicKey)
-    });
-    return node;
-  }
-
-  it('opens the window to the invite\'s own expiry, admitting the invitee that dials in', async () => {
-    const node = await establishedNode();
-    const expiresAt = Date.now() + 120_000;
-    injectInviteIssuer(node, expiresAt);
-
-    expect(await admit(node, STRANGER)).toBe(false);
-    await node.createInvite('tok', 120_000);
-    expect(windowUntil(node)).toBe(expiresAt);
-    expect(await admit(node, STRANGER)).toBe(true);
-  });
-
-  it('falls back to DEFAULT_ENROLLMENT_WINDOW_MS for an invite with no expiry', async () => {
-    const node = await establishedNode();
-    injectInviteIssuer(node, undefined);
-
-    const before = Date.now();
-    await node.createInvite('tok');
-    expect(windowUntil(node)).toBeGreaterThanOrEqual(before + DEFAULT_ENROLLMENT_WINDOW_MS);
-    expect(windowUntil(node)).toBeLessThanOrEqual(Date.now() + DEFAULT_ENROLLMENT_WINDOW_MS);
-    expect(await admit(node, STRANGER)).toBe(true);
-  });
-
-  it('opens nothing for an already-expired invite, and never shrinks an open window', async () => {
-    const expired = await establishedNode();
-    injectInviteIssuer(expired, Date.now() - 1);
-    await expired.createInvite('stale');
-    expect(await admit(expired, STRANGER)).toBe(false);
-
-    const node = await establishedNode();
-    const far = Date.now() + 600_000;
-    node.openEnrollmentWindow(far);
-    injectInviteIssuer(node, Date.now() + 1_000);
-    await node.createInvite('shorter');
-    expect(windowUntil(node)).toBe(far);
   });
 });

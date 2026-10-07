@@ -1,5 +1,5 @@
 /**
- * Tiny duration parser for invite TTLs.
+ * Tiny duration parser for grant TTLs.
  *
  * Accepts a single value+unit token: `30s`, `5m`, `24h`, `7d`, `2w`.
  * Whitespace is allowed around it. Bare numbers are treated as milliseconds.

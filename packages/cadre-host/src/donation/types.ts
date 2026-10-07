@@ -12,14 +12,11 @@
  * *live-node tally* it checks the quota against is owned by the donation
  * service, not by the grant layer — see `GrantValidator.validateForProvision`.
  *
- * **Grant ≠ trust-circle membership.** A trust-circle invite (`auth/`)
+ * **Grant ≠ cadre membership.** A cadre invitation (minted by the owner node)
  * authorises a device to join *the host's own* cadre. A donation grant
  * authorises an external cadre authority to ask the host to spawn a node that
- * joins *the grantee's* cadre. The two token flows are deliberately separate
- * modules; this one reuses the *shape* of the trust-circle store (atomic
- * write-then-rename JSON, token-keyed rows) but with grant — not invite —
- * semantics: a grant is long-lived and reusable up to a quota, never
- * one-time-redeemed.
+ * joins *the grantee's* cadre. The two token flows are deliberately separate;
+ * a grant is long-lived and reusable up to a quota, never one-time-redeemed.
  */
 
 /** A grant the host admin issued to one grantee (friend/family). */

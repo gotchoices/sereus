@@ -5,25 +5,24 @@
  * cadre-host's manager process holds no in-process `CadreNode`; it spawns the
  * admin's owner node as a managed child (see `HostProcessOrchestrator`)
  * and delegates all owner/membership/identity operations to it over this
- * client. The client implements **all three** trimmed `CadreNodeLike`
- * interfaces — the trust-circle one (`auth/trust-circle.ts`), the NAT one
- * (`nat/nat-service.ts`), and the strand one (`strands/strand-service.ts`) —
- * plus `pushInviteAddresses` and `addDrone` (the node-donation requester side).
+ * client. The client implements **both** trimmed `CadreNodeLike` interfaces —
+ * the NAT one (`nat/nat-service.ts`) and the strand one
+ * (`strands/strand-service.ts`) — plus the membership reads, `removePeer`,
+ * `pushInviteAddresses` and `addDrone` (the node-donation requester side).
  *
  * Transport: `Authorization: Bearer <token>` against
  * `http://127.0.0.1:<adminPort>`. Every response uses the cadre-provider
  * envelope `{ ok: true, data }` / `{ ok: false, error: { code, message } }`.
  * A refused connection, a transport error, or any non-2xx response surfaces
- * as {@link OwnerNodeUnavailableError}; the trust-circle / NAT services
+ * as {@link OwnerNodeUnavailableError}; the NAT / strand services
  * translate that into a `node_unavailable` domain error so the management API
  * returns a clear 503 rather than a raw 500.
  */
 
 import debug from 'debug';
-import type { CadreInvite, DroneInitResult } from '@serfab/cadre-core';
+import type { DroneInitResult } from '@serfab/cadre-core';
 
 import type { OwnerAdminEndpoint } from '../orchestrator/index.js';
-import type { CadreNodeLike as TrustCircleCadreNodeLike } from '../auth/trust-circle.js';
 import type { CadreNodeLike as NatCadreNodeLike } from '../nat/nat-service.js';
 import type { CadreNodeLike as StrandCadreNodeLike } from '../strands/strand-service.js';
 import type { StrandListSnapshot, StrandRemovalResult } from '../strands/types.js';
@@ -57,8 +56,7 @@ export interface OwnerNodeClientOptions {
   fetch?: typeof fetch;
 }
 
-export class OwnerNodeClient
-implements TrustCircleCadreNodeLike, NatCadreNodeLike, StrandCadreNodeLike {
+export class OwnerNodeClient implements NatCadreNodeLike, StrandCadreNodeLike {
   private readonly endpointSource: EndpointSource;
   private readonly fetchImpl: typeof fetch;
 
@@ -72,43 +70,10 @@ implements TrustCircleCadreNodeLike, NatCadreNodeLike, StrandCadreNodeLike {
     this.fetchImpl = opts.fetch ?? fetch;
   }
 
-  // --- trust-circle CadreNodeLike ---
-
-  async createInvite(
-    token?: string,
-    expiresInMs?: number,
-  ): Promise<{ invite: CadreInvite; encodedInvite: string }> {
-    const body: Record<string, unknown> = {};
-    if (token !== undefined) body.token = token;
-    if (expiresInMs !== undefined) body.expiresInMs = expiresInMs;
-    return await this.request<{ invite: CadreInvite; encodedInvite: string }>(
-      'POST',
-      '/admin/invites',
-      body,
-    );
-  }
-
-  async acceptPhone(
-    options: { phonePeerId: string; token?: string },
-    issuedInvite?: CadreInvite,
-  ): Promise<void> {
-    const body: Record<string, unknown> = { phonePeerId: options.phonePeerId };
-    if (options.token !== undefined) body.token = options.token;
-    if (issuedInvite !== undefined) body.issuedInvite = issuedInvite;
-    await this.request('POST', '/admin/accept-phone', body);
-  }
+  // --- membership (owner-node admin) ---
 
   async removePeer(peerId: string): Promise<void> {
     await this.request('DELETE', `/admin/members/${encodeURIComponent(peerId)}`);
-  }
-
-  /**
-   * Encode an invite for out-of-band delivery. The admin contract has no
-   * encode route (the mint route already returns `encodedInvite`), so this
-   * mirrors cadre-core's encoding (`base64url(JSON.stringify(invite))`).
-   */
-  encodeInvite(invite: CadreInvite): string {
-    return Buffer.from(JSON.stringify(invite), 'utf8').toString('base64url');
   }
 
   async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {

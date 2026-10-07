@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AdminServer } from '../src/server/admin-server.js';
-import type { CadreNode, CadreInvite, StrandRow, StrandStatus } from '@serfab/cadre-core';
+import type { CadreNode, CadreInviteStatus, CreateCadreInvitationOptions, StrandRow, StrandStatus } from '@serfab/cadre-core';
 
 /**
  * The closed strand's membership key, as it sits in the control row. Tests assert this
@@ -57,21 +57,40 @@ class MockNode {
 
   async isMember(peerId: string) { this.record('isMember', peerId); return this.members.some((m) => m.peerId === peerId); }
 
-  async createInvite(token?: string, expiresInMs?: number) {
-    this.record('createInvite', token, expiresInMs);
+  /** The invitations this node holds, as the list route reports them. */
+  invitations: CadreInviteStatus[] = [];
+
+  async createCadreInvitation(options: CreateCadreInvitationOptions) {
+    this.record('createCadreInvitation', options);
     if (this.seedUninitialized) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    const addrs = this.pushedAddresses ?? this.multiaddrs;
-    const invite: CadreInvite = { partyId: this.partyId, ownerAddrs: addrs, token, createdAt: 1700000000000 };
-    return { invite, encodedInvite: 'encoded-' + addrs.join('|') };
+    const members = this.pushedAddresses ?? this.multiaddrs;
+    const invitation = {
+      v: 1 as const,
+      partyId: this.partyId,
+      invitePrivateKey: 'invite-private-key',
+      invite: {
+        key: 'invite-key', peerId: options.peerId ?? null, grantsOwner: options.grantsOwner,
+        expiresAt: '2030-01-01T00:00:00', totalUses: options.uses ?? 1, stampId: 'stamp', issuerKey: 'owner', issuerSig: 'sig',
+      },
+      ownerKeys: ['owner'],
+      members,
+    };
+    return { invitation, encoded: 'encoded-' + members.join('|') };
   }
 
-  async acceptPhone(options: { phonePeerId: string; token?: string }, issuedInvite?: CadreInvite) {
-    this.record('acceptPhone', options, issuedInvite);
+  async listCadreInvitations() {
+    this.record('listCadreInvitations');
+    return this.invitations;
+  }
+
+  async withdrawCadreInvitation(key: string) {
+    this.record('withdrawCadreInvitation', key);
     if (this.seedUninitialized) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
+    return key === 'invite-key';
   }
 
   async removePeer(peerId: string) {
@@ -200,50 +219,62 @@ describe('AdminServer', () => {
   });
 
   describe('owner routes', () => {
-    it('POST /admin/invites mints an invite with decoded args', async () => {
+    it('POST /admin/invites mints a cadre invitation with decoded args', async () => {
       const res = await fetch(`${base}/admin/invites`, {
         method: 'POST',
         headers: auth({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ token: 'inv-tok', expiresInMs: 60000 }),
+        body: JSON.stringify({ peerId: '12D3KooWDevice', grantsOwner: true, expiresInMs: 60000, uses: 2 }),
       });
       const body = await res.json();
       expect(body.ok).toBe(true);
-      expect(body.data.invite.token).toBe('inv-tok');
-      expect(body.data.encodedInvite).toMatch(/^encoded-/);
-      const call = node.calls.find((c) => c.method === 'createInvite');
-      expect(call?.args).toEqual(['inv-tok', 60000]);
+      expect(body.data.invitation.invite).toMatchObject({ peerId: '12D3KooWDevice', grantsOwner: true, totalUses: 2 });
+      expect(body.data.encoded).toMatch(/^encoded-/);
+      const call = node.calls.find((c) => c.method === 'createCadreInvitation');
+      expect(call?.args).toEqual([{ peerId: '12D3KooWDevice', grantsOwner: true, expiresInMs: 60000, uses: 2 }]);
     });
 
-    it('POST /admin/invites accepts an empty body', async () => {
+    it('POST /admin/invites with an empty body mints an untargeted, member-only invitation', async () => {
       const res = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const body = await res.json();
       expect(body.ok).toBe(true);
-      const call = node.calls.find((c) => c.method === 'createInvite');
-      expect(call?.args).toEqual([undefined, undefined]);
+      const call = node.calls.find((c) => c.method === 'createCadreInvitation');
+      expect(call?.args).toEqual([{ grantsOwner: false }]);
     });
 
-    it('POST /admin/accept-phone forwards peer id, token and invite', async () => {
-      const issuedInvite: CadreInvite = { partyId: 'party-xyz', ownerAddrs: [], token: 't', createdAt: 1 };
-      const res = await fetch(`${base}/admin/accept-phone`, {
+    it.each([
+      ['a non-string peerId', { peerId: 7 }],
+      ['a non-boolean grantsOwner', { grantsOwner: 'yes' }],
+      ['a non-numeric expiresInMs', { expiresInMs: '1h' }],
+      ['a zero uses', { uses: 0 }],
+    ])('POST /admin/invites rejects %s (400)', async (_case, payload) => {
+      const res = await fetch(`${base}/admin/invites`, {
         method: 'POST',
         headers: auth({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ phonePeerId: '12D3KooWPhone', token: 't', issuedInvite }),
-      });
-      const body = await res.json();
-      expect(body).toEqual({ ok: true, data: { ok: true } });
-      const call = node.calls.find((c) => c.method === 'acceptPhone');
-      expect(call?.args[0]).toEqual({ phonePeerId: '12D3KooWPhone', token: 't' });
-      expect(call?.args[1]).toEqual(issuedInvite);
-    });
-
-    it('POST /admin/accept-phone rejects a missing phonePeerId (400)', async () => {
-      const res = await fetch(`${base}/admin/accept-phone`, {
-        method: 'POST',
-        headers: auth({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ token: 't' }),
+        body: JSON.stringify(payload),
       });
       expect(res.status).toBe(400);
       expect((await res.json()).error.code).toBe('bad_request');
+      expect(node.calls.find((c) => c.method === 'createCadreInvitation')).toBeUndefined();
+    });
+
+    it('GET /admin/invites lists the invitations the node holds', async () => {
+      node.invitations = [{
+        invite: { key: 'invite-key', peerId: null, grantsOwner: false, expiresAt: '2030-01-01T00:00:00', totalUses: 1, stampId: 's', issuerKey: 'o', issuerSig: 'g' },
+        live: true, withdrawn: false, usesRecorded: 0,
+      }];
+      const res = await fetch(`${base}/admin/invites`, { headers: auth() });
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data.invitations).toEqual(node.invitations);
+    });
+
+    it('DELETE /admin/invites/:key withdraws, answering whether a tombstone was filed', async () => {
+      const held = await fetch(`${base}/admin/invites/invite-key`, { method: 'DELETE', headers: auth() });
+      expect((await held.json()).data).toEqual({ withdrawn: true });
+
+      const unknown = await fetch(`${base}/admin/invites/other-key`, { method: 'DELETE', headers: auth() });
+      expect((await unknown.json()).data).toEqual({ withdrawn: false });
+      expect(node.calls.filter((c) => c.method === 'withdrawCadreInvitation').map((c) => c.args[0])).toEqual(['invite-key', 'other-key']);
     });
 
     it('DELETE /admin/members/:peerId removes a peer', async () => {
@@ -312,7 +343,7 @@ describe('AdminServer', () => {
   });
 
   describe('invite-address push', () => {
-    it('PUT /admin/invite-addresses pushes addresses embedded by the next invite', async () => {
+    it('PUT /admin/invite-addresses pushes addresses the next invitation names', async () => {
       const pushed = ['/dns4/host.example/tcp/5000/p2p/12D3KooWHost'];
       const putRes = await fetch(`${base}/admin/invite-addresses`, {
         method: 'PUT',
@@ -324,13 +355,13 @@ describe('AdminServer', () => {
 
       const inviteRes = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const inviteBody = await inviteRes.json();
-      expect(inviteBody.data.invite.ownerAddrs).toEqual(pushed);
+      expect(inviteBody.data.invitation.members).toEqual(pushed);
     });
 
-    it('with no addresses pushed, the invite embeds getMultiaddrs()', async () => {
+    it('with no addresses pushed, the invitation names getMultiaddrs()', async () => {
       const inviteRes = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const inviteBody = await inviteRes.json();
-      expect(inviteBody.data.invite.ownerAddrs).toEqual(node.multiaddrs);
+      expect(inviteBody.data.invitation.members).toEqual(node.multiaddrs);
     });
 
     it('rejects a non-array addresses payload (400)', async () => {

@@ -13,7 +13,7 @@
  * an owner-written `CadrePeer` row with ZERO manual control dials.
  *
  * Honesty note (for reviewers): A vouches B (`authorizePeer`) before minting the
- * seed, mirroring production onboarding (`addDrone` / `acceptPhone` /
+ * seed, mirroring production onboarding (`addDrone` /
  * `addPhoneWithRelay` in seed-bootstrap.ts) — without it A's inbound connection
  * gate refuses B's cold-start dial once A holds any authorized member. The vouch
  * is a control-DB write, not a dial, so it does not touch the "zero manual
@@ -67,7 +67,7 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			);
 
 			// Production onboarding vouches the new node BEFORE handing it a seed
-			// (addDrone / acceptPhone / addPhoneWithRelay in seed-bootstrap.ts, and the
+			// (addDrone / addPhoneWithRelay in seed-bootstrap.ts, and the
 			// enrollment sequences in docs/architecture.md). Without it A's inbound gate
 			// refuses B's cold-start seed dial.
 			await A.authorizePeer(B.peerId!.toString());

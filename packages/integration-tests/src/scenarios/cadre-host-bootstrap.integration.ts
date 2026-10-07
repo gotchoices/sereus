@@ -25,8 +25,6 @@ import {
 	Installer,
 	NatService,
 	StrandService,
-	TrustCircleService,
-	TrustCircleStore,
 	createLocalUiServer,
 	readHostConfig,
 	type LocalUiServer,
@@ -35,7 +33,7 @@ import {
 	type ServiceHostStatus,
 } from '@serfab/cadre-host';
 
-import { defaultFakeCadreNode, emptyStrandNode } from '../harness/index.js';
+import { emptyStrandNode } from '../harness/index.js';
 
 class StubServiceHost implements ServiceHost {
 	readonly name = 'cadre-host-test';
@@ -86,18 +84,12 @@ describe('cadre-host bootstrap', () => {
 			uiPort: await pickFreePort(),
 			libp2pPort: await pickFreePort(),
 			openBrowser: false,
-			noInvite: true,
 			serviceHost: new StubServiceHost(),
 		});
 
 		const config = readHostConfig(join(dataDir, 'host.config.json'));
 		orchestrator = new HostProcessOrchestrator({ rootDir: join(dataDir, 'orchestrator'), stopTimeoutMs: 2_000 });
 		await orchestrator.init();
-
-		const trustCircle = new TrustCircleService({
-			cadreNode: defaultFakeCadreNode(),
-			store: new TrustCircleStore(dataDir),
-		});
 
 		nat = new NatService({
 			rootDir: dataDir,
@@ -109,7 +101,7 @@ describe('cadre-host bootstrap', () => {
 			uiPort: config.uiPort,
 			dataDir,
 			orchestrator,
-			founder: { trustCircle, nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
+			founder: { nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 			forcePort: 0,
 		});
 		const started = await server.start();
@@ -122,14 +114,12 @@ describe('cadre-host bootstrap', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json() as {
 			service: { name: string; version: string; uptimeSeconds: number };
-			trustCircle: { members: number; pending: number };
 			connectivity: { portMode: string; directReachability: string };
 		};
 		expect(body.service.name).toBe('cadre-host');
 		expect(typeof body.service.version).toBe('string');
 		expect(body.service.version.length).toBeGreaterThan(0);
 		expect(body.service.uptimeSeconds).toBeGreaterThanOrEqual(0);
-		expect(body.trustCircle).toEqual({ members: 0, pending: 0 });
 		expect(typeof body.connectivity.portMode).toBe('string');
 		expect(typeof body.connectivity.directReachability).toBe('string');
 	});
@@ -168,7 +158,6 @@ describe('cadre-host bootstrap', () => {
 			uiPort: uiPort1,
 			libp2pPort: libp2pPort1,
 			openBrowser: false,
-			noInvite: true,
 			serviceHost: new StubServiceHost(),
 		});
 		const before = readFileSync(join(dataDir, 'identity.key'));
@@ -178,7 +167,6 @@ describe('cadre-host bootstrap', () => {
 			uiPort: await pickFreePort(),
 			libp2pPort: await pickFreePort(),
 			openBrowser: false,
-			noInvite: true,
 			serviceHost: new StubServiceHost(),
 		});
 		const after = readFileSync(join(dataDir, 'identity.key'));

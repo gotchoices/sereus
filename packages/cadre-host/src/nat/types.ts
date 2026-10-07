@@ -141,9 +141,8 @@ export interface DdnsProviderInfo {
 /**
  * Typed HTTP handlers exposed to `cadre-host-local-ui` for Fastify wiring.
  *
- * Like TrustCircleHandlers, these take typed objects and either return typed
- * results or throw a `NatError` whose `.code` the UI ticket maps to an HTTP
- * status code.
+ * These take typed objects and either return typed results or throw a
+ * `NatError` whose `.code` the error handler maps to an HTTP status code.
  */
 export interface NatHandlers {
   getStatus(): Promise<NatStatusSnapshot>;

@@ -19,10 +19,7 @@ import type {
   ControlNetworkSeed,
   ApplySeedResult,
   AddDroneOptions,
-  AddPhoneOptions,
   DroneInitResult,
-  InviteResult,
-  CadreInvite,
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure,
@@ -140,7 +137,6 @@ import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 import { selectInvitationSiblingAddrs, type InvitationSibling } from './invitation-bootstrap.js';
 import {
   createMembershipConnectionGater,
-  DEFAULT_ENROLLMENT_WINDOW_MS,
   UnauthorizedReservationBudget,
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
@@ -552,25 +548,10 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Most-recently pushed invite addresses (see {@link setInviteAddresses}).
    * When non-null these take priority over `libp2pNode.getMultiaddrs()` when
-   * minting invites — the host pushes NAT-resolved addresses here so the
-   * control-network node never needs to dial back to the manager.
+   * minting cadre invitations — the host pushes NAT-resolved addresses here so
+   * the control-network node never needs to dial back to the manager.
    */
   private latestInviteAddresses: string[] | null = null;
-
-  /**
-   * Epoch ms until which the control-network inbound gate admits
-   * not-yet-authorized peers (see {@link admitInboundControlConnection} /
-   * {@link openEnrollmentWindow}). 0 = no window open. Opened automatically by
-   * {@link createInvite}; deliberately NOT reset on stop() — a stop/start cycle
-   * inside an outstanding invite's validity must not strand the invitee.
-   *
-   * NOTE: in-memory only, so a PROCESS restart mid-invite closes the door until
-   * the owner re-mints or the invitee is authorized. Fine while invites are
-   * short-lived and redeemed promptly; if long-lived invites or restart-prone
-   * hosts become normal, persist the window (or derive it from the issued-invite
-   * records `SeedBootstrapService` already keeps).
-   */
-  private enrollmentWindowUntil = 0;
 
   /**
    * Lazily-parsed PeerIds of `controlNetwork.bootstrapNodes` (see
@@ -1681,15 +1662,16 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Persist out-of-band-established owner keys into the node-local anchor —
-   * the runtime enrollment seam: call with `CadreInvite.ownerKeys` when
-   * redeeming an invite (BEFORE the first `applySeed`, so the anchor already
-   * holds the pins when seed trust consults it), or with an operator-supplied
-   * pin. Idempotent. ('genesis' provenance is reserved for the node's own
-   * founding key, seeded internally by {@link initializeSeedBootstrap}.)
+   * the runtime enrollment seam: {@link redeemCadreInvitation} calls it with the
+   * cadre invitation's `ownerKeys` BEFORE dialing a member (so the anchor already
+   * holds the pins when the reply and the rows that follow are judged), and an
+   * embedder calls it with an operator-supplied pin. Idempotent. ('genesis'
+   * provenance is reserved for the node's own founding key, seeded internally by
+   * {@link initializeSeedBootstrap}.)
    *
    * Validates every key's shape before trusting any of them (all-or-nothing):
    * a malformed entry anywhere in `keys` rejects the whole call before a
-   * single key is anchored. For the invite route this means a `CadreInvite`
+   * single key is anchored. For the invitation route this means a bundle
    * carrying one malformed `ownerKeys` entry fails the redemption outright —
    * consistent with the anchor's existing whole-record-or-nothing policy for
    * a corrupt persisted entry (see `trusted-owner-store.ts`'s
@@ -2040,17 +2022,15 @@ export class CadreNode implements SAppIdLookup {
    *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
    *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
    *     configured bootstrap/relay infrastructure);
-   *  2. an enrollment window is open ({@link openEnrollmentWindow}, opened by
-   *     {@link createInvite}) — the invitee dials in before it is authorized;
-   *  3. the peer holds a live DELEGATE ADMISSION GRANT — an authorized member
+   *  2. the peer holds a live DELEGATE ADMISSION GRANT — an authorized member
    *     announced it (over the strand-addr RPC) as the transport peerId of its
    *     own strand node, so a NAT'd member's strand node can hold a
    *     circuit-relay reservation here (see `delegate-admission.ts`).
    *     Connection only: the per-stream gate below never honors a grant;
-   *  4. the authorized-member set is empty — cold start: the rows that would
+   *  3. the authorized-member set is empty — cold start: the rows that would
    *     authorize anyone arrive by replication over these very connections;
-   *  5. the peer IS an authorized member; or
-   *  6. an open invitation is OUTSTANDING — at least one unexpired,
+   *  4. the peer IS an authorized member; or
+   *  5. an open invitation is OUTSTANDING — at least one unexpired,
    *     not-fully-consumed invitation this node minted or persisted (see
    *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
    *     initiator is another party's peer by design and its token is only
@@ -2058,12 +2038,12 @@ export class CadreNode implements SAppIdLookup {
    *     "does this node expect a stranger at all?". REGISTERING the responder
    *     does not suspend stranger denial: every node registers one at
    *     {@link start}, and registering mints no invitation; or
-   *  7. a LIVE cadre invitation exists — a `CadreInvite` row this node holds
+   *  6. a LIVE cadre invitation exists — a `CadreInvite` row this node holds
    *     that is not withdrawn, unexpired, has uses left and whose issuer is
    *     still an owner (`ControlDatabase.hasLiveCadreInvite`). The device that
    *     redeems it is a stranger until the redemption writes its row, and its
    *     proof of possession is only checkable inside `/sereus/cadre-invite/1.0.0`;
-   *     same reasoning as check 6, and the same expectation-of-a-stranger key.
+   *     same reasoning as check 5, and the same expectation-of-a-stranger key.
    *     NOTE: keyed on the row being HELD here, so a member that has not yet
    *     received the row by replication denies the device although the bundle
    *     carries the row (`createCadreInvitation`); the device's dial fails and it
@@ -2071,13 +2051,13 @@ export class CadreNode implements SAppIdLookup {
    *     the blocked ticket `decide-cadre-invite-redeemed-before-the-row-replicates`.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
-   * checks 1-3 are in-memory, 4/5 share one control-DB read, and only a peer
-   * already on the deny path reaches check 6's and 7's invitation lookups.
+   * checks 1-2 are in-memory, 3/4 share one control-DB read, and only a peer
+   * already on the deny path reaches check 5's and 6's invitation lookups.
    *
-   * Caveats of check 6, both self-healing:
+   * Caveats of check 5, both self-healing:
    *  - the in-memory mint registry dies with the process, so after a restart
    *    only invitations persisted as `FormationInvite` rows still hold the
-   *    exemption open (re-mint otherwise — same story as the enrollment window);
+   *    exemption open (re-mint otherwise);
    *  - a peer holding a token whose `FormationInvite` row has not replicated to
    *    this node yet is denied even though the formation handler would have
    *    accepted it, exactly like the unreplicated-membership-row case below.
@@ -2095,12 +2075,12 @@ export class CadreNode implements SAppIdLookup {
    * reservation is admitted in time (see `membership-connection-gater.ts` →
    * "The relay-reservation seam").
    *
-   * NOTE: check 4/5 runs a control-DB read per inbound connection
+   * NOTE: check 3/4 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, and this
    * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
    * read is safe here — unlike the per-stream gate, which must consult the
    * materialized {@link authorizedControlPeers} snapshot instead.
-   * NOTE: checks 6 and 7 add two more control reads (`hasOutstandingFormationInvite`,
+   * NOTE: checks 5 and 6 add two more control reads (`hasOutstandingFormationInvite`,
    * `hasLiveCadreInvite`) for a stranger with no locally minted invitation in play, on
    * every node now that every node runs both responders — a relay-enabled storage node
    * included. If stranger connections to such a node ever arrive fast enough for those
@@ -2114,9 +2094,6 @@ export class CadreNode implements SAppIdLookup {
    */
   private async admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict> {
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
-      return 'admit';
-    }
-    if (Date.now() < this.enrollmentWindowUntil) {
       return 'admit';
     }
     if (this.delegateAdmission.has(remotePeerId)) {
@@ -2175,12 +2152,12 @@ export class CadreNode implements SAppIdLookup {
    * that boots, reserves, and only then has its row replicate here would
    * otherwise keep that slot spent for the rest of the entry's TTL.
    *
-   * The connection gate's stranger carve-outs (an open enrollment window, an
-   * outstanding formation invitation) deliberately do NOT extend here: they
-   * exist so a stranger's SEED or FORMATION stream can ride a connection, and
-   * neither needs relay capacity. A genuine invitee that does need a relay slot
-   * takes one from the budget like any other unplaced peer, so an open window
-   * never becomes an unbounded grant of this node's forwarding capacity.
+   * The connection gate's stranger carve-outs (an outstanding formation
+   * invitation, a live cadre invitation) deliberately do NOT extend here: they
+   * exist so a stranger's FORMATION or CADRE-INVITE stream can ride a connection,
+   * and neither needs relay capacity. A genuine invitee that does need a relay
+   * slot takes one from the budget like any other unplaced peer, so a live
+   * invitation never becomes an unbounded grant of this node's forwarding capacity.
    */
   private async admitControlRelayReservation(remotePeerId: string): Promise<boolean> {
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
@@ -2203,18 +2180,6 @@ export class CadreNode implements SAppIdLookup {
   private admitReservationUncounted(remotePeerId: string): true {
     this.unauthorizedRelayReservations.release(remotePeerId);
     return true;
-  }
-
-  /**
-   * Hold the control-network inbound gate open for not-yet-authorized peers
-   * until `untilEpochMs` (extends, never shrinks, an already-open window).
-   * {@link createInvite} calls this automatically; a host running an
-   * out-of-band enrollment flow (e.g. accepting a phone whose invite this node
-   * never minted) can open it explicitly before the stranger dials in.
-   */
-  openEnrollmentWindow(untilEpochMs: number): void {
-    this.enrollmentWindowUntil = Math.max(this.enrollmentWindowUntil, untilEpochMs);
-    log('Enrollment window open until %d', this.enrollmentWindowUntil);
   }
 
   /**
@@ -2274,10 +2239,10 @@ export class CadreNode implements SAppIdLookup {
    * The STRICT SUBSET of {@link admitInboundControlConnection}: the same
    * "no basis to judge" admissions (shared via
    * {@link admitControlPeerUnconditionally}), minus the stranger carve-outs
-   * (enrollment window, outstanding open invitation, delegate admission
-   * grant). The first two exist so a stranger can reach `/sereus/seed/1.0.0`
-   * and `/sereus/formation/1.0.0` — neither is gated here, and admitting a
-   * stranger to `repo` during an enrollment window is exactly the hole this
+   * (outstanding open invitation, live cadre invitation, delegate admission
+   * grant). The first two exist so a stranger can reach `/sereus/formation/1.0.0`
+   * and `/sereus/cadre-invite/1.0.0` — neither is gated here, and admitting a
+   * stranger to `repo` while an invitation is live is exactly the hole this
    * gate closes. A DELEGATE-admitted connection (a member's strand node
    * holding a circuit-relay reservation, see `delegate-admission.ts`) is
    * likewise exactly a case this gate must still refuse: the delegate gets
@@ -3531,8 +3496,7 @@ export class CadreNode implements SAppIdLookup {
    * addresses ({@link dialPeerAddrs}): the reconcile pass's steady-state sibling
    * ({@link dialControlSibling}) and cold-start bootstrap peer
    * ({@link dialBootstrapPeer}) dials, and — handed to every
-   * {@link SeedBootstrapService} this node builds — `applySeed`'s owner dials and
-   * `dialInvite`.
+   * {@link SeedBootstrapService} this node builds — `applySeed`'s owner dials.
    *
    * See `peer-dial.ts`'s `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` for why a peer's dial is
    * bounded as a whole, and `DEFAULT_CONTROL_COHORT_PER_ADDRESS_DIAL_TIMEOUT_MS` for why each
@@ -7312,8 +7276,8 @@ export class CadreNode implements SAppIdLookup {
     // it to self-publish its CadrePeer row) self-anchor a key that is not a
     // party authority. Harmless while such a node never mints an invite: the
     // store does not replicate, so a node trusting itself grants nothing to
-    // others. But `createInvite` and `createCadreInvitation` hand out the anchor's
-    // contents as the invitee's pins, so the moment a non-founder member mints an
+    // others. But `createCadreInvitation` hands out the anchor's contents as the
+    // device's pins, so the moment a non-founder member mints an
     // invitation it exports its own non-authority key as a cadre owner key. If that
     // becomes reachable (today only cadre-cli/cadre-host owners mint invitations),
     // gate this self-anchor on the actual OwnerKey genesis insert instead.
@@ -7326,7 +7290,6 @@ export class CadreNode implements SAppIdLookup {
     await this.installSeedBootstrapService(new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       ownerPrivateKey,
-      inviteAddressResolver: () => this.resolveInviteAddresses(),
       ...this.seedServiceBudgets(),
       trustPolicy: this.config.seedTrustPolicy,
       // Seed trust anchors on the node-local store (seeded just above with this
@@ -7634,7 +7597,6 @@ export class CadreNode implements SAppIdLookup {
     await this.installSeedBootstrapService(new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       // No owner key - this node only receives seeds
-      inviteAddressResolver: () => this.resolveInviteAddresses(),
       ...this.seedServiceBudgets(),
       trustPolicy: this.config.seedTrustPolicy,
       // A listener-only node accepts a wire-delivered seed solely against this
@@ -7877,10 +7839,10 @@ export class CadreNode implements SAppIdLookup {
    * Apply a seed to populate the peer cache and enable connections.
    *
    * Validates the seed signature, then evaluates a trust anchor for the signer
-   * key (see `SeedTrustPolicy`). An enrollment caller can pass a per-seed
-   * `trustPolicy` override — e.g. a `pinnedKeyTrustPolicy` built from a
-   * `CadreInvite.ownerKeys` — so a cold-start node can accept its first
-   * seed without reconfiguring the service.
+   * key (see `SeedTrustPolicy`). An operator-driven caller can pass a per-seed
+   * `trustPolicy` override — e.g. a `pinnedKeyTrustPolicy` built from a pinned
+   * owner key — so a cold-start node can accept its first seed without
+   * reconfiguring the service.
    */
   async applySeed(
     seed: ControlNetworkSeed,
@@ -7894,7 +7856,7 @@ export class CadreNode implements SAppIdLookup {
       //
       // This temp service is discarded after the call, so it must NOT own the shared
       // node's inbound seed handler: pass { registerHandler: false }. That keeps
-      // repeated service-less applySeed/dialInvite idempotent (no handler leak, no
+      // repeated service-less applySeed idempotent (no handler leak, no
       // DuplicateProtocolHandlerError). The temp service still applies this seed; a
       // node that wants to RECEIVE inbound seeds needs a persistent service
       // (enableSeedListener / initializeSeedBootstrap) to own the handler.
@@ -8021,35 +7983,6 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Create an invite for a phone to join the cadre.
-   * Use when a server wants to invite a NAT'd phone.
-   */
-  async createInvite(token?: string, expiresIn?: number): Promise<InviteResult> {
-    if (!this.seedBootstrapService) {
-      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
-    }
-    const result = await this.seedBootstrapService.createInvite(token, expiresIn);
-    // The invitee dials this node BEFORE it is authorized (dialInvite →
-    // acceptPhone), so hold the inbound connection gate open for strangers for
-    // the invite's validity (or a bounded default when it never expires).
-    this.openEnrollmentWindow(result.invite.expiresAt ?? Date.now() + DEFAULT_ENROLLMENT_WINDOW_MS);
-    return result;
-  }
-
-  /**
-   * Accept a phone connection using an invite.
-   * Call this when a phone dials in with an invite token.
-   */
-  async acceptPhone(options: AddPhoneOptions, issuedInvite?: CadreInvite): Promise<void> {
-    if (!this.seedBootstrapService) {
-      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
-    }
-    // The just-accepted phone opens control-DB streams next; its `CadrePeer` insert
-    // notifies the membership hub, so it is already admitted when this resolves.
-    await this.seedBootstrapService.acceptPhone(options, issuedInvite);
-  }
-
-  /**
    * Add a phone to the cadre with relay support.
    * Use when both nodes are NAT'd (phone-to-phone).
    */
@@ -8062,49 +7995,6 @@ export class CadreNode implements SAppIdLookup {
     // before this resolves — not on the next reconcile, by which time the phone's
     // own control-DB schema load may have died denied.
     return await this.seedBootstrapService.addPhoneWithRelay(phonePeerId);
-  }
-
-  /**
-   * Encode an invite for out-of-band delivery (QR, link, etc.).
-   */
-  encodeInvite(invite: CadreInvite): string {
-    const json = JSON.stringify(invite);
-    return uint8ArrayToString(new TextEncoder().encode(json), 'base64url');
-  }
-
-  /**
-   * Decode an invite from base64url encoding.
-   */
-  decodeInvite(encoded: string): CadreInvite {
-    const bytes = uint8ArrayFromString(encoded, 'base64url');
-    const json = new TextDecoder().decode(bytes);
-    return JSON.parse(json) as CadreInvite;
-  }
-
-  /**
-   * Dial an owner from an invite (for phone joining via invite).
-   */
-  async dialInvite(invite: CadreInvite): Promise<void> {
-    if (!this.seedBootstrapService) {
-      // Create a temporary service that only dials the invite. It is discarded after
-      // the call, so it does NOT own the shared node's inbound seed handler:
-      // initialize with { registerHandler: false }. This temp dialInvite never
-      // applies a seed itself — a node that wants to RECEIVE an inbound seed back
-      // must have a persistent service (enableSeedListener / initializeSeedBootstrap)
-      // own the /sereus/seed/1.0.0 handler. trustPolicy is therefore effectively dead
-      // on this dial-only path; it is kept for symmetry with the applySeed temp site.
-      const tempService = new SeedBootstrapService({
-        partyId: invite.partyId,
-        trustPolicy: this.config.seedTrustPolicy,
-        ...this.seedServiceBudgets(),
-      });
-      if (this.controlNode && this.controlDatabase) {
-        await tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
-      }
-      await tempService.dialInvite(invite);
-      return;
-    }
-    await this.seedBootstrapService.dialInvite(invite);
   }
 
   // ============================================================================
@@ -8123,9 +8013,10 @@ export class CadreNode implements SAppIdLookup {
    * hours. One use unless `uses` says otherwise. The bundle carries the signed row (so a
    * member that has not received it by replication seats it from the bundle), this node's
    * anchored owner keys (the device pins them and checks the member's reply against them;
-   * sourced from the node-local anchor only, never the replicated `OwnerKey` table, for the
-   * reason {@link createInvite} gives, and an empty anchor is refused because a reply could
-   * not be checked), and the addresses of this machine first
+   * sourced from the node-local anchor only, never the replicated `OwnerKey` table, because
+   * the device anchors whatever arrives and a stranger's genesis-inserted key must not ride
+   * an invitation into a fresh node's anchor; an empty anchor is refused because a reply
+   * could not be checked), and the addresses of this machine first
    * ({@link resolveInviteAddresses}, which honours pushed NAT addresses) then up to three
    * other members ({@link siblingInvitationAddrs}).
    *
@@ -8133,7 +8024,7 @@ export class CadreNode implements SAppIdLookup {
    * alone (a phone with no connection), it reaches the other members through the
    * peer-join block catch-up on the next connection. Until a member holds the row, that
    * member's connection gate denies the device ({@link admitInboundControlConnection}
-   * check 7 admits a stranger only while a live `CadreInvite` row is held locally), so the
+   * check 6 admits a stranger only while a live `CadreInvite` row is held locally), so the
    * device's dial of it fails and it moves to the next address; the bundle's copy of the
    * row is seated only at a member whose gate is already open (no vouched member yet, or
    * another live invitation). See the blocked ticket

@@ -6,8 +6,8 @@
  * node's loopback admin channel (`GET /admin/strands`,
  * `DELETE /admin/strands/:id?confirm=1`).
  *
- * Unlike the trust circle — which layers host-local labels and pending invites on
- * top of the node's state — this layer holds **no host-local state at all**. There
+ * Unlike the NAT layer — which keeps `nat.json` beside the node's state — this
+ * layer holds **no host-local state at all**. There
  * is no `strands.json`. It exists for id validation, for translating the admin
  * channel's error codes into a stable vocabulary the management API can map to HTTP
  * statuses, and for nothing else. Keep it small.

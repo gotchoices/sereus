@@ -9,6 +9,8 @@ import {
   type CadreNodeConfig,
   type ControlNetworkSeed,
   type SeedTrustPolicy,
+  decodeCadreInvitation,
+  type CadreInvitation,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
@@ -56,6 +58,49 @@ export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkS
 }
 
 /** Commander collector for the repeatable `--pin-owner-key` option. */
+/**
+ * Decode `--invitation` and check that it names this node's party, throwing when either fails.
+ * `redeemCadreInvitation` repeats the party check, but like {@link decodeSeedFor} this runs
+ * before anything starts, so a bundle for another cadre stops start-up instead of leaving the
+ * node running un-admitted.
+ */
+export function decodeInvitationFor(encoded: string, partyId: string): CadreInvitation {
+  let decoded: CadreInvitation;
+  try {
+    decoded = decodeCadreInvitation(encoded);
+  } catch (err) {
+    throw new Error(
+      `--invitation does not decode as a cadre invitation: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  if (decoded.partyId !== partyId) {
+    throw new Error(
+      `--invitation was minted for party ${decoded.partyId}, but this node's config names party ${partyId} `
+      + '(controlNetwork.partyId). Use an invitation minted by this party\'s owner, or correct the config.'
+    );
+  }
+  return decoded;
+}
+
+/**
+ * The start-up options that cannot be combined with `--invitation`, each with why. A seed is
+ * the owner-online way to the same end. `--owner` runs the founder's genesis insert on a fresh
+ * store, which on a node that is joining somebody else's cadre would seat a second founding
+ * key beside theirs; an invitation that grants ownership seats this node's key by consent
+ * instead, and the node wires it for signing on a later start with `--owner` once the
+ * invitation flag is dropped.
+ */
+export function refuseInvitationConflicts(options: { seed?: string; owner?: boolean }): void {
+  if (options.seed) {
+    throw new Error('--invitation and --seed cannot be combined: a seed is the owner-online way to join, an invitation the owner-offline way. Pass one of them.');
+  }
+  if (options.owner) {
+    throw new Error('--invitation and --owner cannot be combined: --owner founds a cadre on this node, --invitation joins one. '
+      + 'Join first; if the invitation granted ownership, restart with --owner and without --invitation to wire the key for signing.');
+  }
+}
+
 function collectPinKey(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -118,6 +163,7 @@ export const startCommand = new Command('start')
   // Each seed peer is a few hundred bytes of JSON before base64. If cadres grow to dozens of
   // machines, add a --seed-file.
   .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup — what `cadre enroll add` prints on the owner machine. Start-up fails if it does not decode or names a party other than the config\'s controlNetwork.partyId')
+  .option('--invitation <encoded>', 'Redeem a cadre invitation on startup — what `cadre enroll invite` prints on the owner machine — at any member of the cadre it names, so this node can join while the owner is offline. Needs a node identity (the redemption is signed with it); cannot be combined with --seed or --owner. Start-up fails if it does not decode or names another party')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
@@ -163,6 +209,14 @@ export const startCommand = new Command('start')
       }
 
       const seed = options.seed ? decodeSeedFor(options.seed, config.controlNetwork.partyId) : undefined;
+      let invitation: CadreInvitation | undefined;
+      if (options.invitation) {
+        refuseInvitationConflicts(options);
+        if (!config.privateKey) {
+          throw new Error('--invitation requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it');
+        }
+        invitation = decodeInvitationFor(options.invitation, config.controlNetwork.partyId);
+      }
 
       // Operator-pinned owner keys anchor cold-start seed trust. Build the
       // policy BEFORE constructing CadreNode so every later service-construction
@@ -355,6 +409,22 @@ export const startCommand = new Command('start')
 
       // Start the node
       await node.start();
+
+      // Join by invitation, right after the node is up: the redemption dials the members the
+      // bundle names and the node then syncs the control database over the connection it
+      // holds. A node that is already a member (a restart with the flag still in its service
+      // file) is answered as accepted by the member's idempotent redemption; the log line
+      // cannot tell the two apart, and neither needs to. A failure is reported and the node
+      // keeps running, as a failed --seed does: nothing was written here, and the operator
+      // can re-run with a fresh invitation.
+      if (invitation) {
+        try {
+          const joined = await node.redeemCadreInvitation(invitation);
+          console.log(`✓ Invitation accepted by member ${joined.peerId ?? '(unnamed address)'}: this node is a member of party ${invitation.partyId}${joined.grantsOwner ? ', and an owner' : ''}`);
+        } catch (err) {
+          console.error('✗ Failed to redeem the invitation:', err instanceof Error ? err.message : err);
+        }
+      }
 
       // Owner init: bridge the libp2p identity into a base64url owner
       // keypair, run the idempotent genesis insert on a fresh party, then bring

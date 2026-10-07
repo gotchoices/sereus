@@ -1,7 +1,6 @@
 import Fastify, { type FastifyRequest } from 'fastify';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { TrustCircleError } from '../../auth/types.js';
 import { NatError } from '../../nat/types.js';
 import { UpdateErrorException } from '../../update/types.js';
 import { GrantError } from '../../donation/types.js';
@@ -13,10 +12,6 @@ describe('error handler', () => {
   beforeEach(async () => {
     app = Fastify();
     registerErrorHandler(app);
-    app.get('/trust/:code', async (req: FastifyRequest) => {
-      const { code } = req.params as { code: string };
-      throw new TrustCircleError(code as never, `trust err: ${code}`);
-    });
     app.get('/nat/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
       throw new NatError(code as never, `nat err: ${code}`);
@@ -38,41 +33,14 @@ describe('error handler', () => {
     await app.close();
   });
 
-  it('TrustCircleError invalid_label → 400', async () => {
-    const res = await app.inject({ method: 'GET', url: '/trust/invalid_label' });
+  it('NatError invalid_config → 400', async () => {
+    const res = await app.inject({ method: 'GET', url: '/nat/invalid_config' });
     expect(res.statusCode).toBe(400);
     const body = res.json() as { ok: boolean; error: { code: string; message: string } };
     expect(body).toEqual({
       ok: false,
-      error: { code: 'invalid_label', message: 'trust err: invalid_label' },
+      error: { code: 'invalid_config', message: 'nat err: invalid_config' },
     });
-  });
-
-  it('TrustCircleError not_found → 404', async () => {
-    const res = await app.inject({ method: 'GET', url: '/trust/not_found' });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('TrustCircleError already_redeemed → 404', async () => {
-    const res = await app.inject({ method: 'GET', url: '/trust/already_redeemed' });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it('TrustCircleError expired → 410', async () => {
-    const res = await app.inject({ method: 'GET', url: '/trust/expired' });
-    expect(res.statusCode).toBe(410);
-  });
-
-  it('TrustCircleError storage_error → 500', async () => {
-    const res = await app.inject({ method: 'GET', url: '/trust/storage_error' });
-    expect(res.statusCode).toBe(500);
-  });
-
-  it('NatError invalid_config → 400', async () => {
-    const res = await app.inject({ method: 'GET', url: '/nat/invalid_config' });
-    expect(res.statusCode).toBe(400);
-    const body = res.json() as { error: { code: string } };
-    expect(body.error.code).toBe('invalid_config');
   });
 
   it('NatError secrets_unavailable → 500', async () => {

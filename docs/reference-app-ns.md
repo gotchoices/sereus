@@ -96,22 +96,25 @@ protected as the plaintext identity key it qualifies — unlike React Native, wh
 puts the anchor in the secure enclave (see [`reference-app-rn.md`](reference-app-rn.md)).
 Whoever adds NS secure storage should move both together.
 
-The **invite pin is this app's only writer of the anchor**. Settings' Seed
-Bootstrap section carries an optional "Paste enrollment invite (for trust)" field
-(`input-enroll-invite`); its owner keys go to `CadreNode.trustOwnerKeys(keys,
-'invite')` *before* the seed is applied and to `pinnedKeyTrustPolicy(keys)` for
-the apply itself (`CadreViewModel.ownerKeysFromInvite` + `applySeed`, mirroring
-reference-app-rn). The pin persists, so a *later* seed from the same owner is
-accepted with the invite field blank — the default `anchoredTrustPolicy` now
-clears it. A pin sticks even if the seed that motivated it is then *rejected*:
-pasting the invite is itself the out-of-band trust act. A seed that cannot even
-be *decoded* fails earlier than the pin, so that one case leaves the anchor
-untouched — the fields are kept on failure, so the retry costs no re-paste.
-Both fields decode through a raw base64url → `JSON.parse` in cadre-core, so
-`CadreViewModel` rewraps either failure with copy naming *which* paste was
-unreadable; the alert would otherwise read `SyntaxError: Unexpected token …` and
-name neither. (RN surfaces the bare parse error; this is a deliberate NS-only
-improvement, not a parity gap to close in the other direction.)
+**Redeeming a cadre invitation is this app's only writer of the anchor.**
+Settings' Join a Cadre section takes a pasted invitation (`input-cadre-invitation`,
+`btn-join-cadre`) and hands it to `CadreNode.redeemCadreInvitation`
+(`CadreViewModel.joinCadre`, mirroring reference-app-rn), which pins the bundle's
+owner keys before dialing the members it names. The pin persists and sticks even
+if the redemption then fails, so a retry or a later seed from the same owner is
+anchored. The Seed Bootstrap field (`input-seed`) is accepted only when the seed's
+signer is already anchored — the default `anchoredTrustPolicy` — so it serves a
+phone that founded the cadre or has redeemed that owner's invitation; the hint
+beside it says so. Both fields are kept on failure, so the retry costs no re-paste.
+A seed decodes through a raw base64url → `JSON.parse` in cadre-core, and
+`decodeCadreInvitation` names what is wrong with a bundle but not which field it
+came from, so `CadreViewModel` rewraps either failure with copy naming *which*
+paste was unreadable; the modal would otherwise read `SyntaxError: Unexpected
+token …` and name neither. (RN surfaces the bare parse error; this is a deliberate
+NS-only improvement, not a parity gap to close in the other direction.) A
+*refused* redemption is worded by `src/join-failure.ts`, a hand-copied twin of
+RN's module: one plain sentence per rejection code, one each for an unreachable
+member and an unverifiable reply.
 
 The app wires **no owner private key**, so there is no genesis self-anchor. It
 does not need one — it either forms a cadre solo or enrolls into an existing one
@@ -137,8 +140,8 @@ malformed bootstrap list becomes `[]`.
 - **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()`
   first creates the shared view model). With `autoStart` true and nothing started
   yet, the app connects by itself with those options, exactly as a Connect tap
-  would — so a pasted invite's pin is read back and a later seed from that owner
-  is accepted with the invite field blank. Either way the Settings Party ID and
+  would — so a redeemed invitation's pin is read back and a later seed from that
+  owner is accepted. Either way the Settings Party ID and
   Bootstrap fields prefill from them (the bootstrap field is comma-separated so a
   list round-trips). A read fault shows "Could not read the saved connection
   settings" and starts nothing.
@@ -160,13 +163,14 @@ app/
   app-root.xml      TabView → Chat + Settings (each a Frame defaultPage)
   app.css           dark theme shared by both screens
   chat/             chat screen: status bar, message ListView, composer  (binds getChatVm())
-  settings/         settings screen: connect/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
+  settings/         settings screen: connect/join-cadre/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
   ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
   cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
   start-options.ts  the last start options + autoStart, remembered between launches
-  cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands  (← RN use-cadre + cadre-context)
+  cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands/join  (← RN use-cadre + cadre-context)
+  join-failure.ts   plain words for each way a join can fail  (hand-copied twin of RN's)
   chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN src/test-ids.ts)
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
@@ -367,7 +371,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the join and seed paths in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -396,9 +400,12 @@ which re-exports the **real** `Observable` and `ObservableArray` from the
 submodules that do load (`data/observable`, `data/observable-array`). Both suites
 drive one shared fake `CadreNode`
 (`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
-array, because the behaviour under test is an ordering: an enrollment invite's
-owner keys must be anchored via `trustOwnerKeys` strictly *before* the seed is
-applied. That fake declares `implements` against a `Pick<CadreNode, …>` of the
+array, because the behaviours under test are orderings: a pasted invitation is
+decoded (by the real `decodeCadreInvitation`, over a bundle the real
+`encodeCadreInvitation` rendered) *before* `redeemCadreInvitation` is reached, so
+an unreadable paste never touches the node; a seed decodes before it is applied;
+and a Settings handler given a blank field makes no call at all. That fake
+declares `implements` against a `Pick<CadreNode, …>` of the
 methods it stands in for, so a cadre-core signature change fails `typecheck`
 instead of leaving the suites green while the app breaks on device — a `vi.mock`
 factory is not otherwise checked against the module it replaces.
@@ -451,23 +458,24 @@ The orchestrator:
    `strandFilter:all`, `initializeSeedBootstrap`, a pre-created chat strand) with
    the RN package as cwd so its deps resolve;
 2. waits for `GET http://127.0.0.1:4080/health` (the HTTP sidecar);
-3. reads `test-data.json` (`partyId`, `droneBootstrapAddr`, `seed`, `enrollInvite`,
+3. reads `test-data.json` (`partyId`, `droneBootstrapAddr`, `cadreInvitation`,
    `strandId`);
 4. runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can reach
    the host-bound fixture;
 5. runs `maestro test` over the RN `maestro/flows/`, passing the test-data fields
-   (`PARTY_ID`, `BOOTSTRAP_ADDR`, `SEED`, `ENROLL_INVITE`, `STRAND_ID`) +
+   (`PARTY_ID`, `BOOTSTRAP_ADDR`, `CADRE_INVITATION`, `STRAND_ID`) +
    `SIDECAR_URL` + `MAESTRO_APP_ID` as `-e KEY=VALUE` env vars (and
-   `--format junit`). `ENROLL_INVITE` is what `_setup.yaml` types into
-   `input-enroll-invite` so the cold phone pins the drone's owner key before
-   applying the seed;
+   `--format junit`). `CADRE_INVITATION` is what `_setup.yaml` types into
+   `input-cadre-invitation` before tapping `btn-join-cadre` and asserting the
+   `Joined cadre` modal: redeeming it pins the drone's owner key and admits the
+   phone at the drone;
 6. tears down the fixture + adb reverse rules on exit.
 
 #### Flows (reused from RN)
 
 | Flow | Coverage |
 |------|----------|
-| `flows/1-connect-and-send.yaml` | cold launch → connect → seed → create strand → send → local echo |
+| `flows/1-connect-and-send.yaml` | cold launch → connect → join → create strand → send → local echo |
 | `flows/2-drone-to-phone.yaml` | drone-side HTTP insert appears in the app within ~5 s |
 | `flows/3-round-trip.yaml` | bidirectional (app→drone and drone→app both visible) + monotonic timestamps |
 | `flows/4-solo-create-strand.yaml` | no drone: connect alone → create strand → `Strand created` within 60 s |
@@ -483,7 +491,7 @@ it so both sides reference the same DB.
 RN sets `testID`; NativeScript has no `testID`. The NS UI instead sets
 **`automationText`** on every interactive element using the **exact same string
 values** as `src/test-ids.ts` (`input-party-id`, `btn-connect`, `btn-disconnect`,
-`input-seed`, `input-enroll-invite`, `btn-apply-seed`, `input-add-peer`, `btn-add-peer`,
+`input-seed`, `btn-apply-seed`, `input-cadre-invitation`, `btn-join-cadre`, `input-add-peer`, `btn-add-peer`,
 `btn-create-strand`, `value-peer-id`, `modal-title`, `btn-modal-ok`, `status-bar`,
 `input-message`, `btn-send`, `message-list`, `message-row-<id>`). On Android
 `automationText` maps to `contentDescription`; on iOS to

@@ -8,7 +8,7 @@
  *   - apply.ts    — invoke `npm install -g` + rollback on failure.
  *   - index.ts    — composes the above (UpdateService).
  *
- * Mirrors the typed-handler pattern used by trust-circle and NAT (handlers
+ * Mirrors the typed-handler pattern used by NAT (handlers
  * throw `UpdateError` whose `.code` the local-UI maps to HTTP status).
  */
 

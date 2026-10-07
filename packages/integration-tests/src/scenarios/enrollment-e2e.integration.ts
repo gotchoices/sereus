@@ -4,9 +4,9 @@
  * Exercises the full enrollment lifecycle over real libp2p:
  * - Owner creates seed, drone applies and connects
  * - addDrone helper with out-of-band seed encoding
- * - Invite flow for phone enrollment
+ * - A cadre invitation minted by the owner and redeemed at the owner itself
  * - Multi-node cadre expansion
- * - Negative validation cases (tampered seed, expired invite)
+ * - Negative validation cases (tampered seed, expired invitation)
  *
  * Note: deliverSeed (protocol-level /sereus/seed/1.0.0 delivery) is tested
  * separately in deliver-seed-cross-network.integration.ts. These tests use
@@ -16,10 +16,31 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import { TestCadreNetwork, waitUntil } from '../harness/index.js';
-import { SeedBootstrapService, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { TestCadreNetwork, waitUntil, controlNodeConfig, makeOwnOwner } from '../harness/index.js';
+import { CadreNode, SeedBootstrapService, pinnedKeyTrustPolicy, CadreInviteRejectedError } from '@serfab/cadre-core';
 import type { TestParty, TestCadreNode } from '../harness/types.js';
 import type { ControlNetworkSeed } from '@serfab/cadre-core';
+
+/** Replication and redemption waits over loopback; generous because a CadreNode's bring-up is behind each. */
+const OWNER_OP_MS = 60_000;
+
+/** A started owner `CadreNode` with its own genesis key wired, listening on loopback. */
+async function startOwner(partyId: string): Promise<{ owner: CadreNode; ownerKey: string }> {
+	const key = await generateKeyPair('Ed25519');
+	const owner = new CadreNode(controlNodeConfig({ partyId, privateKey: key, strandFilter: 'none' }));
+	await owner.start();
+	return { owner, ownerKey: await makeOwnOwner(owner, key) };
+}
+
+/** A phone-shaped device: no listen address, dials only, a stable identity to sign the redemption with. */
+async function startDevice(partyId: string): Promise<CadreNode> {
+	const device = new CadreNode(controlNodeConfig({
+		partyId, privateKey: await generateKeyPair('Ed25519'), listenAddrs: [], strandFilter: 'none',
+	}));
+	await device.start();
+	return device;
+}
 
 /**
  * Extract raw Ed25519 private key from libp2p protobuf format as base64url.
@@ -197,56 +218,40 @@ describe('E2E Enrollment', () => {
 	});
 
 	// =========================================================================
-	// 3. Server invites phone (invite flow, no seed)
+	// 3. Owner mints a cadre invitation; a phone-shaped device redeems it at the
+	//    owner itself and syncs (the owner is the one member the bundle names)
 	// =========================================================================
-	it('should invite phone via createInvite/dialInvite flow', async () => {
-		const server = await network.createParty({ name: 'server-invite' });
-		const phone = await network.createParty({ name: 'phone-invite' });
+	it('should admit a device that redeems a cadre invitation at the owner, and sync it', async () => {
+		const partyId = `enroll-invitation-${Date.now()}`;
+		const { owner, ownerKey } = await startOwner(partyId);
+		let device: CadreNode | undefined;
+		try {
+			const { invitation, encoded } = await owner.createCadreInvitation({ grantsOwner: false });
+			expect(invitation.ownerKeys).toEqual([ownerKey]);
+			expect(invitation.members).toEqual(owner.getMultiaddrs());
+			expect(typeof encoded).toBe('string');
 
-		const serverService = await createSeedService(server);
-		const phoneService = await createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
+			device = await startDevice(partyId);
+			const devicePeerId = device.peerId!.toString();
+			const result = await device.redeemCadreInvitation(invitation);
+			expect(result.peerId).toBe(owner.peerId!.toString());
+			expect(result.grantsOwner).toBe(false);
 
-		// Server creates invite
-		const { invite, encodedInvite } = await serverService.createInvite('test-token-123', 60_000);
-
-		expect(invite.partyId).toBe(server.partyId);
-		expect(invite.ownerAddrs.length).toBeGreaterThan(0);
-		expect(invite.token).toBe('test-token-123');
-		expect(invite.expiresAt).toBeDefined();
-
-		// Phone decodes and dials invite
-		const decodedInvite = phoneService.decodeInvite(encodedInvite);
-		expect(decodedInvite.partyId).toBe(invite.partyId);
-		expect(decodedInvite.token).toBe(invite.token);
-
-		await phoneService.dialInvite(decodedInvite);
-
-		// Phone should be connected to server
-		await waitUntil(
-			() => phone.ownerNode.libp2p.getConnections().length >= 1,
-			{ timeoutMs: 5000, description: 'phone connects to server after dialInvite' }
-		);
-
-		const phoneConns = phone.ownerNode.libp2p.getConnections();
-		const connectedPeerIds = phoneConns.map(c => c.remotePeer.toString());
-		expect(connectedPeerIds).toContain(server.ownerNode.peerId);
-
-		// Server accepts phone (authorizes in CadrePeer)
-		await serverService.acceptPhone(
-			{ phonePeerId: phone.ownerNode.peerId, token: 'test-token-123' },
-			invite
-		);
-
-		// Verify phone is in server's CadrePeer
-		const db = server.controlDatabase.getDatabase();
-		let phonePeerFound = false;
-		for await (const row of db.eval('select PeerId from CadreControl.CadrePeer')) {
-			if (row.PeerId === phone.ownerNode.peerId) {
-				phonePeerFound = true;
-			}
+			// The owner wrote the device's row itself (no owner signature on it: the
+			// consent chain through the invitation), and judges it a member.
+			expect(await owner.isAuthorizedMember(devicePeerId)).toBe(true);
+			// The device pinned the bundle's owner key and syncs the control database
+			// over the connection it holds: the owner's genesis key arrives by replication.
+			expect(device.getTrustedOwnerStore()!.has(ownerKey)).toBe(true);
+			await waitUntil(
+				async () => (await device!.getControlDatabase()!.getOwnerKeys()).has(ownerKey),
+				{ timeoutMs: OWNER_OP_MS, intervalMs: 500, description: 'the owner key replicates to the admitted device' }
+			);
+		} finally {
+			await device?.stop();
+			await owner.stop();
 		}
-		expect(phonePeerFound).toBe(true);
-	});
+	}, 3 * OWNER_OP_MS);
 
 	// =========================================================================
 	// 4. Multi-node enrollment (owner + 2 drones)
@@ -361,53 +366,27 @@ describe('E2E Enrollment', () => {
 			expect(pinned.success).toBe(true);
 		});
 
-		it('should reject expired invite via dialInvite', async () => {
-			const server = await network.createParty({ name: 'server-expired' });
-			const phone = await network.createParty({ name: 'phone-expired' });
 
-			const serverService = await createSeedService(server);
-			const phoneService = await createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
+		it('should refuse an expired cadre invitation with invite-spent', async () => {
+			// Minted already expired (a negative lifetime), so the member's redemption fails the
+			// usage row's liveness check. The owner alone has no authorized member yet, so its
+			// gate admits the device's connection and the refusal comes from the protocol.
+			const partyId = `enroll-expired-invitation-${Date.now()}`;
+			const { owner } = await startOwner(partyId);
+			let device: CadreNode | undefined;
+			try {
+				const { invitation } = await owner.createCadreInvitation({ grantsOwner: false, expiresInMs: -1000 });
+				expect(new Date(`${invitation.invite.expiresAt}Z`).getTime()).toBeLessThan(Date.now());
 
-			// Create invite that expired 1 second ago
-			const { invite } = await serverService.createInvite('expired-token', -1000);
-
-			expect(invite.expiresAt).toBeDefined();
-			expect(invite.expiresAt!).toBeLessThan(Date.now());
-
-			// dialInvite should throw on expired invite
-			await expect(phoneService.dialInvite(invite)).rejects.toThrow('Invite has expired');
-		});
-
-		it('should reject expired invite via acceptPhone', async () => {
-			const server = await network.createParty({ name: 'server-exp-accept' });
-
-			const serverService = await createSeedService(server);
-
-			// Create expired invite
-			const { invite } = await serverService.createInvite('accept-token', -1000);
-
-			// acceptPhone with expired invite should throw
-			await expect(
-				serverService.acceptPhone(
-					{ phonePeerId: 'fake-peer-id', token: 'accept-token' },
-					invite
-				)
-			).rejects.toThrow('Invite has expired');
-		});
-
-		it('should reject acceptPhone with wrong token', async () => {
-			const server = await network.createParty({ name: 'server-bad-token' });
-
-			const serverService = await createSeedService(server);
-
-			const { invite } = await serverService.createInvite('correct-token', 60_000);
-
-			await expect(
-				serverService.acceptPhone(
-					{ phonePeerId: 'fake-peer-id', token: 'wrong-token' },
-					invite
-				)
-			).rejects.toThrow('Invalid invite token');
-		});
+				device = await startDevice(partyId);
+				const failure: unknown = await device.redeemCadreInvitation(invitation).catch((err: unknown) => err);
+				expect(failure).toBeInstanceOf(CadreInviteRejectedError);
+				expect(failure).toMatchObject({ code: 'invite-spent', retryable: false });
+				expect(await owner.isAuthorizedMember(device.peerId!.toString())).toBe(false);
+			} finally {
+				await device?.stop();
+				await owner.stop();
+			}
+		}, 3 * OWNER_OP_MS);
 	});
 });

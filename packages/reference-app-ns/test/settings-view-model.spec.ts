@@ -2,15 +2,14 @@
  * `app/settings/settings-view-model.ts` — the Settings screen's own view model.
  *
  * Driven against the REAL `CadreViewModel` (only the node beneath it is faked),
- * so these tests cover the whole paste-to-pin path the user actually walks:
- * trim the two text fields → decode the invite → anchor its owner keys → apply
- * the seed → report what was pinned. The seam that motivates the suite is what
- * happens to the two input fields and the modal copy on each outcome:
+ * so these tests cover the paths the user actually walks from a text field to
+ * the node and back to the modal: trim the field → decode → hand the node the
+ * result → report. The seam that motivates the suite is what happens to each
+ * input field and the modal copy on each outcome:
  *
- *  - success clears BOTH fields;
- *  - any failure clears NEITHER — a mistyped seed must not cost the user the
- *    invite they pasted next to it;
- *  - the "applied" message must never claim a pin that did not happen.
+ *  - success clears the field;
+ *  - any failure keeps it — a mistyped paste must not cost the user a re-paste;
+ *  - a blank field makes no node call at all, whatever the button's state.
  *
  * See `test/stubs/fake-cadre-node.ts` for the fake node and why it is reached
  * through a hoisted dynamic import.
@@ -28,7 +27,6 @@ vi.mock('../src/chat-strand', async () => (await stubs).chatStrandMock());
 type Stubs = typeof import('./stubs/fake-cadre-node');
 
 const SEED = 'encoded-seed';
-const INVITE = 'encoded-invite';
 
 /**
  * A Settings view model whose shared `CadreViewModel` has adopted the fake node.
@@ -59,168 +57,97 @@ async function loadWith({ nodeRunning }: { nodeRunning: boolean }): Promise<{ vm
 	return { vm, H };
 }
 
-/** An invite carrying the two owner keys — the enrollment case. */
-async function withInvite(): Promise<{ vm: SettingsViewModel; H: Stubs }> {
-	const loaded = await loadSettings();
-	loaded.H.state.node.invite = {
-		partyId: 'party-x',
-		ownerAddrs: [],
-		createdAt: 0,
-		ownerKeys: [loaded.H.KEY_A, loaded.H.KEY_B],
-	};
-	return loaded;
-}
+// ── Join a cadre ──────────────────────────────────────────────────────────────
 
-// ── The happy path ────────────────────────────────────────────────────────────
+describe('onJoinCadre', () => {
+	it('redeems the trimmed paste, clears the field and names the member that admitted the phone', async () => {
+		// Pasting from a clipboard commonly drags a newline along, and base64url
+		// decoding is what would fail on it.
+		const { vm, H } = await loadSettings();
+		vm.cadreInvitationInput = `  ${H.ENCODED_INVITATION}\n`;
 
-describe('onApplySeed with an enrollment invite', () => {
-	it('anchors the invite keys before applying the seed', async () => {
-		// The end-to-end version of `cadre-vm.spec.ts`'s ordering test: from the two
-		// text fields the user pastes into, through to the node calls in order.
-		const { vm, H } = await withInvite();
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
+		expect(vm.canJoinCadre).toBe(true);
+		await vm.onJoinCadre();
 
-		await vm.onApplySeed();
-
-		expect(H.calls).toEqual(['decodeInvite', 'decodeSeed', 'trustOwnerKeys', 'applySeed']);
-		expect(H.state.node.trusted).toEqual([{ keys: [H.KEY_A, H.KEY_B], source: 'invite' }]);
-	});
-
-	it('clears both fields on success', async () => {
-		const { vm } = await withInvite();
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
-
-		await vm.onApplySeed();
-
-		expect(vm.seedInput).toBe('');
-		expect(vm.enrollInviteInput).toBe('');
-	});
-
-	it('reports how many owner keys were pinned', async () => {
-		const { vm } = await withInvite();
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
-
-		await vm.onApplySeed();
-
-		expect(vm.modalTitle).toBe('Seed applied');
-		expect(vm.modalMessage).toContain('2 owner key');
+		expect(H.calls).toEqual(['redeemCadreInvitation']);
+		expect(vm.cadreInvitationInput).toBe('');
+		expect(vm.modalTitle).toBe('Joined cadre');
+		expect(vm.modalMessage).toContain(H.state.node.redeemResult.peerId);
 		expect(vm.modalVisibility).toBe('visible');
 	});
 
-	it('trims surrounding whitespace off both fields before either reaches the node', async () => {
-		// Pasting from a clipboard commonly drags a newline along; an untrimmed seed
-		// fails base64url decoding with a message that names neither field.
-		const { vm, H } = await withInvite();
-		vm.seedInput = `  ${SEED}\n`;
-		vm.enrollInviteInput = `\t${INVITE}  `;
+	it('shows a refusal in plain words and keeps the paste for a retry', async () => {
+		// The member's code is mapped (`src/join-failure.ts`), not echoed: the modal
+		// must not read `Cadre invitation refused: …` with the wire text behind it.
+		const { vm, H } = await loadSettings();
+		// Imported AFTER `loadSettings` reset the module registry, so this is the same
+		// class `join-failure.ts` checks `instanceof` against; a file-level import
+		// would be the previous registry's copy, and the mapping would never match.
+		const { CadreInviteRejectedError } = await import('@serfab/cadre-core');
+		H.state.node.redeemError = new CadreInviteRejectedError('invite-spent', 'expired 2026-10-06T00:00:00Z');
+		vm.cadreInvitationInput = H.ENCODED_INVITATION;
 
-		await vm.onApplySeed();
+		await vm.onJoinCadre();
 
-		expect(H.state.node.decodedSeeds).toEqual([SEED]);
-		expect(H.state.node.decodedInvites).toEqual([INVITE]);
+		expect(vm.modalTitle).toBe('Join failed');
+		expect(vm.modalMessage).toBe('This invitation is expired, withdrawn or used up');
+		expect(vm.cadreInvitationInput).toBe(H.ENCODED_INVITATION);
+	});
+
+	it('does nothing when the field holds only whitespace', async () => {
+		// `canJoinCadre` disables the button on the same rule, but the handler must
+		// hold the line on its own — the two-way binding can be updated by code.
+		const { vm, H } = await loadSettings();
+		vm.cadreInvitationInput = '   \n';
+
+		expect(vm.canJoinCadre).toBe(false);
+		await vm.onJoinCadre();
+
+		expect(H.calls).toEqual([]);
+		expect(vm.modalVisibility).toBe('collapse');
 	});
 });
 
-describe('onApplySeed without an enrollment invite', () => {
-	it('never decodes an invite and says no owner keys were pinned', async () => {
+// ── Apply a seed ──────────────────────────────────────────────────────────────
+
+describe('onApplySeed', () => {
+	it('decodes and applies the trimmed seed, then clears the field', async () => {
 		const { vm, H } = await loadSettings();
-		vm.seedInput = SEED;
+		vm.seedInput = `  ${SEED}\n`;
 
 		await vm.onApplySeed();
 
 		expect(H.calls).toEqual(['decodeSeed', 'applySeed']);
+		expect(H.state.node.decodedSeeds).toEqual([SEED]);
+		expect(vm.seedInput).toBe('');
 		expect(vm.modalTitle).toBe('Seed applied');
-		expect(vm.modalMessage).toContain('no owner keys pinned');
-	});
-
-	it('says no owner keys were pinned when the invite carried none', async () => {
-		// An older invite decodes fine but yields `[]`. The message must not claim a
-		// pin that did not happen — "Pinned 0 owner key(s)" would read as success.
-		const { vm, H } = await loadSettings();
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
-
-		await vm.onApplySeed();
-
-		expect(H.state.node.trusted).toEqual([]);
-		expect(vm.modalMessage).toContain('no owner keys pinned');
-		expect(vm.modalMessage).not.toContain('Pinned');
+		expect(vm.modalVisibility).toBe('visible');
 	});
 });
 
-// ── Failure: the fields must survive ──────────────────────────────────────────
-
 describe('onApplySeed when the node refuses the seed', () => {
-	it('keeps both fields so the user can retry without re-pasting', async () => {
-		const { vm, H } = await withInvite();
+	it('keeps the field and raises the failure modal with the node text', async () => {
+		const { vm, H } = await loadSettings();
 		H.state.node.applySeedResult = H.refusal('not for this party');
 		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
 
 		await vm.onApplySeed();
 
 		expect(vm.seedInput).toBe(SEED);
-		expect(vm.enrollInviteInput).toBe(INVITE);
-	});
-
-	it('raises the failure modal with the node text', async () => {
-		const { vm, H } = await withInvite();
-		H.state.node.applySeedResult = H.refusal('not for this party');
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = INVITE;
-
-		await vm.onApplySeed();
-
 		expect(vm.modalTitle).toBe('Seed failed');
 		expect(vm.modalMessage).toContain('not for this party');
 		expect(vm.modalVisibility).toBe('visible');
 	});
 });
 
-describe('onApplySeed when the invite cannot be read', () => {
-	it('keeps both fields and never reaches the seed', async () => {
-		// The second, separate failure source: this one throws before `applySeed` is
-		// called at all, so a "clear on success" that lived in the wrong place would
-		// pass the node-refusal tests above and still fail here.
-		const { vm, H } = await loadSettings();
-		H.state.node.decodeInviteError = new SyntaxError('Unexpected token < in JSON at position 0');
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = 'not-an-invite';
-
-		await vm.onApplySeed();
-
-		expect(vm.seedInput).toBe(SEED);
-		expect(vm.enrollInviteInput).toBe('not-an-invite');
-		expect(H.calls).toEqual(['decodeInvite']);
-	});
-
-	it('raises the failure modal naming the enrollment invite', async () => {
-		// Matched on a distinctive substring — this is UI copy, and a wording tweak
-		// should not fail the suite.
-		const { vm, H } = await loadSettings();
-		H.state.node.decodeInviteError = new SyntaxError('Unexpected token < in JSON at position 0');
-		vm.seedInput = SEED;
-		vm.enrollInviteInput = 'not-an-invite';
-
-		await vm.onApplySeed();
-
-		expect(vm.modalTitle).toBe('Seed failed');
-		expect(vm.modalMessage).toMatch(/enrollment invite/i);
-	});
-});
-
 describe('onApplySeed when the seed cannot be read', () => {
-	it('keeps both fields and names the seed, not the invite', async () => {
-		// The third failure source. It happens INSIDE `applySeed`, after the invite
-		// already decoded, so a reader of the modal must still be told which of the
-		// two pasted fields was the bad one.
-		const { vm, H } = await withInvite();
+	it('keeps the field and names the seed, not the parse error', async () => {
+		// This failure happens INSIDE `applySeed`, before the node is asked anything;
+		// a "clear on success" that lived in the wrong place would pass the
+		// node-refusal test above and still fail here.
+		const { vm, H } = await loadSettings();
 		H.state.node.decodeSeedError = new SyntaxError('Unexpected token < in JSON at position 0');
 		vm.seedInput = 'not-a-seed';
-		vm.enrollInviteInput = INVITE;
 
 		await vm.onApplySeed();
 
@@ -228,35 +155,23 @@ describe('onApplySeed when the seed cannot be read', () => {
 		expect(vm.modalMessage).toMatch(/cold-start seed/i);
 		expect(vm.modalMessage).not.toMatch(/SyntaxError/);
 		expect(vm.seedInput).toBe('not-a-seed');
-		expect(vm.enrollInviteInput).toBe(INVITE);
+		expect(H.calls).toEqual(['decodeSeed']);
 	});
 });
 
-// ── The blank-seed guard ──────────────────────────────────────────────────────
-
 describe('onApplySeed with no usable seed', () => {
-	it('does nothing at all when the seed field is empty', async () => {
-		const { vm, H } = await loadSettings();
-
-		await vm.onApplySeed();
-
-		expect(H.calls).toEqual([]);
-		expect(vm.modalVisibility).toBe('collapse');
-	});
-
-	it('does nothing when the seed field holds only whitespace, invite or not', async () => {
+	it('does nothing when the seed field is empty or holds only whitespace', async () => {
 		// `canApplySeed` disables the button on the same rule, but the handler must
 		// hold the line on its own — the two-way binding can be updated by code.
 		const { vm, H } = await loadSettings();
-		vm.seedInput = '   \n';
-		vm.enrollInviteInput = INVITE;
 
+		await vm.onApplySeed();
+		vm.seedInput = '   \n';
 		expect(vm.canApplySeed).toBe(false);
 		await vm.onApplySeed();
 
 		expect(H.calls).toEqual([]);
 		expect(vm.modalVisibility).toBe('collapse');
-		expect(vm.enrollInviteInput).toBe(INVITE);
 	});
 });
 

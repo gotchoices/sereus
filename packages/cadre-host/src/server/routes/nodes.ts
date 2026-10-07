@@ -16,7 +16,7 @@
  * Owner start/restart are founder-only: a donor-only host that once ran as a
  * founder still holds the owner handle and saved config (so re-enabling
  * `ownCadre` can resume it), but spawning it here would bring the owner node
- * back without its trust circle, NAT or strand services — so those answer 409.
+ * back without its NAT or strand services — so those answer 409.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';

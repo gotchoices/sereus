@@ -307,8 +307,9 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	//        DEFAULT anchored seed policy accepts A's seed and B's own
 	//        authorized-member predicate is real.
 	//
-	// Production onboarding vouches before seeding (addDrone / acceptPhone in
-	// seed-bootstrap.ts); without it A's inbound gate refuses B's cold-start dial.
+	// Production onboarding vouches before seeding (`addDrone` in seed-bootstrap.ts),
+	// or admits by invitation (`redeemCadreInvitation`, where the member writes the
+	// row itself); without a row A's inbound gate refuses B's cold-start dial.
 	// Vouching a moment EARLIER — before B starts — costs nothing and makes the
 	// drain checkpoint below observable: B's own start-time self-registration then
 	// has a row to refresh instead of logging "not yet a CadrePeer member".

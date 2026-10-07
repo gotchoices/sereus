@@ -9,8 +9,15 @@
  */
 
 import { Observable } from '@nativescript/core';
-import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
-import type { CadreNode, ControlNetworkSeed, StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
+import { decodeCadreInvitation } from '@serfab/cadre-core';
+import type {
+	CadreInvitation,
+	CadreNode,
+	CadreNodeEvents,
+	ControlNetworkSeed,
+	RedeemCadreInvitationResult,
+	StrandInstance,
+} from '@serfab/cadre-core';
 import {
 	startPhoneNode,
 	stopPhoneNode,
@@ -264,41 +271,10 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
-	 * Decode a pasted base64url `CadreInvite` and return the owner keys it pins
-	 * (empty when an older invite carries none). Guard order matches `applySeed`:
-	 * 'Node not started' throws before the node is touched.
-	 *
-	 * `CadreNode.decodeInvite` is a raw base64url → `JSON.parse` → cast with no
-	 * shape check, so a typo'd paste would otherwise surface as a bare
-	 * `SyntaxError: Unexpected token …`. Rewrap it with app-level copy naming what
-	 * was expected; the original rides along as `cause`.
-	 *
-	 * NOTE: a hand-crafted invite whose `ownerKeys` is not an array of keys is
-	 * safe but reports poorly. A number yields a falsy `.length`, so no pin is
-	 * attempted and the seed is then rejected by the default anchored policy —
-	 * naming the anchor rather than the bad invite. A bare string has a truthy
-	 * `.length`, so `trustOwnerKeys` rejects it all-or-nothing, naming its first
-	 * character. If either ever confuses a real user, the fix is shape validation
-	 * inside `CadreNode.decodeInvite` (one site, both apps), not a second guard here.
-	 */
-	ownerKeysFromInvite(encodedInvite: string): string[] {
-		const node = this._node;
-		if (!node) throw new Error('Node not started');
-		try {
-			return node.decodeInvite(encodedInvite).ownerKeys ?? [];
-		} catch (err) {
-			throw new Error(
-				'Enrollment invite could not be read (expected a base64url CadreInvite)',
-				{ cause: err },
-			);
-		}
-	}
-
-	/**
-	 * `CadreNode.decodeSeed` is the same raw base64url → `JSON.parse` → cast as
-	 * `decodeInvite`, so the same rewrap applies: the Settings modal renders
-	 * `String(err)`, and a typo'd paste must name the field that was wrong rather
-	 * than read `SyntaxError: Unexpected token …`. Only the decode is wrapped —
+	 * `CadreNode.decodeSeed` is a raw base64url → `JSON.parse` → cast, so a typo'd
+	 * paste would surface as a bare `SyntaxError: Unexpected token …`. The Settings
+	 * modal renders `String(err)`, and it must name the field that was wrong, so the
+	 * decode is rewrapped with the original as `cause`. Only the decode is wrapped —
 	 * a rejection from `applySeed` itself already carries the node's own text.
 	 */
 	private decodeSeedOrThrow(node: CadreNode, encoded: string): ControlNetworkSeed {
@@ -313,33 +289,50 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
-	 * Decode + apply a base64url seed, optionally pinning owner keys taken from a
-	 * pasted `CadreInvite`; throws if the node rejects it.
+	 * Decode + apply a base64url seed; throws if the node rejects it. The node
+	 * accepts a seed only when its anchor already holds the signer's key: this node
+	 * founded the cadre, or an invitation it redeemed pinned that owner
+	 * ({@link joinCadre}).
 	 */
-	async applySeed(encoded: string, pinnedOwnerKeys?: string[]): Promise<void> {
+	async applySeed(encoded: string): Promise<void> {
 		const node = this._node;
 		if (!node) throw new Error('Node not started');
 		const seed = this.decodeSeedOrThrow(node, encoded);
-		// One place decides whether this is an enrollment apply — an empty pin list
-		// (what an older invite yields) must read exactly as "no pins".
-		const pins = pinnedOwnerKeys?.length ? pinnedOwnerKeys : undefined;
-		if (pins) {
-			// Enrollment seam: the invite's owner keys are out-of-band trust — anchor
-			// them in the node-local trusted-owner store BEFORE the seed is applied,
-			// so the anchor already holds them when seed trust consults it. The
-			// ordering is load-bearing; do not fold these two calls together.
-			//
-			// The pin STICKS even when the seed that motivated it is then rejected:
-			// pasting the invite is itself the out-of-band trust act, while the seed
-			// is a separate artifact that may be stale, for another party, or
-			// corrupt. Rolling the anchor back on a seed failure would make the user
-			// re-paste the invite on every retry.
-			await node.trustOwnerKeys(pins, 'invite');
-		}
-		const result = await node.applySeed(seed, pins ? { trustPolicy: pinnedKeyTrustPolicy(pins) } : undefined);
+		const result = await node.applySeed(seed);
 		if (!result.success) {
 			throw new Error(result.error ?? 'Seed application failed');
 		}
+	}
+
+	/**
+	 * The same rewrap as {@link decodeSeedOrThrow}, for the invitation paste:
+	 * `decodeCadreInvitation` names what was wrong with the bundle, not which field
+	 * it came from.
+	 */
+	private decodeInvitationOrThrow(encoded: string): CadreInvitation {
+		try {
+			return decodeCadreInvitation(encoded);
+		} catch (err) {
+			throw new Error(
+				'Cadre invitation could not be read (expected a base64url cadre invitation)',
+				{ cause: err },
+			);
+		}
+	}
+
+	/**
+	 * Join the cadre a pasted base64url invitation names: decode it, then redeem it
+	 * at one of the members it lists (`CadreNode.redeemCadreInvitation`, which pins
+	 * the invitation's owner keys before dialing). Guard order matches
+	 * {@link applySeed}: 'Node not started' throws before anything is decoded. The
+	 * node's own errors (`CadreInviteRejectedError`, `CadreInviteUnreachableError`,
+	 * `CadreInviteReplyInvalidError`) pass through for the Settings screen to word.
+	 */
+	async joinCadre(encodedInvitation: string): Promise<RedeemCadreInvitationResult> {
+		const node = this._node;
+		if (!node) throw new Error('Node not started');
+		const invitation = this.decodeInvitationOrThrow(encodedInvitation);
+		return node.redeemCadreInvitation(invitation);
 	}
 
 	async dialPeer(addr: string): Promise<void> {

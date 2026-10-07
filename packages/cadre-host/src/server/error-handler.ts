@@ -2,14 +2,8 @@
  * Fastify error handler — translates known typed errors to stable HTTP status
  * codes and uniform `{ ok: false, error: { code, message } }` payloads.
  *
- * Codes (cross-referenced with `auth/types.ts`, `nat/types.ts`, `strands/types.ts`,
- * `update/types.ts`):
- *   - TrustCircleError
- *       invalid_label, invalid_token             → 400
- *       not_found, already_redeemed              → 404
- *       expired                                  → 410
- *       node_unavailable                         → 503
- *       storage_error                            → 500
+ * Codes (cross-referenced with `nat/types.ts`, `strands/types.ts`,
+ * `update/types.ts`, `donation/types.ts`):
  *   - NatError
  *       invalid_config, ddns_provider_unknown,
  *       ddns_credentials_missing                 → 400
@@ -49,23 +43,12 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import debug from 'debug';
 
-import { TrustCircleError, type TrustCircleErrorCode } from '../auth/types.js';
 import { NatError, type NatErrorCode } from '../nat/types.js';
 import { StrandError, type StrandErrorCode } from '../strands/types.js';
 import { UpdateErrorException, type UpdateErrorCode } from '../update/types.js';
 import { GrantError, type GrantErrorCode, DonationError, type DonationErrorCode } from '../donation/types.js';
 
 const log = debug('cadre:host:error-handler');
-
-const TRUST_STATUS: Record<TrustCircleErrorCode, number> = {
-  invalid_label: 400,
-  invalid_token: 400,
-  not_found: 404,
-  already_redeemed: 404,
-  expired: 410,
-  storage_error: 500,
-  node_unavailable: 503,
-};
 
 const NAT_STATUS: Record<NatErrorCode, number> = {
   invalid_config: 400,
@@ -148,9 +131,6 @@ interface Classified {
 }
 
 function classify(err: FastifyError): Classified {
-  if (err instanceof TrustCircleError) {
-    return { status: TRUST_STATUS[err.code] ?? 500, code: err.code, message: err.message };
-  }
   if (err instanceof NatError) {
     return { status: NAT_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }

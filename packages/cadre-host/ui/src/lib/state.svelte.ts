@@ -45,13 +45,6 @@ export interface NodeStats {
 	memoryBytes: number;
 }
 
-export interface TrustCircleMember {
-	peerId: string;
-	label: string;
-	addedAt: string;
-	self?: boolean;
-}
-
 /**
  * Mirror of the server's `StrandSummary` (`src/strands/types.ts`). `status` is a
  * raw string the manager only forwards — the UI displays it, never branches on it.
@@ -93,13 +86,6 @@ export interface GrantListing {
 	donations: Array<{ id: string; status: DonationStatus }>;
 }
 
-export interface PendingInvite {
-	token: string;
-	label: string;
-	createdAt: string;
-	expiresAt?: string;
-}
-
 export interface NatStatusSnapshot {
 	portMode: PortForwardMode;
 	externalPort: number;
@@ -131,8 +117,6 @@ export interface StatusResponse {
 		profile: 'storage' | 'transaction';
 		owner?: true;
 	}>;
-	/** Omitted in the donor role. */
-	trustCircle?: { members: number; pending: number };
 	/** Omitted in the donor role. */
 	connectivity?: NatStatusSnapshot;
 	update?: { available?: string; lastChecked?: string };
@@ -215,7 +199,6 @@ interface AppState {
 	role: HostRole | null;
 	nodes: NodeInfo[];
 	nodeStats: Record<string, NodeStats | null>;
-	trustCircle: { members: TrustCircleMember[]; pending: PendingInvite[] };
 	strands: StrandsState;
 	grants: GrantsState;
 	connectivity: NatStatusSnapshot | null;
@@ -230,7 +213,6 @@ const state = $state<AppState>({
 	role: null,
 	nodes: [],
 	nodeStats: {},
-	trustCircle: { members: [], pending: [] },
 	strands: { list: [], controlConnections: 0, loaded: false, error: null },
 	grants: { list: [], loaded: false, error: null },
 	connectivity: null,
@@ -330,17 +312,6 @@ export async function refreshNodeDetail(id: string): Promise<{ node: NodeInfo; s
 	} catch (err) {
 		reportError(`node ${id}`, err);
 		return null;
-	}
-}
-
-export async function refreshTrustCircle(): Promise<void> {
-	try {
-		const r = await apiFetch<{ members: TrustCircleMember[]; pending: PendingInvite[] }>(
-			'/auth/trust-circle',
-		);
-		state.trustCircle = r;
-	} catch (err) {
-		reportError('trust-circle', err);
 	}
 }
 
@@ -456,9 +427,6 @@ export function applyEvent(event: { type: string; data: string }): void {
 			if (state.grants.loaded) void refreshGrants();
 			break;
 		}
-		case 'trust-circle-changed':
-			void refreshTrustCircle();
-			break;
 		case 'grants-changed':
 			void refreshGrants();
 			// A revoke or terminate removes nodes from the orchestrator, but their last

@@ -16,7 +16,7 @@
  *      and the dialer sees the connection close moments later. The assertions
  *      below target that real observable: no surviving connection on either
  *      side, and a protocol dial that cannot complete.
- *   2. The enrollment carve-out: `createInvite` opens the window and the same
+ *   2. The invitation carve-out: `createCadreInvitation` opens the gate and the same
  *      outsider's dial then succeeds (the invitee must dial in before it is
  *      authorized).
  *   3. The strand-formation carve-out: a REGISTERED responder alone does not
@@ -107,11 +107,11 @@ describe('E2E control-network membership connection gater', () => {
 			await waitForControlConnection(Rx, memberPeerId, 'receiver admits its authorized member');
 			await waitForControlConnection(member, rxPeerId, 'member sees the receiver connection');
 
-			// ── 3. Enrollment carve-out: createInvite re-opens the door ────────────
-			const { invite } = await Rx.createInvite('gater-invite-token', 60_000);
-			expect(invite.token).toBe('gater-invite-token');
+			// ── 3. Invitation carve-out: a live cadre invitation re-opens the door ──
+			const { invitation } = await Rx.createCadreInvitation({ grantsOwner: false });
+			expect(invitation.partyId).toBe('gater-party');
 			await outsider.getControlNode()!.dial(rxAddr);
-			await waitForControlConnection(Rx, outsiderPeerId, 'receiver admits a stranger during the invite window');
+			await waitForControlConnection(Rx, outsiderPeerId, 'receiver admits a stranger while an invitation is live');
 		} finally {
 			await Promise.allSettled([outsider?.stop(), member?.stop(), Rx?.stop()]);
 		}

@@ -3,21 +3,19 @@
  *
  * `createLocalUiServer(opts)` wires:
  *   - the origin guard + error handler
- *   - existing trust-circle / NAT / update typed handlers, mounted at
- *     `/auth/*`, `/nat/*`, `/update/*` (the CLI contract)
+ *   - existing NAT / update typed handlers, mounted at `/nat/*`, `/update/*`
+ *     (the CLI contract)
  *   - new UI-only routes under `/api/*` (status, nodes, settings, events)
  *   - the static SPA mount at `/`
  *
  * Callers (cadre-host start) own the subsystems and pass them in. The
  * server doesn't construct them — start has to own their lifecycle anyway
- * (orchestrator init, trust-circle/NAT bring-up, update timer).
+ * (orchestrator init, NAT bring-up, update timer).
  */
 
 import type { FastifyInstance } from 'fastify';
 
 import type { HostProcessOrchestrator } from '../orchestrator/index.js';
-import type { TrustCircleService } from '../auth/index.js';
-import { createTrustCircleHandlers } from '../auth/index.js';
 import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
 import type { StrandService } from '../strands/index.js';
@@ -34,7 +32,6 @@ import { registerOriginGuard } from './origin-guard.js';
 import { registerStaticMount } from './static.js';
 import { buildFastify, startListening, stopListening } from './server.js';
 import { registerNatRoutes } from './routes/nat.js';
-import { registerTrustCircleRoutes } from './routes/trust-circle.js';
 import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
 import { registerStatusRoute, type HostRole } from './routes/status.js';
@@ -45,12 +42,11 @@ import { registerGrantsRoutes } from './routes/grants.js';
 import { HostSettingsStore } from './settings-store.js';
 
 /**
- * The host's own-cadre services. All three or none: they share the owner node,
+ * The host's own-cadre services. Both or none: they share the owner node,
  * and grouping them makes the role `/api/status` reports impossible to disagree
  * with the surfaces actually mounted.
  */
 export interface FounderServices {
-  trustCircle: TrustCircleService;
   nat: NatService;
   strands: StrandService;
 }
@@ -64,7 +60,7 @@ export interface LocalUiServerOptions {
   orchestrator: HostProcessOrchestrator;
   /**
    * The host's own-cadre services — present iff `ownCadre.enabled` (the
-   * founder role). Absent in donor-only mode, where `/auth/*`, `/nat/*` and
+   * founder role). Absent in donor-only mode, where `/nat/*` and
    * `/api/strands` stay unmounted and 404 through the static handler, and
    * `/api/status` reports `role: 'donor'`.
    */
@@ -139,18 +135,17 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
     role,
-    ...(founder ? { trustCircle: founder.trustCircle, nat: founder.nat } : {}),
+    ...(founder ? { nat: founder.nat } : {}),
     ...(opts.update ? { update: opts.update } : {}),
   });
   registerNodesRoutes(app, { orchestrator: opts.orchestrator, role });
   registerSettingsRoutes(app, { settingsStore, ...(founder ? { nat: founder.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
 
-  // Trust-circle + NAT + strand surfaces exist only when the host runs its own
-  // personal cadre. In donor-only mode they're left unmounted, so `/auth/*`,
-  // `/nat/*` and `/api/strands` fall through to the static not-found handler and
-  // 404 (see static.ts).
+  // NAT + strand surfaces exist only when the host runs its own personal
+  // cadre. In donor-only mode they're left unmounted, so `/nat/*` and
+  // `/api/strands` fall through to the static not-found handler and 404 (see
+  // static.ts).
   if (founder) {
-    registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(founder.trustCircle), events });
     registerNatRoutes(app, { handlers: createNatHandlers(founder.nat), events });
     registerStrandRoutes(app, { handlers: createStrandHandlers(founder.strands), events });
   }

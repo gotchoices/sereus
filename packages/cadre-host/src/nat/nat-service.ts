@@ -38,8 +38,8 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Minimal slice of CadreNode that NatService needs — defined as an interface
- * so tests can inject a mock without a real libp2p stack. Mirrors
- * `CadreNodeLike` in `auth/trust-circle.ts`.
+ * so tests can inject a mock without a real libp2p stack. The strand service
+ * declares its own slice the same way (`strands/strand-service.ts`).
  *
  * Both methods are async: in production they round-trip over the owner
  * node's loopback admin channel (`GET /admin/identity`, `GET /admin/multiaddrs`).
@@ -56,7 +56,7 @@ export interface CadreNodeLike {
 export type AddressesChangedListener = (addresses: string[]) => void | Promise<void>;
 
 export interface NatServiceOptions {
-  /** Cadre-host root directory (same one orchestrator + trust-circle use). */
+  /** Cadre-host root directory (same one the orchestrator + grant store use). */
   rootDir: string;
   /** libp2p node — used for peer ID and the libp2p multiaddrs fallback. */
   cadreNode: CadreNodeLike;
@@ -315,7 +315,7 @@ export class NatService {
    * peer ID yet), so a single attempt races readiness and silently drops the first
    * NAT-resolved address set. Retry on `node_unavailable` until the node accepts it
    * or the bounded budget elapses (best-effort thereafter). Awaited by start() so
-   * the management API — the invite-minting path — does not come up first.
+   * the management API does not come up before the node holds its first address set.
    */
   private async pushInitialAddresses(): Promise<void> {
     if (this.addressListeners.size === 0) return;
@@ -488,7 +488,7 @@ export class NatService {
 
 /**
  * Wrap a NatService into the typed handler shape consumed by
- * `cadre-host-local-ui`. Mirrors `createTrustCircleHandlers`.
+ * `cadre-host-local-ui`. Same shape as `createStrandHandlers`.
  */
 export function createNatHandlers(service: NatService): NatHandlers {
   return {

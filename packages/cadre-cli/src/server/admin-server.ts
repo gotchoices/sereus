@@ -2,8 +2,8 @@ import http from 'node:http';
 import debug from 'debug';
 import type {
   CadreNode,
-  CadreInvite,
   ControlDatabase,
+  CreateCadreInvitationOptions,
   StrandInstance,
   StrandRow,
   StrandStatus,
@@ -31,7 +31,7 @@ const STATUS_BY_CODE: Record<AdminErrorCode, number> = {
   internal: 500,
 };
 
-/** Maximum admin request body size (256 KiB) — invites/seeds are small. */
+/** Maximum admin request body size (256 KiB) — invitation options and seeds are small. */
 const MAX_BODY_BYTES = 256 * 1024;
 
 /**
@@ -120,8 +120,9 @@ export interface AdminStrandRemoval {
  * - `GET    /admin/authorized-members`         → `{ members: { peerId, multiaddr }[] }` (AUTHORIZED: excludes self)
  * - `GET    /admin/authorized-members/:peerId` → `{ member: boolean }` (AUTHORIZED)
  * - `GET    /admin/strands`           → `{ strands: AdminStrandSummary[], controlConnections }`
- * - `POST   /admin/invites`           → `{ invite, encodedInvite }`
- * - `POST   /admin/accept-phone`      → `{ ok: true }`
+ * - `GET    /admin/invites`           → `{ invitations: CadreInviteStatus[] }` (every invitation this node holds, with its standing)
+ * - `POST   /admin/invites`           → `{ invitation, encoded }` (mint a cadre invitation; body `{ peerId?, grantsOwner?, expiresInMs?, uses? }`)
+ * - `DELETE /admin/invites/:key`      → `{ withdrawn: boolean }` (owner-signed withdrawal; `false` when not held here or already withdrawn)
  * - `POST   /admin/add-drone`         → `{ seed, encodedSeed }` (mint a seed authorizing a drone/donated node)
  * - `DELETE /admin/members/:peerId`   → `{ ok: true }`
  * - `DELETE /admin/strands/:id?confirm=1` → {@link AdminStrandRemoval} (closed strands need `confirm`)
@@ -268,23 +269,19 @@ export class AdminServer {
       }
     }
 
-    if (resource === 'invites' && method === 'POST') {
-      const body = await this.readJson(req);
-      const token = typeof body.token === 'string' ? body.token : undefined;
-      const expiresInMs = typeof body.expiresInMs === 'number' ? body.expiresInMs : undefined;
-      const { invite, encodedInvite } = await node.createInvite(token, expiresInMs);
-      return { invite, encodedInvite };
-    }
-
-    if (resource === 'accept-phone' && method === 'POST') {
-      const body = await this.readJson(req);
-      if (typeof body.phonePeerId !== 'string' || body.phonePeerId.length === 0) {
-        throw new AdminError('bad_request', 'phonePeerId is required');
+    // Cadre invitations: minted here, redeemable at any member of the party
+    // (`CadreNode.createCadreInvitation` / `redeemCadreInvitation`). The key is
+    // base64url, so it is one path segment as it stands.
+    if (resource === 'invites') {
+      if (method === 'GET' && id === undefined) {
+        return { invitations: await node.listCadreInvitations() };
       }
-      const token = typeof body.token === 'string' ? body.token : undefined;
-      const issuedInvite = body.issuedInvite as CadreInvite | undefined;
-      await node.acceptPhone({ phonePeerId: body.phonePeerId, token }, issuedInvite);
-      return { ok: true };
+      if (method === 'POST' && id === undefined) {
+        return await node.createCadreInvitation(parseInvitationOptions(await this.readJson(req)));
+      }
+      if (method === 'DELETE' && id !== undefined) {
+        return { withdrawn: await node.withdrawCadreInvitation(id) };
+      }
     }
 
     // Mint a seed authorizing a drone (a provider-hosted / donated node) to join
@@ -357,6 +354,32 @@ export class AdminServer {
     res.writeHead(STATUS_BY_CODE[code], { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: { code, message } }));
   }
+}
+
+/**
+ * The mint request from its JSON body, each field checked for shape so a caller's mistake is
+ * a `bad_request` naming the field rather than a node fault. `uses` is checked here too,
+ * ahead of the node's own check, for the same reason.
+ */
+function parseInvitationOptions(body: Record<string, unknown>): CreateCadreInvitationOptions {
+  if (body.peerId !== undefined && (typeof body.peerId !== 'string' || body.peerId.length === 0)) {
+    throw new AdminError('bad_request', 'peerId must be a non-empty string when given');
+  }
+  if (body.grantsOwner !== undefined && typeof body.grantsOwner !== 'boolean') {
+    throw new AdminError('bad_request', 'grantsOwner must be a boolean when given');
+  }
+  if (body.expiresInMs !== undefined && (typeof body.expiresInMs !== 'number' || !Number.isFinite(body.expiresInMs))) {
+    throw new AdminError('bad_request', 'expiresInMs must be a finite number when given');
+  }
+  if (body.uses !== undefined && (typeof body.uses !== 'number' || !Number.isInteger(body.uses) || body.uses < 1)) {
+    throw new AdminError('bad_request', 'uses must be a positive integer when given');
+  }
+  return {
+    grantsOwner: body.grantsOwner === true,
+    ...(body.peerId !== undefined ? { peerId: body.peerId as string } : {}),
+    ...(body.expiresInMs !== undefined ? { expiresInMs: body.expiresInMs as number } : {}),
+    ...(body.uses !== undefined ? { uses: body.uses as number } : {}),
+  };
 }
 
 /**

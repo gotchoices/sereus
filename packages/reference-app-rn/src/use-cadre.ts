@@ -2,15 +2,16 @@
  * use-cadre.ts — React hook for CadreNode lifecycle management.
  *
  * Manages the singleton phone node, exposes connection status, and provides
- * methods for seed application and strand creation.
+ * methods for joining a cadre, seed application and strand creation.
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
+import { decodeCadreInvitation } from '@serfab/cadre-core';
 import type { CadreNode } from '@serfab/cadre-core';
 import type {
   StrandInstance,
   CadreNodeEvents,
+  RedeemCadreInvitationResult,
   RelayReservationState,
   RelayReservationStatus,
   StrandFormationDisclosure,
@@ -171,10 +172,20 @@ export interface UseCadreResult {
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
   stop: () => Promise<void>;
-  /** Apply a base64url-encoded seed, optionally pinning owner keys (e.g. from a CadreInvite). */
-  applySeed: (encoded: string, pinnedOwnerKeys?: string[]) => Promise<void>;
-  /** Decode a pasted base64url CadreInvite and return its pinned owner keys (empty if none). */
-  ownerKeysFromInvite: (encodedInvite: string) => string[];
+  /**
+   * Apply a base64url-encoded seed. Accepted only when this node already anchors the
+   * seed's signer: it founded the cadre, or an operator pinned the key (a redeemed
+   * invitation does that — see {@link joinCadre}).
+   */
+  applySeed: (encoded: string) => Promise<void>;
+  /**
+   * Join the cadre a pasted base64url cadre invitation names: decode it, then redeem
+   * it at one of the members it lists (`CadreNode.redeemCadreInvitation`, which pins
+   * the invitation's owner keys before dialing). Throws the node's own errors —
+   * `CadreInviteRejectedError`, `CadreInviteUnreachableError`,
+   * `CadreInviteReplyInvalidError` — or a plain `Error` for a precondition.
+   */
+  joinCadre: (encodedInvitation: string) => Promise<RedeemCadreInvitationResult>;
   /** Dial a peer by multiaddr while already connected */
   dialPeer: (addr: string) => Promise<void>;
   /** Create a new chat strand and return its instance */
@@ -539,33 +550,24 @@ export function useCadreInternal(): UseCadreResult {
     setStatus('idle');
   }, []);
 
-  const applySeed = useCallback(async (encoded: string, pinnedOwnerKeys?: string[]) => {
+  const applySeed = useCallback(async (encoded: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     const seed = current.decodeSeed(encoded);
-    const trustPolicy = pinnedOwnerKeys?.length
-      ? pinnedKeyTrustPolicy(pinnedOwnerKeys)
-      : undefined;
-    if (pinnedOwnerKeys?.length) {
-      // Enrollment seam: the invite's owner keys are out-of-band trust — anchor
-      // them in the node-local trusted-owner store BEFORE the seed is applied,
-      // so the anchor already holds them when membership/seed trust consults it.
-      await current.trustOwnerKeys(pinnedOwnerKeys, 'invite');
-    }
-    const result = await current.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
+    const result = await current.applySeed(seed);
     if (!result.success) {
       throw new Error(result.error ?? 'Seed application failed');
     }
   }, []);
 
-  // Decode a pasted CadreInvite and surface its pinned owner keys so the
-  // caller can anchor a cold-start seed against `pinnedKeyTrustPolicy`. An older
-  // invite without `ownerKeys` yields `[]` (no pin). Guard ordering matches
-  // `applySeed`: throw 'Node not started' before touching the node.
-  const ownerKeysFromInvite = useCallback((encodedInvite: string): string[] => {
+  // Guard ordering matches `applySeed`: throw 'Node not started' before touching
+  // anything. The decode is standalone (no node), so it runs after the guard only
+  // to keep the two failures in one order.
+  const joinCadre = useCallback(async (encodedInvitation: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    return current.decodeInvite(encodedInvite).ownerKeys ?? [];
+    const invitation = decodeCadreInvitation(encodedInvitation);
+    return current.redeemCadreInvitation(invitation);
   }, []);
 
   const dialPeer = useCallback(async (addr: string) => {
@@ -680,7 +682,7 @@ export function useCadreInternal(): UseCadreResult {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
-    start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
+    start, stop, applySeed, joinCadre, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite, requestHostNode,
   };
 }

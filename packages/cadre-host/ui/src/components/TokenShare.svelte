@@ -7,7 +7,7 @@
 	interface Props {
 		/** The secret to hand over, shown as a QR code and as copyable text. */
 		value: string;
-		/** Accessible name for the copy button, e.g. "Copy invite". */
+		/** Accessible name for the copy button, e.g. "Copy grant token". */
 		copyLabel: string;
 	}
 

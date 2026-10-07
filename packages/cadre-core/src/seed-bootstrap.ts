@@ -15,10 +15,7 @@ import type {
   AuthorizePeerOptions,
   ApplySeedResult,
   AddDroneOptions,
-  AddPhoneOptions,
   DroneInitResult,
-  InviteResult,
-  CadreInvite,
   CadreInviteRow,
   PeerAddressRecord,
   DeviceTokenRecord,
@@ -160,13 +157,6 @@ export interface SeedBootstrapConfig {
   /** Owner public key (base64url) - derived from private key if not provided */
   ownerPublicKey?: string;
   /**
-   * Optional async resolver returning the multiaddrs to embed in invites.
-   * When unset, `libp2pNode.getMultiaddrs()` is used. Hosts behind NAT supply
-   * this (via `@serfab/cadre-host`'s NatService) to substitute the host's
-   * DDNS hostname and externally-mapped port.
-   */
-  inviteAddressResolver?: () => Promise<string[]>;
-  /**
    * Trust anchor for incoming seeds. Decides whether a signature-verified
    * `signerKey` should be trusted, against the receiver's anchored owner
    * keys (NOT the seed body). Defaults to `anchoredTrustPolicy()`, which
@@ -229,9 +219,8 @@ export interface SeedBootstrapConfig {
   seedDeliverTimeoutMs?: number;
   /**
    * Time limits for each peer this service dials from a list of addresses —
-   * {@link SeedBootstrapService.applySeed}'s owner dials and
-   * {@link SeedBootstrapService.dialInvite} — per address and per peer (see
-   * `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
+   * {@link SeedBootstrapService.applySeed}'s owner dials — per address and per
+   * peer (see `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
    * passes its `network.controlCohort` limits.
    */
   dialBudget?: PeerDialBudget;
@@ -326,10 +315,10 @@ export class SeedBootstrapService {
    * `registerHandler` (default true) gates registration of the shared inbound
    * `/sereus/seed/1.0.0` handler on `libp2pNode`. Persistent services
    * (`initializeSeedBootstrap`, `enableSeedListener`) own that handler and leave
-   * it on. The throwaway temp services CadreNode builds in `applySeed` /
-   * `dialInvite` pass `false`: they only need the stored `libp2pNode` /
-   * `controlDatabase` for dialing and known-key lookup, and must NOT bind a
-   * discarded closure to the shared node (a handler leak, and a second
+   * it on. The throwaway temp service CadreNode builds in `applySeed` passes
+   * `false`: it only needs the stored `libp2pNode` / `controlDatabase` for
+   * dialing and known-key lookup, and must NOT bind a discarded closure to the
+   * shared node (a handler leak, and a second
    * `handle()` of the same protocol throws `DuplicateProtocolHandlerError`).
    *
    * Rejects when libp2p refuses the registration; the node and database are
@@ -793,11 +782,11 @@ export class SeedBootstrapService {
    *
    * A key accepted via a pin/TOFU is persisted into the anchor (the policy says
    * so via `SeedTrustDecision.anchorAs`), so the next seed from that owner is
-   * anchored without re-supplying the invite.
+   * anchored without re-supplying the pin.
    *
    * @param seed - The seed to apply (already transport-decoded).
    * @param options.trustPolicy - Per-call policy override (e.g. a
-   *   `pinnedKeyTrustPolicy` derived from a `CadreInvite`) used instead of the
+   *   `pinnedKeyTrustPolicy` built from an operator pin) used instead of the
    *   service-configured default for this seed only.
    */
   async applySeed(
@@ -918,7 +907,7 @@ export class SeedBootstrapService {
 
   /**
    * Persist a signer that a pin/TOFU accepted into the node-local anchor, so a
-   * later seed from the same owner is anchored without re-supplying the invite
+   * later seed from the same owner is anchored without re-supplying the pin
    * or re-prompting. Only the policy decides this happens (`anchorAs` is unset
    * when the key was already anchored, so a plain re-apply writes nothing) and
    * `trust()` is idempotent, keeping the original provenance for a known key.
@@ -1249,104 +1238,6 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Create an invite for a phone to join the cadre.
-   *
-   * Use this when a server (public IP) wants to invite a phone (NAT'd).
-   * The invite is shared out-of-band (QR code, link, etc.) and contains
-   * the server's address so the phone can dial in.
-   *
-   * @param token - Optional invite token for validation
-   * @param expiresIn - Optional expiration time in milliseconds
-   * @returns Invite and encoded invite for sharing
-   */
-  async createInvite(token?: string, expiresIn?: number): Promise<InviteResult> {
-    if (!this.libp2pNode) {
-      throw new Error('Service not initialized');
-    }
-
-    log('Creating invite for phone');
-
-    // Get this node's dialable addresses. When an inviteAddressResolver is
-    // configured (typically by `@serfab/cadre-host`'s NatService), it takes
-    // priority — it may substitute a DDNS hostname and externally-mapped
-    // port for the raw LAN multiaddrs libp2p reports.
-    let ownerAddrs: string[];
-    if (this.config.inviteAddressResolver) {
-      try {
-        ownerAddrs = await this.config.inviteAddressResolver();
-      } catch (err) {
-        log('inviteAddressResolver threw, falling back to libp2pNode.getMultiaddrs(): %o', err);
-        ownerAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
-      }
-    } else {
-      ownerAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
-    }
-
-    // Carry the cadre's owner keys out-of-band so a cold-start invitee can pin
-    // the trusted owner set before applying any seed.
-    //
-    // Sourced ONLY from this node's own anchor, never from the replicated
-    // OwnerKey table: the invitee anchors whatever arrives here
-    // (CadreNode.trustOwnerKeys with source 'invite'), so handing over the
-    // pollutable table would let a stranger's genesis-inserted key ride an
-    // otherwise-legitimate invite straight into the new node's anchor —
-    // poisoning the very store this whole trust chain rests on. No anchor wired
-    // (a directly-constructed service) means no pins to hand out: an invite
-    // without `ownerKeys` costs the invitee an extra out-of-band step, whereas a
-    // table-sourced one silently hands it an unanchored key.
-    const ownerKeys = Array.from(this.config.trustedOwners?.all() ?? []);
-
-    const now = Date.now();
-    const invite: CadreInvite = {
-      partyId: this.config.partyId,
-      ownerAddrs,
-      ownerKeys: ownerKeys.length ? ownerKeys : undefined,
-      token,
-      createdAt: now,
-      expiresAt: expiresIn ? now + expiresIn : undefined,
-    };
-
-    const encodedInvite = this.encodeInvite(invite);
-
-    log('Invite created with %d owner addresses, %d owner keys', ownerAddrs.length, ownerKeys.length);
-
-    return { invite, encodedInvite };
-  }
-
-  /**
-   * Accept a phone connection using an invite.
-   *
-   * Use this when a phone dials in with an invite token. This method:
-   * 1. Validates the token if provided
-   * 2. Authorizes the phone peer
-   *
-   * After this, the phone can sync the control database normally.
-   *
-   * @param options - Phone peer info and invite token
-   * @param issuedInvite - The original invite for validation
-   */
-  async acceptPhone(options: AddPhoneOptions, issuedInvite?: CadreInvite): Promise<void> {
-    const { phonePeerId, token } = options;
-
-    log('Accepting phone: %s', phonePeerId);
-
-    // Validate token if invite provided
-    if (issuedInvite) {
-      if (issuedInvite.token && issuedInvite.token !== token) {
-        throw new Error('Invalid invite token');
-      }
-      if (issuedInvite.expiresAt && Date.now() > issuedInvite.expiresAt) {
-        throw new Error('Invite has expired');
-      }
-    }
-
-    // Authorize the phone peer (no multiaddrs - phone is NAT'd)
-    await this.authorizePeer({ peerId: phonePeerId });
-
-    log('Phone %s accepted and authorized', phonePeerId);
-  }
-
-  /**
    * Add a phone to the cadre with relay support.
    *
    * Use this when both nodes are NAT'd (phone-to-phone). This method:
@@ -1383,51 +1274,4 @@ export class SeedBootstrapService {
 
     return { seed, encodedSeed };
   }
-
-  /**
-   * Encode an invite for out-of-band delivery.
-   */
-  encodeInvite(invite: CadreInvite): string {
-    const json = JSON.stringify(invite);
-    return uint8ArrayToString(new TextEncoder().encode(json), 'base64url');
-  }
-
-  /**
-   * Decode an invite from base64url encoding.
-   */
-  decodeInvite(encoded: string): CadreInvite {
-    const bytes = uint8ArrayFromString(encoded, 'base64url');
-    const json = new TextDecoder().decode(bytes);
-    return JSON.parse(json) as CadreInvite;
-  }
-
-  /**
-   * Dial an owner from an invite.
-   * Use this on a phone after receiving an invite to connect to the owner.
-   *
-   * @param invite - The invite received out-of-band
-   * @returns Connection to the owner
-   */
-  async dialInvite(invite: CadreInvite): Promise<void> {
-    if (!this.libp2pNode) {
-      throw new Error('Service not initialized');
-    }
-
-    // Check expiration
-    if (invite.expiresAt && Date.now() > invite.expiresAt) {
-      throw new Error('Invite has expired');
-    }
-
-    log('Dialing invite owner with %d addresses', invite.ownerAddrs.length);
-
-    const addrs = parseDialAddrs(invite.ownerAddrs);
-    if (addrs.length === 0) {
-      throw new Error('No owner addresses available');
-    }
-    // Each address on its own time limit, so one that never answers cannot hold
-    // the invitee back from the rest (`dialPeerAddrs`).
-    const connection = await dialPeerAddrs(this.libp2pNode, addrs, this.dialBudget, 'Invite owner dial');
-    log('Connected to owner at: %s', connection.remoteAddr.toString());
-  }
 }
-

@@ -13,7 +13,6 @@ import type { FastifyInstance } from 'fastify';
 
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { ManagedNodeInfo } from '../../orchestrator/types.js';
-import type { TrustCircleService } from '../../auth/index.js';
 import type { NatService } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
 import type { UpdateService } from '../../update/index.js';
@@ -29,8 +28,6 @@ export type HostRole = 'founder' | 'donor';
 export interface StatusRouteOptions {
   orchestrator: HostProcessOrchestrator;
   role: HostRole;
-  /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
-  trustCircle?: TrustCircleService;
   /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
   nat?: NatService;
   update?: UpdateService;
@@ -51,8 +48,6 @@ export interface StatusResponse {
     /** Present (true) only on the host's own owner node; every other node is donated. */
     owner?: true;
   }>;
-  /** Omitted in donor-only mode (no host-own trust circle). */
-  trustCircle?: { members: number; pending: number };
   /** Omitted in donor-only mode (no NAT service). */
   connectivity?: NatStatusSnapshot;
   update?: { available?: string; lastChecked?: string };
@@ -80,12 +75,8 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
       nodes,
     };
 
-    // Trust-circle + connectivity exist only when the host runs its own
-    // personal cadre; donor-only mode omits both.
-    if (opts.trustCircle) {
-      const tc = await opts.trustCircle.list();
-      response.trustCircle = { members: tc.members.length, pending: tc.pending.length };
-    }
+    // Connectivity exists only when the host runs its own personal cadre;
+    // donor-only mode omits it.
     if (opts.nat) {
       response.connectivity = opts.nat.getStatus();
     }

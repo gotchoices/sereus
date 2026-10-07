@@ -3,8 +3,8 @@
  * (`createStrandHandlers(service)`).
  *
  * Mount path: `/api/strands` — a UI-only surface with no CLI contract to
- * preserve. (The `/auth/*` and `/nat/*` mounts sit outside `/api` only because
- * the existing CLI already targets those URLs.) Envelope form therefore follows
+ * preserve. (The `/nat/*` mount sits outside `/api` only because the existing
+ * CLI already targets that URL.) Envelope form therefore follows
  * the other `/api/*` routes: `{ ok: true, data }`.
  *
  * A removal that actually issued a delete publishes `strands-changed` so other

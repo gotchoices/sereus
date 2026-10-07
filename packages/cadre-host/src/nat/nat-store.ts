@@ -15,8 +15,7 @@ const DEFAULT_PORT = 4001;
 const DEFAULT_DDNS_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * Atomic JSON store for `nat.json`. Mirrors `TrustCircleStore` — write to
- * `<path>.tmp`, then rename.
+ * Atomic JSON store for `nat.json` — write to `<path>.tmp`, then rename.
  *
  * Concurrency assumption: only one cadre-host process owns a given rootDir.
  */

@@ -25,9 +25,8 @@
  *
  *  - `/sereus/seed/1.0.0` ({@link SEED_PROTOCOL}) — enrollment seed delivery.
  *    An owner dials a brand-new node to seed it (the new node has no members
- *    yet, so its gate is inert), and an invited phone dials the owner before it
- *    is authorized (admitted via the enrollment window `CadreNode.createInvite`
- *    opens). The handler's own trust decision is the anchored seed-trust policy.
+ *    yet, so its gate is inert). The handler's own trust decision is the
+ *    anchored seed-trust policy.
  *  - `/sereus/formation/1.0.0` ({@link FORMATION_PROTOCOL}) — cross-party
  *    strand formation via open invitations. Stranger-facing BY DESIGN: the
  *    initiator is another party, and its token is only checkable inside the
@@ -126,7 +125,7 @@
  * mutual denial. The two layers complement, not duplicate: this connection
  * gate is fail-open over a live DB read (deny only on positive proof of an
  * outsider), the stream gate is fail-closed over the snapshot and has NO
- * stranger carve-outs — an enrollment window admits a stranger's connection
+ * stranger carve-outs — a live invitation admits a stranger's connection
  * for seed delivery, yet its repo streams are still refused.
  *
  * ## The bring-up quiet period
@@ -188,15 +187,6 @@ const log = debug('sereus:cadre:connection-gater');
  * cannot silently drift across modules.
  */
 export const STRANGER_OPEN_PROTOCOLS: readonly string[] = [SEED_PROTOCOL, FORMATION_PROTOCOL, CADRE_INVITE_PROTOCOL];
-
-/**
- * How long `CadreNode.createInvite` holds the inbound gate open for strangers
- * when the invite carries no explicit expiry: the invitee must dial in before
- * it is authorized, and an expiry-less invite gives the gate no bound of its
- * own. Redeeming after this window still works once the owner re-mints (or the
- * caller re-opens the window via `CadreNode.openEnrollmentWindow`).
- */
-export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * How long an `'admit-for-relay'` connection may exist without a relay

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { DroneInitResult, SeedPeer } from '@serfab/cadre-core';
 import type { AdminConnection, AdminFetch } from '../src/commands/admin-client.js';
-import { buildEnrollAddReport, describeAdminFailure, mintSeed } from '../src/commands/enroll-add.js';
+import { describeAdminFailure } from '../src/commands/admin-client.js';
+import { buildEnrollAddReport, mintSeed } from '../src/commands/enroll-add.js';
 import { decodeSeedFor } from '../src/commands/start.js';
 
 const NEW_PEER = '12D3KooWNewMachine';

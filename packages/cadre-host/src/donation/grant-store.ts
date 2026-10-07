@@ -10,14 +10,13 @@ const log = debug('cadre:host:grant-store');
 const FILE_VERSION = 1;
 
 /**
- * Atomic JSON store for `grants.json`. Modelled on `auth/trust-circle-store.ts`:
+ * Atomic JSON store for `grants.json`. Same shape as `nat/nat-store.ts`:
  * a single file, written to `<path>.tmp` then renamed, with an in-memory cache
  * keyed by token.
  *
- * Unlike the trust-circle pending rows, grants are **not** self-reaping: a
- * grant may legitimately outlive many nodes, so expiry is evaluated at
- * validate time (in `GrantService`) and the admin removes stale grants
- * explicitly. This store keeps no clock.
+ * Grants are **not** self-reaping: a grant may legitimately outlive many
+ * nodes, so expiry is evaluated at validate time (in `GrantService`) and the
+ * admin removes stale grants explicitly. This store keeps no clock.
  *
  * Concurrency assumption: only one cadre-host process owns a given rootDir
  * (the orchestrator already enforces this). No file-locking primitives.

@@ -147,19 +147,6 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     }
   }, OP_MS);
 
-  it('createInvite() mints an invite for this party with an encoded form', async () => {
-    const { invite, encodedInvite } = await client.createInvite();
-    expect(typeof encodedInvite).toBe('string');
-    expect(encodedInvite.length).toBeGreaterThan(0);
-    expect(invite.partyId).toBe(partyId);
-    expect(Array.isArray(invite.ownerAddrs)).toBe(true);
-
-    // encodedInvite is base64url(JSON) — it must round-trip back to the invite.
-    const decoded = JSON.parse(Buffer.from(encodedInvite, 'base64url').toString('utf8'));
-    expect(decoded.partyId).toBe(partyId);
-    expect(decoded.token).toBe(invite.token);
-  }, OP_MS);
-
   it('listAuthorizedMembers()/isAuthorizedMember() report an empty membership on a fresh party', async () => {
     // AUTHORIZED surface excludes self: a fresh owner self-registers a CadrePeer
     // address row (addressable surface), but has authorized no one — so the trust-facing
@@ -168,37 +155,35 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     expect(await client.isAuthorizedMember(await freshPeerId())).toBe(false);
   }, OP_MS);
 
-  it('accept-phone authorizes a peer, then removePeer deletes it (full add→remove cycle)', async () => {
+  it('addDrone authorizes a peer, then removePeer deletes it (full add→remove cycle)', async () => {
     // This is the cycle the quereus-cadrepeer-delete-no-row-context fix
     // unblocked: the CadrePeer DELETE-with-context now succeeds end-to-end.
-    const phonePeerId = await freshPeerId();
-    const token = `int-tok-${Math.random().toString(36).slice(2)}`;
+    const dronePeerId = await freshPeerId();
 
-    const { invite } = await client.createInvite(token);
-    await client.acceptPhone({ phonePeerId, token }, invite);
+    await client.addDrone({ dronePeerId, droneMultiaddrs: [] });
 
-    expect(await client.isMember(phonePeerId)).toBe(true);
+    expect(await client.isMember(dronePeerId)).toBe(true);
     // Trust-facing surface too: the host's own owner key is genesis-anchored in
-    // its node-local trusted-owner store, so the voucher it wrote on the phone's
+    // its node-local trusted-owner store, so the voucher it wrote on the drone's
     // row verifies — a sibling vouched by an anchored party owner is a full
     // AUTHORIZED member, not just an addressable one.
-    expect(await client.isAuthorizedMember(phonePeerId)).toBe(true);
+    expect(await client.isAuthorizedMember(dronePeerId)).toBe(true);
     const members = await client.listMembers();
-    expect(members.map((m) => m.peerId)).toContain(phonePeerId);
+    expect(members.map((m) => m.peerId)).toContain(dronePeerId);
 
-    await client.removePeer(phonePeerId);
+    await client.removePeer(dronePeerId);
 
-    expect(await client.isMember(phonePeerId)).toBe(false);
-    expect(await client.isAuthorizedMember(phonePeerId)).toBe(false);
-    expect((await client.listMembers()).map((m) => m.peerId)).not.toContain(phonePeerId);
+    expect(await client.isMember(dronePeerId)).toBe(false);
+    expect(await client.isAuthorizedMember(dronePeerId)).toBe(false);
+    expect((await client.listMembers()).map((m) => m.peerId)).not.toContain(dronePeerId);
   }, OP_MS);
 
-  it('pushInviteAddresses() is reflected in subsequently minted invites', async () => {
+  it('pushInviteAddresses() is accepted by the real admin channel', async () => {
+    // The pushed addresses are observable only in a minted cadre invitation
+    // (cadre-core/test/invite-address-push.spec.ts pins that), so this asserts
+    // acceptance alone.
     const pushed = [`/dns4/host.example.com/tcp/45678/p2p/${expectedPeerId}`];
-    await client.pushInviteAddresses(pushed);
-
-    const { invite } = await client.createInvite();
-    expect(invite.ownerAddrs).toEqual(pushed);
+    await expect(client.pushInviteAddresses(pushed)).resolves.toBeUndefined();
   }, OP_MS);
 
   // The first exercise of the strand admin routes against a REAL control database.
@@ -262,7 +247,7 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
 describe('owner-node client — not-ready / unavailable window', () => {
   it('surfaces OwnerNodeUnavailableError when no node has been spawned', async () => {
     // getter returns undefined → the client cannot resolve an endpoint. This is
-    // the pre-spawn state the trust-circle / NAT services translate to a 503.
+    // the pre-spawn state the NAT / strand services translate to a 503.
     const client = new OwnerNodeClient(() => undefined);
     await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
   });

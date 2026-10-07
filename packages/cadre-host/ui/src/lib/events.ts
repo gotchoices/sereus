@@ -21,7 +21,6 @@ export type EventHandler = (event: { type: string; data: string }) => void;
  */
 const EVENT_TYPES = [
 	'node-state-changed',
-	'trust-circle-changed',
 	'strands-changed',
 	'grants-changed',
 	'connectivity-changed',

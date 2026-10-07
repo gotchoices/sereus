@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,7 +54,6 @@ describe('Installer smoke', () => {
       uiPort: 19999,
       libp2pPort: 14001,
       openBrowser: false,
-      noInvite: true,
       serviceHost: fake,
     });
 
@@ -92,31 +91,6 @@ describe('Installer smoke', () => {
     expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
   });
 
-  it('noService on an interactive install skips the enrollment-invite fetch', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    try {
-      const installer = new Installer({ platform: 'linux', installerVersion: 'test-1.0.0' });
-      const result = await installer.install({
-        nonInteractive: false,
-        noService: true,
-        wizard: async () => ({
-          dataDir: tmp,
-          uiPort: 19994,
-          libp2pPort: 14006,
-          upnpEnabled: false,
-          configureDdns: false,
-          ownCadre: false,
-        }),
-      });
-
-      expect(fetchSpy).not.toHaveBeenCalled();
-      expect(result.enrollmentInvite).toBeUndefined();
-      expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
-    } finally {
-      fetchSpy.mockRestore();
-    }
-  });
-
   it('uninstall removes data only when --remove-data is set', async () => {
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
@@ -126,7 +100,6 @@ describe('Installer smoke', () => {
       uiPort: 19998,
       libp2pPort: 14002,
       openBrowser: false,
-      noInvite: true,
       serviceHost: fake,
     });
     expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
@@ -148,7 +121,6 @@ describe('Installer smoke', () => {
       system: true,
       serviceHost: fake,
       openBrowser: false,
-      noInvite: true,
     })).rejects.toThrow(/system.*not yet supported/);
     expect(fake.installCalls).toHaveLength(0);
   });
@@ -170,7 +142,6 @@ describe('Installer smoke', () => {
       libp2pPort: 14003,
       noUpnp: true,
       openBrowser: false,
-      noInvite: true,
       serviceHost: fake,
       wizard: async (defaults) => {
         seenDefaults = { ...defaults };
@@ -205,7 +176,6 @@ describe('Installer smoke', () => {
     await installer.install({
       nonInteractive: false,
       openBrowser: false,
-      noInvite: true,
       serviceHost: fake,
       wizard: async () => ({
         dataDir: tmp,
@@ -227,7 +197,7 @@ describe('Installer smoke', () => {
     const fakeA = new FakeServiceHost();
     const installerA = new Installer({ platform: 'linux' });
     await installerA.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, noInvite: true, serviceHost: fakeA,
+      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fakeA,
     });
     const donorCfg = readHostConfig(join(tmp, 'host.config.json'));
     expect(donorCfg.ownCadre).toEqual({ enabled: false });
@@ -238,7 +208,7 @@ describe('Installer smoke', () => {
       const fakeB = new FakeServiceHost();
       const installerB = new Installer({ platform: 'linux' });
       await installerB.install({
-        nonInteractive: true, dataDir: tmp2, ownCadre: true, openBrowser: false, noInvite: true, serviceHost: fakeB,
+        nonInteractive: true, dataDir: tmp2, ownCadre: true, openBrowser: false, serviceHost: fakeB,
       });
       const founderCfg = readHostConfig(join(tmp2, 'host.config.json'));
       expect(founderCfg.ownCadre).toEqual({ enabled: true });
@@ -251,11 +221,11 @@ describe('Installer smoke', () => {
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
     await installer.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, noInvite: true, serviceHost: fake,
+      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fake,
     });
     const idBefore = (await import('node:fs')).readFileSync(join(tmp, 'identity.key'));
     await installer.install({
-      nonInteractive: true, dataDir: tmp, openBrowser: false, noInvite: true, serviceHost: fake,
+      nonInteractive: true, dataDir: tmp, openBrowser: false, serviceHost: fake,
     });
     const idAfter = (await import('node:fs')).readFileSync(join(tmp, 'identity.key'));
     expect(Buffer.from(idBefore).equals(Buffer.from(idAfter))).toBe(true);

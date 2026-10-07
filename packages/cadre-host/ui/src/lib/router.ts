@@ -11,7 +11,6 @@
 
 export type RouteName =
 	| 'home'
-	| 'trust-circle'
 	| 'connectivity'
 	| 'nodes'
 	| 'node-detail'
@@ -23,7 +22,7 @@ export type RouteName =
  * Pages that exist only when the host runs its own cadre (their API routes 404
  * in the donor role). The hashes still parse in every role; gating is at render.
  */
-export const FOUNDER_ROUTES: ReadonlySet<RouteName> = new Set<RouteName>(['trust-circle', 'connectivity', 'strands']);
+export const FOUNDER_ROUTES: ReadonlySet<RouteName> = new Set<RouteName>(['connectivity', 'strands']);
 
 export function isFounderRoute(name: RouteName): boolean {
 	return FOUNDER_ROUTES.has(name);
@@ -42,8 +41,6 @@ export function parseHash(hash: string): ParsedRoute {
 	if (!trimmed) return DEFAULT_ROUTE;
 	const segments = trimmed.split('/').filter(Boolean);
 	switch (segments[0]) {
-		case 'trust-circle':
-			return { name: 'trust-circle', params: {} };
 		case 'connectivity':
 			return { name: 'connectivity', params: {} };
 		case 'nodes':
@@ -65,7 +62,6 @@ export function parseHash(hash: string): ParsedRoute {
 export function hrefFor(name: RouteName, params: Record<string, string> = {}): string {
 	switch (name) {
 		case 'home': return '#/';
-		case 'trust-circle': return '#/trust-circle';
 		case 'connectivity': return '#/connectivity';
 		case 'nodes': return '#/nodes';
 		case 'node-detail': return `#/nodes/${encodeURIComponent(params['id'] ?? '')}`;

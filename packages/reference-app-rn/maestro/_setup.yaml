@@ -1,17 +1,17 @@
 appId: ${MAESTRO_APP_ID}
 ---
 # Shared bootstrap for all e2e flows.
-# Launches the phone app, connects to the drone fixture, applies the
-# pre-generated seed, creates a chat strand, and switches to the Chat tab.
+# Launches the phone app, connects to the drone fixture, joins the drone's cadre
+# by redeeming its invitation, creates a chat strand, and switches to the Chat tab.
 #
 # Env vars (injected by scripts/run-e2e.mjs):
-#   PARTY_ID, BOOTSTRAP_ADDR, SEED — from test-data.json
-#   ENROLL_INVITE                  — drone's enrollment invite (pins the drone
-#                                    owner key so the cold phone trusts the
-#                                    seed signer under the secure-default policy)
-#   STRAND_ID                      — drone's pre-created strand
-#   SIDECAR_URL                    — drone HTTP base URL
-#   MAESTRO_APP_ID                 — phone app bundle id
+#   PARTY_ID, BOOTSTRAP_ADDR — from test-data.json
+#   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
+#                              and admits the phone at the drone, so the cold
+#                              phone trusts what it then syncs)
+#   STRAND_ID                — drone's pre-created strand
+#   SIDECAR_URL              — drone HTTP base URL
+#   MAESTRO_APP_ID           — phone app bundle id
 #
 # Outputs (for caller flows):
 #   WORKING_STRAND_ID — the phone-created strand the drone has joined
@@ -47,22 +47,24 @@ appId: ${MAESTRO_APP_ID}
       id: "btn-disconnect"
     timeout: 15000
 
-# ── Apply seed ────────────────────────────────────────────────────────────
+# ── Join the cadre ────────────────────────────────────────────────────────
+# The Join section sits below Seed Bootstrap, which can put it below the fold.
+- scrollUntilVisible:
+    element:
+      id: "input-cadre-invitation"
+    direction: DOWN
 - tapOn:
-    id: "input-seed"
-- inputText: ${SEED}
+    id: "input-cadre-invitation"
+- inputText: ${CADRE_INVITATION}
 - hideKeyboard
-# Pin the drone's owner out-of-band so the cold phone trusts the seed's
-# signer under the secure-default policy (no control-sync race).
 - tapOn:
-    id: "input-enroll-invite"
-- inputText: ${ENROLL_INVITE}
-- hideKeyboard
-- tapOn:
-    id: "btn-apply-seed"
-- assertVisible:
-    id: "modal-title"
-    text: "Seed applied"
+    id: "btn-join-cadre"
+# The join dials the drone and waits for its answer.
+- extendedWaitUntil:
+    visible:
+      id: "modal-title"
+      text: "Joined cadre"
+    timeout: 15000
 - tapOn:
     id: "btn-modal-ok"
 

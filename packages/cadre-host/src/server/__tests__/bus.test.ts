@@ -8,11 +8,11 @@ describe('EventBus', () => {
     const bus = new EventBus();
     const received: LocalUiEvent[] = [];
     bus.subscribe((e) => received.push(e));
-    bus.publish({ type: 'trust-circle-changed', kind: 'invited' });
-    bus.publish({ type: 'trust-circle-changed', kind: 'revoked' });
+    bus.publish({ type: 'grants-changed', kind: 'issued' });
+    bus.publish({ type: 'grants-changed', kind: 'revoked' });
     expect(received).toEqual([
-      { type: 'trust-circle-changed', kind: 'invited' },
-      { type: 'trust-circle-changed', kind: 'revoked' },
+      { type: 'grants-changed', kind: 'issued' },
+      { type: 'grants-changed', kind: 'revoked' },
     ]);
   });
 
@@ -20,9 +20,9 @@ describe('EventBus', () => {
     const bus = new EventBus();
     const received: LocalUiEvent[] = [];
     const unsub = bus.subscribe((e) => received.push(e));
-    bus.publish({ type: 'trust-circle-changed', kind: 'invited' });
+    bus.publish({ type: 'grants-changed', kind: 'issued' });
     unsub();
-    bus.publish({ type: 'trust-circle-changed', kind: 'redeemed' });
+    bus.publish({ type: 'grants-changed', kind: 'terminated' });
     expect(received).toHaveLength(1);
     expect(bus.listenerCount()).toBe(0);
   });
@@ -32,7 +32,7 @@ describe('EventBus', () => {
     const received: LocalUiEvent[] = [];
     bus.subscribe(() => { throw new Error('bad listener'); });
     bus.subscribe((e) => received.push(e));
-    bus.publish({ type: 'trust-circle-changed', kind: 'invited' });
+    bus.publish({ type: 'grants-changed', kind: 'issued' });
     expect(received).toHaveLength(1);
   });
 });

@@ -4,18 +4,12 @@
  * This package is the sibling of @serfab/cadre-provider for self-hosted
  * basement-PC deployments. It depends on @serfab/cadre-provider for the
  * orchestration interface and container lifecycle types but ships its own
- * orchestrator (host processes, not Docker), auth (trust circle, not API
- * keys), installer, NAT layer, and local management UI.
+ * orchestrator (host processes, not Docker), donation grants (loopback-admin
+ * tokens, not API keys), installer, NAT layer, and local management UI.
  *
- * Implementations of HostProcessOrchestrator, TrustCircleAuth, the NAT
- * layer, installer scripts, and the local UI live in sibling subdirectories
- * under src/ and are added by their respective tickets:
- *
- *   - cadre-host-process-orchestrator     [DONE]
- *   - cadre-host-trust-circle             [DONE]
- *   - cadre-host-nat
- *   - cadre-host-installer
- *   - cadre-host-local-ui
+ * HostProcessOrchestrator, the donation grant layer, the NAT layer, the
+ * installer, and the local UI server each live in a sibling subdirectory
+ * under src/.
  */
 
 export type {
@@ -40,26 +34,6 @@ export type {
 
 export { OwnerNodeClient, OwnerNodeUnavailableError } from './owner/index.js';
 export type { OwnerNodeClientOptions } from './owner/index.js';
-
-export {
-  TrustCircleService,
-  TrustCircleStore,
-  TrustCircleError,
-  createTrustCircleHandlers,
-  parseDuration,
-  ensureSelfLabel,
-  DEFAULT_INVITE_TTL_MS,
-} from './auth/index.js';
-export type {
-  TrustCircleServiceOptions,
-  CadreNodeLike,
-  TrustCircleMember,
-  PendingInvite,
-  TrustCircleFile,
-  TrustCircleSnapshot,
-  TrustCircleHandlers,
-  TrustCircleErrorCode,
-} from './auth/index.js';
 
 /* ──────────────── strand management ──────────────── */
 
@@ -105,6 +79,7 @@ export type {
   DonationPeerInfo,
   DonationServiceOptions,
 } from './donation/index.js';
+export { parseDuration } from './donation/duration.js';
 
 export { Installer, readHostConfig, updateHostConfig, writeHostConfig } from './installer/index.js';
 export type {

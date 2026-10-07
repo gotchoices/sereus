@@ -200,7 +200,7 @@ vi.mock('../../src/chat-strand', () => ({
 }));
 
 vi.mock('@serfab/cadre-core', () => ({
-  pinnedKeyTrustPolicy: vi.fn(),
+  decodeCadreInvitation: vi.fn(),
 }));
 
 // The flow itself is covered headlessly in `test/host-node-request.spec.ts`; what

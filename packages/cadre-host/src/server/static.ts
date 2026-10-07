@@ -65,7 +65,6 @@ export function registerStaticMount(app: FastifyInstance, opts: StaticMountOptio
     // Don't try to serve API paths as static.
     if (
       request.url.startsWith('/api') ||
-      request.url.startsWith('/auth') ||
       request.url.startsWith('/nat') ||
       request.url.startsWith('/update')
     ) {
@@ -198,7 +197,7 @@ function placeholderHtml(): string {
       <li><span class="endpoint">GET /api/nodes</span></li>
       <li><span class="endpoint">GET /api/settings</span></li>
       <li><span class="endpoint">GET /api/events</span> (Server-Sent Events)</li>
-      <li><span class="endpoint">/auth/*</span>, <span class="endpoint">/nat/*</span>, <span class="endpoint">/update/*</span></li>
+      <li><span class="endpoint">/nat/*</span>, <span class="endpoint">/update/*</span></li>
     </ul>
     <p>See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md">docs/cadre-host.md</a>.</p>
   </body>

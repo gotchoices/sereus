@@ -3,7 +3,6 @@
  */
 
 import type { FounderServices } from '../index.js';
-import type { TrustCircleService } from '../../auth/index.js';
 import type { NatService } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
 import type { StrandService } from '../../strands/index.js';
@@ -31,12 +30,11 @@ export const SAMPLE_CONNECTIVITY: NatStatusSnapshot = {
 
 /**
  * A founder-role service set whose members answer only the reads the server
- * makes on its own (status, boot publish): an empty trust circle, the sample
- * connectivity, no strands. Pass the service a test exercises as an override.
+ * makes on its own (status, boot publish): the sample connectivity, no
+ * strands. Pass the service a test exercises as an override.
  */
 export function fakeFounder(overrides: Partial<FounderServices> = {}): FounderServices {
   return {
-    trustCircle: { list: async () => ({ members: [], pending: [] }) } as unknown as TrustCircleService,
     nat: { getStatus: () => SAMPLE_CONNECTIVITY } as unknown as NatService,
     strands: { list: async () => ({ strands: [], controlConnections: 0 }) } as unknown as StrandService,
     ...overrides,

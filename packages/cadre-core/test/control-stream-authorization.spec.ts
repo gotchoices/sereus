@@ -123,12 +123,18 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     expect(authorize(node, STRANGER)).toBe(false);
   });
 
-  it('an open enrollment window admits the CONNECTION but not the STREAM — the divergence this gate exists for', async () => {
-    // `createInvite` must let a stranger dial in (it redeems over the ungated
-    // /sereus/seed/1.0.0), but that same window must NOT open the control-DB
+  it('a live cadre invitation admits the CONNECTION but not the STREAM — the divergence this gate exists for', async () => {
+    // A held, live `CadreInvite` row must let the device dial in (it redeems over the
+    // ungated /sereus/cadre-invite/1.0.0), but that same row must NOT open the control-DB
     // repo/cluster/sync/block-transfer streams to it.
-    const node = await establishedNode();
-    node.openEnrollmentWindow(Date.now() + 60_000);
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      liveInvite: true
+    });
+    await refresh(node);
 
     expect(await admitConnection(node, STRANGER)).toBe('admit');
     expect(authorize(node, STRANGER)).toBe(false);

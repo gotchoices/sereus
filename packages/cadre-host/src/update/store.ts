@@ -1,7 +1,7 @@
 /**
  * Atomic JSON store for `<dataDir>/update-state.json`.
  *
- * Mirrors `TrustCircleStore` / `NatStore`: load on demand, write to
+ * Mirrors `NatStore`: load on demand, write to
  * `<path>.tmp` then rename. Single-writer assumption — only one cadre-host
  * process owns a given dataDir.
  */

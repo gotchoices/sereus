@@ -28,7 +28,7 @@ describe('cadre-host CLI smoke test', () => {
     });
 
     expect(stdout.length).toBeGreaterThan(0);
-    for (const cmd of ['install', 'start', 'status', 'invite', 'uninstall']) {
+    for (const cmd of ['install', 'start', 'status', 'uninstall']) {
       expect(stdout).toContain(cmd);
     }
   });

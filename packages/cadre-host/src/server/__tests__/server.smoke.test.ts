@@ -7,7 +7,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createLocalUiServer } from '../index.js';
 import { fakeFounder } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
-import type { TrustCircleService } from '../../auth/index.js';
 import { GrantService, GrantStore } from '../../donation/index.js';
 
 function fakeOrchestrator(): HostProcessOrchestrator {
@@ -17,29 +16,6 @@ function fakeOrchestrator(): HostProcessOrchestrator {
     resolveDockerId: () => undefined,
     onStateChange: () => () => undefined,
   } as unknown as HostProcessOrchestrator;
-}
-
-function fakeTrustCircle(): TrustCircleService {
-  const pending = new Map<string, { token: string; label: string; createdAt: string }>();
-  return {
-    list: async () => ({
-      members: [],
-      pending: [...pending.values()],
-    }),
-    issueInvite: async (opts: { label: string }) => {
-      const token = `tok-${pending.size + 1}`;
-      pending.set(token, { token, label: opts.label, createdAt: new Date().toISOString() });
-      return {
-        encodedInvite: `invite:${token}`,
-        invite: {} as never,
-        token,
-        expiresAt: new Date(Date.now() + 3600_000),
-      };
-    },
-    redeemInvite: async () => ({ peerId: 'p', label: 'l' }),
-    revokePending: async () => undefined,
-    removeMember: async () => undefined,
-  } as unknown as TrustCircleService;
 }
 
 function writeConfig(dir: string): void {
@@ -70,7 +46,7 @@ describe('createLocalUiServer smoke', () => {
       uiPort: 8765,
       dataDir,
       orchestrator: fakeOrchestrator(),
-      founder: fakeFounder({ trustCircle: fakeTrustCircle() }),
+      founder: fakeFounder(),
       forcePort: 0,
     });
     const { url } = await server.start();
@@ -115,21 +91,6 @@ describe('createLocalUiServer smoke', () => {
     expect(status).toBe(403);
   });
 
-  it('round-trips an invite through /auth/* and reflects it in /auth/trust-circle', async () => {
-    const post = await fetch(`${baseUrl}/auth/invites`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: 'Mom\'s phone' }),
-    });
-    expect(post.status).toBe(200);
-
-    const listRes = await fetch(`${baseUrl}/auth/trust-circle`);
-    expect(listRes.status).toBe(200);
-    const body = await listRes.json() as { pending: Array<{ label: string }> };
-    expect(body.pending.length).toBe(1);
-    expect(body.pending[0]?.label).toBe('Mom\'s phone');
-  });
-
   it('serves a placeholder index.html when dist/ui is missing', async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
@@ -147,8 +108,8 @@ describe('createLocalUiServer smoke', () => {
 });
 
 // Donor-only mode: the common case (ownCadre.enabled=false). No owner node, so
-// no trustCircle / NAT are wired. The donor surface (/grants-admin) is up, and
-// the founder-only surfaces (/auth, /nat) 404 to keep the surface honest.
+// no NAT is wired. The donor surface (/grants-admin) is up, and the
+// founder-only surface (/nat) 404s to keep the surface honest.
 describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
   let dataDir: string;
   let server: ReturnType<typeof createLocalUiServer>;
@@ -173,20 +134,18 @@ describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  it('serves /api/status as role donor, with no trustCircle / connectivity and no nodes', async () => {
+  it('serves /api/status as role donor, with no connectivity and no nodes', async () => {
     const res = await fetch(`${baseUrl}/api/status`);
     expect(res.status).toBe(200);
     const body = await res.json() as {
       service: { name: string };
       role: string;
       nodes: unknown[];
-      trustCircle?: unknown;
       connectivity?: unknown;
     };
     expect(body.service.name).toBe('cadre-host');
     expect(body.role).toBe('donor');
     expect(body.nodes).toEqual([]);
-    expect(body.trustCircle).toBeUndefined();
     expect(body.connectivity).toBeUndefined();
   });
 
@@ -207,17 +166,5 @@ describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { code: string } };
     expect(body.error.code).toBe('not_found');
-  });
-
-  it('404s the founder-only trust-circle surface (/auth/*)', async () => {
-    const list = await fetch(`${baseUrl}/auth/trust-circle`);
-    expect(list.status).toBe(404);
-
-    const invite = await fetch(`${baseUrl}/auth/invites`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ label: 'Mom' }),
-    });
-    expect(invite.status).toBe(404);
   });
 });

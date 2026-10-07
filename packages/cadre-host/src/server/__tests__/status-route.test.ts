@@ -5,8 +5,6 @@ import { registerErrorHandler } from '../error-handler.js';
 import { registerStatusRoute } from '../routes/status.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { ManagedNodeInfo } from '../../orchestrator/types.js';
-import type { TrustCircleService } from '../../auth/index.js';
-import type { TrustCircleSnapshot } from '../../auth/types.js';
 import type { NatService } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
 import type { UpdateService } from '../../update/index.js';
@@ -15,9 +13,6 @@ import { SAMPLE_CONNECTIVITY } from './fakes.js';
 
 function fakeOrchestrator(nodes: ManagedNodeInfo[]): HostProcessOrchestrator {
   return { listNodes: () => nodes } as unknown as HostProcessOrchestrator;
-}
-function fakeTrustCircle(snap: TrustCircleSnapshot): TrustCircleService {
-  return { list: async () => snap } as unknown as TrustCircleService;
 }
 function fakeNat(snap: NatStatusSnapshot): NatService {
   return { getStatus: () => snap } as unknown as NatService;
@@ -48,10 +43,6 @@ describe('GET /api/status', () => {
           ports: { health: 1, metrics: 2, p2p: 3, admin: 4, ws: 5 },
         },
       ]),
-      trustCircle: fakeTrustCircle({
-        members: [{ peerId: 'p1', label: 'Self', addedAt: '2025-01-01T00:00:00Z', self: true }],
-        pending: [],
-      }),
       nat: fakeNat(SAMPLE_CONNECTIVITY),
     });
 
@@ -61,7 +52,6 @@ describe('GET /api/status', () => {
       service: { name: string; version: string; uptimeSeconds: number };
       role: string;
       nodes: Array<{ id: string; status: string }>;
-      trustCircle: { members: number; pending: number };
       connectivity: { portMode: string };
       update?: { available?: string };
     };
@@ -69,12 +59,11 @@ describe('GET /api/status', () => {
     expect(body.role).toBe('founder');
     expect(body.nodes).toHaveLength(1);
     expect(body.nodes[0]).toMatchObject({ id: 'alice', status: 'running' });
-    expect(body.trustCircle).toEqual({ members: 1, pending: 0 });
     expect(body.connectivity.portMode).toBe('auto-upnp');
     expect(body.update).toBeUndefined();
   });
 
-  it('omits trustCircle + connectivity in donor-only mode (no trust circle / NAT wired)', async () => {
+  it('omits connectivity in donor-only mode (no NAT wired)', async () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
@@ -88,13 +77,11 @@ describe('GET /api/status', () => {
       service: { name: string };
       role: string;
       nodes: unknown[];
-      trustCircle?: unknown;
       connectivity?: unknown;
     };
     expect(body.service.name).toBe('cadre-host');
     expect(body.role).toBe('donor');
     expect(body.nodes).toEqual([]);
-    expect(body.trustCircle).toBeUndefined();
     expect(body.connectivity).toBeUndefined();
   });
 
@@ -104,7 +91,6 @@ describe('GET /api/status', () => {
     registerStatusRoute(app, {
       role: 'founder',
       orchestrator: fakeOrchestrator([]),
-      trustCircle: fakeTrustCircle({ members: [], pending: [] }),
       nat: fakeNat(SAMPLE_CONNECTIVITY),
       update: fakeUpdate({
         version: 1,

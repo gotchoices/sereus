@@ -1,5 +1,5 @@
 /**
- * Settings screen — connect to cadre, apply seed, create strand.
+ * Settings screen — connect to cadre, join a cadre, apply seed, create strand.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -12,7 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { RelayReservationStatus } from '@serfab/cadre-core';
+import type { RedeemCadreInvitationResult, RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { useCadre } from '../src/cadre-context';
 import {
@@ -25,6 +25,7 @@ import {
   type PendingFounding,
 } from '../src/founding-progress';
 import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
+import { describeJoinFailure } from '../src/join-failure';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
 import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
@@ -63,6 +64,13 @@ const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
   connecting: 'Connecting to the node…',
   connected: 'Connected.',
 };
+
+/** The "Joined cadre" alert body: who admitted this phone, and with what standing. */
+function joinedCadreMessage(result: RedeemCadreInvitationResult): string {
+  const member = result.peerId ?? 'a member';
+  const standing = result.grantsOwner ? 'This device is now an owner.' : 'This device is a member, not an owner.';
+  return `Admitted by ${member}. ${standing}`;
+}
 
 /** What the disconnected Node form shows for each field. */
 interface ConnectForm {
@@ -110,7 +118,7 @@ export default function SettingsScreen() {
     setNoiseCryptoMode(form.noiseCryptoMode);
   }, [savedStartOptions]);
   const [seedInput, setSeedInput] = useState('');
-  const [enrollInviteInput, setEnrollInviteInput] = useState('');
+  const [cadreInvitationInput, setCadreInvitationInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
   const [hostUrl, setHostUrl] = useState('');
@@ -164,31 +172,34 @@ export default function SettingsScreen() {
 
   // ── Seed ───────────────────────────────────────────────────────────────
 
-  // Apply a cold-start seed, optionally anchoring trust on the owner keys
-  // carried by a pasted CadreInvite. A cold node has no foreign owner key in
-  // its OwnerKey table, so the secure default rejects a seed signed by
-  // another cadre; pinning the invite's keys lets the first seed through. An
-  // empty/older invite yields no pins — the alert says so rather than implying a
-  // pin succeeded.
+  // Apply a cold-start seed. The node accepts it only when its anchor already
+  // holds the signer's key (see the hint beside the field); the alert on refusal
+  // carries the node's own reason.
   const handleApplySeed = async () => {
     const seed = seedInput.trim();
     if (!seed) return;
     try {
-      const enrollInvite = enrollInviteInput.trim();
-      const pins = enrollInvite
-        ? cadre.ownerKeysFromInvite(enrollInvite)
-        : undefined;
-      await cadre.applySeed(seed, pins);
+      await cadre.applySeed(seed);
       setSeedInput('');
-      setEnrollInviteInput('');
-      showAlert(
-        'Seed applied',
-        pins?.length
-          ? `Pinned ${pins.length} owner key(s); peer cache updated`
-          : 'Peer cache updated (no owner keys pinned)',
-      );
+      showAlert('Seed applied', 'Peer cache updated');
     } catch (err) {
       showAlert('Seed failed', String(err));
+    }
+  };
+
+  // ── Join a cadre ──────────────────────────────────────────────────────
+
+  // The field is cleared on success only: a failed join keeps the paste, so the
+  // retry the alert may suggest costs no re-paste.
+  const handleJoinCadre = async () => {
+    const encoded = cadreInvitationInput.trim();
+    if (!encoded) return;
+    try {
+      const result = await cadre.joinCadre(encoded);
+      setCadreInvitationInput('');
+      showAlert('Joined cadre', joinedCadreMessage(result));
+    } catch (err) {
+      showAlert('Join failed', describeJoinFailure(err));
     }
   };
 
@@ -365,13 +376,24 @@ export default function SettingsScreen() {
         <Section title="Seed Bootstrap">
           <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
           <Text style={styles.hint}>
-            Optional: paste an enrollment invite (CadreInvite) to pin its
-            owner keys as the trust anchor for this seed. A cold node rejects
-            a seed signed by another cadre unless its key is pinned. Distinct from
-            the closed-strand "Paste invite" below.
+            A seed only works when this phone already trusts its signer: it founded
+            the cadre, or the signer&apos;s key was pinned. To join someone else&apos;s
+            cadre, paste a cadre invitation below instead.
           </Text>
-          <LabelledInput label="Paste enrollment invite (for trust)" value={enrollInviteInput} onChangeText={setEnrollInviteInput} placeholder="base64url CadreInvite (optional)" multiline testID={TEST_IDS.settings.enrollInviteInput} />
           <Btn label="Apply Seed" onPress={handleApplySeed} disabled={!seedInput.trim()} testID={TEST_IDS.settings.applySeedBtn} />
+        </Section>
+      )}
+
+      {/* Join a cadre (redeem an owner's invitation at one of its members) */}
+      {connected && (
+        <Section title="Join a Cadre">
+          <Text style={styles.hint}>
+            Paste an invitation an owner of the cadre issued. Joining pins that
+            owner&apos;s keys and admits this phone at one of the members the
+            invitation names. Distinct from the closed-strand &quot;Paste invite&quot; below.
+          </Text>
+          <LabelledInput label="Paste cadre invitation" value={cadreInvitationInput} onChangeText={setCadreInvitationInput} placeholder="base64url cadre invitation" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
+          <Btn label="Join cadre" onPress={handleJoinCadre} disabled={!cadreInvitationInput.trim()} testID={TEST_IDS.settings.joinCadreBtn} />
         </Section>
       )}
 

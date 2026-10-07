@@ -10,12 +10,12 @@
  *
  *  1. Anchored — keys in the receiver's NODE-LOCAL `TrustedOwnerStore`: the
  *     non-replicated, per-party record of owner keys established out of band
- *     (founding the party, the `CadreInvite` that enrolled this node, an
+ *     (founding the party, the cadre invitation that enrolled this node, an
  *     operator pin). Deliberately NOT the replicated `CadreControl.OwnerKey`
  *     table — any connecting node can genesis-insert its own key there and let
  *     it replicate, so that table can be made to say "yes" by a stranger.
  *  2. Pinned out-of-band — keys handed to the node for this seed only (carried
- *     by a `CadreInvite.ownerKeys`, or pinned by an operator) without having
+ *     by a cadre invitation's `ownerKeys`, or pinned by an operator) without having
  *     been anchored yet.
  *  3. TOFU (opt-in) — an explicit confirmation callback invoked on first sight
  *     of an unknown signer key. Interactive hosts only; off by default.
@@ -88,7 +88,7 @@ export function anchoredTrustPolicy(): SeedTrustPolicy {
 
 /**
  * Cold-start policy: trust anchored keys plus a set pinned out-of-band
- * (typically `CadreInvite.ownerKeys` or operator config). Lets an unenrolled
+ * (typically a cadre invitation's `ownerKeys` or operator config). Lets an unenrolled
  * invitee accept its first seed without the seed vouching for itself.
  *
  * @param anchorAs - provenance under which a pin-only acceptance is persisted

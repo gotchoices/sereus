@@ -14,9 +14,11 @@
  * was handed. Hence the explicit {@link reset}, called from every load helper.
  *
  * Every node call is appended to {@link calls} so ORDER can be asserted, not
- * merely presence — the enrollment seam under test is an ordering
- * (`trustOwnerKeys` strictly before `applySeed`), and per-spy call-order
- * plumbing would not read as an ordering at the assertion site.
+ * merely presence: the join path must decode the paste before it redeems (an
+ * unreadable paste never reaches the node), a seed must decode before it is
+ * applied, and a Settings handler given a blank field must make no call at all.
+ * Per-spy call-order plumbing would not read as an ordering at the assertion
+ * site.
  *
  * {@link FakeNode} declares `implements NodeSurface`, so a cadre-core signature
  * change breaks the BUILD here rather than leaving the suites green while the
@@ -27,33 +29,67 @@
 
 import type { SavedStartOptions } from '../../src/start-options';
 import type { Database } from '@quereus/quereus';
+import { encodeCadreInvitation } from '@serfab/cadre-core';
 import type {
 	ApplySeedResult,
-	CadreInvite,
+	CadreInvitation,
 	CadreNode,
 	ControlNetworkSeed,
+	RedeemCadreInvitationResult,
 	SeedTrustPolicy,
 	StrandInstance,
 	StrandStatus,
-	TrustSource,
 } from '@serfab/cadre-core';
 
 /**
  * The slice of `CadreNode` the view models reach. Pinned as a type so the
- * fake below is checked against the real signatures — including argument ORDER,
- * which is what a `trustOwnerKeys(source, keys)` refactor would change.
+ * fake below is checked against the real signatures.
  */
 type NodeSurface = Pick<
 	CadreNode,
-	'isRunning' | 'peerId' | 'getStrands' | 'on' | 'off' | 'decodeInvite' | 'decodeSeed' | 'trustOwnerKeys' | 'applySeed'
+	'isRunning' | 'peerId' | 'getStrands' | 'on' | 'off' | 'decodeSeed' | 'applySeed' | 'redeemCadreInvitation'
 >;
 
 /** Every node/module call the view models make, in order. */
 export const calls: string[] = [];
 
-/** Owner keys as the app sees them: opaque base64url strings carried by an invite. */
-export const KEY_A = 'ZXhhbXBsZS1vd25lci1rZXktYWFhYWFhYWFhYWFhYWFh';
-export const KEY_B = 'ZXhhbXBsZS1vd25lci1rZXktYmJiYmJiYmJiYmJiYmJi';
+/**
+ * Owner keys as the app sees them: opaque base64url strings. Each decodes to 32
+ * bytes, which is all `decodeCadreInvitation`'s shape check asks of a key.
+ */
+export const KEY_A = 'ZXhhbXBsZS1vd25lci1rZXktYWFhYWFhYWFhYWFhYWE';
+export const KEY_B = 'ZXhhbXBsZS1vd25lci1rZXktYmJiYmJiYmJiYmJiYmI';
+/** The invitation keypair's two halves, 32 bytes each like the owner keys. */
+const INVITE_KEY = 'ZXhhbXBsZS1pbnZpdGUta2V5LWFhYWFhYWFhYWFhYWE';
+const INVITE_PRIVATE_KEY = 'ZXhhbXBsZS1pbnZpdGUtc2VlZC1hYWFhYWFhYWFhYWE';
+
+/**
+ * A well-formed cadre invitation, as `CadreNode.createCadreInvitation` would
+ * bundle one: every field in the stored form the real decoder's shape check
+ * requires. The signature is not verified at decode time, so it is a placeholder.
+ */
+export function invitation(): CadreInvitation {
+	return {
+		v: 1,
+		partyId: 'party-x',
+		invitePrivateKey: INVITE_PRIVATE_KEY,
+		invite: {
+			key: INVITE_KEY,
+			peerId: null,
+			grantsOwner: false,
+			expiresAt: '2026-10-08 00:00:00',
+			totalUses: 1,
+			stampId: 'stamp-1',
+			issuerKey: KEY_A,
+			issuerSig: 'issuer-signature',
+		},
+		ownerKeys: [KEY_A],
+		members: ['/ip4/127.0.0.1/tcp/4002/ws/p2p/12D3KooWDroneDroneDroneDroneDroneDroneDroneDroneDrone'],
+	};
+}
+
+/** {@link invitation} as the real encoder renders it — what a user would paste. */
+export const ENCODED_INVITATION = encodeCadreInvitation(invitation());
 
 /**
  * A strand the view models read `.strandId`, `.status` and `.database` off. The
@@ -93,6 +129,11 @@ export function refusal(error?: string): ApplySeedResult {
 	return { success: false, peersAdded: 0, ownerDialsAttempted: 0, ownerDialsFailed: 0, ...(error ? { error } : {}) };
 }
 
+/** An invitation a member accepted, naming itself. */
+export function admission(): RedeemCadreInvitationResult {
+	return { peerId: '12D3KooWDroneDroneDroneDroneDroneDroneDroneDroneDrone', grantsOwner: false, redeemedAt: '2026-10-07T00:00:00.000Z' };
+}
+
 /**
  * The `CadreNode` surface `cadre-vm.ts` actually reaches. Handed to the view
  * model through the mocked `cadre-phone` module, so it arrives exactly as a real
@@ -107,16 +148,16 @@ export class FakeNode implements NodeSurface {
 	/** Handlers registered via `on`, per event. `off` deletes by identity. */
 	readonly bound = new Map<string, Set<unknown>>();
 
-	/** What `decodeInvite` hands back when it does not throw. */
-	invite: CadreInvite = { partyId: 'party-x', ownerAddrs: [], createdAt: 0 };
-	decodeInviteError: Error | null = null;
 	decodeSeedError: Error | null = null;
 	applySeedResult: ApplySeedResult = acceptance();
+	/** What `redeemCadreInvitation` throws when set; else it resolves to {@link redeemResult}. */
+	redeemError: Error | null = null;
+	redeemResult: RedeemCadreInvitationResult = admission();
 
-	readonly decodedInvites: string[] = [];
 	readonly decodedSeeds: string[] = [];
-	readonly trusted: { keys: string[]; source: Exclude<TrustSource, 'genesis'> }[] = [];
 	readonly applied: { seed: ControlNetworkSeed; options: { trustPolicy?: SeedTrustPolicy } | undefined }[] = [];
+	/** Every bundle handed to `redeemCadreInvitation`, decoded. */
+	readonly redeemed: CadreInvitation[] = [];
 
 	getStrands(): Map<string, StrandInstance> {
 		calls.push('getStrands');
@@ -151,13 +192,6 @@ export class FakeNode implements NodeSurface {
 		return [...this.bound.values()].reduce((n, set) => n + set.size, 0);
 	}
 
-	decodeInvite(encoded: string): CadreInvite {
-		calls.push('decodeInvite');
-		this.decodedInvites.push(encoded);
-		if (this.decodeInviteError) throw this.decodeInviteError;
-		return this.invite;
-	}
-
 	decodeSeed(encoded: string): ControlNetworkSeed {
 		calls.push('decodeSeed');
 		this.decodedSeeds.push(encoded);
@@ -165,23 +199,17 @@ export class FakeNode implements NodeSurface {
 		return sentinels.decodedSeed;
 	}
 
-	/**
-	 * Parameters taken from the real signature rather than restated, because
-	 * `implements` alone would NOT catch a swap to `trustOwnerKeys(source, keys)`:
-	 * method parameters are checked bivariantly, and a `TrustSource` string is
-	 * itself an `Iterable<string>`, so both orders type-check. Binding through the
-	 * real tuple makes the swap land in {@link trusted} instead, where the two
-	 * field types do not interchange.
-	 */
-	async trustOwnerKeys(...[keys, source]: Parameters<CadreNode['trustOwnerKeys']>): Promise<void> {
-		calls.push('trustOwnerKeys');
-		this.trusted.push({ keys: [...keys], source });
-	}
-
 	async applySeed(seed: ControlNetworkSeed, options?: { trustPolicy?: SeedTrustPolicy }): Promise<ApplySeedResult> {
 		calls.push('applySeed');
 		this.applied.push({ seed, options });
 		return this.applySeedResult;
+	}
+
+	async redeemCadreInvitation(invitation: CadreInvitation): Promise<RedeemCadreInvitationResult> {
+		calls.push('redeemCadreInvitation');
+		this.redeemed.push(invitation);
+		if (this.redeemError) throw this.redeemError;
+		return this.redeemResult;
 	}
 }
 

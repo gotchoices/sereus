@@ -237,7 +237,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     });
 
     // Donor-only, like a host with `ownCadre` off. Not `createTestCadreHost`: that brings
-    // up the founder role's trust-circle and NAT services, which nothing here needs.
+    // up the founder role's NAT and strand services, which nothing here needs.
     server = createLocalUiServer({
       uiPort: 0, // unused: `forcePort` binds whatever port the OS hands out
       dataDir: join(tmpRoot, 'ui'),

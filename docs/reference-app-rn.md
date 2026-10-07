@@ -404,7 +404,7 @@ packages/reference-app-rn/
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
-    settings.tsx              # Bootstrap config (seed paste, drone address)
+    settings.tsx              # Bootstrap config (drone address, cadre invitation, seed paste)
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
@@ -420,7 +420,8 @@ packages/reference-app-rn/
     noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
-    use-cadre.ts              # React hook: cadre lifecycle, seed application
+    use-cadre.ts              # React hook: cadre lifecycle, joining a cadre, seed application
+    join-failure.ts           # Plain words for each way a join can fail (NS carries a copy)
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
 ```
@@ -634,7 +635,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
-> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. To anchor trust, paste the issuer's `CadreInvite` (which carries `ownerKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that apply via `pinnedKeyTrustPolicy` and persisted into the anchor, so later seeds from the same owner need no invite. Leave it blank when the phone already trusts the signer.
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. A phone that is not the founder joins instead by pasting the cadre invitation an owner issued into **Paste cadre invitation** (the Join a Cadre section) and tapping **Join cadre** (`CadreNode.redeemCadreInvitation`): that pins the invitation's owner keys into the anchor and admits the phone at one of the member machines the invitation names, so later seeds from the same owner are accepted. The seed field is for a phone that already trusts the signer.
 
 ### Step 5: Create a Strand
 
@@ -862,7 +863,7 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 1. Spawns `test-fixture/start.mjs` (in-memory drone with WS + HTTP sidecar)
 2. Waits for `GET http://127.0.0.1:4080/health` to return 200
 3. Reads `test-fixture/test-data.json` for `partyId`, `droneBootstrapAddr`,
-   `seed`, `strandId`, `enrollInvite`
+   `strandId`, `cadreInvitation`
 4. Runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can
    reach the host-bound fixture
 5. Spawns Maestro against `maestro/flows/`, passing the test-data fields as
@@ -880,23 +881,23 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 | Flow | What it covers |
 |------|----------------|
-| `flows/1-connect-and-send.yaml` | Cold launch → connect → seed → create strand → send message → local echo |
+| `flows/1-connect-and-send.yaml` | Cold launch → connect → join → create strand → send message → local echo |
 | `flows/2-drone-to-phone.yaml` | Drone-side HTTP insert appears in phone chat within 5s |
 | `flows/3-round-trip.yaml` | Bidirectional: phone send seen by drone; drone send seen by phone; both visible |
 | `flows/4-solo-create-strand.yaml` | No drone: connect alone (empty party id and bootstrap) → create strand → result modal with its elapsed time |
 
-Flows 1–3 share `_setup.yaml` for the connect/seed/strand bootstrap. Flow 4 connects alone and does not use it; the orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
+Flows 1–3 share `_setup.yaml` for the connect/join/strand bootstrap. Flow 4 connects alone and does not use it; the orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
 
-Under the secure-default seed-trust policy (`anchoredTrustPolicy`), the cold
-phone would reject the drone's seed because the drone's owner key is not in its
-node-local trusted-owner anchor — and control-sync can never put it there. To
-make the apply step work at all, the drone fixture enrolls its own owner key
-(`ensureOwnerKey`) and mints a `CadreInvite` carrying it; `start.mjs` writes
-this as `enrollInvite`, the orchestrator threads it in as `ENROLL_INVITE`, and
-`_setup.yaml` pastes it into `input-enroll-invite` before tapping **Apply Seed**
-so the phone pins the drone owner out-of-band (`pinnedKeyTrustPolicy`) for
-that one apply. The success-modal title stays `"Seed applied"` (only the body
-text changes), so the assertion is unchanged.
+The cold phone has nothing in its node-local trusted-owner anchor, and
+control-sync can never put the drone's owner key there. The phone therefore
+joins the drone's cadre the way a real device would: the fixture enrolls its own
+owner key (`ensureOwnerKey`) and mints a cadre invitation
+(`createCadreInvitation`) whose member address is the drone's ws listener;
+`start.mjs` writes it as `cadreInvitation`, the orchestrator threads it in as
+`CADRE_INVITATION`, and `_setup.yaml` pastes it into `input-cadre-invitation`
+and taps **Join cadre**, asserting the `Joined cadre` modal. Redeeming it pins
+the drone's owner key and admits the phone at the drone, after which the control
+database syncs under a trusted anchor.
 
 After the phone creates its strand, `_helpers/discover-phone-strand.js`
 polls the drone's `/status` endpoint to discover the strand the drone has
