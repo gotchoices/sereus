@@ -287,7 +287,7 @@ A notification tree is rooted at the machines that store a collection's log tail
 
 - **A commit is pushed to every registered watcher, including the machine outside the tail's storage group.** That machine applies no tail, so only a push or the 30 s tail read can tell it; its watch fired within about 50 ms of the committing machine's `insert` returning, as every other watcher's did. A strand larger than its replication breadth therefore gets push wakes. Optimystic roots each collection's notification tree at its tail's storage group, so the plugin README's "every machine in every cohort" requirement is out of date (`blocked/report-optimystic-reactivity-outside-tail-group`).
 - **A table watched before its first commit registers at the first renewal tick after that commit**, up to 30 s later, because the watch service registers only once it has read a committed tail. Until then a commit reaches it only through the tail read.
-- **The first registration at a root takes seconds; later ones about 60 ms.** The first pays the cold root's proof of work, and if it backs off it retries at the next 30 s tick (1.5 to 41 s measured).
+- **The first registration at a root can take seconds; later ones about 60 ms.** The first is a cold start, and if it backs off it retries at the next 30 s tick. The 1.5 to 41 s measured predates Optimystic 1.12.0, when a cold start still solved a proof of work; a strand node now signs a self-endorsement with its peer key instead, and the range has not been re-measured.
 - **Machines that register together are all admitted.** On a new strand every machine's watch opens at launch, so all of them register on the same renewal tick after the first commit; the scenario registers all three within about 250 ms of each other (requires the Optimystic release carrying `reactivity-registration-burst-locks-out-a-small-root`).
 - **For up to 5 s after a machine registers, a commit can be pushed to nobody.** A registration is held by the root-group machine it lands on and reaches the others by cohort gossip every 5 s, so a commit announced only by a machine that has not heard of it yet waits for the 30 s tail read. Optimystic documents this for groups of three or fewer machines; the scenario waits it out before measuring.
 
@@ -302,7 +302,7 @@ With the option off, both postures are unchanged.
 
 ### Known cost
 
-Each watched table registers on every node build, and a cold-start registration runs a proof of work that took 0.3 to 17 s on Node in Optimystic's measurement, and is slower on a phone's JavaScript thread (Optimystic `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Every hibernation wake pays it again. This is why the option is off by default and enabled in none of this repo's apps.
+Each watched table registers on every node build, and every hibernation wake registers again. A cold-start registration carries evidence that the topic is worth serving. Since Optimystic 1.12.0 a strand node, which always has a peer key, signs a self-endorsement for it, one signature, where it used to solve a proof of work that could hold a phone's JavaScript thread for seconds (Optimystic #31). The option is still off by default and enabled in none of this repo's apps (`backlog/feat-reference-apps-watch-strand-changes`).
 
 ## Inviting Parties
 

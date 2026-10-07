@@ -841,7 +841,7 @@ export interface CadreNodeConfig {
    * should enable it, because a node without it neither announces nor serves as part of the
    * group a notification is rooted at. Enabling registers Optimystic's change-notification
    * protocol handlers on the strand node, which the closed-strand per-stream gate does not
-   * cover, and each watched table pays a cold-start proof of work on every node build. Both
+   * cover, and each watched table registers again on every node build. Both
    * are spelled out in `docs/strands.md` → "Change notifications (reactivity)". The control
    * node never gets it.
    */

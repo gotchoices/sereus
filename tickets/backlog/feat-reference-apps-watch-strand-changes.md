@@ -1,7 +1,7 @@
 description: Make the reference chat apps refresh when a strand actually changes, using Optimystic's change notifications, instead of re-reading the strand every two seconds.
 prereq: strand-reactivity-scenario
 files: packages/reference-app-rn/src/use-chat.ts, packages/reference-app-web/src/lib/messages.svelte.ts, packages/reference-app-ns/src/chat-vm.ts, packages/cadre-rn/src/phone-node/, docs/reference-app-rn.md
-tradeoffs: The cold-start registration's proof of work (optimystic backlog bug-first-registration-proof-of-work-freezes-the-node-for-seconds) can freeze a phone's JS thread for seconds, so the RN app may have to wait for that fix before it can switch.
+tradeoffs: The cold-start registration no longer freezes a phone's JS thread: since Optimystic 1.12.0 a strand node self-endorses with its peer key instead of solving a proof of work (Optimystic #31). Re-measure the first-registration latency on a phone before switching the RN app.
 ----
 # Reference apps watch strand changes instead of polling
 
