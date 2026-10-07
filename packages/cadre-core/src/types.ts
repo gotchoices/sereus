@@ -2114,7 +2114,39 @@ export interface SeedMessage {
   signature: string;
   /** The owner key that signed this message */
   signerKey: string;
+  /**
+   * Proof that the sender holds the receiving node's one-time claim secret
+   * (`claim-proof.ts`), sent only when claiming a brand-new node. Rides beside
+   * the seed rather than inside `ControlNetworkSeed`: it is not part of what the
+   * owner signs, and a claimed node never needs it again.
+   *
+   * The protocol id stays `/sereus/seed/1.0.0` and no version field is added:
+   * there is no backwards compatibility yet, a receiver without this feature
+   * ignores the field and refuses by its anchored policy, and a sender without it
+   * gets a definite refusal (`claim-proof-invalid`) from an unclaimed node.
+   */
+  claimProof?: string;
 }
+
+/**
+ * Why a seed was refused, for callers that must branch on the cause without
+ * parsing the human-readable `reason`. The phone claiming a node needs to tell
+ * "someone else already claimed it" from "wrong secret".
+ *
+ *  - `already-claimed`: the node's anchor already holds an owner key other than
+ *    the signer's; the claim secret is no longer consulted.
+ *  - `claim-proof-invalid`: the node is unclaimed and the seed carried no claim
+ *    proof, or a proof that does not verify.
+ *  - `claim-rate-limited`: too many failed proofs recently; the proof was not
+ *    verified. Retry after the window.
+ *  - `claim-not-persisted`: the proof verified but the node could not durably
+ *    record the claim; nothing was anchored, so the same claim may be retried.
+ */
+export type SeedRefusalCode =
+  | 'already-claimed'
+  | 'claim-proof-invalid'
+  | 'claim-rate-limited'
+  | 'claim-not-persisted';
 
 /**
  * Acknowledgment message from new node to instigator.
@@ -2124,6 +2156,8 @@ export interface SeedAckMessage {
   accepted: boolean;
   /** Reason for rejection (if not accepted) */
   reason?: string;
+  /** Machine-readable refusal cause, when the refusing policy supplies one. */
+  code?: SeedRefusalCode;
 }
 
 // ============================================================================
@@ -2222,6 +2256,15 @@ export interface AuthorizePeerOptions {
 }
 
 /**
+ * Where `deliverSeed` sends a seed: one multiaddr string, dialed as given, or a
+ * peer id with its known addresses. The object form merges the addresses into
+ * the peer store and dials by peer id, so an existing connection is reused and
+ * libp2p tries every address under the one delivery deadline. It is what a phone
+ * uses to claim a node from the addresses it scanned.
+ */
+export type SeedDeliveryTarget = string | { peerId: string; multiaddrs: string[] };
+
+/**
  * Result of applying a seed to a node.
  */
 export interface ApplySeedResult {
@@ -2231,6 +2274,8 @@ export interface ApplySeedResult {
   peersAdded: number;
   /** Error message if not successful */
   error?: string;
+  /** Machine-readable refusal cause, when the refusing trust policy supplied one. */
+  code?: SeedRefusalCode;
   /**
    * Owner-flagged seed peers this apply attempted to dial. Zero when the seed
    * carried no owner peer with an address, or when the seed was rejected before

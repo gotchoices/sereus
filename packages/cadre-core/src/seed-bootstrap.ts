@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { Libp2p, Connection } from '@libp2p/interface';
+import type { Libp2p, Connection, PeerId } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
@@ -12,6 +12,8 @@ import type {
   SeedPeer,
   SeedMessage,
   SeedAckMessage,
+  SeedRefusalCode,
+  SeedDeliveryTarget,
   AuthorizePeerOptions,
   ApplySeedResult,
   AddDroneOptions,
@@ -94,11 +96,38 @@ export function canonicalSeedPayload(
 }
 
 /**
+ * The digest a seed's signature covers: sha256 over {@link canonicalSeedPayload},
+ * base64url. One function so the signer (`createSeed`), the verifier
+ * (`validateSeedSignature`) and the claim proof (`claim-proof.ts`, which binds a
+ * proof to one seed through this value) all name the same bytes.
+ */
+export function seedDigest(seed: Pick<ControlNetworkSeed, 'partyId' | 'peers'>): string {
+  return digest([canonicalSeedPayload(seed)], 'sha256', 'base64url') as string;
+}
+
+/**
  * An {@link ApplySeedResult} for a seed refused before the owner-dial loop ran,
  * so the dial counters read zero rather than being absent.
  */
-function seedRejected(error: string): ApplySeedResult {
-  return { success: false, peersAdded: 0, error, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+function seedRejected(error: string, code?: SeedRefusalCode): ApplySeedResult {
+  return {
+    success: false,
+    peersAdded: 0,
+    error,
+    ...(code !== undefined ? { code } : {}),
+    ownerDialsAttempted: 0,
+    ownerDialsFailed: 0,
+  };
+}
+
+/** What rides beside a seed into {@link SeedBootstrapService.verifyAndMergeSeed}. */
+interface SeedApplyOptions {
+  /** Per-call policy override, used instead of the service-configured default for this seed only. */
+  trustPolicy?: SeedTrustPolicy;
+  /** The claim proof the message carried, when the seed came over the wire. */
+  claimProof?: string;
+  /** The delivering peer, when the seed came over the wire. */
+  remotePeerId?: string;
 }
 
 /** What dialing a seed's owner peers produced — the owner-dial half of an {@link ApplySeedResult}. */
@@ -122,8 +151,9 @@ function parseDialAddrs(addrs: readonly string[]): Multiaddr[] {
 
 /**
  * Merge a peer list's addresses into `node`'s peer store, so the node can dial them: the
- * seed's peers after its signature and trust checks, or the dial hints a member returns on
- * a cadre invitation redemption (`cadre-invite-protocol.ts`). Best-effort per peer — one
+ * seed's peers after its signature and trust checks, the dial hints a member returns on
+ * a cadre invitation redemption (`cadre-invite-protocol.ts`), or the node a seed is being
+ * delivered to ({@link resolveDeliveryTarget}). Best-effort per peer — one
  * unparsable entry costs that peer, not the rest — and a peer with no address is skipped,
  * since there is nothing to dial. Returns how many peers were merged.
  */
@@ -144,6 +174,23 @@ export async function mergeSeedPeers(node: Libp2p, peers: readonly SeedPeer[]): 
     }
   }
   return peersAdded;
+}
+
+/**
+ * Turn a {@link SeedDeliveryTarget} into what `dialProtocol` takes. A multiaddr string is
+ * dialed as given. For a peer id with addresses, the addresses go into the peer store
+ * first and the dial is by peer id, so an existing connection is reused and libp2p tries
+ * every address under the caller's deadline. A malformed peer id throws here, before
+ * anything is dialed; a malformed address is dropped by {@link mergeSeedPeers}, and a
+ * target left with no address fails at the dial.
+ */
+async function resolveDeliveryTarget(node: Libp2p, target: SeedDeliveryTarget): Promise<Multiaddr | PeerId> {
+  if (typeof target === 'string') {
+    return multiaddr(target);
+  }
+  const peerId = peerIdFromString(target.peerId);
+  await mergeSeedPeers(node, [{ peerId: target.peerId, multiaddrs: target.multiaddrs, isOwner: false }]);
+  return peerId;
 }
 
 /**
@@ -748,10 +795,8 @@ export class SeedBootstrapService {
     };
     
     // Sign the seed over its canonical byte representation
-    const seedJson = canonicalSeedPayload(seedData);
-    const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
     const signature = sign(
-      seedDigest,
+      seedDigest(seedData),
       this.config.ownerPrivateKey,
       'ed25519',
       'base64url',
@@ -807,7 +852,7 @@ export class SeedBootstrapService {
    */
   private async verifyAndMergeSeed(
     seed: ControlNetworkSeed,
-    options?: { trustPolicy?: SeedTrustPolicy }
+    options?: SeedApplyOptions
   ): Promise<ApplySeedResult> {
     if (!this.libp2pNode) {
       return seedRejected('Service not initialized');
@@ -821,8 +866,10 @@ export class SeedBootstrapService {
     // mismatch here instead.
     log('Applying seed for party: %s', seed.partyId);
 
-    // Validate the seed signature
-    if (!this.validateSeedSignature(seed)) {
+    // One digest serves the signature check and the trust context: a claim proof is
+    // bound to the seed through the same value the signature covers.
+    const digestB64 = seedDigest(seed);
+    if (!this.validateSeedSignature(seed, digestB64)) {
       return seedRejected('Invalid seed signature');
     }
 
@@ -838,9 +885,16 @@ export class SeedBootstrapService {
       partyId: seed.partyId,
       signerKey: seed.signerKey,
       knownOwnerKeys,
+      // Optional-chained like `dialSeedOwners`: partial libp2p handles (unit-test doubles)
+      // omit `peerId`. A real node always has one, and a proof bound to a real peer id can
+      // only fail against '' — the safe direction.
+      localPeerId: this.libp2pNode.peerId?.toString() ?? '',
+      seedDigest: digestB64,
+      claimProof: options?.claimProof,
+      remotePeerId: options?.remotePeerId,
     });
     if (!decision.trusted) {
-      return seedRejected(decision.reason ?? 'Signer key not trusted by trust policy');
+      return seedRejected(decision.reason ?? 'Signer key not trusted by trust policy', decision.code);
     }
     await this.anchorAcceptedSigner(seed.signerKey, decision);
 
@@ -915,6 +969,9 @@ export class SeedBootstrapService {
    * Failure to PERSIST does not fail the seed: `trust()` reflects the key in the
    * in-memory anchor synchronously, so this seed and the rest of the session are
    * unaffected — only durability across a restart is lost, and that is logged.
+   * That holds for pins and TOFU, which are re-supplied at the next start; a claim
+   * is the opposite case, so `claimSecretTrustPolicy` anchors its signer itself,
+   * awaits durability, and never sets `anchorAs` (the type excludes `'claim'`).
    *
    * NOTE: anchoring a key can flip `CadrePeer` rows ALREADY present from
    * unauthorized to authorized, which the write-driven membership-gate refresh
@@ -963,21 +1020,32 @@ export class SeedBootstrapService {
    * membership-gated receiver paths: without the bound a target that accepts the
    * stream and never replies parks this call forever, and one that streams
    * arbitrary bytes as a fake ack exhausts memory.
+   *
+   * `target` is a multiaddr string, dialed as given, or a peer id with its addresses
+   * ({@link SeedDeliveryTarget}): the addresses are merged into the peer store and the
+   * dial is by peer id, so an existing connection is reused and libp2p tries every
+   * address under the one deadline. `options.claimProof` rides beside the seed in the
+   * message when the target is a brand-new node being claimed (`claim-proof.ts`).
    */
-  async deliverSeed(targetMultiaddr: string, seed: ControlNetworkSeed): Promise<SeedAckMessage> {
+  async deliverSeed(
+    target: SeedDeliveryTarget,
+    seed: ControlNetworkSeed,
+    options?: { claimProof?: string },
+  ): Promise<SeedAckMessage> {
     if (!this.libp2pNode) {
       throw new Error('Service not initialized');
     }
     // Capture the node so the closure below needs no non-null assertion.
     const node = this.libp2pNode;
-    const addr = multiaddr(targetMultiaddr);
+    const dialTarget = await resolveDeliveryTarget(node, target);
+    const label = typeof target === 'string' ? target : target.peerId;
 
-    log('Delivering seed to: %s', targetMultiaddr);
+    log('Delivering seed to: %s', label);
 
     return await withDeadline(
       this.seedDeliverTimeoutMs,
-      `Seed delivery to ${targetMultiaddr}`,
-      (signal) => this.sendSeed(node, addr, seed, signal),
+      `Seed delivery to ${label}`,
+      (signal) => this.sendSeed(node, dialTarget, seed, options?.claimProof, signal),
     );
   }
 
@@ -995,17 +1063,19 @@ export class SeedBootstrapService {
    */
   private async sendSeed(
     node: Libp2p,
-    addr: Multiaddr,
+    dialTarget: Multiaddr | PeerId,
     seed: ControlNetworkSeed,
+    claimProof: string | undefined,
     signal: AbortSignal,
   ): Promise<SeedAckMessage> {
-    const rawStream = await node.dialProtocol(addr, SEED_PROTOCOL, { signal });
+    const rawStream = await node.dialProtocol(dialTarget, SEED_PROTOCOL, { signal });
 
     const message: SeedMessage = {
       partyId: seed.partyId,
       peers: seed.peers,
       signature: seed.signature,
       signerKey: seed.signerKey,
+      ...(claimProof !== undefined ? { claimProof } : {}),
     };
 
     const ack = await exchangeFrame(
@@ -1056,17 +1126,17 @@ export class SeedBootstrapService {
 
   /**
    * Validate a seed's signature.
+   *
+   * @param digestB64 - The seed's {@link seedDigest}, when the caller already computed it
+   *   (`verifyAndMergeSeed` shares one digest between this check and the trust context).
    */
-  validateSeedSignature(seed: ControlNetworkSeed): boolean {
+  validateSeedSignature(seed: ControlNetworkSeed, digestB64 = seedDigest(seed)): boolean {
     try {
-      // Reconstruct the signed bytes via the shared canonical payload builder so
-      // verification is independent of key order. The payload is the fixed
-      // `{ partyId, peers }` the producer emits.
-      const seedJson = canonicalSeedPayload(seed);
-      const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
-
+      // The digest is over the shared canonical payload, so verification is
+      // independent of key order; the payload is the fixed `{ partyId, peers }`
+      // the producer emits.
       return verify(
-        seedDigest,
+        digestB64,
         seed.signature,
         seed.signerKey,
         'ed25519',
@@ -1141,12 +1211,16 @@ export class SeedBootstrapService {
     this.activeStreams++;
     let acked = false;
     try {
-      const seed = await this.readSeedFrame(stream);
+      const { seed, claimProof } = await this.readSeedFrame(stream);
       this.eventCallbacks.onSeedReceived?.(seed.partyId, remotePeerId);
 
-      const merged = await this.verifyAndMergeSeed(seed);
+      const merged = await this.verifyAndMergeSeed(seed, { claimProof, remotePeerId });
       acked = true;
-      await replyAndClose(stream, { accepted: merged.success, reason: merged.error } satisfies SeedAckMessage, 'Seed');
+      await replyAndClose(
+        stream,
+        { accepted: merged.success, reason: merged.error, code: merged.code } satisfies SeedAckMessage,
+        'Seed',
+      );
 
       if (merged.success) {
         await this.dialSeedOwners(seed);
@@ -1167,8 +1241,12 @@ export class SeedBootstrapService {
     }
   }
 
-  /** Read the inbound seed frame to EOF (bounded and size-capped) and decode it. */
-  private async readSeedFrame(stream: ControlStream): Promise<ControlNetworkSeed> {
+  /**
+   * Read the inbound seed frame to EOF (bounded and size-capped) and decode it. The
+   * claim proof comes back beside the seed: it is not part of what the owner signed, so
+   * `ControlNetworkSeed` does not carry it.
+   */
+  private async readSeedFrame(stream: ControlStream): Promise<{ seed: ControlNetworkSeed; claimProof?: string }> {
     const data = await readStreamToEnd(stream, {
       maxBytes: MAX_SEED_SIZE,
       timeoutMs: this.seedReadTimeoutMs,
@@ -1176,10 +1254,13 @@ export class SeedBootstrapService {
     });
     const message = JSON.parse(new TextDecoder().decode(decodeLengthPrefixedFrame(data))) as SeedMessage;
     return {
-      partyId: message.partyId,
-      peers: message.peers,
-      signature: message.signature,
-      signerKey: message.signerKey,
+      seed: {
+        partyId: message.partyId,
+        peers: message.peers,
+        signature: message.signature,
+        signerKey: message.signerKey,
+      },
+      claimProof: message.claimProof,
     };
   }
 

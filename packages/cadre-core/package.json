@@ -93,6 +93,7 @@
     "@libp2p/peer-id": "^6.0.15",
     "@libp2p/peer-record": "^9.0.16",
     "@multiformats/multiaddr": "^13.0.3",
+    "@noble/hashes": "^2.0.0",
     "@optimystic/db-core": "^1.11.0",
     "@optimystic/db-p2p": "^1.11.0",
     "@optimystic/quereus-plugin-crypto": "^1.11.0",

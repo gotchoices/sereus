@@ -18,6 +18,8 @@ import type {
   CadreNodeEvents,
   ControlNetworkSeed,
   ApplySeedResult,
+  SeedAckMessage,
+  SeedDeliveryTarget,
   AddDroneOptions,
   DroneInitResult,
   OpenInvitation,
@@ -7951,12 +7953,20 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Deliver a seed directly to a peer via the /sereus/seed/1.0.0 protocol.
+   *
+   * `target` is a multiaddr string, or a peer id with its addresses (the form a phone
+   * uses for a node it scanned). `options.claimProof` rides beside the seed when the
+   * target is a brand-new node being claimed (`claim-proof.ts`).
    */
-  async deliverSeed(targetMultiaddr: string, seed: ControlNetworkSeed): Promise<{ accepted: boolean; reason?: string }> {
+  async deliverSeed(
+    target: SeedDeliveryTarget,
+    seed: ControlNetworkSeed,
+    options?: { claimProof?: string },
+  ): Promise<SeedAckMessage> {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    return await this.seedBootstrapService.deliverSeed(targetMultiaddr, seed);
+    return await this.seedBootstrapService.deliverSeed(target, seed, options);
   }
 
   /**

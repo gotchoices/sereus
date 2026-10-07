@@ -7,8 +7,9 @@
  * made true by a stranger. This store is the anchor that CAN be trusted — a
  * per-party, on-device record of owner keys established OUT OF BAND: founding
  * the party (genesis self-trust), the pinned keys carried by the cadre invitation
- * that enrolled this node, or an explicit operator pin. It is never written
- * from replicated control state; that is the whole point.
+ * that enrolled this node, an explicit operator pin, or the claim of a brand-new
+ * node by whoever holds its one-time claim secret. It is never written from
+ * replicated control state; that is the whole point.
  *
  * Three implementations:
  *  - {@link MemoryTrustedOwnerStore} (this module, cross-platform) — ephemeral;
@@ -23,16 +24,23 @@
  *    `@serfab/cadre-core/trusted-owner-store-file` (same isolation pattern as
  *    `key-store-file`) so `node:fs` never lands in the RN/browser entry graph.
  *
- * Keys are additive: nothing in this interface removes a key (owner revocation
- * is out of scope here and tracked with the broader control-sync design).
+ * Keys are almost always additive. The one remover, {@link TrustedOwnerStore.remove},
+ * exists for two callers: the claim-secret trust policy rolling back a claim whose
+ * persist failed (`claimSecretTrustPolicy` in `seed-trust-policy.ts`), and the planned
+ * owner-removal work (`owner-anchor-follows-owner-key-changes`). Nothing else removes a
+ * key; owner revocation in the replicated tables does not reach in here.
  */
 import debug from 'debug';
 import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from './node-local-snapshot.js';
 
 const log = debug('sereus:cadre:trusted-owner-store');
 
-/** How an owner key entered the anchor (out-of-band provenance). */
-export type TrustSource = 'genesis' | 'invite' | 'operator';
+/**
+ * How an owner key entered the anchor (out-of-band provenance). `claim` is the
+ * durable "this node has been claimed" marker: the first seed whose sender proved
+ * it held the node's claim secret anchored its signer under this source.
+ */
+export type TrustSource = 'genesis' | 'invite' | 'operator' | 'claim';
 
 export interface TrustedOwnerStore {
 	/** Party this anchor is scoped to. */
@@ -53,13 +61,20 @@ export interface TrustedOwnerStore {
 
 	/**
 	 * Add a key established out of band (genesis self-trust / invite pin /
-	 * operator pin). Idempotent: re-trusting a known key is a no-op that keeps
+	 * operator pin / claim). Idempotent: re-trusting a known key is a no-op that keeps
 	 * the original source. Implementations MUST reflect the key in {@link has} /
 	 * {@link all} synchronously; the returned promise tracks durability only
 	 * (a persistent backend's write), so a synchronous caller may safely consult
 	 * the store right after invoking this.
 	 */
 	trust(ownerKey: string, source: TrustSource): Promise<void>;
+
+	/**
+	 * Drop a key, with {@link trust}'s contract: gone from {@link has} / {@link all}
+	 * synchronously, the returned promise tracks durability. Removing an absent key
+	 * is a no-op. See the module doc for who may call this.
+	 */
+	remove(ownerKey: string): Promise<void>;
 }
 
 /**
@@ -87,6 +102,12 @@ export class MemoryTrustedOwnerStore implements TrustedOwnerStore {
 		this.keys.set(ownerKey, source);
 		log('trusted owner key anchored (party=%s, source=%s)', this.partyId, source);
 	}
+
+	async remove(ownerKey: string): Promise<void> {
+		if (this.keys.delete(ownerKey)) {
+			log('trusted owner key removed (party=%s)', this.partyId);
+		}
+	}
 }
 
 /** One anchored key as persisted: provenance + wall-clock trust time (ms). */
@@ -95,7 +116,10 @@ interface TrustedOwnerEntry {
 	trustedAt: number;
 }
 
-const KNOWN_SOURCES: ReadonlySet<string> = new Set<TrustSource>(['genesis', 'invite', 'operator']);
+// Every TrustSource must be listed: under the discard-all policy below, one entry with a
+// source this set does not know discards the WHOLE anchor on reload, so a node whose only
+// owner was anchored by a claim would silently come back unclaimed.
+const KNOWN_SOURCES: ReadonlySet<string> = new Set<TrustSource>(['genesis', 'invite', 'operator', 'claim']);
 
 /**
  * What the anchor persists: `owners` maps ownerKey (base64url) -> provenance.
@@ -167,5 +191,16 @@ export class PersistentTrustedOwnerStore implements TrustedOwnerStore {
 		}
 		log('trusted owner key anchored (party=%s, source=%s); persisting', this.partyId, source);
 		return this.snapshot.put(ownerKey, { source, trustedAt: Date.now() });
+	}
+
+	/**
+	 * Drop a key: gone from {@link has} / {@link all} synchronously, then the full
+	 * snapshot is persisted (see `NodeLocalSnapshot.remove`).
+	 */
+	remove(ownerKey: string): Promise<void> {
+		if (this.snapshot.has(ownerKey)) {
+			log('trusted owner key removed (party=%s); persisting', this.partyId);
+		}
+		return this.snapshot.remove(ownerKey);
 	}
 }

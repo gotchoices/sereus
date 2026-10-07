@@ -1,19 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, digest, sign, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   SeedBootstrapService,
   SEED_PROTOCOL,
   canonicalSeedPayload,
-  decodeLengthPrefixedFrame
+  decodeLengthPrefixedFrame,
+  seedDigest
 } from '../src/seed-bootstrap.js';
+import { claimProof, parseClaimSecret } from '../src/claim-proof.js';
 import { projectSeedPeers } from '../src/control-database.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import {
   anchoredTrustPolicy,
   pinnedKeyTrustPolicy,
-  tofuTrustPolicy
+  tofuTrustPolicy,
+  claimSecretTrustPolicy
 } from '../src/seed-trust-policy.js';
 import { MemoryTrustedOwnerStore, type TrustSource } from '../src/trusted-owner-store.js';
 import { CadreNode } from '../src/cadre-node.js';
@@ -661,6 +664,7 @@ describe('Seed trust policy', () => {
 					recorded.push([key, source]);
 					await anchor.trust(key, source);
 				},
+				remove: (key: string) => anchor.remove(key),
 			},
 		});
 		serviceInternals(service).libp2pNode = createMockLibp2p();
@@ -715,6 +719,7 @@ describe('Seed trust policy', () => {
 			has: (k: string) => anchor.has(k),
 			all: () => anchor.all(),
 			trust: async () => { throw new Error('disk full'); },
+			remove: (k: string) => anchor.remove(k),
 		};
 		const service = new SeedBootstrapService({ partyId, trustedOwners: failing });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
@@ -759,6 +764,8 @@ describe('Seed trust policy', () => {
 			partyId,
 			signerKey: attackerPublicKey,
 			knownOwnerKeys: new Set(),
+			localPeerId: 'receiver-peer',
+			seedDigest: 'unused-by-this-policy',
 		})).toMatchObject({ trusted: false });
 	});
 
@@ -1446,6 +1453,57 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     // The dial is still in flight at this point — nothing to reset yet.
     expect(stream.aborted).toBeNull();
     await vi.waitFor(() => expect(stream.aborted).toBeTruthy());
+  });
+
+  it('claims an unclaimed node over the wire: the proof rides the frame, the refusal code rides the ack', async () => {
+    // The whole claim path below CadreNode: an object target (addresses merged, dial by
+    // peer id), the claim proof beside the seed, a receiver whose claim policy binds the
+    // proof to ITS OWN peer id, and the machine-readable code copied into the ack.
+    const { seed, ownerPublicKey } = makeSignedSeed('claim-party');
+    const secret = parseClaimSecret(randomBytes(256, 'base64url') as string);
+    const anchor = new MemoryTrustedOwnerStore('claim-party');
+    const receiverPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519'));
+    const receiver = new SeedBootstrapService({
+      partyId: 'claim-party',
+      trustedOwners: anchor,
+      trustPolicy: claimSecretTrustPolicy({ secret, trustedOwners: anchor }),
+    });
+    serviceInternals(receiver).libp2pNode = {
+      peerId: receiverPeerId,
+      peerStore: { merge: async () => {} },
+      dial: async () => {},
+    };
+
+    const merged: string[] = [];
+    const dialed: string[] = [];
+    const sender = new SeedBootstrapService({ partyId: 'claim-party', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(sender).libp2pNode = {
+      peerStore: { merge: async (peerId: { toString(): string }) => { merged.push(peerId.toString()); } },
+      dialProtocol: async (target: { toString(): string }) => {
+        dialed.push(target.toString());
+        const { clientStream, serverStream } = duplexPair();
+        void runHandleSeedStream(receiver, serverStream, 'phone-peer');
+        return clientStream;
+      },
+    };
+    const target = { peerId: receiverPeerId.toString(), multiaddrs: ['/ip4/10.0.0.9/tcp/4001'] };
+
+    // A proof minted for another node: a definite, coded refusal and nothing anchored.
+    const wrong = await sender.deliverSeed(target, seed, {
+      claimProof: claimProof(secret, 'some-other-node', ownerPublicKey, seedDigest(seed)),
+    });
+    expect(wrong).toMatchObject({ accepted: false, code: 'claim-proof-invalid' });
+    expect(anchor.all().size).toBe(0);
+
+    // The proof for this node: accepted, and the node is now claimed by the signer.
+    const right = await sender.deliverSeed(target, seed, {
+      claimProof: claimProof(secret, target.peerId, ownerPublicKey, seedDigest(seed)),
+    });
+    expect(right).toEqual({ accepted: true });
+    expect(anchor.all()).toEqual(new Set([ownerPublicKey]));
+
+    expect(merged).toEqual([target.peerId, target.peerId]);
+    expect(dialed).toEqual([target.peerId, target.peerId]);
   });
 });
 

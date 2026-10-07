@@ -5034,6 +5034,7 @@ __metadata:
     "@libp2p/webrtc": "npm:6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
+    "@noble/hashes": "npm:^2.0.0"
     "@optimystic/db-core": "npm:^1.11.0"
     "@optimystic/db-p2p": "npm:^1.11.0"
     "@optimystic/db-p2p-storage-fs": "npm:^1.11.0"

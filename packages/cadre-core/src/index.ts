@@ -363,6 +363,7 @@ export {
   SeedBootstrapService,
   SEED_PROTOCOL,
   mergeSeedPeers,
+  seedDigest,
   type SeedBootstrapConfig,
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
@@ -514,10 +515,22 @@ export {
   anchoredTrustPolicy,
   pinnedKeyTrustPolicy,
   tofuTrustPolicy,
+  claimSecretTrustPolicy,
   type SeedTrustPolicy,
   type SeedTrustContext,
-  type SeedTrustDecision
+  type SeedTrustDecision,
+  type ClaimSecretTrustPolicyOptions
 } from './seed-trust-policy.js';
+
+// Claim proof: how a brand-new node's first seed proves its sender holds the node's
+// one-time claim secret. The owner side builds the proof over `seedDigest` (exported
+// with the seed bootstrap above); `claimSecretTrustPolicy` verifies it.
+export {
+  parseClaimSecret,
+  claimProof,
+  verifyClaimProof,
+  CLAIM_SECRET_BYTES
+} from './claim-proof.js';
 
 // Schema Verification
 export {

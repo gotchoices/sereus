@@ -91,6 +91,17 @@ describe.each(backends)('TrustedOwnerStore contract: $name', ({ make, cleanup })
 		expect(snapshot.has(KEY_B)).toBe(false);
 		expect(store.all().has(KEY_B)).toBe(true);
 	});
+
+	it('remove() drops a key synchronously, and removing an absent key is a no-op', async () => {
+		const store = await make();
+		await store.trust(KEY_A, 'claim');
+		await store.trust(KEY_B, 'operator');
+		const pending = store.remove(KEY_A);
+		expect(store.has(KEY_A)).toBe(false);
+		await pending;
+		await store.remove(KEY_A);
+		expect(store.all()).toEqual(new Set([KEY_B]));
+	});
 });
 
 describe('FileTrustedOwnerStore specifics', () => {
@@ -108,6 +119,18 @@ describe('FileTrustedOwnerStore specifics', () => {
 
 		const reloaded = await FileTrustedOwnerStore.open(dir, PARTY);
 		expect(reloaded.all()).toEqual(new Set([KEY_A, KEY_B]));
+	});
+
+	it('a key anchored by a claim survives reload (the node stays claimed across a restart)', async () => {
+		// The anchor's loader discards the WHOLE record on one entry whose source it does
+		// not know, so a `claim` entry it did not recognise would bring the node back
+		// unclaimed with nobody told.
+		const dir = await makeTmpDir();
+		const first = await FileTrustedOwnerStore.open(dir, PARTY);
+		await first.trust(KEY_A, 'claim');
+
+		const reloaded = await FileTrustedOwnerStore.open(dir, PARTY);
+		expect(reloaded.all()).toEqual(new Set([KEY_A]));
 	});
 
 	it('an absent directory is a cold start (empty), not a crash', async () => {

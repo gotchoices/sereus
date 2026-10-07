@@ -65,16 +65,18 @@ describe('pinnedKeyTrustPolicy wiring contract', () => {
   const SIGNER = 'pinned-signer-key';
   const partyId = 'party-1';
   const knownOwnerKeys = new Set<string>();
+  // The pinned policy reads neither of these; they only complete the context type.
+  const receiver = { localPeerId: 'receiver-peer', seedDigest: 'unused-by-this-policy' };
 
   it('trusts a signer key that was pinned', async () => {
     const policy = pinnedKeyTrustPolicy(collectPinnedOwnerKeys([SIGNER], undefined));
-    const decision = await policy.evaluate({ partyId, signerKey: SIGNER, knownOwnerKeys });
+    const decision = await policy.evaluate({ partyId, signerKey: SIGNER, knownOwnerKeys, ...receiver });
     expect(decision.trusted).toBe(true);
   });
 
   it('rejects an unknown signer key with a reason', async () => {
     const policy = pinnedKeyTrustPolicy(collectPinnedOwnerKeys([SIGNER], undefined));
-    const decision = await policy.evaluate({ partyId, signerKey: 'some-other-key', knownOwnerKeys });
+    const decision = await policy.evaluate({ partyId, signerKey: 'some-other-key', knownOwnerKeys, ...receiver });
     expect(decision.trusted).toBe(false);
     expect(decision.reason).toBeTruthy();
   });
