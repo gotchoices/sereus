@@ -19,6 +19,12 @@
 
 	/** The claim route answers 503 until the child reports an address; the CLI polls it the same way. */
 	const STARTING_RETRY_MS = 1_000;
+	/**
+	 * How long a 503 counts as "starting", as the CLI's `CLAIM_DETAILS_WAIT_MS`. Past it
+	 * the server's reason is shown with Try again: a host with no address a phone could
+	 * dial answers 503 for as long as the node waits.
+	 */
+	const STARTING_WAIT_MS = 60_000;
 
 	const app = appState();
 
@@ -55,6 +61,7 @@
 	function readCode(nodeId: string): () => void {
 		let stopped = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = Date.now() + STARTING_WAIT_MS;
 		async function load(): Promise<void> {
 			try {
 				const read = await fetchClaimDetails(nodeId);
@@ -63,7 +70,7 @@
 				failure = null;
 			} catch (err) {
 				if (stopped) return;
-				if (err instanceof ApiError && err.code === 'node_unavailable') {
+				if (err instanceof ApiError && err.code === 'node_unavailable' && Date.now() < deadline) {
 					timer = setTimeout(() => void load(), STARTING_RETRY_MS);
 					return;
 				}

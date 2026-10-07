@@ -23,12 +23,15 @@
 	</header>
 
 	<div class="card">
-		{#if rows.length === 0 && !app.hostedNodes.loaded && !app.hostedNodes.error}
-			<p class="muted">Loading…</p>
-		{:else if rows.length === 0}
+		{#if app.hostedNodes.error}
+			<p class="error">Couldn’t load hosted nodes: {app.hostedNodes.error}</p>
+		{/if}
+		{#if rows.length === 0 && app.hostedNodes.loaded}
 			<p class="muted">
 				No nodes yet. <a href={hrefFor('join')}>Join a cadre</a> to start one, then scan its code with the phone that owns the cadre.
 			</p>
+		{:else if rows.length === 0}
+			{#if !app.hostedNodes.error}<p class="muted">Loading…</p>{/if}
 		{:else}
 			<div class="scroll">
 				<table>
@@ -102,4 +105,5 @@
 	}
 	tr:last-child td { border-bottom: none; }
 	.badges { display: inline-flex; gap: 0.25rem; }
+	.error { color: var(--color-danger); }
 </style>
