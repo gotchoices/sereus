@@ -181,6 +181,9 @@ export interface ClaimSecretTrustPolicyOptions {
   /**
    * The node's anchor. A key under source `claim` here is the durable "this node is
    * claimed" marker; the policy writes it and awaits its durability before accepting.
+   * Must be the same store the `SeedBootstrapService` snapshots into
+   * `SeedTrustContext.knownOwnerKeys`: steps 1 and 2 read that snapshot, and a claim
+   * written to a different store would never be seen there.
    */
   trustedOwners: TrustedOwnerStore;
   /** Called once, after the claim is durable, with the owner key that claimed the node. */

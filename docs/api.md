@@ -10,8 +10,9 @@ createCadrePeer(): Promise<{ peerId: PeerId; privateKey: Uint8Array }>;
 authorizePeer(peerId: string, multiaddrs?: string[]): Promise<void>;
 createSeed(): Promise<ControlNetworkSeed>;
 
-// Deliver seed to new node
-deliverSeed(targetMultiaddr: string, seed: ControlNetworkSeed): Promise<SeedAckMessage>;
+// Deliver seed to new node: a multiaddr string, or a peer id with its addresses (merged into the
+// peer store, then dialed by peer id). `claimProof` only when claiming a brand-new node.
+deliverSeed(target: SeedDeliveryTarget, seed: ControlNetworkSeed, options?: { claimProof?: string }): Promise<SeedAckMessage>;
 // Or encode for out-of-band delivery (QR, link, API)
 encodeSeed(seed: ControlNetworkSeed): string;
 
