@@ -36,6 +36,7 @@ import {
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { trailingPeerId } from './peer-record.js';
+import { nextMacrotask } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
 import { isRetriableControlWriteFailure } from './control-write-retry.js';
 import type { CadreInviteRow, SeedPeer } from './types.js';
@@ -194,7 +195,11 @@ export type CadreInviteRejectionCode =
   | 'busy'
   /** The write failed transiently (the write retry gave up); nothing was recorded. */
   | 'conflict'
-  /** An unexpected member-side failure. */
+  /**
+   * An unexpected member-side failure, or a request frame the member could not read (timed
+   * out, oversized, not JSON): nothing was proved either way, so the device tries the next
+   * address, as the formation responder's `internal` is read.
+   */
   | 'internal';
 
 /** Which refusals are worth repeating at the next address — the one place that says so. */
@@ -245,6 +250,18 @@ interface CadreInviteRejection extends CadreInviteRedeemReply {
   accepted: false;
   code: CadreInviteRejectionCode;
   reason: string;
+}
+
+/**
+ * A refusal as the device reads it: the code and reason verbatim off the wire, untyped, so
+ * {@link CadreInviteRejectedError} is the one place that classifies a code this build does
+ * not know (as `'unrecognized'`, retryable) rather than the decoder folding it into a code
+ * it does.
+ */
+interface CadreInviteRefusalFrame {
+  accepted: false;
+  code: unknown;
+  reason: unknown;
 }
 
 function rejection(code: CadreInviteRejectionCode, reason: string): CadreInviteRejection {
@@ -400,18 +417,16 @@ function sanitizePeers(peers: unknown): SeedPeer[] {
 
 /**
  * Read a reply frame into a typed reply, sanitizing the attacker-influenced fields of an
- * acceptance. A refusal keeps only its code and reason. Throws on a frame that is neither.
+ * acceptance. A refusal keeps only its code and reason, as sent. Throws on a frame that is
+ * neither.
  */
-function decodeReply(value: unknown): CadreInviteAccepted | CadreInviteRejection {
+function decodeReply(value: unknown): CadreInviteAccepted | CadreInviteRefusalFrame {
   if (typeof value !== 'object' || value === null) {
     throw new Error('Cadre invitation reply is not an object');
   }
   const reply = value as Record<string, unknown>;
   if (reply.accepted !== true) {
-    return rejection(
-      isCadreInviteRejectionCode(reply.code) ? reply.code : 'internal',
-      typeof reply.reason === 'string' ? reply.reason : 'no reason provided'
-    );
+    return { accepted: false, code: reply.code, reason: reply.reason };
   }
   if (!isBoundedString(reply.partyId) || !isWellFormedCadreInviteRow(reply.invite)) {
     throw new Error('Cadre invitation acceptance is missing its party id or a well-formed row');
@@ -596,20 +611,19 @@ export class CadreInviteHandler {
     }
   }
 
-  /** Read the request frame to EOF, bounded and size-capped; JSON only, shape is `decide`'s. */
+  /**
+   * Read the request frame to EOF, bounded and size-capped; JSON only, shape is `decide`'s.
+   * Throws on a frame that cannot be read, which {@link handleStream} answers `internal`:
+   * a read timeout or a cut frame proves nothing about the invitation, so the device must
+   * stay free to try the next address.
+   */
   private async readRequest(stream: ControlStream): Promise<unknown> {
     const data = await readStreamToEnd(stream, { maxBytes: MAX_CADRE_INVITE_MSG_SIZE, timeoutMs: this.readTimeoutMs, label: 'Cadre invite' });
     return JSON.parse(new TextDecoder().decode(decodeLengthPrefixedFrame(data, MAX_CADRE_INVITE_MSG_SIZE)));
   }
 
   private async decide(stream: ControlStream, remotePeerId: string): Promise<CadreInviteRedeemReply> {
-    let request: unknown;
-    try {
-      request = await this.readRequest(stream);
-    } catch (error) {
-      log('request from %s could not be read: %o', remotePeerId, error);
-      return rejection('invite-invalid', 'Malformed redemption request');
-    }
+    const request = await this.readRequest(stream);
     const refused = this.checkRequest(request, remotePeerId);
     if (refused) return refused;
     return await this.seatAndRedeem(request as CadreInviteRedeemRequest, remotePeerId);
@@ -730,7 +744,7 @@ async function exchangeRedemption(
   signal: AbortSignal,
   budgetMs: number,
   protocolId: string
-): Promise<CadreInviteAccepted | CadreInviteRejection> {
+): Promise<CadreInviteAccepted | CadreInviteRefusalFrame> {
   // `runOnLimitedConnection`: a member may be reachable only through a relay (see `register`).
   const rawStream = await node.dialProtocol(addr, protocolId, { runOnLimitedConnection: true, signal });
   return await exchangeFrame(
@@ -747,11 +761,6 @@ async function exchangeRedemption(
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-/** Between attempts: libp2p's dial queue needs a macrotask to drop an aborted job (`peer-dial.ts`). */
-function nextMacrotask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /**
@@ -772,6 +781,7 @@ export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOpti
   const budgetMs = options.addressBudgetMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
   const outcomes: CadreInviteAddressOutcome[] = [];
   for (const addr of options.invitation.members) {
+    // Between attempts: libp2p's dial queue needs a macrotask to drop an aborted job.
     if (outcomes.length > 0) await nextMacrotask();
     let parsed: Multiaddr;
     try {

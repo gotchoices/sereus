@@ -2064,6 +2064,11 @@ export class CadreNode implements SAppIdLookup {
    *     redeems it is a stranger until the redemption writes its row, and its
    *     proof of possession is only checkable inside `/sereus/cadre-invite/1.0.0`;
    *     same reasoning as check 6, and the same expectation-of-a-stranger key.
+   *     NOTE: keyed on the row being HELD here, so a member that has not yet
+   *     received the row by replication denies the device although the bundle
+   *     carries the row (`createCadreInvitation`); the device's dial fails and it
+   *     tries the next address. Whether the gate should admit such a device is
+   *     the blocked ticket `decide-cadre-invite-redeemed-before-the-row-replicates`.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
    * checks 1-3 are in-memory, 4/5 share one control-DB read, and only a peer
@@ -8126,8 +8131,13 @@ export class CadreNode implements SAppIdLookup {
    *
    * The row commits locally and replicates like any other control write; minted while
    * alone (a phone with no connection), it reaches the other members through the
-   * peer-join block catch-up on the next connection, and redemption at a member works
-   * before then because the bundle carries the row.
+   * peer-join block catch-up on the next connection. Until a member holds the row, that
+   * member's connection gate denies the device ({@link admitInboundControlConnection}
+   * check 7 admits a stranger only while a live `CadreInvite` row is held locally), so the
+   * device's dial of it fails and it moves to the next address; the bundle's copy of the
+   * row is seated only at a member whose gate is already open (no vouched member yet, or
+   * another live invitation). See the blocked ticket
+   * `decide-cadre-invite-redeemed-before-the-row-replicates`.
    *
    * @throws when no owner key is wired, the anchor is empty, `uses` is not a positive
    *   integer, or neither this machine nor any other member has an address.

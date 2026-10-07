@@ -495,7 +495,7 @@ sequenceDiagram
     participant M as Member (always-on)
     participant D as Device (new)
     Note over O: 1. createCadreInvitation() — mint keypair,<br/>owner-sign CadreInvite row, bundle it
-    O-->>M: 2. CadreInvite row replicates (or not yet)
+    O-->>M: 2. CadreInvite row replicates (M's gate admits strangers while it holds a live row)
     Note over O: 3. Owner goes offline
     O->>D: 4. Bundle out of band (QR / paste / link)
     Note over D: 5. Pin bundle.ownerKeys; sign request<br/>with invitation key + identity key
@@ -522,7 +522,7 @@ interface CadreInvitation {
 }
 ```
 
-Carrying the signed row is what makes redemption work at a member that has not received the row by replication: the member seats it from the bundle (`seatCadreInvite`, its own transaction) and redeems in the next. The row's signature covers every column, so an altered bundle seats nowhere. `ownerKeys` come from the issuer's node-local anchor only, never the replicated `OwnerKey` table, for the reason the seed invite gives (the device anchors whatever arrives). An untargeted owner-granting invitation is a bearer credential for admin rights and defaults to a 15-minute lifetime; every other kind to 24 hours; one use unless asked otherwise.
+The bundle carries the signed row so a member that does not hold it can seat it from the bundle (`seatCadreInvite`, its own transaction) and redeem in the next; the row's signature covers every column, so an altered bundle seats nowhere. That covers less than it first seems: the member's connection gate admits a stranger only while the member itself holds a live `CadreInvite` row (see the gate's "What it admits anyway" below), so a member that has not yet received the row by replication refuses the device's connection before the protocol runs, the dial fails, and the device tries the next address. The seat from the bundle therefore serves a member whose gate is open for another reason: it has no vouched member yet, or it holds another live invitation. An invitation minted while the owner is alone becomes redeemable at another member once the row replicates there; whether the gate should admit such a device earlier is the blocked ticket [`decide-cadre-invite-redeemed-before-the-row-replicates`](../tickets/blocked/decide-cadre-invite-redeemed-before-the-row-replicates.md). `ownerKeys` come from the issuer's node-local anchor only, never the replicated `OwnerKey` table, for the reason the seed invite gives (the device anchors whatever arrives). An untargeted owner-granting invitation is a bearer credential for admin rights and defaults to a 15-minute lifetime; every other kind to 24 hours; one use unless asked otherwise.
 
 **The exchange** is one frame each way over the shared `control-stream.ts` primitives, capped at 64 KiB:
 
@@ -559,7 +559,7 @@ The member checks in cost order so a stranger that cannot prove anything costs n
 | `party-mismatch` | no | this machine serves another cadre |
 | `busy` | yes | the member is at its cap on concurrent redemptions |
 | `conflict` | yes | the write failed transiently and nothing was recorded |
-| `internal` | yes | an unexpected member-side failure |
+| `internal` | yes | an unexpected member-side failure, or a request frame the member could not read (timed out, oversized, not JSON) |
 
 The device (`redeemAtMembers`) tries the bundle's addresses one at a time, each under a deadline derived from the link (a relayed dial plus one request, as seed delivery's is), and stops at the first acceptance or the first final code; a dial failure, a malformed reply or a retryable code moves it to the next address, and when every address is exhausted it throws `CadreInviteUnreachableError` naming each address's outcome. Every address gets the same request with one `usageStampId`, the usage table's key, so a member the device gave up on cannot admit it twice, and a retry after a dropped reply is answered as already a member with no second usage row. On acceptance the device checks the reply's party id, invitation key and row signature against the keys it pinned (`verifyRedeemReply`); that catches a wrong-party or wrong-row answer, not a forged member — the request already carried the signed row, so a machine that is not a member can echo it. What protects the device afterwards is its anchor: every row it then syncs is judged against the pinned owner keys, so such a machine can admit nobody the device will trust. It then merges the reply's peers, retains the answering member as a cold-start dial target, refreshes its membership gate and syncs the control database over the connection it already holds — the same unified behaviour as after a seed.
 

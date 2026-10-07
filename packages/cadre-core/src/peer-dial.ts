@@ -310,6 +310,11 @@ function allAttemptsFailed(label: string, failures: AddrAttemptFailure[]): Error
 	return new Error(`${label} failed for all ${failures.length} candidate addresses: ${detail}`, { cause: failures[0].error });
 }
 
-function nextMacrotask(): Promise<void> {
+/**
+ * Yield one macrotask: libp2p's dial queue drops an aborted job only on the next turn, so a
+ * dialer that moves on to another address after an abort waits this long first. Shared with
+ * the cadre invitation dialer (`cadre-invite-protocol.ts`).
+ */
+export function nextMacrotask(): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, 0));
 }

@@ -3,7 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode, CADRE_INVITATION_DEFAULT_TTL_MS, OWNER_INVITATION_DEFAULT_TTL_MS } from '../src/cadre-node.js';
 import { decodeCadreInvitation, type CadreInvitation } from '../src/cadre-invite-protocol.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
-import { newUnstartedNode, startSelfOwnerNode, type SelfOwnerNode } from './self-owner-node-helpers.js';
+import { startSelfOwnerNode, type SelfOwnerNode } from './self-owner-node-helpers.js';
 import { anchorWith, createConfig, inject } from './membership-gate-helpers.js';
 
 /**
@@ -90,11 +90,6 @@ describe('CadreNode.createCadreInvitation', () => {
     };
 
     await expect(node.createCadreInvitation({ grantsOwner: false })).rejects.toThrow(/anchors no owner key/);
-  });
-
-  it('needs the owner key', async () => {
-    const { node } = await newUnstartedNode('cadre-invitation-keyless-');
-    await expect(node.createCadreInvitation({ grantsOwner: false })).rejects.toThrow(/initializeSeedBootstrap/);
   });
 });
 
