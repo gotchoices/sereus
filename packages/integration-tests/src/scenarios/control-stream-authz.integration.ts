@@ -1,8 +1,7 @@
 /**
- * E2E for the per-stream control-DB authorization gate
- * (`CadreNode.authorizeInboundControlStream` — the fail-closed layer wired as
- * `authorizeInboundStream` on the control node, behind the fail-open
- * connection gater).
+ * E2E for the control node's per-stream protocol guard (`control-protocol-guard.ts`
+ * — the fail-closed layer behind the fail-open connection gater, which also backs
+ * Optimystic's own `authorizeInboundStream` check on the four control-DB protocols).
  *
  * The hole this gate closes: the connection gater must admit strangers while
  * a cadre invitation is live (`createCadreInvitation` — the device dials in before
@@ -10,8 +9,9 @@
  * deny repo". So during that window an outsider HOLDS an admitted connection
  * to the owner — and without the stream gate it could speak the four
  * Optimystic control-DB protocols directly. This scenario drives the repo
- * protocol RAW (a `RepoClient` over a minimal `IPeerNetwork` stub) to prove,
- * over real WebSocket libp2p nodes:
+ * protocol RAW (a `RepoClient` over a minimal `IPeerNetwork` stub), and every
+ * other members-only protocol the owner serves, to prove, over real WebSocket
+ * libp2p nodes:
  *
  *   1. Positive control: an authorized member's raw pend+commit against the
  *      owner's control repo succeeds (the gate admits members).
@@ -26,6 +26,11 @@
  *      present, proving the probe observes real writes).
  *   4. The outsider's CONNECTION survives the denied stream — connection
  *      admitted, stream refused: the two layers are genuinely distinct.
+ *   5. Stranger probe: on EVERY protocol the owner serves that is not declared
+ *      stranger-open or libp2p plumbing (read off its live protocol list, so a
+ *      members-only protocol added later is probed without editing this file), a
+ *      stream from the outsider is reset with zero response bytes, and the delegate
+ *      it announced was not granted.
  *
  * Redirect robustness: `responsibilityK` defaults to 1 and the party's only
  * repo-serving cluster here is {owner, member}, so the owner is always in the
@@ -47,10 +52,11 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
+import type { PeerId } from '@libp2p/interface';
 import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
-import { CadreNode, collectStrandAddrs } from '@serfab/cadre-core';
+import { CadreNode, collectStrandAddrs, controlProtocolClasses } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { controlNodeConfig, makeOwnOwner, waitForControlConnection, waitUntil } from '../harness/index.js';
 import type { ControlNodeOpts } from '../harness/index.js';
@@ -73,6 +79,82 @@ function peerNetworkOver(node: Libp2p): IPeerNetwork {
 		connect: async (peerId, protocol, options) =>
 			await node.dialProtocol(libp2pPeerIdFromString(peerId.toString()), protocol, options),
 	};
+}
+
+/** How long one probe stream may take to be refused before the probe counts it as answered by silence. */
+const PROBE_TIMEOUT_MS = 10_000;
+
+/** How a probe stream ended: refused by the remote (at open or after), closed cleanly, or never settled. */
+type ProbeEnd = 'reset' | 'eof' | 'timeout';
+
+interface ProbeResult {
+	protocol: string;
+	end: ProbeEnd;
+	responseBytes: number;
+	detail: string;
+}
+
+/** A 4-byte big-endian length-prefixed JSON frame, the framing of the Sereus control protocols. */
+function sereusFrame(body: unknown): Uint8Array {
+	const json = new TextEncoder().encode(JSON.stringify(body));
+	const frame = new Uint8Array(4 + json.length);
+	new DataView(frame.buffer).setUint32(0, json.length, false);
+	frame.set(json, 4);
+	return frame;
+}
+
+/** An unsigned-varint length-prefixed JSON frame, the framing of the Optimystic and FRET protocols. */
+function varintFrame(body: unknown): Uint8Array {
+	const json = new TextEncoder().encode(JSON.stringify(body));
+	const prefix: number[] = [];
+	for (let n = json.length; ; n >>>= 7) {
+		if (n < 0x80) {
+			prefix.push(n);
+			break;
+		}
+		prefix.push((n & 0x7f) | 0x80);
+	}
+	const frame = new Uint8Array(prefix.length + json.length);
+	frame.set(prefix, 0);
+	frame.set(json, prefix.length);
+	return frame;
+}
+
+/**
+ * Open `protocol` to `target`, send `frame`, half-close, and read to the end, counting the
+ * response bytes. A refused stream ends in a `reset`, at open or on the read; a handler that ran
+ * and answered or closed ends in `eof`; one that holds the stream open ends in `timeout`.
+ *
+ * Bounded by racing a timer rather than by the dial's abort signal alone: once the stream is open,
+ * a handler that never closes its side would otherwise hold the read for as long as it likes.
+ */
+async function probeStream(node: Libp2p, target: PeerId, protocol: string, frame: Uint8Array): Promise<ProbeResult> {
+	let stream: Awaited<ReturnType<Libp2p['dialProtocol']>> | undefined;
+	let responseBytes = 0;
+	const exchange = (async (): Promise<ProbeResult> => {
+		try {
+			stream = await node.dialProtocol(target, protocol);
+			stream.send(frame);
+			await stream.close();
+			for await (const chunk of stream) {
+				responseBytes += chunk.byteLength;
+			}
+			return { protocol, end: 'eof', responseBytes, detail: 'stream closed cleanly' };
+		} catch (error) {
+			const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+			return { protocol, end: 'reset', responseBytes, detail };
+		}
+	})();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<ProbeResult>((resolve) => {
+		timer = setTimeout(() => resolve({ protocol, end: 'timeout', responseBytes, detail: `no end within ${PROBE_TIMEOUT_MS}ms` }), PROBE_TIMEOUT_MS);
+	});
+	try {
+		return await Promise.race([exchange, timedOut]);
+	} finally {
+		clearTimeout(timer);
+		stream?.abort(new Error('probe finished'));
+	}
 }
 
 describe('E2E per-stream control-DB stream authorization', () => {
@@ -169,6 +251,43 @@ describe('E2E per-stream control-DB stream authorization', () => {
 					(c) => c.remotePeer.toString() === oPeerId && c.status === 'open'
 				)
 			).toBe(true);
+
+			// ── 5. Stranger probe: every members-only protocol A serves ──────────
+			// Read off A's live protocol list. A protocol with no class is guarded as
+			// members-only too, so it is probed rather than skipped.
+			const classes = controlProtocolClasses(partyId);
+			const membersOnly = A.getControlNode()!.getProtocols().filter((protocol) => {
+				const protocolClass = classes.get(protocol);
+				return protocolClass !== 'stranger-open' && protocolClass !== 'transport';
+			});
+			expect(membersOnly).toEqual(expect.arrayContaining([
+				'/sereus/strand-wake/1.0.0', '/sereus/strand-addr/1.0.0', `${protocolPrefix}/fret/1.0.0/neighbors/announce`
+			]));
+			// Each frame is one the protocol's handler would act on if it ran: a wake, an
+			// address request announcing a delegate, a FRET announce naming the outsider.
+			const announcedDelegate = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+			const sereusRequest = sereusFrame({ strandId: 'stream-authz-strand', reason: 'probe', delegatePeerId: announcedDelegate });
+			const fretAnnounce = varintFrame({ from: oPeerId, timestamp: Date.now(), successors: [], predecessors: [], sample: [] });
+			const aLibp2pId = libp2pPeerIdFromString(aPeerId);
+			const oNode = O.getControlNode()!;
+			const probes = await Promise.all(membersOnly.map((protocol) => probeStream(
+				oNode, aLibp2pId, protocol, protocol.startsWith('/sereus/') ? sereusRequest : fretAnnounce
+			)));
+			// Sent by the authorized member M instead, these frames draw a reply on every
+			// protocol here except repo and block-transfer, whose handlers reset a frame they
+			// cannot parse (measured 2026-10-07). So on the others a reset with nothing
+			// received is the guard; for repo, the raw pend in step 2 is the proof.
+			const answered = probes.filter((probe) => probe.end !== 'reset' || probe.responseBytes > 0);
+			expect(answered, JSON.stringify(answered, null, 1)).toEqual([]);
+
+			// The address request's delegate announce did not land.
+			expect(A.hasDelegateAdmission(announcedDelegate)).toBe(false);
+			// NOTE: not asserted: that A's FRET ring and control-database cohort exclude O. They
+			// do not. libp2p records every protocol a peer opens a stream on as one that peer
+			// serves, before any handler runs, and FRET and Optimystic count a peer serving the
+			// party's protocols as a ring and cohort member, so after this probe O is in the
+			// cohort for A's control blocks. Ticket
+			// `stranger-joins-the-control-cohort-by-advertising-protocols`.
 		} finally {
 			await Promise.allSettled([O?.stop(), M?.stop(), A?.stop()]);
 		}
@@ -251,16 +370,16 @@ describe('E2E per-stream control-DB stream authorization', () => {
 				)
 			).rejects.toThrow();
 
-			// Strand-addr: the responder's own isAuthorizedMember gate refuses a
-			// non-member (the grant buys the connection, not the RPC) — a `refused`
-			// reply carrying no addresses.
+			// Strand-addr: the responder's protocol guard refuses a non-member (the
+			// grant buys the connection, not the RPC) by resetting the stream, which
+			// the asker reports as `unreachable`, with no addresses.
 			const refused = await collectStrandAddrs(
 				D.getControlNode()!,
 				[{ peerId: aPeerId, addrs: [multiaddr(aAddr.toString())] }],
 				strandId
 			);
 			expect(refused.addrs).toEqual([]);
-			expect(refused.outcomes.get(aPeerId)).toBe('refused');
+			expect(refused.outcomes.get(aPeerId)).toBe('unreachable');
 
 			// The refused streams did not cost the delegate its connection — the
 			// circuit-relay reservation riding it would survive.

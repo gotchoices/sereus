@@ -487,22 +487,22 @@ describe('E2E push-wake over the control network', () => {
 
 			await bringUpHibernatingStrand(Rx, strandId);
 
-			// Wake gate: rejected despite the membership row; the sleeping node cannot
-			// be woken by an outsider that merely published rows.
-			const ack: WakeAck = await O.pushWake(rxPeerId, strandId, 'unauthorized wake');
-			expect(ack.accepted).toBe(false);
-			// No side effect: the strand is still hibernating (receiver rejected before wake).
+			// Wake gate: refused despite the membership row; the sleeping node cannot
+			// be woken by an outsider that merely published rows. Rx's protocol guard
+			// resets the stream without an ack, so the push rejects.
+			await expect(O.pushWake(rxPeerId, strandId, 'unauthorized wake')).rejects.toThrow();
+			// No side effect: the strand is still hibernating (refused before the handler ran).
 			expect(Rx.getStrand(strandId)?.status).toBe('hibernating');
 
 			// Strand-addr gate mirrors the wake gate. Wake the strand LOCALLY so Rx has
 			// live strand multiaddrs to protect, then let O ask for them over the real
-			// STRAND_ADDR_PROTOCOL dial: refused (empty) while unanchored.
+			// STRAND_ADDR_PROTOCOL dial: reset (no reply, so `unreachable`) while unanchored.
 			await Rx.wakeStrand(strandId);
 			expect(Rx.getStrand(strandId)?.status).toBe('active');
 			const rxDialTargets = [{ peerId: rxPeerId, addrs: rxAddrs.map((a) => multiaddr(a)) }];
 			const refused = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
 			expect(refused.addrs).toEqual([]);
-			expect(refused.outcomes.get(rxPeerId)).toBe('refused');
+			expect(refused.outcomes.get(rxPeerId)).toBe('unreachable');
 
 			// POSITIVE CONTROL — same replicated state, one anchor pin: once Rx's
 			// operator pins O's owner key, the identical rows flip to authorized and the

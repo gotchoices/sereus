@@ -16,13 +16,12 @@
  *
  * **Authorization (v1):** a wake is low-risk — it only causes the receiver to
  * spend resources coming online for a strand it already participates in — so the
- * receiver carries no per-request signature and instead defers entirely to the
- * injected `isMember` predicate. `CadreNode` injects its AUTHORIZED-membership
- * predicate there (`isAuthorizedMember`: the sender's `CadrePeer` row must carry
- * a voucher that verifies against an owner key in the receiver's node-local
- * trusted-owner anchor), so a peer that merely published rows into the replicated
- * control DB is refused. This module stays agnostic: it enforces whatever
- * predicate it is given.
+ * request carries no signature. Membership is checked before this handler runs, by
+ * the control node's protocol guard (`control-protocol-guard.ts`, the `members`
+ * class: `CadreNode.isAuthorizedMember`, under which the sender's `CadrePeer` row
+ * must carry a voucher that verifies against an owner key in the receiver's
+ * node-local trusted-owner anchor), so a peer that merely published rows into the
+ * replicated control DB gets its stream reset and never reaches this module.
  */
 
 import debug from 'debug';
@@ -55,8 +54,8 @@ const MAX_WAKE_SIZE = 64 * 1024;
  * It holds only link work because the receiver acks as soon as it has DECIDED, before the
  * wake itself runs ({@link StrandWakeService.processWakeRequest}).
  *
- * NOTE: the receiver's membership check (two live control reads) runs inside this deadline and
- * is not counted. In steady state those reads touch only held blocks and do not consult the
+ * NOTE: the receiver's membership check (two live control reads, in its protocol guard) runs
+ * inside this deadline and is not counted. In steady state those reads touch only held blocks and do not consult the
  * cohort. If a wake or address request is seen timing out while the receiver's membership read
  * is consulting, count one membership decision in this deadline or answer the check from the
  * materialized authorized-peer snapshot. See docs/cadre-consistency.md → "Deadlines Over
@@ -122,8 +121,6 @@ async function readFrame<T>(stream: ControlStream, timeoutMs: number): Promise<T
  * (`CadreNode`), injected so the service is testable without a full node.
  */
 export interface StrandWakeServiceOptions {
-  /** Membership gate: is the remote peer a `CadrePeer` member of this cadre? */
-  isMember(remotePeerId: string): Promise<boolean>;
   /** Look up a local strand instance by id (undefined if not participated in). */
   getStrand(strandId: string): StrandInstance | undefined;
   /**
@@ -157,9 +154,10 @@ export interface StrandWakeServiceOptions {
 
 /**
  * Receiver side of the push-wake protocol. Registers a `WAKE_PROTOCOL` handler
- * on the control node and, for each inbound {@link WakeRequest}, gates on cadre
- * membership, replies with a {@link WakeAck}, and starts resuming the named
- * strand if it is hibernating/idle and we participate in it.
+ * on the control node and, for each inbound {@link WakeRequest} (from a peer the
+ * protocol guard has already admitted as an authorized member), replies with a
+ * {@link WakeAck} and starts resuming the named strand if it is hibernating/idle
+ * and we participate in it.
  */
 export class StrandWakeService {
   private readonly options: StrandWakeServiceOptions;
@@ -249,8 +247,7 @@ export class StrandWakeService {
    * Decide the wake for a decoded request and start it. Exposed (not private) so
    * the decision matrix can be unit-tested directly.
    *
-   * - Non-member sender → rejected (`accepted: false`).
-   * - Unknown / not-participated strand → rejected.
+   * - Unknown / not-participated strand → rejected (`accepted: false`).
    * - Hibernating or idle strand → `accepted` with that status, and a wake started.
    * - Already-live strand → no-op, `accepted` with current status.
    *
@@ -260,13 +257,6 @@ export class StrandWakeService {
    * sender's attempt deadline, coupling that deadline to this node's own budgets.
    */
   async processWakeRequest(request: WakeRequest, remotePeerId: string): Promise<WakeAck> {
-    // The injected membership predicate is the whole v1 authorization (CadreNode
-    // supplies the voucher-anchored one); only a peer it admits may ask us to wake.
-    if (!(await this.options.isMember(remotePeerId))) {
-      log('Rejecting wake from non-member %s', remotePeerId);
-      return { accepted: false, reason: 'Sender is not a cadre member' };
-    }
-
     const instance = this.options.getStrand(request.strandId);
     if (!instance) {
       log('Rejecting wake for unknown/unparticipated strand %s', request.strandId);

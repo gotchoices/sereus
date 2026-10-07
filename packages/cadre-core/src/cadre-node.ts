@@ -110,7 +110,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, pendingJoinId, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
@@ -143,6 +143,7 @@ import {
   UnauthorizedReservationBudget,
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
+import { controlNetworkName, installControlProtocolGuard } from './control-protocol-guard.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
 import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer, type StrandAddrOutcome, type StrandAddrCollection } from './strand-addr-protocol.js';
 import {
@@ -1211,6 +1212,9 @@ export class CadreNode implements SAppIdLookup {
       this.controlNode = await this.createControlNode();
       timing('[start] createControlNode: %dms', Math.round(performance.now() - t0));
       log('Control node started with ID: %s', this.controlNode.peerId.toString());
+      // Before anything else can happen on the node: the quiet period above holds every
+      // connection off, so no stream can arrive ahead of the guard.
+      this.installControlProtocolGuard(this.controlNode);
 
       // Extract coordinatedRepo from the node (attached by createLibp2pNode)
       const coordinatedRepo = (this.controlNode as Libp2pNodeWithRepo).coordinatedRepo;
@@ -1286,11 +1290,10 @@ export class CadreNode implements SAppIdLookup {
       this.hibernationManager.start();
 
       // Register the control-network push-wake receiver: a same-cadre peer can
-      // signal us to bring a hibernating strand online. Gated on AUTHORIZED
-      // membership (not the addressable surface); the wake routes through the same
-      // path as a local wake.
+      // signal us to bring a hibernating strand online. The protocol guard admits
+      // only AUTHORIZED members (not the addressable surface); the wake routes
+      // through the same path as a local wake.
       this.strandWakeService = new StrandWakeService({
-        isMember: (peerId) => this.isAuthorizedMember(peerId),
         getStrand: (strandId) => this.strandManager.getInstance(strandId),
         wake: (strandId) => this.wakeStrand(strandId),
       });
@@ -1298,14 +1301,13 @@ export class CadreNode implements SAppIdLookup {
 
       // Register the control-network strand-address responder: a same-cadre peer
       // resolving a strand's bootstrap seed asks us for our live strand-network
-      // multiaddrs (its CadrePeer row only knows our *control* address). Gated on
-      // AUTHORIZED membership; answers only for strands we are actively meshing.
-      // The same RPC doubles as the delegate-announce channel: a member's request
-      // may carry the derived peerId its strand node runs as, and we record an
-      // admission grant so our connection gate (and thus our relay server, when
-      // enabled) admits it — see delegate-admission.ts.
+      // multiaddrs (its CadrePeer row only knows our *control* address). The
+      // protocol guard admits only AUTHORIZED members; answers only for strands we
+      // are actively meshing. The same RPC doubles as the delegate-announce channel:
+      // a member's request may carry the derived peerId its strand node runs as, and
+      // we record an admission grant so our connection gate (and thus our relay
+      // server, when enabled) admits it — see delegate-admission.ts.
       this.strandAddrService = new StrandAddrService({
-        isMember: (peerId) => this.isAuthorizedMember(peerId),
         getStrandMultiaddrs: (strandId) => this.getStrandMultiaddrs(strandId),
         onDelegateAnnounce: (announcer, strandId, delegate) =>
           this.grantDelegateAdmission(announcer, strandId, delegate),
@@ -1806,19 +1808,24 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The control libp2p node's Optimystic network name — ONE binding for every
-   * derivation from it (`db-p2p` namespaces all of the node's protocol ids as
-   * `/optimystic/<networkName>/...`), so the node options and the block-transfer
-   * protocol prefix the control backfill dials can never drift apart.
-   *
-   * NOTE: the party id goes in UNENCODED here, unlike in `controlStorageScope`. Safe
-   * today because a party id is locally configured rather than replicated in, and both
-   * ends of a connection derive this string identically — an odd party id yields an odd
-   * but consistent protocol id, not a mismatch or an escaped name. If a party id ever
-   * arrives from the network, encode it here as the storage scope key already does.
+   * Refuse non-members on every members-only protocol of the control node, at one seam
+   * (`control-protocol-guard.ts`). Wake and strand-addr are judged by the live
+   * {@link isAuthorizedMember}, bounded by the asker's own attempt deadline at this
+   * node's declared link; everything a control-database read depends on is judged by
+   * the snapshot ({@link authorizeInboundControlStream}).
    */
+  private installControlProtocolGuard(controlNode: Libp2p): void {
+    installControlProtocolGuard(controlNode, {
+      partyId: this.config.controlNetwork.partyId,
+      isMemberLive: (peerId) => this.isAuthorizedMember(peerId),
+      isMemberSnapshot: (peerId, protocol) => this.authorizeInboundControlStream(peerId, protocol),
+      liveDecisionTimeoutMs: relayedRequestBudgetMs(this.config.network?.linkRoundTripMs),
+    });
+  }
+
+  /** This node's control network name ({@link controlNetworkName}, the one binding for it). */
   private controlNetworkName(): string {
-    return `control-${this.config.controlNetwork.partyId}`;
+    return controlNetworkName(this.config.controlNetwork.partyId);
   }
 
   /**
@@ -2133,7 +2140,10 @@ export class CadreNode implements SAppIdLookup {
       // Fail-closed per-stream authorization for the four Optimystic control-DB
       // protocols — the members-only layer the connection gater's stranger
       // carve-outs cannot express (see authorizeInboundControlStream). Control
-      // node only: strand cohort nodes serve cross-party peers.
+      // node only: strand cohort nodes serve cross-party peers. The protocol guard
+      // (installControlProtocolGuard) checks these four with this same predicate
+      // first; Optimystic's own check is kept because it is a working, supported
+      // upstream defence, not a second policy.
       authorizeInboundStream: (remotePeerId, protocol) =>
         this.authorizeInboundControlStream(remotePeerId, protocol)
     };
@@ -2350,8 +2360,8 @@ export class CadreNode implements SAppIdLookup {
    * transport peerId of `announcerPeerId`'s strand-`strandId` node, admitted
    * at the CONNECTION and RESERVATION levels (all a circuit-relay reservation
    * needs, without spending the unauthorized-reservation budget) for
-   * `DELEGATE_GRANT_TTL_MS`. Called by the strand-addr responder after its
-   * authorized-membership gate has passed; public so tests can drive the
+   * `DELEGATE_GRANT_TTL_MS`. Called by the strand-addr responder, which the
+   * protocol guard admits only authorized members to; public so tests can drive the
    * admission policy without a full strand launch. A re-announce for the same
    * (announcer, strand) REPLACES the previous delegate rather than
    * accumulating. Never honored by {@link authorizeInboundControlStream}.
@@ -7650,7 +7660,7 @@ export class CadreNode implements SAppIdLookup {
    * not-yet-enrolled node authorizes no one), a null/partial proof, an
    * unanchored `VouchOwner`, a bad signature, or a usage or invitation row this node
    * does not hold all yield "not authorized" — having an address row is NOT
-   * membership. The control-network wake and strand-address gates consult this set,
+   * membership. The protocol guard admits wake and strand-address requests by this set,
    * NOT the addressable one.
    *
    * The usage and invitation tables are read only when at least one row needs them,
@@ -7756,8 +7766,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Probe whether a given peer is an AUTHORIZED party member (see
-   * {@link listAuthorizedMembers}) — the gate the control-network wake and
-   * strand-address responders consult, NOT {@link isMember} (the addressable
+   * {@link listAuthorizedMembers}) — the check the protocol guard runs ahead of the
+   * control-network wake and strand-address handlers, NOT {@link isMember} (the addressable
    * surface). Deliberately scans the full membership (one `CadrePeer` query)
    * rather than adding a single-row read path: cadres are small, and one code
    * path keeps the predicate impossible to drift from the list.
@@ -7774,14 +7784,16 @@ export class CadreNode implements SAppIdLookup {
    * record (via {@link resolvePeerAddrs}, signaling/relay first — so a NAT'd peer
    * is reachable through its circuit-relay address), dials `WAKE_PROTOCOL`, sends
    * the {@link WakeRequest}, and returns the peer's {@link WakeAck}. The receiver
-   * gates the request on cadre membership and only resumes a strand it already
-   * participates in; it acks once it has decided, before the strand is up. The
-   * dial deadlines derive from this node's `network.linkRoundTripMs`.
+   * only resumes a strand it already participates in; it acks once it has decided,
+   * before the strand is up. The dial deadlines derive from this node's
+   * `network.linkRoundTripMs`.
    *
    * @param targetPeerId - The hibernating cadre peer to wake.
    * @param strandId - The strand the caller knows has pending activity.
    * @param reason - Optional cause hint, e.g. `"activity"` or `"manual"`.
-   * @throws if the node is not started or the target has no dialable address.
+   * @throws if the node is not started, the target has no dialable address, or no
+   *   attempt got an ack — including when the receiver does not count this node as an
+   *   authorized member, since its protocol guard resets the stream without a reply.
    */
   async pushWake(targetPeerId: string, strandId: string, reason?: string): Promise<WakeAck> {
     if (!this.controlNode) {

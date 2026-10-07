@@ -67,7 +67,6 @@ function fakeControlNode(opts: ControlFakeOpts): Libp2p {
         throw new Error(`no route for ${id}`);
       }
       const receiver = new StrandAddrService({
-        isMember: async () => true,
         getStrandMultiaddrs: () => reply
       });
       const { clientStream, serverStream } = duplexPair();

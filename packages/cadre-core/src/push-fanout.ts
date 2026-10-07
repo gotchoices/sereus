@@ -193,11 +193,17 @@ export class PushFanoutService {
    * to a platform push only when the dial cannot reach the (suspended) peer.
    *
    * A resolved {@link WakeAck} means the control path REACHED the peer — even an
-   * ack with `accepted:false` (the receiver declined, e.g. non-member/unknown
-   * strand) counts as reached, so we do NOT also send a platform push (that would
+   * ack with `accepted:false` (the receiver declined, e.g. an unknown strand)
+   * counts as reached, so we do NOT also send a platform push (that would
    * double-wake). Only a dial/transport REJECTION means the phone is suspended
    * and unreachable over the control network, which is the one case that falls
    * through to FCM/APNs.
+   *
+   * A receiver that does not yet count this node as an authorized member (its copy
+   * of our `CadrePeer` row has not replicated) resets the wake stream in its protocol
+   * guard without replying, which reads here as a rejection, so that peer gets the
+   * platform push. Deliberate: the reset carries nothing that would tell it apart
+   * from a transport fault, and the platform push wakes the peer by its own path.
    *
    * NOTE: the platform push waits for the whole direct dial to fail, up to
    * `DEFAULT_WAKE_DIAL_BUDGET_MS` (57 s at the default declared link). A suspended

@@ -25,13 +25,12 @@ async function freshPeerId(): Promise<string> {
   return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 }
 
-/** Construct a service: members allowed by default, addrs from a fixed list or per-strand fn. */
+/** Construct a service: addrs from a fixed list or per-strand fn. */
 function makeService(
   addrs: string[] | ((strandId: string) => string[]),
   overrides: Partial<StrandAddrServiceOptions> = {}
 ): StrandAddrService {
   return new StrandAddrService({
-    isMember: overrides.isMember ?? (async () => true),
     getStrandMultiaddrs:
       overrides.getStrandMultiaddrs ?? (typeof addrs === 'function' ? addrs : () => addrs),
     onDelegateAnnounce: overrides.onDelegateAnnounce,
@@ -90,17 +89,6 @@ describe('StrandAddrService.processAddrRequest — decision matrix', () => {
     });
   });
 
-  it('refuses a non-member sender, before any strand lookup', async () => {
-    const service = makeService(
-      () => { throw new Error('non-member must be refused before strand lookup'); },
-      { isMember: async () => false }
-    );
-
-    const response = await service.processAddrRequest({ strandId: 'strand-1' }, 'stranger-peer');
-
-    expect(response).toEqual({ status: 'refused', strandId: 'strand-1', multiaddrs: [] });
-  });
-
   it('returns ok with empty multiaddrs when the strand is not running locally', async () => {
     // getStrandMultiaddrs returns [] when there is no live strand node.
     const service = makeService(() => []);
@@ -132,18 +120,6 @@ describe('StrandAddrService.processAddrRequest — delegate announce', () => {
 
     expect(announces).toEqual([['member-peer', 'strand-1', delegate]]);
     expect(response.multiaddrs).toEqual(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
-  });
-
-  it('ignores a non-member announce — refused before the hook, like the address lookup', async () => {
-    const announces: Announce[] = [];
-    const delegate = await freshPeerId();
-    const service = announceService(announces, { isMember: async () => false });
-
-    const response = await service.processAddrRequest(
-      { strandId: 'strand-1', delegatePeerId: delegate }, 'stranger-peer');
-
-    expect(announces).toEqual([]);
-    expect(response).toEqual({ status: 'refused', strandId: 'strand-1', multiaddrs: [] });
   });
 
   it('ignores a malformed delegatePeerId, keeping the address lookup intact', async () => {
@@ -190,30 +166,6 @@ describe('StrandAddrService.handleStream — framing round-trip', () => {
 
     expect(stream.closed).toBe(true);
     expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'ok', strandId: 'framed', multiaddrs: addrs });
-  });
-
-  it('replies refused, with empty multiaddrs, for a non-member sender', async () => {
-    const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], { isMember: async () => false });
-
-    const request: StrandAddrRequest = { strandId: 'framed' };
-    const stream = new CapturingStream([frameMessage(request)]);
-
-    await runHandleStream(service, stream, 'stranger-peer');
-
-    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'refused', strandId: 'framed', multiaddrs: [] });
-  });
-
-  it('replies unavailable, not refused or empty, when the membership lookup throws', async () => {
-    // gotchoices/sereus#22: a failed control-database read used to reply exactly what
-    // "I have nothing" replies, so the asker waited a full refresh interval to retry.
-    const service = makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], {
-      isMember: async () => { throw new Error('peers-unreachable'); }
-    });
-    const stream = new CapturingStream([frameMessage({ strandId: 'framed' })]);
-
-    await runHandleStream(service, stream, 'member-peer');
-
-    expect(decodeFrames<StrandAddrResponse>(stream.sent)).toEqual({ status: 'unavailable', strandId: '', multiaddrs: [] });
   });
 
   it('replies unavailable to an oversized/malformed frame (length-prefix guard)', async () => {
@@ -381,13 +333,12 @@ describe('collectStrandAddrs — client union/dedup', () => {
     // The refresh pass schedules each sibling's next ask from this outcome, so a reply
     // that is not `ok` must not pass as an answer, and one without a valid status —
     // a responder that predates the field, or a broken one — must count as no reply.
-    const [self, empty, busy, refusing, statusless] = await Promise.all(
-      Array.from({ length: 5 }, () => freshPeerId())
+    const [self, empty, busy, statusless] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
     );
     const canned = new Map<string, unknown>([
       [empty, { status: 'ok', strandId: 'strand-x', multiaddrs: [] }],
       [busy, { status: 'unavailable', strandId: '', multiaddrs: [] }],
-      [refusing, { status: 'refused', strandId: 'strand-x', multiaddrs: ['/ip4/3.3.3.3/tcp/3'] }],
       [statusless, { strandId: 'strand-x', multiaddrs: ['/ip4/4.4.4.4/tcp/4'] }]
     ]);
     const node = {
@@ -404,7 +355,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     expect(result.addrs).toEqual([]);
     expect(result.outcomes).toEqual(new Map([
-      [empty, 'empty'], [busy, 'unavailable'], [refusing, 'refused'], [statusless, 'unreachable']
+      [empty, 'empty'], [busy, 'unavailable'], [statusless, 'unreachable']
     ]));
   });
 

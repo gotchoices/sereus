@@ -25,8 +25,8 @@
  *   2. Party B boots the same way, decodes the invitation, and runs
  *      `formStrand` — its control node dials A's circuit address through the
  *      relay. The formation protocol is stranger-open while an unexpired
- *      invitation is outstanding (`membership-connection-gater.ts` →
- *      `STRANGER_OPEN_PROTOCOLS`); this is its first exercise over a circuit.
+ *      invitation is outstanding (`membership-connection-gater.ts` → "The
+ *      stranger windows"); this is its first exercise over a circuit.
  *      The formation handler does NOT set `runOnLimitedConnection`, so this
  *      works only because the dedicated relay runs `applyDefaultLimit: false`
  *      (ops-container parity) — asserted live via `connection.limits` being

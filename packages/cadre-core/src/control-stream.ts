@@ -35,6 +35,10 @@ export interface ControlStream extends AsyncIterable<Uint8Array> {
   send(data: Uint8Array): boolean;
   close(): Promise<void>;
   abort(err: Error): void;
+  /** Whether the remote has half-closed its write end (`'closed'`); absent on test doubles. */
+  readonly remoteWriteStatus?: string;
+  /** Bytes received and not yet read; absent on test doubles. */
+  readonly readBufferLength?: number;
 }
 
 /** Write a JSON object as a single 4-byte big-endian length-prefixed frame. */
@@ -206,16 +210,31 @@ export function readStreamToEnd(
   return Promise.race([readLoop, timeout]).finally(() => clearTimeout(timer));
 }
 
-/** Accumulate every chunk to EOF, rejecting once the running total exceeds `maxBytes`. */
+/**
+ * Accumulate every chunk to EOF, rejecting once the running total exceeds `maxBytes`.
+ *
+ * A remote that half-closed before this read began has already sent everything it will,
+ * so the read ends once those buffered bytes are in. Its own end-of-stream cannot be
+ * waited for: libp2p 3.3.11's stream iterator ends on the one-shot `remoteCloseWrite`
+ * event, and an iterator attached after it fired never ends. That happens to any handler
+ * that awaits before reading, as the control-protocol guard's live membership check makes
+ * the wake and strand-addr handlers do.
+ */
 async function collect(stream: ControlStream, maxBytes: number, label: string): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of stream) {
-    const bytes = toBytes(chunk);
-    chunks.push(bytes);
-    total += bytes.length;
-    if (total > maxBytes) {
-      throw new Error(`${label} message too large: ${total} bytes exceeds max ${maxBytes}`);
+  const alreadySent = stream.remoteWriteStatus === 'closed' ? (stream.readBufferLength ?? 0) : undefined;
+  if (alreadySent !== 0) {
+    for await (const chunk of stream) {
+      const bytes = toBytes(chunk);
+      chunks.push(bytes);
+      total += bytes.length;
+      if (total > maxBytes) {
+        throw new Error(`${label} message too large: ${total} bytes exceeds max ${maxBytes}`);
+      }
+      if (alreadySent !== undefined && total >= alreadySent) {
+        break;
+      }
     }
   }
 

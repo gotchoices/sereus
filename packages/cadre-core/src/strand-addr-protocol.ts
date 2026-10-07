@@ -18,14 +18,14 @@
  * one stream, so each side reads to EOF (under a read timeout) and decodes one
  * frame via the shared {@link decodeLengthPrefixedFrame} guard.
  *
- * **Authorization (v1):** like wake, the receiver defers entirely to the injected
- * `isMember` predicate and requires no further signature; a peer it rejects gets
- * a `refused` reply with no addresses. `CadreNode` injects its AUTHORIZED-membership predicate
- * (`isAuthorizedMember`: voucher on the requester's `CadrePeer` row verified
- * against the node-local trusted-owner anchor), so an outsider that published its
- * own rows into the replicated control DB cannot harvest live strand addresses.
- * Cross-party strand bootstrap is a different mechanism (strand formation /
- * `MemberPeer`) and is out of scope here.
+ * **Authorization (v1):** like wake, the request carries no signature. Membership
+ * is checked before this handler runs, by the control node's protocol guard
+ * (`control-protocol-guard.ts`, the `members` class: `CadreNode.isAuthorizedMember`,
+ * a voucher on the requester's `CadrePeer` row verified against the node-local
+ * trusted-owner anchor). A peer it refuses gets its stream reset, never a reply, so
+ * an outsider that published its own rows into the replicated control DB can neither
+ * harvest live strand addresses nor announce a delegate. Cross-party strand bootstrap
+ * is a different mechanism (strand formation / `MemberPeer`) and is out of scope here.
  */
 
 import debug from 'debug';
@@ -69,7 +69,7 @@ async function readFrame<T>(stream: ControlStream, timeoutMs: number): Promise<T
   return JSON.parse(new TextDecoder().decode(body)) as T;
 }
 
-/** An address-free reply, for every path but a member's lookup: cap, unreadable request, lookup failure, non-member. */
+/** An address-free reply, for every path but a lookup: over the cap, an unreadable request, a lookup that threw. */
 function addrlessResponse(status: StrandAddrStatus, strandId: string): StrandAddrResponse {
   return { status, strandId, multiaddrs: [] };
 }
@@ -79,8 +79,6 @@ function addrlessResponse(status: StrandAddrStatus, strandId: string): StrandAdd
  * (`CadreNode`), injected so the service is testable without a full node.
  */
 export interface StrandAddrServiceOptions {
-  /** Membership gate: is the remote peer a `CadrePeer` member of this cadre? */
-  isMember(remotePeerId: string): Promise<boolean>;
   /**
    * The local strand instance's dialable strand-network multiaddrs, ordered
    * signaling-first. Returns `[]` when the strand is not running / has no live
@@ -90,8 +88,9 @@ export interface StrandAddrServiceOptions {
   getStrandMultiaddrs(strandId: string): string[];
   /**
    * Called when a member's request carries a `delegatePeerId` — the derived
-   * transport peerId its strand-`strandId` node runs as. Invoked only AFTER the
-   * `isMember` gate passed, with a validated (parseable, non-self) peerId.
+   * transport peerId its strand-`strandId` node runs as, with a validated
+   * (parseable, non-self) peerId. Every caller is an authorized member: the
+   * protocol guard admitted it before this handler ran.
    * `CadreNode` injects its delegate-admission grant recorder so this node's
    * connection gate — and thus its circuit-relay server, when it runs one —
    * admits that peerId (see `delegate-admission.ts`). Optional: absent, an
@@ -114,10 +113,10 @@ export interface StrandAddrServiceOptions {
 
 /**
  * Receiver side of the strand-address RPC. Registers a `STRAND_ADDR_PROTOCOL`
- * handler on the control node and, for each inbound {@link StrandAddrRequest},
- * gates on cadre membership, then replies with the local strand instance's live
- * multiaddrs — `ok` with an empty list when the strand is not running, `refused`
- * for a non-member, `unavailable` when it could not answer at all.
+ * handler on the control node and, for each inbound {@link StrandAddrRequest}
+ * (from a peer the protocol guard has already admitted as an authorized member),
+ * replies with the local strand instance's live multiaddrs — `ok` with an empty
+ * list when the strand is not running, `unavailable` when it could not answer at all.
  */
 export class StrandAddrService {
   private readonly options: StrandAddrServiceOptions;
@@ -175,8 +174,8 @@ export class StrandAddrService {
    * (over {@link maxConcurrent}, reply without looking up any address), a read
    * timeout (a peer that never half-closes is aborted inside {@link readFrame}/
    * `readStreamToEnd`), and the existing malformed/oversized-frame guard. A
-   * lookup that throws — the membership read failing, say — is `unavailable` too,
-   * never a `refused` or an empty `ok` the asker would wait ten minutes on.
+   * lookup that throws is `unavailable` too, never an empty `ok` the asker would
+   * wait ten minutes on.
    */
   private async handleStream(stream: ControlStream, remotePeerId: string): Promise<void> {
     log('Incoming strand-addr request from: %s', remotePeerId);
@@ -215,22 +214,14 @@ export class StrandAddrService {
    * decision matrix can be unit-tested directly (mirrors wake's
    * `processWakeRequest`).
    *
-   * - Non-member sender → `refused`, no delegate grant.
-   * - Member request carrying a `delegatePeerId` → recorded via
+   * - Request carrying a `delegatePeerId` → recorded via
    *   {@link StrandAddrServiceOptions.onDelegateAnnounce} before the lookup.
    * - Strand not running locally → `ok` with empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
-   * - Member + running strand → `ok` with the strand's live, signaling-first multiaddrs.
+   * - Running strand → `ok` with the strand's live, signaling-first multiaddrs.
    *
-   * A throwing `isMember` propagates; {@link handleStream} answers it `unavailable`.
+   * A throwing lookup propagates; {@link handleStream} answers it `unavailable`.
    */
   async processAddrRequest(request: StrandAddrRequest, remotePeerId: string): Promise<StrandAddrResponse> {
-    // Control-network membership is the v1 authorization: only this party's
-    // cadre peers may ask us for a strand address (or announce a delegate).
-    if (!(await this.options.isMember(remotePeerId))) {
-      log('Refusing strand-addr from non-member %s', remotePeerId);
-      return addrlessResponse('refused', request.strandId);
-    }
-
     this.recordDelegateAnnounce(request, remotePeerId);
 
     const multiaddrs = this.options.getStrandMultiaddrs(request.strandId);
@@ -303,11 +294,11 @@ export interface CollectStrandAddrsOptions {
  * - `empty` — status `ok` with no address: the sibling does not run the strand
  *   right now, a normal steady state.
  * - `unavailable` — the sibling replied that it could not answer.
- * - `refused` — the sibling does not (yet) count the asker as an authorized member.
- * - `unreachable` — no reply at all: every dial target failed or timed out, or
- *   the reply was malformed.
+ * - `unreachable` — no reply at all: every dial target failed or timed out, the
+ *   reply was malformed, or the sibling's protocol guard reset the stream because
+ *   it does not (yet) count the asker as an authorized member.
  */
-export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'refused' | 'unreachable';
+export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'unreachable';
 
 /** Result of {@link collectStrandAddrs}. */
 export interface StrandAddrCollection {
@@ -525,7 +516,7 @@ async function sendStrandAddr(
   return response;
 }
 
-const STRAND_ADDR_STATUSES: ReadonlySet<string> = new Set<StrandAddrStatus>(['ok', 'unavailable', 'refused']);
+const STRAND_ADDR_STATUSES: ReadonlySet<string> = new Set<StrandAddrStatus>(['ok', 'unavailable']);
 
 /**
  * Shape check on a decoded reply: the responder is another machine, so a reply

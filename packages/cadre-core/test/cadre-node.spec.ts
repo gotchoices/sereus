@@ -359,7 +359,6 @@ describe('CadreNode', () => {
         getConnections: () => [{ remotePeer: { toString: () => otherPeerId } }],
         dialProtocol: async () => {
           const receiver = new StrandAddrService({
-            isMember: async () => true,
             getStrandMultiaddrs: () => [otherStrandAddr]
           });
           const { clientStream, serverStream } = duplexPair();
@@ -995,7 +994,6 @@ describe('CadreNode', () => {
       };
       const wakeCalls: string[] = [];
       const receiver = new StrandWakeService({
-        isMember: async () => true,
         getStrand: (id) => (id === 'push-strand' ? receiverInstance : undefined),
         wake: async (id) => {
           wakeCalls.push(id);

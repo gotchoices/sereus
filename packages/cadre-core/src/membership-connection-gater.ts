@@ -2,28 +2,29 @@
  * Control-network inbound admission gates (defense-in-depth): the
  * encrypted-connection checkpoint and the circuit-relay reservation checkpoint.
  *
- * Layer 2 of the membership enforcement chain: the PRIMARY gates are per-stream
- * — every sensitive sereus control protocol rejects a peer that fails the
- * voucher-anchored membership check (wake and strand-addr via
- * `CadreNode.isAuthorizedMember`; the Optimystic control-DB protocols via the
- * materialized-snapshot gate `CadreNode.authorizeInboundControlStream`), and
- * the replicated rows an outsider *can* still write are disbelieved at read
- * time. This module adds the opportunistic connection-level layer on top: a
+ * Layer 2 of the membership enforcement chain: the PRIMARY gate is per-stream —
+ * the control node's protocol guard (`control-protocol-guard.ts`) refuses a peer
+ * that is not an authorized member on every protocol not declared open to
+ * strangers, before its handler runs — and the replicated rows an outsider *can*
+ * still write are disbelieved at read time. This module adds the opportunistic
+ * connection-level layer on top: a
  * peer this node can positively determine is NOT authorized is refused at the
  * encrypted-connection checkpoint, before any protocol negotiation, so a
  * known-nothing outsider is never even in the conversation — EXCEPT on a node
  * that runs the circuit-relay server, where the refusal moves to the
  * relay-reservation checkpoint instead (see "The relay-reservation seam").
  *
- * ## The stranger allowlist (the ONE place it is defined)
+ * ## The stranger windows
  *
  * A libp2p connection gater decides per CONNECTION, before protocols are
  * negotiated, so "allow seed, deny repo" cannot be expressed here — instead the
  * policy admits a connection whenever a legitimate stranger interaction could be
- * riding it, and the per-stream gates take over. The complete set of protocols a
- * NOT-yet-authorized peer may legitimately speak on a control node is:
+ * riding it, and the protocol guard takes over. Which protocols a NOT-yet-authorized
+ * peer may speak is declared once, as the `stranger-open` class of
+ * `controlProtocolClasses` (`control-protocol-guard.ts`); this section says when
+ * the connection carrying each one is admitted:
  *
- *  - `/sereus/seed/1.0.0` ({@link SEED_PROTOCOL}) — enrollment seed delivery.
+ *  - `/sereus/seed/1.0.0` — enrollment seed delivery.
  *    An owner dials a brand-new node to seed it (the new node has no members
  *    yet, so its gate is inert). The handler's own trust decision is the
  *    anchored seed-trust policy — or, on a node started with a claim secret
@@ -36,7 +37,7 @@
  *    unclaimed node has no siblings to replicate from, and one on a public
  *    address must not relay for anyone. The claim anchors the owner, after which
  *    the ordinary rules apply.
- *  - `/sereus/formation/1.0.0` ({@link FORMATION_PROTOCOL}) — cross-party
+ *  - `/sereus/formation/1.0.0` — cross-party
  *    strand formation via open invitations. Stranger-facing BY DESIGN: the
  *    initiator is another party, and its token is only checkable inside the
  *    protocol. The exemption is therefore keyed on EXPECTATION of a stranger,
@@ -50,7 +51,7 @@
  *    handler's own trust decision remains the per-token check, which is
  *    strictly finer than this one: a peer admitted here can still be rejected
  *    in-protocol for a bogus or spent token.
- *  - `/sereus/cadre-invite/1.0.0` ({@link CADRE_INVITE_PROTOCOL}) — redemption
+ *  - `/sereus/cadre-invite/1.0.0` — redemption
  *    of a cadre invitation at any member machine. Stranger-facing BY DESIGN:
  *    the device is not a member until the redemption writes its row, and its
  *    proof of possession (a signature with the invitation's private key) is
@@ -74,7 +75,7 @@
  *    (`CadreNode.grantDelegateAdmission`). The grant admits the CONNECTION,
  *    admits the peer's RESERVATION at the seam below (without spending the
  *    unauthorized budget), and nothing else — it is deliberately invisible to
- *    the per-stream gate, so a delegate still gets refused on every
+ *    the protocol guard, so a delegate still gets refused on every
  *    members-only protocol.
  *
  * ## The relay-reservation seam
@@ -96,9 +97,9 @@
  * On a node whose relay server is enabled the two questions are separated:
  *
  *  - The policy returns `'admit-for-relay'` instead of `'deny'`, and the
- *    connection is ADMITTED. The fail-closed per-stream gates still refuse such
- *    a peer every members-only protocol, so it gains identify/ping and the
- *    relay hop protocol, nothing else.
+ *    connection is ADMITTED. The protocol guard still refuses such a peer every
+ *    members-only protocol, so it gains the libp2p plumbing (identify, ping, the
+ *    relay hop protocol) and the stranger-open protocols, nothing else.
  *  - The reservation itself is decided at libp2p's
  *    `denyInboundRelayReservation` hook (the circuit-relay server consults it
  *    per RESERVE request): the policy admits members, delegates and configured
@@ -121,21 +122,17 @@
  * peer whose admitted reservation is then refused for server capacity keeps its
  * connection until either side closes it — bounded and mute, so harmless.
  *
- * Everything else a control node handles — the Optimystic control-DB protocols
- * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), wake
- * (`/sereus/strand-wake/1.0.0`), and strand-addr (`/sereus/strand-addr/1.0.0`)
- * — is members-only, and every one of them enforces that per-stream. Wake and
- * strand-addr check `isAuthorizedMember` inside their handlers; the four
- * control-DB protocols are gated by the fail-closed
- * `CadreNode.authorizeInboundControlStream` (wired as libp2p's
- * `authorizeInboundStream` upstream hook), which judges each inbound stream
- * against the MATERIALIZED authorized-peer snapshot — synchronous and
- * in-memory, because a live DB read from inside the gate would deadlock into
- * mutual denial. The two layers complement, not duplicate: this connection
- * gate is fail-open over a live DB read (deny only on positive proof of an
- * outsider), the stream gate is fail-closed over the snapshot and has NO
- * stranger carve-outs — a live invitation admits a stranger's connection
- * for seed delivery, yet its repo streams are still refused.
+ * Everything else a control node serves is either libp2p plumbing open to any
+ * connection (identify, ping, hole punching, AutoNAT, the relay protocols) or
+ * members-only — wake, strand-addr, the Optimystic control-DB protocols and FRET —
+ * and the fail-closed layer for all of it is the protocol guard
+ * (`control-protocol-guard.ts`), one seam that wraps every handler at dispatch,
+ * with a protocol nobody classed treated as members-only. The two layers
+ * complement, not duplicate: this connection gate is fail-open over a live DB
+ * read (deny only on positive proof of an outsider), the protocol guard is
+ * fail-closed and has NO stranger carve-outs — a live invitation admits a
+ * stranger's connection for redemption, yet its repo and FRET streams are still
+ * refused.
  *
  * ## The bring-up quiet period
  *
@@ -180,22 +177,11 @@
 
 import debug from 'debug';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
-import { SEED_PROTOCOL } from './seed-bootstrap.js';
-import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
-import { CADRE_INVITE_PROTOCOL } from './cadre-invite-protocol.js';
 import { withDeadline } from './control-stream.js';
 import { PARTY_RELAY_RESERVATION_TTL_MS } from './relay-server.js';
 import { ADMISSION_DECISION_TIMEOUT_MS, relayAdmissionReserveDeadlineMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:connection-gater');
-
-/**
- * The protocols a not-yet-authorized peer may legitimately speak on a control
- * node (see the module doc above for why each is open and where its own trust
- * decision lives). Exported as the single reference point so the allowlist
- * cannot silently drift across modules.
- */
-export const STRANGER_OPEN_PROTOCOLS: readonly string[] = [SEED_PROTOCOL, FORMATION_PROTOCOL, CADRE_INVITE_PROTOCOL];
 
 /**
  * How long an `'admit-for-relay'` connection may exist without a relay

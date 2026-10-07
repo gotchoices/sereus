@@ -2284,12 +2284,14 @@ export interface StrandAddrRequest {
  *
  * - `ok` — looked up; `multiaddrs` is the truth, possibly empty (strand not running here).
  * - `unavailable` — the responder could not answer: over its concurrency cap, the
- *   request was unreadable, or its own lookup threw (e.g. a control-database read failed).
- * - `refused` — the requester is not an authorized member in the responder's
- *   current view (possibly because its `CadrePeer` row has not replicated there yet);
- *   any `delegatePeerId` it carried was NOT recorded.
+ *   request was unreadable, or its own lookup threw.
+ *
+ * A requester the responder does not count as an authorized member (possibly because
+ * its `CadrePeer` row has not replicated there yet) gets no response at all: the
+ * responder's protocol guard resets the stream, and any `delegatePeerId` it carried
+ * is not recorded.
  */
-export type StrandAddrStatus = 'ok' | 'unavailable' | 'refused';
+export type StrandAddrStatus = 'ok' | 'unavailable';
 
 /**
  * Response to a {@link StrandAddrRequest}, carrying the responder's strand-node

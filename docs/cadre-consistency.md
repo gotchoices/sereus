@@ -79,7 +79,7 @@ Three relationships between these numbers are load-bearing:
 
 One gap is deliberate, with a stated condition for revisiting it:
 
-- **The receiver's membership check inside a wake or strand-address exchange is not counted** in the sender's attempt deadline. The receiver answers only after its membership check (the protocol's `isMember` option, which cadre-node wires to `isAuthorizedMember`), and that is two live control reads: `Revocation`, then `CadrePeer`. In steady state those reads touch only held blocks and do not consult the cohort. If a wake or address request is seen timing out while the receiver's membership read is consulting, count one membership decision in the attempt deadline, or answer the check from the materialized authorized-peer snapshot.
+- **The receiver's membership check inside a wake or strand-address exchange is not counted** in the sender's attempt deadline. The receiver answers only after its membership check (the control-protocol guard's live check, `isAuthorizedMember`, which refuses when it outlasts the asker's own attempt deadline at the receiver's declared link), and that is two live control reads: `Revocation`, then `CadrePeer`. In steady state those reads touch only held blocks and do not consult the cohort. If a wake or address request is seen timing out while the receiver's membership read is consulting, count one membership decision in the attempt deadline, or answer the check from the materialized authorized-peer snapshot.
 
 ## Two Layers
 

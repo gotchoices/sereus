@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { withTimeout } from '../src/control-stream.js';
+import { readStreamToEnd, withTimeout, type ControlStream } from '../src/control-stream.js';
 
 /**
  * `withTimeout` is the deadline primitive the formation, wake, and strand-addr
@@ -91,5 +91,27 @@ describe('withTimeout', () => {
 			// And advancing past the budget surfaces no late rejection.
 			advance(5_000);
 		});
+	});
+});
+
+describe('readStreamToEnd', () => {
+	it('ends a read that began after the remote half-closed, once the bytes it buffered are in', async () => {
+		// libp2p 3.3.11's iterator ends on a one-shot `remoteCloseWrite` event, so a reader that
+		// attaches after the remote half-closed gets the buffered bytes and then waits forever.
+		// The guard's live membership check makes the wake and strand-addr handlers read that late.
+		const request = new TextEncoder().encode('one request frame');
+		const lateStream: ControlStream = {
+			remoteWriteStatus: 'closed',
+			readBufferLength: request.length,
+			send: () => true,
+			close: async () => {},
+			abort: () => {},
+			async *[Symbol.asyncIterator]() {
+				yield request;
+				await new Promise<never>(() => {});
+			},
+		};
+
+		await expect(readStreamToEnd(lateStream, { maxBytes: 1024, timeoutMs: 200, label: 'Late' })).resolves.toEqual(request);
 	});
 });

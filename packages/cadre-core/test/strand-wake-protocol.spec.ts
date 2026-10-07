@@ -28,13 +28,12 @@ function makeInstance(strandId = 'strand-1', status: StrandStatus = 'hibernating
   };
 }
 
-/** Construct a service with the given option overrides (member + present strand by default). */
+/** Construct a service with the given option overrides (present strand by default). */
 function makeService(
   instance: StrandInstance | undefined,
   overrides: Partial<StrandWakeServiceOptions> = {}
 ): StrandWakeService {
   return new StrandWakeService({
-    isMember: overrides.isMember ?? (async () => true),
     getStrand: overrides.getStrand ?? ((id) => (instance && id === instance.strandId ? instance : undefined)),
     wake: overrides.wake ?? (async () => {}),
     readTimeoutMs: overrides.readTimeoutMs,
@@ -102,21 +101,6 @@ describe('StrandWakeService.processWakeRequest — decision matrix', () => {
 
     expect(ack.accepted).toBe(false);
     expect(ack.reason).toMatch(/not found|not participated/i);
-  });
-
-  it('rejects a wake from a non-member peer before touching any strand', async () => {
-    let waked = false;
-    const service = makeService(undefined, {
-      isMember: async () => false,
-      getStrand: () => { throw new Error('non-member must be rejected before strand lookup'); },
-      wake: async () => { waked = true; }
-    });
-
-    const ack = await service.processWakeRequest({ strandId: 'strand-1' }, 'stranger-peer');
-
-    expect(ack.accepted).toBe(false);
-    expect(ack.reason).toMatch(/not a cadre member/i);
-    expect(waked).toBe(false);
   });
 });
 
@@ -272,24 +256,6 @@ describe('dialWake — sender round-trip against a live receiver', () => {
 
     expect(ack).toEqual({ accepted: true, status: 'hibernating' });
     expect(wakeCalls).toEqual(['push']);
-  });
-
-  it('rejects (without waking) when the receiver sees a non-member sender', async () => {
-    const instance = makeInstance('push');
-    let waked = false;
-    const receiver = makeService(instance, {
-      isMember: async () => false,
-      wake: async () => { waked = true; }
-    });
-
-    const ack = await dialWake(
-      loopbackNode(receiver),
-      [multiaddr('/ip4/1.2.3.4/tcp/4001')],
-      { strandId: 'push' }
-    );
-
-    expect(ack.accepted).toBe(false);
-    expect(waked).toBe(false);
   });
 
   it('falls through to the next address when the first dial fails', async () => {

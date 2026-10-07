@@ -99,7 +99,6 @@ function fakeControlNode(opts: ControlFakeOpts): Libp2p {
         throw new Error(`no route for ${id}`);
       }
       const receiver = new StrandAddrService({
-        isMember: async () => true,
         getStrandMultiaddrs: (strandId: string) => {
           const record = { peerId: id, strandId };
           opts.asked.push(record);

@@ -628,10 +628,15 @@ export {
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';
 
+// Control-network per-stream protocol guard (which peers may open which protocol)
+export {
+  controlProtocolClasses,
+  type ControlProtocolClass
+} from './control-protocol-guard.js';
+
 // Control-network inbound connection gate (membership defense-in-depth)
 export {
   createMembershipConnectionGater,
-  STRANGER_OPEN_PROTOCOLS,
   RELAY_ADMISSION_RESERVE_DEADLINE_MS,
   RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
   MAX_UNAUTHORIZED_RELAY_RESERVATIONS,

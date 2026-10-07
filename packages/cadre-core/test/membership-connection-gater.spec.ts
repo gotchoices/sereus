@@ -5,15 +5,11 @@ import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/inter
 import { CadreNode } from '../src/cadre-node.js';
 import {
   createMembershipConnectionGater,
-  STRANGER_OPEN_PROTOCOLS,
   UnauthorizedReservationBudget,
   type InboundAdmissionPolicy,
   type InboundConnectionVerdict
 } from '../src/membership-connection-gater.js';
 import { StrandSolicitationService } from '../src/strand-solicitation.js';
-import { SEED_PROTOCOL } from '../src/seed-bootstrap.js';
-import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
-import { CADRE_INVITE_PROTOCOL } from '../src/cadre-invite-protocol.js';
 import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb } from './membership-gate-helpers.js';
 
 /**
@@ -116,13 +112,6 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
     settle?.(); // release the pending policy promise so the test leaves nothing dangling
-  });
-
-  it('documents exactly the seed, formation and cadre-invite protocols as stranger-open', () => {
-    // Literal wire ids, not the imported constants — this locks the allowlist's
-    // CONTENT, so widening it (or renaming a protocol) cannot pass silently.
-    expect(STRANGER_OPEN_PROTOCOLS).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0', '/sereus/cadre-invite/1.0.0']);
-    expect(STRANGER_OPEN_PROTOCOLS).toEqual([SEED_PROTOCOL, FORMATION_PROTOCOL, CADRE_INVITE_PROTOCOL]);
   });
 });
 
