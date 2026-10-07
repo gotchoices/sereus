@@ -231,3 +231,4 @@
 {"slug":"pin-every-re-founding-shape-against-a-sealed-strand","file":"pin-every-re-founding-shape-against-a-sealed-strand.md","completedAt":"2026-09-03","commit":"df422d57e70d5cdc0330b0860e128c936aace18b","prunedAt":"2026-10-04T04:13:50.950Z"}
 {"slug":"strand-catch-up-refused-until-solo-writes-carry-proof","file":"strand-catch-up-refused-until-solo-writes-carry-proof.md","completedAt":"2026-09-02","commit":"da7ef4290f1b2d1fca0a212581634f812a7bfb23","prunedAt":"2026-10-04T04:13:50.950Z"}
 {"slug":"strand-seal-binds-a-second-node","file":"strand-seal-binds-a-second-node.md","completedAt":"2026-09-03","commit":"84afcdf45497baf736af0068a1af8b1e68e27d71","prunedAt":"2026-10-04T04:13:50.950Z"}
+{"slug":"ws-listener-unreachable-outside-container","file":"ws-listener-unreachable-outside-container.md","completedAt":"2026-09-05","commit":"422b81d0ea97664621d05ad1c8c274b2766d11b9","prunedAt":"2026-10-07T04:02:33.187Z"}
