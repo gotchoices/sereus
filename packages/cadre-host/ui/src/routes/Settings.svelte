@@ -70,7 +70,6 @@
 			applying = false;
 		}
 	}
-
 </script>
 
 <section class="stack">

@@ -307,7 +307,7 @@ Each node in the status snapshot (`nodes: NodeReachability[]`, with a `PortRoute
 | otherwise, either port forwarded by hand | `manual` |
 | otherwise | `mapped` |
 
-An `unreachable` node carries a plain-language `reason` naming the failing port, its internal port, the LAN address and what to do: forward it, or turn UPnP on, or, under CGNAT, that a forward will not help and a relay is needed (relay support is `backlog/feat-cadre-host-children-reserve-on-a-relay`). The host-level `directReachability` rolls the running nodes up:
+An `unreachable` node carries a plain-language `reason` naming the failing port, its internal port, the LAN address and what to do: forward it, or turn UPnP on, or, under CGNAT, whatever else failed the port, that neither UPnP nor a forward will help and a relay is needed (relay support is `backlog/feat-cadre-host-children-reserve-on-a-relay`). The host-level `directReachability` rolls the running nodes up:
 
 | Conditions | Verdict |
 |---|---|

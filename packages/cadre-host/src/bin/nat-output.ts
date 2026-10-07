@@ -138,6 +138,11 @@ function formatRoute(r: NatPortRouteLike | undefined): string {
  * command is still offered for every port. With every port routed there is
  * nothing to forward: what is missing is the host's public address, which the
  * reason already explains.
+ *
+ * NOTE: the UI builds the same sentence (`forwardInstruction` in
+ * `ui/src/lib/reachability.ts`); if the rule for which ports to forward
+ * changes, have the server send the port list in `NodeReachability` instead
+ * of changing both copies.
  */
 function forwardAdvice(n: NatNodeLike, s: NatStatusLike): string[] {
   if (n.verdict !== 'unreachable') return [];

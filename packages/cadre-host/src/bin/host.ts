@@ -12,6 +12,9 @@
  *
  * Every command here needs a matching `### ` heading in the package README's
  * `## CLI reference`; `__tests__/cli-reference.test.ts` enforces that.
+ *
+ * NOTE: this file is ~1200 lines; `nat-output.ts` shows the split to make —
+ * when a command group's code grows, move it to its own module under `bin/`.
  */
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';

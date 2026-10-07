@@ -72,6 +72,8 @@ describe('evaluateNodeReachability', () => {
     expect(r.verdict).toBe('unreachable');
     expect(r.reason).toContain('carrier-grade NAT');
     expect(r.reason).toContain('a relay is needed');
+    const refused = evaluateNodeReachability({ ...BASE, cgnatDetected: true, ws: none(10004, 'mapping table is full') });
+    expect(refused.reason).not.toContain('Forward port');
     expect(evaluateNodeReachability({ ...BASE, cgnatDetected: true, tcp: manual(10003), ws: manual(10004) }).verdict).toBe('manual');
   });
 });

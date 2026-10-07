@@ -86,8 +86,9 @@ function usable(route: PortRoute, cgnatDetected: boolean): boolean {
 
 type FailureCause = 'cgnat' | 'refused' | 'upnp_off' | 'no_gateway' | 'pending';
 
+/** Behind CGNAT no router-side remedy helps, so CGNAT outranks whatever else failed the port. */
 function causeOf(route: PortRoute, input: NodeVerdictInput): FailureCause {
-  if (input.cgnatDetected && route.source === 'upnp') return 'cgnat';
+  if (input.cgnatDetected) return 'cgnat';
   if (route.error) return 'refused';
   if (!input.upnpEnabled) return 'upnp_off';
   if (!input.gatewayFound) return 'no_gateway';
@@ -110,7 +111,7 @@ function describeCause(cause: FailureCause, entries: PortEntry[], input: NodeVer
   const forwardHint = `Forward ${entries.length === 1 ? 'port' : 'ports'} ${listPorts(entries)} to ${lan} on your router, then tell cadre-host the external ${entries.length === 1 ? 'port' : 'ports'}.`;
   switch (cause) {
     case 'cgnat':
-      return `This host is behind carrier-grade NAT, so the router's mapping of the ${joinNames(names)} cannot be reached from outside and a port forward on your router will not help; a relay is needed.`;
+      return `This host is behind carrier-grade NAT, so the ${joinNames(names)} cannot be reached from outside through your router, and neither UPnP nor a port forward on your router will help; a relay is needed.`;
     case 'refused': {
       const errors = entries.map(({ route }) => route.error).filter((e): e is string => !!e);
       return `Router refused the ${joinNames(names)} mapping (${errors.join('; ')}). ${forwardHint}`;

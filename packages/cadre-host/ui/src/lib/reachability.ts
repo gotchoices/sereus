@@ -39,6 +39,11 @@ export function portsOf(node: NodeReachability): Array<{ kind: PortKind; route: 
  * not fix the node: it is reachable, every port already has a route (the
  * host's public address is what is missing, which the node's reason says), or
  * the host is behind CGNAT, which the page explains on its own.
+ *
+ * NOTE: the CLI builds the same sentence (`forwardAdvice` in
+ * `src/bin/nat-output.ts`); if the rule for which ports to forward changes,
+ * have the server send the port list in `NodeReachability` instead of
+ * changing both copies.
  */
 export function forwardInstruction(
 	node: NodeReachability,
