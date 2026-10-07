@@ -86,6 +86,7 @@ const SAMPLE_NODE: ManagedNodeInfo = {
   spawnedAt: '2025-01-01T00:00:00Z',
   workdir: '',
   ports: { health: 11, metrics: 12, p2p: 13, admin: 14, ws: 15 },
+  announcedAddrs: [],
 };
 
 describe('/api/nodes routes', () => {
@@ -187,6 +188,7 @@ describe('/api/nodes — owner node start/restart', () => {
     spawnedAt: '2025-01-01T00:00:00Z',
     workdir: '',
     ports: { health: 1, metrics: 2, p2p: 4555, admin: 3, ws: 4 },
+    announcedAddrs: [],
     owner: true,
   };
 

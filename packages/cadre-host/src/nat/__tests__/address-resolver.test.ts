@@ -29,6 +29,11 @@ describe('buildPublicAddresses', () => {
       expected: ['/dns4/foo.duckdns.org/tcp/10003', '/dns4/foo.duckdns.org/tcp/10004/ws'],
     },
     {
+      name: 'a hostname that is not a DNS name is skipped, so no entry can stop a node starting',
+      input: { ddnsHostname: 'https://foo.duckdns.org,bar' },
+      expected: ['/ip4/203.0.113.5/tcp/10003', '/ip4/203.0.113.5/tcp/10004/ws'],
+    },
+    {
       name: 'public IPv4 without DDNS',
       input: {},
       expected: ['/ip4/203.0.113.5/tcp/10003', '/ip4/203.0.113.5/tcp/10004/ws'],

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { NatService, NAT_UNMAP_GRACE_MS, type NatNodeSource } from '../nat-service.js';
+import { NAT_ADDRESS_RESTART_MIN_INTERVAL_MS } from '../address-watch.js';
 import { ExternalIpDetector } from '../external-ip.js';
 import { NatError } from '../types.js';
 import type { GatewayInfo, PortMapper, PortMapRequest, PortMapResult } from '../port-mapper.js';
@@ -11,11 +12,13 @@ import type { SecretsStore } from '../secrets/index.js';
 import { ddnsAccount } from '../secrets/index.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../../orchestrator/types.js';
 
-/** A router: maps `internal + offset`, refuses once `cap` ports are mapped. */
+/** A router: maps `internal + offset` (or a `reassigned` port), refuses once `cap` ports are mapped. */
 class FakeMapper implements PortMapper {
   gateway: GatewayInfo | null = { lanAddress: '192.168.1.20', routerHost: '192.168.1.1' };
   cap = Number.POSITIVE_INFINITY;
   offset = 0;
+  /** Internal port → the external port the router grants for it instead. */
+  readonly reassigned = new Map<number, number>();
   routerIp: string | null = '203.0.113.10';
   readonly mapped = new Map<number, number>();
   readonly mapCalls: number[] = [];
@@ -29,7 +32,7 @@ class FakeMapper implements PortMapper {
     if (!this.mapped.has(req.internalPort) && this.mapped.size >= this.cap) {
       throw new NatError('mapping_failed', 'router: mapping table is full');
     }
-    const externalPort = req.internalPort + this.offset;
+    const externalPort = this.reassigned.get(req.internalPort) ?? req.internalPort + this.offset;
     this.mapped.set(req.internalPort, externalPort);
     return { externalPort, leaseExpiresAt: new Date(Date.now() + req.ttlMs) };
   }
@@ -45,6 +48,8 @@ class FakeMapper implements PortMapper {
 class FakeNodes implements NatNodeSource {
   private readonly nodes = new Map<string, ManagedNodeInfo>();
   private readonly listeners = new Set<NodeStateListener>();
+  /** The orchestrator's announce hook, asked at every spawn; `rig` points it at the service. */
+  announce: (id: string, ports: { p2p: number; ws?: number }) => string[] = () => [];
   listNodes(): ManagedNodeInfo[] { return [...this.nodes.values()]; }
   onStateChange(listener: NodeStateListener): () => void {
     this.listeners.add(listener);
@@ -60,9 +65,15 @@ class FakeNodes implements NatNodeSource {
       spawnedAt: '2026-01-01T00:00:00Z',
       workdir: `/w/${id}`,
       ports: { health: 1, metrics: 2, p2p: ports.p2p, admin: 3, ws: ports.ws as number },
+      announcedAddrs: this.announce(id, ports),
     };
     this.nodes.set(id, info);
     this.emit(info);
+  }
+  /** A respawn on the same ports, announcing what the hook gives now. */
+  restart(id: string): void {
+    const { ports } = this.nodes.get(id)!;
+    this.add(id, { p2p: ports.p2p, ws: ports.ws });
   }
   setStatus(id: string, status: ManagedNodeInfo['status']): void {
     const info = { ...this.nodes.get(id)!, status };
@@ -148,6 +159,7 @@ function rig(opts: {
     externalIpDetector: opts.detector ?? makeDetector({ pub: '203.0.113.10' }),
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
+  nodes.announce = (id, ports) => svc.publicAddressesFor(id, ports);
   return { svc, mapper, nodes };
 }
 
@@ -430,6 +442,52 @@ describe('NatService — public addresses', () => {
       publicAddrs: ['/ip4/203.0.113.10/tcp/40000', '/ip4/203.0.113.10/tcp/40001/ws'],
     });
     expect(after.directReachability).toBe('reachable');
+  });
+});
+
+describe('NatService — stale announced addresses', () => {
+  it('asks to restart only the node whose router-assigned port differs from the one it announced, and only once', async () => {
+    const mapper = new FakeMapper();
+    mapper.reassigned.set(10006, 30006);
+    const { svc, nodes } = rig({ mapper });
+    await startAndSettle(svc);
+    const stale: string[] = [];
+    svc.onNodeAddressesStale((id) => { stale.push(id); });
+
+    // Both spawn announcing the predicted identity mapping.
+    nodes.add('same', { p2p: 10003, ws: 10004 });
+    nodes.add('moved', { p2p: 10005, ws: 10006 });
+    await svc.reconcile();
+    expect(stale).toEqual(['moved']);
+
+    nodes.restart('moved');
+    clock += NAT_ADDRESS_RESTART_MIN_INTERVAL_MS;
+    await svc.reconcile();
+    expect(nodes.listNodes().find((n) => n.id === 'moved')!.announcedAddrs)
+      .toEqual(['/ip4/203.0.113.10/tcp/10005', '/ip4/203.0.113.10/tcp/30006/ws']);
+    expect(stale).toEqual(['moved']);
+  });
+
+  it('defers a second restart of one node until the rate-limit window has passed', async () => {
+    const mapper = new FakeMapper();
+    mapper.reassigned.set(10004, 30004);
+    const { svc, nodes } = rig({ mapper });
+    await startAndSettle(svc);
+    const stale: string[] = [];
+    svc.onNodeAddressesStale((id) => { stale.push(id); });
+
+    nodes.add('a', { p2p: 10003, ws: 10004 });
+    await svc.reconcile();
+    expect(stale).toEqual(['a']);
+
+    // Never restarted, so the difference stands at every later pass.
+    clock += NAT_ADDRESS_RESTART_MIN_INTERVAL_MS - 1;
+    await svc.reconcile();
+    expect(stale).toEqual(['a']);
+
+    clock += 1;
+    await svc.reconcile();
+    expect(stale).toEqual(['a', 'a']);
   });
 });
 

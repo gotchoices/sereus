@@ -169,6 +169,19 @@ interface SpawnedHandles {
 /** A respawn's attempt counters — the record's `respawn` block, never absent. */
 type RespawnAttempt = NonNullable<Donation['respawn']>;
 
+/** Options for {@link DonationService.respawn}. */
+export interface RespawnOptions {
+  /**
+   * Whether this respawn spends one of the record's attempts. Default true: a crash
+   * respawn does, since the supervisor's backoff and give-up read the count. A
+   * deliberate restart of a running node (`DonationSupervisor.restart`) passes false
+   * and leaves both the counters and `updatedAt` alone — it is neither a crash nor
+   * borrower activity, so it must neither spend the budget nor defer the
+   * stale-`awaiting_seed` reap.
+   */
+  countAttempt?: boolean;
+}
+
 /**
  * Orchestrator capabilities the donation cleanup paths need beyond the base
  * `Orchestrator`. Both are optional — only `HostProcessOrchestrator` implements
@@ -511,8 +524,10 @@ export class DonationService {
 
   /**
    * Re-spawn a donated node that is no longer running, replaying the spawn
-   * inputs persisted on the record. The node keeps its workdir — and with it its
-   * identity key, trusted-owner anchor, and retained bootstrap peers — so it
+   * inputs persisted on the record. `opts.countAttempt: false` marks a deliberate
+   * restart rather than a crash respawn (see {@link RespawnOptions}). The node
+   * keeps its workdir — and with it its identity key, trusted-owner anchor, and
+   * retained bootstrap peers — so it
    * comes back as the *same* peer and rejoins from its own durable node-local
    * stores. Only the host-side handles change: `dockerId`, `seedEndpoint`,
    * `seedToken` are written back fresh.
@@ -533,7 +548,7 @@ export class DonationService {
    * an unmanaged process. A supervisor with more than one trigger (timer +
    * exit event) must not let its passes overlap on one id.
    */
-  async respawn(id: string): Promise<RespawnResult> {
+  async respawn(id: string, opts: RespawnOptions = {}): Promise<RespawnResult> {
     const donation = this.requireDonation(id);
     // Callers filter for this already; the guard is here so no future one can
     // resurrect or double-spawn a loan by omission.
@@ -543,9 +558,7 @@ export class DonationService {
         `Donation ${id} cannot be respawned in status ${donation.status}`,
       );
     }
-    // An empty `bootstrapNodes` is a real spawn input (a requester that dials the node
-    // itself); only a missing field marks a record written before inputs were persisted.
-    if (donation.bootstrapNodes === undefined || !donation.ownerKeys?.length) {
+    if (!hasSpawnInputs(donation)) {
       log('donation %s is not respawnable (record predates persisted spawn inputs)', id);
       return { outcome: 'not_respawnable' };
     }
@@ -553,10 +566,9 @@ export class DonationService {
     // Just the counters, never a whole row copy: both exits below merge these
     // onto whatever the store holds *after* the spawn, and an entry-time
     // `Donation` in scope is a standing invitation to write the stale row back.
-    const attempt: RespawnAttempt = {
-      attempts: (donation.respawn?.attempts ?? 0) + 1,
-      lastAttemptAt: this.now().toISOString(),
-    };
+    const attempt: RespawnAttempt | undefined = opts.countAttempt === false
+      ? undefined
+      : { attempts: (donation.respawn?.attempts ?? 0) + 1, lastAttemptAt: this.now().toISOString() };
 
     let spawned: SpawnedHandles | undefined;
     try {
@@ -587,16 +599,15 @@ export class DonationService {
       const respawned: Donation = {
         ...current,
         // Merge only the attempt counters forward off the entry-time copy.
-        respawn: attempt,
+        // NOTE: on an `awaiting_seed` record `updatedAt` is the very field the
+        // stale-seed reap measures age from, so each counted respawn defers that
+        // reap. Bounded today (5 attempts, ≤80s backoff ≈ 2.5min against a 30min
+        // TTL, then give-up moves the record to `error`) — but anyone raising
+        // DONATION_RESPAWN_MAX_ATTEMPTS should re-check that arithmetic.
+        ...(attempt ? { respawn: attempt, updatedAt: this.now().toISOString() } : {}),
         dockerId: result.dockerId,
         seedEndpoint: result.seedEndpoint,
         seedToken: result.seedToken,
-        // NOTE: on an `awaiting_seed` record this is the very field the
-        // stale-seed reap measures age from, so each respawn defers that reap.
-        // Bounded today (5 attempts, ≤80s backoff ≈ 2.5min against a 30min TTL,
-        // then give-up moves the record to `error`) — but anyone raising
-        // DONATION_RESPAWN_MAX_ATTEMPTS should re-check that arithmetic.
-        updatedAt: this.now().toISOString(),
       };
       this.store.put(respawned);
       log('respawned donation %s → %s (status %s)', id, result.dockerId, respawned.status);
@@ -863,8 +874,9 @@ export class DonationService {
   }
 
   /**
-   * Persist a failed respawn's attempt counters — plus, when the spawn itself
-   * succeeded and it was the record write that failed, the new child's handles.
+   * Persist a failed respawn's attempt counters (none for an uncounted restart) —
+   * plus, when the spawn itself succeeded and it was the record write that failed,
+   * the new child's handles.
    * Merged onto whatever is on disk now, never written wholesale: the caller's
    * copy predates the orchestrator round-trip and `store.put` replaces the whole
    * row, so writing it back would undo a `terminate` that landed while the spawn
@@ -887,14 +899,15 @@ export class DonationService {
    */
   private storeRespawnAttempt(
     id: string,
-    respawn: RespawnAttempt,
+    respawn: RespawnAttempt | undefined,
     spawned?: SpawnedHandles,
   ): void {
+    if (!respawn && !spawned) return;
     try {
       // A row that vanished (terminate + delete) must not be recreated.
       const current = this.store.get(id);
       if (!current) return;
-      this.store.put({ ...current, respawn, ...spawned });
+      this.store.put({ ...current, ...(respawn ? { respawn } : {}), ...spawned });
     } catch (err) {
       log('failed to record respawn attempt for %s: %s', id, errorMessage(err));
     }
@@ -991,6 +1004,17 @@ function denialToError(reason: GrantDenyReason | undefined): DonationError {
     default:
       return new DonationError('unauthorized', 'Unknown or missing grant token');
   }
+}
+
+/**
+ * Whether a record carries the inputs a respawn replays. An empty `bootstrapNodes`
+ * is a real spawn input (a requester that dials the node itself); only a missing
+ * field marks a record written before inputs were persisted.
+ */
+export function hasSpawnInputs(
+  donation: Donation,
+): donation is Donation & Required<Pick<Donation, 'bootstrapNodes' | 'ownerKeys'>> {
+  return donation.bootstrapNodes !== undefined && (donation.ownerKeys?.length ?? 0) > 0;
 }
 
 /**

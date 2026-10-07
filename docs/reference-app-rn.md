@@ -736,7 +736,7 @@ Relaunching the app reconnects to the same cadre by itself (see [Start options](
 ### Not covered here
 
 - Strands on the lent node. A lent node launches no strand of its own — whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
-- Reaching a host across the internet rather than a home LAN: the host maps each lent node's ports through its router ([cadre-host.md → NAT and DDNS](cadre-host.md#nat-and-ddns)); the node announcing those addresses is ticket `cadre-host-nodes-announce-public-addresses`.
+- Reaching a host across the internet rather than a home LAN: the host maps each lent node's ports through its router and the node announces the resulting public addresses ([cadre-host.md → Public addresses reach the node](cadre-host.md#public-addresses-reach-the-node)); whether the router answers on them is not tested from the phone.
 - Listing loans or ending one from the app. The host's own UI and `cadre-host` CLI do that.
 
 

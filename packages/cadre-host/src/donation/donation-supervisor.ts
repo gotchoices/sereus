@@ -3,7 +3,7 @@ import debug from 'debug';
 import type { Orchestrator } from '@serfab/cadre-provider';
 
 import type { ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
-import type { DonationService } from './donation-service.js';
+import { hasSpawnInputs, type DonationService } from './donation-service.js';
 import type { DonationStore } from './donation-store.js';
 import type { Donation, DonationStatus } from './types.js';
 
@@ -109,7 +109,8 @@ export interface DonationSupervisorOptions {
  * Passes are serialized: `DonationService.respawn` is not itself serialized, and
  * two overlapping respawns of one id both spawn a child while the second drops
  * the first's orchestrator handle (see its docstring). Since two of the three
- * triggers can fire at once, the serialization lives here.
+ * triggers can fire at once, the serialization lives here. A deliberate
+ * {@link restart} runs on the same serialization tail.
  */
 export class DonationSupervisor {
   private readonly service: DonationService;
@@ -140,8 +141,28 @@ export class DonationSupervisor {
    * Returns the donation ids it respawned in *its own* pass.
    */
   reconcile(): Promise<string[]> {
-    const run = (): Promise<string[]> => this.reconcileOnce();
-    const next = this.tail.then(run, run);
+    return this.serialize(() => this.reconcileOnce());
+  }
+
+  /**
+   * Stop a running donated node and start it again, for a change the node picks
+   * up only at start — its public addresses (`NatService.onNodeAddressesStale`).
+   * Serialized with the reconcile passes, so it never overlaps a respawn or a
+   * give-up of the same record, and it re-reads the record first: a record that
+   * is no longer `awaiting_seed`/`seeded`, has no handle, or whose node is not
+   * running is left alone (a node that is down is the crash path's).
+   *
+   * Does not spend the record's respawn budget. A restart whose respawn throws
+   * rejects; the node is then down, and the exit event its stop raised has queued
+   * a reconcile pass that takes it over through the crash path, with its counting.
+   */
+  restart(id: string): Promise<void> {
+    return this.serialize(() => this.restartOnce(id));
+  }
+
+  /** Run `fn` after every pass and restart already queued. */
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.tail.then(fn, fn);
     // The stored tail swallows outcomes — a failed pass must not reject the
     // next caller's wait, only sequence after it.
     this.tail = next.then(() => undefined, () => undefined);
@@ -227,6 +248,17 @@ export class DonationSupervisor {
       }
     }
     return respawned;
+  }
+
+  private async restartOnce(id: string): Promise<void> {
+    if (this.disposed) return;
+    const donation = this.store.get(id);
+    // A record with no spawn inputs could be stopped but never brought back.
+    if (!donation?.dockerId || !SUPERVISED_STATUSES.has(donation.status) || !hasSpawnInputs(donation)) return;
+    if (!(await this.orchestrator.isRunning(donation.dockerId))) return;
+    await this.orchestrator.stopContainer(donation.dockerId);
+    const result = await this.service.respawn(id, { countAttempt: false });
+    log('restarted donation %s: %s', id, result.outcome);
   }
 
   /** Reconcile one record. Returns its id when this pass respawned it. */

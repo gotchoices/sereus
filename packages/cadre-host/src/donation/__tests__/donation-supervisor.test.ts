@@ -475,6 +475,23 @@ describe('DonationSupervisor.reconcile', () => {
   });
 });
 
+describe('DonationSupervisor.restart', () => {
+  it('stops and respawns a running node without spending its respawn budget', async () => {
+    const h = makeHarness();
+    const view = await h.provision();
+    const respawn = { attempts: 2, lastAttemptAt: new Date(h.nowMs()).toISOString() };
+    const before: Donation = { ...requireDonation(h.store, view.id), status: 'seeded', respawn };
+    h.store.put(before);
+    h.advance(60_000);
+
+    await h.supervisor.restart(view.id);
+
+    expect(h.orch.stopped).toEqual([view.dockerId]);
+    const after = requireDonation(h.store, view.id);
+    expect(after).toMatchObject({ status: 'seeded', dockerId: 'dock_2', respawn, updatedAt: before.updatedAt });
+  });
+});
+
 describe('DonationSupervisor start/stop', () => {
   it('sweeps at startup and again on a donated child exit', async () => {
     const h = makeHarness();
@@ -519,6 +536,7 @@ describe('DonationSupervisor start/stop', () => {
         spawnedAt: new Date(START_MS).toISOString(),
         workdir: '/fake/owner',
         ports: { health: 0, metrics: 0, p2p: 0, admin: 0, ws: 0 },
+        announcedAddrs: [],
         owner: true,
       };
       h.orch.emit(ownerExit);

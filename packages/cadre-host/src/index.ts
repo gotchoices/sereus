@@ -183,6 +183,7 @@ export type {
   NatServiceOptions,
   NatNodeSource,
   NatChangeListener,
+  NodeAddressesStaleListener,
   NatStatusSnapshot,
   NatGatewayStatus,
   NatDdnsStatus,

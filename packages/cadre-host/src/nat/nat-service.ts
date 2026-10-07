@@ -27,6 +27,7 @@ import { DdnsUpdater } from './ddns/updater.js';
 import { getProvider, listProviders } from './ddns/index.js';
 import { buildPublicAddresses, isPublicIpv4 } from './address-resolver.js';
 import { createSecretsStore, ddnsAccount, type SecretsStore } from './secrets/index.js';
+import { AddressWatch, type NodeAddressesStaleListener } from './address-watch.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
 
 const log = debug('cadre:host:nat-service');
@@ -135,6 +136,9 @@ function errorMessage(err: unknown): string {
  *   - `publicAddressesFor(nodeId, ports)`: a node's public multiaddrs, also
  *     from cached state, predicting the identity mapping for a port that has
  *     no route yet.
+ *   - `onNodeAddressesStale(listener)`: asked to restart a running node whose
+ *     announced addresses no longer match `publicAddressesFor`, checked after
+ *     every pass and every settings write (see `AddressWatch`).
  *
  * One reconcile pass against the node source behind three triggers (start,
  * node state change, a 1-minute timer), plus one renewal pass for every lease
@@ -143,7 +147,8 @@ function errorMessage(err: unknown): string {
  * port the other pass is mapping.
  *
  * NOTE: this file holds the settings/DDNS glue, the mapping table and the status
- * assembly together (about 850 lines); when the next capability lands here, move
+ * assembly together (about 890 lines; the stale-address check lives in
+ * `address-watch.ts` for that reason); when the next capability lands here, move
  * the mapping table (`NodeEntry` through `releaseUpnpRoutes`) into its own module.
  */
 export class NatService {
@@ -176,6 +181,7 @@ export class NatService {
 
   private readonly changeListeners = new Set<NatChangeListener>();
   private lastSignature: string | null = null;
+  private readonly addressWatch: AddressWatch;
 
   constructor(opts: NatServiceOptions) {
     this.nodeSource = opts.nodeSource;
@@ -188,6 +194,7 @@ export class NatService {
     this.injectedDetector = opts.externalIpDetector ?? null;
     this.secretsRootDir = opts.rootDir;
     this.currentSettings = this.store.load();
+    this.addressWatch = new AddressWatch(() => this.nowFn().getTime());
   }
 
   // --- lifecycle ---
@@ -309,6 +316,15 @@ export class NatService {
     return () => { this.changeListeners.delete(listener); };
   }
 
+  /**
+   * Register a listener asked to restart a running node whose announced addresses
+   * (`ManagedNodeInfo.announcedAddrs`) differ from `publicAddressesFor` — at most
+   * once per node per `NAT_ADDRESS_RESTART_MIN_INTERVAL_MS`. Returns an unsubscribe fn.
+   */
+  onNodeAddressesStale(listener: NodeAddressesStaleListener): () => void {
+    return this.addressWatch.subscribe(listener);
+  }
+
   /** List available DDNS providers (UI listing for configuration). */
   listDdnsProviders(): DdnsProviderInfo[] {
     return listProviders().map((p) => ({
@@ -354,7 +370,7 @@ export class NatService {
       });
     }
     await this.detectIp();
-    this.notifyIfChanged();
+    this.publish();
   }
 
   // --- writes ---
@@ -371,7 +387,7 @@ export class NatService {
     if (this.ddnsUpdater) {
       await this.ddnsUpdater.forceUpdate().catch((err) => log('ddns forceUpdate err: %s', errorMessage(err)));
     }
-    this.notifyIfChanged();
+    this.publish();
     return this.getStatus();
   }
 
@@ -400,7 +416,7 @@ export class NatService {
         });
       }
     }
-    this.notifyIfChanged();
+    this.publish();
     return this.getStatus();
   }
 
@@ -457,7 +473,7 @@ export class NatService {
     }
     this.currentSettings = this.store.setForward(nodeId, patch);
     if (this.started) await this.reconcile();
-    this.notifyIfChanged();
+    this.publish();
     return this.getStatus();
   }
 
@@ -504,7 +520,7 @@ export class NatService {
         log('reconcile of node %s failed: %s', node.id, errorMessage(err));
       }
     }
-    this.notifyIfChanged();
+    this.publish();
   }
 
   /**
@@ -599,7 +615,7 @@ export class NatService {
         await this.mapRoute(entry, kind);
       }
     }
-    this.notifyIfChanged();
+    this.publish();
   }
 
   /**
@@ -790,6 +806,19 @@ export class NatService {
   }
 
   // --- change notification ---
+
+  /**
+   * The end of every pass and every settings write: tell the change listeners
+   * when the snapshot moved, then ask for a restart of every running node whose
+   * announced addresses went stale. Running the check here rather than only on a
+   * change is what lets a difference deferred by the restart rate limit fire on the
+   * first timer pass after the limit ends.
+   */
+  private publish(): void {
+    this.notifyIfChanged();
+    if (!this.started) return;
+    this.addressWatch.check(this.nodeSource.listNodes(), (node) => this.publicAddressesFor(node.id, node.ports));
+  }
 
   /** Fire the change listeners when the snapshot differs (timestamps aside) from the last one they saw. */
   private notifyIfChanged(): void {

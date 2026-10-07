@@ -169,6 +169,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly cliEntrypoint: string;
   /** Resolves push credentials fresh on every spawn (see HostProcessConfig). */
   private readonly pushResolver?: PushCredentialsResolver;
+  /** The public addresses a node announces, asked at every spawn (see HostProcessConfig). */
+  private readonly announceAddrs?: HostProcessConfig['announceAddrs'];
   /** State-change listeners — invoked when a handle's alive state changes. */
   private readonly stateListeners = new Set<NodeStateListener>();
   /** Persisted spawn config for the owner node (re-spawn on demand). */
@@ -188,6 +190,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.defaultMemoryLimit = cfg.defaultResources?.memoryLimit;
     this.cliEntrypoint = cfg.spawn?.entrypoint ?? resolveCadreCliBin();
     this.pushResolver = cfg.pushResolver;
+    this.announceAddrs = cfg.announceAddrs;
     log('HostProcessOrchestrator rootDir=%s cli=%s', this.rootDir, this.cliEntrypoint);
   }
 
@@ -211,6 +214,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         partyId: persisted.partyId,
         profile: persisted.profile,
         ...(persisted.owner ? { owner: true } : {}),
+        announcedAddrs: persisted.announcedAddrs ?? [],
         alive: false,
       };
       handle.alive = isHandleLive(handle);
@@ -437,6 +441,22 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
+   * The public addresses the node about to spawn announces. A hook that throws costs
+   * the node its public addresses, never its start: it still binds and is reachable
+   * on its LAN addresses, and `NatService` restarts it once the addresses it should
+   * announce differ from these.
+   */
+  private announceAddrsFor(containerId: string, ports: NodePorts): string[] {
+    if (!this.announceAddrs) return [];
+    try {
+      return this.announceAddrs(containerId, ports);
+    } catch (err) {
+      log('announce hook failed for %s; it starts with no public addresses: %s', containerId, (err as Error).message);
+      return [];
+    }
+  }
+
+  /**
    * Ensure the admin's owner node is running, spawning it if absent or
    * dead. Idempotent: a second call with the node already alive returns the
    * existing handle without launching a second child. The spawn parameters
@@ -600,6 +620,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     const memoryLimit = opts.memoryLimit ?? this.defaultMemoryLimit;
     const heapBytes = parseMemoryLimit(memoryLimit);
     const heapMB = heapBytes !== undefined ? Math.max(64, Math.floor(heapBytes / (1024 * 1024))) : undefined;
+    const announcedAddrs = this.announceAddrsFor(containerId, ports);
 
     const env: NodeJS.ProcessEnv = {
       // Scrubbed, not raw process.env: every CADRE_* config-override key is
@@ -613,19 +634,16 @@ export class HostProcessOrchestrator implements Orchestrator {
       CADRE_HEALTH_PORT: String(ports.health),
       CADRE_METRICS_PORT: String(ports.metrics),
       CADRE_LISTEN_ADDRS: childListenAddrs(ports).join(','),
-      // NOTE: the scrub above drops every CADRE_* var and `extraEnv` is built only from
-      // pinnedOwnerKeys, so a managed child advertises only the ports assigned to it here
-      // — `CADRE_ANNOUNCE_ADDRS`/`CADRE_APPEND_ANNOUNCE_ADDRS` cannot reach it. Fine while
-      // children are reached at those ports; if a host is ever fronted by a proxy or DNS
-      // name, plumb an announce var through from host config. The TCP
-      // and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand node the
-      // child runs binds the same two entries with OS-assigned ports instead, since one
-      // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). `NatService`
-      // maps both of the control node's ports on the router (or records the user's manual
-      // forward for them), so from outside it is reachable over TCP and WebSocket; the
-      // strand nodes' OS-assigned ports are not mapped, and they are reached through
-      // observed addresses only, since no `CADRE_RELAY_ADDRS` is set here and a child
-      // therefore holds no relay reservation.
+      // The append form, not `CADRE_ANNOUNCE_ADDRS`: that one replaces the advertised
+      // set and would drop the LAN addresses a phone at home dials. Every entry must be
+      // a valid multiaddr: cadre-core refuses to start on one that is not.
+      // The TCP and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand
+      // node the child runs binds the same two entries with OS-assigned ports instead,
+      // since one port cannot be held twice, and inherits neither announce field
+      // (`cadre-core/src/strand-network-config.ts`). Those ports are not mapped, and
+      // strand nodes are reached through observed addresses only, since no
+      // `CADRE_RELAY_ADDRS` is set here and a child therefore holds no relay reservation.
+      ...(announcedAddrs.length > 0 ? { CADRE_APPEND_ANNOUNCE_ADDRS: announcedAddrs.join(',') } : {}),
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
@@ -694,6 +712,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       partyId: opts.partyId,
       profile: opts.profile,
       ...(opts.owner ? { owner: true } : {}),
+      announcedAddrs,
       child,
       alive: true,
     };
@@ -1125,6 +1144,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       partyId: h.partyId,
       profile: h.profile,
       ...(h.owner ? { owner: true } : {}),
+      announcedAddrs: h.announcedAddrs,
     };
   }
 }
@@ -1140,6 +1160,7 @@ function toNodeInfo(h: Handle): ManagedNodeInfo {
     workdir: h.workdir,
     ports: { ...h.ports },
     ...(h.owner ? { owner: true } : {}),
+    announcedAddrs: [...h.announcedAddrs],
   };
 }
 

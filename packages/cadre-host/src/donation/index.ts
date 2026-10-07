@@ -42,6 +42,7 @@ export type {
   DonationSeedResult,
   DonationPeerInfo,
   DonationServiceOptions,
+  RespawnOptions,
   RespawnResult,
 } from './donation-service.js';
 export {

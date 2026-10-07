@@ -41,6 +41,7 @@ describe('GET /api/status', () => {
           spawnedAt: '2025-01-01T00:00:00Z',
           workdir: '/tmp/alice',
           ports: { health: 1, metrics: 2, p2p: 3, admin: 4, ws: 5 },
+          announcedAddrs: [],
         },
       ]),
       nat: fakeNat(SAMPLE_CONNECTIVITY),

@@ -34,11 +34,24 @@ export function buildPublicAddresses(input: PublicAddressInput): string[] {
 /**
  * `/dns4/<hostname>` when a DDNS hostname is configured (externally managed
  * included), else `/ip4/<externalIp>` when that is a public IPv4, else none.
+ *
+ * A hostname that is not a DNS name is skipped rather than used: these addresses
+ * reach each node as `CADRE_APPEND_ANNOUNCE_ADDRS`, a comma-separated list that
+ * cadre-core validates at start, so one bad entry (a pasted URL, a comma) would
+ * stop every hosted node from starting.
  */
 function publicHost(input: PublicAddressInput): string | null {
-  if (input.ddnsHostname) return `/dns4/${input.ddnsHostname}`;
+  if (input.ddnsHostname && isDnsHostname(input.ddnsHostname)) return `/dns4/${input.ddnsHostname}`;
   if (input.externalIp && isPublicIpv4(input.externalIp)) return `/ip4/${input.externalIp}`;
   return null;
+}
+
+/** One RFC 1123 label: letters, digits and inner hyphens, 1–63 characters. */
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+/** True for a hostname of dot-separated RFC 1123 labels, at most 253 characters. */
+export function isDnsHostname(s: string): boolean {
+  return s.length <= 253 && s.split('.').every((label) => DNS_LABEL.test(label));
 }
 
 /**

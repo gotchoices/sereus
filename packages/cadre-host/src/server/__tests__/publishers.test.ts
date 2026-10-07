@@ -101,6 +101,7 @@ describe('publisher wiring', () => {
       spawnedAt: 'x',
       workdir: '/tmp',
       ports: { health: 1, metrics: 2, p2p: 3, admin: 4, ws: 5 },
+      announcedAddrs: [],
     });
     expect(received).toContainEqual({
       type: 'node-state-changed',

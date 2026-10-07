@@ -284,9 +284,13 @@ program
       // persisted in state.json. The non-secret bits (bundle id / sandbox toggle,
       // cooldown/debounce) are re-read from host.config.json each call too.
       const pushSecrets = await createSecretsStore(cfg.dataDir);
+      // Each node is spawned announcing its public addresses. Read through a late-bound
+      // reference: NatService takes the orchestrator as its node source, so it is built after.
+      const addresses: { source?: NatService } = {};
       const orchestrator = new HostProcessOrchestrator({
         rootDir: join(cfg.dataDir, 'orchestrator'),
         pushResolver: () => resolvePushCredentials(pushSecrets, readHostConfig(cfgPath).push),
+        announceAddrs: (id, ports) => addresses.source?.publicAddressesFor(id, ports) ?? [],
       });
       await orchestrator.init();
 
@@ -298,6 +302,7 @@ program
       // for re-attached nodes land in the background. Best-effort: a failure
       // here leaves the management API up.
       const natService = new NatService({ rootDir: cfg.dataDir, nodeSource: orchestrator });
+      addresses.source = natService;
       try {
         await natService.start();
       } catch (err) {
@@ -330,6 +335,19 @@ program
         orchestrator,
       });
       donationSupervisor.start();
+
+      // A node learns its public addresses only at start, so one whose addresses
+      // changed (a mapping on another port, a forward, the DDNS hostname, the external
+      // IP) is restarted, at most once per node per 10 minutes. The owner node only in
+      // the founder role: on a donor host a leftover owner child is being stopped
+      // below, and `restartOwnerNode` would spawn it again.
+      // NOTE: a failed owner restart leaves the owner node down, and nothing else
+      // re-spawns it (the supervisor covers donated nodes only); if that is ever seen,
+      // retry `ensureOwnerNode` on a timer while the founder role is on.
+      natService.onNodeAddressesStale(async (id) => {
+        if (!orchestrator.isOwnerNode(id)) await donationSupervisor.restart(id);
+        else if (hostOwnsCadre(cfg)) await orchestrator.restartOwnerNode();
+      });
 
       // Reap orphaned donations: a requester that provisioned a node but never
       // presented a seed leaves an `awaiting_seed` child holding host ports,

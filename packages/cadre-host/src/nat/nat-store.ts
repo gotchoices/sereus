@@ -10,6 +10,7 @@ import {
   type NatSettingsFile,
   type PortKind,
 } from './types.js';
+import { isDnsHostname } from './address-resolver.js';
 
 const log = debug('cadre:host:nat-store');
 
@@ -230,7 +231,7 @@ function validate(s: NatSettingsFile): void {
   if (s.ddns.providerId !== null && s.ddns.providerId.length === 0) {
     throw new NatError('invalid_config', 'ddns.providerId must be a non-empty string or null');
   }
-  if (s.ddns.hostname !== null && s.ddns.hostname.length === 0) {
-    throw new NatError('invalid_config', 'ddns.hostname must be a non-empty string or null');
+  if (s.ddns.hostname !== null && !isDnsHostname(s.ddns.hostname)) {
+    throw new NatError('invalid_config', `ddns.hostname must be a DNS name such as foo.duckdns.org or null, got "${s.ddns.hostname}"`);
   }
 }

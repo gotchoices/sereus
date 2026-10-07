@@ -23,6 +23,8 @@ export interface PersistedHandle {
   profile: 'storage' | 'transaction';
   /** True for the admin's owner node. */
   owner?: boolean;
+  /** The public addresses the child was started announcing. Absent in a file written before they existed. */
+  announcedAddrs?: string[];
 }
 
 export interface PersistedState {

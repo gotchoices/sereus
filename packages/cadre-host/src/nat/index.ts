@@ -13,6 +13,8 @@ export {
   NAT_IP_REDETECT_INTERVAL_MS,
 } from './nat-service.js';
 export type { NatServiceOptions, NatNodeSource, NatChangeListener } from './nat-service.js';
+export { NAT_ADDRESS_RESTART_MIN_INTERVAL_MS } from './address-watch.js';
+export type { NodeAddressesStaleListener } from './address-watch.js';
 export { NatStore } from './nat-store.js';
 export {
   NatError,

@@ -33,6 +33,15 @@ export interface HostProcessConfig {
    * resolver itself is responsible for rejecting a partial credential set.
    */
   pushResolver?: PushCredentialsResolver;
+  /**
+   * The public multiaddrs a node about to spawn should announce beside its listen
+   * addresses (`CADRE_APPEND_ANNOUNCE_ADDRS`), given its container id and the ports just
+   * allocated to it. Synchronous on purpose: both spawn paths allocate ports inside a
+   * window that must contain no `await` (see `restoreDroppedHandles`), and the addresses
+   * depend on those ports. A throw is logged and the node starts announcing nothing extra.
+   * Absent, no node announces anything beyond what libp2p reports.
+   */
+  announceAddrs?: (containerId: string, ports: NodePorts) => string[];
 }
 
 /**
@@ -76,6 +85,8 @@ export interface Handle {
   profile: 'storage' | 'transaction';
   /** True for the admin's owner node (binds the admin channel). */
   owner?: boolean;
+  /** The public addresses the child was started announcing ({@link HostProcessConfig.announceAddrs}). */
+  announcedAddrs: string[];
   /** Live ChildProcess reference; absent after re-attach via init(). */
   child?: ChildProcess;
   /** Marked false when init() finds the PID dead or token mismatched. */
@@ -97,6 +108,12 @@ export interface ManagedNodeInfo {
   ports: NodePorts;
   /** True for the admin's owner node. */
   owner?: boolean;
+  /**
+   * The public addresses the node was started announcing. It learns them only at start,
+   * so `NatService` compares this with the node's current public addresses and asks for
+   * a restart when they differ.
+   */
+  announcedAddrs: string[];
 }
 
 /**
