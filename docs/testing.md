@@ -665,8 +665,10 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   helpers in `child-node-fixtures.ts`, and an in-process claimant in the phone shape of the
   bullet above, which calls `CadreNode.claimNode` with the node's own `/status` addresses. A
   wrong secret and an owner of another cadre are refused, the right secret claims the node,
-  the phone dials in and rows cross both ways, and the node restarted on the same workdir stays
-  claimed and is dialed again. Loopback only, and no strand.
+  which records the claim (`claim.json`, with the party and owner key but not the secret) and
+  restarts in-process from its placeholder party into the claimant's, the phone dials in and
+  rows cross both ways, and the node restarted on the same workdir starts from that record and
+  is dialed again. Loopback only, and no strand.
 - Relayed control plane (a control node with no inbound reachability of its own, reserving a
   circuit-relay slot on a sibling and being dialed through it) —
   `relay-only-control-addr.integration.ts`. The control plane only; the strand plane is the

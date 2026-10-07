@@ -30,7 +30,8 @@ claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Pro
 
 // On the node being claimed: true while it has a claim secret and no owner yet. While true it
 // admits strangers' connections and refuses their control-DB streams and relay reservations.
-// The `claim:accepted` event fires once, with the owner key, when a claim lands.
+// The `claim:accepted` event fires once, with the owner key and the claim seed's party (the one the
+// node should serve from now on; `CadreNodeConfig.claim.record` is handed both first), when a claim lands.
 isAwaitingClaim(): boolean;
 ```
 

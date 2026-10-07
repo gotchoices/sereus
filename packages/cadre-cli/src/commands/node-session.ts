@@ -58,10 +58,10 @@ export function resolveStorageConfig(config: ResolvedConfig['storage']): Storage
  * control-database operation and exits never reaches them.
  *
  * `partyId` is the party the node serves, which on a claimed node is the claim record's rather
- * than the config's placeholder (`partyOnRecord`); the default is for callers that have no
- * node-state directory to consult.
+ * than the config's placeholder (`partyOnRecord`), so it is passed in rather than read off the
+ * config.
  */
-export function oneShotNodeConfig(config: ResolvedConfig, partyId: string = config.controlNetwork.partyId): CadreNodeConfig {
+export function oneShotNodeConfig(config: ResolvedConfig, partyId: string): CadreNodeConfig {
   return {
     privateKey: config.privateKey,
     controlNetwork: { ...config.controlNetwork, partyId },

@@ -83,8 +83,9 @@ export function parseClaimRecord(text: string, path: string): ClaimRecord {
  * what was written.
  *
  * NOTE: a copy of cadre-core's `writeFileAtomically` (`fs-atomic.ts`), which that package keeps
- * out of its exported surface; cadre-host carries the same write-then-rename shape in its own
- * stores. If a third copy is ever needed here, export cadre-core's and use it.
+ * out of its exported surface, minus its best-effort directory fsync; cadre-host carries the
+ * same write-then-rename shape in its own stores. If a third copy is ever needed here, export
+ * cadre-core's and use it.
  */
 export async function writeClaimRecord(nodeStateDir: string, claim: NodeClaimRecord, now: () => Date = () => new Date()): Promise<ClaimRecord> {
   const record: ClaimRecord = { version: RECORD_VERSION, partyId: claim.partyId, ownerKey: claim.ownerKey, claimedAt: now().toISOString() };
