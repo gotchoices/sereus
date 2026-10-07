@@ -563,9 +563,9 @@ export function projectSeedPeers(rows: readonly CadrePeerRow[], ownerKeys: Reado
 /**
  * The conditions a cadre invitation must still meet to be redeemed, short of its use count:
  * not withdrawn, unexpired (`expiresAt <= now` is expired, as the redemption refuses it),
- * and issued by a current owner. Shared by {@link ControlDatabase.hasLiveCadreInvite} and
- * {@link ControlDatabase.listCadreInviteStatuses} so the two cannot drift from each other,
- * or from `CadreInviteUsage.Authorized`.
+ * and issued by a current owner. Shared by {@link ControlDatabase.hasLiveCadreInvite},
+ * {@link ControlDatabase.isCadreInviteLive} and {@link ControlDatabase.listCadreInviteStatuses}
+ * so they cannot drift from each other, or from `CadreInviteUsage.Authorized`.
  */
 function cadreInviteStillOpen(
   row: { stampId: string; issuerKey: string; expiresAt: string | null },

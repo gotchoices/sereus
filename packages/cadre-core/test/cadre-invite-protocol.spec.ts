@@ -108,6 +108,8 @@ describe('cadre invitation redemption protocol', () => {
   let memberPeerId: string;
   let memberAddr: string;
   let handler: CadreInviteHandler;
+  /** Every device the real handler pushed the control store to, and whether its row was already written then. */
+  const pushes: Array<{ peerId: string; admittedAtPush: boolean }> = [];
 
   beforeAll(async () => {
     founder = freshKeyPair();
@@ -123,7 +125,13 @@ describe('cadre invitation redemption protocol', () => {
     expect(await db.ensureOwnerKey(founder.publicKey)).toBe(true);
     memberPeerId = member.peerId!.toString();
     memberAddr = `/ip4/127.0.0.1/tcp/4001/p2p/${memberPeerId}`;
-    handler = new CadreInviteHandler({ partyId, store: db });
+    handler = new CadreInviteHandler({
+      partyId,
+      store: db,
+      catchUpDevice: async (peerId) => {
+        pushes.push({ peerId, admittedAtPush: (await db.queryCadrePeers()).some((row) => row.peerId === peerId) });
+      }
+    });
   }, 60_000);
 
   afterAll(async () => {
@@ -186,6 +194,8 @@ describe('cadre invitation redemption protocol', () => {
     expect(await db.getOwnerKeys()).toContain(device.peerKey);
     expect(await db.countCadreInviteUsage(invitation.invite.key)).toBe(1);
     expect((await member.listAuthorizedMembers()).map((row) => row.peerId)).toContain(device.partyId);
+    // The device was handed the control store once, before its rows were written.
+    expect(pushes.filter((push) => push.peerId === device.partyId)).toEqual([{ peerId: device.partyId, admittedAtPush: false }]);
   });
 
   it('moves past a member that does not know the issuer (issuer-unknown is retryable) to one that does', async () => {
@@ -269,6 +279,8 @@ describe('cadre invitation redemption protocol', () => {
     expect(failure).toBeInstanceOf(CadreInviteRejectedError);
     expect((failure as CadreInviteRejectedError).code).toBe('invite-spent');
     expect((await db.queryCadrePeers()).some((row) => row.peerId === device.partyId)).toBe(false);
+    // The holder of an invitation that is no longer live is sent nothing.
+    expect(pushes.some((push) => push.peerId === device.partyId)).toBe(false);
   });
 
   it('reports every address\'s outcome when none accepts', async () => {

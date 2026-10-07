@@ -2572,6 +2572,11 @@ export class CadreNode implements SAppIdLookup {
           await this.registerSelf();
         } catch (error) {
           // Background task — a failed publish must not crash the node.
+          // NOTE: a restarted machine whose own CadrePeer row replicates in while this update
+          // runs fails here with ConcurrentModificationError (seen on the owner's restart in
+          // every traced run of cadre-invite-any-member), leaving its record unrefreshed until
+          // the next heartbeat. If a restarted machine's changed addresses must publish sooner,
+          // retry once here.
           log('Self-registration failed: %o', error);
         }
         // Wire the ongoing refresh + control-cohort reconcile cadence, then run
