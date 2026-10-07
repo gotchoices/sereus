@@ -143,7 +143,8 @@ function resolveTimeout(raw: string): number {
 
 /**
  * The operator-facing reason an admin request failed, naming the fix where there is one.
- * `ownerFlag` names what the node must be started with for this request to be served.
+ * Every admin route is served only by a node started with `--owner`, so the not-ready case
+ * names that flag.
  */
 export function describeAdminFailure(err: unknown, port: number): string {
   if (!(err instanceof AdminRequestError)) {

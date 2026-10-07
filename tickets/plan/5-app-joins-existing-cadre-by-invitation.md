@@ -25,7 +25,7 @@ In both flows B pins the owner keys the invitation carries (the existing invite-
 
 ## What to build
 
-- The app-facing calls on top of `createInvite` / `redeemInvite` from the foundation ticket: request encoding, invitation encoding (versioned, e.g. `sereus-invite:`, short enough to paste and to fit in a QR code; the member address list capped as `INVITATION_SIBLING_MACHINES` caps it), and B's progress states.
+- The app-facing calls on top of `createCadreInvitation` / `redeemCadreInvitation` (landed by `cadre-invite-redemption-protocol`; the apps' thin "Paste cadre invitation" / "Join cadre" wiring by `cadre-invitations-redeemable-by-any-member`): request encoding, invitation encoding (versioned, e.g. `sereus-invite:`, short enough to paste and to fit in a QR code; the member address list capped as `INVITATION_SIBLING_MACHINES` caps it), and B's progress states.
 - **No always-on machine.** Two apps on one phone cannot connect to each other: phone nodes accept no connections, and iOS does not run two apps at once. Redemption needs a reachable member. A checks whether the cadre has a member with a public or relayed address and, if not, says so before handing over the invitation. B shows "waiting for an always-on node" rather than failing silently.
 - B is still a member of its own one-node cadre at this point. Moving its strands and dissolving that cadre is `move-strand-between-cadres` and `dissolve-empty-cadre`. Decide, based on how the cadre-rn node handles party ids, whether one node joins a second party or B's app starts a second node for party A, and document it.
 

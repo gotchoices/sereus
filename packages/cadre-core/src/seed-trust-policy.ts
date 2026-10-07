@@ -118,7 +118,7 @@ export function pinnedKeyTrustPolicy(
 
 /**
  * Opt-in interactive policy: trust keys already in the node-local anchor, and
- * on an unknown key invoke `confirm` (e.g. a trust-circle UI prompt). The key is
+ * on an unknown key invoke `confirm` (e.g. a host UI prompt). The key is
  * trusted iff `confirm` resolves true, and a confirmed key is persisted into the
  * anchor as an 'operator' pin (a human at the console is the same provenance as
  * an explicit operator pin) so the prompt is not repeated. Not enabled by default.

@@ -33,6 +33,9 @@ export interface EnrollInviteReport extends CreateCadreInvitationResult {
   warnings: string[];
 }
 
+// NOTE: listing and withdrawing have no CLI command yet, so this warning names the admin
+// route. If operators withdraw often, add `cadre enroll invite --list` / `--withdraw <key>`
+// over the same admin client rather than a second command family.
 const UNTARGETED_OWNER_WARNING =
   'This invitation makes WHOEVER redeems it an owner of the cadre: a bearer credential for admin rights. '
   + 'Hand it over directly and withdraw it (DELETE /admin/invites/<key>) if it goes astray; it expires in 15 minutes '
@@ -98,7 +101,7 @@ export function formatEnrollInviteReport(report: EnrollInviteReport): string {
     `  Admits:   ${invite.peerId === null ? 'any device' : `device ${invite.peerId}`}`,
     `  Grants:   ${invite.grantsOwner ? 'membership and ownership' : 'membership'}`,
     `  Uses:     ${invite.totalUses ?? 'unlimited'}`,
-    `  Expires:  ${invite.expiresAt ?? 'never'} (UTC)`,
+    `  Expires:  ${invite.expiresAt === null ? 'never' : `${invite.expiresAt} (UTC)`}`,
     '  Member addresses the device can redeem at:',
     ...addrs,
     'On the device (its config must set controlNetwork.partyId: ' + partyId + '):',

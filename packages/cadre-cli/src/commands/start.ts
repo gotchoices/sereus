@@ -57,7 +57,6 @@ export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkS
   return decoded as ControlNetworkSeed;
 }
 
-/** Commander collector for the repeatable `--pin-owner-key` option. */
 /**
  * Decode `--invitation` and check that it names this node's party, throwing when either fails.
  * `redeemCadreInvitation` repeats the party check, but like {@link decodeSeedFor} this runs
@@ -101,6 +100,7 @@ export function refuseInvitationConflicts(options: { seed?: string; owner?: bool
   }
 }
 
+/** Commander collector for the repeatable `--pin-owner-key` option. */
 function collectPinKey(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
@@ -208,10 +208,12 @@ export const startCommand = new Command('start')
         }
       }
 
+      // The conflict check comes before either decode, so an operator who passed both flags
+      // is told that, not that one of the two values failed to decode.
+      if (options.invitation) refuseInvitationConflicts(options);
       const seed = options.seed ? decodeSeedFor(options.seed, config.controlNetwork.partyId) : undefined;
       let invitation: CadreInvitation | undefined;
       if (options.invitation) {
-        refuseInvitationConflicts(options);
         if (!config.privateKey) {
           throw new Error('--invitation requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it');
         }
@@ -417,6 +419,10 @@ export const startCommand = new Command('start')
       // cannot tell the two apart, and neither needs to. A failure is reported and the node
       // keeps running, as a failed --seed does: nothing was written here, and the operator
       // can re-run with a fresh invitation.
+      // NOTE: a retryable refusal (`err.retryable`: no member reachable, or a member that
+      // answered busy/conflict in the window after the owner left its cohort) is not retried
+      // here; the operator re-runs. If headless joins in that window become common, add a
+      // bounded retry on `retryable` before giving up.
       if (invitation) {
         try {
           const joined = await node.redeemCadreInvitation(invitation);
