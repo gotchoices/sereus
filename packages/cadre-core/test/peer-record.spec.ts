@@ -4,7 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { digest, sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
-import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import {
   peerRecordSignedPayload,
   signPeerRecord,

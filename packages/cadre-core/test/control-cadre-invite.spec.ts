@@ -19,6 +19,7 @@ import {
   cadreInviteRedeemDigest,
   verifyInvitationAdmission,
 } from '../src/peer-authorization.js';
+import { signPeerRecord } from '../src/peer-record.js';
 import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields } from '../src/types.js';
 import {
   expectConstraintFailure,
@@ -284,6 +285,24 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     expect(usage?.ownerStampId).toBe(result.ownerStampId);
   });
 
+  it('refuses: completing an already-admitted device under a key other than its peer row\'s (PeerExists)', async () => {
+    // With no peer insert in the transaction nothing else pins PeerKey, so a holder redeeming
+    // an owner-granting invitation for an admitted peer id must still present THAT device's key:
+    // otherwise an OwnerKey row would be seated for a key the targeted device never held.
+    const device = await mintContactJoiner();
+    const other = await mintContactJoiner();
+    await admit(device);
+    const { invite } = await issue({ grantsOwner: true, peerId: device.partyId });
+    const usageStampId = generateStampId(device.partyId);
+    const { inviteSig, peerSig } = redemptionSignatures(invite, other, usageStampId);
+
+    await expectConstraintFailure(db.redeemCadreInvite({
+      inviteKey: invite.publicKey, peerId: device.partyId, peerKey: other.peerKey, usageStampId, inviteSig, peerSig,
+    }), 'PeerExists');
+    expect(await ownerRow(other.peerKey)).toBeUndefined();
+    expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(0);
+  });
+
   it('re-vouch: an owner re-touching an invitation-admitted row moves it onto the signature and clears VouchUsage', async () => {
     const device = await mintContactJoiner();
     await admit(device);
@@ -295,6 +314,25 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     expect(peer?.VouchUsage).toBeNull();
     // Still a member, now judged by the voucher: the invitation is no longer consulted for it.
     expect((await node.listAuthorizedMembers()).map(member => member.peerId)).toContain(device.partyId);
+  });
+
+  it('self-publish: an invitation-admitted device re-publishes its addresses with its proof columns untouched (AuthorizedUpdate)', async () => {
+    // The self-publish branch compares VouchSig and VouchUsage null-safe; a bare equality over
+    // the null VouchSig would have been null and the whole check with it.
+    const device = await mintContactJoiner();
+    const stampId = await admit(device);
+    const addrs = ['/ip4/10.0.0.9/tcp/4001'];
+    await db.updateSelfPeerRecord(signPeerRecord(
+      { peerId: device.partyId, publicKey: device.peerKey, addrs, updatedAt: Date.now() + 60_000 },
+      device.privateKey,
+    ));
+
+    const row = await rawDb.get('select Multiaddr, StampId, VouchSig, VouchUsage from CadreControl.CadrePeer where PeerId = ?', [device.partyId]);
+    expect(row?.Multiaddr).toBe(addrs.join(','));
+    expect(row?.StampId).toBe(stampId);
+    expect(row?.VouchSig).toBeNull();
+    expect(typeof row?.VouchUsage).toBe('string');
+    expect((await node.listAuthorizedMembers()).find(member => member.peerId === device.partyId)?.multiaddr).toBe(addrs.join(','));
   });
 
   // ── Liveness conditions at redemption (CadreInviteUsage.Authorized) ───────

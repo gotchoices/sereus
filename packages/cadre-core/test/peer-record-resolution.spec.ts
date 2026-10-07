@@ -4,7 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
-import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import { signPeerRecord, verifyPeerRecordSignature } from '../src/peer-record.js';
 import type { PeerAddressRecord } from '../src/types.js';
 

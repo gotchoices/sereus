@@ -393,16 +393,28 @@ interface GuardedRemoval {
   readonly revocationSignature: string;
 }
 
+/**
+ * The exact bytes an owner signs to append one `Revocation` tombstone — `Revocation.Authorized`
+ * binds the whole (TableName, RowKey, StampId) row under its own domain tag. Shared by every
+ * tombstone writer (a guarded removal, a `CadreInvite` withdrawal, the ledger marker) so the
+ * field order lives in one place; the base64url verifier is `peer-authorization.ts`'s
+ * `revocationDigest`.
+ */
+function revocationTombstoneMessage(ref: { tableName: string; rowKey: string; stampId: string }): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.Revocation', 'remove', [ref.tableName, ref.rowKey, ref.stampId]);
+}
+
 function signGuardedRemoval(
   tableName: RemovableTable,
   rowKey: string,
   stampId: string,
   signMessage: (message: Uint8Array) => string
 ): GuardedRemoval {
+  const ref = { tableName, rowKey, stampId };
   return {
-    ref: { tableName, rowKey, stampId },
+    ref,
     signature: signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', [rowKey, stampId])),
-    revocationSignature: signMessage(buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId])),
+    revocationSignature: signMessage(revocationTombstoneMessage(ref)),
   };
 }
 
@@ -2834,9 +2846,7 @@ export class ControlDatabase {
   ): Promise<RevocationLedgerOpenResult> {
     this.ensureInitialized();
     const { tableName, rowKey, stampId } = REVOCATION_LEDGER_MARKER;
-    const signature = signMessage(buildAuthorizationMessage(
-      'CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]
-    ));
+    const signature = signMessage(revocationTombstoneMessage(REVOCATION_LEDGER_MARKER));
     try {
       return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
         if (await this.revocationLedgerFiled()) {
@@ -3925,8 +3935,7 @@ export class ControlDatabase {
         return null;
       }
       const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
-      const signature = signMessage(buildAuthorizationMessage('CadreControl.Revocation', 'remove', [ref.tableName, ref.rowKey, ref.stampId]));
-      await this.execTombstone(ref, signature, ownerKey);
+      await this.execTombstone(ref, signMessage(revocationTombstoneMessage(ref)), ownerKey);
       return ref;
     }, {}, 'cadre-invite-withdraw');
     if (filed === null) {

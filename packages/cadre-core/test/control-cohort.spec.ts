@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { selectControlCohortDials } from '../src/control-cohort.js';
-import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import type { CohortPeerRow } from '../src/strand-cohort.js';
 
 /** A real Ed25519 peer + its derived base64url owner key. */

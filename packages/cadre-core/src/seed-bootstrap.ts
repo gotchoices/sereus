@@ -80,10 +80,6 @@ export function decodeLengthPrefixedFrame(data: Uint8Array, maxLength = MAX_SEED
   return data.subarray(4, 4 + length);
 }
 
-// Re-exported from its new home so the callers that learned it here keep resolving; the
-// lightweight verifiers in peer-authorization.ts needed it without this module's runtime.
-export { ed25519PublicKeyB64FromPeerId };
-
 /**
  * Canonical byte representation of the authenticated seed fields.
  *

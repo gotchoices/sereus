@@ -697,8 +697,12 @@ declare schema CadreControl {
                    new.PeerSig, new.PeerKey, 'ed25519')
         ),
         -- Deferred, so the same-transaction peer insert counts: a usage row can never be held in
-        -- reserve to seat a row later (FormationUsage.StrandExists).
-        constraint PeerExists check (exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and P.StampId = new.PeerStampId)),
+        -- reserve to seat a row later (FormationUsage.StrandExists). PeerKey must be the key the
+        -- peer row stores: a redemption that only completes an already-admitted device with its
+        -- OwnerKey row (no peer insert to pin it) cannot name a key other than that device's.
+        constraint PeerExists check (exists (
+            select 1 from CadrePeer P where P.PeerId = new.PeerId and P.StampId = new.PeerStampId and P.PublicKey = new.PeerKey
+        )),
         constraint OwnerExists check (
             new.OwnerStampId is null
                 or exists (select 1 from OwnerKey K where K.Key = new.PeerKey and K.StampId = new.OwnerStampId)

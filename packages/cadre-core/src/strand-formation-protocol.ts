@@ -28,7 +28,7 @@ import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
-import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import { trailingPeerId } from './peer-record.js';
 import {
   formationDeadlines,

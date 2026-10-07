@@ -72,7 +72,7 @@ import {
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission } from './peer-authorization.js';
-import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
   signPeerRecord,
   verifyPeerRecordSignature,
@@ -7476,6 +7476,14 @@ export class CadreNode implements SAppIdLookup {
    * The usage and invitation rows {@link hasAnchoredProof} resolves an invitation-admitted
    * row through, keyed for lookup. Both reads honour `retry` for
    * {@link listAuthorizedMembers}' reason.
+   *
+   * NOTE: once invitations are the only admission route (ticket
+   * `cadre-invitations-redeemable-by-any-member`), every cadre with a member not yet
+   * re-vouched pays these two whole-table reads and three ed25519 verifies per row on every
+   * membership refresh. Both tables are append-only and a verified chain never changes (expiry,
+   * use count and withdrawal are not re-checked), so if the gate's admission deadline ever
+   * shows this, memoise verified (row stamp → usage stamp) pairs per node and skip the reads
+   * when every admitted row is already memoised.
    */
   private async loadInvitationChain(controlDatabase: ControlDatabase, retry: boolean): Promise<InvitationChain> {
     const [usages, invites] = await Promise.all([

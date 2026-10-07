@@ -6,9 +6,9 @@ import {
   SeedBootstrapService,
   SEED_PROTOCOL,
   canonicalSeedPayload,
-  decodeLengthPrefixedFrame,
-  ed25519PublicKeyB64FromPeerId
+  decodeLengthPrefixedFrame
 } from '../src/seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import {
   anchoredTrustPolicy,
   pinnedKeyTrustPolicy,

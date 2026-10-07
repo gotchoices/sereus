@@ -48,7 +48,7 @@ export type {
 export { controlAuthorizationFields, cadreInviteRowFields, type ControlDomain, type ControlAction, type CadreInviteSignedFields } from './control-authorization.js';
 
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
-export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
+export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 
 // Pluggable key store (backend-agnostic identity/owner key material seam).
 // Dependency-free: the interface, error, default slot id, and in-memory backend
@@ -362,7 +362,6 @@ export {
 export {
   SeedBootstrapService,
   SEED_PROTOCOL,
-  ed25519PublicKeyB64FromPeerId,
   type SeedBootstrapConfig,
   type SeedEventCallbacks
 } from './seed-bootstrap.js';

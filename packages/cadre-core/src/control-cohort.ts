@@ -21,7 +21,7 @@
  * party it bounds out-degree to `backbone + targetDegree`.
  */
 
-import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 
 /**
