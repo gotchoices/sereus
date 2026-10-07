@@ -41,7 +41,10 @@ export const NAT_UNMAP_GRACE_MS = 3 * 60_000;
 /** The backstop reconcile cadence; state-change events trigger passes between ticks. */
 export const NAT_RECONCILE_INTERVAL_MS = 60_000;
 
-/** How often the external IP is re-detected. */
+/**
+ * How often the external IP is re-detected, and how often gateway discovery is
+ * retried while UPnP is on and no router has answered.
+ */
 export const NAT_IP_REDETECT_INTERVAL_MS = 5 * 60_000;
 
 /**
@@ -138,6 +141,10 @@ function errorMessage(err: unknown): string {
  * every `DEFAULT_REFRESH_MS`. Passes are serialized on one promise tail, so a
  * state change during a timer pass can neither map a port twice nor unmap a
  * port the other pass is mapping.
+ *
+ * NOTE: this file holds the settings/DDNS glue, the mapping table and the status
+ * assembly together (about 850 lines); when the next capability lands here, move
+ * the mapping table (`NodeEntry` through `releaseUpnpRoutes`) into its own module.
  */
 export class NatService {
   private readonly nodeSource: NatNodeSource;
@@ -162,7 +169,7 @@ export class NatService {
 
   private started = false;
   private tail: Promise<void> = Promise.resolve();
-  /** At most one event-triggered pass queued at a time (crash storms coalesce). */
+  /** True while an event-triggered pass is queued and not yet started (crash storms coalesce into it). */
   private eventPassQueued = false;
   private timers: NodeJS.Timeout[] = [];
   private unsubscribe: (() => void) | null = null;
@@ -197,13 +204,7 @@ export class NatService {
     if (!this.secretsStore) {
       this.secretsStore = await createSecretsStore(this.secretsRootDir);
     }
-    if (this.currentSettings.upnpEnabled) {
-      // NOTE: discovery runs here, on a UPnP toggle and on `testReachability` only; a
-      // router that boots after the host is found at the next test or restart. If
-      // that shows up on real hosts, retry discovery on the reconcile timer while
-      // `gateway.found` is false.
-      await this.discoverGateway();
-    }
+    if (this.currentSettings.upnpEnabled) await this.discoverGateway();
     await this.detectIp();
 
     this.ddnsUpdater = new DdnsUpdater({
@@ -220,7 +221,7 @@ export class NatService {
     this.timers = [
       setInterval(() => { this.sweep('reconcile', () => this.reconcile()); }, NAT_RECONCILE_INTERVAL_MS),
       setInterval(() => { this.sweep('renewal', () => this.renewMappings()); }, DEFAULT_REFRESH_MS),
-      setInterval(() => { this.sweep('ip', () => this.redetectIp()); }, NAT_IP_REDETECT_INTERVAL_MS),
+      setInterval(() => { this.sweep('probe', () => this.redetect()); }, NAT_IP_REDETECT_INTERVAL_MS),
     ];
     for (const t of this.timers) t.unref();
 
@@ -337,6 +338,23 @@ export class NatService {
    */
   renewMappings(): Promise<void> {
     return this.enqueue(() => this.renewOnce());
+  }
+
+  /**
+   * The 5-minute probe pass: while UPnP is on and no router has answered,
+   * search again and map the running nodes as soon as one does — a host that
+   * boots before its network, or a router that comes up later, is found here
+   * rather than at the next restart; then re-detect the external IP.
+   */
+  async redetect(): Promise<void> {
+    if (this.currentSettings.upnpEnabled && !this.gateway.found) {
+      await this.enqueue(async () => {
+        await this.discoverGateway();
+        if (this.gateway.found) await this.reconcileOnce({ mapMissing: true });
+      });
+    }
+    await this.detectIp();
+    this.notifyIfChanged();
   }
 
   // --- writes ---
@@ -458,12 +476,19 @@ export class NatService {
     void run().catch((err) => { log('%s pass failed: %s', trigger, errorMessage(err)); });
   }
 
+  /**
+   * One pass per burst of events: an event while a pass is queued joins it,
+   * and an event during a running pass queues exactly one more, so a node that
+   * spawned after the running pass listed the nodes is mapped by the next pass
+   * rather than by the timer.
+   */
   private queueEventPass(): void {
     if (this.eventPassQueued) return;
     this.eventPassQueued = true;
-    void this.reconcile()
-      .catch((err) => { log('event pass failed: %s', errorMessage(err)); })
-      .finally(() => { this.eventPassQueued = false; });
+    void this.enqueue(() => {
+      this.eventPassQueued = false;
+      return this.reconcileOnce({ mapMissing: true });
+    }).catch((err) => { log('event pass failed: %s', errorMessage(err)); });
   }
 
   private async reconcileOnce(opts: { mapMissing: boolean }): Promise<void> {
@@ -656,15 +681,16 @@ export class NatService {
   }
 
   /**
-   * Detect the external IP. A detection that finds nothing (or throws) keeps
-   * the previous result, so one failed probe does not drop every node's public
-   * address.
+   * Detect the external IP. A detection that finds nothing (or throws), or that
+   * lost the public echo the previous one had, keeps the previous result: one
+   * failed probe must not drop every node's public address, and a router-only
+   * answer must not flip the CGNAT flag the two probes had agreed on.
    */
   private async detectIp(): Promise<void> {
     try {
       const result = await this.ipDetector().detect();
-      if (result.publicIp === null && result.routerIp === null) {
-        log('external IP detection found nothing; keeping the previous result');
+      if (this.knowsLessThanPrevious(result)) {
+        log('external IP detection found less than before; keeping the previous result');
         return;
       }
       this.latestIp = result;
@@ -673,9 +699,9 @@ export class NatService {
     }
   }
 
-  private async redetectIp(): Promise<void> {
-    await this.detectIp();
-    this.notifyIfChanged();
+  private knowsLessThanPrevious(result: ExternalIpResult): boolean {
+    if (result.publicIp === null && result.routerIp === null) return true;
+    return result.publicIp === null && this.latestIp?.publicIp != null;
   }
 
   private ipDetector(): ExternalIpDetector {
@@ -806,7 +832,7 @@ function routeSignature(r: PortRoute): Omit<PortRoute, 'leaseExpiresAt'> {
 }
 
 function validateForwardPatch(patch: ManualForwardPatch): void {
-  if (!patch || typeof patch !== 'object') {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     throw new NatError('invalid_config', 'a forward patch must be an object with tcp and/or ws');
   }
   for (const kind of PORT_KINDS) {

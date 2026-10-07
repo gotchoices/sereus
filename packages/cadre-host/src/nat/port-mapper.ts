@@ -168,7 +168,10 @@ export class UpnpPortMapper implements PortMapper {
   // delete for those, so after a host restart a port mapped by the previous process is
   // left to expire with its lease rather than deleted. It also names the INTERNAL port
   // as the external one in that delete, so a mapping the router granted on another
-  // external port is not deleted either; it, too, expires with its lease (1 h).
+  // external port is not deleted either; it, too, expires with its lease (1 h). And it
+  // appends one tracked entry per successful `map` of a port, so after N renewals an
+  // unmap sends N deletes (the first is the one that counts); they all run under the
+  // one 10 s bound, which caps the cost of a process that has renewed for days.
   async unmap(internalPort: number, _protocol: 'tcp' | 'udp'): Promise<void> {
     if (!this.gateway) return;
     const op = deadline(GATEWAY_OPERATION_TIMEOUT_MS);
@@ -211,7 +214,16 @@ export class UpnpPortMapper implements PortMapper {
     return { gateway: this.gateway, lanAddress: this.lanAddress };
   }
 
-  /** First IPv4 gateway to answer the SSDP search, or null when none did within the timeout. */
+  /**
+   * First IPv4 gateway to answer the SSDP search, or null when none did within
+   * the timeout.
+   *
+   * NOTE: the library searches for `InternetGatewayDevice:2` only (its
+   * `upnp/discovery.js`), and a router that implements only version 1 does not
+   * answer a version-2 search, so such a router reads as "not found". There is
+   * no library option for it; if it shows up on real hosts, the fix is a fork or
+   * another library.
+   */
   private async findIpv4Gateway(): Promise<Gateway | null> {
     const search = deadline(GATEWAY_DISCOVERY_TIMEOUT_MS);
     try {

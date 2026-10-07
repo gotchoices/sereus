@@ -151,7 +151,7 @@ At that moment:
 
 Until someone requests a node, the Nodes page in the UI stays empty — that's expected.
 
-**What is not built yet (v1):** `/grants` mounts on the same loopback-only management server as everything else, so today a grantee can only reach it from *this machine* or through an SSH tunnel like the one in step 2. Letting a friend's phone reach it across the internet is deferred (`backlog/feat-cadre-host-wan-grant-reachability`), and no app drives the four calls above for you yet — it is raw HTTP today. Issuing grants and running donated nodes work now; the last hop from a remote phone does not.
+**What is not built yet (v1):** `/grants` mounts on the same loopback-only management server as everything else, so today a grantee can only reach it from *this machine* or through an SSH tunnel like the one in step 2. Letting a friend's phone reach it across the internet is not done, and no app drives the four calls above for you yet — it is raw HTTP today. Issuing grants and running donated nodes work now; the last hop from a remote phone does not.
 
 ### 5. Manage grants
 

@@ -8,9 +8,10 @@
  * donations its own grant authorized (the single cross-grantee boundary,
  * analogous to cadre-provider's per-customer ownership check).
  *
- * Reachability is out of scope here: in v1 this mounts on the loopback
- * management server, same as the NAT surface. Physically exposing
- * it to a remote phone is `backlog/feat-cadre-host-wan-grant-reachability`.
+ * Reachability is out of scope here: this mounts on the loopback management
+ * server, so a request has to come from this machine or its LAN. Exposing it
+ * to a remote phone is not done (the nodes it lends are mapped through the
+ * router by the NAT layer; the request surface is not).
  *
  * Errors: handlers either send a `{ ok:false, error:{code,message} }` envelope
  * inline (auth / body validation) or let the `DonationService` throw a

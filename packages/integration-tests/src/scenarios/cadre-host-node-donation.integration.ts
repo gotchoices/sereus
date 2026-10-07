@@ -23,7 +23,8 @@
  *
  * Everything is loopback. **WAN reachability is out of scope** here (a green
  * donation test says nothing about a remote phone reaching the host over NAT) —
- * that is the deferred `backlog/feat-cadre-host-wan-grant-reachability`.
+ * the NAT layer that maps a lent node's ports is `docs/cadre-host.md` → "NAT
+ * and DDNS", and the `/grants` request surface itself stays loopback-only.
  *
  * The orchestrator resolves the real cadre-cli bin (no `spawn.entrypoint`
  * override), so this requires `@serfab/cadre-cli` and `@serfab/cadre-host` to be

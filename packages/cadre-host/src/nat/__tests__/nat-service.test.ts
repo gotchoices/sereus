@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { NatService, NAT_UNMAP_GRACE_MS, createNatHandlers, type NatNodeSource } from '../nat-service.js';
+import { NatService, NAT_UNMAP_GRACE_MS, type NatNodeSource } from '../nat-service.js';
 import { ExternalIpDetector } from '../external-ip.js';
 import { NatError } from '../types.js';
 import type { GatewayInfo, PortMapper, PortMapRequest, PortMapResult } from '../port-mapper.js';
@@ -20,9 +20,12 @@ class FakeMapper implements PortMapper {
   readonly mapped = new Map<number, number>();
   readonly mapCalls: number[] = [];
   readonly unmapCalls: number[] = [];
+  /** Runs at the start of every `map`: a test's chance to act while a pass is mid-flight. */
+  onMap: (() => void) | undefined;
   async discover(): Promise<GatewayInfo | null> { return this.gateway; }
   async map(req: PortMapRequest): Promise<PortMapResult> {
     this.mapCalls.push(req.internalPort);
+    this.onMap?.();
     if (!this.mapped.has(req.internalPort) && this.mapped.size >= this.cap) {
       throw new NatError('mapping_failed', 'router: mapping table is full');
     }
@@ -160,6 +163,15 @@ function node(svc: NatService, id: string) {
   return found;
 }
 
+/** Poll until `check` holds; for passes the service queues on its own, which nothing public awaits. */
+async function waitUntil(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error('condition not met in time');
+    await new Promise<void>((r) => setTimeout(r, 10));
+  }
+}
+
 describe('NatService — mapping table', () => {
   it('maps both ports of every running node, and stop() unmaps nothing', async () => {
     const { svc, mapper, nodes } = rig({ detector: makeDetector({ router: '203.0.113.10', pub: '203.0.113.10' }) });
@@ -269,6 +281,36 @@ describe('NatService — mapping table', () => {
     nodes.setStatus('a', 'running');
     await svc.reconcile();
     expect(node(svc, 'a')).toMatchObject({ running: true, verdict: 'mapped', tcp: { externalPort: 10003 } });
+  });
+
+  it('a node spawned while an event-triggered pass runs is mapped by the pass that follows it', async () => {
+    const mapper = new FakeMapper();
+    const { svc, nodes } = rig({ mapper });
+    await startAndSettle(svc);
+
+    // The spawn of `a` queues an event pass; `b` spawns while that pass is mapping a's first port.
+    mapper.onMap = () => {
+      mapper.onMap = undefined;
+      nodes.add('b', { p2p: 10005, ws: 10006 });
+    };
+    nodes.add('a', { p2p: 10003, ws: 10004 });
+
+    await waitUntil(() => svc.getStatus().nodes.some((n) => n.nodeId === 'b' && n.verdict === 'mapped'));
+    expect(node(svc, 'a').verdict).toBe('mapped');
+  });
+
+  it('a router that answers a later probe maps the running nodes without a restart', async () => {
+    const mapper = new FakeMapper();
+    mapper.gateway = null;
+    const { svc, nodes } = rig({ mapper });
+    nodes.add('a', { p2p: 10003, ws: 10004 });
+    await startAndSettle(svc);
+    expect(node(svc, 'a').reason).toContain('No UPnP router answered');
+
+    mapper.gateway = { lanAddress: '192.168.1.20', routerHost: '192.168.1.1' };
+    await svc.redetect();
+    expect(svc.getStatus().gateway).toMatchObject({ found: true, lanAddress: '192.168.1.20' });
+    expect(node(svc, 'a')).toMatchObject({ verdict: 'mapped', tcp: { externalPort: 10003, source: 'upnp' } });
   });
 });
 
@@ -392,9 +434,10 @@ describe('NatService — public addresses', () => {
 });
 
 describe('NatService — external IP and change notification', () => {
-  it('a failed re-detection keeps the previous external IP', async () => {
+  it('a re-detection that loses the public probe keeps the previous result, CGNAT flag included', async () => {
     let offline = false;
     const detector = new ExternalIpDetector({
+      routerProbe: async () => '100.64.0.5',
       fetch: (async () => {
         if (offline) throw new Error('offline');
         return { ok: true, status: 200, async text() { return '203.0.113.10'; } };
@@ -403,11 +446,13 @@ describe('NatService — external IP and change notification', () => {
     });
     const { svc } = rig({ detector });
     await startAndSettle(svc);
-    expect(svc.getStatus().externalIp).toBe('203.0.113.10');
+    expect(svc.getStatus()).toMatchObject({ externalIp: '203.0.113.10', cgnatDetected: true });
 
+    // Only the router answers now: taking that result would drop the CGNAT verdict
+    // and read the carrier address as the host's.
     offline = true;
     const status = await svc.testReachability();
-    expect(status.externalIp).toBe('203.0.113.10');
+    expect(status).toMatchObject({ externalIp: '203.0.113.10', cgnatDetected: true });
     expect(status.lastTestedAt).not.toBeNull();
   });
 
@@ -433,22 +478,5 @@ describe('NatService — external IP and change notification', () => {
     await startAndSettle(svc);
     await expect(svc.putDdns({ providerId: 'no-such-provider', hostname: 'x', config: {} }))
       .rejects.toMatchObject({ code: 'ddns_provider_unknown' });
-  });
-});
-
-describe('createNatHandlers', () => {
-  it('every handler delegates to the service', async () => {
-    const { svc, nodes } = rig({ fetch: okFetch(), secrets: makeSecrets() });
-    nodes.add('a', { p2p: 10003, ws: 10004 });
-    await startAndSettle(svc);
-    const h = createNatHandlers(svc);
-
-    expect((await h.getStatus()).directReachability).toBe('reachable');
-    expect((await h.listDdnsProviders()).find((p) => p.id === 'duckdns')).toBeDefined();
-    expect((await h.testReachability()).lastTestedAt).not.toBeNull();
-    expect((await h.putSettings({ upnpEnabled: false })).upnpEnabled).toBe(false);
-    expect((await h.putForward('a', { tcp: 40000 })).nodes[0]!.tcp.externalPort).toBe(40000);
-    expect((await h.putDdns({ providerId: 'duckdns', hostname: 'a.duckdns.org', config: { token: 'T' } })).ddns.hostname)
-      .toBe('a.duckdns.org');
   });
 });

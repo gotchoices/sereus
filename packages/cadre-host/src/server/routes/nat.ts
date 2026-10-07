@@ -58,13 +58,10 @@ export function registerNatRoutes(app: FastifyInstance, opts: NatRoutesOptions):
 
   // The ports the user forwarded on their router for one node. `null` clears a
   // port; both cleared removes the entry. Unknown node → 404 unknown_node; a
-  // port outside 1–65535 → 400 invalid_config (both from the service).
+  // body that is not an object, or a port outside 1–65535 → 400 invalid_config
+  // (all from the service, which reads only `tcp` and `ws`).
   app.put<{ Params: { nodeId: string } }>('/nat/nodes/:nodeId/forward', async (request) => {
-    const body = (request.body ?? {}) as ManualForwardPatch;
-    const patch: ManualForwardPatch = {};
-    if ('tcp' in body) patch.tcp = body.tcp;
-    if ('ws' in body) patch.ws = body.ws;
-    const snap = await handlers.putForward(request.params.nodeId, patch);
+    const snap = await handlers.putForward(request.params.nodeId, (request.body ?? {}) as ManualForwardPatch);
     publishConnectivity(events, snap);
     return snap;
   });
