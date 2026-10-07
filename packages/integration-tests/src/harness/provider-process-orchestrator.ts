@@ -8,10 +8,7 @@
  * FROM THE PROVIDER (`buildNodeEnv`), layered exactly the way Docker layers
  * it — do not reimplement the env assembly anywhere else:
  *
- *   1. parent env with every `CADRE_*` key scrubbed (an inherited
- *      CADRE_PARTY_ID on the dev's shell would otherwise silently
- *      reconfigure the child — same rationale as cadre-host's
- *      HostProcessOrchestrator),
+ *   1. parent env with every `CADRE_*` key scrubbed (`scrubbedParentEnv`),
  *   2. the image's own `ENV` block (packages/cadre-cli/docker/Dockerfile),
  *      with `/data` rewritten to the per-container volume dir,
  *   3. the two vars `entrypoint.sh` derives and exports (CADRE_KEY_FILE,
@@ -29,8 +26,6 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer } from 'node:net';
-import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
@@ -45,6 +40,14 @@ import {
 	type RecoverableOrchestrator,
 } from '@serfab/cadre-provider';
 import type { CliConfigFile } from '@serfab/cadre-cli';
+
+import {
+	allocFreePort,
+	isChildUp,
+	resolveCadreCliBin,
+	scrubbedParentEnv,
+	stopChildProcess,
+} from './child-node-fixtures.js';
 
 const log = debug('sereus:integration:provider-orchestrator');
 
@@ -67,59 +70,6 @@ export interface ProviderProcessHandle {
 export interface ProviderProcessOrchestratorOptions {
 	/** Root under which each container gets its own durable "volume" dir. */
 	rootDir: string;
-}
-
-/**
- * Manager's own `process.env` with every `CADRE_*` key removed. Copied from
- * cadre-host's HostProcessOrchestrator (module-private there): cadre-cli
- * treats inherited `CADRE_*` vars as config overrides, so an inherited
- * CADRE_PARTY_ID would silently reconfigure the child. Scrubbing the whole
- * prefix rather than a list of known keys means a new cli env var can't
- * reintroduce the leak by being forgotten here.
- */
-function scrubbedParentEnv(): NodeJS.ProcessEnv {
-	const env = { ...process.env };
-	for (const key of Object.keys(env)) {
-		if (key.startsWith('CADRE_')) delete env[key];
-	}
-	return env;
-}
-
-/** A spawned child that has neither exited nor been signalled is still up. */
-function isChildUp(child: ChildProcess): boolean {
-	return child.exitCode === null && child.signalCode === null;
-}
-
-/** Ask the OS for a free TCP port (bind 0, read back, close). */
-function allocFreePort(): Promise<number> {
-	return new Promise((resolve, reject) => {
-		const srv = createServer();
-		srv.once('error', reject);
-		srv.listen(0, '127.0.0.1', () => {
-			const address = srv.address();
-			if (address === null || typeof address === 'string') {
-				srv.close(() => reject(new Error('failed to allocate a free port')));
-				return;
-			}
-			const port = address.port;
-			srv.close(() => resolve(port));
-		});
-	});
-}
-
-/** Resolve the real cadre-cli bin from THIS package's own dependency. */
-function resolveCadreCliBin(): string {
-	const req = createRequire(import.meta.url);
-	try {
-		return req.resolve('@serfab/cadre-cli/bin/cadre.js');
-	} catch (err) {
-		throw new Error(
-			'Unable to resolve @serfab/cadre-cli bin from integration-tests. ' +
-			'Ensure cadre-cli is built (yarn workspace @serfab/cadre-cli build) ' +
-			`and listed as a dependency. Underlying error: ${(err as Error).message}`,
-			{ cause: err },
-		);
-	}
 }
 
 export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
@@ -216,17 +166,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		const handle = this.requireHandle(dockerId);
 		const { child } = handle;
 		if (!isChildUp(child)) return;
-
-		const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-		child.kill('SIGTERM');
-		const timeout = new Promise<'timeout'>((resolve) => {
-			const t = setTimeout(() => resolve('timeout'), STOP_TIMEOUT_MS);
-			if (typeof t.unref === 'function') t.unref();
-		});
-		if (await Promise.race([exited, timeout]) === 'timeout') {
-			child.kill('SIGKILL');
-			await exited;
-		}
+		await stopChildProcess(child, STOP_TIMEOUT_MS);
 		log('stopped %s', dockerId);
 	}
 

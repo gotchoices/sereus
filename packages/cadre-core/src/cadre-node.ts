@@ -2784,7 +2784,9 @@ export class CadreNode implements SAppIdLookup {
     const existing = await this.controlDatabase.queryPeerRecord(peerId);
 
     if (!existing) {
-      if (!this.seedBootstrapService) {
+      // A listener-only service (`enableSeedListener`, a claim node's) holds no owner key and
+      // cannot sign the insert, so it is "no owner service" here too.
+      if (!this.seedBootstrapService?.canAuthorize()) {
         // "No row" also covers "revoked": queryPeerRecord reads a row whose StampId is
         // retired in Revocation as absent, so a removed node lands here every heartbeat
         // and stops refreshing its own record — correct, but say so, or the message reads
@@ -3015,6 +3017,28 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Publish this node's own address record from the reconcile pass, for a CLAIMED node that
+   * has not published one this session. Its owner writes its `CadrePeer` row only after the
+   * claim is accepted (`claimNode`), so the row reaches this node by replication, after the
+   * boot-time publish and the first-growth drain have both found nothing to publish; without
+   * this the record would wait for the heartbeat ({@link startRecordRefresh}), and the cadre
+   * could not resolve the node's addresses until then. The reconcile pass is where replicated
+   * membership is picked up, so each pass tries until the first publish lands. A try before
+   * the row has arrived is a `skipped` publish: one `CadrePeer` read. A claimed node later
+   * removed from its cadre never publishes again, so it pays that read on every pass.
+   */
+  private async publishSelfRecordOnceClaimed(): Promise<void> {
+    if (!this.config.claim || this.isAwaitingClaim() || this.lastSelfRecordPublishAt !== null) {
+      return;
+    }
+    const outcome = await this.registerSelf().catch((error: unknown) => {
+      log('reconcileControlCohort: claimed-node self-record publish failed (continuing): %o', error);
+      return 'skipped' as const;
+    });
+    log('reconcileControlCohort: claimed node self-record publish: %s', outcome);
+  }
+
+  /**
    * Collect this node's current dialable addresses for publication, signaling
    * (`/p2p-circuit`) first. Prefers the best invite/NAT-resolved set and folds
    * in the relay/signaling address (the WebRTC dial input) when not already
@@ -3071,12 +3095,14 @@ export class CadreNode implements SAppIdLookup {
     // `/p2p-circuit` address the boot-time publish could not carry). Harmless
     // where a late-authorized node's addresses keep churning (NAT/relay rotation
     // fire the event anyway), and invisible while parties authorize members before
-    // they boot. If late enrollment becomes the normal path — an invited phone is
-    // exactly that — republish on the membership-change seam that already exists
-    // (`ControlDatabase.setMembershipChangeListener`) rather than lengthening this
-    // list of triggers. Measured while writing
-    // `relay-only-control-addr.integration.ts` case 4, which drives `registerSelf()`
-    // explicitly because neither trigger is dependable there.
+    // they boot. A claimed node is always authorized after it boots, and the reconcile
+    // pass publishes for it ({@link publishSelfRecordOnceClaimed}). If late enrollment
+    // becomes the normal path for other nodes too — an invited phone is exactly that —
+    // drop that method's claim condition rather than lengthening this list of triggers:
+    // the membership-change seam (`ControlDatabase.setMembershipChangeListener`) fires
+    // on LOCAL commits only, and the row a late-authorized node waits for is written
+    // elsewhere. Measured while writing `relay-only-control-addr.integration.ts` case 4,
+    // which drives `registerSelf()` explicitly because neither trigger is dependable there.
     this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
     (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
 
@@ -3378,6 +3404,10 @@ export class CadreNode implements SAppIdLookup {
     // control-founding-consult-budget.spec.ts). If those reads ever get costly,
     // share one row-set across all three.
     await this.refreshMembershipGate('reconcile');
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return { dialed: [] };
+    }
+    await this.publishSelfRecordOnceClaimed();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return { dialed: [] };
     }

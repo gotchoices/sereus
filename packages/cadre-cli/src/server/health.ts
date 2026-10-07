@@ -70,7 +70,18 @@ export interface HealthServerOptions {
    * trusted, and a trusted seed still requires a valid bearer to be delivered.
    */
   seedToken?: string;
+  /**
+   * Whether the node was started with a claim secret (`CADRE_CLAIM_SECRET`), which decides
+   * whether `/status` reports `node.claim` as `none` or reads it from the node.
+   */
+  claimConfigured?: boolean;
 }
+
+/**
+ * Whether the node belongs to anybody yet: `none` without a claim secret, else `awaiting`
+ * until a claim is accepted and `claimed` after (a restarted claimed node included).
+ */
+export type ClaimState = 'awaiting' | 'claimed' | 'none';
 
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy' | 'starting';
@@ -96,6 +107,8 @@ export interface HealthStatus {
      * Counts only — the full `paths[]` array is omitted to keep the probe cheap.
      */
     connectionPaths: Omit<ConnectionPathSummary, 'paths'>;
+    /** cadre-host's join flow polls this to learn when its node has been claimed. */
+    claim: ClaimState;
   };
 }
 
@@ -140,6 +153,7 @@ export class HealthServer {
       metricsPort: options.metricsPort ?? 9090,
       profile: options.profile ?? '',
       seedToken: options.seedToken ?? '',
+      claimConfigured: options.claimConfigured ?? false,
     };
   }
 
@@ -204,8 +218,21 @@ export class HealthServer {
         profile: this.options.profile,
         strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
+        claim: this.claimState(),
       },
     };
+  }
+
+  /**
+   * `isAwaitingClaim()` is false until `start()` has built the node's trusted-owner anchor, so
+   * a node still starting reads as `awaiting`, never `claimed`: a poller told `claimed` early
+   * would report a claim nobody made, while a claimed node that reads `awaiting` for its
+   * start-up refuses any other claimant all the same.
+   */
+  private claimState(): ClaimState {
+    if (!this.options.claimConfigured) return 'none';
+    const node = this.node;
+    return node?.isRunning && !node.isAwaitingClaim() ? 'claimed' : 'awaiting';
   }
 
   private getMetrics(): MetricsData {

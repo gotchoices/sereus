@@ -39,6 +39,7 @@ const HEALTH: HealthStatus = {
         unknown: 0,
       },
     },
+    claim: 'none',
   },
 };
 

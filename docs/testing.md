@@ -659,6 +659,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   unit-tested in `cadre-host` and `cadre-core`. Strand replication onto a lent node is
   deliberately not asserted — see
   `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`.
+- A phone **claims** a node started waiting to be claimed — `node-claim-by-phone.integration.ts`.
+  A real `cadre-cli` child started with `CADRE_CLAIM_SECRET`, spawned directly with the
+  helpers in `child-node-fixtures.ts`, and an in-process claimant in the phone shape of the
+  bullet above, which calls `CadreNode.claimNode` with the node's own `/status` addresses. A
+  wrong secret and an owner of another cadre are refused, the right secret claims the node,
+  the phone dials in and rows cross both ways, and the node restarted on the same workdir stays
+  claimed and is dialed again. Loopback only, and no strand.
 - Relayed control plane (a control node with no inbound reachability of its own, reserving a
   circuit-relay slot on a sibling and being dialed through it) —
   `relay-only-control-addr.integration.ts`. The control plane only; the strand plane is the

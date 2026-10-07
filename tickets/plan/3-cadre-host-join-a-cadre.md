@@ -47,3 +47,10 @@ difficulty: hard
 ## Note from planning `cadre-invitations-redeemable-by-any-member`
 
 That ticket chain deleted the cadre-host trust circle (service, store, routes, UI page, `invite`/`trust` CLI commands) because its only mechanism (`createInvite`/`acceptPhone`) was removed, and added `cadre start --invitation <encoded>` for "join by invitation" (both landed). Plan the rest of the founder-role removal on top of that.
+
+## Note from `node-claim-cli-and-scenario`
+
+Two facts the claim scenario (`packages/integration-tests/src/scenarios/node-claim-by-phone.integration.ts`) established that this plan has to settle:
+
+- **Party id.** A node serves the party its config names (`controlNetwork.partyId`, required at start), and a claim does not change it: `SeedBootstrapService.verifyAndMergeSeed` never compares the seed's party with the node's (see the `NOTE:` there). A node spawned for another party accepts the claim and then never syncs with its owner. The QR payload above carries no party id, so the plan needs a way for the host to learn it before spawning, or for a node to take its party from the claim seed.
+- **"Already claimed" relies on the relay server.** A second claimant is not a member, so a claimed node's connection gate answers `'admit-for-relay'` (storage profile, relay on by default) and the seed stream is answered `already-claimed` inside that admission's deadline. With the relay off the connection is refused and the phone sees a dial failure instead. Hosted nodes run the storage default today; the scenario's step 4 carries a `NOTE:` on this.

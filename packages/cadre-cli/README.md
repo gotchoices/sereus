@@ -175,6 +175,20 @@ On the new machine, `--invitation` redeems right after the node is up: the node 
 
 The bundle names the owner's own addresses first and then up to three other members, taken from their signed address records. A member that has not yet received the invitation's row by replication refuses the connection, and the device moves on to the next address; mint the invitation while the owner is connected to at least one always-on member, and give that member a moment to receive it before the owner goes offline.
 
+### Waiting to be claimed
+
+A node started with `CADRE_CLAIM_SECRET` belongs to nobody until an owner claims it: the owner's device dials the node and delivers a seed carrying proof that it holds the secret (`CadreNode.claimNode`), and the node then trusts that owner and syncs into its cadre ([docs/architecture.md → Seed Delivery Protocol](../../docs/architecture.md#seed-delivery-protocol), the claim-secret entry). It is the way to add an always-on node to a cadre whose only member is a phone, which cannot be dialed: the node's peer ID, addresses and secret go to the phone out of band (cadre-host shows them as a QR code), and the phone dials the node.
+
+```bash
+# 32 random bytes, base64url
+export CADRE_CLAIM_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
+cadre start -c cadre.yaml --identity-file node.key
+```
+
+While it waits, the node accepts a stranger's connection, because the claim seed has to ride one, and nothing else on it: control-database streams and relay reservations are refused until the claim. The secret is one-time: the first owner whose proof verifies becomes the node's owner, any other claimant is refused as `already-claimed`, and the same owner claiming again is accepted. Each proof is bound to this node's peer ID, so the node must keep its identity file for the secret to stay usable, and a proof made for one node claims no other. The claim is recorded in the node-state directory (`nodeState.dir`), so a claimed node restarted with the variable still set ignores it and prints `• Already claimed`. `/status` reports `node.claim` as `awaiting`, `claimed`, or `none` when no secret is set; while the node is still starting it reads `awaiting`, so `claimed` always means the claim is on record.
+
+The node serves the party its config names (`controlNetwork.partyId`), and a claim does not change it, so the config must name the claimant's party. `CADRE_CLAIM_SECRET` cannot be combined with `--owner`, `--seed`, `--invitation`, `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret is read from the environment only, because a flag value shows in the process list, and it is never printed or logged.
+
 ### Strands
 
 List the strands this node is running (`cadre strands` is an alias for `cadre strand list`):
@@ -272,6 +286,7 @@ says so rather than starting without it.
 | `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` and `cadre enroll invite` present it (or read it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
 | `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` and `cadre enroll invite` connect to when they are not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
+| `CADRE_CLAIM_SECRET` | _(env only)_ | Start the node waiting to be claimed ([Waiting to be claimed](#waiting-to-be-claimed)): a one-time secret, base64url of 32 random bytes. A malformed value fails startup without echoing it; a set-but-empty value means no claim. Cannot be combined with `--owner`, `--seed`, `--invitation`, `--pin-owner-key` or `CADRE_OWNER_KEYS` |
 
 Environment variables override config file values. A variable that is **set but
 empty** (or whitespace-only) counts as unspecified and is ignored — this is what

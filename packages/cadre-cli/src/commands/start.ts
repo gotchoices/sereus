@@ -18,6 +18,7 @@ import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import { fromString } from 'uint8arrays';
+import { specifiedEnv } from '@serfab/config-check';
 import { resolveConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { resolveStorageConfig } from './node-session.js';
@@ -135,6 +136,32 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
 }
 
 /**
+ * Refuse every start-up option that cannot be combined with `CADRE_CLAIM_SECRET`, all named in
+ * one error. A node waiting to be claimed takes its owner from the claim, and each of these is
+ * another way in: `--owner` founds a cadre on this node, `--seed` and `--invitation` join one,
+ * and a pinned owner key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never
+ * named. The node refuses a pin beside a claim itself (`CadreNodeConfig.claim`), but its message
+ * names the config field; this check runs first, before the config is loaded, and names the
+ * options the operator actually passed.
+ */
+export function refuseClaimConflicts(
+  options: { owner?: boolean; seed?: string; invitation?: string; pinOwnerKey?: string[] },
+  ownerKeysEnv: string | undefined,
+): void {
+  const conflicts = [
+    options.owner ? '--owner' : undefined,
+    options.seed ? '--seed' : undefined,
+    options.invitation ? '--invitation' : undefined,
+    collectPinnedOwnerKeys(options.pinOwnerKey, undefined).length > 0 ? '--pin-owner-key' : undefined,
+    collectPinnedOwnerKeys(undefined, ownerKeysEnv).length > 0 ? 'CADRE_OWNER_KEYS' : undefined,
+  ].filter((name): name is string => name !== undefined);
+  if (conflicts.length > 0) {
+    throw new Error(`CADRE_CLAIM_SECRET cannot be combined with ${conflicts.join(', ')}: a node waiting to be claimed `
+      + 'takes its owner from the claim. Unset CADRE_CLAIM_SECRET, or start without the conflicting options.');
+  }
+}
+
+/**
  * Write `$CADRE_STARTUP_TOKEN` to `path` (the `--startup-token-file`), if both are given.
  *
  * The file is an identity proof, not a readiness signal: an orchestrator
@@ -181,6 +208,11 @@ export const startCommand = new Command('start')
 
     try {
       writeStartupToken(options.startupTokenFile);
+
+      // Env only, never a flag: a flag value shows in the process list. Set-but-empty is unset,
+      // as for every other variable.
+      const claimSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
+      if (claimSecret !== undefined) refuseClaimConflicts(options, commandEnv('CADRE_OWNER_KEYS'));
 
       // A --identity-file flag overrides the config file's identity. Route it through the env
       // mapping (CADRE_KEY_FILE -> identity.keyFile) so the loader resolves it exactly as the
@@ -293,6 +325,8 @@ export const startCommand = new Command('start')
         hibernation: config.hibernation,
         strandWatchInterval: config.strandWatchInterval,
         seedTrustPolicy,
+        // The node turns its own seed listener on, so `--listen-for-seeds` is redundant here.
+        ...(claimSecret !== undefined ? { claim: { secret: claimSecret } } : {}),
         // Platform push credentials provisioned by the orchestrator (cadre-host
         // writes the `push` block into cadre.json; cadre-provider injects it via
         // CADRE_PUSH). This CLI is the Node host, so it constructs the
@@ -319,6 +353,10 @@ export const startCommand = new Command('start')
 
       node.on('control:disconnected', () => {
         console.log('✗ Disconnected from control network');
+      });
+
+      node.on('claim:accepted', ({ ownerKey }) => {
+        console.log(`✓ Claimed by owner ${ownerKey.slice(0, 8)}`);
       });
 
       // A control write the retry funnel gave up on. This is a long-running headless
@@ -377,7 +415,13 @@ export const startCommand = new Command('start')
         // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
         const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
 
-        healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile, seedToken });
+        healthServer = new HealthServer({
+          healthPort,
+          metricsPort,
+          profile: config.profile,
+          seedToken,
+          claimConfigured: claimSecret !== undefined,
+        });
         healthServer.attach(node);
         await healthServer.start();
         console.log(`✓ Health server on port ${healthPort}, metrics on port ${metricsPort}`);
@@ -411,6 +455,10 @@ export const startCommand = new Command('start')
 
       // Start the node
       await node.start();
+
+      if (claimSecret !== undefined) {
+        console.log(node.isAwaitingClaim() ? '✓ Awaiting claim' : '• Already claimed; CADRE_CLAIM_SECRET is ignored');
+      }
 
       // Join by invitation, right after the node is up: the redemption dials the members the
       // bundle names and the node then syncs the control database over the connection it
