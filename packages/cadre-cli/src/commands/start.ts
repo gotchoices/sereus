@@ -99,10 +99,9 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * the claim on record; each of these is another way in: `--owner` founds a cadre on this node,
  * `--seed` and an invitation (`--invitation`, `CADRE_INVITATION`) join one, and a pinned owner
  * key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node
- * refuses a pin beside a
- * claim itself (`CadreNodeConfig.claim`), but its message names the config field; this check
- * runs first — for the secret, before the config is loaded — and names the options the
- * operator actually passed. `subject` is what the message blames: the secret, or the record.
+ * refuses a pin beside a claim itself (`CadreNodeConfig.claim`), but its message names the
+ * config field; this check runs first — for the secret, before the config is loaded — and
+ * names the options the operator actually passed. `subject` is what the message blames: the secret, or the record.
  */
 export function refuseClaimConflicts(
   options: { owner?: boolean; seed?: string; invitation?: StartupInvitation; pinOwnerKey?: string[] },

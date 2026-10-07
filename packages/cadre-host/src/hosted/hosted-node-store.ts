@@ -13,10 +13,11 @@ const FILE_VERSION = 1;
  * Atomic JSON store for `hosted-nodes.json` — one row per hosted node. A single
  * file written to `<path>.tmp` then renamed, with an in-memory cache keyed by id.
  *
- * **Persists the claim secret.** The orchestrator keeps nothing of it (`state.json`
- * omits every per-spawn env), so this row is what lets a respawn start the child
- * with the same secret, which keeps a QR code already shown valid and lets a
- * claimed node answer a rival `already-claimed`.
+ * **Persists the claim secret, or the invitation.** The orchestrator keeps nothing of
+ * either (`state.json` omits every per-spawn env), so this row is what lets a respawn
+ * start the child with the same secret, which keeps a QR code already shown valid and
+ * lets a claimed node answer a rival `already-claimed`, and lets a `joining` node redeem
+ * its invitation again.
  *
  * Concurrency assumption: only one cadre-host process owns a given rootDir
  * (the orchestrator already enforces this). No file-locking primitives.

@@ -45,6 +45,10 @@ export interface HostedNodeInvitationJoin {
   /**
    * The bundle as the owner's app encoded it (`encodeCadreInvitation`). It carries the
    * invitation's private key, so it is redacted like the claim secret.
+   *
+   * NOTE: kept on disk after the node joins, though nothing reads it then (a joined node is
+   * respawned without it). An invitation with uses left admits whoever reads it; if
+   * multi-use invitations get pasted into hosts, drop it at the watcher's `joined` write.
    */
   encoded: string;
 }

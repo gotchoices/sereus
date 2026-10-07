@@ -141,7 +141,7 @@ cadre-host node reset <id>        # remove it and start a fresh one with a new c
 cadre-host node retry <id>        # start an invitation node again once a member is reachable
 ```
 
-`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset) rather than Stop: the respawn supervisor treats a claimed, joining or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
+`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset, except on an invitation node no member could be reached for, where it is `node retry`) rather than Stop: the respawn supervisor treats a claimed, joining or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
 
 ## Reachability — can people actually reach your nodes?
 

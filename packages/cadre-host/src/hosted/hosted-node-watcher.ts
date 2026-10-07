@@ -221,9 +221,9 @@ export class HostedNodeWatcher {
 
   /**
    * A joined node's `connected` follows its control-connection count; published only on a
-   * change. Its `/status` may still report an invitation (a child started with one before a
-   * respawn dropped it, re-attached after a host restart), and a `failed` there is ignored:
-   * the node is a member, and the record says so.
+   * change. Its `/status` keeps reporting the invitation for as long as the child that
+   * redeemed it runs, and whatever it says there is ignored: the node is a member, and the
+   * record says so.
    */
   private applyJoined(current: HostedNode, status: NodeStatus): void {
     const connected = status.node.connectionPaths.total > 0;
