@@ -5,7 +5,7 @@ repro: verified
 difficulty: medium
 ----
 
-**Blocked: a dependency outside this repo.** `../Fret` (the `p2p-fret` package, at v1.0.1, commit `3ff4f38`) is a read-only sibling. This unblocks when FRET ships the two-arm rule below and this workspace links a build that carries it. Nothing on FRET's own board (`../Fret/tickets/`) covers either arm as of 2026-10-07.
+**Blocked: a dependency outside this repo.** Filed in `../Fret` as `tickets/fix/address-less-peer-never-marked-dead`. This unblocks when FRET ships the two-arm rule below and this workspace links a build that carries it.
 
 # A peer with no address never fails a contact, so it is never marked dead
 
