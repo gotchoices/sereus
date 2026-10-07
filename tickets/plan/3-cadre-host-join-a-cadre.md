@@ -1,5 +1,5 @@
 description: Reframe cadre-host around one action, "Join a cadre": the host starts a node and shows a QR code, the owner's phone scans it and claims the node. Remove the grant-token system, which let token holders ask the host to spawn nodes on demand.
-prereq: node-claim-protocol, cadre-host-node-reachability, cadre-invitations-redeemable-by-any-member
+prereq: node-claim-cli-and-scenario, cadre-host-node-reachability, cadre-invitations-redeemable-by-any-member
 files: packages/cadre-host/src/donation/, packages/cadre-host/src/owner/, packages/cadre-host/src/installer/, packages/cadre-host/src/server/routes/grants.ts, packages/cadre-host/src/server/routes/grants-admin.ts, packages/cadre-host/src/server/routes/provision-request-validation.ts, packages/cadre-host/src/server/routes/bootstrap-node-validation.ts, packages/cadre-host/src/bin/, packages/cadre-host/ui/, packages/cadre-host/README.md, docs/cadre-host.md, docs/architecture.md
 difficulty: hard
 ----
