@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { pushToast } from '../lib/state.svelte.js';
+	import { copyText } from '../lib/state.svelte.js';
 
 	import QrCode from './QrCode.svelte';
 	import CopyIcon from './icons/CopyIcon.svelte';
@@ -12,15 +12,6 @@
 	}
 
 	const { value, copyLabel }: Props = $props();
-
-	async function copy(): Promise<void> {
-		try {
-			await navigator.clipboard.writeText(value);
-			pushToast('success', 'Copied to clipboard');
-		} catch (err) {
-			pushToast('error', `Copy failed: ${(err as Error).message}`);
-		}
-	}
 </script>
 
 <div class="qr-wrap">
@@ -28,7 +19,7 @@
 </div>
 <div class="token">
 	<textarea readonly rows="3">{value}</textarea>
-	<button class="ghost" type="button" onclick={copy} aria-label={copyLabel}>
+	<button class="ghost" type="button" onclick={() => copyText(value)} aria-label={copyLabel}>
 		<CopyIcon /> Copy
 	</button>
 </div>

@@ -107,7 +107,7 @@ function describeFailures(failing: PortEntry[], input: NodeVerdictInput): string
 function describeCause(cause: FailureCause, entries: PortEntry[], input: NodeVerdictInput): string {
   const names = entries.map(({ kind, route }) => `${kindLabel(kind)} port ${route.internalPort}`);
   const lan = input.lanAddress ?? "this machine's LAN address";
-  const forwardHint = `Forward ${entries.length === 1 ? 'port' : 'ports'} ${listPorts(entries)} to ${lan} on your router, then enter the external ${entries.length === 1 ? 'port' : 'ports'} here.`;
+  const forwardHint = `Forward ${entries.length === 1 ? 'port' : 'ports'} ${listPorts(entries)} to ${lan} on your router, then tell cadre-host the external ${entries.length === 1 ? 'port' : 'ports'}.`;
   switch (cause) {
     case 'cgnat':
       return `This host is behind carrier-grade NAT, so the router's mapping of the ${joinNames(names)} cannot be reached from outside and a port forward on your router will not help; a relay is needed.`;

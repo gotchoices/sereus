@@ -16,10 +16,11 @@
 		}
 	});
 
-	const reachTone: 'ok' | 'warn' | 'err' | 'info' = $derived.by(() => {
+	// Unreachable nodes still work on the home network: a warning, as in `overall-status.ts`.
+	const reachTone: 'ok' | 'warn' | 'info' = $derived.by(() => {
 		switch (reachability) {
 			case 'reachable': return 'ok';
-			case 'unreachable': return 'err';
+			case 'unreachable':
 			case 'cgnat': return 'warn';
 			default: return 'info';
 		}

@@ -191,7 +191,14 @@ cadre-host nat status     # UPnP and router state, external IP, and per node: ma
 cadre-host nat test       # re-run the probes right now
 ```
 
-If a node reads `unreachable`, the status names the port to forward and the address on this machine to forward it to; the UI's **Connectivity** page shows the same. Telling cadre-host the external port you chose is `PUT /nat/nodes/<nodeId>/forward` with `{ "tcp": <port>, "ws": <port> }` on the management API; a `cadre-host nat forward` command and a form on the Connectivity page are the next step. If your ISP uses carrier-grade NAT, a port forward will not help and the status says so. A lent node announcing these addresses to the cadre it joined is also still to come (`cadre-host-nodes-announce-public-addresses`), so until then a phone off your LAN reaches it only through the addresses the node observes itself.
+If a node reads `unreachable`, the status says which of its ports to forward on your router and to which address on this machine, then the command that records the external ports you chose:
+
+```bash
+cadre-host nat forward grn_abc123 --tcp 10003 --ws 10004   # the ports your router forwards to that node
+cadre-host nat forward grn_abc123 --clear                  # forget them
+```
+
+The UI's **Connectivity** page shows the same per node, with an "I forwarded these ports" form. A node whose public addresses change restarts to announce them to the cadre it belongs to, at most once every 10 minutes; a node that restarts or respawns keeps its ports, so the forward stays valid. If your ISP uses carrier-grade NAT, a port forward will not help and the status says so. See [docs/cadre-host.md § Manual port forwarding](../../docs/cadre-host.md#manual-port-forwarding).
 
 When your residential IP changes (it will), members can't find you on the old IP. DDNS (a hostname that auto-updates to your current IP) fixes this:
 
@@ -263,11 +270,15 @@ Shut down one donated node — stop it and delete its working directory — what
 
 ### `cadre-host nat status [--json]`
 
-Print current NAT state — whether UPnP is on and a router was found (and this machine's address on its network), external IP, CGNAT detection, the host-level reachability result, then one block per hosted node (its verdict, each port's mapping, its public addresses, and what to do when it is unreachable), then the DDNS configuration. With `--json`, dumps the raw response from the management API.
+Print current NAT state — whether UPnP is on and a router was found (and this machine's address on its network), external IP, CGNAT detection, the host-level reachability result and the DDNS configuration — then one block per hosted node: its id and verdict (`mapped`, `manual` or `unreachable`), the TCP and WebSocket ports as internal → external with where the route came from (UPnP or forwarded by hand), and its public addresses. An `unreachable` node adds why, and the forward to make: which ports to forward to which address on this machine, and the `cadre-host nat forward` command to run afterwards. With `--json`, dumps the raw response from the management API.
 
 ### `cadre-host nat test [--json]`
 
 Re-run the reachability probe right now and print the updated NAT state. Useful after changing port-forwarding rules on your router.
+
+### `cadre-host nat forward <nodeId> [--tcp <port>] [--ws <port>] [--clear-tcp] [--clear-ws] [--clear]`
+
+Record the external ports your router forwards to one node, by the node id `nat status` shows: `--tcp` for its TCP port, `--ws` for its WebSocket port, `--clear-tcp`/`--clear-ws`/`--clear` to forget them. Ports are whole numbers 1–65535. Prints the node's block from the updated status. If the node's public addresses changed, it restarts to announce them; a node already restarted for an address change in the last 10 minutes waits until those 10 minutes are up. An id the host does not run is refused with a pointer to `nat status`.
 
 ### `cadre-host nat settings [--upnp|--no-upnp]`
 
@@ -326,7 +337,7 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 - `/grants-admin` (issue/list/revoke grants, where revoke also shuts down the grant's donated nodes unless `?keepNodes=true`, and `DELETE /grants-admin/donations/:id` to shut down one donated node — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
 - `/update/*` (update flow) — matches the CLI's contract.
-- `/nat/*` (NAT/DDNS) — every role: every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand.
+- `/nat/*` (NAT/DDNS) — every role: every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
 - `/api/strands` — **founder role only**; left unmounted and 404 on a donor-only install.
 - `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}` (stop/start/restart act on the owner node only; a donated node answers 501), `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
 - `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
@@ -353,11 +364,11 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 Six pages cover the day-to-day operations. One of them belongs to the opt-in founder role and is marked as such:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, and a connectivity tile (how many running nodes can be reached from outside). A donor-only install adds a Donation tile linking to Grants.
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, and a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity). A donor-only install adds a Donation tile linking to Grants.
 - **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again). Your own owner node (founder role) has start/stop/restart; a donated node has **Terminate** instead, the same as `cadre-host grant terminate <id>`. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
 - **Grants** — issue grant tokens (QR + copy), see each grant's node usage and the donated nodes under it (linked to their node pages), show an active grant's token again, revoke a grant with or without its nodes. Same `/grants-admin` surface as `cadre-host grant`.
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
-- **Connectivity** — UPnP and router status, each hosted node's reachability with its port mappings and public addresses (and what to forward when it can't be reached), "Test reachability", DDNS provider configuration.
+- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
 - **Strands** *(founder role only)* — the shared SQL databases your own cadre belongs to.
 
 On a donor-only install the founder-only page is left out of the nav, and opening it by its address shows a note instead of the page.

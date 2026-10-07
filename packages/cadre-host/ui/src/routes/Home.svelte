@@ -24,6 +24,7 @@
 	const donatedRunning = $derived(donatedNodes.filter((n) => n.status === 'running').length);
 	const runningReachability = $derived((app.connectivity?.nodes ?? []).filter((n) => n.running));
 	const reachableNodes = $derived(runningReachability.filter((n) => n.verdict !== 'unreachable').length);
+	const allReachable = $derived(reachableNodes === runningReachability.length);
 </script>
 
 <section class="stack">
@@ -52,14 +53,21 @@
 			<h3>Connectivity</h3>
 			{#if app.connectivity}
 				<ConnectivityBadge reachability={app.connectivity.directReachability} />
+				{#if runningReachability.length === 0}
+					<p class="muted">No nodes are running yet.</p>
+				{:else if reachableNodes === 0}
+					<p class="none">
+						{runningReachability.length === 1 ? 'The running node cannot' : `None of the ${runningReachability.length} running nodes can`}
+						be reached from outside your home network.
+					</p>
+				{:else}
+					<p class="big">{reachableNodes} <span class="muted">of {runningReachability.length} nodes reachable from outside</span></p>
+				{/if}
 				<dl class="kv">
 					<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
-					<div><dt>Reachable nodes</dt><dd>{reachableNodes} of {runningReachability.length} running</dd></div>
 					<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
 				</dl>
-				{#if app.connectivity.directReachability !== 'reachable'}
-					<a class="link" href={hrefFor('connectivity')}>Resolve →</a>
-				{/if}
+				<a class="link" href={hrefFor('connectivity')}>{allReachable ? 'Details →' : 'Resolve →'}</a>
 			{:else}
 				<p class="muted">Loading connectivity…</p>
 			{/if}
@@ -111,5 +119,6 @@
 		margin: var(--space-2) 0;
 	}
 	.big .muted { font-size: 0.95rem; font-weight: 400; }
+	.none { margin: var(--space-2) 0; color: var(--color-warn); font-weight: 500; }
 	.link { display: inline-block; margin-top: var(--space-2); font-weight: 500; }
 </style>

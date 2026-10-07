@@ -19,7 +19,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 
 import { parseDuration } from '../donation/duration.js';
 import { Installer } from '../installer/index.js';
@@ -47,6 +47,7 @@ import {
   type GrantListing,
 } from '../donation/index.js';
 import { NatService } from '../nat/index.js';
+import type { ManualForwardPatch } from '../nat/types.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
 import {
   resolvePushCredentials,
@@ -59,6 +60,7 @@ import { StrandService } from '../strands/index.js';
 import { OwnerNodeClient } from '../owner/index.js';
 import { createLocalUiServer, HostSettingsStore, type FounderServices } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
+import { printForwardResult, printNatStatus, type NatStatusLike } from './nat-output.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
 
@@ -762,6 +764,67 @@ nat
     process.exit(0);
   });
 
+interface ForwardOptions {
+  tcp?: number;
+  ws?: number;
+  clearTcp?: boolean;
+  clearWs?: boolean;
+  clear?: boolean;
+  port: string;
+  host: string;
+}
+
+nat
+  .command('forward')
+  .description('Tell cadre-host the external ports you forwarded on your router for one node')
+  .argument('<nodeId>', 'Node id as `cadre-host nat status` lists it')
+  .option('--tcp <port>', "External port your router forwards to the node's TCP port", parsePortArg)
+  .option('--ws <port>', "External port your router forwards to the node's WebSocket port", parsePortArg)
+  .option('--clear-tcp', 'Forget the TCP forward')
+  .option('--clear-ws', 'Forget the WebSocket forward')
+  .option('--clear', 'Forget both forwards')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (nodeId: string, opts: ForwardOptions) => {
+    const patch = forwardPatchFrom(opts);
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/nodes/${encodeURIComponent(nodeId)}/forward`;
+    const body = await callJson(url, 'PUT', patch, (error) => (error.code === 'unknown_node'
+      ? `No node with id "${nodeId}" runs on this host. Run \`cadre-host nat status\` to list node ids.`
+      : `cadre-host refused the forward: ${error.message} (${error.code})`));
+    printForwardResult(nodeId, body);
+    process.exit(0);
+  });
+
+/** The route's patch: a port sets that forward, a clear flag sends `null`. Exits on conflicting or missing flags. */
+function forwardPatchFrom(opts: ForwardOptions): ManualForwardPatch {
+  const patch: ManualForwardPatch = {};
+  const clears = { tcp: opts.clearTcp === true, ws: opts.clearWs === true };
+  for (const kind of ['tcp', 'ws'] as const) {
+    const value = opts[kind];
+    const clear = opts.clear === true || clears[kind];
+    if (value !== undefined && clear) {
+      console.error(`--${kind} conflicts with ${opts.clear ? '--clear' : `--clear-${kind}`}`);
+      process.exit(1);
+    }
+    if (value !== undefined) patch[kind] = value;
+    else if (clear) patch[kind] = null;
+  }
+  if (Object.keys(patch).length === 0) {
+    console.error('Nothing to change: pass --tcp, --ws, --clear-tcp, --clear-ws or --clear.');
+    process.exit(1);
+  }
+  return patch;
+}
+
+/** Commander parser for an external port. */
+function parsePortArg(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new InvalidArgumentError('expected a whole number from 1 to 65535.');
+  }
+  return n;
+}
+
 const ddns = nat
   .command('ddns')
   .description('Configure dynamic DNS');
@@ -1020,38 +1083,23 @@ async function putJson(url: string, body: unknown): Promise<NatStatusLike> {
   return await callJson(url, 'PUT', body);
 }
 
-interface NatStatusLike {
-  upnpEnabled?: boolean;
-  gateway?: {
-    found?: boolean;
-    lanAddress?: string | null;
-    routerExternalIp?: string | null;
-    lastError?: string | null;
-  };
-  externalIp?: string | null;
-  cgnatDetected?: boolean;
-  directReachability?: string;
-  lastTestedAt?: string | null;
-  nodes?: Array<{
-    nodeId?: string;
-    running?: boolean;
-    verdict?: string;
-    reason?: string | null;
-    tcp?: NatPortRouteLike;
-    ws?: NatPortRouteLike | null;
-    publicAddrs?: string[];
-  }>;
-  ddns?: {
-    providerId?: string | null;
-    hostname?: string | null;
-    externallyManaged?: boolean;
-    lastUpdateAt?: string | null;
-    lastUpdateOk?: boolean | null;
-    lastError?: string | null;
-  };
+/** The `{ code, message }` of a management-API error response. */
+interface ApiErrorBody {
+  code: string;
+  message: string;
 }
 
-async function callJson(url: string, method: string, body?: unknown): Promise<NatStatusLike> {
+/**
+ * One request to the management API, exiting on failure: 2 when cadre-host is
+ * unreachable, 1 on a non-OK response, printed by `describeError` when the
+ * response carries a typed error and the caller has words for it.
+ */
+async function callJson(
+  url: string,
+  method: string,
+  body?: unknown,
+  describeError?: (error: ApiErrorBody) => string,
+): Promise<NatStatusLike> {
   let response: Response;
   try {
     const init: RequestInit = { method };
@@ -1070,7 +1118,10 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
   }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+    const error = describeError ? apiErrorOf(response, text) : null;
+    console.error(error && describeError
+      ? describeError(error)
+      : `cadre-host returned ${response.status}: ${text || response.statusText}`);
     process.exit(1);
     throw new Error('non-ok');
   }
@@ -1078,51 +1129,19 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
   return await response.json() as NatStatusLike;
 }
 
-interface NatPortRouteLike {
-  internalPort?: number;
-  externalPort?: number | null;
-  source?: string | null;
-  error?: string | null;
-}
-
-function printNatStatus(s: NatStatusLike): void {
-  const gateway = s.gateway ?? {};
-  const gatewayLine = gateway.found
-    ? `found (this machine is ${gateway.lanAddress ?? '?'} on its network)`
-    : `not found${gateway.lastError ? ` — ${gateway.lastError}` : ''}`;
-  console.log(`UPnP:         ${s.upnpEnabled === false ? 'off' : 'on'}; router ${gatewayLine}`);
-  if (gateway.routerExternalIp) {
-    console.log(`Router IP:    ${gateway.routerExternalIp}`);
+/** The typed error in a `{ ok: false, error: { code, message } }` body (`server/error-handler.ts`), or null. */
+function apiErrorOf(response: Response, text: string): ApiErrorBody | null {
+  if (!response.headers.get('content-type')?.includes('application/json')) return null;
+  let parsed: { error?: { code?: unknown; message?: unknown } };
+  try {
+    parsed = JSON.parse(text) as typeof parsed;
+  } catch {
+    // Malformed JSON: the caller prints the raw text instead.
+    return null;
   }
-  console.log(`External IP:  ${s.externalIp ?? '(unknown)'}${s.cgnatDetected ? '  [CGNAT detected]' : ''}`);
-  console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
-  const nodes = s.nodes ?? [];
-  console.log(`\nNodes: ${nodes.length === 0 ? 'none' : ''}`);
-  for (const n of nodes) {
-    console.log(`  ${n.nodeId ?? '?'}: ${n.verdict ?? '?'}${n.running === false ? '  [stopped]' : ''}`);
-    console.log(`    TCP        ${formatRoute(n.tcp)}`);
-    console.log(`    WebSocket  ${n.ws ? formatRoute(n.ws) : 'not available'}`);
-    if (n.publicAddrs?.length) console.log(`    Public:    ${n.publicAddrs.join(', ')}`);
-    if (n.reason) console.log(`    ${n.reason}`);
-  }
-  const ddns = s.ddns ?? {};
-  if (ddns.providerId || ddns.hostname) {
-    console.log(`\nDDNS:`);
-    console.log(`  Provider:   ${ddns.providerId ?? '(none)'}${ddns.externallyManaged ? '  [externally managed]' : ''}`);
-    console.log(`  Hostname:   ${ddns.hostname ?? '(unset)'}`);
-    if (ddns.lastUpdateAt) {
-      const ok = ddns.lastUpdateOk ? 'OK' : 'FAIL';
-      console.log(`  Last update: ${ok} at ${ddns.lastUpdateAt}${ddns.lastError ? `  — ${ddns.lastError}` : ''}`);
-    }
-  } else {
-    console.log('\nDDNS: not configured');
-  }
-}
-
-function formatRoute(r: NatPortRouteLike | undefined): string {
-  if (!r) return '?';
-  if (r.externalPort == null) return `${r.internalPort ?? '?'} → not mapped${r.error ? ` (${r.error})` : ''}`;
-  return `${r.internalPort ?? '?'} → external ${r.externalPort} (${r.source ?? '?'})`;
+  const { code, message } = parsed.error ?? {};
+  if (typeof code !== 'string') return null;
+  return { code, message: typeof message === 'string' ? message : '' };
 }
 
 /** Read a single line from stdin with echo suppressed (TTY only). */

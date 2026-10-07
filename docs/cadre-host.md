@@ -276,7 +276,7 @@ Cadre-host runs on machines that are typically behind NAT. For the nodes it runs
 ### Port mapping
 
 - **UPnP by default.** The service asks the router (`@achingbrain/nat-port-mapper`) for the same external port as the internal one; the router may grant another, and the port it returns is the one recorded and advertised. NAT-PMP is not implemented (`backlog/feat-cadre-host-nat-pmp-mapping`).
-- **Manual wins.** A user who forwarded ports by hand enters them (`PUT /nat/nodes/:nodeId/forward { tcp?, ws? }`, `null` clears; persisted as `forwards` in `nat.json`); a port with a manual forward is not requested over UPnP, and a port that became manual releases its UPnP mapping.
+- **Manual wins.** A user who forwarded ports by hand enters them ([Manual port forwarding](#manual-port-forwarding); persisted as `forwards` in `nat.json`); a port with a manual forward is not requested over UPnP, and a port that became manual releases its UPnP mapping.
 - **Each mapping fails alone.** A router that refuses one port, or caps the number of mappings, records an error on that port only; every other route is untouched.
 - **Leases and renewal.** Leases are one hour, renewed by cadre-host itself every 30 minutes in one pass over every mapping, each renewal isolated; the library's auto-refresh is off so lease expiry and per-port failures stay visible. A renewal that fails keeps the route until the lease runs out, with the error recorded.
 - **Which nodes.** The table follows the orchestrator's node list on every state change and on a 1-minute timer: a running node is mapped; a node stopped for longer than 3 minutes (longer than the donation supervisor's whole respawn backoff, so a crash-and-respawn keeps its mapping) is unmapped; a terminated node is unmapped at once and its manual forward deleted.
@@ -317,6 +317,18 @@ An `unreachable` node carries a plain-language `reason` naming the failing port,
 | otherwise | `unreachable` |
 
 This is a heuristic, not a real dial-back. A future ticket will enable libp2p's AutoNAT service in `@optimystic/db-p2p`'s `libp2p-node-base.ts` and use its verdict here.
+
+### Manual port forwarding
+
+When the router does not map a node's ports (UPnP is off, no UPnP router answered, or the router refused), the user forwards them on the router by hand and tells cadre-host which external ports they chose. `cadre-host nat status` and the Connectivity page show, for each `unreachable` node, exactly what to forward.
+
+- **Which ports.** Each node needs its libp2p TCP port and its WebSocket port, the one a phone dials (a node from an older build has no WebSocket port). Port numbers differ per node, so the instruction lists only the node's ports that have no route.
+- **Forwarded to.** `gateway.lanAddress`, this machine's address on the router's subnet, on the same internal port. With no router found the instruction says "this machine's LAN address", because cadre-host cannot tell which of its local addresses the router sees. The external port is the user's choice; the simplest is the same number as the internal port.
+- **Telling cadre-host.** `cadre-host nat forward <nodeId> --tcp <port> --ws <port>` (`--clear-tcp`, `--clear-ws` and `--clear` remove a forward), the "I forwarded these ports" form on the node's entry on the Connectivity page or on its node page, or `PUT /nat/nodes/:nodeId/forward { tcp?, ws? }` with `null` clearing a port. Both clients refuse a port outside 1–65535 before sending; the route refuses it too (`400 invalid_config`), and a node id the host does not run is `404 unknown_node`.
+- **The node restarts.** A forward that changes the node's public addresses restarts the node so it announces them, at most once per node per 10 minutes ([Public addresses reach the node](#public-addresses-reach-the-node)). A forward that matches the port the router already granted changes no address and restarts nothing.
+- **A forward outlives a respawn.** A node respawned after a crash, a host restart or an address restart keeps its ports ([A respawned node keeps its addresses](#respawn-keeping-a-donated-node-up)), so the router rule still points at it. Terminating a node deletes its forward, since a replacement gets other ports.
+- **Not verified.** The verdict trusts the ports it is told: a node with every port forwarded by hand reads `manual` whether or not the router rule exists.
+- **Behind CGNAT** a router forward does not help, and both clients say so; the form and the command stay available because the CGNAT check can misfire ([External IP detection](#external-ip-detection)).
 
 ### DuckDNS setup
 
@@ -500,7 +512,8 @@ cadre-host is a same-machine management surface. Any local process running as th
 | `/api/strands/:id?confirm=1` | DELETE | Remove this party's participation in one strand. `confirm` is forwarded to the node, which refuses an unconfirmed **closed** strand with 428 | 400 invalid_id, 428 confirmation_required, 503 node_unavailable |
 | `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted) | 400 invalid_setting |
 | `/api/events` | GET | Server-Sent Events stream | — |
-| `/nat/*` | various | NAT/DDNS (matches CLI; every role) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings`, `PUT /nat/nodes/:nodeId/forward` | mapped from `NatError.code`; 404 unknown_node for a forward naming a node the host does not run, 400 invalid_config for a port outside 1–65535 |
+| `/nat/*` | various | NAT/DDNS (matches CLI; every role) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings` | mapped from `NatError.code` |
+| `/nat/nodes/:nodeId/forward` | PUT | Record the external ports forwarded by hand for one node — `{ tcp?, ws? }`, `null` clears a port, both cleared removes the entry → the NAT snapshot ([Manual port forwarding](#manual-port-forwarding)) | 404 unknown_node for a node the host does not run; 400 invalid_config for a body that is not an object or a port outside 1–65535 |
 | `/update/*` | various | Update flow — `GET /update`, `POST /update/apply`, `GET/PUT /update/settings` | mapped from `UpdateErrorException.code` |
 | `/grants-admin` | GET | Every grant, each with `liveNodes` (donations counting against `maxNodes`) and `donations` (`{ id, status }` of every donation not yet `terminated` — what a revoke would end) | — |
 | `/grants-admin` | POST | Issue a grant — `{ label, maxNodes?, ttlMs? }` → `{ grant }` | 400 invalid_label / invalid_max_nodes / invalid_ttl |
@@ -521,7 +534,7 @@ Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { c
 | `node-state-changed` | A managed node transitions running ↔ stopped |
 | `strands-changed` | A strand removal issued a delete (`kind: 'removed'`). Not emitted when the id was never published — nothing changed |
 | `grants-changed` | A `/grants-admin` call issued a grant, revoked one, or terminated a donation (`kind: 'issued' \| 'revoked' \| 'terminated'`). Donations changing through `/grants` or the respawn supervisor do not emit it; the SPA re-reads grants on `node-state-changed` instead |
-| `connectivity-changed` | NAT settings or a manual forward changed, reachability re-tested, server boot, and any change the NAT layer notices on its own (a mapping completing after a spawn, the external IP or CGNAT flag changing, a lease the router dropped). Carries `directReachability` |
+| `connectivity-changed` | NAT settings or a manual forward changed, reachability re-tested, server boot, and any change to the NAT snapshot the NAT layer notices on its own (a hosted node starting, stopping or being removed, a mapping completing after a spawn, the external IP or CGNAT flag changing, a lease the router dropped). Carries `directReachability` only; the SPA re-reads `/nat/status`, which is how its per-node entries follow a node's restart for new addresses |
 | `update-available` | A new release version is observed |
 
 A `: heartbeat` comment is sent every 15 s so corporate proxies don't time out idle connections; the wire format also includes a `retry: 5000` hint. Listeners are cleaned up on client disconnect — `bus.listenerCount()` drops back to zero.

@@ -7,6 +7,7 @@
 		refreshSettings,
 		refreshUpdate,
 		pushToast,
+		copyText,
 	} from '../lib/state.svelte.js';
 	import { formatRelativeTime } from '../lib/format.js';
 
@@ -70,14 +71,6 @@
 		}
 	}
 
-	async function copy(text: string): Promise<void> {
-		try {
-			await navigator.clipboard.writeText(text);
-			pushToast('success', 'Copied');
-		} catch (err) {
-			pushToast('error', `Copy failed: ${(err as Error).message}`);
-		}
-	}
 </script>
 
 <section class="stack">
@@ -144,7 +137,7 @@
 					<dt>Data dir</dt>
 					<dd class="copy-row">
 						<code>{app.settings.dataDir}</code>
-						<button type="button" class="ghost" aria-label="Copy data dir" onclick={() => copy(app.settings!.dataDir)}>
+						<button type="button" class="ghost" aria-label="Copy data dir" onclick={() => copyText(app.settings!.dataDir)}>
 							<CopyIcon />
 						</button>
 					</dd>
@@ -153,7 +146,7 @@
 					<dt>Identity</dt>
 					<dd class="copy-row">
 						<code>{app.settings.identityPath}</code>
-						<button type="button" class="ghost" aria-label="Copy identity path" onclick={() => copy(app.settings!.identityPath)}>
+						<button type="button" class="ghost" aria-label="Copy identity path" onclick={() => copyText(app.settings!.identityPath)}>
 							<CopyIcon />
 						</button>
 					</dd>

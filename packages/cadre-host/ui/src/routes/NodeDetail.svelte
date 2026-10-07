@@ -13,6 +13,7 @@
 
 	import ConfirmDialog from '../components/ConfirmDialog.svelte';
 	import LogTail from '../components/LogTail.svelte';
+	import NodeReachabilityCard from '../components/NodeReachabilityCard.svelte';
 
 	interface Props { id: string }
 	const { id }: Props = $props();
@@ -29,6 +30,7 @@
 
 	const node = $derived(app.nodes.find((n) => n.id === id) ?? null);
 	const stats = $derived(app.nodeStats[id] ?? null);
+	const reachability = $derived(app.connectivity?.nodes.find((n) => n.nodeId === id) ?? null);
 
 	onMount(() => {
 		void refreshNodeDetail(id);
@@ -158,6 +160,17 @@
 						{busyAction === 'terminate' ? 'Terminating…' : 'Terminate'}
 					</button>
 				</div>
+			{/if}
+		</div>
+
+		<div class="card stack">
+			<h3>Reachable from outside</h3>
+			{#if !app.connectivity}
+				<p class="muted">Loading…</p>
+			{:else if !reachability}
+				<p class="muted">The port mapping table has no entry for this node yet.</p>
+			{:else}
+				<NodeReachabilityCard node={reachability} connectivity={app.connectivity} />
 			{/if}
 		</div>
 

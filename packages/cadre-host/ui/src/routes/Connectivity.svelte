@@ -6,11 +6,13 @@
 		appState,
 		refreshConnectivity,
 		pushToast,
-		type PortRoute,
 	} from '../lib/state.svelte.js';
 	import { formatRelativeTime } from '../lib/format.js';
+	import { grantLabelFor } from '../lib/grants.js';
+	import { hrefFor } from '../lib/router.js';
 
 	import ConnectivityBadge from '../components/ConnectivityBadge.svelte';
+	import NodeReachabilityCard from '../components/NodeReachabilityCard.svelte';
 
 	type DdnsProvider = {
 		id: string;
@@ -35,16 +37,21 @@
 		providers.find((p) => p.id === providerId) ?? null,
 	);
 
-	const needsFix = $derived(
-		!!app.connectivity && app.connectivity.directReachability === 'unreachable',
-	);
+	const runningNodes = $derived((app.connectivity?.nodes ?? []).filter((n) => n.running));
+	const unreachableCount = $derived(runningNodes.filter((n) => n.verdict === 'unreachable').length);
 
 	const cgnatDetected = $derived(app.connectivity?.cgnatDetected === true);
 
-	/** Each distinct reason once: nodes failing the same way share the sentence. */
-	const reasons = $derived(
-		[...new Set((app.connectivity?.nodes ?? []).map((n) => n.reason).filter((r): r is string => !!r))],
-	);
+	/**
+	 * Who a node is for, where the page already knows: the owner flag comes from
+	 * the node list, a donated node's grant label from the grant list once the
+	 * Grants page has loaded it.
+	 */
+	function nodeLabel(nodeId: string): string | null {
+		if (app.nodes.find((n) => n.id === nodeId)?.owner) return 'your own node';
+		const grant = grantLabelFor(nodeId, app.grants.list);
+		return grant ? `lent under grant “${grant}”` : null;
+	}
 
 	onMount(() => {
 		void refreshConnectivity();
@@ -59,12 +66,6 @@
 		externallyManaged = c.ddns.externallyManaged;
 		upnpEnabled = c.upnpEnabled;
 	});
-
-	function routeLabel(route: PortRoute | null): string {
-		if (!route) return 'not available';
-		if (route.externalPort === null) return `${route.internalPort} → not mapped`;
-		return `${route.internalPort} → ${route.externalPort} (${route.source === 'manual' ? 'forwarded by hand' : 'UPnP'})`;
-	}
 
 	async function loadProviders(): Promise<void> {
 		try {
@@ -160,25 +161,22 @@
 			{/if}
 		</div>
 
-		{#if needsFix || cgnatDetected}
+		{#if cgnatDetected}
 			<div class="card warning">
-				<h3>Manual fix</h3>
-				{#if cgnatDetected}
-					<p>Your ISP is using Carrier-Grade NAT (CGNAT): a port forward on your router will not help. You'll need to either:</p>
-					<ul>
-						<li>Ask your ISP for a public IP.</li>
-						<li>Use a relay / tunnel (e.g. Cloudflare Tunnel, Tailscale Funnel).</li>
-					</ul>
-				{:else}
-					<p>Some of this machine's nodes aren't reachable from the open internet:</p>
-					<ul>
-						{#each reasons as reason (reason)}
-							<li>{reason}</li>
-						{/each}
-					</ul>
-				{/if}
+				<h3>Behind carrier-grade NAT</h3>
+				<p>Your ISP appears to use carrier-grade NAT (CGNAT), so a port forward on your router will not help. Ask your ISP for a public IP address.</p>
+				<p>A relay would reach nodes behind CGNAT, but cadre-host cannot reserve one for its nodes yet.</p>
+				<p class="muted small">The detection can be wrong. If you did forward ports, enter them on each node below.</p>
+			</div>
+		{:else if unreachableCount > 0}
+			<div class="card warning">
+				<h3>Needs a port forward</h3>
+				<p>
+					{unreachableCount} of {runningNodes.length} running {runningNodes.length === 1 ? 'node' : 'nodes'} cannot be reached from outside your home network.
+					Each one below says which ports to forward on your router, and to which address.
+				</p>
 				<p class="muted small">
-					See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md" target="_blank" rel="noreferrer">docs/cadre-host.md</a> for vendor-specific router instructions.
+					See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md#manual-port-forwarding" target="_blank" rel="noreferrer">docs/cadre-host.md</a> for how manual forwarding works.
 				</p>
 			</div>
 		{/if}
@@ -193,20 +191,14 @@
 		{:else}
 			<ul class="nodes">
 				{#each app.connectivity.nodes as n (n.nodeId)}
+					{@const label = nodeLabel(n.nodeId)}
 					<li>
-						<div class="row">
-							<strong>{n.nodeId}</strong>
-							<span class="badge {n.verdict === 'unreachable' ? 'err' : 'ok'}">{n.verdict}</span>
-							{#if !n.running}<span class="badge">stopped</span>{/if}
-						</div>
-						<dl class="kv">
-							<div><dt>TCP</dt><dd>{routeLabel(n.tcp)}</dd></div>
-							<div><dt>WebSocket</dt><dd>{routeLabel(n.ws)}</dd></div>
-							{#if n.publicAddrs.length > 0}
-								<div><dt>Public</dt><dd><code>{n.publicAddrs.join('  ')}</code></dd></div>
-							{/if}
-						</dl>
-						{#if n.reason}<p class="muted small">{n.reason}</p>{/if}
+						<NodeReachabilityCard node={n} connectivity={app.connectivity}>
+							{#snippet header()}
+								<a href={hrefFor('node-detail', { id: n.nodeId })}><strong><code>{n.nodeId}</code></strong></a>
+								{#if label}<span class="muted small">{label}</span>{/if}
+							{/snippet}
+						</NodeReachabilityCard>
 					</li>
 				{/each}
 			</ul>
@@ -308,13 +300,10 @@
 	.nodes { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
 	.nodes li { border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
 	.nodes li:first-child { border-top: 0; padding-top: 0; }
-	.nodes .row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-	.nodes code { font-size: 0.85rem; word-break: break-all; }
 	.warning {
 		background: var(--color-warn-bg);
 		border-color: var(--color-warn);
 	}
-	.warning ul { margin: 0; padding-left: 1.25rem; }
 	.actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 	.small { font-size: 0.85rem; }
 </style>

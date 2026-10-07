@@ -48,3 +48,8 @@ export const DONATION_STATUS_LABEL: Record<DonationStatus, string> = {
 export function donationHasNode(status: DonationStatus): boolean {
 	return status === 'awaiting_seed' || status === 'seeded';
 }
+
+/** The label of the grant a donated node was lent under, or null when the loaded grant list does not name it. */
+export function grantLabelFor(nodeId: string, grants: readonly GrantListing[]): string | null {
+	return grants.find((g) => g.donations.some((d) => d.id === nodeId))?.label ?? null;
+}

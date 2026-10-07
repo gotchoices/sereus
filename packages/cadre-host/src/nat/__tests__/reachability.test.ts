@@ -47,7 +47,7 @@ describe('evaluateNodeReachability', () => {
     expect(r.verdict).toBe('unreachable');
     expect(r.reason).toBe(
       'Router refused the WebSocket port 10004 mapping (mapping table is full). ' +
-      'Forward port 10004 to 192.168.1.20 on your router, then enter the external port here.',
+      'Forward port 10004 to 192.168.1.20 on your router, then tell cadre-host the external port.',
     );
   });
 

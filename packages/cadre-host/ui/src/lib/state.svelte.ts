@@ -7,7 +7,7 @@
  * are co-located with the API calls that triggered them.
  */
 
-import { apiFetch, ApiError } from './api.js';
+import { apiFetch, apiPut, ApiError } from './api.js';
 import { deriveOverallStatus } from './overall-status.js';
 
 // --- Mirrors of server-side types (kept narrow on purpose) ---
@@ -103,6 +103,12 @@ export interface NodeReachability {
 	/** Null for a node without a WebSocket port. */
 	ws: PortRoute | null;
 	publicAddrs: string[];
+}
+
+/** Mirror of the server's `ManualForwardPatch`: the external ports forwarded by hand; `null` clears one. */
+export interface ManualForwardPatch {
+	tcp?: number | null;
+	ws?: number | null;
 }
 
 export interface NatStatusSnapshot {
@@ -264,6 +270,15 @@ export function dismissToast(id: string): void {
 	state.toasts = state.toasts.filter((t) => t.id !== id);
 }
 
+export async function copyText(text: string): Promise<void> {
+	try {
+		await navigator.clipboard.writeText(text);
+		pushToast('success', 'Copied to clipboard');
+	} catch (err) {
+		pushToast('error', `Copy failed: ${(err as Error).message}`);
+	}
+}
+
 export function reportError(scope: string, err: unknown): void {
 	const code = err instanceof ApiError ? err.code : 'error';
 	const msg = err instanceof Error ? err.message : String(err);
@@ -398,6 +413,17 @@ export async function refreshConnectivity(): Promise<void> {
 	} catch (err) {
 		reportError('connectivity', err);
 	}
+}
+
+/**
+ * Store the external ports the user forwarded by hand for one node. The route
+ * answers with the whole snapshot, which replaces the slice. Errors reach the
+ * caller as `ApiError` (404 `unknown_node` for a node that is gone, 400
+ * `invalid_config` for a bad port) so the form can say which.
+ */
+export async function saveForward(nodeId: string, patch: ManualForwardPatch): Promise<void> {
+	state.connectivity = await apiPut<NatStatusSnapshot>(`/nat/nodes/${encodeURIComponent(nodeId)}/forward`, patch);
+	recomputeStatus();
 }
 
 export async function refreshUpdate(): Promise<void> {

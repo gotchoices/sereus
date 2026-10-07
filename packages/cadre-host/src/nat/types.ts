@@ -50,7 +50,7 @@ export interface NodeReachability {
   /**
    * Plain-language reason and remedy when unreachable, e.g. "Router refused
    * the WebSocket port mapping. Forward port 10004 to 192.168.1.20 on your
-   * router, then enter the external port here."
+   * router, then tell cadre-host the external port."
    */
   reason: string | null;
   tcp: PortRoute;
