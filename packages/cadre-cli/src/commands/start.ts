@@ -6,9 +6,14 @@ import {
   ed25519KeyPairFromLibp2p,
   pinnedKeyTrustPolicy,
   requireEd25519PublicKeyB64,
+  type BootstrapPeerStore,
   type CadreNodeConfig,
   type ControlNetworkSeed,
+  type EnrolledMachineStore,
+  type NodeClaimRecord,
   type SeedTrustPolicy,
+  type StrandNetworkStateStore,
+  type TrustedOwnerStore,
   decodeCadreInvitation,
   type CadreInvitation,
 } from '@serfab/cadre-core';
@@ -19,9 +24,10 @@ import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-st
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import { fromString } from 'uint8arrays';
 import { specifiedEnv } from '@serfab/config-check';
-import { resolveConfig } from '../config/index.js';
+import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { resolveStorageConfig } from './node-session.js';
+import { claimRecordPath, partyOnRecord, writeClaimRecord, type ClaimRecord } from './claim-record.js';
 import { HealthServer } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
 
@@ -136,17 +142,19 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
 }
 
 /**
- * Refuse every start-up option that cannot be combined with `CADRE_CLAIM_SECRET`, all named in
- * one error. A node waiting to be claimed takes its owner from the claim, and each of these is
- * another way in: `--owner` founds a cadre on this node, `--seed` and `--invitation` join one,
- * and a pinned owner key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never
- * named. The node refuses a pin beside a claim itself (`CadreNodeConfig.claim`), but its message
- * names the config field; this check runs first, before the config is loaded, and names the
- * options the operator actually passed.
+ * Refuse every start-up option that cannot be combined with a claim, all named in one error.
+ * A node waiting to be claimed takes its owner from the claim, and a claimed node took it from
+ * the claim on record; each of these is another way in: `--owner` founds a cadre on this node,
+ * `--seed` and `--invitation` join one, and a pinned owner key (`--pin-owner-key`,
+ * `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node refuses a pin beside a
+ * claim itself (`CadreNodeConfig.claim`), but its message names the config field; this check
+ * runs first — for the secret, before the config is loaded — and names the options the
+ * operator actually passed. `subject` is what the message blames: the secret, or the record.
  */
 export function refuseClaimConflicts(
   options: { owner?: boolean; seed?: string; invitation?: string; pinOwnerKey?: string[] },
   ownerKeysEnv: string | undefined,
+  subject: string = 'CADRE_CLAIM_SECRET',
 ): void {
   const conflicts = [
     options.owner ? '--owner' : undefined,
@@ -156,8 +164,8 @@ export function refuseClaimConflicts(
     collectPinnedOwnerKeys(undefined, ownerKeysEnv).length > 0 ? 'CADRE_OWNER_KEYS' : undefined,
   ].filter((name): name is string => name !== undefined);
   if (conflicts.length > 0) {
-    throw new Error(`CADRE_CLAIM_SECRET cannot be combined with ${conflicts.join(', ')}: a node waiting to be claimed `
-      + 'takes its owner from the claim. Unset CADRE_CLAIM_SECRET, or start without the conflicting options.');
+    throw new Error(`${subject} cannot be combined with ${conflicts.join(', ')}: a node that is claimed, or waiting to be, `
+      + 'takes its owner from the claim. Remove the claim, or start without the conflicting options.');
   }
 }
 
@@ -177,6 +185,261 @@ function writeStartupToken(path: string | undefined): void {
   if (!path || token.length === 0) return;
   writeFileSync(path, token, { encoding: 'utf8' });
   log('Wrote startup token to %s', path);
+}
+
+/** `--ws-port` convenience: append a WebSocket listen address to the config's listen addresses. */
+function applyWsPortOption(config: ResolvedConfig, wsPort: string | undefined): void {
+  if (!wsPort) return;
+  const port = parseInt(wsPort, 10);
+  if (isNaN(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid WebSocket port: ${wsPort}`);
+  }
+  const wsAddr = `/ip4/0.0.0.0/tcp/${port}/ws`;
+  if (!config.network) config.network = {};
+  if (!config.network.listenAddrs) config.network.listenAddrs = [];
+  if (!config.network.listenAddrs.includes(wsAddr)) {
+    config.network.listenAddrs.push(wsAddr);
+    log('Added WebSocket listen address: %s', wsAddr);
+  }
+}
+
+/** The node-local file stores a node keeps under one party in its state directory. */
+interface NodeStores {
+  trustedOwnerStore: TrustedOwnerStore;
+  bootstrapPeerStore: BootstrapPeerStore;
+  enrolledMachineStore: EnrolledMachineStore;
+  strandNetworkStateStore: StrandNetworkStateStore;
+}
+
+/**
+ * Open the four node-local stores for `partyId` in `nodeStateDir`, each file-backed so what it
+ * holds survives a restart: the trusted-owner anchor (so anchored trust is not re-supplied),
+ * the cold-start dial targets (a seed pushed at RUNTIME — the seed protocol, or cadre-host's
+ * donation flow posting to `/seed` — gets no `--seed` argument on the next start, so its
+ * addresses have to come off disk), the enrolled-machine count (the control node's block-repair
+ * yardstick is declared at bring-up, before the database holding the membership rows exists;
+ * an absent or unreadable file is a cold start, never a failed launch), and each strand node's
+ * saved network state (the FRET routing table it re-imports, so a cross-party strand re-meshes
+ * without a fresh invitation; dial hints only, verified at import).
+ *
+ * All four are keyed on the party, which is why a claimed node opens them under the party on
+ * record and not the config's placeholder (`claim-record.ts`).
+ */
+async function openNodeStores(nodeStateDir: string, partyId: string): Promise<NodeStores> {
+  return {
+    trustedOwnerStore: await FileTrustedOwnerStore.open(nodeStateDir, partyId),
+    bootstrapPeerStore: await FileBootstrapPeerStore.open(nodeStateDir, partyId),
+    enrolledMachineStore: await FileEnrolledMachineStore.open(nodeStateDir, partyId),
+    strandNetworkStateStore: await FileStrandNetworkStateStore.open(nodeStateDir, partyId),
+  };
+}
+
+/** The cold-start trust a node is built with, chosen by the start path (`buildNodeConfig`). */
+type ColdStartTrust = Pick<CadreNodeConfig, 'trustedOwners' | 'seedTrustPolicy' | 'claim'>;
+
+/** The `CadreNodeConfig` for `partyId` over `stores`: everything in the resolved config, plus `trust`. */
+function buildNodeConfig(config: ResolvedConfig, partyId: string, stores: NodeStores, trust: ColdStartTrust): CadreNodeConfig {
+  return {
+    privateKey: config.privateKey,
+    ...trust,
+    bootstrapPeers: { store: stores.bootstrapPeerStore },
+    enrolledMachines: { store: stores.enrolledMachineStore },
+    strandNetworkState: { store: stores.strandNetworkStateStore },
+    controlNetwork: { ...config.controlNetwork, partyId },
+    profile: config.profile,
+    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
+    // CLI node (every cadre-host donated node included) hosts a replica of every strand its
+    // party publishes; the only opt-out here is `strandFilter`. If an operator needs
+    // announce-only on an always-on node, surface the field in the CLI config.
+    strandFilter: config.strandFilter,
+    strandReactivity: config.strandReactivity,
+    storage: resolveStorageConfig(config.storage),
+    network: config.network,
+    hibernation: config.hibernation,
+    strandWatchInterval: config.strandWatchInterval,
+    // Platform push credentials provisioned by the orchestrator (cadre-host
+    // writes the `push` block into cadre.json; cadre-provider injects it via
+    // CADRE_PUSH). This CLI is the Node host, so it constructs the
+    // `PushNotifier` from the Node-only `@serfab/cadre-core/push-node`
+    // subpath (keeping node:crypto/node:http2 out of the cross-platform core
+    // graph) and injects the instance; CadreNode owns its lifecycle.
+    push: config.push
+      ? {
+          notifier: createPushNotifier(config.push),
+          cooldownMs: config.push.cooldownMs,
+          debounceMs: config.push.debounceMs,
+        }
+      : undefined,
+  };
+}
+
+/**
+ * The `claim` block a node gets when `CADRE_CLAIM_SECRET` is set: the secret, and a `record`
+ * that writes `claim.json` and reports what it wrote. Undefined without the secret — a claimed
+ * node started without it is still honoured from its record, just with no claim policy, so a
+ * rival's seed is refused as an untrusted seed rather than `already-claimed`.
+ *
+ * NOTE: without `claim`, cadre-core's `publishSelfRecordOnceClaimed` does not run either, so a
+ * claimed node restarted with the secret unset republishes its address record on the heartbeat
+ * only (about 7.5 min), not on its first reconcile pass. Its owner retained its addresses and
+ * dials in regardless. cadre-host keeps the secret set on respawn; if an embedder that drops it
+ * ever needs the prompt publish, key that method on the anchor's `claim` source, not the config.
+ */
+function claimConfigFor(
+  secret: string | undefined,
+  nodeStateDir: string,
+  onRecorded: (record: ClaimRecord) => void,
+): CadreNodeConfig['claim'] {
+  if (secret === undefined) return undefined;
+  return {
+    secret,
+    record: async (claim) => onRecorded(await writeClaimRecord(nodeStateDir, claim)),
+  };
+}
+
+/**
+ * The node for a claim — this process's start from `claim.json`, or its restart after the claim
+ * was accepted: stores under the claim's party, the claim's owner anchored under source `claim`
+ * (idempotent; the restart's stores are fresh and hold nothing yet), no operator pins (refused
+ * beside `claim` by cadre-core, and refused here by `refuseClaimConflicts` either way), and
+ * `claim` only when the secret is still set.
+ *
+ * The files the placeholder party created while the node waited (`trusted-owners.unclaimed.json`
+ * and the like) are left where they are; nothing opens them again.
+ *
+ * NOTE: the claim seed's peers were merged into the placeholder party's stores, so the restarted
+ * node holds no dial target for its owner; it waits for the owner to dial in, which the owner's
+ * `claimNode` retained the node's addresses for. If a claimed node ever needs to dial first (an
+ * owner reachable only through a relay the node must initiate to), re-apply the claim seed
+ * after the restart; `seed:applied` does not carry it today.
+ */
+async function buildClaimedNode(config: ResolvedConfig, claim: NodeClaimRecord, claimConfig: CadreNodeConfig['claim']): Promise<CadreNode> {
+  const stores = await openNodeStores(config.nodeStateDir, claim.partyId);
+  await stores.trustedOwnerStore.trust(claim.ownerKey, 'claim');
+  const node = new CadreNode(buildNodeConfig(config, claim.partyId, stores, {
+    trustedOwners: { store: stores.trustedOwnerStore },
+    claim: claimConfig,
+  }));
+  wireNodeEvents(node);
+  return node;
+}
+
+/**
+ * The node for the configured party: operator pins (source `operator`) and the pinned-key seed
+ * policy when there are any, or, with `claimConfig`, a node waiting to be claimed under the
+ * config's placeholder party.
+ */
+async function buildConfiguredNode(
+  config: ResolvedConfig,
+  pinnedKeys: string[],
+  seedTrustPolicy: SeedTrustPolicy | undefined,
+  claimConfig: CadreNodeConfig['claim'],
+): Promise<CadreNode> {
+  const partyId = config.controlNetwork.partyId;
+  const stores = await openNodeStores(config.nodeStateDir, partyId);
+  const node = new CadreNode(buildNodeConfig(config, partyId, stores, {
+    trustedOwners: { store: stores.trustedOwnerStore, pinnedKeys, pinnedSource: 'operator' },
+    seedTrustPolicy,
+    claim: claimConfig,
+  }));
+  wireNodeEvents(node);
+  return node;
+}
+
+/** The console lines a node prints for its lifecycle, strand and seed events. */
+function wireNodeEvents(node: CadreNode): void {
+  node.on('control:connected', () => {
+    console.log('✓ Connected to control network');
+    console.log(`  Party ID: ${node.partyId}`);
+    console.log(`  Peer ID:  ${node.peerId?.toString()}`);
+  });
+
+  node.on('control:disconnected', () => {
+    console.log('✗ Disconnected from control network');
+  });
+
+  node.on('claim:accepted', ({ ownerKey, partyId }) => {
+    console.log(`✓ Claimed by owner ${ownerKey.slice(0, 8)} into party ${partyId}`);
+  });
+
+  // A control write the retry funnel gave up on. This is a long-running headless
+  // process, so it is the operator's only view of it: the node itself only escalates
+  // the one case whose consequence it can measure (its own address record going
+  // stale), and the funnel's own trace is a `debug` line nothing enables by default.
+  // A BACKGROUND write — the self-address republish, the replication drains — has no
+  // caller to reject to either, so without this line it is lost in silence.
+  node.on('control:write-abandoned', ({ label, reason, attemptsMade, attemptsAllowed, error }) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠ Control write abandoned [${label ?? 'unlabelled'}] `
+      + `after ${attemptsMade}/${attemptsAllowed} attempt(s) (${reason}): ${detail}`);
+  });
+
+  node.on('strand:started', ({ strandId }) => {
+    console.log(`✓ Strand started: ${strandId}`);
+  });
+
+  node.on('strand:stopped', ({ strandId }) => {
+    console.log(`• Strand stopped: ${strandId}`);
+  });
+
+  node.on('strand:error', ({ strandId, error }) => {
+    console.error(`✗ Strand error (${strandId}): ${error.message}`);
+  });
+
+  node.on('strand:idle', ({ strandId }) => {
+    log('Strand idle: %s', strandId);
+  });
+
+  node.on('strand:hibernating', ({ strandId }) => {
+    log('Strand hibernating: %s', strandId);
+  });
+
+  node.on('seed:received', ({ partyId, peerId }) => {
+    console.log(`✓ Seed received from ${peerId} for party ${partyId}`);
+  });
+
+  node.on('seed:applied', ({ partyId, peersAdded }) => {
+    console.log(`✓ Seed applied: ${peersAdded} peers added for party ${partyId}`);
+  });
+
+  node.on('seed:error', ({ partyId, error }) => {
+    console.error(`✗ Seed error (${partyId}): ${error}`);
+  });
+}
+
+/**
+ * Run `onSettled` once the seed that carried the claim has been handled end to end.
+ * `claim:accepted` fires inside the node's trust decision, BEFORE the seed is acknowledged to
+ * the claimant, its peers merged and its owners dialed; stopping the node there would drop
+ * the acknowledgement, and the claimant would read its own claim as failed. That seed's
+ * `seed:applied` — or `seed:error`, when its work after the acknowledgement failed — is the
+ * first event after all of it. A seed for another party is some other claimant's, refused
+ * `already-claimed` while this one was in flight, and is not waited for.
+ *
+ * NOTE: a second claimant of the SAME party whose refusal lands in that window settles this
+ * early, and the restart may stop the node before the claim is acknowledged. The claimant then
+ * retries and is accepted idempotently by the restarted node, whose anchor holds it. If that is
+ * ever seen, carry the seed's digest on the two events and key the settle on it.
+ */
+function afterClaimSeedSettles(node: CadreNode, claimedPartyId: string, onSettled: () => void): void {
+  // The node's own party as well: a failure after the trust decision is reported under it.
+  const ownParties = new Set([claimedPartyId, node.partyId]);
+  const settle = ({ partyId }: { partyId: string }): void => {
+    if (!ownParties.has(partyId)) return;
+    node.off('seed:applied', settle);
+    node.off('seed:error', settle);
+    onSettled();
+  };
+  node.on('seed:applied', settle);
+  node.on('seed:error', settle);
+}
+
+/** Say which party a node started from its claim record serves, and that the config's is ignored when it differs. */
+function reportClaimOnRecord(claim: ClaimRecord, configuredPartyId: string): void {
+  const placeholder = configuredPartyId === claim.partyId
+    ? ''
+    : ` (controlNetwork.partyId '${configuredPartyId}' is a placeholder and is ignored)`;
+  console.log(`• Claimed by owner ${claim.ownerKey.slice(0, 8)} into party ${claim.partyId}${placeholder}`);
 }
 
 export const startCommand = new Command('start')
@@ -224,32 +487,28 @@ export const startCommand = new Command('start')
       }
 
       const config = await resolveConfig(options.config);
+      applyWsPortOption(config, options.wsPort);
 
-      // --ws-port convenience: append a WebSocket listen address
-      if (options.wsPort) {
-        const wsPort = parseInt(options.wsPort, 10);
-        if (isNaN(wsPort) || wsPort < 1 || wsPort > 65535) {
-          throw new Error(`Invalid WebSocket port: ${options.wsPort}`);
-        }
-        const wsAddr = `/ip4/0.0.0.0/tcp/${wsPort}/ws`;
-        if (!config.network) config.network = {};
-        if (!config.network.listenAddrs) config.network.listenAddrs = [];
-        if (!config.network.listenAddrs.includes(wsAddr)) {
-          config.network.listenAddrs.push(wsAddr);
-          log('Added WebSocket listen address: %s', wsAddr);
-        }
+      // The claim on record names the party this node serves and the owner it belongs to; the
+      // config's party is then a placeholder. A malformed record throws here and stops the
+      // start (`claim-record.ts` says why). The record refuses the same options the secret
+      // does, whether or not the secret is still set.
+      const { partyId, claim: claimOnRecord } = await partyOnRecord(config);
+      if (claimOnRecord) {
+        refuseClaimConflicts(options, commandEnv('CADRE_OWNER_KEYS'), `The claim on record (${claimRecordPath(config.nodeStateDir)})`);
+        reportClaimOnRecord(claimOnRecord, config.controlNetwork.partyId);
       }
 
       // The conflict check comes before either decode, so an operator who passed both flags
       // is told that, not that one of the two values failed to decode.
       if (options.invitation) refuseInvitationConflicts(options);
-      const seed = options.seed ? decodeSeedFor(options.seed, config.controlNetwork.partyId) : undefined;
+      const seed = options.seed ? decodeSeedFor(options.seed, partyId) : undefined;
       let invitation: CadreInvitation | undefined;
       if (options.invitation) {
         if (!config.privateKey) {
           throw new Error('--invitation requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it');
         }
-        invitation = decodeInvitationFor(options.invitation, config.controlNetwork.partyId);
+        invitation = decodeInvitationFor(options.invitation, partyId);
       }
 
       // Operator-pinned owner keys anchor cold-start seed trust. Build the
@@ -263,146 +522,16 @@ export const startCommand = new Command('start')
         console.log(`✓ Pinned ${pinnedKeys.length} owner key(s) for cold-start seed trust`);
       }
 
-      // Node-local trusted-owner anchor: file-backed in this node's state
-      // directory (so anchored trust survives restarts), regardless of how the
-      // node's identity is configured. The operator pins above seed it either
-      // way (source 'operator').
-      const trustedOwnerStore = await FileTrustedOwnerStore.open(
-        config.nodeStateDir,
-        config.controlNetwork.partyId,
-      );
+      // The claim on record as `/status` reports it: read above, or written by the node's claim
+      // policy when a claim is accepted in this process.
+      let claimRecord = claimOnRecord;
+      const claimConfig = claimConfigFor(claimSecret, config.nodeStateDir, (record) => { claimRecord = record; });
 
-      // Cold-start bootstrap dial targets: file-backed in the same directory, so a
-      // seed pushed at RUNTIME (the /sereus/seed/1.0.0 protocol, or cadre-host's
-      // donation flow pushing to POST /seed — neither of which gets a --seed
-      // argument on the next start) still has addresses to retry after a process
-      // or container restart.
-      const bootstrapPeerStore = await FileBootstrapPeerStore.open(
-        config.nodeStateDir,
-        config.controlNetwork.partyId,
-      );
-
-      // How many machines this party had enrolled at this node's last look, kept in
-      // the same directory. The control node's block-repair yardstick is declared
-      // from it at bring-up, which is before the database holding the membership
-      // rows exists — so the count has to come off disk or not at all. An absent or
-      // unreadable file is a cold start (declare nothing, run as before), never a
-      // failed launch.
-      const enrolledMachineStore = await FileEnrolledMachineStore.open(
-        config.nodeStateDir,
-        config.controlNetwork.partyId,
-      );
-
-      // Each strand node's saved network state, kept in the same directory: the FRET
-      // routing table it re-imports after a restart, with every peer's signed address
-      // record, so a cross-party strand re-meshes without a fresh invitation. Dial hints
-      // only, like the bootstrap peers — FRET verifies each record at import.
-      const strandNetworkStateStore = await FileStrandNetworkStateStore.open(
-        config.nodeStateDir,
-        config.controlNetwork.partyId,
-      );
-
-      const nodeConfig: CadreNodeConfig = {
-        privateKey: config.privateKey,
-        trustedOwners: {
-          store: trustedOwnerStore,
-          pinnedKeys,
-          pinnedSource: 'operator',
-        },
-        bootstrapPeers: { store: bootstrapPeerStore },
-        enrolledMachines: { store: enrolledMachineStore },
-        strandNetworkState: { store: strandNetworkStateStore },
-        controlNetwork: config.controlNetwork,
-        profile: config.profile,
-        // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
-        // CLI node (every cadre-host donated node included) hosts a replica of every strand its
-        // party publishes; the only opt-out here is `strandFilter`. If an operator needs
-        // announce-only on an always-on node, surface the field in the CLI config.
-        strandFilter: config.strandFilter,
-        strandReactivity: config.strandReactivity,
-        storage: resolveStorageConfig(config.storage),
-        network: config.network,
-        hibernation: config.hibernation,
-        strandWatchInterval: config.strandWatchInterval,
-        seedTrustPolicy,
-        // The node turns its own seed listener on, so `--listen-for-seeds` is redundant here.
-        ...(claimSecret !== undefined ? { claim: { secret: claimSecret } } : {}),
-        // Platform push credentials provisioned by the orchestrator (cadre-host
-        // writes the `push` block into cadre.json; cadre-provider injects it via
-        // CADRE_PUSH). This CLI is the Node host, so it constructs the
-        // `PushNotifier` from the Node-only `@serfab/cadre-core/push-node`
-        // subpath (keeping node:crypto/node:http2 out of the cross-platform core
-        // graph) and injects the instance; CadreNode owns its lifecycle.
-        push: config.push
-          ? {
-              notifier: createPushNotifier(config.push),
-              cooldownMs: config.push.cooldownMs,
-              debounceMs: config.push.debounceMs,
-            }
-          : undefined,
-      };
-
-      const node = new CadreNode(nodeConfig);
-
-      // Set up event handlers
-      node.on('control:connected', () => {
-        console.log('✓ Connected to control network');
-        console.log(`  Party ID: ${config.controlNetwork.partyId}`);
-        console.log(`  Peer ID:  ${node.peerId?.toString()}`);
-      });
-
-      node.on('control:disconnected', () => {
-        console.log('✗ Disconnected from control network');
-      });
-
-      node.on('claim:accepted', ({ ownerKey }) => {
-        console.log(`✓ Claimed by owner ${ownerKey.slice(0, 8)}`);
-      });
-
-      // A control write the retry funnel gave up on. This is a long-running headless
-      // process, so it is the operator's only view of it: the node itself only escalates
-      // the one case whose consequence it can measure (its own address record going
-      // stale), and the funnel's own trace is a `debug` line nothing enables by default.
-      // A BACKGROUND write — the self-address republish, the replication drains — has no
-      // caller to reject to either, so without this line it is lost in silence.
-      node.on('control:write-abandoned', ({ label, reason, attemptsMade, attemptsAllowed, error }) => {
-        const detail = error instanceof Error ? error.message : String(error);
-        console.warn(`⚠ Control write abandoned [${label ?? 'unlabelled'}] `
-          + `after ${attemptsMade}/${attemptsAllowed} attempt(s) (${reason}): ${detail}`);
-      });
-
-      node.on('strand:started', ({ strandId }) => {
-        console.log(`✓ Strand started: ${strandId}`);
-      });
-
-      node.on('strand:stopped', ({ strandId }) => {
-        console.log(`• Strand stopped: ${strandId}`);
-      });
-
-      node.on('strand:error', ({ strandId, error }) => {
-        console.error(`✗ Strand error (${strandId}): ${error.message}`);
-      });
-
-      node.on('strand:idle', ({ strandId }) => {
-        log('Strand idle: %s', strandId);
-      });
-
-      node.on('strand:hibernating', ({ strandId }) => {
-        log('Strand hibernating: %s', strandId);
-      });
-
-      // Set up seed event handlers
-      node.on('seed:received', ({ partyId, peerId }) => {
-        console.log(`✓ Seed received from ${peerId} for party ${partyId}`);
-      });
-
-      node.on('seed:applied', ({ partyId, peersAdded }) => {
-        console.log(`✓ Seed applied: ${peersAdded} peers added for party ${partyId}`);
-      });
-
-      node.on('seed:error', ({ partyId, error }) => {
-        console.error(`✗ Seed error (${partyId}): ${error}`);
-      });
+      // The current node. Reassigned once, by the restart into the claimed party below; the
+      // servers and the shutdown handler go through this variable so they follow it.
+      let node = claimOnRecord
+        ? await buildClaimedNode(config, claimOnRecord, claimConfig)
+        : await buildConfiguredNode(config, pinnedKeys, seedTrustPolicy, claimConfig);
 
       // Start health/metrics servers if enabled
       let healthServer: HealthServer | null = null;
@@ -420,7 +549,7 @@ export const startCommand = new Command('start')
           metricsPort,
           profile: config.profile,
           seedToken,
-          claimConfigured: claimSecret !== undefined,
+          claim: () => ({ secretConfigured: claimSecret !== undefined, claimedBy: claimRecord?.ownerKey }),
         });
         healthServer.attach(node);
         await healthServer.start();
@@ -452,6 +581,37 @@ export const startCommand = new Command('start')
 
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+
+      /**
+       * Replace the node with one built for the claimed party — the path the next start takes
+       * from the record, taken now so the owner's cadre gets its node without a process restart.
+       * The servers stay up and are re-pointed; the listen addresses are rebound. A restart that
+       * fails (a store that will not open, a port that will not rebind) exits non-zero rather
+       * than leaving a process with no node in it: the embedder's supervisor respawns it, and
+       * that start takes the claimed path from the record.
+       */
+      const restartIntoClaimedParty = async (accepted: NodeClaimRecord): Promise<void> => {
+        console.log(`• Restarting into party ${accepted.partyId}`);
+        await node.stop();
+        node = await buildClaimedNode(config, accepted, claimConfig);
+        healthServer?.attach(node);
+        adminServer?.attach(node);
+        await node.start();
+        console.log(`✓ Restarted into party ${accepted.partyId} as a node claimed by owner ${accepted.ownerKey.slice(0, 8)}`);
+      };
+      if (claimSecret !== undefined && !claimOnRecord) {
+        const unclaimedNode = node;
+        unclaimedNode.on('claim:accepted', (accepted) => {
+          afterClaimSeedSettles(unclaimedNode, accepted.partyId, () => {
+            restartIntoClaimedParty(accepted).catch((err: unknown) => {
+              console.error('✗ Failed to restart into the claimed party; exiting so the supervisor restarts from the claim record:',
+                err instanceof Error ? err.message : err);
+              log('Restart error details: %o', err);
+              process.exit(1);
+            });
+          });
+        });
+      }
 
       // Start the node
       await node.start();
@@ -570,4 +730,3 @@ export const startCommand = new Command('start')
       process.exit(1);
     }
   });
-

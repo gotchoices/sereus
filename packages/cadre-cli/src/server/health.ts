@@ -40,6 +40,18 @@ function countStrandStatuses(strands: Map<string, StrandInstance>): Record<'sync
   return counts;
 }
 
+/**
+ * `claimed` as soon as a claim is on record, whatever the node's running state. The record is
+ * written only after the claim proof verified and before the claimant is acknowledged, so it
+ * never names a claim nobody made; and it is kept across the in-process restart into the
+ * claimed party, so a poller never sees `claimed` flip back to `awaiting` while the node
+ * object is replaced. `awaiting` is a secret with no record; `none` is neither.
+ */
+function claimState(claim: ClaimFacts): ClaimState {
+  if (claim.claimedBy !== undefined) return 'claimed';
+  return claim.secretConfigured ? 'awaiting' : 'none';
+}
+
 /** Maximum seed request body size (256 KiB) — seeds are small. Mirrors AdminServer. */
 const MAX_SEED_BODY_BYTES = 256 * 1024;
 
@@ -71,15 +83,31 @@ export interface HealthServerOptions {
    */
   seedToken?: string;
   /**
-   * Whether the node was started with a claim secret (`CADRE_CLAIM_SECRET`), which decides
-   * whether `/status` reports `node.claim` as `none` or reads it from the node.
+   * What `cadre start` knows about the node's claim, read on every `/status` so a claim
+   * accepted in this process shows at once. Absent: no claim secret, `node.claim` is `none`.
    */
-  claimConfigured?: boolean;
+  claim?: () => ClaimFacts;
 }
 
 /**
- * Whether the node belongs to anybody yet: `none` without a claim secret, else `awaiting`
- * until a claim is accepted and `claimed` after (a restarted claimed node included).
+ * The two facts `/status`'s claim fields are derived from. A function of the start command's
+ * live state rather than a snapshot, because both change while the process runs: the record
+ * is written when a claim is accepted, and the node object itself is replaced by the restart
+ * into the claimed party that follows (`start.ts`).
+ */
+export interface ClaimFacts {
+  /** `CADRE_CLAIM_SECRET` is set: a node with no claim on record is waiting to be claimed. */
+  secretConfigured: boolean;
+  /**
+   * The owner key (base64url) of the claim on record — read from `claim.json` at start, or
+   * written by this process's claim policy. Present means claimed.
+   */
+  claimedBy?: string;
+}
+
+/**
+ * Whether the node belongs to anybody yet: `none` without a claim secret, `awaiting` with one
+ * and no claim on record, `claimed` once a claim is on record (a restarted claimed node included).
  */
 export type ClaimState = 'awaiting' | 'claimed' | 'none';
 
@@ -109,6 +137,11 @@ export interface HealthStatus {
     connectionPaths: Omit<ConnectionPathSummary, 'paths'>;
     /** cadre-host's join flow polls this to learn when its node has been claimed. */
     claim: ClaimState;
+    /**
+     * The owner key (base64url) the claim on record anchored; present iff `claim` is
+     * `claimed`. With `partyId`, what cadre-host shows as "claimed by <key> into cadre <party>".
+     */
+    claimedBy?: string;
   };
 }
 
@@ -153,7 +186,7 @@ export class HealthServer {
       metricsPort: options.metricsPort ?? 9090,
       profile: options.profile ?? '',
       seedToken: options.seedToken ?? '',
-      claimConfigured: options.claimConfigured ?? false,
+      claim: options.claim ?? (() => ({ secretConfigured: false })),
     };
   }
 
@@ -204,6 +237,7 @@ export class HealthServer {
     // Counts only — drop the per-connection `paths[]` array to keep /status cheap.
     const { paths: _paths, ...connectionPaths } =
       this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
+    const claim = this.options.claim();
 
     return {
       status: isRunning ? 'healthy' : 'starting',
@@ -218,21 +252,10 @@ export class HealthServer {
         profile: this.options.profile,
         strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
-        claim: this.claimState(),
+        claim: claimState(claim),
+        ...(claim.claimedBy !== undefined ? { claimedBy: claim.claimedBy } : {}),
       },
     };
-  }
-
-  /**
-   * `isAwaitingClaim()` is false until `start()` has built the node's trusted-owner anchor, so
-   * a node still starting (or already stopping) reads as `awaiting`, never `claimed`: a poller told `claimed` early
-   * would report a claim nobody made, while a claimed node that reads `awaiting` for its
-   * start-up refuses any other claimant all the same.
-   */
-  private claimState(): ClaimState {
-    if (!this.options.claimConfigured) return 'none';
-    const node = this.node;
-    return node?.isRunning && !node.isAwaitingClaim() ? 'claimed' : 'awaiting';
   }
 
   private getMetrics(): MetricsData {

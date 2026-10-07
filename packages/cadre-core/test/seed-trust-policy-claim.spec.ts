@@ -3,6 +3,7 @@ import { randomBytes } from '@optimystic/quereus-plugin-crypto';
 import { claimSecretTrustPolicy, type SeedTrustContext } from '../src/seed-trust-policy.js';
 import { claimProof, parseClaimSecret } from '../src/claim-proof.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
+import type { NodeClaimRecord } from '../src/types.js';
 
 const PARTY = 'party-claim';
 const NODE = '12D3KooWClaimedNode';
@@ -86,7 +87,35 @@ describe('claimSecretTrustPolicy', () => {
 
 		expect(trust).toHaveBeenCalledTimes(1);
 		expect(onClaimed).toHaveBeenCalledTimes(1);
-		expect(onClaimed).toHaveBeenCalledWith(OWNER_A);
+		expect(onClaimed).toHaveBeenCalledWith({ partyId: PARTY, ownerKey: OWNER_A });
+	});
+
+	it('the claim is recorded, party included, before the claimant is anchored; a record failure leaves the node unclaimed', async () => {
+		const secret = freshSecret();
+		const store = new MemoryTrustedOwnerStore(PARTY);
+		const calls: string[] = [];
+		const realTrust = store.trust.bind(store);
+		const trust = vi.spyOn(store, 'trust').mockImplementation((key, source) => { calls.push('anchor'); return realTrust(key, source); });
+		let recordFails = true;
+		const recordClaim = vi.fn(async (claim: NodeClaimRecord) => {
+			calls.push(`record:${claim.partyId}:${claim.ownerKey}`);
+			if (recordFails) throw new Error('disk full');
+		});
+		const onClaimed = vi.fn();
+		const policy = claimSecretTrustPolicy({ secret, trustedOwners: store, recordClaim, onClaimed });
+
+		// The record is the party's only home, so a record that cannot be written refuses
+		// the claim before anything is anchored — and clears the latch, so a claim can follow.
+		const refused = await policy.evaluate(contextFor(store, OWNER_A, claimProof(secret, NODE, OWNER_A, DIGEST)));
+		expect(refused).toMatchObject({ trusted: false, code: 'claim-not-persisted' });
+		expect(calls).toEqual([`record:${PARTY}:${OWNER_A}`]);
+		expect(trust).not.toHaveBeenCalled();
+		expect(onClaimed).not.toHaveBeenCalled();
+
+		recordFails = false;
+		expect(await policy.evaluate(contextFor(store, OWNER_B, claimProof(secret, NODE, OWNER_B, DIGEST)))).toEqual({ trusted: true });
+		expect(calls).toEqual([`record:${PARTY}:${OWNER_A}`, `record:${PARTY}:${OWNER_B}`, 'anchor']);
+		expect(onClaimed).toHaveBeenCalledWith({ partyId: PARTY, ownerKey: OWNER_B });
 	});
 
 	it('a claim whose persist fails is rolled back: claim-not-persisted, nothing anchored, and the node can still be claimed', async () => {

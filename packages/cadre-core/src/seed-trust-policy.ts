@@ -35,7 +35,7 @@
  * anything (see {@link claimSecretTrustPolicy}).
  */
 import debug from 'debug';
-import type { SeedRefusalCode } from './types.js';
+import type { NodeClaimRecord, SeedRefusalCode } from './types.js';
 import type { TrustSource, TrustedOwnerStore } from './trusted-owner-store.js';
 import { verifyClaimProof } from './claim-proof.js';
 
@@ -186,8 +186,17 @@ export interface ClaimSecretTrustPolicyOptions {
    * written to a different store would never be seen there.
    */
   trustedOwners: TrustedOwnerStore;
-  /** Called once, after the claim is durable, with the owner key that claimed the node. */
-  onClaimed?: (signerKey: string) => void;
+  /**
+   * Record the claim — the seed's party and the claimant's key — BEFORE the claimant is
+   * anchored, and await its durability (`CadreNodeConfig.claim.record`). The party is the
+   * one fact the anchor cannot hold: an unclaimed node's own party is a placeholder, and
+   * the claim seed is the first thing to name the real one. A rejection refuses the claim
+   * `claim-not-persisted` with nothing anchored. Optional: a policy with nothing to record
+   * only anchors.
+   */
+  recordClaim?: (claim: NodeClaimRecord) => Promise<void>;
+  /** Called once, after the claim is durable, with the party and owner key that claimed the node. */
+  onClaimed?: (claim: NodeClaimRecord) => void;
   /** Failed proofs tolerated per window; default {@link DEFAULT_CLAIM_FAILURE_LIMIT}. */
   failureLimit?: number;
   /** The window those failures are counted over (ms); default {@link DEFAULT_CLAIM_FAILURE_WINDOW_MS}. */
@@ -213,10 +222,13 @@ export interface ClaimSecretTrustPolicyOptions {
  *  4. No `P` → refused, `claim-proof-invalid`.
  *  5. Too many failed proofs recently → refused, `claim-rate-limited`, without verifying.
  *  6. `P` does not verify → one failure counted, refused, `claim-proof-invalid`.
- *  7. Latch `K`, then `trustedOwners.trust(K, 'claim')` and await it. Durable → trusted,
- *     with no `anchorAs` (the policy anchored the key itself). Persist rejected → remove
- *     `K` from the anchor, clear the latch, refuse `claim-not-persisted`; the claimant
- *     may retry.
+ *  7. Latch `K`, then `recordClaim({ partyId, ownerKey: K })` and await it. Rejected →
+ *     clear the latch, refuse `claim-not-persisted` with nothing anchored.
+ *  8. `trustedOwners.trust(K, 'claim')` and await it. Durable → trusted, with no
+ *     `anchorAs` (the policy anchored the key itself). Persist rejected → remove `K`
+ *     from the anchor, clear the latch, refuse `claim-not-persisted`; the claimant may
+ *     retry. The record stands: an embedder that starts from its record comes up
+ *     claimed by `K`, and `K`'s retry is accepted at step 1.
  *
  * The anchor write is the commit point. `SeedBootstrapService.anchorAcceptedSigner`
  * deliberately logs and continues when a persist fails, which is right for a pin that
@@ -224,12 +236,17 @@ export interface ClaimSecretTrustPolicyOptions {
  * node unclaimed again after a restart with nobody told. Keeping the latch, the anchor
  * write and the rollback in one object is what lets the refusal be definite.
  *
+ * The record goes first because it names the party, which the anchor does not. A crash
+ * between the two leaves a record and an empty anchor, which the embedder's next start
+ * repairs (above); the other order would leave an anchored node that serves its
+ * placeholder party forever with no record of the real one.
+ *
  * The failure limit is node-wide, not per peer: libp2p peer ids are free to mint, so a
  * per-peer limit is bypassed by reconnecting. With a 256-bit secret guessing is
  * infeasible either way; the limit bounds CPU and log noise, not security.
  */
 export function claimSecretTrustPolicy(options: ClaimSecretTrustPolicyOptions): SeedTrustPolicy {
-  const { secret, trustedOwners, onClaimed } = options;
+  const { secret, trustedOwners, recordClaim, onClaimed } = options;
   const failureLimit = options.failureLimit ?? DEFAULT_CLAIM_FAILURE_LIMIT;
   const failureWindowMs = options.failureWindowMs ?? DEFAULT_CLAIM_FAILURE_WINDOW_MS;
   const now = options.now ?? (() => Date.now());
@@ -255,16 +272,24 @@ export function claimSecretTrustPolicy(options: ClaimSecretTrustPolicyOptions): 
     return failureTimes.length >= failureLimit;
   }
 
-  async function anchorClaim(signerKey: string): Promise<SeedTrustDecision> {
+  /** Steps 7 and 8: record the claim, then anchor the claimant; either failure refuses. */
+  async function anchorClaim(claim: NodeClaimRecord): Promise<SeedTrustDecision> {
     try {
-      await trustedOwners.trust(signerKey, 'claim');
+      await recordClaim?.(claim);
     } catch (error) {
-      log('claim anchor persist failed; rolling the claim back: %o', error);
-      await rollbackClaim(signerKey);
+      log('claim record failed; the node stays unclaimed: %o', error);
+      latchedSigner = undefined;
       return refuse('claim-not-persisted', 'This node could not durably record the claim; it remains unclaimed, retry');
     }
-    log('node claimed by signer %s', signerKey);
-    notifyClaimed(signerKey);
+    try {
+      await trustedOwners.trust(claim.ownerKey, 'claim');
+    } catch (error) {
+      log('claim anchor persist failed; rolling the claim back: %o', error);
+      await rollbackClaim(claim.ownerKey);
+      return refuse('claim-not-persisted', 'This node could not durably record the claim; it remains unclaimed, retry');
+    }
+    log('node claimed by signer %s into party %s', claim.ownerKey, claim.partyId);
+    notifyClaimed(claim);
     return { trusted: true };
   }
 
@@ -285,9 +310,9 @@ export function claimSecretTrustPolicy(options: ClaimSecretTrustPolicyOptions): 
   }
 
   /** The claim is durable whatever the callback does; a throwing embedder must not undo it. */
-  function notifyClaimed(signerKey: string): void {
+  function notifyClaimed(claim: NodeClaimRecord): void {
     try {
-      onClaimed?.(signerKey);
+      onClaimed?.(claim);
     } catch (error) {
       log('onClaimed callback threw; the claim stands: %o', error);
     }
@@ -318,9 +343,11 @@ export function claimSecretTrustPolicy(options: ClaimSecretTrustPolicyOptions): 
       }
       // Everything above ran synchronously: this is the first point the policy yields,
       // and the latch is set before it. Two claimants racing with valid proofs therefore
-      // cannot both reach the anchor write; the second sees the latch at step 2.
+      // cannot both reach the record or the anchor write; the second sees the latch at
+      // step 2. The party is the seed's: signed by the claimant, and the only statement of
+      // which cadre this node now belongs to.
       latchedSigner = ctx.signerKey;
-      return anchorClaim(ctx.signerKey);
+      return anchorClaim({ partyId: ctx.partyId, ownerKey: ctx.signerKey });
     },
   };
 }

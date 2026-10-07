@@ -858,11 +858,14 @@ export class SeedBootstrapService {
       return seedRejected('Service not initialized');
     }
 
-    // NOTE: `seed.partyId` is never checked against `config.partyId`. Nothing
-    // downstream reads it — trust is keyed on `signerKey` vs the anchor, and the
-    // anchor a stray-party seed could write into belongs to THIS party, which
-    // only a caller-supplied pin for that signer can reach. If applying a seed
-    // ever branches on its partyId (or the anchor becomes multi-party), reject a
+    // NOTE: `seed.partyId` is never checked against `config.partyId`. Trust is keyed on
+    // `signerKey` vs the anchor, and the anchor a stray-party seed could write into
+    // belongs to THIS party, which only a caller-supplied pin for that signer can reach.
+    // The one reader of the seed's party is the claim policy, which records it as the
+    // party the node now serves (`CadreNodeConfig.claim.record`): a mismatch is still not
+    // rejected there because an unclaimed node's own party is a placeholder, and the
+    // claim seed is the first thing to name the real one. If any other path ever
+    // branches on the seed's partyId (or the anchor becomes multi-party), reject a
     // mismatch here instead.
     log('Applying seed for party: %s', seed.partyId);
 

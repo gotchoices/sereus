@@ -120,7 +120,7 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 			controlNetwork: { partyId, bootstrapNodes: [] },
 			profile: 'transaction',
 			trustedOwners: { store: injected, pinnedKeys: [pinned] },
-			claim: { secret: randomBytes(256, 'base64url') as string },
+			claim: { secret: randomBytes(256, 'base64url') as string, record: async () => {} },
 		});
 		await expect(node.start()).rejects.toThrow(/`claim` and `trustedOwners.pinnedKeys`/);
 		expect(injected.all().size).toBe(0);

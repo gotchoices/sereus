@@ -13,32 +13,37 @@
  *   itself: the requester of `cadre-host-donation-phone-requester.integration.ts`.
  * - **The QR payload** — the node's peer id and addresses, read here from its `/status`, plus
  *   the secret. cadre-host's join flow will show these as a QR code
- *   (`tickets/plan/3-cadre-host-join-a-cadre.md`); here the test hands them over.
+ *   (`cadre-host-hosted-nodes-join-by-qr`); here the test hands them over.
  *
  * What the steps pin, in order, each its own `it` so a failure names the step:
  *
- *   1. the node is up and `/status` reports `claim: 'awaiting'`; the claimant is undialable
+ *   1. the node is up under the placeholder party and `/status` reports `claim: 'awaiting'`;
+ *      the claimant is undialable
  *   2. a wrong secret is refused as `claim-proof-invalid`, the node is still unclaimed, and
  *      the claimant kept no `CadrePeer` row and no dial target for it
- *   3. the right secret claims it: `/status` says `claimed`, the claimant DIALS IN (outbound
- *      on its side, a WebSocket control connection on the node's), the node's signed record
- *      reaches the claimant, and the claimant's row is in the node's authorized set
+ *   3. the right secret claims it: `/status` says `claimed`, the node records the claim
+ *      (`claim.json`, without the secret) and restarts in-process into the claimant's party,
+ *      `/status` then names that party and the claimant as `claimedBy`, the claimant DIALS IN
+ *      (outbound on its side, a WebSocket control connection on the node's), the node's
+ *      signed record reaches the claimant, and the claimant's row is in the node's
+ *      authorized set
  *   4. an owner of another cadre presenting the same secret is refused as `already-claimed`
  *   5. the first owner claiming again is accepted, leaving one row and one dial target
  *   6. the node restarted on the same workdir and environment reads `claimed` with no
- *      further claim, and the claimant reconnects with no further call
+ *      further claim, serves the claimant's party from the record, and the claimant
+ *      reconnects with no further call
  *
  * The child is spawned directly, not through cadre-host's `HostProcessOrchestrator`: that
- * orchestrator has no way to hand a child a claim secret yet (`cadre-host-join-a-cadre` adds
- * one). It runs the `storage` profile, as cadre-host's nodes do, binds `/ws` on loopback only,
- * and keeps its identity file, file storage and node-state directory in one workdir, so step 6
- * restarts the same node. Its loopback admin channel (`--admin-port`) is the only window onto
- * its authorized set from outside the process.
+ * orchestrator has no way to hand a child a claim secret yet (`cadre-host-hosted-nodes-join-by-qr`
+ * adds one). It runs the `storage` profile, as cadre-host's nodes do, binds `/ws` on loopback
+ * only, and keeps its identity file, file storage and node-state directory in one workdir, so
+ * step 6 restarts the same node. Its loopback admin channel (`--admin-port`) is the only window
+ * onto its authorized set from outside the process.
  *
- * The child's config names the claimant's party. A claim decides who owns the node, not which
- * party's control network it serves, so a node configured for another party would accept the
- * claim and then never sync. The QR payload carries no party id; how cadre-host learns it is
- * `cadre-host-join-a-cadre`'s question.
+ * The child's config names the placeholder party `unclaimed`, as cadre-host's will: nobody
+ * can know the party before the claim, so the claim seed carries it, the node records it
+ * and restarts into it (cadre-cli README → Waiting to be claimed), and step 6's restart on
+ * the same workdir starts from that record.
  *
  * Step 3's node-to-claimant half rests on the claimed node publishing its own address record
  * once the row its owner wrote after the claim reaches it by replication. It does that on its
@@ -90,6 +95,10 @@ const RECONCILE_MS = 2_000;
 const STOP_TIMEOUT_MS = 10_000;
 const LOG_FILE = 'node.log';
 const LOG_TAIL_LINES = 40;
+/** The party an unclaimed node's config names; the claim replaces it. */
+const PLACEHOLDER_PARTY = 'unclaimed';
+/** Where `cadre start` records the claim, in the node-state directory (the workdir here). */
+const CLAIM_RECORD_FILE = 'claim.json';
 
 /** One claimable `cadre-cli` node: everything a restart reuses, plus its current process. */
 interface ClaimableNode {
@@ -172,27 +181,28 @@ async function readStatus(node: ClaimableNode): Promise<HealthStatus> {
 }
 
 /**
- * Wait until the node is running and `/status` reports `state`. A child that exits first (a
- * refused start, an unknown `CADRE_*` name) fails at once with the tail of its log, rather
- * than after the whole budget with only a timeout to show for it.
+ * Wait until the node is running and `/status` reports `claim` and `partyId`. A child that
+ * exits first (a refused start, an unknown `CADRE_*` name) fails at once with the tail of its
+ * log, rather than after the whole budget with only a timeout to show for it.
  */
-async function waitForClaimState(node: ClaimableNode, state: ClaimState): Promise<HealthStatus> {
+async function waitForStatus(node: ClaimableNode, want: { claim: ClaimState; partyId: string }): Promise<HealthStatus> {
+  const wanted = `claim '${want.claim}', party '${want.partyId}'`;
   const deadline = Date.now() + STARTUP_MS;
   let last = 'no answer yet';
   while (Date.now() < deadline) {
     if (!node.process || !isChildUp(node.process)) {
-      throw new Error(`cadre-cli exited (code ${node.process?.exitCode}) before /status reported claim '${state}':\n${logTail(node)}`);
+      throw new Error(`cadre-cli exited (code ${node.process?.exitCode}) before /status reported ${wanted}:\n${logTail(node)}`);
     }
     try {
       const status = await readStatus(node);
-      if (status.status === 'healthy' && status.node.claim === state) return status;
-      last = `status '${status.status}', claim '${status.node.claim}'`;
+      if (status.status === 'healthy' && status.node.claim === want.claim && status.node.partyId === want.partyId) return status;
+      last = `status '${status.status}', claim '${status.node.claim}', party '${status.node.partyId}'`;
     } catch (err) {
       last = err instanceof Error ? err.message : String(err);
     }
     await sleep(500);
   }
-  throw new Error(`Timeout waiting for /status to report claim '${state}' (last: ${last}):\n${logTail(node)}`);
+  throw new Error(`Timeout waiting for /status to report ${wanted} (last: ${last}):\n${logTail(node)}`);
 }
 
 /** Is `peerId` in the node's AUTHORIZED member set, by its loopback admin channel. */
@@ -239,7 +249,7 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
 
   beforeAll(async () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'node-claim-by-phone-'));
-    node = await prepareClaimableNode(join(tmpRoot, 'node'), partyId, claimSecret);
+    node = await prepareClaimableNode(join(tmpRoot, 'node'), PLACEHOLDER_PARTY, claimSecret);
   });
 
   afterAll(async () => {
@@ -252,9 +262,10 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
 
   it('step 1: the node starts waiting to be claimed, and the claimant is undialable', async () => {
     launch(node);
-    const status = await waitForClaimState(node, 'awaiting');
+    const status = await waitForStatus(node, { claim: 'awaiting', partyId: PLACEHOLDER_PARTY });
     expect(status.node.peerId).toBe(node.peerId);
-    expect(status.node.partyId).toBe(partyId);
+    expect(status.node.claimedBy).toBeUndefined();
+    expect(existsSync(join(node.workdir, CLAIM_RECORD_FILE))).toBe(false);
     nodeAddrs = status.multiaddrs;
     expect(nodeAddrs.some((a) => a.includes('/ws'))).toBe(true);
 
@@ -285,10 +296,22 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     expect(claimantPeerStore.all().has(node.peerId)).toBe(false);
   }, OP_MS);
 
-  it('step 3: the right secret claims the node, the claimant DIALS IN, and rows cross both ways', async () => {
+  it('step 3: the right secret claims the node, which restarts into the claimant\'s party, the claimant DIALS IN, and rows cross both ways', async () => {
     await claimant!.claimNode({ peerId: node.peerId, multiaddrs: nodeAddrs, secret: claimSecret });
-    // The node anchors the claimant before it acknowledges the seed, so no wait is needed.
+    // The node records the claim before it acknowledges the seed, so `claimed` needs no wait
+    // and never flips back while the node restarts into the party. The party itself does
+    // need one: the restart waits for the seed to be handled, then rebuilds the node.
     expect((await readStatus(node)).node.claim).toBe('claimed');
+    const claimed = await waitForStatus(node, { claim: 'claimed', partyId });
+    expect(claimed.node.claimedBy).toBe(claimantOwnerKey);
+    expect(claimed.node.peerId).toBe(node.peerId);
+
+    // The record names the party and the owner, never the secret.
+    const record = readFileSync(join(node.workdir, CLAIM_RECORD_FILE), 'utf8');
+    expect(JSON.parse(record)).toMatchObject({ version: 1, partyId, ownerKey: claimantOwnerKey });
+    expect(record).not.toContain(claimSecret);
+    expect(readLog(node)).toContain(`✓ Claimed by owner ${claimantOwnerKey.slice(0, 8)} into party ${partyId}`);
+    expect(readLog(node)).toContain(`✓ Restarted into party ${partyId} as a node claimed by owner ${claimantOwnerKey.slice(0, 8)}`);
 
     await waitUntil(() => hasOutboundTo(claimant!, node.peerId), {
       timeoutMs: OP_MS,
@@ -318,9 +341,8 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     }, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: 'the node’s signed record reaches the claimant' });
     expect(resolved.some((a) => a.includes('/ws'))).toBe(true);
 
-    expect(readLog(node)).toContain(`✓ Claimed by owner ${claimantOwnerKey.slice(0, 8)}`);
     expect(claimant!.getMultiaddrs()).toEqual([]);
-  }, 2 * STARTUP_MS + 2 * OP_MS);
+  }, 3 * STARTUP_MS + 2 * OP_MS);
 
   it('step 4: an owner of another cadre presenting the same secret is refused as already-claimed', async () => {
     const built = await buildPhoneOwner(`node-claim-rival-${Math.random().toString(36).slice(2)}`);
@@ -360,8 +382,13 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
 
     await stopChildProcess(node.process!, STOP_TIMEOUT_MS);
     launch(node);
-    await waitForClaimState(node, 'claimed');
-    expect(readLog(node)).toContain('• Already claimed');
+    // The restarted process reads `claim.json` first: the claimant's party, not the config's
+    // placeholder, and the claimant as owner, with no further claim.
+    const restarted = await waitForStatus(node, { claim: 'claimed', partyId });
+    expect(restarted.node.claimedBy).toBe(claimantOwnerKey);
+    expect(readLog(node)).toContain(`• Claimed by owner ${claimantOwnerKey.slice(0, 8)} into party ${partyId} `
+      + `(controlNetwork.partyId '${PLACEHOLDER_PARTY}' is a placeholder and is ignored)`);
+    expect(readLog(node)).toContain('• Already claimed; CADRE_CLAIM_SECRET is ignored');
 
     // NOTE: does not pin WHICH dial source the claimant used: the dial target `claimNode`
     // retained and the node's fresh signed record both survive into this step, as in the

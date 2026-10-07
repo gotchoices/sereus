@@ -949,10 +949,26 @@ export interface CadreNodeConfig {
    * `initializeSeedBootstrap` (an owner key) refuses on such a node: a hosted node never
    * holds an owner key. A claimed node restarted with this still set ignores it (its
    * anchor is non-empty), so the operator need not remove it.
+   *
+   * The claim also decides which party the node serves: `controlNetwork.partyId` on an
+   * unclaimed node is a placeholder, and the real party is the claim seed's. The node
+   * itself keeps serving the placeholder for the rest of the process — everything it
+   * holds is keyed on the party it started with — so `record` is where the embedder
+   * learns the claimed party, and it is the embedder's job to restart into it.
    */
   claim?: {
     /** The one-time claim secret, base64url of 32 bytes. Never written to replicated state or logs. */
     secret: string;
+    /**
+     * Record the claim durably: called with the seed's party and the claimant's key after
+     * the proof verifies and BEFORE the claimant is anchored, and awaited. A rejection
+     * refuses the claim `claim-not-persisted` with nothing anchored, so the claimant
+     * retries. Record first, anchor second: a crash between the two leaves a record and
+     * an empty anchor, and an embedder that starts from its record (cadre-cli does)
+     * then comes up claimed by that owner, who is accepted idempotently when it retries.
+     * The other order would leave an anchored node with no record of its party.
+     */
+    record: (claim: NodeClaimRecord) => Promise<void>;
   };
 
   /**
@@ -1749,12 +1765,16 @@ export interface CadreNodeEvents {
   'seed:error': { partyId: string; error: string };
   /**
    * Emitted once on a node started with `CadreNodeConfig.claim`, when a seed carrying a
-   * valid claim proof has durably anchored its signer as this node's owner. Fires
-   * BEFORE the seed's peers are merged and its owners dialed, so it precedes that seed's
-   * `seed:applied`. `CadreNode.isAwaitingClaim` is the matching predicate for a reader
-   * that subscribed too late to see the event.
+   * valid claim proof has been recorded (`claim.record`) and has durably anchored its
+   * signer as this node's owner. Carries the claim's party beside the owner key: the
+   * party this node should serve from now on, which its own config did not know. Fires
+   * BEFORE the seed is acknowledged to the claimant, its peers merged and its owners
+   * dialed, so it precedes that seed's `seed:applied`; an embedder that restarts into
+   * the claimed party on this event should wait for that `seed:applied` (or `seed:error`)
+   * so the acknowledgement is not lost with the node. `CadreNode.isAwaitingClaim` is the
+   * matching predicate for a reader that subscribed too late to see the event.
    */
-  'claim:accepted': { ownerKey: string };
+  'claim:accepted': NodeClaimRecord;
 }
 
 // ============================================================================
@@ -2174,6 +2194,21 @@ export type SeedRefusalCode =
   | 'claim-proof-invalid'
   | 'claim-rate-limited'
   | 'claim-not-persisted';
+
+/**
+ * What a claim settles for the node that accepted it: the party it serves from now on
+ * and the owner it belongs to. Both come from the claim seed — the party is the seed's
+ * `partyId`, the owner the key that signed it — because an unclaimed node's own
+ * configured party is a placeholder; nobody could know the real one before the claim.
+ * Handed to `CadreNodeConfig.claim.record` before the owner is anchored, and carried by
+ * `claim:accepted`.
+ */
+export interface NodeClaimRecord {
+  /** The party the claim seed named: the cadre this node now serves. */
+  partyId: string;
+  /** The claimant's ed25519 owner key (base64url): the key the claim anchors. */
+  ownerKey: string;
+}
 
 /**
  * Acknowledgment message from new node to instigator.

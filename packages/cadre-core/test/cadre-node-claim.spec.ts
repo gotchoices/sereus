@@ -40,7 +40,7 @@ describe('CadreNode admission while awaiting a claim', () => {
 	}
 
 	it('admits a stranger\'s connection, refuses its streams and reservations, and admits streams once claimed', async () => {
-		const { node, anchor, predicates } = wire({ secret: randomBytes(256, 'base64url') as string });
+		const { node, anchor, predicates } = wire({ secret: randomBytes(256, 'base64url') as string, record: async () => {} });
 		expect(node.isAwaitingClaim()).toBe(true);
 
 		expect(await predicates.admitInboundControlConnection(STRANGER)).toBe('admit');

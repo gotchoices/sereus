@@ -3,6 +3,7 @@ import { CadreNode, type CadreNodeConfig, type StorageConfig } from '@serfab/cad
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
+import { partyOnRecord } from './claim-record.js';
 
 const log = debug('cadre:cli:node-session');
 
@@ -55,11 +56,15 @@ export function resolveStorageConfig(config: ResolvedConfig['storage']): Storage
  * store, seed-trust policy, or push notifier. Those exist to shape a node's long-running
  * behaviour (which seeds it accepts, whom it wakes); a command that connects, performs one
  * control-database operation and exits never reaches them.
+ *
+ * `partyId` is the party the node serves, which on a claimed node is the claim record's rather
+ * than the config's placeholder (`partyOnRecord`); the default is for callers that have no
+ * node-state directory to consult.
  */
-export function oneShotNodeConfig(config: ResolvedConfig): CadreNodeConfig {
+export function oneShotNodeConfig(config: ResolvedConfig, partyId: string = config.controlNetwork.partyId): CadreNodeConfig {
   return {
     privateKey: config.privateKey,
-    controlNetwork: config.controlNetwork,
+    controlNetwork: { ...config.controlNetwork, partyId },
     profile: config.profile,
     strandFilter: config.strandFilter,
     storage: resolveStorageConfig(config.storage),
@@ -86,7 +91,9 @@ export async function withConnectedNode(
   timeoutMs: number = DEFAULT_CONNECT_TIMEOUT_MS
 ): Promise<void> {
   const config = await resolveConfig(configPath);
-  const node = new CadreNode(oneShotNodeConfig(config));
+  // A claimed node serves the party on record, not its config's placeholder (`claim-record.ts`).
+  const { partyId } = await partyOnRecord(config);
+  const node = new CadreNode(oneShotNodeConfig(config, partyId));
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const connected = new Promise<void>((resolve, reject) => {

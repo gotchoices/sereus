@@ -1600,7 +1600,8 @@ export class CadreNode implements SAppIdLookup {
     this.claimTrustPolicy = claimSecretTrustPolicy({
       secret: parseClaimSecret(claim.secret),
       trustedOwners: this.trustedOwnerStore,
-      onClaimed: (ownerKey) => this.emit('claim:accepted', { ownerKey }),
+      recordClaim: claim.record,
+      onClaimed: (accepted) => this.emit('claim:accepted', accepted),
     });
     log('Node starts awaiting a claim; start() enables the seed listener once the control node is up');
   }
