@@ -89,6 +89,7 @@ function canned(reply: CadreInviteRedeemReply): Responder {
 /** A store that must never be reached; every method throws. */
 const untouchable: CadreInviteStore = {
   seatCadreInvite: async () => { throw new Error('store touched'); },
+  isCadreInviteLive: async () => { throw new Error('store touched'); },
   redeemCadreInvite: async () => { throw new Error('store touched'); },
   querySeedPeers: async () => { throw new Error('store touched'); }
 };

@@ -407,6 +407,12 @@ export class CadreNode implements SAppIdLookup {
    * start() cycle rebuilds it with a fresh caught-up-peer memo.
    */
   private controlBackfill: PeerJoinBackfill | null = null;
+  /**
+   * Devices whose invitation redemption this member has verified and is admitting right now,
+   * each with its count of overlapping redemptions. The control backfill's gate admits them
+   * as it admits a member, for that window only ({@link catchUpRedeemingDevice}).
+   */
+  private readonly admittingDevices = new Map<string, number>();
   private strandWatcher: StrandWatcher | null = null;
   private strandManager: StrandInstanceManager;
   private hibernationManager: HibernationManager;
@@ -1297,6 +1303,7 @@ export class CadreNode implements SAppIdLookup {
       this.cadreInviteHandler = new CadreInviteHandler({
         partyId: this.config.controlNetwork.partyId,
         store: this.controlDatabase,
+        catchUpDevice: (peerId) => this.catchUpRedeemingDevice(peerId),
       });
       await this.cadreInviteHandler.register(this.controlNode);
 
@@ -1733,6 +1740,8 @@ export class CadreNode implements SAppIdLookup {
    * reconnect re-runs identify), and — because the production join order is
    * connect-then-authorize — on every committed membership change via
    * {@link refreshAuthorizedControlPeers}'s `scheduleConnectedPeers()` call.
+   * The one non-member the gate admits is a device whose invitation
+   * redemption this member is admitting ({@link catchUpRedeemingDevice}).
    *
    * No-ops (logged) when the embedder configured no control storage or the
    * node exposes no key network — the backfill would have nothing to read or
@@ -1763,7 +1772,7 @@ export class CadreNode implements SAppIdLookup {
       // under — derived from the same networkName binding the node options
       // used, never re-spelled here.
       protocolPrefix: `/optimystic/${networkName}`,
-      authorizePeer: (peerId) => this.isAuthorizedMember(peerId)
+      authorizePeer: async (peerId) => this.admittingDevices.has(peerId) || await this.isAuthorizedMember(peerId)
     }, {
       // A shorter settle window than the strand default (1000 ms): the control
       // store is small (a party's membership — dozens of blocks), a re-push is
@@ -1788,6 +1797,38 @@ export class CadreNode implements SAppIdLookup {
       ...this.config.controlBackfill
     });
     this.controlBackfill.start();
+  }
+
+  /**
+   * Push this member's control store to a device whose invitation redemption has verified,
+   * and wait for the push, before the redemption writes the device's rows (the handler's
+   * `catchUpDevice`; `CadreInviteHandler.catchUpDeviceIfLive` says why the write needs it).
+   * The device is admitted at the backfill's gate for the length of the push only.
+   *
+   * Through {@link PeerJoinBackfill.forceCatchUpPeer}, not `catchUpPeer`: the device's own
+   * `peer:identify` scheduled a run a moment earlier, which was denied if it passed the gate
+   * before the device was added here, and `catchUpPeer` would answer that run's in-flight
+   * status with an empty result.
+   */
+  private async catchUpRedeemingDevice(peerId: string): Promise<void> {
+    const backfill = this.controlBackfill;
+    if (!backfill) {
+      log('No control backfill on this node; device %s is not caught up before its admission', peerId);
+      return;
+    }
+    this.admittingDevices.set(peerId, (this.admittingDevices.get(peerId) ?? 0) + 1);
+    try {
+      const result = await backfill.forceCatchUpPeer(peerIdFromString(peerId));
+      log('Device %s caught up before its admission: offered=%d accepted=%d rejected=%d',
+        peerId, result.offered, result.accepted, result.rejected.length);
+    } finally {
+      const remaining = (this.admittingDevices.get(peerId) ?? 1) - 1;
+      if (remaining > 0) {
+        this.admittingDevices.set(peerId, remaining);
+      } else {
+        this.admittingDevices.delete(peerId);
+      }
+    }
   }
 
   /**

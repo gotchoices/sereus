@@ -829,6 +829,40 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
+  it('forceCatchUpPeer waits out a run denied before the caller authorized the peer, then pushes', async () => {
+    // A member admitting an invitation's device: the device's peer:identify run passed the gate
+    // a moment before the member authorized it, and is still in flight when the member asks.
+    // `catchUpPeer` would answer that with an empty result and the device would hold nothing.
+    let authorized = false;
+    let releaseGate: (() => void) | undefined;
+    const gateHeld = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const { pushes, client } = makePushClient();
+    const backfill = new PeerJoinBackfill({
+      label: 'control-test',
+      libp2p: makeLibp2p().node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/control-test',
+      authorizePeer: async () => {
+        if (!authorized) {
+          await gateHeld;
+          return false;
+        }
+        return true;
+      },
+      createPushClient: () => client
+    });
+
+    const identifyRun = backfill.catchUpPeer(peer('device'));
+    authorized = true;
+    const forced = backfill.forceCatchUpPeer(peer('device'));
+    releaseGate!();
+
+    expect((await identifyRun).denied).toBe(true);
+    expect((await forced).accepted).toBe(1);
+    expect(pushes.map((push) => push.ids)).toEqual([['b1']]);
+  });
+
   it('does not replay a re-arm that arrived during a run which finished clean', async () => {
     // The other half: a mid-run re-arm must not cost a second whole-store push once the
     // peer is caught up. `done` is set before the deferred replay is considered.

@@ -3965,6 +3965,25 @@ export class ControlDatabase {
   }
 
   /**
+   * Is this one cadre invitation still redeemable here — the conditions
+   * {@link hasLiveCadreInvite} applies, for one key? False when this node holds no row for it.
+   * A permissive pre-check like {@link countCadreInviteUsage}: the redemption's own write is
+   * what enforces every condition.
+   */
+  async isCadreInviteLive(key: string, nowMs: number = Date.now()): Promise<boolean> {
+    this.ensureInitialized();
+    const invite = await this.queryCadreInvite(key);
+    if (invite === null) {
+      return false;
+    }
+    const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
+    if (!cadreInviteStillOpen(invite, withdrawn, owners, nowMs)) {
+      return false;
+    }
+    return invite.totalUses === null || await this.countCadreInviteUsage(key) < invite.totalUses;
+  }
+
+  /**
    * Every `CadreInvite` row this node holds with its standing: how many redemptions are
    * recorded, whether it is withdrawn, and whether it is still redeemable — the same
    * conditions {@link hasLiveCadreInvite} applies, answered per row for an owner's listing

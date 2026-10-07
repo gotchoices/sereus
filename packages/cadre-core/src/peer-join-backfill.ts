@@ -315,10 +315,16 @@ export class PeerJoinBackfill {
   private readonly createPushClient: (peerId: PeerId) => PeerJoinBackfillPushClient;
   private started = false;
   private stopped = false;
-  /** Peers fully caught up this runtime (never retried until the runtime is rebuilt). */
+  /**
+   * Peers fully caught up this runtime (never rescheduled until the runtime is rebuilt; only
+   * {@link forceCatchUpPeer} pushes to one again).
+   */
   private readonly done = new Set<string>();
-  /** Peers with a catch-up currently running (suppresses concurrent duplicates). */
-  private readonly inFlight = new Set<string>();
+  /**
+   * Peers with a catch-up currently running, each with that run (suppresses concurrent
+   * duplicates; {@link forceCatchUpPeer} waits on the run).
+   */
+  private readonly inFlight = new Map<string, Promise<PeerJoinBackfillResult>>();
   /**
    * Peers whose (re-)schedule arrived while their OWN run was in flight, replayed once
    * that run finishes. Load-bearing for the gated path: the gate's authorization check is
@@ -464,7 +470,53 @@ export class PeerJoinBackfill {
     if (this.stopped || this.done.has(key) || this.inFlight.has(key)) {
       return emptyResult();
     }
-    this.inFlight.add(key);
+    return await this.trackRun(peerId);
+  }
+
+  /**
+   * Run one peer's catch-up now and wait for it, whatever this instance remembers about the
+   * peer: wait out a run already in flight for it, then push the whole store again even when
+   * the peer is memoized as caught up. Never rejects; an all-zero result only when stopped.
+   *
+   * For a caller that must know the peer holds this store before it proceeds, where
+   * {@link catchUpPeer}'s empty answer would hide a run that was denied (a `peer:identify`
+   * run can pass the gate a moment before the caller authorized the peer) or a memo older
+   * than the commits since.
+   */
+  async forceCatchUpPeer(peerId: PeerId): Promise<PeerJoinBackfillResult> {
+    const key = peerId.toString();
+    for (let pending = this.inFlight.get(key); pending; pending = this.inFlight.get(key)) {
+      await pending;
+    }
+    if (this.stopped) {
+      return emptyResult();
+    }
+    return await this.trackRun(peerId);
+  }
+
+  /**
+   * Register one run in {@link inFlight} before its first await, so no second run for the
+   * peer can start beside it, and replay a schedule that arrived while it ran.
+   */
+  private async trackRun(peerId: PeerId): Promise<PeerJoinBackfillResult> {
+    const key = peerId.toString();
+    const run = this.settleRun(peerId);
+    this.inFlight.set(key, run);
+    try {
+      return await run;
+    } finally {
+      this.inFlight.delete(key);
+      // Replay a schedule that arrived mid-run. `schedulePeer` re-checks `done`, so a run
+      // that finished clean re-arms nothing; a denied or failed one gets its retry.
+      if (this.rearmAfterFlight.delete(key)) {
+        this.schedulePeer(peerId);
+      }
+    }
+  }
+
+  /** One run and what follows from its outcome: the memo, or a backoff re-arm. Never rejects. */
+  private async settleRun(peerId: PeerId): Promise<PeerJoinBackfillResult> {
+    const key = peerId.toString();
     try {
       const { result, clean, pushFailed } = await this.runCatchUp(peerId);
       // NOTE: a run that hit `maxBlocks` is still "clean" and still memoizes the peer, so
@@ -496,13 +548,6 @@ export class PeerJoinBackfill {
       // metadata reads too — a backfill fault must never surface through a libp2p event.
       log('[%s] catch-up peer=%s failed: %o', this.deps.label, key, error);
       return emptyResult();
-    } finally {
-      this.inFlight.delete(key);
-      // Replay a schedule that arrived mid-run. `schedulePeer` re-checks `done`, so a run
-      // that finished clean re-arms nothing; a denied or failed one gets its retry.
-      if (this.rearmAfterFlight.delete(key)) {
-        this.schedulePeer(peerId);
-      }
     }
   }
 
