@@ -22,6 +22,8 @@
 	const nodesRunning = $derived(app.nodes.filter((n) => n.status === 'running').length);
 	const donatedNodes = $derived(app.nodes.filter((n) => !n.owner));
 	const donatedRunning = $derived(donatedNodes.filter((n) => n.status === 'running').length);
+	const runningReachability = $derived((app.connectivity?.nodes ?? []).filter((n) => n.running));
+	const reachableNodes = $derived(runningReachability.filter((n) => n.verdict !== 'unreachable').length);
 </script>
 
 <section class="stack">
@@ -46,27 +48,24 @@
 			</dl>
 		</div>
 
-		{#if app.role === 'founder'}
-			<div class="card">
-				<h3>Connectivity</h3>
-				{#if app.connectivity}
-					<ConnectivityBadge
-						reachability={app.connectivity.directReachability}
-						portMode={app.connectivity.portMode}
-					/>
-					<dl class="kv">
-						<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
-						<div><dt>External port</dt><dd>{app.connectivity.externalPort}</dd></div>
-						<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
-					</dl>
-					{#if app.connectivity.directReachability !== 'reachable'}
-						<a class="link" href={hrefFor('connectivity')}>Resolve →</a>
-					{/if}
-				{:else}
-					<p class="muted">Loading connectivity…</p>
+		<div class="card">
+			<h3>Connectivity</h3>
+			{#if app.connectivity}
+				<ConnectivityBadge reachability={app.connectivity.directReachability} />
+				<dl class="kv">
+					<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
+					<div><dt>Reachable nodes</dt><dd>{reachableNodes} of {runningReachability.length} running</dd></div>
+					<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
+				</dl>
+				{#if app.connectivity.directReachability !== 'reachable'}
+					<a class="link" href={hrefFor('connectivity')}>Resolve →</a>
 				{/if}
-			</div>
-		{:else if app.role === 'donor'}
+			{:else}
+				<p class="muted">Loading connectivity…</p>
+			{/if}
+		</div>
+
+		{#if app.role === 'donor'}
 			<div class="card">
 				<h3>Donation</h3>
 				<p class="muted">This machine donates cadre nodes to other people's cadres.</p>

@@ -2,24 +2,37 @@
  * NAT / DDNS substrate for cadre-host.
  *
  * See ./nat-service.ts for the top-level orchestrator and `docs/cadre-host.md`
- * for integration notes (the long-running process owner is `cadre-host-local-ui`).
+ * for integration notes (the long-running process owner is `cadre-host start`).
  */
 
-export { NatService, createNatHandlers } from './nat-service.js';
-export type { NatServiceOptions, CadreNodeLike, AddressesChangedListener } from './nat-service.js';
+export {
+  NatService,
+  createNatHandlers,
+  NAT_UNMAP_GRACE_MS,
+  NAT_RECONCILE_INTERVAL_MS,
+  NAT_IP_REDETECT_INTERVAL_MS,
+} from './nat-service.js';
+export type { NatServiceOptions, NatNodeSource, NatChangeListener } from './nat-service.js';
 export { NatStore } from './nat-store.js';
 export {
   NatError,
 } from './types.js';
 export type {
   NatStatusSnapshot,
+  NatGatewayStatus,
   NatDdnsStatus,
   NatSettingsFile,
   NatDdnsSettings,
   NatHandlers,
   NatErrorCode,
-  PortForwardMode,
   DirectReachability,
+  NodeReachability,
+  NodeVerdict,
+  PortKind,
+  PortRoute,
+  PortRouteSource,
+  ManualForward,
+  ManualForwardPatch,
   DdnsProviderInfo,
   DdnsConfigField,
 } from './types.js';
@@ -33,21 +46,22 @@ export type {
   ExternalIpDetectorOptions,
 } from './external-ip.js';
 export {
-  PortMapperService,
-  createDefaultPortMapper,
+  UpnpPortMapper,
+  pickLanAddress,
   DEFAULT_LEASE_TTL_MS,
   DEFAULT_REFRESH_MS,
+  GATEWAY_DISCOVERY_TIMEOUT_MS,
 } from './port-mapper.js';
 export type {
   PortMapper,
-  PortMappingResult,
-  PortMapOptions,
-  PortMapperState,
-  PortMapperServiceOptions,
+  GatewayInfo,
+  PortMapRequest,
+  PortMapResult,
 } from './port-mapper.js';
-export { evaluateReachability } from './reachability.js';
-export { buildInviteAddresses } from './address-resolver.js';
-export type { BuildInviteAddressesInput } from './address-resolver.js';
+export { evaluateNodeReachability, evaluateHostReachability } from './reachability.js';
+export type { NodeVerdictInput, NodeVerdictResult } from './reachability.js';
+export { buildPublicAddresses, isPublicIpv4 } from './address-resolver.js';
+export type { PublicAddressInput } from './address-resolver.js';
 export {
   BUILTIN_PROVIDERS,
   getProvider,

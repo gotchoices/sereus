@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount } from 'svelte';
 
 	import {
 		appState,
@@ -51,16 +51,6 @@
 	// dashboard never flashes links that would 404.
 	const nav = $derived(NAV.filter((item) => app.role === 'founder' || !isFounderRoute(item.name)));
 
-	// The founder-only slices are fetched once the role resolves to founder —
-	// whether that is the boot status fetch or a later one after a failed boot.
-	// Their routes 404 in the donor role, so fetching unconditionally would toast.
-	$effect(() => {
-		if (app.role !== 'founder') return;
-		untrack(() => {
-			void refreshConnectivity();
-		});
-	});
-
 	function isActive(name: RouteName): boolean {
 		if (name === 'nodes') {
 			return route.route.name === 'nodes' || route.route.name === 'node-detail';
@@ -72,6 +62,8 @@
 		startRouter();
 		void refreshStatus();
 		void refreshNodes();
+		// Connectivity exists in every role: every hosted node is mapped.
+		void refreshConnectivity();
 		void refreshUpdate();
 		void refreshSettings();
 

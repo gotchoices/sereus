@@ -1,12 +1,11 @@
 <script lang="ts">
-	import type { DirectReachability, PortForwardMode } from '../lib/state.svelte.js';
+	import type { DirectReachability } from '../lib/state.svelte.js';
 
 	interface Props {
 		reachability: DirectReachability;
-		portMode: PortForwardMode;
 	}
 
-	const { reachability, portMode }: Props = $props();
+	const { reachability }: Props = $props();
 
 	const reachLabel = $derived.by(() => {
 		switch (reachability) {
@@ -25,24 +24,6 @@
 			default: return 'info';
 		}
 	});
-
-	const portModeLabel = $derived.by(() => {
-		switch (portMode) {
-			case 'auto-upnp': return 'UPnP';
-			case 'auto-natpmp': return 'NAT-PMP';
-			case 'manual': return 'Manual';
-			case 'failed': return 'Failed';
-			case 'disabled': return 'Disabled';
-			default: return portMode;
-		}
-	});
 </script>
 
-<span class="row">
-	<span class="badge {reachTone}">{reachLabel}</span>
-	<span class="badge">{portModeLabel}</span>
-</span>
-
-<style>
-	.row { display: inline-flex; gap: 0.4rem; flex-wrap: wrap; }
-</style>
+<span class="badge {reachTone}">{reachLabel}</span>

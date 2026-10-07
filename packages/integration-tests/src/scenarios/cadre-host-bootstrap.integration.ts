@@ -23,7 +23,7 @@ import { join } from 'node:path';
 import {
 	HostProcessOrchestrator,
 	Installer,
-	NatService,
+	type NatService,
 	StrandService,
 	createLocalUiServer,
 	readHostConfig,
@@ -33,7 +33,7 @@ import {
 	type ServiceHostStatus,
 } from '@serfab/cadre-host';
 
-import { emptyStrandNode } from '../harness/index.js';
+import { emptyStrandNode, startOfflineNatService } from '../harness/index.js';
 
 class StubServiceHost implements ServiceHost {
 	readonly name = 'cadre-host-test';
@@ -91,17 +91,14 @@ describe('cadre-host bootstrap', () => {
 		orchestrator = new HostProcessOrchestrator({ rootDir: join(dataDir, 'orchestrator'), stopTimeoutMs: 2_000 });
 		await orchestrator.init();
 
-		nat = new NatService({
-			rootDir: dataDir,
-			cadreNode: { getPeerId: () => '', getMultiaddrs: () => [] },
-		});
-		try { await nat.start(); } catch { /* tolerate */ }
+		nat = await startOfflineNatService(dataDir, orchestrator);
 
 		server = createLocalUiServer({
 			uiPort: config.uiPort,
 			dataDir,
 			orchestrator,
-			founder: { nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
+			nat,
+			founder: { strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 			forcePort: 0,
 		});
 		const started = await server.start();
@@ -114,14 +111,15 @@ describe('cadre-host bootstrap', () => {
 		expect(res.status).toBe(200);
 		const body = await res.json() as {
 			service: { name: string; version: string; uptimeSeconds: number };
-			connectivity: { portMode: string; directReachability: string };
+			connectivity: { upnpEnabled: boolean; directReachability: string; nodes: unknown[] };
 		};
 		expect(body.service.name).toBe('cadre-host');
 		expect(typeof body.service.version).toBe('string');
 		expect(body.service.version.length).toBeGreaterThan(0);
 		expect(body.service.uptimeSeconds).toBeGreaterThanOrEqual(0);
-		expect(typeof body.connectivity.portMode).toBe('string');
-		expect(typeof body.connectivity.directReachability).toBe('string');
+		expect(body.connectivity.upnpEnabled).toBe(true);
+		expect(body.connectivity.directReachability).toBe('unknown');
+		expect(body.connectivity.nodes).toEqual([]);
 	});
 
 	it('/api/settings reflects host.config.json written by the installer', async () => {

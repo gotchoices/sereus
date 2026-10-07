@@ -7,10 +7,10 @@
  *   - NatError
  *       invalid_config, ddns_provider_unknown,
  *       ddns_credentials_missing                 → 400
+ *       unknown_node                             → 404
  *       secrets_unavailable, storage_error,
  *       mapping_failed, router_unreachable,
  *       ip_detection_failed, ddns_update_failed  → 500
- *       node_unavailable                         → 503
  *   - StrandError
  *       invalid_id                               → 400
  *       confirmation_required                    → 428
@@ -54,13 +54,13 @@ const NAT_STATUS: Record<NatErrorCode, number> = {
   invalid_config: 400,
   ddns_provider_unknown: 400,
   ddns_credentials_missing: 400,
+  unknown_node: 404,
   secrets_unavailable: 500,
   storage_error: 500,
   mapping_failed: 500,
   router_unreachable: 500,
   ip_detection_failed: 500,
   ddns_update_failed: 500,
-  node_unavailable: 503,
 };
 
 /**

@@ -28,8 +28,8 @@ export type HostRole = 'founder' | 'donor';
 export interface StatusRouteOptions {
   orchestrator: HostProcessOrchestrator;
   role: HostRole;
-  /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
-  nat?: NatService;
+  /** Present in every role: every hosted node is mapped, donated ones included. */
+  nat: NatService;
   update?: UpdateService;
 }
 
@@ -48,8 +48,7 @@ export interface StatusResponse {
     /** Present (true) only on the host's own owner node; every other node is donated. */
     owner?: true;
   }>;
-  /** Omitted in donor-only mode (no NAT service). */
-  connectivity?: NatStatusSnapshot;
+  connectivity: NatStatusSnapshot;
   update?: { available?: string; lastChecked?: string };
 }
 
@@ -73,13 +72,8 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
       },
       role: opts.role,
       nodes,
+      connectivity: opts.nat.getStatus(),
     };
-
-    // Connectivity exists only when the host runs its own personal cadre;
-    // donor-only mode omits it.
-    if (opts.nat) {
-      response.connectivity = opts.nat.getStatus();
-    }
 
     if (opts.update) {
       const state = await opts.update.getState();

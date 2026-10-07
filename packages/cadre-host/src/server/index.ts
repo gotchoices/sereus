@@ -31,7 +31,7 @@ import { registerErrorHandler } from './error-handler.js';
 import { registerOriginGuard } from './origin-guard.js';
 import { registerStaticMount } from './static.js';
 import { buildFastify, startListening, stopListening } from './server.js';
-import { registerNatRoutes } from './routes/nat.js';
+import { registerNatRoutes, publishConnectivity } from './routes/nat.js';
 import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
 import { registerStatusRoute, type HostRole } from './routes/status.js';
@@ -42,12 +42,12 @@ import { registerGrantsRoutes } from './routes/grants.js';
 import { HostSettingsStore } from './settings-store.js';
 
 /**
- * The host's own-cadre services. Both or none: they share the owner node,
- * and grouping them makes the role `/api/status` reports impossible to disagree
- * with the surfaces actually mounted.
+ * The host's own-cadre services: present iff `ownCadre.enabled` (the founder
+ * role), so the role `/api/status` reports cannot disagree with the surfaces
+ * actually mounted. Strand management asks the owner node, which only a
+ * founder runs.
  */
 export interface FounderServices {
-  nat: NatService;
   strands: StrandService;
 }
 
@@ -59,10 +59,15 @@ export interface LocalUiServerOptions {
   /** Wired dependencies — all owned by the caller. */
   orchestrator: HostProcessOrchestrator;
   /**
+   * The NAT layer. Present in every role: every node the host runs — donated
+   * ones included — gets its ports mapped, so `/nat/*` always mounts.
+   */
+  nat: NatService;
+  /**
    * The host's own-cadre services — present iff `ownCadre.enabled` (the
-   * founder role). Absent in donor-only mode, where `/nat/*` and
-   * `/api/strands` stay unmounted and 404 through the static handler, and
-   * `/api/status` reports `role: 'donor'`.
+   * founder role). Absent in donor-only mode, where `/api/strands` stays
+   * unmounted and 404s through the static handler, and `/api/status` reports
+   * `role: 'donor'`.
    */
   founder?: FounderServices;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
@@ -114,7 +119,7 @@ export interface LocalUiServer {
 const UPDATE_OBSERVER_INTERVAL_MS = 60_000;
 
 export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
-  const { founder } = opts;
+  const { founder, nat } = opts;
   const role: HostRole = founder ? 'founder' : 'donor';
   const events = opts.events ?? new EventBus();
   const settingsStore = opts.settingsStore ?? new HostSettingsStore({ dataDir: opts.dataDir });
@@ -135,18 +140,17 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
     role,
-    ...(founder ? { nat: founder.nat } : {}),
+    nat,
     ...(opts.update ? { update: opts.update } : {}),
   });
   registerNodesRoutes(app, { orchestrator: opts.orchestrator, role });
-  registerSettingsRoutes(app, { settingsStore, ...(founder ? { nat: founder.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
+  registerSettingsRoutes(app, { settingsStore, nat, ...(opts.update ? { update: opts.update } : {}) });
+  registerNatRoutes(app, { handlers: createNatHandlers(nat), events });
 
-  // NAT + strand surfaces exist only when the host runs its own personal
-  // cadre. In donor-only mode they're left unmounted, so `/nat/*` and
-  // `/api/strands` fall through to the static not-found handler and 404 (see
-  // static.ts).
+  // The strand surface exists only when the host runs its own personal cadre.
+  // In donor-only mode it is left unmounted, so `/api/strands` falls through
+  // to the static not-found handler and 404s (see static.ts).
   if (founder) {
-    registerNatRoutes(app, { handlers: createNatHandlers(founder.nat), events });
     registerStrandRoutes(app, { handlers: createStrandHandlers(founder.strands), events });
   }
   if (opts.update) {
@@ -195,20 +199,17 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
         }),
       );
 
+      // NAT → bus adapter: a mapping that completes after a spawn, an IP change
+      // or a lease the router dropped all change the snapshot without any
+      // route being called; the SPA follows them through this.
+      teardown.push(nat.onChange((snap) => { publishConnectivity(events, snap); }));
+
       // One-shot connectivity publish — the SPA will get a sane initial
-      // signal even if no settings have changed yet this session. Skipped in
-      // donor-only mode, where there is no NatService.
-      if (founder) {
-        try {
-          const snap = founder.nat.getStatus();
-          events.publish({
-            type: 'connectivity-changed',
-            portMode: snap.portMode,
-            directReachability: snap.directReachability,
-          });
-        } catch {
-          // NatService.start may not have completed; harmless to skip.
-        }
+      // signal even if no settings have changed yet this session.
+      try {
+        publishConnectivity(events, nat.getStatus());
+      } catch {
+        // NatService.start may not have completed; harmless to skip.
       }
 
       // Update observer: poll UpdateService.getState() every 60 s and emit

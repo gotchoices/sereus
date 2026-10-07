@@ -25,9 +25,9 @@ describe('apiFetch', () => {
 	});
 
 	it('returns bare body when there is no envelope', async () => {
-		mockFetch(async () => jsonResponse({ portMode: 'auto-upnp' }));
-		const r = await apiFetch<{ portMode: string }>('/nat/status');
-		expect(r.portMode).toBe('auto-upnp');
+		mockFetch(async () => jsonResponse({ directReachability: 'reachable' }));
+		const r = await apiFetch<{ directReachability: string }>('/nat/status');
+		expect(r.directReachability).toBe('reachable');
 	});
 
 	it('throws ApiError on { ok: false, error }', async () => {

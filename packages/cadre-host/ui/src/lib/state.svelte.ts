@@ -17,13 +17,8 @@ export type ContainerStatus = 'running' | 'stopped';
 /** Mirror of the server's `HostRole`: whether this host also runs its own cadre. */
 export type HostRole = 'founder' | 'donor';
 
-export type PortForwardMode =
-	| 'auto-upnp'
-	| 'auto-natpmp'
-	| 'manual'
-	| 'failed'
-	| 'disabled';
 export type DirectReachability = 'reachable' | 'unreachable' | 'unknown' | 'cgnat';
+export type NodeVerdict = 'mapped' | 'manual' | 'unreachable';
 
 export interface NodeInfo {
 	id: string;
@@ -86,17 +81,45 @@ export interface GrantListing {
 	donations: Array<{ id: string; status: DonationStatus }>;
 }
 
-export interface NatStatusSnapshot {
-	portMode: PortForwardMode;
-	externalPort: number;
+/** Mirror of the server's `PortRoute` (`src/nat/types.ts`): how one of a node's ports is reached from outside. */
+export interface PortRoute {
 	internalPort: number;
-	routerExternalIp: string | null;
-	mappingLeaseExpiresAt: string | null;
+	/** Null when there is no route. */
+	externalPort: number | null;
+	source: 'upnp' | 'manual' | null;
+	leaseExpiresAt: string | null;
+	/** Last mapping failure in plain language. */
+	error: string | null;
+}
+
+/** Mirror of the server's `NodeReachability`. */
+export interface NodeReachability {
+	nodeId: string;
+	running: boolean;
+	verdict: NodeVerdict;
+	/** Plain-language reason and remedy when unreachable. */
+	reason: string | null;
+	tcp: PortRoute;
+	/** Null for a node without a WebSocket port. */
+	ws: PortRoute | null;
+	publicAddrs: string[];
+}
+
+export interface NatStatusSnapshot {
+	upnpEnabled: boolean;
+	gateway: {
+		found: boolean;
+		/** This machine's address on the router's network — the one to forward to. */
+		lanAddress: string | null;
+		routerExternalIp: string | null;
+		lastError: string | null;
+	};
 	externalIp: string | null;
 	externalIpDetectedAt: string | null;
 	cgnatDetected: boolean;
 	directReachability: DirectReachability;
 	lastTestedAt: string | null;
+	nodes: NodeReachability[];
 	ddns: {
 		providerId: string | null;
 		hostname: string | null;
@@ -117,8 +140,8 @@ export interface StatusResponse {
 		profile: 'storage' | 'transaction';
 		owner?: true;
 	}>;
-	/** Omitted in the donor role. */
-	connectivity?: NatStatusSnapshot;
+	/** Present in every role: every hosted node, donated ones included, is mapped. */
+	connectivity: NatStatusSnapshot;
 	update?: { available?: string; lastChecked?: string };
 }
 
@@ -265,7 +288,7 @@ export async function refreshStatus(): Promise<void> {
 		// state. Fine while `ownCadre` is install-time only; if the role ever becomes
 		// switchable at runtime, re-fetch status on SSE reconnect and clear those slices.
 		state.role = r.role;
-		state.connectivity = r.connectivity ?? null;
+		state.connectivity = r.connectivity;
 		// status returns a thin per-node summary; the Nodes page hydrates the
 		// full list separately. Keep what's already in state.nodes if it's
 		// non-empty, otherwise project the summary.

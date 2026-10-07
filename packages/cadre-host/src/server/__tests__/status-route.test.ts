@@ -52,23 +52,24 @@ describe('GET /api/status', () => {
       service: { name: string; version: string; uptimeSeconds: number };
       role: string;
       nodes: Array<{ id: string; status: string }>;
-      connectivity: { portMode: string };
+      connectivity: { directReachability: string };
       update?: { available?: string };
     };
     expect(body.service.name).toBe('cadre-host');
     expect(body.role).toBe('founder');
     expect(body.nodes).toHaveLength(1);
     expect(body.nodes[0]).toMatchObject({ id: 'alice', status: 'running' });
-    expect(body.connectivity.portMode).toBe('auto-upnp');
+    expect(body.connectivity.directReachability).toBe('reachable');
     expect(body.update).toBeUndefined();
   });
 
-  it('omits connectivity in donor-only mode (no NAT wired)', async () => {
+  it('includes connectivity in the donor role too (every role maps its nodes)', async () => {
     app = Fastify();
     registerErrorHandler(app);
     registerStatusRoute(app, {
       role: 'donor',
       orchestrator: fakeOrchestrator([]),
+      nat: fakeNat(SAMPLE_CONNECTIVITY),
     });
 
     const res = await app.inject({ method: 'GET', url: '/api/status' });
@@ -77,12 +78,12 @@ describe('GET /api/status', () => {
       service: { name: string };
       role: string;
       nodes: unknown[];
-      connectivity?: unknown;
+      connectivity: { directReachability: string };
     };
     expect(body.service.name).toBe('cadre-host');
     expect(body.role).toBe('donor');
     expect(body.nodes).toEqual([]);
-    expect(body.connectivity).toBeUndefined();
+    expect(body.connectivity.directReachability).toBe('reachable');
   });
 
   it('includes update info when service is present', async () => {

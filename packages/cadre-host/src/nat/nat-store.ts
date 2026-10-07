@@ -2,17 +2,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import debug from 'debug';
 
-import { NatError, type NatDdnsSettings, type NatSettingsFile } from './types.js';
+import {
+  NatError,
+  type ManualForward,
+  type ManualForwardPatch,
+  type NatDdnsSettings,
+  type NatSettingsFile,
+  type PortKind,
+} from './types.js';
 
 const log = debug('cadre:host:nat-store');
 
 const FILE_VERSION = 1;
 
-/** Default port (libp2p TCP default). */
-const DEFAULT_PORT = 4001;
-
 /** Default DDNS update interval (5 minutes). */
 const DEFAULT_DDNS_INTERVAL_MS = 5 * 60 * 1000;
+
+const PORT_KINDS: ReadonlyArray<PortKind> = ['tcp', 'ws'];
 
 /**
  * Atomic JSON store for `nat.json` — write to `<path>.tmp`, then rename.
@@ -57,13 +63,14 @@ export class NatStore {
         `nat file at ${this.path} is not valid JSON: ${(err as Error).message}`,
       );
     }
-    if (!isNatSettingsFile(parsed)) {
+    const settings = fromParsed(parsed);
+    if (!settings) {
       throw new NatError(
         'storage_error',
         `nat file at ${this.path} has unexpected shape`,
       );
     }
-    this.cache = parsed;
+    this.cache = settings;
     return this.cache;
   }
 
@@ -76,22 +83,58 @@ export class NatStore {
     writeFileSync(tmp, payload, { encoding: 'utf8' });
     renameSync(tmp, this.path);
     this.cache = next;
-    log('saved nat.json (port=%d, ddns=%s) to %s',
-      next.externalPort,
+    log('saved nat.json (upnp=%s, forwards=%d, ddns=%s) to %s',
+      next.upnpEnabled,
+      Object.keys(next.forwards).length,
       next.ddns.providerId ?? '(none)',
       this.path);
   }
 
-  /** Patch and persist (validation lives here). */
-  update(patch: Partial<Omit<NatSettingsFile, 'version'>>): NatSettingsFile {
+  /** Patch and persist (validation lives here). `forwards` is edited through `setForward`. */
+  update(patch: Partial<Omit<NatSettingsFile, 'version' | 'forwards'>>): NatSettingsFile {
     const current = this.load();
     const merged: NatSettingsFile = {
       ...current,
       ...patch,
       ddns: { ...current.ddns, ...(patch.ddns ?? {}) },
+      forwards: current.forwards,
       version: FILE_VERSION,
     };
     validate(merged);
+    this.save(merged);
+    return merged;
+  }
+
+  /**
+   * Apply a manual-forward patch for one node: a number sets that port's
+   * external port, `null` clears it, an absent key leaves it alone. An entry
+   * with no ports left is removed.
+   */
+  setForward(nodeId: string, patch: ManualForwardPatch): NatSettingsFile {
+    const current = this.load();
+    const next: ManualForward = { ...(current.forwards[nodeId] ?? {}) };
+    for (const kind of PORT_KINDS) {
+      const value = patch[kind];
+      if (value === undefined) continue;
+      if (value === null) delete next[kind];
+      else next[kind] = value;
+    }
+    const forwards = { ...current.forwards };
+    if (Object.keys(next).length === 0) delete forwards[nodeId];
+    else forwards[nodeId] = next;
+    const merged: NatSettingsFile = { ...current, forwards };
+    validate(merged);
+    this.save(merged);
+    return merged;
+  }
+
+  /** Drop a node's manual forward entry. No-op (no write) when there is none. */
+  deleteForward(nodeId: string): NatSettingsFile {
+    const current = this.load();
+    if (!(nodeId in current.forwards)) return current;
+    const forwards = { ...current.forwards };
+    delete forwards[nodeId];
+    const merged: NatSettingsFile = { ...current, forwards };
     this.save(merged);
     return merged;
   }
@@ -100,9 +143,8 @@ export class NatStore {
 function defaultSettings(): NatSettingsFile {
   return {
     version: FILE_VERSION,
-    externalPort: DEFAULT_PORT,
-    internalPort: DEFAULT_PORT,
     upnpEnabled: true,
+    forwards: {},
     ddns: defaultDdns(),
   };
 }
@@ -116,27 +158,68 @@ function defaultDdns(): NatDdnsSettings {
   };
 }
 
-function isNatSettingsFile(v: unknown): v is NatSettingsFile {
-  if (!v || typeof v !== 'object') return false;
+/**
+ * Build the settings from the known fields of a parsed file, or null when the
+ * shape is wrong. Unknown fields — including the `externalPort`/`internalPort`
+ * an older build wrote — are dropped, so the next save removes them.
+ */
+function fromParsed(v: unknown): NatSettingsFile | null {
+  if (!v || typeof v !== 'object') return null;
   const obj = v as Record<string, unknown>;
-  if (obj.version !== FILE_VERSION) return false;
-  if (typeof obj.externalPort !== 'number' || typeof obj.internalPort !== 'number') return false;
-  if (typeof obj.upnpEnabled !== 'boolean') return false;
+  if (obj.version !== FILE_VERSION) return null;
+  if (typeof obj.upnpEnabled !== 'boolean') return null;
   const ddns = obj.ddns as Record<string, unknown> | undefined;
-  if (!ddns || typeof ddns !== 'object') return false;
-  if (ddns.providerId !== null && typeof ddns.providerId !== 'string') return false;
-  if (ddns.hostname !== null && typeof ddns.hostname !== 'string') return false;
-  if (typeof ddns.externallyManaged !== 'boolean') return false;
-  if (typeof ddns.intervalMs !== 'number') return false;
-  return true;
+  if (!ddns || typeof ddns !== 'object') return null;
+  if (ddns.providerId !== null && typeof ddns.providerId !== 'string') return null;
+  if (ddns.hostname !== null && typeof ddns.hostname !== 'string') return null;
+  if (typeof ddns.externallyManaged !== 'boolean') return null;
+  if (typeof ddns.intervalMs !== 'number') return null;
+  const forwards = parseForwards(obj.forwards);
+  if (!forwards) return null;
+  return {
+    version: FILE_VERSION,
+    upnpEnabled: obj.upnpEnabled,
+    forwards,
+    ddns: {
+      providerId: ddns.providerId as string | null,
+      hostname: ddns.hostname as string | null,
+      externallyManaged: ddns.externallyManaged,
+      intervalMs: ddns.intervalMs,
+    },
+  };
+}
+
+/** `forwards` is absent in a file written before manual forwards existed; that reads as none. */
+function parseForwards(v: unknown): Record<string, ManualForward> | null {
+  if (v === undefined) return {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, ManualForward> = {};
+  for (const [nodeId, entry] of Object.entries(v as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') return null;
+    const rec = entry as Record<string, unknown>;
+    const forward: ManualForward = {};
+    for (const kind of PORT_KINDS) {
+      if (rec[kind] === undefined) continue;
+      if (typeof rec[kind] !== 'number') return null;
+      forward[kind] = rec[kind];
+    }
+    out[nodeId] = forward;
+  }
+  return out;
 }
 
 function validate(s: NatSettingsFile): void {
-  if (!Number.isInteger(s.externalPort) || s.externalPort < 1 || s.externalPort > 65535) {
-    throw new NatError('invalid_config', `externalPort must be 1-65535, got ${s.externalPort}`);
-  }
-  if (!Number.isInteger(s.internalPort) || s.internalPort < 1 || s.internalPort > 65535) {
-    throw new NatError('invalid_config', `internalPort must be 1-65535, got ${s.internalPort}`);
+  for (const [nodeId, forward] of Object.entries(s.forwards)) {
+    if (nodeId.length === 0) {
+      throw new NatError('invalid_config', 'a manual forward needs a node id');
+    }
+    for (const kind of PORT_KINDS) {
+      const port = forward[kind];
+      if (port === undefined) continue;
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new NatError('invalid_config', `${kind} forward for ${nodeId} must be 1-65535, got ${port}`);
+      }
+    }
   }
   if (!Number.isFinite(s.ddns.intervalMs) || s.ddns.intervalMs < 1000) {
     throw new NatError(

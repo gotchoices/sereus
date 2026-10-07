@@ -153,9 +153,10 @@ export class Installer {
     const cfgPath = configPath(answers.dataDir);
     writeHostConfig(cfgPath, cfg);
 
-    // 4. Seed nat.json with the chosen libp2p port + UPnP flag so the
-    //    NatService picks them up on first start.
-    seedNatSettings(answers.dataDir, answers.libp2pPort, answers.upnpEnabled);
+    // 4. Seed nat.json with the UPnP flag so the NatService picks it up on
+    //    first start. Ports are not seeded: the service maps every hosted
+    //    node's ports from the orchestrator's allocations.
+    seedNatSettings(answers.dataDir, answers.upnpEnabled);
 
     const uiUrl = `http://127.0.0.1:${answers.uiPort}/`;
 
@@ -254,14 +255,10 @@ export class Installer {
 
 export { runWizardWith, defaultsForPlatform, DEFAULT_UI_PORT, DEFAULT_LIBP2P_PORT };
 
-function seedNatSettings(dataDir: string, libp2pPort: number, upnpEnabled: boolean): void {
+function seedNatSettings(dataDir: string, upnpEnabled: boolean): void {
   const store = new NatStore(dataDir);
   // `update()` merges + persists.
-  store.update({
-    externalPort: libp2pPort,
-    internalPort: libp2pPort,
-    upnpEnabled,
-  });
+  store.update({ upnpEnabled });
 }
 
 function randomInstallId(): string {

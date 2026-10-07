@@ -276,7 +276,7 @@ program
       // owner node of its own for that. Running the host's **own** personal
       // cadre here — the "founder" persona — is opt-in via `ownCadre.enabled`
       // (see docs/cadre-host.md § Two roles: donor and founder). Only when it
-      // is enabled do we spawn the owner node and bring up NAT + strands.
+      // is enabled do we spawn the owner node and bring up the strand service.
       // The manager never joins the control network (docs/cadre-host.md
       // § Control-plane separation).
       // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
@@ -289,6 +289,20 @@ program
         pushResolver: () => resolvePushCredentials(pushSecrets, readHostConfig(cfgPath).push),
       });
       await orchestrator.init();
+
+      // NAT layer — in every role: every node the host runs, donated ones
+      // included, gets its two libp2p ports mapped on the router (or the
+      // user's manual forward recorded for them). Started before anything is
+      // spawned so the first spawns see a discovered gateway. `start()` awaits
+      // only gateway discovery and IP detection (both bounded); the mappings
+      // for re-attached nodes land in the background. Best-effort: a failure
+      // here leaves the management API up.
+      const natService = new NatService({ rootDir: cfg.dataDir, nodeSource: orchestrator });
+      try {
+        await natService.start();
+      } catch (err) {
+        console.error(`NAT start failed: ${(err as Error).message}`);
+      }
 
       // Donation grant layer — the always-on donor surface. Local-only:
       // issue/validate/revoke are pure store ops (no node round-trip), so it
@@ -336,10 +350,8 @@ program
       reapTimer.unref();
 
       // Founder stack (opt-in). Absent `ownCadre.enabled`, cadre-host is a pure
-      // donor: no owner node, and the /nat + /api/strands surfaces stay unmounted
-      // (they 404). Per-donated-node WAN reachability is deferred to
-      // backlog/feat-cadre-host-wan-grant-reachability, so v1 donor mode is
-      // loopback-only — nothing for NatService to map without an owner node.
+      // donor: no owner node, and the /api/strands surface stays unmounted (it
+      // 404s). The NAT layer above runs either way.
       let founder: FounderServices | undefined;
       if (hostOwnsCadre(cfg)) {
         // Spawn the owner node. Best-effort: a spawn failure leaves the
@@ -360,40 +372,13 @@ program
         // bearer token is picked up automatically.
         const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
-        const natService = new NatService({
-          rootDir: cfg.dataDir,
-          cadreNode: owner,
-        });
-
-        // Strand management is founder-only for the same reason as NAT: it
-        // asks the owner node, and donor-only mode has none.
-        const strandService = new StrandService({ cadreNode: owner });
-
-        // Push NAT-resolved invite addresses to the node on every NAT change.
-        // NatService.start() also fires this once as an initial push, retried
-        // until the freshly spawned owner node accepts it (bounded).
-        natService.onAddressesChanged(async (addresses) => {
-          if (addresses.length === 0) return;
-          try {
-            await owner.pushInviteAddresses(addresses);
-          } catch (err) {
-            console.error(`invite-address push failed: ${(err as Error).message}`);
-          }
-        });
-
-        // Best-effort NAT start. Failures here aren't fatal — the local UI
-        // can still serve settings, strands, etc.
-        try {
-          await natService.start();
-        } catch (err) {
-          console.error(`NAT start failed: ${(err as Error).message}`);
-        }
-
-        founder = { nat: natService, strands: strandService };
+        // Strand management is founder-only: it asks the owner node, and
+        // donor-only mode has none.
+        founder = { strands: new StrandService({ cadreNode: owner }) };
       } else {
         // Donor-only. If ownCadre was toggled off after a prior founder run,
         // orchestrator.init() re-attaches the still-running owner child (it would
-        // otherwise linger in listNodes with no nat/strand services wired, serving
+        // otherwise linger in listNodes with no strand service wired, serving
         // the host's own cadre despite being disabled). Reap it now so a disabled
         // own-cadre is actually stopped — its workdir + control-DB persist on
         // disk, so toggling ownCadre back on re-spawns it from saved config.
@@ -402,7 +387,7 @@ program
         } catch (err) {
           console.error(`owner node reap failed: ${(err as Error).message}`);
         }
-        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /nat + /api/strands inactive)');
+        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /api/strands inactive)');
       }
 
       const settingsStore = new HostSettingsStore({ dataDir: cfg.dataDir });
@@ -410,6 +395,7 @@ program
         uiPort: cfg.uiPort,
         dataDir: cfg.dataDir,
         orchestrator,
+        nat: natService,
         ...(founder ? { founder } : {}),
         update: updateService,
         grants: grantService,
@@ -426,7 +412,7 @@ program
       clearInterval(reapTimer);
       donationSupervisor.stop();
       try { await server.stop(); } catch { /* ignore */ }
-      try { await founder?.nat.stop(); } catch { /* ignore */ }
+      try { await natService.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');
@@ -737,23 +723,18 @@ nat
 
 nat
   .command('settings')
-  .description('Update NAT settings (external port, UPnP toggle)')
-  .option('--external-port <port>', 'External port to map')
-  .option('--internal-port <port>', 'Internal libp2p port (defaults to external)')
-  .option('--no-upnp', 'Disable UPnP/NAT-PMP port mapping')
+  .description('Update NAT settings (UPnP toggle)')
+  .option('--upnp', 'Ask the router for port mappings over UPnP')
+  .option('--no-upnp', 'Stop asking the router for port mappings (manual forwards stay)')
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
   .action(async (opts: {
-    externalPort?: string;
-    internalPort?: string;
     upnp?: boolean;
     port: string;
     host: string;
   }) => {
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/settings`;
     const patch: Record<string, unknown> = {};
-    if (opts.externalPort) patch.externalPort = resolvePort(opts.externalPort);
-    if (opts.internalPort) patch.internalPort = resolvePort(opts.internalPort);
     // Commander assigns `upnp: false` when `--no-upnp` is passed.
     if (opts.upnp === false) patch.upnpEnabled = false;
     if (opts.upnp === true) patch.upnpEnabled = true;
@@ -1022,15 +1003,26 @@ async function putJson(url: string, body: unknown): Promise<NatStatusLike> {
 }
 
 interface NatStatusLike {
-  portMode?: string;
-  externalPort?: number;
-  internalPort?: number;
+  upnpEnabled?: boolean;
+  gateway?: {
+    found?: boolean;
+    lanAddress?: string | null;
+    routerExternalIp?: string | null;
+    lastError?: string | null;
+  };
   externalIp?: string | null;
-  routerExternalIp?: string | null;
   cgnatDetected?: boolean;
   directReachability?: string;
   lastTestedAt?: string | null;
-  mappingLeaseExpiresAt?: string | null;
+  nodes?: Array<{
+    nodeId?: string;
+    running?: boolean;
+    verdict?: string;
+    reason?: string | null;
+    tcp?: NatPortRouteLike;
+    ws?: NatPortRouteLike | null;
+    publicAddrs?: string[];
+  }>;
   ddns?: {
     providerId?: string | null;
     hostname?: string | null;
@@ -1068,15 +1060,32 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
   return await response.json() as NatStatusLike;
 }
 
+interface NatPortRouteLike {
+  internalPort?: number;
+  externalPort?: number | null;
+  source?: string | null;
+  error?: string | null;
+}
+
 function printNatStatus(s: NatStatusLike): void {
-  console.log(`Port mapping: ${s.portMode ?? '?'} (external ${s.externalPort ?? '?'} → internal ${s.internalPort ?? '?'})`);
-  if (s.routerExternalIp) {
-    console.log(`Router IP:    ${s.routerExternalIp}`);
+  const gateway = s.gateway ?? {};
+  const gatewayLine = gateway.found
+    ? `found (this machine is ${gateway.lanAddress ?? '?'} on its network)`
+    : `not found${gateway.lastError ? ` — ${gateway.lastError}` : ''}`;
+  console.log(`UPnP:         ${s.upnpEnabled === false ? 'off' : 'on'}; router ${gatewayLine}`);
+  if (gateway.routerExternalIp) {
+    console.log(`Router IP:    ${gateway.routerExternalIp}`);
   }
   console.log(`External IP:  ${s.externalIp ?? '(unknown)'}${s.cgnatDetected ? '  [CGNAT detected]' : ''}`);
   console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
-  if (s.mappingLeaseExpiresAt) {
-    console.log(`Lease expires: ${s.mappingLeaseExpiresAt}`);
+  const nodes = s.nodes ?? [];
+  console.log(`\nNodes: ${nodes.length === 0 ? 'none' : ''}`);
+  for (const n of nodes) {
+    console.log(`  ${n.nodeId ?? '?'}: ${n.verdict ?? '?'}${n.running === false ? '  [stopped]' : ''}`);
+    console.log(`    TCP        ${formatRoute(n.tcp)}`);
+    console.log(`    WebSocket  ${n.ws ? formatRoute(n.ws) : 'not available'}`);
+    if (n.publicAddrs?.length) console.log(`    Public:    ${n.publicAddrs.join(', ')}`);
+    if (n.reason) console.log(`    ${n.reason}`);
   }
   const ddns = s.ddns ?? {};
   if (ddns.providerId || ddns.hostname) {
@@ -1090,6 +1099,12 @@ function printNatStatus(s: NatStatusLike): void {
   } else {
     console.log('\nDDNS: not configured');
   }
+}
+
+function formatRoute(r: NatPortRouteLike | undefined): string {
+  if (!r) return '?';
+  if (r.externalPort == null) return `${r.internalPort ?? '?'} → not mapped${r.error ? ` (${r.error})` : ''}`;
+  return `${r.internalPort ?? '?'} → external ${r.externalPort} (${r.source ?? '?'})`;
 }
 
 /** Read a single line from stdin with echo suppressed (TTY only). */

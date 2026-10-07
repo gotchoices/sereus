@@ -14,9 +14,10 @@ import type {
 } from './state.svelte.js';
 
 /**
- * Connectivity counts only for a founder: a donor host runs no NAT service, so
- * its `connectivity` stays null for good and must not hold the status at
- * `'loading'`. Until the role is known nothing is decided.
+ * Connectivity counts in every role: every node the host runs, donated ones
+ * included, is mapped through the router, so a host whose nodes cannot be
+ * reached from outside is a warning whoever it donates to. Until the role and
+ * the connectivity are known nothing is decided.
  *
  * A donor ignores its owner node: one left stopped by an earlier founder run
  * stays listed (its state persists on disk) but is off by the owner's choice.
@@ -27,12 +28,9 @@ export function deriveOverallStatus(
 	nodes: NodeInfo[],
 	update: UpdateState | null,
 ): OverallStatus {
-	if (role === null) return 'loading';
-	if (role === 'founder') {
-		if (!connectivity) return 'loading';
-		const reachability = connectivity.directReachability;
-		if (reachability === 'unreachable' || reachability === 'cgnat') return 'warn';
-	}
+	if (role === null || !connectivity) return 'loading';
+	const reachability = connectivity.directReachability;
+	if (reachability === 'unreachable' || reachability === 'cgnat') return 'warn';
 	if (nodes.some((n) => n.status !== 'running' && !(role === 'donor' && n.owner))) return 'warn';
 	if (update?.lastError) return 'warn';
 	return 'ok';

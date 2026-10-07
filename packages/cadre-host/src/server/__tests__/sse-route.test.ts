@@ -89,7 +89,7 @@ describe('GET /api/events (SSE)', () => {
     await new Promise<void>((r) => setTimeout(r, 30));
     bus.publish({ type: 'grants-changed', kind: 'issued' });
     bus.publish({ type: 'grants-changed', kind: 'revoked' });
-    bus.publish({ type: 'connectivity-changed', portMode: 'auto-upnp', directReachability: 'reachable' });
+    bus.publish({ type: 'connectivity-changed', directReachability: 'reachable' });
 
     // Wait until at least 3 events have arrived (or 1s).
     const deadline = Date.now() + 1000;

@@ -256,7 +256,8 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Register a state-change listener. Invoked when a handle's `alive`
-   * transitions (child exit, manual stop). Returns an unsubscribe fn.
+   * transitions (create, child exit, manual stop) and once more, as `stopped`,
+   * when a handle is removed. Returns an unsubscribe fn.
    */
   onStateChange(listener: NodeStateListener): () => void {
     this.stateListeners.add(listener);
@@ -619,12 +620,12 @@ export class HostProcessOrchestrator implements Orchestrator {
       // name, plumb an announce var through from host config. The TCP
       // and WebSocket ports are the CHILD'S CONTROL NODE's alone: each strand node the
       // child runs binds the same two entries with OS-assigned ports instead, since one
-      // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). A NAT
-      // forward (the owner node's, via `NatService`) covers the TCP port only, so it
-      // reaches the control node over TCP alone; a phone outside the LAN, which needs the
-      // WebSocket port, and every strand node are reached through observed addresses only,
-      // since no `CADRE_RELAY_ADDRS` is set here and a child therefore holds no relay
-      // reservation.
+      // port cannot be held twice (`cadre-core/src/strand-network-config.ts`). `NatService`
+      // maps both of the control node's ports on the router (or records the user's manual
+      // forward for them), so from outside it is reachable over TCP and WebSocket; the
+      // strand nodes' OS-assigned ports are not mapped, and they are reached through
+      // observed addresses only, since no `CADRE_RELAY_ADDRS` is set here and a child
+      // therefore holds no relay reservation.
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
@@ -963,6 +964,11 @@ export class HostProcessOrchestrator implements Orchestrator {
 
     this.handles.delete(dockerId);
     this.persist();
+    // Removal is a state change too: `NatService` releases the node's port
+    // mappings on it at once rather than at its next timer pass. A stopped
+    // event for a node no longer in `listNodes()` is how listeners tell a
+    // removal from a stop.
+    this.emitStateChange(handle);
   }
 
   /**

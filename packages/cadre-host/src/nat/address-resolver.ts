@@ -1,52 +1,81 @@
 /**
- * Build the multiaddrs that should be embedded in invites.
+ * Build the public multiaddrs of one hosted node from the host's current
+ * understanding of its dialable surface.
  *
- * Inputs are the host's currently-best understanding of its dialable surface:
- *   - DDNS hostname (`/dns4/<hostname>/...`) when configured AND reachable.
- *   - Raw external IP (`/ip4/<ip>/...`) when no DDNS but reachable.
- *   - Whatever libp2p reports otherwise — which would include a `/p2p-circuit/`
- *     address once cadre-host passes a relay to its owner node; it passes none
- *     yet (docs/cadre-host.md → "NAT and DDNS", item 2).
- *
- * This is intentionally a pure function so it's trivial to unit-test, and so
- * the NatService can be the only place that knows about settings → multiaddrs.
+ * Pure so it's trivial to unit-test, and so `NatService` is the only place
+ * that turns settings and routes into addresses. The addresses carry no
+ * `/p2p/` suffix: the node appends its own (cadre-core `normalizeSelfAddrs`,
+ * libp2p for announce addresses). The node's own LAN addresses are not here
+ * either — libp2p reports those itself.
  */
-export interface BuildInviteAddressesInput {
-  peerId: string;
-  externalPort: number;
+
+import type { PortRoute } from './types.js';
+
+export interface PublicAddressInput {
   ddnsHostname: string | null;
+  /** Last known public IPv4; null when unknown. */
   externalIp: string | null;
-  reachable: boolean;
-  /** Multiaddrs reported by the underlying libp2p node. */
-  libp2pAddrs: string[];
+  cgnatDetected: boolean;
+  tcp: PortRoute;
+  ws: PortRoute | null;
 }
 
-export function buildInviteAddresses(input: BuildInviteAddressesInput): string[] {
-  const suffix = `/p2p/${input.peerId}`;
-  // DNS path-of-truth: stable across IP changes.
-  if (input.reachable && input.ddnsHostname) {
-    return [`/dns4/${input.ddnsHostname}/tcp/${input.externalPort}${suffix}`];
-  }
-  // Raw IPv4: works when we know our external IP.
-  if (input.reachable && input.externalIp && isIpv4(input.externalIp)) {
-    return [`/ip4/${input.externalIp}/tcp/${input.externalPort}${suffix}`];
-  }
-  // Fallback: whatever libp2p sees. Strip any addresses that lack the
-  // peer suffix and append it for clarity, but otherwise pass through.
-  return input.libp2pAddrs.map((a) => withPeerSuffix(a, input.peerId));
+export function buildPublicAddresses(input: PublicAddressInput): string[] {
+  const host = publicHost(input);
+  if (!host) return [];
+  const out: string[] = [];
+  const tcpPort = routedPort(input.tcp, input.cgnatDetected);
+  if (tcpPort !== null) out.push(`${host}/tcp/${tcpPort}`);
+  const wsPort = input.ws ? routedPort(input.ws, input.cgnatDetected) : null;
+  if (wsPort !== null) out.push(`${host}/tcp/${wsPort}/ws`);
+  return out;
 }
 
-function withPeerSuffix(addr: string, peerId: string): string {
-  if (addr.includes(`/p2p/${peerId}`)) return addr;
-  if (addr.includes('/p2p/')) return addr;  // already has *some* peer
-  return `${addr}/p2p/${peerId}`;
+/**
+ * `/dns4/<hostname>` when a DDNS hostname is configured (externally managed
+ * included), else `/ip4/<externalIp>` when that is a public IPv4, else none.
+ */
+function publicHost(input: PublicAddressInput): string | null {
+  if (input.ddnsHostname) return `/dns4/${input.ddnsHostname}`;
+  if (input.externalIp && isPublicIpv4(input.externalIp)) return `/ip4/${input.externalIp}`;
+  return null;
 }
 
-function isIpv4(s: string): boolean {
+/**
+ * Under CGNAT a UPnP route produces nothing: the router's mapping is on a
+ * carrier-private address. A manual route still does, since the user asserted
+ * the forward (the CGNAT check can misfire).
+ */
+function routedPort(route: PortRoute, cgnatDetected: boolean): number | null {
+  if (route.externalPort === null || route.source === null) return null;
+  if (cgnatDetected && route.source === 'upnp') return null;
+  return route.externalPort;
+}
+
+/** Private, carrier-grade, loopback, link-local, multicast and reserved IPv4 ranges. */
+const NON_PUBLIC_IPV4: ReadonlyArray<[number, number]> = [
+  [0x00000000, 8],  // 0.0.0.0/8
+  [0x0a000000, 8],  // 10.0.0.0/8
+  [0x64400000, 10], // 100.64.0.0/10 (carrier-grade NAT)
+  [0x7f000000, 8],  // 127.0.0.0/8
+  [0xa9fe0000, 16], // 169.254.0.0/16
+  [0xac100000, 12], // 172.16.0.0/12
+  [0xc0a80000, 16], // 192.168.0.0/16
+  [0xe0000000, 4],  // 224.0.0.0/4 (multicast)
+  [0xf0000000, 4],  // 240.0.0.0/4 (reserved, broadcast)
+];
+
+/** True for a dotted-quad IPv4 outside every non-public range above. */
+export function isPublicIpv4(s: string): boolean {
+  const octets = parseIpv4(s);
+  if (!octets) return false;
+  const value = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+  return !NON_PUBLIC_IPV4.some(([base, prefix]) => (value >>> (32 - prefix)) === (base >>> (32 - prefix)));
+}
+
+function parseIpv4(s: string): number[] | null {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
-  if (!m) return false;
-  return m.slice(1).every((octet) => {
-    const n = Number(octet);
-    return n >= 0 && n <= 255;
-  });
+  if (!m) return null;
+  const octets = m.slice(1).map(Number);
+  return octets.every((n) => n >= 0 && n <= 255) ? octets : null;
 }

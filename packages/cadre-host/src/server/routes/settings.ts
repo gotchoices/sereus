@@ -28,12 +28,8 @@ const WRITABLE_UPDATES_KEYS = new Set<string>(['autoApply', 'manifestUrl']);
 
 export interface SettingsRoutesOptions {
   settingsStore: HostSettingsStore;
-  /**
-   * Present only when the host runs its own personal cadre. In donor-only mode
-   * an `upnpEnabled` write still persists to host.config.json but has no running
-   * NatService to propagate into.
-   */
-  nat?: NatService;
+  /** Present in every role; an `upnpEnabled` write takes effect on it at once. */
+  nat: NatService;
   update?: UpdateService;
 }
 
@@ -59,14 +55,11 @@ export function registerSettingsRoutes(app: FastifyInstance, opts: SettingsRoute
 
     if ('upnpEnabled' in body) {
       patch.upnpEnabled = body.upnpEnabled as boolean;
-      // Propagate UPnP toggle into the running NatService so the change
+      // Propagate the UPnP toggle into the running NatService so the change
       // takes effect immediately. NatService persists into nat.json — that's
       // independent of host.config.json's `upnpEnabled` (which the installer
       // uses on first run to seed nat.json). Update both for consistency.
-      // In donor-only mode there is no NatService — the write still persists.
-      if (nat) {
-        await nat.putSettings({ upnpEnabled: body.upnpEnabled as boolean });
-      }
+      await nat.putSettings({ upnpEnabled: body.upnpEnabled as boolean });
     }
     if ('updates' in body) {
       const updates = body.updates as { autoApply?: boolean; manifestUrl?: string };

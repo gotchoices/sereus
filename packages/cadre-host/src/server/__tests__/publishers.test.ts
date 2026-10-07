@@ -2,6 +2,7 @@
  * Verifies the publisher wiring inside createLocalUiServer:
  *   - orchestrator.onStateChange → 'node-state-changed'
  *   - NatService.getStatus() at boot → 'connectivity-changed'
+ *   - NatService.onChange → 'connectivity-changed'
  *   - UpdateService.getState() polling → 'update-available'
  */
 
@@ -14,7 +15,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createLocalUiServer } from '../index.js';
 import { EventBus } from '../events/bus.js';
 import type { LocalUiEvent } from '../events/types.js';
-import { fakeFounder } from './fakes.js';
+import { fakeFounder, fakeNat } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../../orchestrator/types.js';
 import type { UpdateService } from '../../update/index.js';
@@ -85,6 +86,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
+      nat: fakeNat(),
       founder: fakeFounder(),
       events: bus,
       forcePort: 0,
@@ -113,6 +115,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
+      nat: fakeNat(),
       founder: fakeFounder(),
       events: bus,
       forcePort: 0,
@@ -120,11 +123,25 @@ describe('publisher wiring', () => {
     await server.start();
     const conn = received.filter((e) => e.type === 'connectivity-changed');
     expect(conn).toHaveLength(1);
-    expect(conn[0]).toMatchObject({
-      type: 'connectivity-changed',
-      portMode: 'auto-upnp',
-      directReachability: 'reachable',
+    expect(conn[0]).toEqual({ type: 'connectivity-changed', directReachability: 'reachable' });
+  });
+
+  it('NatService.onChange → connectivity-changed', async () => {
+    orchestrator = manualOrchestrator();
+    const nat = fakeNat();
+    server = createLocalUiServer({
+      uiPort: 8765,
+      dataDir,
+      orchestrator,
+      nat,
+      founder: fakeFounder(),
+      events: bus,
+      forcePort: 0,
     });
+    await server.start();
+    received.length = 0;
+    nat.emit({ ...nat.getStatus(), directReachability: 'unreachable' });
+    expect(received).toEqual([{ type: 'connectivity-changed', directReachability: 'unreachable' }]);
   });
 
   it('publishes update-available when UpdateService.getState() shows a new version', async () => {
@@ -134,6 +151,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
+      nat: fakeNat(),
       founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,
@@ -159,6 +177,7 @@ describe('publisher wiring', () => {
       uiPort: 8765,
       dataDir,
       orchestrator,
+      nat: fakeNat(),
       founder: fakeFounder(),
       events: bus,
       update: update as unknown as UpdateService,

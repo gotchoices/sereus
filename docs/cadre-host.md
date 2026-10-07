@@ -32,7 +32,7 @@ Everything else is bespoke to cadre-host:
 | Storage | Per-customer billing-aware quotas | Shared volumes on the host filesystem |
 | Install | Operator runs Docker | One-shot installer + service-host integration |
 | UI | None (API only) | Localhost web UI |
-| NAT | Operator's problem | First-class DDNS + UPnP/PCP; relay fallback not wired yet (see [NAT and DDNS](#nat-and-ddns)) |
+| NAT | Operator's problem | First-class DDNS + UPnP mapping of every hosted node's ports, with manual forwards; relay fallback not wired yet (see [NAT and DDNS](#nat-and-ddns)) |
 
 The shared types are too thin to warrant a third package (no `@serfab/cadre-orchestration-core`). If sibling tickets discover a real shared concern, it can be hoisted then.
 
@@ -45,16 +45,16 @@ One host machine runs the `cadre-host` service. That service is a **management p
 cadre-host can play two independent roles. They are separate; a host can do either, both, or (usefully) just the first:
 
 - **Node donor (primary, always on).** The host contributes capacity to *other people's* cadres. A friend or family member holding a **grant token** asks the host to spawn a cadre node that joins *their* cadre; the node pins the *requester's* owner key and never runs a host genesis. A `storage`-profile donated node also keeps a storage replica of every strand the requester's party publishes, with no quota yet, so its disk use grows with that party's shared data (see [architecture.md → Strand Filtering](architecture.md#strand-filtering)). This is the default reason to run cadre-host, and it needs **no** owner node of the host's own. The grant lifecycle lives in the donation layer (`grant`/donation tickets); the loopback admin surface is `/grants-admin`.
-- **Founder (opt-in).** The host *also* runs its **own** personal cadre on this machine — the historical "single household owner node" described below. This spawns the host-owned owner node, and only then are the NAT (`/nat/*`) and strand (`/api/strands`) surfaces active.
+- **Founder (opt-in).** The host *also* runs its **own** personal cadre on this machine — the historical "single household owner node" described below. This spawns the host-owned owner node, and only then is the strand (`/api/strands`) surface active.
 
 The founder role is gated by the install-time flag **`ownCadre.enabled`** in `host.config.json` (default **false**). The installer wizard asks *"Also run your own personal cadre on this machine?"* (default no); `cadre-host install --own-cadre` sets it non-interactively. It is a structural field, not editable through `/api/settings` — change it in `host.config.json` and restart (see [Write-whitelist](#write-whitelist-for-apisettings)).
 
 Consequences when `ownCadre.enabled` is **false** (donor-only, the common case):
 
 - `cadre-host start` brings up the orchestrator, the donation grant layer, and the loopback management server — but spawns **no** owner node.
-- `/nat/*` and `/api/strands` are left unmounted and **404** (there is no host cadre to have a NAT-mapped owner node for). Donor nodes are loopback-only in v1; per-donated-node WAN reachability is future work (`backlog/feat-cadre-host-wan-grant-reachability`).
+- `/api/strands` is left unmounted and **404s** (there is no host cadre to list strands for). `/nat/*` mounts in every role: the NAT layer maps every node the host runs, donated ones included (see [NAT and DDNS](#nat-and-ddns)).
 - `installId` still identifies the install, but is used as a cadre **party id** only when the founder role is enabled — a pure-donor host never uses it as a party id.
-- The local UI learns the role from `role` on `GET /api/status` (the running process's role, not the file on disk). In the donor role it hides the Connectivity and Strands pages and their Home tiles, shows a Donation tile instead (linking to the Grants page, which both roles have), offers no lifecycle buttons on a leftover owner node, and leaves that stopped node out of its health summary. The API matches: `POST /api/nodes/owner/{start,restart}` answers **409 own_cadre_disabled** in the donor role, even when a saved owner spawn config remains from a founder run. In either role a donated node's detail page offers **Terminate** (`DELETE /grants-admin/donations/:id`), never Start/Stop.
+- The local UI learns the role from `role` on `GET /api/status` (the running process's role, not the file on disk). In the donor role it hides the Strands page and its Home tile, shows a Donation tile (linking to the Grants page, which both roles have) beside the Connectivity tile that every role has, offers no lifecycle buttons on a leftover owner node, and leaves that stopped node out of its health summary. The API matches: `POST /api/nodes/owner/{start,restart}` answers **409 own_cadre_disabled** in the donor role, even when a saved owner spawn config remains from a founder run. In either role a donated node's detail page offers **Terminate** (`DELETE /grants-admin/donations/:id`), never Start/Stop.
 
 Toggling the flag on later spawns the owner node on the next `start` (genesis is idempotent). Toggling it off later leaves the owner node's workdir + control-DB storage on disk, just unspawned — its data persists; nothing is deleted.
 
@@ -146,13 +146,13 @@ A respawn replays the donation's persisted spawn inputs (`bootstrapNodes`, which
 
 Landed: the grant-token layer (`GrantService` / `GrantStore` / `/grants-admin` / `cadre-host grant`), the orchestrator's pinned-owner-key wiring (`createContainer` → `CADRE_OWNER_KEYS`), the `donations.json` store plus donation types, the **`DonationService`** that drives the lifecycle above (`provision` / `getPeer` / `applySeed` / `terminate` / `respawn` / `get` / `list`, exported from `@serfab/cadre-host`), the grantee-facing **`/grants` provisioning surface** (`POST /grants`, `GET /grants/:id/peer`, `PUT /grants/:id/seed`, `DELETE /grants/:id`), the **`DonationSupervisor`** described above (wired into `bin/host.ts` alongside the stale-`awaiting_seed` reap sweep and the stuck-`provisioning` reap sweep), and the `DonationService` / `DonationSupervisor` / `/grants`-route unit tests — all proven end-to-end against two real `cadre-cli` children by `cadre-host-node-donation.integration.ts`.
 
-Both dial directions are now covered end-to-end. The requester in `cadre-host-node-donation.integration.ts` is a TCP-dialable `cadre-cli` node that passes `bootstrapNodes`, so the lent node dials it. The **dial-in** direction — the one node lending exists for, where the requester cannot be dialed at all — is `cadre-host-donation-phone-requester.integration.ts`: an in-process requester in the phone's shape (`listenAddrs: []`, WebSocket and circuit-relay transports, no TCP) provisions over the `/grants` routes with the phone's own client, sending no `bootstrapNodes`, dials the lent node's `/ws` address itself, and holds that connection across a `respawn` (which comes back on the same WebSocket port) and across its own restart, with no second donation request. That scenario is also where a **real respawned child** rejoining the borrower's cadre is proven; the `DonationSupervisor` that drives respawns in production is still exercised only against a fake orchestrator. Reachability (a friend's phone reaching the host across a home NAT) is the one remaining piece — see below.
+Both dial directions are now covered end-to-end. The requester in `cadre-host-node-donation.integration.ts` is a TCP-dialable `cadre-cli` node that passes `bootstrapNodes`, so the lent node dials it. The **dial-in** direction — the one node lending exists for, where the requester cannot be dialed at all — is `cadre-host-donation-phone-requester.integration.ts`: an in-process requester in the phone's shape (`listenAddrs: []`, WebSocket and circuit-relay transports, no TCP) provisions over the `/grants` routes with the phone's own client, sending no `bootstrapNodes`, dials the lent node's `/ws` address itself, and holds that connection across a `respawn` (which comes back on the same WebSocket port) and across its own restart, with no second donation request. That scenario is also where a **real respawned child** rejoining the borrower's cadre is proven; the `DonationSupervisor` that drives respawns in production is still exercised only against a fake orchestrator. Reachability across a home NAT is the NAT layer's job — see below.
 
-#### Reachability (loopback-only in v1)
+#### Reachability from outside the home network
 
-The `/grants` surface mounts on the **loopback** management server, same as the NAT surface. It is fully exercisable same-machine (and by same-machine tests), but a friend's phone on the far side of a home NAT cannot yet reach it. Making the donation request cross the internet to a residential box — and giving each donated node its own NAT/relay mapping so the requester's cadre can dial it — is deferred to [`backlog/feat-cadre-host-wan-grant-reachability`](../tickets/backlog/feat-cadre-host-wan-grant-reachability.md). **Do not read "donation works" as "WAN reachability works."**
+The `/grants` request surface mounts on the **loopback** management server, so the request itself has to come from the host's machine or its LAN; making it cross the internet is not done. The nodes it lends are a different matter: the NAT layer maps every hosted node's TCP and WebSocket ports through the router, or records the ports the user forwarded by hand, in every role ([NAT and DDNS](#nat-and-ddns)). Whether a lent node's announced addresses carry those public ports is `cadre-host-nodes-announce-public-addresses`; until it lands, a phone off the LAN reaches the lent node only through the addresses the node itself observes. **Do not read "donation works" as "WAN reachability works."**
 
-On the host's own LAN the node half needs nothing further: every managed node listens on its WebSocket port on all interfaces, so a phone on the same network can dial the `/ws` address `GET /grants/:id/peer` reports. The `/grants` request itself is still loopback-only, though, and the host's NAT mapping covers only the owner node's TCP port — so a phone off the LAN can reach neither the request surface nor a donated node's WebSocket port.
+On the host's own LAN the node half needs nothing further: every managed node listens on its WebSocket port on all interfaces, so a phone on the same network can dial the `/ws` address `GET /grants/:id/peer` reports.
 
 ### Control-plane separation (load-bearing principle)
 
@@ -168,7 +168,7 @@ Whether cadre-host holds any owner identity **at all** depends on the role:
 
 Either way the consequence is **not** that the *manager* joins any control network — only the spawned cadre nodes do.
 
-The remaining sections of this document — the single-owner-node topology just below, the node admin channel, [adding a device](#adding-a-device-to-a-host-founded-cadre), and [NAT/DDNS](#nat-and-ddns) — describe the opt-in **founder** role and apply only when `ownCadre.enabled` is true.
+The next sections — the single-owner-node topology just below, the node admin channel and [adding a device](#adding-a-device-to-a-host-founded-cadre) — describe the opt-in **founder** role and apply only when `ownCadre.enabled` is true; [NAT and DDNS](#nat-and-ddns) applies to every role.
 
 **Topology: a single household owner node.** cadre-host spawns exactly one cadre node — the admin's **owner node**, which founds/joins the party's control network and carries the host identity. The admin's other devices are *not* separate hosted nodes; they are `CadrePeer` rows (devices that dial in over libp2p), consistent with architecture.md's definition of a cadre as a single party's nodes sharing one control network. (Additional non-owner nodes can still be spawned via the orchestrator for scaling, but the manager only spawns and delegates to the one owner node.)
 
@@ -189,7 +189,7 @@ graph TD
 Two external surfaces:
 
 - **Local UI on `http://localhost:<port>`** — admin-only, no auth beyond "you are on the host." View node status, connectivity, strands and grants.
-- **Public libp2p surface** — managed by the NAT layer (DDNS, UPnP/PCP; a relay fallback is not wired yet). Each cadre node accepts inbound connections from its corresponding member's other devices, plus connections from peers in the strands those members participate in.
+- **Public libp2p surface** — managed by the NAT layer (DDNS, UPnP or manual port forwards; a relay fallback is not wired yet). Each cadre node accepts inbound connections from its corresponding member's other devices, plus connections from peers in the strands those members participate in.
 
 The host process itself is not addressable from the public internet. The NAT layer exposes each cadre node, not the manager.
 
@@ -227,7 +227,7 @@ Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{
 | `DELETE /admin/strands/:id?confirm=1` | owner-signed `Strand` delete → `{ strandId, published, type, removed, alone }`. Reads the row, decides, then writes — an unpublished id answers **200** with `published:false` (nothing to do), and a **closed** strand without `confirm` answers **428 `confirmation_required`** and writes nothing (its row carries the party's membership key, stored nowhere else). `confirm` accepts exactly `1` and `true`. `alone:true` means 0 control connections were sampled after the write, so the deletion may be local-only (it is sampled on every call, including one that found no row and wrote nothing). An id must occupy exactly one path segment — percent-encode any `/` as `%2F`; a literal one is refused with `bad_request`, as is a malformed escape |
 | `PUT /admin/invite-addresses` | push NAT-resolved invite addresses (resolver transport) |
 
-The mint route already returns the encoded bundle. Invite addresses use a **push** model — the manager `PUT`s NAT-resolved addresses at spawn and on every NAT change; the node holds the latest set and embeds them in subsequent invites, falling back to `libp2pNode.getMultiaddrs()` when none have been pushed. The spawn-time push is a bounded retry awaited inside `NatService.start()` (the freshly spawned node's admin channel may not be bound yet), so the manager's invite-minting API does not come up until the first address set has landed (or the retry budget elapses). Push (host→node) is chosen over a callback so the control-network node never needs to know or dial the manager's address.
+The mint route already returns the encoded bundle. The node names itself in an invitation by `libp2pNode.getMultiaddrs()` (cadre-core `collectSelfAddrs`), which includes any announce addresses it was started with; cadre-host pushes nothing over `PUT /admin/invite-addresses` (the route stays for other embedders). Getting a node's public addresses into that list is `cadre-host-nodes-announce-public-addresses`.
 
 This node-side surface is established by `cadre-node-admin-channel`; `cadre-host-delegated-owner-node` (6.7) builds the manager-side adapters that spawn the node and consume these routes, and finalizes the topology reconciliation noted above (single household owner node, members as `CadrePeer` rows).
 
@@ -243,7 +243,7 @@ This node-side surface is established by `cadre-node-admin-channel`; `cadre-host
 
 > **Founder role only.** Membership in the host's *own* personal cadre (`ownCadre.enabled`) is unrelated to [node donation](#node-donation-the-primary-role): donated nodes join *other people's* cadres and are gated by grant tokens.
 
-Membership is canonical in cadre-core's `CadrePeer` table on the control network, and cadre-host keeps no membership state of its own. Until the plan ticket `cadre-host-join-a-cadre` lands (which removes the founder role), an operator adds a device with `cadre enroll invite` from `@serfab/cadre-cli`, run against the owner node's loopback admin channel — the `--admin-port` and `CADRE_STARTUP_TOKEN` the orchestrator spawned the owner node with (`orchestrator.getOwnerAdminEndpoint()`; the token is in the owner node's spawn record) — and the device redeems the printed bundle with `cadre start --invitation <encoded>` or a reference app's **Join cadre** input ([cadre-cli README → Join by invitation](../packages/cadre-cli/README.md#join-by-invitation-the-owner-may-be-offline), [architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). The bundle names the owner node's addresses as the NAT layer resolved them ([Invite address resolver](#invite-address-resolver)), so a device on the LAN or, with a DDNS hostname and a port mapping, on the WAN redeems at the owner node itself. The same admin channel lists the invitations the node holds (`GET /admin/invites`) and withdraws one (`DELETE /admin/invites/:key`); removing a device is `DELETE /admin/members/:peerId`.
+Membership is canonical in cadre-core's `CadrePeer` table on the control network, and cadre-host keeps no membership state of its own. Until the plan ticket `cadre-host-join-a-cadre` lands (which removes the founder role), an operator adds a device with `cadre enroll invite` from `@serfab/cadre-cli`, run against the owner node's loopback admin channel — the `--admin-port` and `CADRE_STARTUP_TOKEN` the orchestrator spawned the owner node with (`orchestrator.getOwnerAdminEndpoint()`; the token is in the owner node's spawn record) — and the device redeems the printed bundle with `cadre start --invitation <encoded>` or a reference app's **Join cadre** input ([cadre-cli README → Join by invitation](../packages/cadre-cli/README.md#join-by-invitation-the-owner-may-be-offline), [architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). The bundle names the owner node's own addresses ([Public addresses per node](#public-addresses-per-node) says which public ones they will include once the node announces them), so a device on the LAN or, with a DDNS hostname and a port mapping, on the WAN redeems at the owner node itself. The same admin channel lists the invitations the node holds (`GET /admin/invites`) and withdraws one (`DELETE /admin/invites/:key`); removing a device is `DELETE /admin/members/:peerId`.
 
 ## Strands
 
@@ -265,11 +265,26 @@ The same read→decide→write and the same confirmation gate back `cadre strand
 
 ## NAT and DDNS
 
-Cadre-host runs on machines that are typically behind NAT. To be dialable from the open internet it composes three layers, each fail-safe and independent:
+Cadre-host runs on machines that are typically behind NAT. For the nodes it runs to be dialable from the open internet — every node, the donated ones included, in both roles — it composes three layers, each fail-safe and independent:
 
-1. **UPnP / NAT-PMP port mapping.** The default is to punch a forward through the upstream router via `@achingbrain/nat-port-mapper`. If the router refuses or doesn't expose UPnP, port mode flips to `failed` and the user is prompted to set up a manual port forward (a relay fallback is not wired yet — next bullet). The mapping is refreshed periodically; lease expiry surfaces as `mappingLeaseExpiresAt` in the status snapshot.
+1. **Port mapping per hosted node.** `NatService` keeps one mapping table keyed by node id (`owner` for the owner node, the donation id for a donated node) with a route per port: the node's libp2p TCP port and its WebSocket port, the one a phone dials. Health, metrics and admin ports are never mapped. See [Port mapping](#port-mapping) for the rules.
 2. **Circuit-relay reservation (not wired).** When the host is unreachable directly (CGNAT or stubborn router), a relay reservation would give its nodes a `/p2p-circuit` address phones can still dial. The pieces exist below cadre-host: cadre-core runs relay servers (`network.enableRelay`) and can reserve on a relay (`network.relayAddrs`), and cadre-cli exposes the reservation as `CADRE_RELAY_ADDRS`. What is missing is in cadre-host itself: host settings have no field for a relay address, and the spawn removes every `CADRE_*` variable from the environment its owner node and donated nodes inherit, then never sets `CADRE_RELAY_ADDRS`. So no node cadre-host runs is reachable through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)). Until then, hosts behind CGNAT will need either IPv6 or manual port forwarding.
 3. **Dynamic DNS.** When a stable hostname is desired, cadre-host pushes the current external IP to a DDNS provider. v1 ships **DuckDNS** only; additional providers (Cloudflare, No-IP, Dynu, …) are filed as backlog work and drop into `nat/ddns/` as one file each plus a registry entry.
+
+### Port mapping
+
+- **UPnP by default.** The service asks the router (`@achingbrain/nat-port-mapper`) for the same external port as the internal one; the router may grant another, and the port it returns is the one recorded and advertised. NAT-PMP is not implemented (`backlog/feat-cadre-host-nat-pmp-mapping`).
+- **Manual wins.** A user who forwarded ports by hand enters them (`PUT /nat/nodes/:nodeId/forward { tcp?, ws? }`, `null` clears; persisted as `forwards` in `nat.json`); a port with a manual forward is not requested over UPnP, and a port that became manual releases its UPnP mapping.
+- **Each mapping fails alone.** A router that refuses one port, or caps the number of mappings, records an error on that port only; every other route is untouched.
+- **Leases and renewal.** Leases are one hour, renewed by cadre-host itself every 30 minutes in one pass over every mapping, each renewal isolated; the library's auto-refresh is off so lease expiry and per-port failures stay visible. A renewal that fails keeps the route until the lease runs out, with the error recorded.
+- **Which nodes.** The table follows the orchestrator's node list on every state change and on a 1-minute timer: a running node is mapped; a node stopped for longer than 3 minutes (longer than the donation supervisor's whole respawn backoff, so a crash-and-respawn keeps its mapping) is unmapped; a terminated node is unmapped at once and its manual forward deleted.
+- **Host shutdown unmaps nothing.** Hosted children keep running across a host restart, so their mappings must outlive the process; they expire within the lease if the host stays down, and the next start re-maps the re-attached nodes (re-mapping the same internal port is idempotent on the router).
+- **Turning UPnP off** releases every UPnP route and keeps the manual ones.
+- **Strand nodes are not mapped.** The strand nodes inside each child bind OS-assigned ports and are reached through relays by design (`cadre-core/src/strand-network-config.ts`).
+
+### UPnP gateway
+
+Discovery listens 10 s for the first IPv4 gateway to answer the SSDP search; none within that time means UPnP is unavailable (`gateway.found: false` with the reason; manual forwards still work). Mappings point at the local IPv4 address whose subnet contains the router — not every local address, which would leave stray mappings for VPN and container interfaces — and that address is reported as `gateway.lanAddress`, since it is the one a user forwards to. Two limits of the library: it deletes only mappings this process made, so after a host restart the previous process's mappings expire with their lease rather than being deleted; and its delete names the internal port as the external one, so a mapping the router granted on another external port also expires rather than being deleted.
 
 ### External IP detection
 
@@ -278,18 +293,26 @@ Cadre-host queries its external IP from two independent sources and compares the
 - **Router-side** — the WAN IP that the UPnP/NAT-PMP gateway reports for itself.
 - **Public side** — an HTTPS GET to one of `api.ipify.org`, `ifconfig.me`, or `icanhazip.com`, first success wins.
 
-When both succeed and disagree, cadre-host flags `cgnatDetected: true` — the textbook signature of CGNAT, where the router thinks it has a public address that's really private to the carrier. The verdict is informational, not enforced; the heuristic can also misfire on dual-stack networks, sliced VPNs, or flapping IPs.
+When both succeed and disagree, cadre-host flags `cgnatDetected: true` — the textbook signature of CGNAT, where the router thinks it has a public address that's really private to the carrier. The verdict is informational, not enforced; the heuristic can also misfire on dual-stack networks, sliced VPNs, or flapping IPs. The IP is re-detected every 5 minutes; a detection that finds nothing keeps the previous result, so one failed probe does not drop every node's public address. Only a public IPv4 is used in addresses.
 
 ### Reachability verdict
 
-The `directReachability` field in the status snapshot is best-effort:
+Each node in the status snapshot (`nodes: NodeReachability[]`, with a `PortRoute` for `tcp` and for `ws`) gets a verdict:
 
-| Conditions                                | Verdict        |
-|-------------------------------------------|----------------|
-| `cgnatDetected: true`                     | `cgnat`        |
-| `portMode: auto-upnp` / `auto-natpmp`     | `reachable`    |
-| `portMode: failed`                        | `unreachable`  |
-| manual config / `upnpEnabled: false`      | `unknown`      |
+| Conditions | Verdict |
+|---|---|
+| either port has no route, or the host part is unknown (no DDNS hostname and no public IPv4), or the node's routes are UPnP routes under CGNAT | `unreachable` |
+| otherwise, either port forwarded by hand | `manual` |
+| otherwise | `mapped` |
+
+An `unreachable` node carries a plain-language `reason` naming the failing port, its internal port, the LAN address and what to do: forward it, or turn UPnP on, or, under CGNAT, that a forward will not help and a relay is needed (relay support is `backlog/feat-cadre-host-children-reserve-on-a-relay`). The host-level `directReachability` rolls the running nodes up:
+
+| Conditions | Verdict |
+|---|---|
+| CGNAT detected and no node is reachable through a manual route | `cgnat` |
+| no running nodes | `unknown` |
+| every running node is `mapped` or `manual` | `reachable` |
+| otherwise | `unreachable` |
 
 This is a heuristic, not a real dial-back. A future ticket will enable libp2p's AutoNAT service in `@optimystic/db-p2p`'s `libp2p-node-base.ts` and use its verdict here.
 
@@ -311,13 +334,17 @@ cadre-host nat ddns external --hostname foo.duckdns.org
 
 cadre-host then surfaces the hostname in invitations and status but never makes an update request.
 
-### Invite address resolver
+### Public addresses per node
 
-The host's NAT layer hooks into cadre-core through the `network.inviteAddressResolver` option on `CadreNodeConfig`. Cadre-core's `CadreNode.createCadreInvitation` names this machine by what that resolver answers (pushed addresses win; see the admin channel's `PUT /admin/invite-addresses`); cadre-host's `NatService.getInviteAddresses()` returns:
+`NatService.publicAddressesFor(nodeId, ports)` builds, from cached state, the multiaddrs through which one node is reachable from outside; the same list is `publicAddrs` on the node's status entry:
 
-- `/dns4/<hostname>/tcp/<externalPort>/p2p/<peerId>` when DDNS is configured and reachability is `reachable`,
-- `/ip4/<externalIp>/tcp/<externalPort>/p2p/<peerId>` when only the raw IP is known,
-- the libp2p multiaddrs otherwise (which would include a `/p2p-circuit/` address once cadre-host passes a relay to its owner node; it does not yet — see item 2 of [NAT and DDNS](#nat-and-ddns)).
+- The host part is `/dns4/<hostname>` when a DDNS hostname is configured (externally managed included), else `/ip4/<externalIp>` when the detected IP is a public IPv4, else there is none and the list is empty.
+- One address per port that has a route: `<host>/tcp/<externalPort>` and `<host>/tcp/<externalPort>/ws`, with the external port the router granted or the user entered. No `/p2p/` suffix: the node appends its own.
+- Under CGNAT, UPnP routes produce nothing (the router's mapping is on a carrier-private address); manual routes still do, since the user asserted the forward.
+- The node's own LAN addresses are not here; libp2p reports those itself.
+- A port with no route yet is predicted to land on the identity mapping (external = internal) when UPnP is on and a gateway was found, so a caller at spawn time gets the addresses a brand-new node will most likely have; a port whose mapping attempt failed is not predicted.
+
+Getting these addresses into the node, and restarting it when they change, is `cadre-host-nodes-announce-public-addresses`.
 
 ### Credential storage
 
@@ -366,13 +393,11 @@ At spawn time `HostProcessOrchestrator` calls its `pushResolver` (wired in `cadr
 
 ### Process integration
 
-`NatService` is constructed and owned by the manager process (`cadre-host start`), same pattern as `StrandService`. Its `cadreNode` dependency is a **management-channel adapter to the spawned owner node**, not an in-process libp2p node — `getPeerId()` / `getMultiaddrs()` query the node over that channel. The wiring:
+`NatService` is constructed and owned by the manager process (`cadre-host start`) in every role. Its node source is the orchestrator (`listNodes()` plus `onStateChange`); it holds no owner-node client. The wiring:
 
-1. Constructs `new NatService({ rootDir, cadreNode })` where `cadreNode` proxies `getPeerId()` and `getMultiaddrs()` to the owner node.
-2. Calls `await service.start()` once the owner node is up and reporting addresses.
-3. Mounts `createNatHandlers(service)` on Fastify under `/nat/*` (`GET /nat/status`, `POST /nat/test`, `PUT /nat/ddns`, `PUT /nat/settings`).
-4. Calls `await service.stop()` on shutdown to release the UPnP lease.
-5. Installs `service.getInviteAddresses` as the owner node's `network.inviteAddressResolver` — set in the `CadreNodeConfig` the orchestrator passes when it spawns that node, so cadre-core's `CadreNode.createCadreInvitation` names the host's NAT-resolved addresses. (Because the resolver lives in the manager while the node runs in a child, this is the one cross-plane hook the realignment ticket must design a transport for — e.g. resolved addresses pushed to the node at spawn/refresh time rather than a synchronous in-process callback.)
+1. Constructs `new NatService({ rootDir, nodeSource: orchestrator })` right after `orchestrator.init()`, before anything is spawned, and awaits `service.start()` — which awaits only gateway discovery (bounded at 10 s) and external-IP detection, then maps the re-attached running nodes in the background — so the first spawns see a discovered gateway. A start failure is logged; the management API comes up regardless.
+2. Mounts `createNatHandlers(service)` on Fastify under `/nat/*` in every role, and wires `service.onChange` to publish `connectivity-changed`, so the UI follows a mapping that completes after a spawn.
+3. Calls `await service.stop()` on shutdown, which clears timers and releases nothing on the router.
 
 ## Updates
 
@@ -449,7 +474,7 @@ cadre-host is a same-machine management surface. Any local process running as th
 
 | Path | Method | Purpose | Errors |
 |---|---|---|---|
-| `/api/status` | GET | Aggregated dashboard snapshot; `role` (`'founder' \| 'donor'`) says which surfaces this process mounted | — |
+| `/api/status` | GET | Aggregated dashboard snapshot; `role` (`'founder' \| 'donor'`) says which surfaces this process mounted; `connectivity` is the NAT snapshot, in every role | — |
 | `/api/nodes` | GET | List managed cadre nodes (orchestrator handles) | — |
 | `/api/nodes/:id` | GET | One node's detail + stats | 404 unknown |
 | `/api/nodes/:id/logs?lines=N` | GET | Tail of `node.log` (default 200, max 2000) | 404 unknown |
@@ -458,7 +483,7 @@ cadre-host is a same-machine management surface. Any local process running as th
 | `/api/strands/:id?confirm=1` | DELETE | Remove this party's participation in one strand. `confirm` is forwarded to the node, which refuses an unconfirmed **closed** strand with 428 | 400 invalid_id, 428 confirmation_required, 503 node_unavailable |
 | `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted) | 400 invalid_setting |
 | `/api/events` | GET | Server-Sent Events stream | — |
-| `/nat/*` | various | NAT/DDNS (matches CLI) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings` | mapped from `NatError.code` |
+| `/nat/*` | various | NAT/DDNS (matches CLI; every role) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings`, `PUT /nat/nodes/:nodeId/forward` | mapped from `NatError.code`; 404 unknown_node for a forward naming a node the host does not run, 400 invalid_config for a port outside 1–65535 |
 | `/update/*` | various | Update flow — `GET /update`, `POST /update/apply`, `GET/PUT /update/settings` | mapped from `UpdateErrorException.code` |
 | `/grants-admin` | GET | Every grant, each with `liveNodes` (donations counting against `maxNodes`) and `donations` (`{ id, status }` of every donation not yet `terminated` — what a revoke would end) | — |
 | `/grants-admin` | POST | Issue a grant — `{ label, maxNodes?, ttlMs? }` → `{ grant }` | 400 invalid_label / invalid_max_nodes / invalid_ttl |
@@ -479,7 +504,7 @@ Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { c
 | `node-state-changed` | A managed node transitions running ↔ stopped |
 | `strands-changed` | A strand removal issued a delete (`kind: 'removed'`). Not emitted when the id was never published — nothing changed |
 | `grants-changed` | A `/grants-admin` call issued a grant, revoked one, or terminated a donation (`kind: 'issued' \| 'revoked' \| 'terminated'`). Donations changing through `/grants` or the respawn supervisor do not emit it; the SPA re-reads grants on `node-state-changed` instead |
-| `connectivity-changed` | NAT settings change, reachability re-tested, server boot |
+| `connectivity-changed` | NAT settings or a manual forward changed, reachability re-tested, server boot, and any change the NAT layer notices on its own (a mapping completing after a spawn, the external IP or CGNAT flag changing, a lease the router dropped). Carries `directReachability` |
 | `update-available` | A new release version is observed |
 
 A `: heartbeat` comment is sent every 15 s so corporate proxies don't time out idle connections; the wire format also includes a `retry: 5000` hint. Listeners are cleaned up on client disconnect — `bus.listenerCount()` drops back to zero.
@@ -522,11 +547,12 @@ graph TD
     Upd -. "npm install -g + ServiceHost.restart" .-> Install
     Orch -->|spawns| AN["owner cadre node<br/>(child process — joins control network)"]
     Orch --> NN["other cadre node(s)<br/>(child processes)"]
-    NAT -. "getPeerId / getMultiaddrs · inviteAddressResolver" .-> AN
+    NAT -. "maps each child's TCP + WebSocket ports" .-> AN
+    NAT -. "maps each child's TCP + WebSocket ports" .-> NN
     Install -.-> Mgmt
 ```
 
-The dotted line from `NAT` to the owner node is the **management channel** (local IPC / loopback), *not* the control network — only the spawned cadre nodes (`AN`, `NN`) join control networks. The named subsystems are each owned by a sibling ticket; this package establishes the surface they plug into.
+The dotted lines from `NAT` to the nodes are router mappings, not channels: the NAT layer talks to the router and to the orchestrator's node list, never to a node. Only the spawned cadre nodes (`AN`, `NN`) join control networks. The named subsystems are each owned by a sibling ticket; this package establishes the surface they plug into.
 
 ## Status
 
@@ -534,17 +560,17 @@ The dotted line from `NAT` to the owner node is the **management channel** (loca
 
 - Workspace package skeleton (`packages/cadre-host/`).
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
-- `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's cadre-invitation mint.
-- CLI: `grant issue <label>`, `grant list`, `grant revoke [--keep-nodes]`, `grant terminate <donation-id>` (the always-on **node-donor** surface, talking to `/grants-admin`); `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings` (the opt-in founder surfaces); `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM; `install --no-service` skips registration so the host runs by hand under `start`). `start` loads config + identity, brings up the orchestrator + donation grant layer, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`) — this is the always-on **node-donor** path. **Only when `ownCadre.enabled`** (the opt-in founder role) does it additionally **spawn the host's own owner node as a managed child and delegate owner operations to it over the loopback admin channel** (`6.6`/`6.7`) and bring up the NAT and strand services; otherwise `/nat/*` and `/api/strands` are inactive (see [Two roles: donor and founder](#two-roles-donor-and-founder)). `ui` prints + opens the local-UI URL.
-- Owner-node delegation (`6.7`): `OwnerNodeClient` (`src/owner/`) is an HTTP client of the node's loopback admin channel implementing the NAT and strand `CadreNodeLike` shapes plus `pushInviteAddresses`. `NatService` and `StrandService` hold this client instead of an in-process `ControlDatabase`; the manager never joins the control network. Unreachable-node failures surface as `node_unavailable` (→ 503).
+- `NatService` + `NatStore` — per-node UPnP port mapping (the TCP and WebSocket ports of every hosted node) with manual forwards, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and per-node public addresses.
+- CLI: `grant issue <label>`, `grant list`, `grant revoke [--keep-nodes]`, `grant terminate <donation-id>` (the always-on **node-donor** surface, talking to `/grants-admin`); `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings` (every role); `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM; `install --no-service` skips registration so the host runs by hand under `start`). `start` loads config + identity, brings up the orchestrator + donation grant layer, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`) — this is the always-on **node-donor** path. **Only when `ownCadre.enabled`** (the opt-in founder role) does it additionally **spawn the host's own owner node as a managed child and delegate owner operations to it over the loopback admin channel** (`6.6`/`6.7`) and bring up the strand service; otherwise `/api/strands` is inactive (see [Two roles: donor and founder](#two-roles-donor-and-founder)). `ui` prints + opens the local-UI URL.
+- Owner-node delegation (`6.7`): `OwnerNodeClient` (`src/owner/`) is an HTTP client of the node's loopback admin channel implementing the strand `CadreNodeLike` shape. `StrandService` holds this client instead of an in-process `ControlDatabase`; the manager never joins the control network. Unreachable-node failures surface as `node_unavailable` (→ 503).
 - `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
 - Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
-- Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Connectivity / Nodes + per-node detail / Grants / Settings / Strands) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. Pages adapt to the host's role: the founder-only pages, Home tiles and owner-node lifecycle buttons appear only in the founder role. ≈ 45 KB gzipped.
+- Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Connectivity / Nodes + per-node detail / Grants / Settings / Strands) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. Pages adapt to the host's role: the founder-only Strands page, its Home tile and the owner-node lifecycle buttons appear only in the founder role. ≈ 45 KB gzipped.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
 **Control-plane realignment landed (`6.6`/`6.7`).** The manager spawns the admin's owner cadre node via `HostProcessOrchestrator` and delegates owner/membership/identity operations to it over the node's loopback admin channel (`OwnerNodeClient`). The earlier throwing stubs (`missingCadreNodeStub` / `missingNatNodeStub`) are gone, and the manager holds no in-process `ControlDatabase` — it is purely a management plane (see [Control-plane separation](#control-plane-separation-load-bearing-principle)). The full delegation surface — including the signed `CadrePeer` delete that was once blocked upstream — is now exercised end-to-end against a real cadre-cli child by `integration-tests/src/scenarios/cadre-host-owner-node.integration.ts` (which now stands as the **opt-in own-cadre / founder** scenario).
 
-**Node-donor realignment.** cadre-host's primary role is now **node donor** — contributing nodes to *external* cadres — with the founder role (its own cadre) demoted to the opt-in `ownCadre.enabled` path (see [Two roles](#two-roles-donor-and-founder) and [Node donation](#node-donation-the-primary-role)). The grant layer, the `DonationService` lifecycle, the grantee-facing `/grants` routes, the `DonationSupervisor` and reap sweeps, and the dashboard's **Grants** page have landed; see [Status of the donation surface](#status-of-the-donation-surface) for what is proven end-to-end. **Deferred:** WAN reachability for the request surface and per-donated-node NAT mapping (`backlog/feat-cadre-host-wan-grant-reachability`) — v1 donation is loopback-only.
+**Node-donor realignment.** cadre-host's primary role is now **node donor** — contributing nodes to *external* cadres — with the founder role (its own cadre) demoted to the opt-in `ownCadre.enabled` path (see [Two roles](#two-roles-donor-and-founder) and [Node donation](#node-donation-the-primary-role)). The grant layer, the `DonationService` lifecycle, the grantee-facing `/grants` routes, the `DonationSupervisor` and reap sweeps, and the dashboard's **Grants** page have landed; see [Status of the donation surface](#status-of-the-donation-surface) for what is proven end-to-end. Per-node NAT mapping covers donated nodes too (`cadre-host-nat-per-node-mappings`); the node announcing those addresses is `cadre-host-nodes-announce-public-addresses`. The `/grants` request surface itself is still loopback-only.
 
 ## See also
 

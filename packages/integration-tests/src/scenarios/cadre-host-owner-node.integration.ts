@@ -178,14 +178,6 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     expect((await client.listMembers()).map((m) => m.peerId)).not.toContain(dronePeerId);
   }, OP_MS);
 
-  it('pushInviteAddresses() is accepted by the real admin channel', async () => {
-    // The pushed addresses are observable only in a minted cadre invitation
-    // (cadre-core/test/invite-address-push.spec.ts pins that), so this asserts
-    // acceptance alone.
-    const pushed = [`/dns4/host.example.com/tcp/45678/p2p/${expectedPeerId}`];
-    await expect(client.pushInviteAddresses(pushed)).resolves.toBeUndefined();
-  }, OP_MS);
-
   // The first exercise of the strand admin routes against a REAL control database.
   // Every other test of those routes drives a mock node, so nothing else proves the
   // `StrandRow` → `StrandSummary` projection survives a real row, or that the

@@ -16,7 +16,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { createLocalUiServer } from '../index.js';
 import type { LocalUiEvent } from '../events/types.js';
-import { fakeFounder } from './fakes.js';
+import { fakeFounder, fakeNat } from './fakes.js';
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { StrandService } from '../../strands/index.js';
 import { StrandError } from '../../strands/index.js';
@@ -80,6 +80,7 @@ function buildServer(opts: { withStrands: boolean }): void {
     uiPort: 8765,
     dataDir,
     orchestrator: fakeOrchestrator(),
+    nat: fakeNat(),
     ...(opts.withStrands ? { founder: fakeFounder({ strands: strands.service }) } : {}),
     forcePort: 0,
   });

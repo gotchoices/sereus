@@ -5,25 +5,23 @@
  * cadre-host's manager process holds no in-process `CadreNode`; it spawns the
  * admin's owner node as a managed child (see `HostProcessOrchestrator`)
  * and delegates all owner/membership/identity operations to it over this
- * client. The client implements **both** trimmed `CadreNodeLike` interfaces —
- * the NAT one (`nat/nat-service.ts`) and the strand one
- * (`strands/strand-service.ts`) — plus the membership reads, `removePeer`,
- * `pushInviteAddresses` and `addDrone` (the node-donation requester side).
+ * client. The client implements the strand service's trimmed `CadreNodeLike`
+ * (`strands/strand-service.ts`) plus the identity reads, the membership reads,
+ * `removePeer` and `addDrone` (the node-donation requester side).
  *
  * Transport: `Authorization: Bearer <token>` against
  * `http://127.0.0.1:<adminPort>`. Every response uses the cadre-provider
  * envelope `{ ok: true, data }` / `{ ok: false, error: { code, message } }`.
  * A refused connection, a transport error, or any non-2xx response surfaces
- * as {@link OwnerNodeUnavailableError}; the NAT / strand services
- * translate that into a `node_unavailable` domain error so the management API
- * returns a clear 503 rather than a raw 500.
+ * as {@link OwnerNodeUnavailableError}; the strand service translates that
+ * into a `node_unavailable` domain error so the management API returns a
+ * clear 503 rather than a raw 500.
  */
 
 import debug from 'debug';
 import type { DroneInitResult } from '@serfab/cadre-core';
 
 import type { OwnerAdminEndpoint } from '../orchestrator/index.js';
-import type { CadreNodeLike as NatCadreNodeLike } from '../nat/nat-service.js';
 import type { CadreNodeLike as StrandCadreNodeLike } from '../strands/strand-service.js';
 import type { StrandListSnapshot, StrandRemovalResult } from '../strands/types.js';
 
@@ -56,7 +54,7 @@ export interface OwnerNodeClientOptions {
   fetch?: typeof fetch;
 }
 
-export class OwnerNodeClient implements NatCadreNodeLike, StrandCadreNodeLike {
+export class OwnerNodeClient implements StrandCadreNodeLike {
   private readonly endpointSource: EndpointSource;
   private readonly fetchImpl: typeof fetch;
 
@@ -109,7 +107,7 @@ export class OwnerNodeClient implements NatCadreNodeLike, StrandCadreNodeLike {
     return data.member;
   }
 
-  // --- NAT CadreNodeLike ---
+  // --- identity ---
 
   async getPeerId(): Promise<string> {
     const data = await this.request<{ peerId: string | null; partyId: string }>('GET', '/admin/identity');
@@ -158,13 +156,6 @@ export class OwnerNodeClient implements NatCadreNodeLike, StrandCadreNodeLike {
       dronePeerId: options.dronePeerId,
       droneMultiaddrs: options.droneMultiaddrs,
     });
-  }
-
-  // --- push-model invite addresses ---
-
-  /** Push the NAT-resolved addresses the node should embed in future invites. */
-  async pushInviteAddresses(addresses: string[]): Promise<void> {
-    await this.request('PUT', '/admin/invite-addresses', { addresses });
   }
 
   // --- internals ---

@@ -1,52 +1,92 @@
 /**
  * NAT/DDNS types for cadre-host.
  *
- * cadre-host runs on home/SMB machines that are typically behind NAT. To be
- * dialable from the open internet the host must:
- *   1. Punch a port forward on the upstream router (UPnP/NAT-PMP).
+ * cadre-host runs on home/SMB machines that are typically behind NAT. For the
+ * nodes it runs to be dialable from the open internet the host must:
+ *   1. Map every hosted node's two libp2p ports (TCP, and the WebSocket port a
+ *      phone dials) through the upstream router, or let the user forward them
+ *      by hand.
  *   2. Detect its external IP (and whether it's behind CGNAT).
  *   3. Optionally publish a stable hostname via dynamic DNS.
  *
- * State for these three concerns lives in `<rootDir>/nat.json` (user settings)
- * and is exposed as a single `NatStatusSnapshot` to the management UI.
+ * State for these concerns lives in `<rootDir>/nat.json` (user settings) and is
+ * exposed as a single `NatStatusSnapshot` to the management UI, with one
+ * `NodeReachability` entry per hosted node.
  *
  * Credentials for DDNS providers are NOT stored in `nat.json`. They go through
  * the SecretsStore (keytar, with a 0600 file fallback).
  */
 
-/** Port-forwarding mode currently in effect. */
-export type PortForwardMode =
-  | 'auto-upnp'
-  | 'auto-natpmp'
-  | 'manual'
-  | 'failed'
-  | 'disabled';
-
-/** Reachability verdict — best-effort heuristic until AutoNAT lands. */
+/** Reachability roll-up across the host's running nodes — see `reachability.ts`. */
 export type DirectReachability = 'reachable' | 'unreachable' | 'unknown' | 'cgnat';
+
+/** The two ports of a hosted node that are mapped: libp2p TCP and libp2p WebSocket. */
+export type PortKind = 'tcp' | 'ws';
+
+/** Where a port's external route came from. */
+export type PortRouteSource = 'upnp' | 'manual';
+
+/** How one of a node's ports is reached from outside the home network. */
+export interface PortRoute {
+  internalPort: number;
+  /** Port reachable from outside; null when there is no route. */
+  externalPort: number | null;
+  source: PortRouteSource | null;
+  /** ISO timestamp when the router lease expires; UPnP routes only. */
+  leaseExpiresAt: string | null;
+  /** Last mapping failure, in plain language; null when the last attempt succeeded. */
+  error: string | null;
+}
+
+/** Per-node verdict. */
+export type NodeVerdict = 'mapped' | 'manual' | 'unreachable';
+
+/** Reachability of one hosted node, as reported in the status snapshot. */
+export interface NodeReachability {
+  nodeId: string;
+  /** Whether the node's process is running; a stopped node keeps its last routes until the unmap grace elapses. */
+  running: boolean;
+  verdict: NodeVerdict;
+  /**
+   * Plain-language reason and remedy when unreachable, e.g. "Router refused
+   * the WebSocket port mapping. Forward port 10004 to 192.168.1.20 on your
+   * router, then enter the external port here."
+   */
+  reason: string | null;
+  tcp: PortRoute;
+  /** Null for a handle persisted by an older build without a WebSocket port. */
+  ws: PortRoute | null;
+  /** Multiaddrs (no `/p2p/` suffix) through which the node is reachable from outside. */
+  publicAddrs: string[];
+}
+
+/** The UPnP gateway as the host last saw it. */
+export interface NatGatewayStatus {
+  found: boolean;
+  /** This machine's address on the router's subnet — the address a user forwards to. */
+  lanAddress: string | null;
+  /** The WAN address the router reports for itself. */
+  routerExternalIp: string | null;
+  /** Why discovery or the last gateway operation failed; null when it did not. */
+  lastError: string | null;
+}
 
 /** Snapshot returned to the management UI / CLI. */
 export interface NatStatusSnapshot {
-  // Port forwarding
-  portMode: PortForwardMode;
-  externalPort: number;
-  internalPort: number;
-  /** IP the router reports as its WAN address. Null when not auto-mapped. */
-  routerExternalIp: string | null;
-  /** ISO timestamp when the current mapping lease expires. */
-  mappingLeaseExpiresAt: string | null;
+  upnpEnabled: boolean;
+  gateway: NatGatewayStatus;
 
-  // External IP (from public probe; may differ from routerExternalIp under CGNAT)
+  // External IP (from the public probe, falling back to the router's report).
   externalIp: string | null;
   externalIpDetectedAt: string | null;
   cgnatDetected: boolean;
 
-  // Reachability verdict
+  /** Roll-up across running nodes; see `reachability.ts`. */
   directReachability: DirectReachability;
   lastTestedAt: string | null;
 
-  // DDNS
   ddns: NatDdnsStatus;
+  nodes: NodeReachability[];
 }
 
 /** DDNS sub-section of the status snapshot. */
@@ -65,18 +105,28 @@ export interface NatDdnsStatus {
   lastError: string | null;
 }
 
+/** The external ports a user forwarded on their router for one node, per port kind. */
+export interface ManualForward {
+  tcp?: number;
+  ws?: number;
+}
+
+/** Patch applied by `PUT /nat/nodes/:nodeId/forward`: `null` clears that port. */
+export interface ManualForwardPatch {
+  tcp?: number | null;
+  ws?: number | null;
+}
+
 /**
  * On-disk shape of `nat.json`. NEVER contains DDNS credentials — those live
  * in the SecretsStore.
  */
 export interface NatSettingsFile {
   version: 1;
-  /** External port to map (and announce). Default 4001. */
-  externalPort: number;
-  /** Internal libp2p port. Default 4001. */
-  internalPort: number;
-  /** Whether to attempt UPnP/NAT-PMP at all. */
+  /** Whether to ask the router for port mappings at all. */
   upnpEnabled: boolean;
+  /** Per node id: the external port the user forwarded on their router, per port kind. */
+  forwards: Record<string, ManualForward>;
   ddns: NatDdnsSettings;
 }
 
@@ -107,8 +157,8 @@ export type NatErrorCode =
   | 'secrets_unavailable'
   | 'storage_error'
   | 'invalid_config'
-  /** The owner node's admin channel is unreachable / not ready. */
-  | 'node_unavailable';
+  /** A manual forward named a node id the host does not run. */
+  | 'unknown_node';
 
 /** Typed error carrying a stable `code` for HTTP mapping in the local-ui. */
 export class NatError extends Error {
@@ -139,7 +189,7 @@ export interface DdnsProviderInfo {
 }
 
 /**
- * Typed HTTP handlers exposed to `cadre-host-local-ui` for Fastify wiring.
+ * Typed HTTP handlers exposed to the local UI server for Fastify wiring.
  *
  * These take typed objects and either return typed results or throw a
  * `NatError` whose `.code` the error handler maps to an HTTP status code.
@@ -154,5 +204,6 @@ export interface NatHandlers {
     config: Record<string, string>;
     externallyManaged?: boolean;
   }): Promise<NatStatusSnapshot>;
-  putSettings(body: Partial<Omit<NatSettingsFile, 'version'>>): Promise<NatStatusSnapshot>;
+  putSettings(body: Partial<Omit<NatSettingsFile, 'version' | 'forwards'>>): Promise<NatStatusSnapshot>;
+  putForward(nodeId: string, patch: ManualForwardPatch): Promise<NatStatusSnapshot>;
 }

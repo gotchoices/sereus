@@ -3,8 +3,9 @@
  *
  * Verifies the seam between route adapters, the EventBus, and the
  * `/api/events` SSE endpoint:
- *   - settings PUT does NOT emit a connectivity-changed (no route adapter
- *     exists today — see events/types.ts)
+ *   - a settings PUT that toggles UPnP reaches the SSE client as a
+ *     connectivity-changed, through NatService's own change listener (no
+ *     route adapter publishes for /api/settings)
  *   - SSE close releases the listener slot in the bus
  *   - Direct bus publish flows through the SSE serializer
  *
@@ -42,15 +43,15 @@ describe('cadre-host SSE events', () => {
 		const stream = await host.openEventStream();
 		try {
 			await awaitSubscribed(baseline + 1);
-			host.server.events.publish({ type: 'connectivity-changed', portMode: 'disabled', directReachability: 'unknown' });
-			const ev = await stream.next((e) => e.type === 'connectivity-changed');
-			expect(ev).toMatchObject({ type: 'connectivity-changed', portMode: 'disabled', directReachability: 'unknown' });
+			host.server.events.publish({ type: 'connectivity-changed', directReachability: 'cgnat' });
+			const ev = await stream.next((e) => e.type === 'connectivity-changed' && e.directReachability === 'cgnat');
+			expect(ev).toEqual({ type: 'connectivity-changed', directReachability: 'cgnat' });
 		} finally {
 			stream.close();
 		}
 	});
 
-	it('settings PUT mutates state but does not publish an event in v1', async () => {
+	it('a settings PUT that toggles UPnP reaches the stream through the NAT change listener', async () => {
 		const baseline = host.server.events.listenerCount();
 		const stream = await host.openEventStream();
 		try {
@@ -63,14 +64,15 @@ describe('cadre-host SSE events', () => {
 				body: { upnpEnabled: false },
 			});
 			expect(put.status).toBe(200);
-
-			// Give the bus a beat to fan out anything it might (it shouldn't).
-			await new Promise<void>((r) => setTimeout(r, 100));
-
-			const after = stream.received();
-			const novel = after.slice(before);
-			expect(novel.filter((e) => e.type === 'connectivity-changed')).toEqual([]);
 			expect(host.nat.getSettings().upnpEnabled).toBe(false);
+
+			// No route adapter publishes for /api/settings; the event comes from
+			// NatService.onChange, which the server wires to the bus.
+			await stream.next((e) => e.type === 'connectivity-changed');
+			const novel = stream.received().slice(before);
+			expect(novel.filter((e) => e.type === 'connectivity-changed')).toEqual([
+				{ type: 'connectivity-changed', directReachability: 'unknown' },
+			]);
 		} finally {
 			stream.close();
 		}

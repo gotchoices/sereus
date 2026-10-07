@@ -56,8 +56,8 @@
  * nothing registers one on a lent node; whether it should is the open question in
  * `tickets/blocked/always-on-nodes-host-strands-of-apps-they-do-not-run.md`. Also out of
  * scope: WAN reachability — everything here is loopback, and a green run says nothing
- * about a phone reaching the host across a home NAT
- * (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`). And the origin guard's
+ * about a phone reaching the host across a home NAT (the NAT layer here is the
+ * harness's offline one; the real one is `docs/cadre-host.md` → "NAT and DDNS"). And the origin guard's
  * refusal: Node's `fetch` sends `Host: 127.0.0.1:<port>` and no `Origin`, which the guard
  * accepts, so a phone addressing the host by its LAN address (`forbidden_origin`) is
  * covered only by `reference-app-rn/test/host-node-request.spec.ts`. Nothing here runs a
@@ -99,6 +99,7 @@ import {
   DonationStore,
   createLocalUiServer,
   type LocalUiServer,
+  type NatService,
 } from '@serfab/cadre-host';
 
 import {
@@ -107,6 +108,7 @@ import {
   controlNodeConfig,
   hasOutboundTo,
   makeOwnOwner,
+  startOfflineNatService,
   waitUntil,
   type RawStorageCapture,
 } from '../harness/index.js';
@@ -170,6 +172,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
   let donationService: DonationService;
   /** The host's real management server, carrying the `/grants` routes the phone calls. */
   let server: LocalUiServer | undefined;
+  let nat: NatService | undefined;
   let hostUrl: string;
 
   /** The requester's durable identity — the same key both incarnations start on. */
@@ -237,11 +240,14 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
     });
 
     // Donor-only, like a host with `ownCadre` off. Not `createTestCadreHost`: that brings
-    // up the founder role's NAT and strand services, which nothing here needs.
+    // up the founder role's strand service, which nothing here needs. The NAT layer
+    // runs in every role; here it is the harness's offline one (no router, no probe).
+    nat = await startOfflineNatService(join(tmpRoot, 'nat'), hostOrch);
     server = createLocalUiServer({
       uiPort: 0, // unused: `forcePort` binds whatever port the OS hands out
       dataDir: join(tmpRoot, 'ui'),
       orchestrator: hostOrch,
+      nat,
       grants,
       donations: donationService,
       forcePort: 0,
@@ -252,6 +258,7 @@ describe('a phone-shaped requester borrows a cadre-host node (real cadre-cli)', 
   afterAll(async () => {
     // The server first, so no request lands on a node mid-teardown.
     try { await server?.stop(); } catch { /* ignore */ }
+    try { await nat?.stop(); } catch { /* ignore */ }
     try { await requester?.stop(); } catch { /* ignore */ }
     if (hostOrch) {
       for (const n of hostOrch.listNodes()) {

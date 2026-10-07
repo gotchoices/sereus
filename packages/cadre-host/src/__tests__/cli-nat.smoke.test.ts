@@ -33,16 +33,24 @@ interface StubServer {
 }
 
 const DEFAULT_STATUS = {
-  portMode: 'auto-upnp',
-  externalPort: 4001,
-  internalPort: 4001,
-  routerExternalIp: '203.0.113.5',
-  mappingLeaseExpiresAt: null,
+  upnpEnabled: true,
+  gateway: { found: true, lanAddress: '192.168.1.20', routerExternalIp: '203.0.113.5', lastError: null },
   externalIp: '203.0.113.5',
   externalIpDetectedAt: new Date().toISOString(),
   cgnatDetected: false,
   directReachability: 'reachable',
   lastTestedAt: null,
+  nodes: [
+    {
+      nodeId: 'owner',
+      running: true,
+      verdict: 'mapped',
+      reason: null,
+      tcp: { internalPort: 4001, externalPort: 4001, source: 'upnp', leaseExpiresAt: null, error: null },
+      ws: { internalPort: 10001, externalPort: 10001, source: 'upnp', leaseExpiresAt: null, error: null },
+      publicAddrs: ['/ip4/203.0.113.5/tcp/4001', '/ip4/203.0.113.5/tcp/10001/ws'],
+    },
+  ],
   ddns: {
     providerId: 'duckdns',
     hostname: 'foo.duckdns.org',
@@ -112,8 +120,9 @@ describe('cadre-host nat status', () => {
     expect(stub.requests).toHaveLength(1);
     expect(stub.requests[0]!.method).toBe('GET');
     expect(stub.requests[0]!.url).toBe('/nat/status');
-    expect(result.stdout).toContain('auto-upnp');
+    expect(result.stdout).toContain('reachable');
     expect(result.stdout).toContain('203.0.113.5');
+    expect(result.stdout).toContain('owner: mapped');
     expect(result.stdout).toContain('foo.duckdns.org');
   });
 
@@ -121,7 +130,7 @@ describe('cadre-host nat status', () => {
     const result = await runCli(['nat', 'status', '--port', String(stub.port), '--json']);
     expect(result.code).toBe(0);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.portMode).toBe('auto-upnp');
+    expect(parsed.directReachability).toBe('reachable');
   });
 
   it('exits 2 when cadre-host is unreachable', async () => {
@@ -197,16 +206,14 @@ describe('cadre-host nat ddns external', () => {
 });
 
 describe('cadre-host nat settings', () => {
-  it('PUTs /nat/settings with --external-port and --no-upnp', async () => {
+  it('PUTs /nat/settings with --no-upnp', async () => {
     const result = await runCli([
       'nat', 'settings',
-      '--external-port', '4002',
       '--no-upnp',
       '--port', String(stub.port),
     ]);
     expect(result.code).toBe(0);
-    const body = JSON.parse(stub.requests[0]!.body);
-    expect(body.externalPort).toBe(4002);
-    expect(body.upnpEnabled).toBe(false);
+    expect(stub.requests[0]!.url).toBe('/nat/settings');
+    expect(JSON.parse(stub.requests[0]!.body)).toEqual({ upnpEnabled: false });
   });
 });

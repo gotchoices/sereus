@@ -1,7 +1,8 @@
 /**
  * Test harness that boots a complete cadre-host stack in-process:
  *   - Installer.install() into a fresh temp data dir
- *   - HostProcessOrchestrator + NatService + StrandService + (optional) UpdateService
+ *   - HostProcessOrchestrator + NatService (offline: no router, no IP probe)
+ *     + StrandService + (optional) UpdateService
  *   - createLocalUiServer wired against the real subsystems on an ephemeral port
  *
  * Scenarios drive the host over its public HTTP/SSE surface to exercise the
@@ -20,8 +21,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+	ExternalIpDetector,
 	HostProcessOrchestrator,
 	Installer,
+	NatError,
 	NatService,
 	StrandService,
 	UpdateService,
@@ -30,6 +33,8 @@ import {
 	type HostConfigFile,
 	type LocalUiEvent,
 	type LocalUiServer,
+	type NatNodeSource,
+	type PortMapper,
 	type StrandCadreNodeLike,
 	type UpdateSettings,
 } from '@serfab/cadre-host';
@@ -44,9 +49,35 @@ export function emptyStrandNode(): StrandCadreNodeLike {
 	};
 }
 
-/** Minimal CadreNodeLike for NatService — no libp2p multiaddrs. */
-function natFallbackNode(): { getPeerId: () => string; getMultiaddrs: () => string[] } {
-	return { getPeerId: () => '', getMultiaddrs: () => [] };
+/** A router that is never found, so no test sends SSDP searches or SOAP calls. */
+function offlinePortMapper(): PortMapper {
+	return {
+		async discover() { return null; },
+		async map() { throw new NatError('mapping_failed', 'offline test mapper'); },
+		async unmap() { /* nothing mapped */ },
+		async externalIp() { return null; },
+		async stop() { /* nothing to release */ },
+	};
+}
+
+/**
+ * A started NatService with no router and no external-IP probe: every node reads
+ * `unreachable`, nothing leaves the machine, and `start()` returns at once
+ * instead of waiting out the 10 s gateway discovery. `rootDir` holds its
+ * `nat.json`.
+ */
+export async function startOfflineNatService(rootDir: string, nodeSource: NatNodeSource): Promise<NatService> {
+	const nat = new NatService({
+		rootDir,
+		nodeSource,
+		portMapper: offlinePortMapper(),
+		externalIpDetector: new ExternalIpDetector({
+			fetch: (async () => { throw new Error('offline test detector'); }) as unknown as typeof fetch,
+			publicIpUrls: ['https://offline.invalid'],
+		}),
+	});
+	await nat.start();
+	return nat;
 }
 
 export interface TestCadreHostOptions {
@@ -139,16 +170,7 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 	const orchestrator = new HostProcessOrchestrator(orchestratorOpts);
 	await orchestrator.init();
 
-	const nat = new NatService({
-		rootDir: dataDir,
-		cadreNode: natFallbackNode(),
-	});
-	// Real NAT probing may fail on the test host; per-module tests already cover that.
-	try {
-		await nat.start();
-	} catch {
-		// best-effort
-	}
+	const nat = await startOfflineNatService(dataDir, orchestrator);
 
 	let update: UpdateService | undefined;
 	if (opts.manifestUrl) {
@@ -166,7 +188,8 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 		uiPort: config.uiPort,
 		dataDir,
 		orchestrator,
-		founder: { nat, strands: new StrandService({ cadreNode: emptyStrandNode() }) },
+		nat,
+		founder: { strands: new StrandService({ cadreNode: emptyStrandNode() }) },
 		forcePort: 0,
 	};
 	if (update) serverOpts.update = update;

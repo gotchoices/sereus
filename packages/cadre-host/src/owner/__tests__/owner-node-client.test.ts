@@ -111,14 +111,6 @@ describe('OwnerNodeClient', () => {
     expect(last?.path).toBe('/admin/multiaddrs');
   });
 
-  it('pushInviteAddresses PUTs /admin/invite-addresses', async () => {
-    const client = makeClient();
-    await client.pushInviteAddresses(['/dns4/h/tcp/1/p2p/x']);
-    expect(last?.method).toBe('PUT');
-    expect(last?.path).toBe('/admin/invite-addresses');
-    expect(JSON.parse(last!.body)).toEqual({ addresses: ['/dns4/h/tcp/1/p2p/x'] });
-  });
-
   it('addDrone POSTs /admin/add-drone with body and unwraps the seed result', async () => {
     responder = () => ({ status: 200, payload: { ok: true, data: { seed: { partyId: 'p', peers: [] }, encodedSeed: 'enc-seed' } } });
     const client = makeClient();
