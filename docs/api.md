@@ -21,6 +21,17 @@ applySeed(seed: ControlNetworkSeed): Promise<ApplySeedResult>;
 
 // Helper for provider-hosted drones
 addDrone(options: AddDroneOptions): Promise<DroneInitResult>;
+
+// Claim a node started with a claim secret (`CadreNodeConfig.claim`) from what its host showed:
+// mints a seed, proves the secret beside it, delivers it, then vouches the node and keeps its
+// addresses as a dial target. Throws `ClaimRefusedError` (with the node's `code`) on a refusal,
+// writing nothing. Idempotent for the same owner.
+claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Promise<void>;
+
+// On the node being claimed: true while it has a claim secret and no owner yet. While true it
+// admits strangers' connections and refuses their control-DB streams and relay reservations.
+// The `claim:accepted` event fires once, with the owner key, when a claim lands.
+isAwaitingClaim(): boolean;
 ```
 
 ## Member registration:

@@ -525,10 +525,12 @@ export {
 // Claim proof: how a brand-new node's first seed proves its sender holds the node's
 // one-time claim secret. The owner side builds the proof over `seedDigest` (exported
 // with the seed bootstrap above); `claimSecretTrustPolicy` verifies it.
+// `ClaimRefusedError` is what `CadreNode.claimNode` throws when the node said no.
 export {
   parseClaimSecret,
   claimProof,
   verifyClaimProof,
+  ClaimRefusedError,
   CLAIM_SECRET_BYTES
 } from './claim-proof.js';
 

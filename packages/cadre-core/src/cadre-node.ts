@@ -129,8 +129,9 @@ import {
   requestedPendingJoin
 } from './pending-join-runner.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
-import { SeedBootstrapService, mergeSeedPeers, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
-import type { SeedTrustPolicy } from './seed-trust-policy.js';
+import { SeedBootstrapService, mergeSeedPeers, seedDigest, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
+import { claimSecretTrustPolicy, type SeedTrustPolicy } from './seed-trust-policy.js';
+import { ClaimRefusedError, claimProof, parseClaimSecret } from './claim-proof.js';
 import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
@@ -420,6 +421,14 @@ export class CadreNode implements SAppIdLookup {
   private hibernationManager: HibernationManager;
   private enrollmentService: EnrollmentService;
   private seedBootstrapService: SeedBootstrapService | null = null;
+  /**
+   * The claim-secret trust policy of a node started with `config.claim`, built once by
+   * {@link initializeClaimPolicy} over {@link trustedOwnerStore} and handed to every
+   * seed service this node constructs ({@link inboundSeedTrustPolicy}). Kept across
+   * stop()→start() like the anchor it writes: its in-process latch and failure window
+   * are per node, not per seed service. Null when the node has no claim secret.
+   */
+  private claimTrustPolicy: SeedTrustPolicy | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
   /**
    * The service whose formation handler is registered on the control node. Trails
@@ -1147,6 +1156,11 @@ export class CadreNode implements SAppIdLookup {
       // interaction could consult them.
       await this.initializeTrustedOwnerStore();
 
+      // A node started with a claim secret gets its trust policy here, over the anchor
+      // just built, and a conflicting or malformed `claim` fails closed before any
+      // network bring-up, like a mis-scoped anchor above.
+      this.initializeClaimPolicy();
+
       // Bring up the node-local cold-start bootstrap-peer store alongside the
       // anchor, and for the same two reasons: a mis-scoped injected store fails
       // closed before any network bring-up, and the retained dial targets are
@@ -1308,6 +1322,14 @@ export class CadreNode implements SAppIdLookup {
         catchUpDevice: (peerId) => this.catchUpRedeemingDevice(peerId),
       });
       await this.cadreInviteHandler.register(this.controlNode);
+
+      // A node waiting to be claimed listens for its claim seed from the start: nobody
+      // else will turn the listener on, and a node no seed can reach cannot be claimed.
+      // Before `control:connected`, so an embedder that reports "awaiting claim" on that
+      // event is already reachable on `/sereus/seed/1.0.0`.
+      if (this.config.claim) {
+        await this.enableSeedListener();
+      }
 
       // Server-side push-wake fan-out: only when push is configured.
       if (this.config.push) {
@@ -1519,6 +1541,69 @@ export class CadreNode implements SAppIdLookup {
     for (const key of pinnedKeys) {
       await this.trustedOwnerStore.trust(key, trustedOwners?.pinnedSource ?? 'operator');
     }
+  }
+
+  /**
+   * Validate `config.claim` and build {@link claimTrustPolicy} from it, once per node
+   * (a restart keeps the policy, as {@link initializeTrustedOwnerStore} keeps the anchor
+   * it writes). Runs after the anchor exists and before any network bring-up, so a bad
+   * claim configuration fails `start()` closed with nothing to tear down.
+   *
+   * A node has exactly ONE cold-start trust source, so `claim` beside a non-empty
+   * `trustedOwners.pinnedKeys` or a `seedTrustPolicy` is refused here rather than
+   * silently letting one of them win. Asserted at this seam, not by a type: the
+   * embedders build `CadreNodeConfig` as one object literal with every optional field
+   * present, which a discriminated union over the whole config would not express.
+   * The secret itself is validated by `parseClaimSecret`, which names the problem and
+   * never echoes the value.
+   */
+  private initializeClaimPolicy(): void {
+    const { claim } = this.config;
+    if (!claim || this.claimTrustPolicy) {
+      return;
+    }
+    if ((this.config.trustedOwners?.pinnedKeys?.length ?? 0) > 0) {
+      throw new Error(
+        'CadreNodeConfig: `claim` and `trustedOwners.pinnedKeys` are both set — a node has one ' +
+        'cold-start trust source; a node waiting to be claimed anchors its claimant, not a pin'
+      );
+    }
+    if (this.config.seedTrustPolicy) {
+      throw new Error(
+        'CadreNodeConfig: `claim` and `seedTrustPolicy` are both set — a node has one cold-start ' +
+        'trust source; the claim secret supplies the seed trust policy itself'
+      );
+    }
+    // Unreachable in practice: start() builds the store just above. Guarded so the
+    // policy can never be built over a missing anchor and silently claim into nothing.
+    if (!this.trustedOwnerStore) {
+      throw new Error('CadreNode: the trusted-owner anchor must exist before the claim policy is built');
+    }
+    this.claimTrustPolicy = claimSecretTrustPolicy({
+      secret: parseClaimSecret(claim.secret),
+      trustedOwners: this.trustedOwnerStore,
+      onClaimed: (ownerKey) => this.emit('claim:accepted', { ownerKey }),
+    });
+    log('Node starts awaiting a claim; the seed listener is enabled at the end of start()');
+  }
+
+  /**
+   * Is this node waiting to be claimed: started with `config.claim` and owned by nobody
+   * yet (empty anchor)? Read live from the anchor every time, as
+   * {@link admitControlPeerUnconditionally} reads it per stream: the anchor is the one
+   * source of truth for "claimed", and a cached flag would need its own invalidation
+   * from the policy's persist, the rollback and a restart. False on a node with no claim
+   * secret, on a claimed one (restarted with the secret still set or not), and before
+   * {@link start} has built the anchor.
+   *
+   * While true the node admits strangers' CONNECTIONS (the claim seed has to ride one)
+   * and refuses their control-database streams ({@link authorizeInboundControlStream})
+   * and relay reservations ({@link admitControlRelayReservation}): an unclaimed node has
+   * no siblings to replicate from and must not become a public relay while it waits.
+   * cadre-cli reports this on `/status`; `claim:accepted` is the event form.
+   */
+  isAwaitingClaim(): boolean {
+    return this.config.claim !== undefined && this.trustedOwnerStore?.all().size === 0;
   }
 
   /**
@@ -2175,7 +2260,13 @@ export class CadreNode implements SAppIdLookup {
    * "The relay-reservation seam"); the circuit-relay server consults it per
    * RESERVE request, so it is never called on a node whose relay server is off.
    *
-   * Admits when ANY of:
+   * Refuses everyone, ahead of every admission below, while this node is waiting to be
+   * claimed ({@link isAwaitingClaim}): a storage-profile node runs the relay server by
+   * default, and an unclaimed node on a public address must not become anyone's relay.
+   * The empty-anchor admission in check 1 exists for a node that will be enrolled by
+   * its siblings, which an unclaimed node has none of.
+   *
+   * Otherwise admits when ANY of:
    *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
    *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
    *     configured bootstrap/relay infrastructure);
@@ -2203,6 +2294,10 @@ export class CadreNode implements SAppIdLookup {
    * invitation never becomes an unbounded grant of this node's forwarding capacity.
    */
   private async admitControlRelayReservation(remotePeerId: string): Promise<boolean> {
+    if (this.isAwaitingClaim()) {
+      log('admitControlRelayReservation: REFUSING %s — this node is unclaimed and relays for nobody until it is', remotePeerId);
+      return false;
+    }
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return this.admitReservationUncounted(remotePeerId);
     }
@@ -2291,7 +2386,15 @@ export class CadreNode implements SAppIdLookup {
    * likewise exactly a case this gate must still refuse: the delegate gets
    * the connection and never the control DB.
    *
-   * Admits when ANY of:
+   * Refuses everyone, ahead of every admission below, while this node is waiting to be
+   * claimed ({@link isAwaitingClaim}). The empty-anchor and empty-snapshot admissions
+   * exist so a brand-new node can take replication from the siblings that will
+   * authorize it; an unclaimed node has no siblings yet, and the rows that will
+   * authorize anyone arrive only after the claim, over the owner's streams that the
+   * same two admissions then let in. Configured bootstrap infra is refused too: a
+   * relay opens no control-database stream.
+   *
+   * Otherwise admits when ANY of:
    *  1. a shared-baseline check admits (not running / no DB, empty anchor,
    *     configured bootstrap infra);
    *  2. the materialized authorized set is empty — cold start, before the
@@ -2314,6 +2417,11 @@ export class CadreNode implements SAppIdLookup {
    * ever becomes a supported deployment, this gate needs a key-based admission.
    */
   private authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean {
+    if (this.isAwaitingClaim()) {
+      log('authorizeInboundControlStream: DENYING %s on %s — this node is unclaimed and replicates with nobody until it is',
+        remotePeerId, protocol);
+      return false;
+    }
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return true;
     }
@@ -7313,6 +7421,12 @@ export class CadreNode implements SAppIdLookup {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before initializing seed bootstrap');
     }
+    // A hosted node waiting to be claimed never holds an owner key: the claim is its
+    // one trust source, and genesis-anchoring a key here would mark it claimed by
+    // itself. Refused here rather than in start() because this call comes after it.
+    if (this.config.claim) {
+      throw new Error('CadreNode: a node started with `claim` is owned by its claimant and cannot initialize seed bootstrap with an owner key');
+    }
 
     // A node wiring seed-bootstrap with an owner PRIVATE key is declaring that
     // key an authority of its own party (founder genesis / self-signing owner)
@@ -7339,7 +7453,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       ownerPrivateKey,
       ...this.seedServiceBudgets(),
-      trustPolicy: this.config.seedTrustPolicy,
+      trustPolicy: this.inboundSeedTrustPolicy(),
       // Seed trust anchors on the node-local store (seeded just above with this
       // node's own genesis key), never on the replicated OwnerKey table.
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
@@ -7629,7 +7743,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Enable the seed listener for receiving seeds via the /sereus/seed/1.0.0 protocol.
    * This is for drone nodes that need to receive seeds without being an owner.
-   * Does not require an owner key.
+   * Does not require an owner key. Idempotent; a node started with `config.claim`
+   * calls it itself at the end of {@link start}, so an embedder's own call is a no-op.
    */
   async enableSeedListener(): Promise<void> {
     if (!this.controlNode || !this.controlDatabase) {
@@ -7646,7 +7761,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       // No owner key - this node only receives seeds
       ...this.seedServiceBudgets(),
-      trustPolicy: this.config.seedTrustPolicy,
+      trustPolicy: this.inboundSeedTrustPolicy(),
       // A listener-only node accepts a wire-delivered seed solely against this
       // anchor (there is no per-call override on the inbound handler): with no
       // genesis/invite/operator pin it authorizes nobody, which is the point.
@@ -7713,6 +7828,18 @@ export class CadreNode implements SAppIdLookup {
       },
       onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
     };
+  }
+
+  /**
+   * The node-wide default trust policy for INBOUND seeds, the one value every
+   * {@link SeedBootstrapService} this node constructs is given — the owner service,
+   * the listener, and `applySeed`'s temp service — so the three cannot drift. The
+   * claim policy when the node was started with `config.claim` (the two are refused
+   * together at start, so there is nothing to merge), otherwise the configured
+   * `seedTrustPolicy`, and `undefined` for the service's anchored default.
+   */
+  private inboundSeedTrustPolicy(): SeedTrustPolicy | undefined {
+    return this.claimTrustPolicy ?? this.config.seedTrustPolicy;
   }
 
   /**
@@ -7910,7 +8037,7 @@ export class CadreNode implements SAppIdLookup {
       // (enableSeedListener / initializeSeedBootstrap) to own the handler.
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
-        trustPolicy: this.config.seedTrustPolicy,
+        trustPolicy: this.inboundSeedTrustPolicy(),
         ...this.seedServiceBudgets(),
         // The anchor is node-scoped, not service-scoped: a throwaway service
         // must consult (and persist an accepted signer into) the SAME store the
@@ -8036,6 +8163,55 @@ export class CadreNode implements SAppIdLookup {
     this.noteControlWrite(options.dronePeerId, 'authorize');
     this.retainDialTarget(options.dronePeerId, options.droneMultiaddrs, 'addDrone');
     return result;
+  }
+
+  /**
+   * Claim a node that was started with a claim secret (`CadreNodeConfig.claim`), from
+   * the peer id, addresses and secret its host showed (the QR code): mint a seed, prove
+   * possession of the secret beside it (`claim-proof.ts`), deliver it, and on acceptance
+   * vouch the node into this cadre and keep its addresses as a dial target. The owner
+   * side of the claim-secret entry in the Seed Delivery Protocol (`docs/architecture.md`).
+   *
+   * Requires the seed service with an owner key ({@link initializeSeedBootstrap}), as
+   * {@link addDrone} does. The order is the REVERSE of `addDrone`'s: seed first, row
+   * second. A refused claim (`ClaimRefusedError`, carrying the node's refusal code when
+   * its policy gave one) or a failed delivery (thrown by `deliverSeed`) therefore leaves
+   * no `CadrePeer` row and no retained dial target behind on this node — a phone that
+   * typed the wrong secret, or scanned a node someone else already owns, has nothing to
+   * clean up.
+   *
+   * Idempotent for the same owner: a second call after a dropped response is accepted
+   * by the node (its anchored branch), the row insert is a no-op on an existing row
+   * (`ControlDatabase.insertCadrePeer`), and the dial target is replaced, not duplicated.
+   *
+   * The first dial is kicked (not awaited) so it happens now rather than on the next
+   * timed reconcile pass; a caller that wants to wait for the connection awaits
+   * {@link reconcileControlCohort} itself, with `addDrone`'s caveat that a pass already
+   * in flight is joined rather than restarted. The claimed node dials this one back too,
+   * from the seed's owner list, when this node has a listen or relay address; a phone
+   * with neither is reached by its own reconcile pass alone.
+   *
+   * @throws {ClaimRefusedError} when the node was reached and refused the claim.
+   */
+  async claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Promise<void> {
+    if (!this.seedBootstrapService) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    const secret = parseClaimSecret(target.secret);
+    const seed = await this.seedBootstrapService.createSeed();
+    const proof = claimProof(secret, target.peerId, seed.signerKey, seedDigest(seed));
+    const ack = await this.seedBootstrapService.deliverSeed(
+      { peerId: target.peerId, multiaddrs: target.multiaddrs }, seed, { claimProof: proof });
+    if (!ack.accepted) {
+      throw new ClaimRefusedError(target.peerId, ack.reason ?? 'no reason given', ack.code);
+    }
+    log('claimNode: %s accepted the claim; vouching it into the cadre', target.peerId);
+    // The wrapper queues the write for re-replication: a phone claiming its first
+    // always-on node has no control connection yet, so the insert commits local-only.
+    await this.authorizePeer(target.peerId, target.multiaddrs);
+    this.retainDialTarget(target.peerId, target.multiaddrs, 'claimNode');
+    void this.reconcileControlCohort().catch((error) =>
+      log('claimNode: reconcile kick after claiming %s failed: %o', target.peerId, error));
   }
 
   /**

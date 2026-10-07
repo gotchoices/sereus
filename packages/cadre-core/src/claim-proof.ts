@@ -31,11 +31,30 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { canonicalJson } from './canonical-json.js';
+import type { SeedRefusalCode } from './types.js';
 
 const log = debug('sereus:cadre:claim-proof');
 
 /** Length of a claim secret: 256 bits, so guessing one is infeasible. */
 export const CLAIM_SECRET_BYTES = 32;
+
+/**
+ * Thrown by `CadreNode.claimNode` when the node answered the claim seed with a refusal.
+ * Distinct from a dial or deadline failure (which propagates as thrown by `deliverSeed`):
+ * here the node was reached and said no. `code` is the node's machine-readable cause
+ * when its policy supplied one (`already-claimed`, `claim-proof-invalid`, ...), so a
+ * phone can tell "someone else owns it" from "wrong secret" without parsing `reason`.
+ */
+export class ClaimRefusedError extends Error {
+	constructor(
+		readonly nodePeerId: string,
+		readonly reason: string,
+		readonly code?: SeedRefusalCode,
+	) {
+		super(`Node ${nodePeerId} refused the claim${code ? ` (${code})` : ''}: ${reason}`);
+		this.name = 'ClaimRefusedError';
+	}
+}
 
 /**
  * Decode a claim secret from the base64url text the host shows and the phone scans.

@@ -26,7 +26,16 @@
  *  - `/sereus/seed/1.0.0` ({@link SEED_PROTOCOL}) — enrollment seed delivery.
  *    An owner dials a brand-new node to seed it (the new node has no members
  *    yet, so its gate is inert). The handler's own trust decision is the
- *    anchored seed-trust policy.
+ *    anchored seed-trust policy — or, on a node started with a claim secret
+ *    (`CadreNodeConfig.claim`), the claim-secret policy. Such a node is the one
+ *    stranger-facing state that is NOT "admit the connection and let the
+ *    per-stream gates sort it out": while it waits to be claimed
+ *    (`CadreNode.isAwaitingClaim`) its connection is admitted, because the claim
+ *    seed has to ride one, but its control-DB streams and relay reservations are
+ *    refused ahead of every admission below, the empty-anchor one included. An
+ *    unclaimed node has no siblings to replicate from, and one on a public
+ *    address must not relay for anyone. The claim anchors the owner, after which
+ *    the ordinary rules apply.
  *  - `/sereus/formation/1.0.0` ({@link FORMATION_PROTOCOL}) — cross-party
  *    strand formation via open invitations. Stranger-facing BY DESIGN: the
  *    initiator is another party, and its token is only checkable inside the

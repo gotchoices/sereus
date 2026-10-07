@@ -937,6 +937,25 @@ export interface CadreNodeConfig {
   seedTrustPolicy?: SeedTrustPolicy;
 
   /**
+   * Start this node waiting to be CLAIMED: it belongs to nobody until someone delivers
+   * a seed carrying a proof of this one-time secret (`claim-proof.ts`,
+   * `claimSecretTrustPolicy`), and that signer becomes its anchored owner. The node
+   * turns its seed listener on itself and, while unclaimed, lets a stranger do nothing
+   * but deliver a seed: connections are admitted, control-database streams and relay
+   * reservations are refused (`CadreNode.isAwaitingClaim`).
+   *
+   * A node has exactly one cold-start trust source, so `claim` beside a non-empty
+   * `trustedOwners.pinnedKeys` or a `seedTrustPolicy` fails `start()` closed, and
+   * `initializeSeedBootstrap` (an owner key) refuses on such a node: a hosted node never
+   * holds an owner key. A claimed node restarted with this still set ignores it (its
+   * anchor is non-empty), so the operator need not remove it.
+   */
+  claim?: {
+    /** The one-time claim secret, base64url of 32 bytes. Never written to replicated state or logs. */
+    secret: string;
+  };
+
+  /**
    * Node-local trusted-owner anchor (see `trusted-owner-store.ts`): the
    * NON-replicated, per-party record of owner keys established out of band —
    * the anchor membership/seed trust can rest on, since the replicated
@@ -1728,6 +1747,14 @@ export interface CadreNodeEvents {
   'seed:applied': { partyId: string; peersAdded: number };
   /** Emitted when seed application fails */
   'seed:error': { partyId: string; error: string };
+  /**
+   * Emitted once on a node started with `CadreNodeConfig.claim`, when a seed carrying a
+   * valid claim proof has durably anchored its signer as this node's owner. Fires
+   * BEFORE the seed's peers are merged and its owners dialed, so it precedes that seed's
+   * `seed:applied`. `CadreNode.isAwaitingClaim` is the matching predicate for a reader
+   * that subscribed too late to see the event.
+   */
+  'claim:accepted': { ownerKey: string };
 }
 
 // ============================================================================
