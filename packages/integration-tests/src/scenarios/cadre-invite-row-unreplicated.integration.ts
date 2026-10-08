@@ -68,7 +68,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			}));
 			await A.start();
 			const aOwnerKey = await makeOwnOwner(A, aKey);
-			M = await startPinningMember(partyId, aOwnerKey, captureM.provider);
+			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });
 			const member = M;
 			await admitMember(A, member, STARTUP_MS);
 			// M names A's key in its OwnerKey table (the seat's issuer check reads it) and lists A

@@ -1,34 +1,55 @@
 /**
- * Machines and steps shared by the cadre invitation scenarios (`cadre-invite-*.integration.ts`):
- * an always-on member that pins the owner's key, its owner-online admission, and a device's
- * redemption that keeps trying while members answer retryably.
+ * Machines and steps shared by the cadre invitation scenarios (`cadre-invite-*.integration.ts`)
+ * and the owner-anchor scenario: an always-on member that pins the owner's key, its owner-online
+ * admission, and a device's redemption that keeps trying while members answer retryably.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { CadreNode, CadreInviteUnreachableError, type CadreInvitation, type RawStorageProvider, type RedeemCadreInvitationResult } from '@serfab/cadre-core';
+import type { PrivateKey } from '@libp2p/interface';
+import {
+	CadreNode, CadreInviteUnreachableError, ed25519KeyPairFromLibp2p,
+	type CadreInvitation, type RawStorageProvider, type RedeemCadreInvitationResult,
+} from '@serfab/cadre-core';
 import { controlNodeConfig, controlAddrs, hasOutboundTo } from './node-fixtures.js';
 import { waitUntil } from './wait-utils.js';
 
 /** Pause between a device's redemption attempts while the members answer retryably. */
 const REDEEM_RETRY_PAUSE_MS = 2_000;
 
-export interface InviteMember { node: CadreNode; peerId: string }
+export interface InviteMember { node: CadreNode; peerId: string; key: PrivateKey }
+
+export interface PinningMemberOptions {
+	/** Lets a scenario look inside the member's raw stores. */
+	storageProvider?: RawStorageProvider;
+	/**
+	 * Wire the member's own key for owner signing (`initializeSeedBootstrap`) in place of the
+	 * listener-only seed service, for a machine an owner will make a second owner
+	 * (`CadreNode.addOwner`). A node registers one seed handler, so this has to replace the
+	 * listener rather than follow it; the owner-capable service answers the admitting owner's
+	 * seed the same way. It anchors the member's own key on the member alone.
+	 */
+	ownerCapable?: boolean;
+}
 
 /**
  * An always-on member: `storage` profile on a WebSocket listen address, pinning `ownerKey` as an
  * operator would (`--pin-owner-key`), with the seed handler `cadre start --listen-for-seeds`
- * registers. `storageProvider` lets a scenario look inside the member's raw stores.
+ * registers.
  */
-export async function startPinningMember(partyId: string, ownerKey: string, storageProvider?: RawStorageProvider): Promise<InviteMember> {
+export async function startPinningMember(partyId: string, ownerKey: string, options: PinningMemberOptions = {}): Promise<InviteMember> {
 	const key = await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
 		partyId, privateKey: key, profile: 'storage', strandFilter: 'none', pinnedOwnerKeys: [ownerKey],
-		...(storageProvider ? { storageProvider } : {}),
+		...(options.storageProvider ? { storageProvider: options.storageProvider } : {}),
 	}));
 	await node.start();
-	await node.enableSeedListener();
-	return { node, peerId: peerIdFromPrivateKey(key).toString() };
+	if (options.ownerCapable) {
+		await node.initializeSeedBootstrap(ed25519KeyPairFromLibp2p(key).privateKeyB64);
+	} else {
+		await node.enableSeedListener();
+	}
+	return { node, peerId: peerIdFromPrivateKey(key).toString(), key };
 }
 
 /** The owner-online path: `owner` vouches the member, delivers the seed, and dials it from the retained address. */
