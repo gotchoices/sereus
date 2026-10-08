@@ -34,7 +34,6 @@ import {
   type SavedStartOptions,
 } from '../../src/cadre-phone';
 import { createClosedChatStrand, joinChatStrand } from '../../src/chat-strand';
-import { requestHostNode } from '../../src/host-node-request';
 
 // ── Shared test doubles (hoisted so the vi.mock factories below can close over
 //    them — vitest lifts vi.hoisted above the mocks). ─────────────────────────
@@ -201,13 +200,6 @@ vi.mock('../../src/chat-strand', () => ({
 
 vi.mock('@serfab/cadre-core', () => ({
   decodeCadreInvitation: vi.fn(),
-}));
-
-// The flow itself is covered headlessly in `test/host-node-request.spec.ts`; what
-// the hook owns — the re-entry guard, the abort handle and what it passes down — is
-// what the tests at the bottom of this file exercise.
-vi.mock('../../src/host-node-request', () => ({
-  requestHostNode: vi.fn(),
 }));
 
 // ── Harness ───────────────────────────────────────────────────────────────────
@@ -652,112 +644,6 @@ describe('useCadreInternal — resuming the last session at launch', () => {
     expect(startPhoneNode).not.toHaveBeenCalled();
     expect(sink.current!.status).toBe('idle');
     expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
-  });
-});
-
-describe('useCadreInternal — requesting a node from a cadre-host', () => {
-  beforeEach(resetHarness);
-
-  /** A request that hangs until the test releases it, plus the deps the hook passed down. */
-  function pendingRequest() {
-    let release!: () => void;
-    const deps: { signal?: AbortSignal; node?: unknown } = {};
-    vi.mocked(requestHostNode).mockImplementationOnce(async (_url, _token, passed) => {
-      deps.signal = passed.signal;
-      deps.node = passed.node;
-      await new Promise<void>((resolve) => { release = resolve; });
-      return { donationId: 'donation-1', peerId: 'lent-node' };
-    });
-    return { deps, release: () => release() };
-  }
-
-  it('refuses before the node is started', async () => {
-    const { sink } = mountCadre();
-
-    await expect(sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok')).rejects.toThrow(/not started/);
-    expect(requestHostNode).not.toHaveBeenCalled();
-  });
-
-  it('passes the running node, the platform fetch and an abort signal', async () => {
-    const sink = await mountStarted();
-    vi.mocked(requestHostNode).mockResolvedValueOnce({ donationId: 'donation-1', peerId: 'lent-node' });
-
-    await act(async () => {
-      await sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok');
-    });
-
-    expect(requestHostNode).toHaveBeenCalledWith('http://127.0.0.1:8088', 'tok', expect.objectContaining({
-      fetch: globalThis.fetch,
-      node: h.ctl.node,
-      signal: expect.any(AbortSignal),
-    }));
-  });
-
-  it('refuses a second request while one is in flight', async () => {
-    const sink = await mountStarted();
-    const first = pendingRequest();
-
-    let inFlight!: Promise<unknown>;
-    await actFlush(() => {
-      inFlight = sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok');
-    });
-
-    // The guard, not the disabled button: a slow host would otherwise take two
-    // provisions against one grant.
-    await act(async () => {
-      await expect(sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok')).rejects.toThrow(/already running/);
-    });
-    expect(requestHostNode).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      first.release();
-      await inFlight;
-    });
-  });
-
-  it('allows a retry once the first request has settled, including after a failure', async () => {
-    const sink = await mountStarted();
-    vi.mocked(requestHostNode).mockRejectedValueOnce(new Error('host unreachable'));
-
-    await act(async () => {
-      await expect(sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok')).rejects.toThrow(/host unreachable/);
-    });
-
-    vi.mocked(requestHostNode).mockResolvedValueOnce({ donationId: 'donation-2', peerId: 'lent-node' });
-    await act(async () => {
-      await expect(sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok')).resolves.toEqual({
-        donationId: 'donation-2', peerId: 'lent-node',
-      });
-    });
-  });
-
-  it('aborts an in-flight request when the node is stopped, and waits for it to unwind', async () => {
-    const sink = await mountStarted();
-    const request = pendingRequest();
-
-    let inFlight!: Promise<unknown>;
-    await actFlush(() => {
-      inFlight = sink.current!.requestHostNode('http://127.0.0.1:8088', 'tok');
-    });
-    expect(request.deps.signal!.aborted).toBe(false);
-
-    let stopping!: Promise<void>;
-    await actFlush(() => {
-      stopping = sink.current!.stop();
-    });
-
-    expect(request.deps.signal!.aborted).toBe(true);
-    // The load-bearing half: the node is STILL UP while the aborted request unwinds,
-    // because its cleanup drops the lent node's authorization row through that node.
-    // Without the wait the removal would race `stopPhoneNode` and lose.
-    expect(h.ctl.node).not.toBeNull();
-
-    await act(async () => {
-      request.release();
-      await inFlight;
-      await stopping;
-    });
-    expect(h.ctl.node).toBeNull();
   });
 });
 

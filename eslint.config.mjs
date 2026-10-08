@@ -302,23 +302,6 @@ export default tseslint.config(
 			'no-restricted-syntax': 'off',
 		},
 	},
-	// ---- Import-free app modules ----
-	// An `integration-tests` scenario may import this module's SOURCE by relative path and run
-	// it in plain Node (docs/testing.md → "App modules in a scenario"), so a runtime import of
-	// anything — a native or Expo module above all — would break such a scenario as it loads.
-	// Type-only imports are erased and stay allowed.
-	{
-		files: ['packages/reference-app-rn/src/host-node-request.ts'],
-		rules: {
-			'@typescript-eslint/no-restricted-imports': ['error', {
-				patterns: [{
-					regex: '.',
-					allowTypeImports: true,
-					message: 'This module may be imported by an integration-tests scenario and must stay import-free (docs/testing.md → "App modules in a scenario"). Pass the dependency in through HostNodeRequestDeps instead.',
-				}],
-			}],
-		},
-	},
 	// ---- Type-aware rules (node/library src only) ----
 	// `no-floating-promises` needs type information. Scope it to package `src/` trees
 	// whose tsconfig.json resolves cleanly under NodeNext; the bundler/expo apps

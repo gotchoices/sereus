@@ -193,31 +193,6 @@ Vitest counts every test under a failed `beforeAll` as skipped. A scenario file 
 
 The counting rule is covered by `test-harness/setup-failure-reporter.spec.ts`, which runs Vitest itself on a fixture suite written to the OS temp directory.
 
-## App modules in a scenario
-
-An app module that imports nothing may run inside an `integration-tests` scenario: the scenario imports its **source** by relative path, so the real server meets the requests the app actually sends rather than a hand-written equivalent of them. No scenario does this today; the lint rule that keeps `packages/reference-app-rn/src/host-node-request.ts` import-free stays, so that module can be run this way again.
-
-- **Why not a package dependency.** One from `reference-app-rn` on `@serfab/cadre-host` would
-  install a Fastify server into the Expo app's own `node_modules` (the app sets
-  `hoistingLimits: "workspaces"`) and into every EAS build. One from `integration-tests` on the app
-  would link an Expo app that has no exports map, and bring the question of its dependencies with
-  it. Moving the module into a shared or published package is more than one test is worth, and the
-  module carries phone-specific wording for the user.
-- **The module must stay import-free.** Whatever it imports has to load in plain Node; a native or
-  Expo import breaks the scenario as it loads. The module's header says so, and
-  `eslint.config.mjs` refuses any runtime import in it (type-only imports are erased, so they
-  stay allowed); a second module used this way goes on that rule's `files` list.
-- **No stale-build guard is involved.** Vitest resolves the `.js` specifier to the `.ts` source, so
-  there is no `dist` to go stale.
-- **Scenario files are not built.** `integration-tests`' `tsconfig.build.json` excludes
-  `**/*.integration.ts` as it does `*.spec.ts` and `*.test.ts`: scenarios are Vitest test files,
-  nothing consumes them compiled (the temporary device-run scripts placed in `dist/` import only
-  `dist/harness/`), and a source file from outside `src/` would otherwise fail the build with
-  TS6059. For the same reason `rootDir: "src"` sits in `tsconfig.build.json` rather than
-  `tsconfig.json`, so an editor opening the scenario does not flag the import.
-  `tsconfig.typecheck.json` widens `rootDir` to the repo root, so `yarn typecheck` checks the
-  imported module against this package's settings too.
-
 ## Type-check coverage
 
 `yarn typecheck` (root) fans out to **every** TS workspace. Each package defines a `typecheck`
@@ -411,9 +386,6 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   Not caught: other names (`…_WAIT_MS`) and inline `setTimeout(…, 5000)`. Converting a `link-bound` site means
   deleting its directive too: `reportUnusedDisableDirectives: 'error'` fails the gate on any directive, anywhere
   in the repo, that no longer disables anything.
-- **Import-free app modules:** `@typescript-eslint/no-restricted-imports` refuses every runtime import in
-  `reference-app-rn/src/host-node-request.ts`, which an `integration-tests` scenario imports by source path
-  and runs in plain Node (see "App modules in a scenario"). Type-only imports stay allowed.
 - Rules at **`warn`**: none, deliberately. Every rule the config encodes is a hard `error` gate;
   there is no `warn` backlog to accumulate behind.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in

@@ -1,6 +1,6 @@
 description: A phone needs some machine to act as its address before other people can reach it. Today that has to be a separate public server somebody set up. If the machine a person already runs at home could do the job instead, a phone plus a home machine would be a complete setup with nothing else to configure.
 prereq: bug-party-run-relay-caps-every-relayed-connection, bug-party-run-relay-drops-a-stranger-dialing-through-it
-files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-rn/src/phone-node/config.ts, packages/reference-app-rn/src/host-node-request.ts, packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts, docs/architecture.md, docs/reference-app-rn.md
+files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-rn/src/phone-node/config.ts, packages/reference-app-rn/src/node-claim.ts, packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts, docs/architecture.md, docs/reference-app-rn.md
 difficulty: hard
 tradeoffs: The configured-relay route already works and is tested, so this buys convenience rather than capability — and it puts a person's home machine on the data path for their own traffic, which is more load and more uptime expectation than that machine signed up for.
 ----
@@ -11,7 +11,7 @@ tradeoffs: The configured-relay route already works and is tested, so this buys 
 
 A phone cannot accept incoming connections, so before anyone can reach it, some other machine has to forward traffic on its behalf. That machine is called a relay. Today the phone app is pointed at one by configuration — a public server someone deployed (`ops/docker/libp2p-infra`), named by an environment variable or typed into Settings. That works (`phone-becomes-reachable-through-a-relay`), but it means every deployment needs a piece of shared infrastructure, and everyone who uses it is trusting it to stay up.
 
-There is already a machine in the picture that could do the job. A person can ask a machine they run at home to lend their cadre an always-on node (`rn-request-node-from-cadre-host`, shipped). That node runs the `storage` profile, and a storage-profile node already runs the relay server by default. The phone already knows its address, because it dialled it. Nothing new would have to be deployed, and the setup story becomes "a phone plus a machine at home", with no third party in it.
+There is already a machine in the picture that could do the job. A person can add a node from a machine they run at home to their cadre by scanning the code that machine shows (`rn-app-joins-host-node-by-qr`). That node runs the `storage` profile, and a storage-profile node already runs the relay server by default. The phone already knows its address, because it dialled it. Nothing new would have to be deployed, and the setup story becomes "a phone plus a machine at home", with no third party in it.
 
 ## Use cases
 

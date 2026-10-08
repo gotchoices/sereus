@@ -1,5 +1,6 @@
 /**
- * Settings screen — connect to cadre, join a cadre, apply seed, create strand.
+ * Settings screen — connect to cadre, join a cadre, apply seed, create strand, add an
+ * always-on node.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -9,11 +10,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import type { RedeemCadreInvitationResult, RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
+import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import {
   foundingDetail,
@@ -24,11 +25,11 @@ import {
   type FoundingOutcome,
   type PendingFounding,
 } from '../src/founding-progress';
-import { HostNodeRequestError, type HostNodeRequestStage } from '../src/host-node-request';
 import { describeJoinFailure } from '../src/join-failure';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
 import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
+import { Btn, controlStyles, LabelledInput, Section } from '../src/settings-controls';
 import { TEST_IDS } from '../src/test-ids';
 import { uuid } from '../src/uuid';
 
@@ -53,16 +54,6 @@ const NOISE_CRYPTO_LABEL: Record<NoiseCryptoMode, string> = {
   symmetric: 'Native, symmetric only',
   full: 'Native, including key exchange',
   off: 'Pure JavaScript',
-};
-
-/** Plain-language label for each stage of a host-node request, for the progress line. */
-const HOST_NODE_STAGE_LABEL: Record<HostNodeRequestStage, string> = {
-  requesting: 'Asking the host for a node…',
-  'waiting-for-node': 'Waiting for the node to start…',
-  authorizing: 'Adding the node to this cadre…',
-  seeding: 'Telling the node who its owner is…',
-  connecting: 'Connecting to the node…',
-  connected: 'Connected.',
 };
 
 /** The "Joined cadre" alert body: who admitted this phone, and with what standing. */
@@ -121,11 +112,6 @@ export default function SettingsScreen() {
   const [cadreInvitationInput, setCadreInvitationInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
-  const [hostUrl, setHostUrl] = useState('');
-  const [hostToken, setHostToken] = useState('');
-  // The stage a host-node request has reached, or null when none is running —
-  // which is also what disables the button.
-  const [hostNodeStage, setHostNodeStage] = useState<HostNodeRequestStage | null>(null);
   const [modal, setModal] = useState<{ title: string; message: string; detail?: string } | null>(null);
   // The strand founding in progress, if any. Both create buttons found a strand, so
   // both are disabled while either runs: one screen cannot start two foundings.
@@ -217,30 +203,6 @@ export default function SettingsScreen() {
     }
   };
 
-  // ── Host node (borrow a node from a cadre-host) ────────────────────────
-
-  // Errors carry a message written for a person plus the host's own wording as
-  // `detail`; show both, because the detail is what makes a bug report useful.
-  // The hook holds the real re-entry guard — this only disables the button.
-  //
-  // NOTE: leaving this screen does not cancel a running request, and today it need
-  // not: the tab navigator keeps Settings mounted and the hook lives at the app
-  // root, so the request and its progress state outlive the tab switch either way.
-  // If Settings ever moves behind a stack route that unmounts it, add an unmount
-  // effect that cancels — otherwise the request runs on with nothing showing it.
-  const handleRequestHostNode = async () => {
-    setHostNodeStage('requesting');
-    try {
-      const result = await cadre.requestHostNode(hostUrl, hostToken, setHostNodeStage);
-      showAlert('Host node connected', `Peer ID: ${result.peerId}`, `Loan ${result.donationId}`);
-    } catch (err) {
-      const detail = err instanceof HostNodeRequestError ? err.detail : undefined;
-      showAlert('Host node request failed', String(err instanceof Error ? err.message : err), detail);
-    } finally {
-      setHostNodeStage(null);
-    }
-  };
-
   // ── Strand founding (both create buttons) ──────────────────────────────
 
   // Run one founding with its progress state and log lines. Returns null, without
@@ -323,6 +285,7 @@ export default function SettingsScreen() {
         {connected ? (
           <>
             <InfoRow label="Status" value="Connected" color="#4caf50" />
+            <InfoRow label="Party ID" value={cadre.node?.partyId ?? '—'} />
             <InfoRow label="Peer ID" value={cadre.peerId ?? '—'} />
             {/* Owner public key (base64url): share out-of-band for pairing /
                 enrollment. Tap to view + select the full key. Read-only; the
@@ -352,7 +315,7 @@ export default function SettingsScreen() {
             <LabelledInput label="Party ID" value={partyId} onChangeText={setPartyId} placeholder="auto-generated if empty" testID={TEST_IDS.settings.partyIdInput} />
             <LabelledInput label="Bootstrap addr" value={bootstrapAddr} onChangeText={setBootstrapAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" testID={TEST_IDS.settings.bootstrapAddrInput} />
             <LabelledInput label="Relay" value={relayAddr} onChangeText={setRelayAddr} placeholder="/ip4/…/tcp/…/ws/p2p/… (comma-separated)" testID={TEST_IDS.settings.relayAddrInput} />
-            <Text style={styles.hint}>
+            <Text style={controlStyles.hint}>
               A phone cannot accept incoming connections, so the only address other
               people can dial it at is one a relay forwards. Without a relay this app
               still works — it just cannot invite anyone into a private chat.
@@ -375,7 +338,7 @@ export default function SettingsScreen() {
       {connected && (
         <Section title="Seed Bootstrap">
           <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
-          <Text style={styles.hint}>
+          <Text style={controlStyles.hint}>
             A seed only works when this phone already trusts its signer: it founded
             the cadre, or the signer&apos;s key was pinned. To join someone else&apos;s
             cadre, paste a cadre invitation below instead.
@@ -387,7 +350,7 @@ export default function SettingsScreen() {
       {/* Join a cadre (redeem an owner's invitation at one of its members) */}
       {connected && (
         <Section title="Join a Cadre">
-          <Text style={styles.hint}>
+          <Text style={controlStyles.hint}>
             Paste an invitation an owner of the cadre issued. Joining pins that
             owner&apos;s keys and admits this phone at one of the members the
             invitation names. Distinct from the closed-strand &quot;Paste invite&quot; below.
@@ -413,36 +376,13 @@ export default function SettingsScreen() {
         </Section>
       )}
 
-      {/* Host node (borrow a node from a self-hosted cadre-host) */}
-      {connected && (
-        <Section title="Host Node">
-          <Text style={styles.hint}>
-            Ask a machine running cadre-host to lend this cadre an always-on node.
-            Enter that host&apos;s address and a grant token its owner issued with
-            &quot;cadre-host grant issue&quot;. The host only answers requests from
-            itself, so on a phone forward its port with &quot;adb reverse&quot; and use
-            a 127.0.0.1 address. Phone and host must be on the same Wi-Fi network.
-          </Text>
-          <LabelledInput label="Host URL" value={hostUrl} onChangeText={setHostUrl} placeholder="http://127.0.0.1:8765" testID={TEST_IDS.settings.hostUrlInput} />
-          <LabelledInput label="Grant token" value={hostToken} onChangeText={setHostToken} placeholder="token from cadre-host grant issue" testID={TEST_IDS.settings.hostTokenInput} />
-          <Btn
-            label="Request Node"
-            onPress={handleRequestHostNode}
-            disabled={hostNodeStage !== null || !hostUrl.trim() || !hostToken.trim()}
-            testID={TEST_IDS.settings.requestHostNodeBtn}
-          />
-          {hostNodeStage && (
-            <Text style={styles.slowHint} testID={TEST_IDS.settings.hostNodeStage}>
-              {HOST_NODE_STAGE_LABEL[hostNodeStage]}
-            </Text>
-          )}
-        </Section>
-      )}
+      {/* Add an always-on node (claim a cadre-host node by its code) */}
+      {connected && <AddNodeSection showAlert={showAlert} />}
 
       {/* Closed strand (trust model) */}
       {connected && (
         <Section title="Closed Strand (Invite-Only)">
-          <Text style={styles.hint}>
+          <Text style={controlStyles.hint}>
             Host: create a closed strand and an invitation to share out-of-band.
             Invitee: paste an invitation to consent + join. Requires the host
             reachable via a relay/drone.
@@ -463,9 +403,9 @@ export default function SettingsScreen() {
 
       {/* Selectable-text alert modal */}
       <Modal visible={modal !== null} transparent animationType="fade" onRequestClose={() => setModal(null)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle} testID={TEST_IDS.settings.modalTitle}>{modal?.title}</Text>
+        <View style={controlStyles.modalOverlay}>
+          <View style={controlStyles.modalBox}>
+            <Text style={controlStyles.modalTitle} testID={TEST_IDS.settings.modalTitle}>{modal?.title}</Text>
             {modal?.detail ? (
               <Text style={styles.modalDetail} testID={TEST_IDS.settings.modalDetail}>{modal.detail}</Text>
             ) : null}
@@ -482,22 +422,13 @@ export default function SettingsScreen() {
 
 // ── Reusable sub-components ──────────────────────────────────────────────────
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {children}
-    </View>
-  );
-}
-
 function InfoRow({ label, value, color, onPress, testID }: { label: string; value: string; color?: string; onPress?: () => void; testID?: string }) {
   const valueText = (
     <Text style={[styles.value, color ? { color } : null]} numberOfLines={1} testID={onPress ? undefined : testID}>{value}</Text>
   );
   return (
     <View style={styles.row}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={controlStyles.label}>{label}</Text>
       {onPress ? (
         <Pressable style={styles.valuePress} onPress={onPress} testID={testID}>{valueText}</Pressable>
       ) : valueText}
@@ -513,7 +444,7 @@ function InfoRow({ label, value, color, onPress, testID }: { label: string; valu
 function NoiseCryptoChoice({ value, onChange }: { value: NoiseCryptoMode; onChange: (mode: NoiseCryptoMode) => void }) {
   return (
     <View style={{ marginBottom: 8 }}>
-      <Text style={styles.label}>Connection encryption</Text>
+      <Text style={controlStyles.label}>Connection encryption</Text>
       {NOISE_CRYPTO_MODES.map((mode) => (
         <Pressable
           key={mode}
@@ -526,7 +457,7 @@ function NoiseCryptoChoice({ value, onChange }: { value: NoiseCryptoMode; onChan
           <Text style={styles.optionText}>{NOISE_CRYPTO_LABEL[mode]}</Text>
         </Pressable>
       ))}
-      <Text style={styles.hint}>
+      <Text style={controlStyles.hint}>
         Native runs the connection&apos;s encryption in compiled code: symmetric only
         covers the cost paid on every message, and including key exchange also moves
         the connection handshake. Pure JavaScript is the old, slow path, kept to
@@ -537,33 +468,9 @@ function NoiseCryptoChoice({ value, onChange }: { value: NoiseCryptoMode; onChan
   );
 }
 
-function LabelledInput(props: { label: string; value: string; onChangeText: (t: string) => void; placeholder?: string; multiline?: boolean; testID?: string }) {
-  return (
-    <View style={{ marginBottom: 8 }}>
-      <Text style={styles.label}>{props.label}</Text>
-      {/*
-        Every field on this screen takes an identifier, an address or a token —
-        never prose. RN's defaults (`autoCapitalize="sentences"`, autocorrect on)
-        would upper-case the first character and offer word substitutions, which
-        silently turns a pasted grant token into a 401 and `http://…` into
-        `Http://…`. Off for all of them.
-      */}
-      <TextInput style={styles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} autoCapitalize="none" autoCorrect={false} testID={props.testID} />
-    </View>
-  );
-}
-
-function Btn({ label, onPress, disabled, color, testID }: { label: string; onPress: () => void; disabled?: boolean; color?: string; testID?: string }) {
-  return (
-    <Pressable style={[styles.btn, { backgroundColor: color ?? '#6c63ff' }, disabled && styles.btnDisabled]} onPress={onPress} disabled={disabled} testID={testID}>
-      <Text style={styles.btnText}>{label}</Text>
-    </Pressable>
-  );
-}
-
 function SlowFoundingHint() {
   return (
-    <Text style={styles.slowHint}>
+    <Text style={controlStyles.slowHint}>
       Creating the strand is taking longer than expected. It is still running, and the
       result will appear here when it finishes.
     </Text>
@@ -591,25 +498,13 @@ function useFoundingClock(founding: PendingFounding | null): number {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f1a' },
   content: { padding: 16 },
-  section: { marginBottom: 24 },
-  sectionTitle: { color: '#6c63ff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  label: { color: '#aaa', fontSize: 13, marginBottom: 4 },
-  hint: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
   value: { color: '#fff', fontSize: 13, flexShrink: 1, textAlign: 'right' },
   valuePress: { flexShrink: 1, flexDirection: 'row', justifyContent: 'flex-end' },
   option: { backgroundColor: '#2a2a3e', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a3e', paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
   optionSelected: { borderColor: '#6c63ff' },
   optionText: { color: '#fff', fontSize: 14 },
-  input: { backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14 },
-  btn: { borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
-  btnDisabled: { opacity: 0.4 },
-  btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
-  slowHint: { color: '#ff9800', fontSize: 12, lineHeight: 17, marginTop: 6 },
   error: { color: '#f44336', textAlign: 'center', marginTop: 12 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
-  modalBox: { backgroundColor: '#1e1e2e', borderRadius: 12, padding: 20, width: '85%', maxHeight: '60%' },
-  modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
   modalDetail: { color: '#aaa', fontSize: 13, marginTop: -6, marginBottom: 12 },
   modalScroll: { maxHeight: 200, marginBottom: 8 },
   modalMessage: { color: '#ccc', fontSize: 14, lineHeight: 20 },

@@ -35,9 +35,17 @@
       "expo-notifications",
       "react-native-quick-crypto",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Sereus uses the camera to scan the code a home machine shows when you add its node to your cadre.",
+          "microphonePermission": "Unused: Sereus uses WebRTC data channels only and never requests microphone access.",
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "@config-plugins/react-native-webrtc",
         {
-          "cameraPermission": "Unused: Sereus uses WebRTC data channels only and never requests camera access.",
+          "cameraPermission": "Sereus uses the camera to scan the code a home machine shows when you add its node to your cadre.",
           "microphonePermission": "Unused: Sereus uses WebRTC data channels only and never requests microphone access."
         }
       ]

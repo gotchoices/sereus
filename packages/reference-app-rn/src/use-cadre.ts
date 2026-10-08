@@ -15,6 +15,7 @@ import type {
   RelayReservationState,
   RelayReservationStatus,
   StrandFormationDisclosure,
+  NodeClaimPayload,
 } from '@serfab/cadre-core';
 import {
   startPhoneNode,
@@ -39,11 +40,6 @@ import {
   joinClosedChatStrandFromFormation,
   CHAT_SAPP_ID,
 } from './chat-strand';
-import {
-  requestHostNode as runHostNodeRequest,
-  type HostNodeRequestResult,
-  type HostNodeRequestStage,
-} from './host-node-request';
 import {
   createBackgroundRunner,
   type BackgroundRunner,
@@ -90,33 +86,6 @@ function unreachableInviteMessage(relay: RelayReservationState): string {
       // `/p2p-circuit` address. Say something true rather than something confident.
       return `${lead} Connect through a relay or a host node first.`;
   }
-}
-
-/**
- * How long {@link UseCadreResult.stop} waits for a cancelled host-node request to
- * finish undoing itself before the node comes down anyway. Bounded because the
- * abort cannot interrupt a node call the request is already inside (a cohort
- * reconcile dials peers and can take tens of seconds), and logging out must not
- * wait that out — the cost of giving up is a logged cleanup failure, not a hang.
- */
-const HOST_REQUEST_CANCEL_WAIT_MS = 5_000;
-
-/** A host-node request in flight: the handle {@link stop} cancels through, and its settle. */
-interface InFlightHostRequest {
-  abort: AbortController;
-  /** Resolves once the request has returned or thrown — which is after its cleanup ran. */
-  settled: Promise<void>;
-}
-
-/** Resolve when `settled` does, or after `ms`, whichever comes first. */
-function waitBounded(settled: Promise<void>, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    void settled.then(() => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -204,22 +173,20 @@ export interface UseCadreResult {
    */
   joinViaInvite: (encoded: string) => Promise<StrandInstance>;
   /**
-   * Ask the cadre-host at `hostUrl` to lend this cadre a node, using a grant
-   * token its admin issued, and resolve once the phone is connected to that node
-   * (see `host-node-request.ts` for the six stages `onStage` reports).
-   *
-   * Only one request may run at a time — a second call rejects rather than
-   * provisioning a second node against the same grant. {@link stop} cancels one
-   * in flight.
-   *
-   * Nothing else needs refreshing afterwards: the new peer arrives through the
-   * control database like any other member.
+   * Whether this device's owner key is one of the cadre's owner keys. Only an owner can
+   * add a node: a claim signed by any other key would leave the node owned by a key the
+   * cadre does not trust. False when the node is not running.
    */
-  requestHostNode: (
-    hostUrl: string,
-    grantToken: string,
-    onStage?: (stage: HostNodeRequestStage) => void,
-  ) => Promise<HostNodeRequestResult>;
+  isOwnerDevice: () => Promise<boolean>;
+  /**
+   * Add a cadre-host node to this cadre from its decoded node code (`node-claim.ts` →
+   * `readNodeCode`), through `CadreNode.claimNode`. Resolves once the node accepted the
+   * claim; the node then restarts once under this cadre, and this phone's reconcile passes
+   * reconnect to it. Throws `claimNode`'s errors (`describeClaimFailure` puts them into
+   * words), or a plain `Error` when the node is not running or another claim is running.
+   * Callers check {@link isOwnerDevice} first.
+   */
+  claimHostNode: (payload: NodeClaimPayload) => Promise<void>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -259,10 +226,9 @@ export function useCadreInternal(): UseCadreResult {
   const optsRef = useRef<PhoneNodeOptions | null>(null);
   const runnerRef = useRef<BackgroundRunner | null>(null);
 
-  // Non-null exactly while a host-node request is in flight, so it doubles as the
-  // re-entry guard and as the handle `stop` cancels through. A ref, not state: the
-  // guard has to hold against a same-frame second tap, which a re-render cannot.
-  const hostRequestRef = useRef<InFlightHostRequest | null>(null);
+  // True while a node claim runs. A ref, not state: the guard has to hold against a
+  // same-frame second tap, which a re-render cannot.
+  const claimingRef = useRef(false);
 
   // ── Strand event sync ──────────────────────────────────────────────────
 
@@ -525,16 +491,6 @@ export function useCadreInternal(): UseCadreResult {
     // straight back once the stop finishes. With no options the runner's `ensureNode`
     // does nothing.
     optsRef.current = null;
-    // Cancel a host-node request first, and give it a bounded moment to unwind:
-    // the first thing its cleanup does is drop the lent node's authorization row,
-    // which needs this node still running. Aborting without waiting would leave
-    // that removal racing the teardown below (see HOST_REQUEST_CANCEL_WAIT_MS for
-    // why the wait is bounded rather than open-ended).
-    const hostRequest = hostRequestRef.current;
-    if (hostRequest) {
-      hostRequest.abort.abort();
-      await waitBounded(hostRequest.settled, HOST_REQUEST_CANCEL_WAIT_MS);
-    }
     // Clear the DeviceToken row + drop the rotation listener before stopping, so a
     // logged-out phone is no longer push-wake addressable. Best-effort (logs on
     // failure); must run before stopPhoneNode tears the node down.
@@ -640,41 +596,34 @@ export function useCadreInternal(): UseCadreResult {
     return instance;
   }, [refreshStrands]);
 
-  // ── Borrowing a node from a cadre-host ─────────────────────────────────
+  // ── Adding a cadre-host node (claim by its code) ───────────────────────
 
-  // The guard is here rather than only on the button: a disabled button takes
-  // effect one render late, and two provisions against one grant would use up a
-  // one-node grant on a node the phone then only half-owns.
+  const isOwnerDevice = useCallback(async () => {
+    const controlDb = nodeRef.current?.getControlDatabase();
+    const ownerKey = getOwnerPublicKey();
+    if (!controlDb || !ownerKey) return false;
+    return (await controlDb.getOwnerKeys()).has(ownerKey);
+  }, []);
+
+  // Stopping the node during a claim needs no cleanup here: `claimNode` writes nothing
+  // before the node accepts, so the claim just fails.
   //
-  // NOTE: the in-flight request holds the node it started with. If the OS kills the
-  // node mid-request, the BackgroundRunner's cold start (`ensureNode`) replaces the
-  // singleton and the request's own calls then fail against the dead one — which is
-  // the outcome we want (a clear failure plus cleanup), but the message names the
-  // node call that failed rather than the kill. Thread the abort through the runner
-  // if that ever needs to read better.
-  const requestHostNode = useCallback(async (
-    hostUrl: string,
-    grantToken: string,
-    onStage?: (stage: HostNodeRequestStage) => void,
-  ): Promise<HostNodeRequestResult> => {
+  // NOTE: accepted tradeoff — killed or disconnected between the node accepting and
+  // `claimNode` writing the node's `CadrePeer` row (one local insert), the node belongs
+  // to this owner while this phone has no row, and the code is gone with the process
+  // (the host stops showing it once claimed). The recovery is Reset on the machine and a
+  // fresh scan. Revisit if a device run sees that window hit (slow control writes on React
+  // Native): persist the pending code in the app-private `sereus-node-local` store and
+  // finish the claim on the next start.
+  const claimHostNode = useCallback(async (payload: NodeClaimPayload) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    if (hostRequestRef.current) throw new Error('A host node request is already running');
-    const abort = new AbortController();
-    // `settled` is what `stop` waits on. It resolves in the `finally` below, which
-    // runs only after the flow's own cleanup has — that is the point of the wait.
-    let settle!: () => void;
-    hostRequestRef.current = { abort, settled: new Promise<void>((resolve) => { settle = resolve; }) };
+    if (claimingRef.current) throw new Error('A node is already being added');
+    claimingRef.current = true;
     try {
-      return await runHostNodeRequest(hostUrl, grantToken, {
-        fetch,
-        node: current,
-        onStage,
-        signal: abort.signal,
-      });
+      await current.claimNode(payload);
     } finally {
-      hostRequestRef.current = null;
-      settle();
+      claimingRef.current = false;
     }
   }, []);
 
@@ -683,7 +632,7 @@ export function useCadreInternal(): UseCadreResult {
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
     start, stop, applySeed, joinCadre, dialPeer, createStrand,
-    createClosedStrandWithInvite, joinViaInvite, requestHostNode,
+    createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
   };
 }
 

@@ -564,7 +564,7 @@ Only the hosted nodes (`NN`) join control networks. The dotted line from `NAT` t
 - **NAT.** Per-node UPnP mapping with manual forwards, external-IP detection with the CGNAT flag, per-node reachability verdicts, DuckDNS, and nodes that announce their public addresses and restart when they change. Not yet: a relay reservation for nodes behind CGNAT (`feat-cadre-host-children-reserve-on-a-relay`), NAT-PMP (`feat-cadre-host-nat-pmp-mapping`), and a real dial-back test of reachability.
 - **Install and updates.** The installer wizard, `host.config.json` version 3 and service-host registration (`systemd --user`, LaunchAgent, NSSM; `install --no-service` skips it); the signed-manifest update service with npm apply, rollback and service restart.
 - **CLI.** `install`, `uninstall`, `status`, `start`, `ui`; `join [--invitation]`; `node list|remove|reset|retry`; `nat status|test|settings|forward|ddns set|ddns external`; `push fcm|apns|options|clear|status`. The [package README](../packages/cadre-host/README.md#cli-reference) documents each command.
-- **Not yet.** The phone side of the scan flow in the React Native reference app (`rn-app-joins-host-node-by-qr`); strand reactivity on hosted nodes (`feat-cadre-host-and-provider-nodes-carry-strand-reactivity`); a storage quota per node.
+- **Not yet.** Strand reactivity on hosted nodes (`feat-cadre-host-and-provider-nodes-carry-strand-reactivity`); a storage quota per node.
 
 ## See also
 

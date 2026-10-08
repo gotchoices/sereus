@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    // Here rather than in tsconfig.json so an editor opening a scenario that imports
-    // an app module by relative path (see docs/testing.md) does not flag TS6059.
+    // Keeps dist/ laid out as src/ is: a file pulled in from outside src/ fails the
+    // build (TS6059) instead of moving every output path.
     "rootDir": "src"
   },
   // Scenarios are Vitest test files like *.spec.ts; nothing imports them compiled.

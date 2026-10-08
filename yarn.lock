@@ -5300,6 +5300,7 @@ __metadata:
     "@babel/runtime": "npm:^7.29.2"
     "@config-plugins/react-native-webrtc": "npm:^12.0.0"
     "@libp2p/circuit-relay-v2": "npm:^4.2.13"
+    "@libp2p/utils": "npm:^7.4.1"
     "@libp2p/webrtc": "npm:6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
@@ -5312,6 +5313,7 @@ __metadata:
     "@types/react": "npm:~19.0.10"
     "@types/react-test-renderer": "npm:^19.0.0"
     expo: "npm:~53.0.0"
+    expo-camera: "npm:~16.1.11"
     expo-constants: "npm:~17.1.8"
     expo-dev-client: "npm:~5.2.4"
     expo-linking: "npm:~7.1.7"
@@ -9186,6 +9188,23 @@ __metadata:
     react: "*"
     react-native: "*"
   checksum: 10c0/32d1ccd630c7e62ec4b71cf03e2414fb389ca5d6383a5243ff9efe6ac71061ea626aa7f1503ccd3187d62451165034265b2ed04e508626710f810c0d0246a81d
+  languageName: node
+  linkType: hard
+
+"expo-camera@npm:~16.1.11":
+  version: 16.1.11
+  resolution: "expo-camera@npm:16.1.11"
+  dependencies:
+    invariant: "npm:^2.2.4"
+  peerDependencies:
+    expo: "*"
+    react: "*"
+    react-native: "*"
+    react-native-web: "*"
+  peerDependenciesMeta:
+    react-native-web:
+      optional: true
+  checksum: 10c0/f33418edf8b62dc7ee53c4e3b9ac493a6c4807384c5d0f73ccaa45d28d25321249f9a6ad87f9a30cbdf3a2a7b05700c0fca219132c4d1b6412b844f23e721513
   languageName: node
   linkType: hard
 

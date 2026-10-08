@@ -119,7 +119,7 @@ network: {
 
 `relayAddrs` and `requireRelay` are what make the phone dialable without making a relay a condition of starting — see "Reachability: configuring a relay" below.
 
-`denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A node borrowed from a cadre-host on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
+`denyDialMultiaddr` is set because libp2p's `connection-gater` points its `react-native` package field at the browser build, which refuses to dial insecure `ws://` and private addresses — LAN and loopback. A cadre-host node claimed on the same Wi-Fi is exactly that, in normal use rather than only in development, so the phone opts out of that default the same way the web reference app does. Only the dial is permitted: the connection is still Noise-encrypted, and membership is still gated by cadre-core's `denyDialPeer` plus its inbound and relay hooks. cadre-core threads this to strand nodes as well, which is wanted — they dial LAN addresses too.
 
 **Native crypto for Noise.** Metro resolves `@chainsafe/libp2p-noise`'s browser build, so on its own every handshake and every encrypted frame runs pure-JS SHA-256, ChaCha20-Poly1305 and X25519 on Hermes (see the `WebAssembly` row under "The web APIs the phone's connectivity depends on"). SHA-256 over 512 bytes was measured at about 15 ms on a Galaxy S7, and at that cost the phone's event loop stays busy for long enough that libp2p's connection monitor drops connections (gotchoices/sereus#13). `cadre-phone.ts` therefore passes `buildNoiseCrypto(mode)` from `@serfab/cadre-rn/noise-crypto` as `CadreNodeConfig.network.noiseCrypto`, and cadre-core hands it to the control node and every strand node. The implementation is backed by `react-native-quick-crypto`; [the kit's README](../packages/cadre-rn/README.md) has the measurements and the native modules an app must list. Only local primitives change, not the wire protocol, so a phone with native crypto still talks to nodes without it.
 
@@ -136,7 +136,7 @@ Every mode but `off` starts from optimystic's `noisePureJsCrypto` and overrides 
 | `EXPO_PUBLIC_NOISE_CRYPTO` | build-time env var: `off`, `symmetric` or `full`, read by [`src/noise-crypto-config.ts`](../packages/reference-app-rn/src/noise-crypto-config.ts). Unset or blank means `symmetric`, the kit's `DEFAULT_NOISE_CRYPTO_MODE`. Any other value throws an error naming the three, because silently running a different mode would corrupt the measurement the switch exists for | a build that should start in another mode |
 | Settings → **Connection encryption** | a three-way choice in the disconnected Node form, below **Relay**, prefilled from the mode the node last started with (see [Start options](#start-options-app-private-leveldb)), else from the env var. The choice is remembered: the next launch starts in the same mode | switching one device between modes |
 
-Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or host-node request in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
+Switching modes is Disconnect → choose → Connect, which builds a new node. The choice exists only in the disconnected form, so a strand founding or node claim in flight never sees a rebuild. The connected Node card's **Encryption** row names the mode the running node was built with. `cadre-phone.ts` records it when it builds the node (cadre-core keeps only the implementation), so a device run can confirm what it measured. Adding the native modules needs a native rebuild (§ When Native Rebuild Is Needed). Whether each mode stops the connection-monitor drops on a real device has not been measured yet: blocked ticket `rn-native-noise-crypto-device-run`.
 
 **The ping deadline is already widened, for every node.** While the phone runs pure-JS crypto (`off` mode, or any build before the native crypto above) its event loop can stay busy for longer than libp2p's 5 second liveness-ping deadline, and libp2p aborts a connection on the first missed ping. Each redial costs another handshake, which keeps the phone busy — measured on a Galaxy S7's crypto cost, a two-party bring-up never finished. cadre-core therefore defaults `network.connectionMonitor` to a 30 second deadline, pinged every 35 seconds, on every node it builds (`DEFAULT_CONNECTION_MONITOR`), not only under React Native: the peer at the other end of the connection runs the monitor too, and its abort closes the connection just as effectively. The gap between pings has to exceed the deadline, or libp2p starts a second ping over the same connection while the first is still waiting and drops the connection for that instead. This app sets nothing for it.
 
@@ -147,7 +147,7 @@ Switching modes is Disconnect → choose → Connect, which builds a new node. T
 
 ### Reachability: configuring a relay
 
-A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a node borrowed from a cadre-host, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: the phone runs the strand it invites to, so the joiner must be able to reach the phone itself, and the app refuses to mint an invitation while the phone has no address (`use-cadre.ts`). `CadreNode.createOpenInvitation` alone would still mint one that names only the party's other machines, which may not run a strand the phone has just founded yet.
+A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a cadre-host node it claimed, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: the phone runs the strand it invites to, so the joiner must be able to reach the phone itself, and the app refuses to mint an invitation while the phone has no address (`use-cadre.ts`). `CadreNode.createOpenInvitation` alone would still mint one that names only the party's other machines, which may not run a strand the phone has just founded yet.
 
 The one address a phone can have is a `/p2p-circuit` address earned by holding a **reservation** on a circuit relay — a public libp2p node that forwards traffic on its behalf. Point the app at one and it becomes invitable. Which other kinds of node can hold a reservation today is in [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay).
 
@@ -169,7 +169,7 @@ Each relay is also the phone's **STUN** server, for upgrading a relayed connecti
 | | with a relay reserved | without |
 | --- | --- | --- |
 | Start, found strands, read and write them locally | yes | yes |
-| Dial a drone / a borrowed cadre-host node, sync, chat | yes | yes |
+| Dial a drone / a claimed cadre-host node, sync, chat | yes | yes |
 | Join a closed strand from someone else's invitation | yes | yes |
 | **Create a closed strand + invite** | yes | **no** — refused before anything is founded, with a message naming this field |
 
@@ -238,7 +238,7 @@ The anchor is not secret but it **is** trust-bearing — anything that can silen
 
 ### Bootstrap dial targets (app-private LevelDB)
 
-The dial targets the node learned out of band: the owner peers of every seed it has applied, and every node it added (a lent cadre-host node, a provider drone). They are the only addresses a stranded node has to re-dial its way back into the party, and the only ones the phone has for a node it added until that node publishes a signed address record. Persisted by cadre-core's `PersistentBootstrapPeerStore` over a `kvStoreSlot`: one key of a `LevelDBKVStore` in the app-private `sereus-node-local` database, separate from any strand's database so clearing it cannot disturb replicated data.
+The dial targets the node learned out of band: the owner peers of every seed it has applied, and every node it added (a claimed cadre-host node, a provider drone). They are the only addresses a stranded node has to re-dial its way back into the party, and the only ones the phone has for a node it added until that node publishes a signed address record. Persisted by cadre-core's `PersistentBootstrapPeerStore` over a `kvStoreSlot`: one key of a `LevelDBKVStore` in the app-private `sereus-node-local` database, separate from any strand's database so clearing it cannot disturb replicated data.
 
 Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-binds every retained address to the peer id it was recorded under before dialing), and multiaddrs run 80–120 characters each with several per peer and the snapshot growing for the node's whole lifetime — it would cross SecureStore's ~2048-byte value limit and simply fail the write.
 
@@ -404,7 +404,7 @@ packages/reference-app-rn/
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
-    settings.tsx              # Bootstrap config (drone address, cadre invitation, seed paste)
+    settings.tsx              # Bootstrap config (drone address, cadre invitation, seed paste, always-on node)
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
@@ -422,6 +422,10 @@ packages/reference-app-rn/
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, joining a cadre, seed application
     join-failure.ts           # Plain words for each way a join can fail (NS carries a copy)
+    settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
+    add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
+    node-code-scanner.tsx     # Full-screen camera (expo-camera) that reads a node code's QR
+    node-claim.ts             # Reads a node code; plain words for each way a claim can fail
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
 ```
@@ -464,6 +468,8 @@ packages/cadre-rn/metro/
 | `react-native-quick-base64` | npm | quick-crypto peer; 3.x is a new-architecture TurboModule, supported on Expo 53 with the new architecture enabled |
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
+| `expo-camera` | npm | Scans a cadre-host node code (§ Adding a Home Machine's Node). Native: needs a rebuilt dev client (§ When Native Rebuild Is Needed). Its `app.json` plugin entry sets the camera usage text; its microphone text repeats the WebRTC plugin's "Unused" one, because `microphonePermission: false` deletes the iOS key that plugin sets |
+| `@libp2p/utils` | npm | `isPrivateIp`, which decides whether a node code's addresses reach beyond the machine's home network |
 | `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
 
 **Babel helpers must be 7.29.2 or newer.** Hermes has no native async generators, so Metro's Babel transform rewrites them onto Babel's `wrapAsyncGenerator` helper, imported from `@babel/runtime` (or inlined from `@babel/helpers` for script sources). Before 7.29.2 that helper stopped a generator's `finally` at its first `await` when the consumer left a `for await` loop early. Quereus releases its execution lock in such a `finally`, so on the phone the first early-exit read (`strandTableCount`) left the lock held, and founding a strand hung at `StrandDatabase.bootstrapFounder`. Node runs async generators natively, so no headless test saw it. The app declares `@babel/runtime` `^7.29.2`, and `test/metro-babel/async-generator-cleanup.spec.ts` (Vitest project `metro-babel`) compiles an early-exit probe with the app's own Metro Babel transformer and fails, naming the upgrade, if any helper a bundle would use drops that cleanup. Upgrade inside Babel 7 with `yarn up -R @babel/runtime @babel/helpers` (a bare `yarn up` moves to Babel 8), then restart Metro with `--clear` so it recompiles.
@@ -670,13 +676,11 @@ A strand write can fail without settling whether it landed, so a failed send say
 | Chat | Chat tab → type → send |
 
 
-## Borrowing a Node From a cadre-host
+## Adding a Home Machine's Node (cadre-host)
 
-> **This screen no longer works against cadre-host.** cadre-host no longer serves the grant requests (`/grants`) that **Settings → Host Node** makes; a host now starts a node and shows a QR code that the phone owning the cadre scans and claims ([cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)). `rn-app-joins-host-node-by-qr` replaces this screen with that scan flow and rewrites this section; until then the section below describes the screen as the app still ships it.
+The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is a machine running **cadre-host**, the self-hosted manager ([cadre-host.md](cadre-host.md)). Choosing **Join a cadre** there starts a node waiting to be claimed and shows a code, as a QR code and as text ([cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)). The phone reads that code in **Settings → Add an always-on node** and claims the node with `CadreNode.claimNode`: it dials the node, proves it holds the code's secret, and once the node accepts, writes the node's `CadrePeer` row and keeps its addresses as a dial target. The phone is the side that dials; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
 
-The startup sequence above has you run the always-on node yourself, from the command line. The other way to get one is to ask a machine running **cadre-host** — the self-hosted manager (`docs/cadre-host.md`) — to lend your cadre a node. The phone drives that from **Settings → Host Node**. Here too the phone dials the node; [architecture.md → Which Side Dials](architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this with the other ways to add a machine to a cadre.
-
-This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/host-node-request.spec.ts` (the phone's side of the protocol, against a fake host) and `packages/integration-tests/src/scenarios/cadre-host-donation-phone-requester.integration.ts` (the phone's own client, `src/host-node-request.ts`, run against the host's real `/grants` server and a real lent node, with a phone-shaped requester dialing in). That scenario covers the success path, a wrong grant token and the cleanup `DELETE` after a cancel; the retry loops and the other error mappings are covered only by the fake host. Neither runs on a device, uses React Native's `fetch`, or reaches the host by a LAN address (which the host's origin guard refuses), so this manual check is still the only coverage of those.
+This is a **manual acceptance check**, not something CI runs. The headless coverage is `packages/reference-app-rn/test/node-claim.spec.ts` (what the user is told about a code and about each way a claim fails) and `packages/integration-tests/src/scenarios/cadre-host-join-by-qr.integration.ts` (a phone-shaped claimant against a real cadre-host node, over LAN addresses on the same machine). Neither scans a QR code, runs on a device, or dials across a Wi-Fi network; that is blocked ticket `rn-node-claim-by-qr-device-run`.
 
 ### On the PC
 
@@ -684,62 +688,66 @@ A test session needs a cadre-host data directory and a host running in the foreg
 
 ```bash
 yarn workspace @serfab/cadre-host build
-node packages/cadre-host/dist/bin/host.js install --non-interactive --no-service --no-upnp --no-invite --data-dir <dir>
+node packages/cadre-host/dist/bin/host.js install --non-interactive --no-service --no-upnp --no-browser --data-dir <dir>
 node packages/cadre-host/dist/bin/host.js start --data-dir <dir>          # prints "cadre-host local UI: http://127.0.0.1:<port>"
-node packages/cadre-host/dist/bin/host.js grant issue "phone test"        # add --port <port> if start bound anything but 8765
+node packages/cadre-host/dist/bin/host.js join                            # add --port <port> if start bound anything but 8765
 ```
 
 With cadre-host installed globally, replace `node packages/cadre-host/dist/bin/host.js` with `cadre-host`.
 
 - `install --no-service` writes the identity key and `host.config.json` into `<dir>` and registers no OS service. It is needed once per data directory. Without `--no-service`, `install` registers and starts a service (systemd, launchd, or NSSM on Windows, where it fails if `nssm.exe` is not on the PATH).
-- `start` runs the host until Ctrl+C. Run `grant issue` from a second terminal.
-- `grant issue` requires a label, which can be any text. It prints the grant token to paste into the phone.
+- `--no-upnp` leaves the router alone, so the code carries the node's LAN addresses only: the same-Wi-Fi case this check covers.
+- `start` runs the host until Ctrl+C. Run `join` from a second terminal.
+- `join` starts a node, prints its QR code and the code's text, and waits for the claim. The local UI's Join page (the **Join a cadre** button) does the same and shows the code larger, which is easier to scan.
 
-**The management port** is `uiPort` in `<dir>/host.config.json`: 8765 unless `install` was given `--ui-port`. `start` binds it, or the next free port up to `uiPort+9` if it is taken, and prints the port it bound. `grant issue` talks to 8765 (or `$CADRE_HOST_PORT`) unless given `--port`. The steps below write 8765; use the bound port if it differs.
+**The management port** is `uiPort` in `<dir>/host.config.json`: 8765 unless `install` was given `--ui-port`. `start` binds it, or the next free port up to `uiPort+9` if it is taken, and prints the port it bound. `join` talks to 8765 (or `$CADRE_HOST_PORT`) unless given `--port`. Only the PC talks to this port; the phone never does.
 
-**If cadre-host is already installed as a service** (a plain `cadre-host install`), that service is the running host. Skip `install` and `start` and run only `grant issue`. Running `start` on top of the service starts a second host on the same data directory, on the next free port.
+**If cadre-host is already installed as a service** (a plain `cadre-host install`), that service is the running host. Skip `install` and `start` and run only `join`. Running `start` on top of the service starts a second host on the same data directory, on the next free port.
 
-### Reaching the host from the phone
+### The PC's firewall
 
-The grant surface (`/grants`) is loopback-only in v1: the host's origin guard accepts a `Host` header of `127.0.0.1` or `localhost` and nothing else, so a LAN-IP URL answers `403 forbidden_origin`. Forward the management port instead:
+The phone dials the node on the PC's LAN address, so the phone must be on the **same Wi-Fi** as the PC and the PC's firewall must allow incoming connections to the node. On Windows, rules apply per network profile (Private or Public), and a home Wi-Fi can be classified Public. Windows prompts about `node.exe` only while no rule for it exists, so once any rule exists (including a Block rule left by an earlier prompt) nothing prompts again. A device run on 2026-09-17 hit this: the Wi-Fi was Public, `node.exe` had two inbound Block rules (TCP and UDP, named "Node.js JavaScript Runtime") on Public and no Allow rule on any profile, no prompt appeared, and the phone's dials timed out.
 
-```bash
-adb reverse tcp:8765 tcp:8765
-```
-
-Then enter `http://127.0.0.1:8765` as the Host URL on the phone.
-
-Two things `adb reverse` does **not** cover:
-
-- **libp2p traffic.** The phone dials the lent node directly, so the phone must be on the **same Wi-Fi LAN** as the PC. `adb reverse` needs every port named up front, and a lent node's strand nodes listen on ports the OS picks at start, so forwarding the control port alone is not a working setup.
-- **The PC's firewall.** The phone's dial reaches the lent node on the PC's LAN address, so the firewall must allow incoming connections to it. On Windows, rules apply per network profile (Private or Public), and a home Wi-Fi can be classified Public. Windows prompts about `node.exe` only while no rule for it exists, so once any rule exists (including a Block rule left by an earlier prompt) nothing prompts again. The 2026-09-17 device run hit this: the Wi-Fi was Public, `node.exe` had two inbound Block rules (TCP and UDP, named "Node.js JavaScript Runtime") on Public and no Allow rule on any profile, no prompt appeared, and the phone's dials timed out.
-  - **How to check** (PowerShell): `Get-NetConnectionProfile` shows the network's `NetworkCategory`. `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Format-Table DisplayName, Direction, Action, Profile, Enabled` lists the rules for this `node.exe` (`Get-NetFirewallRule -DisplayName "*Node*"` also finds rules for other programs with Node in the name). `adb shell nc -w 3 <pc-lan-ip> <ws-port>` tests the path from the phone; a timeout means something between the phone and the node drops the connection. The WebSocket port is described under "If the flow stalls".
-  - **Fix, either one** (administrator PowerShell): mark the network Private (`Set-NetConnectionProfile -InterfaceAlias <alias> -NetworkCategory Private`, with the alias from `Get-NetConnectionProfile`), which works only when an Allow rule for `node.exe` covers the Private profile (the 2026-09-17 PC had none); or add an inbound Allow rule on the profile the network uses, for `node.exe` or for the ports the host gives lent nodes (10000–20000 by default), for example `New-NetFirewallRule -DisplayName "cadre-host lent nodes" -Direction Inbound -Protocol TCP -LocalPort 10000-20000 -Action Allow -Profile Public`. That rule opens those ports to every program on every Public network, so remove it after the session: `Remove-NetFirewallRule -DisplayName "cadre-host lent nodes"`.
-  - A Block rule overrides an Allow rule. An existing Block rule for `node.exe` on the network's profile has to be disabled or removed, whichever fix you choose: `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Where-Object Action -eq Block | Disable-NetFirewallRule` disables every Block rule for this `node.exe`.
+- **How to check** (PowerShell): `Get-NetConnectionProfile` shows the network's `NetworkCategory`. `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Format-Table DisplayName, Direction, Action, Profile, Enabled` lists the rules for this `node.exe` (`Get-NetFirewallRule -DisplayName "*Node*"` also finds rules for other programs with Node in the name).
+- **Network or app?** `adb shell nc -w 3 <pc-lan-ip> <ws-port>` opens a plain TCP connection from the phone to the node; `<ws-port>` is the node's WebSocket port, which the node's page in the host's local UI (Nodes) lists under Ports as `ws`. A timeout means something between the phone and the node drops the connection, so a claim that fails to reach the node is the network's or the firewall's fault, not the app's.
+- **Fix, either one** (administrator PowerShell): mark the network Private (`Set-NetConnectionProfile -InterfaceAlias <alias> -NetworkCategory Private`, with the alias from `Get-NetConnectionProfile`), which works only when an Allow rule for `node.exe` covers the Private profile (the 2026-09-17 PC had none); or add an inbound Allow rule on the profile the network uses, for `node.exe` or for the ports the host gives its nodes (10000–20000 by default), for example `New-NetFirewallRule -DisplayName "cadre-host nodes" -Direction Inbound -Protocol TCP -LocalPort 10000-20000 -Action Allow -Profile Public`. That rule opens those ports to every program on every Public network, so remove it after the session: `Remove-NetFirewallRule -DisplayName "cadre-host nodes"`.
+- **A Block rule overrides an Allow rule.** An existing Block rule for `node.exe` on the network's profile has to be disabled or removed, whichever fix you choose: `Get-NetFirewallApplicationFilter -Program (Get-Command node).Source | Get-NetFirewallRule | Where-Object Action -eq Block | Disable-NetFirewallRule` disables every Block rule for this `node.exe`.
 
 ### The run
 
-1. Connect the phone solo (Settings → Connect, no bootstrap address).
-2. Settings → **Host Node** → paste the Host URL and the grant token → **Request Node**.
-3. The progress line advances through: asking the host, waiting for the node to start, adding it to the cadre, seeding it, connecting. A failure opens the usual modal, with the host's own wording underneath the plain-language message.
+1. Connect the phone solo (Settings → Connect, no bootstrap address). The device must be an owner of the cadre it is connected to; a phone that founded its own party is one.
+2. Settings → **Add an always-on node** → **Scan code**, and point the camera at the code. Or copy the code's text to the phone, paste it into the field and tap **Use code**. The first scan asks for camera permission.
+3. The approval prompt names the cadre the node will join (the full Party ID, as the Node card shows it), this device's owner fingerprint (the first 8 characters of its owner key), the node's peer id, and whether the node is reachable from anywhere or only on the machine's home network. Nothing is claimed until **Add to this cadre**.
+4. The progress line reads "Reaching the node and adding it to this cadre…". After 20 seconds it adds that some addresses are not answering: each address the phone cannot reach costs up to 21.5 seconds before the next is tried, so a code none of whose addresses answer takes about two minutes to fail.
 
-Expected result: the stages reach `connected`, and the lent node's peer id appears among the phone's control connections.
+Expected result: the alert "Node added" with the node's peer id, and the host's page for the node reading "Claimed by owner `<fingerprint>` into cadre `<party>`", with the fingerprint and Party ID the prompt showed. The node then restarts itself once under the cadre, which drops the connection the claim used; the phone's next reconcile pass (within 15 seconds) connects again, and the host then reports the node connected. "Node added" means the node accepted the claim, not that a connection is open.
 
-Disconnecting (Settings → Disconnect) while a request is running cancels it: the app drops the authorization it had given the lent node and asks the host to end the loan, then brings the node down. It waits a few seconds for that to finish — not indefinitely, so a host that has gone quiet cannot hold up a logout. If the wait runs out, the loan is left for the host's own UI or `cadre-host` CLI to end.
+Relaunching the app reconnects to the same cadre by itself (see [Start options](#start-options-app-private-leveldb)), and the phone dials the node again from the addresses it kept ([Bootstrap dial targets](#bootstrap-dial-targets-app-private-leveldb)).
 
-Relaunching the app reconnects to the same cadre by itself (see [Start options](#start-options-app-private-leveldb)), so the phone should reach the lent node again from the address it recorded when it added it. The headless proof of that reconnect is the integration scenario named above; a device run has not checked it yet (blocked ticket `rn-host-node-request-device-run`).
+The section shows only while the node is connected. Switching tabs does not stop a claim. Disconnect during a claim stops the node and the claim fails; before the node accepted, nothing changed on either side, so scan again.
 
-### If the flow stalls
+### What a failure says
 
-- **Stuck at "Adding the node to this cadre"** (the `authorizing` stage). That step writes to the control database. Run `yarn workspace @serfab/reference-app-rn vitest run --project metro-babel` and restart Metro with `--clear`: the Babel async-generator helper defect behind `rn-solo-founding-stall-on-device` left Quereus's lock held after an early-exit read, and it only exists in Metro's compiled bundle. The device-side confirmation of that fix is ticket `rn-solo-founding-device-run`, which has since landed.
-- **Stuck at "Connecting to the node"**, then failing after 180 seconds. The phone reached the host over the forwarded port but cannot reach the node itself: check the Wi-Fi network and the firewall. The phone tries every address the host reported for the node, one at a time, giving each up to 21.5 seconds, so a few unreachable addresses (the PC's other network adapters, or LAN addresses a firewall drops) delay the connection by that much each but do not prevent it. The connect wait counts from the first dial, and the phone dials again whenever an attempt ends without a connection. The host reports a TCP and a WebSocket (`/ws`) address on every address the PC has, and the phone can use only the `/ws` ones. VPN adapters are a common source of extra addresses: on the 2026-09-17 run the host reported six, on the Tailscale address, the LAN address and `127.0.0.1`.
-- **Network or app?** The host also reports `/ip4/127.0.0.1/tcp/<ws-port>/ws` for the lent node, where `<ws-port>` is the node's WebSocket port. The node's page in the host's local UI (Nodes) lists it under Ports as `ws`; it was 10004 for the first loan on a fresh host, but read it rather than assume it. With `adb reverse tcp:<ws-port> tcp:<ws-port>`, the phone's dial to that address reaches the node over USB. If the flow reaches "Connected" with the forward and times out without it, the app works and the cause is the network or the firewall. The forward is only a diagnostic: strand nodes listen on ports the OS picks at start, so it does not make chat work.
+Every failure opens the usual alert, with the underlying error under the title for bug reports. When the same code can succeed again, the section keeps it and offers **Try again** (no rescan and no second approval) and **Discard**. That matters once the node has accepted: the host stops showing the code within about 2 seconds of a claim.
+
+| Alert | Cause | Same code again? |
+|---|---|---|
+| "…can only be reached on the machine's home network so far, and this phone could not reach it…" | No address answered, and the code holds LAN addresses only: the phone is on another network, or the firewall drops the dial | yes |
+| "This phone could not reach the node at any of its addresses…" | No address answered, though the code has a public address: the machine is off or offline, the router does not forward the mapped port, or (on the same Wi-Fi) the firewall drops the dial | yes |
+| "This node already belongs to another cadre…" | Someone else claimed the node first (`already-claimed`). Reset the node on the machine and scan the new code | no |
+| "The node did not accept this code…" | The secret does not match (`claim-proof-invalid`): the node was reset after the code was shown | no |
+| "The node is refusing claims for a while…" | Several wrong codes in a short time (`claim-rate-limited`) | yes, after a minute |
+| "The node could not save its new owner…" | The node could not write its claim to disk (`claim-not-persisted`) | yes |
+| "Adding the node did not finish…" | The node was reached and the exchange, or a step on the phone, failed. The node accepts a repeat claim from the same owner | yes |
+| "Only an owner can add a node" | This device is a member of the cadre, not one of its owners, so nothing was sent | — |
+
+A code that is not a node code, comes from a newer cadre-host, or is cut short is refused before the approval prompt, with a line saying which.
 
 ### Not covered here
 
-- Strands on the lent node. A lent node launches no strand of its own — whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
-- Reaching a host across the internet rather than a home LAN: the host maps each lent node's ports through its router and the node announces the resulting public addresses ([cadre-host.md → Public addresses reach the node](cadre-host.md#public-addresses-reach-the-node)); whether the router answers on them is not tested from the phone.
-- Listing loans or ending one from the app. The host's own UI and `cadre-host` CLI do that.
+- Strands on the node. A cadre-host node launches no strand of its own; whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
+- Opening a code from the phone's own camera app rather than the scanner inside this app: ticket `rn-app-opens-node-codes-from-the-system-camera`.
+- Listing the cadre's nodes or removing one from the app. cadre-host's UI and CLI do that on the machine's side.
 
 
 ## Build & Development Workflow
@@ -822,7 +830,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 

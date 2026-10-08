@@ -27,13 +27,21 @@ export const TEST_IDS = {
 		createClosedStrandBtn: 'btn-create-closed-strand',
 		inviteInput: 'input-invite',
 		joinViaInviteBtn: 'btn-join-via-invite',
-		/** Management address of a cadre-host to borrow a node from. */
-		hostUrlInput: 'input-host-url',
-		/** Grant token that host's admin issued. */
-		hostTokenInput: 'input-host-token',
-		requestHostNodeBtn: 'btn-request-host-node',
-		/** Progress line showing which stage the host-node request has reached. */
-		hostNodeStage: 'text-host-node-stage',
+		/** Opens the camera to scan a cadre-host node code. */
+		scanNodeCodeBtn: 'btn-scan-node-code',
+		/** Closes the camera without a scan. */
+		scannerCloseBtn: 'btn-scanner-close',
+		/** A pasted node code (`sereus-join:…`), read by `btn-use-node-code`. */
+		nodeCodeInput: 'input-node-code',
+		useNodeCodeBtn: 'btn-use-node-code',
+		/** The approval prompt's buttons: claim the node into this cadre, or not. */
+		approveNodeClaimBtn: 'btn-approve-node-claim',
+		cancelNodeClaimBtn: 'btn-cancel-node-claim',
+		/** Progress line while a node claim runs. */
+		nodeClaimProgress: 'text-node-claim-progress',
+		/** After a failed claim that may succeed again: Try again with the kept code, or Discard it. */
+		retryNodeClaimBtn: 'btn-retry-node-claim',
+		discardNodeClaimBtn: 'btn-discard-node-claim',
 		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
 		/** Elapsed-time line under the modal title; shown only for strand-creation results. */

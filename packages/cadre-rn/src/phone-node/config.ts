@@ -86,8 +86,8 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// primitives change, not the wire protocol.
 			noiseCrypto: inputs.noiseCrypto,
 			// libp2p's `connection-gater` points its `react-native` field at the browser build, which
-			// refuses to dial plain `ws://`, loopback and private addresses. A node borrowed from a
-			// cadre-host on the same Wi-Fi, an emulator reaching `10.0.2.2` and a self-run relay
+			// refuses to dial plain `ws://`, loopback and private addresses. A cadre-host node claimed
+			// by its code on the same Wi-Fi, an emulator reaching `10.0.2.2` and a self-run relay
 			// without TLS are all of those. Only the dial is permitted: the connection is still Noise,
 			// the pinned `/p2p/<id>` decides which machine answers, and membership is still gated by
 			// `denyDialPeer` and the inbound hooks. cadre-core hands this gater to strand nodes too.
