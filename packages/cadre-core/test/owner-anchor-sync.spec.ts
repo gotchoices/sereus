@@ -13,6 +13,9 @@ import { freshKeyPair, freshStamp, signB64 } from './control-constraint-helpers.
 import type { KeyPair } from './control-constraint-helpers.js';
 import { mintContactJoiner } from './formation-consent-helper.js';
 
+/** The party every proof here is signed for; the digests bind it, so one id serves the whole file. */
+const PARTY_ID = 'owner-anchor-sync-spec';
+
 /**
  * The rule by which every node recomputes its trusted-owner anchor from the replicated
  * `OwnerKey` table (`owner-anchor-sync.ts`), driven with real signatures and no database:
@@ -26,7 +29,7 @@ function signedRow(owner: KeyPair, voucher: KeyPair, stampId = freshStamp()): Ow
 		key: owner.publicKey,
 		stampId,
 		vouchOwner: voucher.publicKey,
-		vouchSig: signB64(voucher, ownerKeyAddDigest(owner.publicKey, stampId)),
+		vouchSig: signB64(voucher, ownerKeyAddDigest(PARTY_ID, owner.publicKey, stampId)),
 		vouchUsage: null,
 	};
 }
@@ -44,7 +47,7 @@ function tombstoneFor(row: OwnerKeyRow, signer: KeyPair): RevocationRow {
 		stampId: row.stampId,
 		reissuedAt: 0,
 		signerKey: signer.publicKey,
-		signerSig: signB64(signer, revocationDigest('OwnerKey', row.key, row.stampId)),
+		signerSig: signB64(signer, revocationDigest(PARTY_ID, 'OwnerKey', row.key, row.stampId)),
 	};
 }
 
@@ -57,7 +60,7 @@ async function invitationAdmittedOwner(issuer: KeyPair): Promise<{ row: OwnerKey
 	const device = await mintContactJoiner();
 	const inviteKeys = freshKeyPair();
 	const signed = { key: inviteKeys.publicKey, peerId: null, grantsOwner: true, expiresAt: null, totalUses: 1, stampId: freshStamp() };
-	const invite = { ...signed, issuerKey: issuer.publicKey, issuerSig: signB64(issuer, cadreInviteAddDigest(signed)) };
+	const invite = { ...signed, issuerKey: issuer.publicKey, issuerSig: signB64(issuer, cadreInviteAddDigest(PARTY_ID, signed)) };
 	const usageStampId = freshStamp();
 	const ownerStampId = freshStamp();
 	const usage = {
@@ -67,8 +70,8 @@ async function invitationAdmittedOwner(issuer: KeyPair): Promise<{ row: OwnerKey
 		peerKey: device.peerKey,
 		peerStampId: freshStamp(),
 		ownerStampId,
-		inviteSig: signB64(inviteKeys, cadreInviteRedeemDigest(invite.key, usageStampId, device.peerKey)),
-		peerSig: signB64({ privateKey: device.privateKey, publicKey: device.peerKey }, cadreInviteConsentDigest(invite.key, usageStampId, device.peerKey)),
+		inviteSig: signB64(inviteKeys, cadreInviteRedeemDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
+		peerSig: signB64({ privateKey: device.privateKey, publicKey: device.peerKey }, cadreInviteConsentDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
 	};
 	const row: OwnerKeyRow = { key: device.peerKey, stampId: ownerStampId, vouchOwner: issuer.publicKey, vouchSig: null, vouchUsage: usageStampId };
 	return {
@@ -94,12 +97,12 @@ describe('deriveOwnerAnchor', () => {
 		// Rows listed with the far end first, so a single sweep in row order could not find B before C needs it.
 		const rows = [admitted.row, bRow, foundingRow(a)];
 
-		const { target, refusedRemovals } = deriveOwnerAnchor({ anchor: anchorOf([a]), rows, tombstones: [], chain: admitted.chain });
+		const { target, refusedRemovals } = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a]), rows, tombstones: [], chain: admitted.chain });
 		expect(target).toEqual(keysOf(a, b, admitted.device));
 		expect(refusedRemovals).toEqual([]);
 
 		// With no anchored voucher at the root, nothing is derived — the table alone seats nobody.
-		expect(deriveOwnerAnchor({ anchor: new Map(), rows, tombstones: [], chain: admitted.chain }).target.size).toBe(0);
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: new Map(), rows, tombstones: [], chain: admitted.chain }).target.size).toBe(0);
 	});
 
 	it('keeps an owner a removed owner had added where it was derived, and cannot derive it elsewhere until re-added', () => {
@@ -111,15 +114,15 @@ describe('deriveOwnerAnchor', () => {
 		const bRemoved = tombstoneFor(bRow, a);
 
 		// A machine that had derived B and C: B's row is retired, so B goes; C's row is live, so C stays.
-		const kept = deriveOwnerAnchor({ anchor: anchorOf([a], [b, c]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
+		const kept = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a], [b, c]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
 		expect(kept.target).toEqual(keysOf(a, c));
 
 		// A machine that never held C: its chain from A runs through B's retired row.
-		const unreached = deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
+		const unreached = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
 		expect(unreached.target).toEqual(keysOf(a));
 
 		const cByA = signedRow(c, a);
-		const healed = deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [cByA], tombstones: [bRemoved], chain: null });
+		const healed = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a]), rows: [cByA], tombstones: [bRemoved], chain: null });
 		expect(healed.target).toEqual(keysOf(a, c));
 	});
 
@@ -134,15 +137,15 @@ describe('deriveOwnerAnchor', () => {
 		const a2Row = signedRow(a2, a);
 		const rotation = { rows: [aRow, a2Row], tombstones: [tombstoneFor(aRow, a2)], chain: null };
 
-		expect(deriveOwnerAnchor({ anchor: anchorOf([a]), ...rotation }).target).toEqual(keysOf(a2));
-		expect(deriveOwnerAnchor({ anchor: anchorOf([], [a2]), ...rotation }).target).toEqual(keysOf(a2));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a]), ...rotation }).target).toEqual(keysOf(a2));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([], [a2]), ...rotation }).target).toEqual(keysOf(a2));
 
 		// A2 is a full owner afterwards: B derives through its vouch, and B's removal of A2 applies.
 		const bRow = signedRow(b, a2);
 		const rows = [...rotation.rows, bRow];
-		expect(deriveOwnerAnchor({ ...rotation, anchor: anchorOf([], [a2]), rows }).target).toEqual(keysOf(a2, b));
+		expect(deriveOwnerAnchor({ ...rotation, partyId: PARTY_ID, anchor: anchorOf([], [a2]), rows }).target).toEqual(keysOf(a2, b));
 		const tombstones = [...rotation.tombstones, tombstoneFor(a2Row, b)];
-		expect(deriveOwnerAnchor({ anchor: anchorOf([], [a2, b]), rows, tombstones, chain: null }).target).toEqual(keysOf(b));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([], [a2, b]), rows, tombstones, chain: null }).target).toEqual(keysOf(b));
 	});
 
 	it('a re-add under a fresh stamp beats the older tombstone, and a base pin of a removed key is dropped', () => {
@@ -152,12 +155,12 @@ describe('deriveOwnerAnchor', () => {
 		const removed = tombstoneFor(first, a);
 
 		// K pinned here out of band (operator pin), removed by A elsewhere: the pin goes.
-		expect(deriveOwnerAnchor({ anchor: anchorOf([a, k]), rows: [], tombstones: [removed], chain: null }).target).toEqual(keysOf(a));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a, k]), rows: [], tombstones: [removed], chain: null }).target).toEqual(keysOf(a));
 
 		// Re-added under a fresh stamp: the live derivable row wins over the old stamp's tombstone.
 		const second = signedRow(k, a);
-		expect(deriveOwnerAnchor({ anchor: anchorOf([a, k]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
-		expect(deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a, k]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
 	});
 
 	it('refuses a mutual removal that would empty the anchor, and applies it when a third owner remains', () => {
@@ -168,11 +171,11 @@ describe('deriveOwnerAnchor', () => {
 		const bRow = signedRow(b, a);
 		const tombstones = [tombstoneFor(aRow, b), tombstoneFor(bRow, a)];
 
-		const refused = deriveOwnerAnchor({ anchor: anchorOf([a, b]), rows: [], tombstones, chain: null });
+		const refused = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a, b]), rows: [], tombstones, chain: null });
 		expect(refused.target).toEqual(keysOf(a, b));
 		expect(new Set(refused.refusedRemovals)).toEqual(keysOf(a, b));
 
-		const applied = deriveOwnerAnchor({ anchor: anchorOf([a, b, c]), rows: [], tombstones, chain: null });
+		const applied = deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a, b, c]), rows: [], tombstones, chain: null });
 		expect(applied.target).toEqual(keysOf(c));
 		expect(applied.refusedRemovals).toEqual([]);
 	});
@@ -187,6 +190,6 @@ describe('deriveOwnerAnchor', () => {
 		const forged = { ...tombstoneFor(bRow, a), signerSig: tombstoneFor(signedRow(b, a), a).signerSig };
 
 		// B's row is kept out so the tombstones' stamps retire nothing; B is base, as a pin would be.
-		expect(deriveOwnerAnchor({ anchor: anchorOf([a, b]), rows: [], tombstones: [byStranger, bySelf, forged], chain: null }).target).toEqual(keysOf(a, b));
+		expect(deriveOwnerAnchor({ partyId: PARTY_ID, anchor: anchorOf([a, b]), rows: [], tombstones: [byStranger, bySelf, forged], chain: null }).target).toEqual(keysOf(a, b));
 	});
 });

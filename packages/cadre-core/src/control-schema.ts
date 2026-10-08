@@ -13,8 +13,12 @@ export const CONTROL_SCHEMA = `-- A Sereus party's cadre (its nodes) and their p
 --
 -- Every write is authorized by a check: an owner signs an action-tagged digest of the row
 -- (cadre-core control-authorization.ts), or a peer signs its own record. Each digest leads
--- with a 'CadreControl.<Table>' domain tag and an action tag, so an approval verifies only
--- against the one rule it was minted for.
+-- with a 'CadreControl.<Table>' domain tag, an action tag and party_id(), the party this
+-- machine is configured for (a zero-argument function ControlDatabase registers on its own
+-- engine, never read from a context value or a replicated table), so an approval verifies
+-- only against the one rule, in the one party, it was minted for: two parties that share
+-- an owner key never accept each other's approvals. FormationUsage is the exception, its
+-- two digests scoped by the invitation token instead (FormationUsage.Authorized).
 --
 -- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey, JoinedStrand,
 -- JoinRequest, CadrePeer, DeviceToken, CadreInvite) carry a one-off StampId bound into their
@@ -76,9 +80,7 @@ declare schema CadreControl {
         -- count keeps a same-transaction swap of the sole owner off that branch. That count is
         -- deliberately raw, the one owner read here that ignores Revocation: a machine holding only
         -- a retired owner row must still be refused a second genesis, or a removed device could
-        -- re-found the party on its own copy. An owner cannot sign its own removal. The domain tag
-        -- scopes an approval to a table and an action, not to a party: two parties sharing an owner
-        -- key would accept each other's approvals.
+        -- re-found the party on its own copy. An owner cannot sign its own removal.
         -- The consent branch seats an owner with no signature at all: a CadreInviteUsage row
         -- written in the same transaction names this exact row (Key and stamp), and the
         -- invitation it redeemed grants ownership and was issued by the stored VouchOwner. The
@@ -87,7 +89,7 @@ declare schema CadreControl {
         constraint Authorized check on insert, delete (
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0
                 and new.VouchOwner is null and new.VouchSig is null and new.VouchUsage is null)
-                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null)
@@ -99,7 +101,7 @@ declare schema CadreControl {
                                 and U.OwnerStampId = new.StampId
                                 and exists (select 1 from committed.CadreInvite I where I.Key = U.InviteKey and I.GrantsOwner = 1 and I.IssuerKey = new.VouchOwner)
                     ))
-                or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
+                or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
     ) with context (OwnerKey text null, Signature text null);
 
@@ -115,7 +117,7 @@ declare schema CadreControl {
         ),
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.ValidationKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.ValidationKey', 'add', party_id(), new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         -- Owner-signed over the stored row, or a reap: a committed tombstone naming this exact row
         -- incarnation lets a node that was offline at removal time delete the stale row unsigned
@@ -123,7 +125,7 @@ declare schema CadreControl {
         -- cannot stand in for the signature; the stamp clause, so a tombstone of an earlier
         -- incarnation cannot remove the current one.
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.ValidationKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.ValidationKey', 'remove', party_id(), old.Key, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'ValidationKey' and R.RowKey = old.Key and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text, Signature text);
@@ -162,7 +164,7 @@ declare schema CadreControl {
         -- A standalone tombstone (no accompanying delete, Revocation.Authorized) lets an owner
         -- foreclose consent-seating of an id that never existed: owner-only, and ids are random.
         constraint AuthorizedInsert check on insert (
-            (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+            (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'add', party_id(), new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
                 and new.FounderOwnerKey = context.OwnerKey)
                 or (
                     new.Type = 'o'
@@ -188,7 +190,7 @@ declare schema CadreControl {
         -- MemberPrivateKey is stored nowhere else, so this delete is unrecoverable
         -- (tickets/backlog/debt-strand-tombstone-reap.md owns any change).
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         -- An open strand has no membership gate, so no member key.
         constraint MemberKeyClosedOnly check (
@@ -214,11 +216,11 @@ declare schema CadreControl {
         constraint NoUpdate check on update (false),
         -- Binding PrivateKey means a captured approval can only reproduce the key it approved.
         constraint AuthorizedInsert check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.StrandPartyKey', 'add', new.Id, new.PrivateKey, new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.StrandPartyKey', 'add', party_id(), new.Id, new.PrivateKey, new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         -- No reap branch: the key is stored nowhere else (as Strand.AuthorizedDelete).
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.StrandPartyKey', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.StrandPartyKey', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 
@@ -246,10 +248,10 @@ declare schema CadreControl {
         -- Owner-signed only: every always-on machine of the party downloads the strands named
         -- here, so a machine that is not an owner keeps its joins machine-local.
         constraint AuthorizedInsert check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinedStrand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinedStrand', 'add', party_id(), new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinedStrand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinedStrand', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'JoinedStrand' and R.RowKey = old.Id and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text, Signature text);
@@ -285,12 +287,12 @@ declare schema CadreControl {
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
-                digest('CadreControl.JoinRequest', 'add', new.Id, new.Invitation, new.Disclosure, cast(new.RequestedAt as text), cast(new.ExpiresAt as text), new.StampId),
+                digest('CadreControl.JoinRequest', 'add', party_id(), new.Id, new.Invitation, new.Disclosure, cast(new.RequestedAt as text), cast(new.ExpiresAt as text), new.StampId),
                 context.Signature, A.Key, 'ed25519'))
         ),
         -- Reapable: the inviting party and the user hold the invitation too.
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinRequest', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.JoinRequest', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'JoinRequest' and R.RowKey = old.Id and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text null, Signature text null);
@@ -311,7 +313,7 @@ declare schema CadreControl {
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
-                digest('CadreControl.JoinSuccess', 'add', new.RequestStampId, cast(new.RecordedAt as text), new.StrandId, coalesce(new.MembershipInvite, '')),
+                digest('CadreControl.JoinSuccess', 'add', party_id(), new.RequestStampId, cast(new.RecordedAt as text), new.StrandId, coalesce(new.MembershipInvite, '')),
                 context.Signature, A.Key, 'ed25519'))
         ),
         -- Removed only with its request: the tombstone retiring the request's stamp (owner-signed,
@@ -337,7 +339,7 @@ declare schema CadreControl {
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
-                digest('CadreControl.JoinFailure', 'add', new.RequestStampId, cast(new.RecordedAt as text), new.Code, new.Reason),
+                digest('CadreControl.JoinFailure', 'add', party_id(), new.RequestStampId, cast(new.RecordedAt as text), new.Code, new.Reason),
                 context.Signature, A.Key, 'ed25519'))
         ),
         -- Removed with its request (JoinSuccess.AuthorizedDelete), or superseded by a join
@@ -387,7 +389,7 @@ declare schema CadreControl {
         -- device out is removing its row AND withdrawing the invitation.
         constraint AuthorizedInsert check on insert (
             (
-                exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'vouch', party_id(), new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
                 and coalesce(new.VouchOwner, '') = context.OwnerKey
                 and coalesce(new.VouchSig, '') = context.Signature
                 and new.VouchUsage is null
@@ -409,7 +411,7 @@ declare schema CadreControl {
         -- The stored 'vouch' voucher never authorizes a delete; the 'remove' signature rides in
         -- context and is never stored. Or a reap (ValidationKey.AuthorizedDelete).
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
         -- A peer re-publishes its own addrs and freshness under its own key (cadre-core
@@ -430,12 +432,12 @@ declare schema CadreControl {
                 and coalesce(new.VouchUsage, '') = coalesce(old.VouchUsage, '')
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and verify(
-                        digest('CadreControl.CadrePeer', 'publish', new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
+                        digest('CadreControl.CadrePeer', 'publish', party_id(), new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
                         new.Sig, new.PublicKey, 'ed25519')
             )
                 or (
                     new.StampId = old.StampId
-                    and exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                    and exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'vouch', party_id(), new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null
@@ -466,7 +468,7 @@ declare schema CadreControl {
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
                 digest(
-                    'CadreControl.DeviceToken', 'add',
+                    'CadreControl.DeviceToken', 'add', party_id(),
                     new.PeerId,
                     new.Platform,
                     new.Token,
@@ -477,7 +479,7 @@ declare schema CadreControl {
                 context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.DeviceToken', 'remove', party_id(), old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'DeviceToken' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
         -- Self-update only: Platform and Token may change, PeerId and StampId may not, UpdatedAt
@@ -488,7 +490,7 @@ declare schema CadreControl {
             and new.StampId = old.StampId
             and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
             and exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(
-                    digest('CadreControl.DeviceToken', 'publish', new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text)),
+                    digest('CadreControl.DeviceToken', 'publish', party_id(), new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text)),
                     new.Sig, P.PublicKey, 'ed25519'))
         )
     ) with context (OwnerKey text null, Signature text);
@@ -507,7 +509,7 @@ declare schema CadreControl {
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
                 digest(
-                    'CadreControl.FormationInvite', 'add',
+                    'CadreControl.FormationInvite', 'add', party_id(),
                     new.Token,
                     new.sAppId,
                     coalesce(cast(new.ExpiresAt as text), ''),
@@ -521,7 +523,7 @@ declare schema CadreControl {
         constraint AuthorizedDelete check on delete (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
                 digest(
-                    'CadreControl.FormationInvite', 'remove',
+                    'CadreControl.FormationInvite', 'remove', party_id(),
                     old.Token,
                     old.sAppId,
                     coalesce(cast(old.ExpiresAt as text), ''),
@@ -566,6 +568,13 @@ declare schema CadreControl {
         -- not revisit rows it approved.
         -- A bound invite may only name its own host strand. An unbound invite may name any
         -- existing strand, which burns a use and forecloses that id's consent-seating: harmless.
+        -- Neither digest of this table binds party_id(), alone in this schema: the joiner signs
+        -- its consent before the responder's party id reaches it (it arrives in the result
+        -- frame) and with a key made fresh for this one formation, and the outside approver
+        -- behind ValidationUrl is sent only the five fields below. Both digests bind the
+        -- invitation Token, a random secret seated in one party's FormationInvite table, so
+        -- replaying either in another party needs that party's owner to seat the same token in
+        -- its own database, and the only database harmed would be its own.
         constraint Authorized check on insert (
             exists (
                 select 1 from FormationInvite FI
@@ -584,7 +593,8 @@ declare schema CadreControl {
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId and S.StampId = new.StrandStampId)),
         -- The joiner proves it agreed. PeerKey is its own key, so there is nothing for a writer to
         -- substitute; stored on the row so any reader can re-check it (verifyFormationConsent).
-        -- StrandId is not signed: the joiner cannot know it when it signs.
+        -- StrandId and the party id are not signed: the joiner cannot know them when it signs
+        -- (Authorized, above).
         constraint PeerConsented check on insert (
             verify(digest('CadreControl.FormationUsage', 'consent',
                           new.Token, new.UsageStampId, new.PeerKey, new.Disclosure),
@@ -632,7 +642,7 @@ declare schema CadreControl {
         constraint AuthorizedInsert check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
                 digest(
-                    'CadreControl.CadreInvite', 'add',
+                    'CadreControl.CadreInvite', 'add', party_id(),
                     new.Key,
                     coalesce(new.PeerId, ''),
                     cast(new.GrantsOwner as text),
@@ -695,12 +705,12 @@ declare schema CadreControl {
         -- Verified against the invitation key itself: the member writing the row can check this
         -- signature but, holding only the public half, cannot produce it.
         constraint InvitePossessed check on insert (
-            verify(digest('CadreControl.CadreInviteUsage', 'redeem', new.InviteKey, new.UsageStampId, new.PeerKey),
+            verify(digest('CadreControl.CadreInviteUsage', 'redeem', party_id(), new.InviteKey, new.UsageStampId, new.PeerKey),
                    new.InviteSig, new.InviteKey, 'ed25519')
         ),
         -- The device proves it agreed (FormationUsage.PeerConsented).
         constraint PeerConsented check on insert (
-            verify(digest('CadreControl.CadreInviteUsage', 'consent', new.InviteKey, new.UsageStampId, new.PeerKey),
+            verify(digest('CadreControl.CadreInviteUsage', 'consent', party_id(), new.InviteKey, new.UsageStampId, new.PeerKey),
                    new.PeerSig, new.PeerKey, 'ed25519')
         ),
         -- Deferred, so the same-transaction peer insert counts: a usage row can never be held in
@@ -783,7 +793,7 @@ declare schema CadreControl {
         -- rule too, over ('Revocation', 'ledger', 'opened'). The stored signer pair must be the
         -- pair verified here.
         constraint Authorized check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Revocation', 'remove', party_id(), new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
                 and coalesce(new.SignerKey, '') = context.OwnerKey
                 and coalesce(new.SignerSig, '') = context.Signature
         ),
@@ -791,7 +801,7 @@ declare schema CadreControl {
         constraint AuthorizedReissue check on update (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey
                 and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId)
-                and verify(digest('CadreControl.Revocation', 'reissue',
+                and verify(digest('CadreControl.Revocation', 'reissue', party_id(),
                                   new.TableName, new.RowKey, new.StampId, cast(new.ReissuedAt as text)),
                            context.Signature, A.Key, 'ed25519'))
         )

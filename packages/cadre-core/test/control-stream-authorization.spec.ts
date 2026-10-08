@@ -57,7 +57,7 @@ async function establishedNode(): Promise<CadreNode> {
   const node = new CadreNode(createConfig());
   const owner = makeOwner();
   inject(node, {
-    members: [vouchedRow(MEMBER, owner)],
+    members: [vouchedRow(node.partyId, MEMBER, owner)],
     anchor: await anchorWith('p', owner.publicKey)
   });
   await refresh(node);
@@ -114,7 +114,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     const node = new CadreNode(createConfig([`/ip4/10.0.0.1/tcp/4001/p2p/${infraId}`]));
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
     await refresh(node);
@@ -131,7 +131,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       liveInvite: true
     });
@@ -160,7 +160,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: true
     });
@@ -175,8 +175,8 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     // revocation-filtered predicate, so a removed peer stays out of it.
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
-    const revoked = vouchedRow(MEMBER, owner);
-    const survivor = vouchedRow('peer-member-2', owner);
+    const revoked = vouchedRow(node.partyId, MEMBER, owner);
+    const survivor = vouchedRow(node.partyId, 'peer-member-2', owner);
     inject(node, {
       members: [revoked, survivor],
       anchor: await anchorWith('p', owner.publicKey),
@@ -195,7 +195,7 @@ describe('CadreNode.refreshAuthorizedControlPeers', () => {
     const owner = makeOwner();
     const IMPOSTOR = 'peer-impostor';
     inject(node, {
-      members: [vouchedRow(MEMBER, owner), bareRow(IMPOSTOR)],
+      members: [vouchedRow(node.partyId, MEMBER, owner), bareRow(IMPOSTOR)],
       anchor: await anchorWith('p', owner.publicKey)
     });
     await refresh(node);
@@ -224,7 +224,7 @@ describe('CadreNode.refreshAuthorizedControlPeers', () => {
     const owner = makeOwner();
     inject(node, {
       running: false,
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
     await refresh(node);
@@ -238,7 +238,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
   async function nodeWithMutableRows(): Promise<{ node: CadreNode; owner: Owner; members: PeerRow[] }> {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
-    const members = [vouchedRow(MEMBER, owner)];
+    const members = [vouchedRow(node.partyId, MEMBER, owner)];
     inject(node, { members, anchor: await anchorWith('p', owner.publicKey) });
     await refresh(node);
     return { node, owner, members };
@@ -279,7 +279,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
 
     // A write straight through `getSeedBootstrapService().insertSelfPeerRecord`:
     // the row is in the control DB, but no wrapper re-materialized the snapshot.
-    members.push(vouchedRow(LATE, owner));
+    members.push(vouchedRow(node.partyId, LATE, owner));
     expect(authorize(node, LATE)).toBe(false);
 
     await node.refreshMembershipGate();
@@ -291,7 +291,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
 
   it('is idempotent and never rejects, even when the control-DB read blows up', async () => {
     const { node, owner, members } = await nodeWithMutableRows();
-    members.push(vouchedRow('peer-late', owner));
+    members.push(vouchedRow(node.partyId, 'peer-late', owner));
 
     await node.refreshMembershipGate();
     await node.refreshMembershipGate();
@@ -309,7 +309,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     // every wrapper; the shared `onSeedApplied` callback owes the refresh.
     const { node, owner, members } = await nodeWithMutableRows();
     const SEEDED = 'peer-seeded';
-    members.push(vouchedRow(SEEDED, owner));
+    members.push(vouchedRow(node.partyId, SEEDED, owner));
     expect(authorize(node, SEEDED)).toBe(false);
 
     const seed: ControlNetworkSeed = { partyId: 'p', peers: [], signature: '', signerKey: '' };
@@ -332,7 +332,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       addPhoneWithRelay: async (phonePeerId: string) =>
         fakeDb(node).mutateCadrePeer('peer-insert', async () => {
-          members.push(vouchedRow(phonePeerId, owner));
+          members.push(vouchedRow(node.partyId, phonePeerId, owner));
           return { seed: {}, encodedSeed: '' };
         })
     };
@@ -353,7 +353,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     expect(authorize(node, LATE)).toBe(false);
 
     const externalService = {
-      insertPeer: (peerId: string) => write(node, () => { members.push(vouchedRow(peerId, owner)); })
+      insertPeer: (peerId: string) => write(node, () => { members.push(vouchedRow(node.partyId, peerId, owner)); })
     };
     await externalService.insertPeer(LATE);
 
@@ -364,7 +364,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
   it('drops a removed peer from the snapshot by the time the write resolves', async () => {
     const { node, owner, members } = await nodeWithMutableRows();
     const SURVIVOR = 'peer-survivor';
-    members.push(vouchedRow(SURVIVOR, owner));
+    members.push(vouchedRow(node.partyId, SURVIVOR, owner));
     await node.refreshMembershipGate();
     expect(authorize(node, MEMBER)).toBe(true);
 
@@ -387,7 +387,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     // DB would roll it back) so "no membership read was issued" is provable from
     // the gate as well as from the counter.
     await expect(db.mutateCadrePeer('peer-insert', async () => {
-      members.push(vouchedRow('peer-doomed', owner));
+      members.push(vouchedRow(node.partyId, 'peer-doomed', owner));
       throw new Error('AuthorizedInsert rejected the row');
     })).rejects.toThrow('AuthorizedInsert rejected the row');
 
@@ -401,7 +401,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     const db = fakeDb(node);
     db.queryCadrePeers = async () => { db.peerQueries++; throw new Error('control DB read failed'); };
 
-    await expect(write(node, () => { members.push(vouchedRow('peer-late', owner)); })).resolves.toBeUndefined();
+    await expect(write(node, () => { members.push(vouchedRow(node.partyId, 'peer-late', owner)); })).resolves.toBeUndefined();
 
     expect(db.peerQueries).toBeGreaterThan(0);
     expect([...snapshot(node)]).toEqual([MEMBER]);
@@ -438,7 +438,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
 
     const observed = new Map<string, boolean>();
     const writes = ids.map((id) =>
-      write(node, () => { members.push(vouchedRow(id, owner)); })
+      write(node, () => { members.push(vouchedRow(node.partyId, id, owner)); })
         .then(() => { observed.set(id, snapshot(node).has(id)); }));
 
     await vi.waitFor(() => expect(notified).toBe(ids.length));
@@ -469,7 +469,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       canAuthorize: () => true,
       reauthorizePeer: async (peerId: string) =>
-        db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(peerId, owner)); })
+        db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(node.partyId, peerId, owner)); })
     };
     queuePendingWrites(node, queued);
 
@@ -491,7 +491,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     const db = fakeDb(node);
     const extra = ['peer-r1', 'peer-r2'];
     for (const id of extra) {
-      members.push(vouchedRow(id, owner));
+      members.push(vouchedRow(node.partyId, id, owner));
     }
 
     let reissued = 0;
@@ -532,8 +532,8 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       canAuthorize: () => true,
       reauthorizePeer: async (peerId: string) => {
-        await db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(peerId, owner)); });
-        await write(node, () => { members.push(vouchedRow(OUTSIDER, owner)); });
+        await db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(node.partyId, peerId, owner)); });
+        await write(node, () => { members.push(vouchedRow(node.partyId, OUTSIDER, owner)); });
         observedInScope.push(authorize(node, OUTSIDER));
       }
     };
@@ -555,7 +555,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     db.setMembershipChangeListener(null);
     const before = db.peerQueries;
 
-    await write(node, () => { members.push(vouchedRow('peer-after-detach', owner)); });
+    await write(node, () => { members.push(vouchedRow(node.partyId, 'peer-after-detach', owner)); });
 
     expect(db.peerQueries).toBe(before);
     expect(authorize(node, 'peer-after-detach')).toBe(false);
@@ -572,7 +572,7 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     // `registerSelf`'s self-insert notifies like any other `CadrePeer` write, but the
     // authorized predicate filters self out — so the automatic refresh must NOT turn
     // an empty snapshot non-empty and close the cold-start admit-all carve-out.
-    await write(node, () => { members.push(vouchedRow(SELF, owner)); });
+    await write(node, () => { members.push(vouchedRow(node.partyId, SELF, owner)); });
 
     expect(snapshot(node).size).toBe(0);
     expect(authorize(node, STRANGER)).toBe(true);

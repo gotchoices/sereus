@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import { Database, registerPlugin } from '@quereus/quereus';
+import { Database, FunctionFlags, TEXT_RETURN, createScalarFunction, registerPlugin } from '@quereus/quereus';
 import type { VTablePluginInfo, FunctionPluginInfo, SqlParameters, SqlValue } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
@@ -10,8 +10,8 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
-import { controlAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
-import type { ControlTable, RevocableTable, ControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
+import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyCadreInviteRow } from './peer-authorization.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
@@ -194,14 +194,14 @@ function parseNullableStoredDatetimeMs(value: string | number | null | undefined
  * The message is a SINGLE framed SHA-256 digest over the ordered field vector from
  * {@link controlAuthorizationFields} (the crypto plugin's injective multi-field
  * encoding): two fixed literals — the domain tag naming the table rule and the action
- * tag — followed by the row fields in the schema's fixed order, with the single-use
- * StampId as the final field where the table has one:
+ * tag — then the party id, then the row fields in the schema's fixed order, with the
+ * single-use StampId as the final field where the table has one:
  *
- *   message = sha256(encodeFields([domain, action, field_1, ..., StampId]))   // raw digest bytes
+ *   message = sha256(encodeFields([domain, action, partyId, field_1, ..., StampId]))   // raw digest bytes
  *
  * ed25519 signs these raw digest bytes DIRECTLY (no second hash). The SQL constraints
  * verify the identical bytes with one variadic call
- * (`verify(digest('CadreControl.X', 'add', field_1, ...), context.Signature, A.Key, 'ed25519')`):
+ * (`verify(digest('CadreControl.X', 'add', party_id(), field_1, ...), context.Signature, A.Key, 'ed25519')`):
  * SQL `digest(...)` returns the base64url string of the same digest, which `verify`'s default
  * base64url input encoding decodes back to those raw bytes — so signer and verifier
  * operate on the same bytes. Every field is TEXT on both sides (the SQL columns are
@@ -209,16 +209,57 @@ function parseNullableStoredDatetimeMs(value: string | number | null | undefined
  * type tags agree. Binding the row contents closes captured-stamp replay; the leading
  * domain/action tags scope the signature to ONE table rule, so an approval minted for
  * one constraint can never satisfy another (e.g. a ValidationKey enrollment can no
- * longer double as an OwnerKey enrollment). Single source of truth: every signed writer
- * (and every test/harness signer) MUST build the message through this function with the
- * schema's tags and field order, or `verify` will reject the row.
+ * longer double as an OwnerKey enrollment); the party id scopes it to ONE party, so two
+ * parties sharing an owner key never accept each other's approvals. `partyId` is the
+ * party the signer is configured for, and the SQL side reads its own through the
+ * node-local `party_id()` ({@link registerPartyIdFunction}). Single source of truth:
+ * every signed writer (and every test/harness signer) MUST build the message through
+ * this function with the schema's tags and field order, or `verify` will reject the row.
  */
 export function buildAuthorizationMessage(
-  domain: ControlDomain,
+  domain: BoundControlDomain,
+  action: ControlAction,
+  partyId: string,
+  rowFields: string[],
+): Uint8Array {
+  return digest(controlAuthorizationFields(domain, action, partyId, rowFields), 'sha256', 'bytes') as Uint8Array;
+}
+
+/**
+ * {@link buildAuthorizationMessage} for the two party-free digests (`UnboundControlDomain`):
+ * the same framed digest with no party id after the tags.
+ */
+function buildUnboundAuthorizationMessage(
+  domain: UnboundControlDomain,
   action: ControlAction,
   rowFields: string[],
 ): Uint8Array {
-  return digest(controlAuthorizationFields(domain, action, rowFields), 'sha256', 'bytes') as Uint8Array;
+  return digest(unboundAuthorizationFields(domain, action, rowFields), 'sha256', 'bytes') as Uint8Array;
+}
+
+/**
+ * Register the zero-argument scalar `party_id()` on `db`: the party id this machine is
+ * configured for, which every party-bound `digest(...)` in the control schema puts third.
+ * Node-local by design — a `context` value would be the writer's choice (a cohort member
+ * that re-ran the statement would replay it as a literal), and a stored `Party` table would
+ * be replicated data the schema already treats as untrusted. A cohort member that re-runs a
+ * statement therefore evaluates its OWN party id, and the schema text stays identical for
+ * every party. Each `Database` carries its own registration, so a process serving two
+ * parties holds two.
+ *
+ * NOTE: flagged deterministic, so the planner may fold the call into a plan; plans are
+ * per `Database` today. If Quereus ever shares plans across `Database` instances, drop
+ * the DETERMINISTIC flag or one party's id would be folded into another's checks.
+ *
+ * `ControlDatabase.initialize` calls this before hydrating persisted schemas, because a
+ * warm restart parses the persisted CHECK text, which calls it. Exported for specs that
+ * build their own `Database` around a copy of a bound constraint.
+ */
+export function registerPartyIdFunction(db: Database, partyId: string): void {
+  db.registerFunction(createScalarFunction(
+    { name: 'party_id', numArgs: 0, flags: FunctionFlags.UTF8 | FunctionFlags.DETERMINISTIC, returnType: TEXT_RETURN },
+    () => partyId,
+  ));
 }
 
 /**
@@ -236,6 +277,10 @@ export function buildAuthorizationMessage(
  * that same nonce, then pass BOTH the nonce and the signature to
  * {@link ControlDatabase.redeemInvitation} / {@link ControlDatabase.recordFormationUsage}:
  * signing one nonce and inserting another fails the CHECK.
+ *
+ * No party id, unlike every owner digest: the approver is sent only these five fields
+ * (`formation-approval.ts`), and the `token` it binds is a random secret seated in one
+ * party's `FormationInvite` table (the schema's `FormationUsage.Authorized` comment).
  */
 export function formationVouchMessage(fields: {
   token: string;
@@ -244,7 +289,7 @@ export function formationVouchMessage(fields: {
   peerKey: string;
   disclosure: string;
 }): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [
+  return buildUnboundAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [
     fields.token, fields.usageStampId, fields.strandId, fields.peerKey, fields.disclosure,
   ]);
 }
@@ -265,7 +310,9 @@ export function formationVouchMessage(fields: {
  * the strand when it signs (a bound invite's host strand arrives only in the result
  * frame; an unbound strand is minted by the responder). The responder cannot
  * substitute one anyway — a bound invite is pinned to its own strand by `Authorized`,
- * and an unbound redemption mints a fresh strand, so there is no victim to name.
+ * and an unbound redemption mints a fresh strand, so there is no victim to name. The
+ * party id is absent for the same reason (it too arrives only in the result frame) and
+ * the `token` scopes the digest to one party instead, as for {@link formationVouchMessage}.
  */
 export function formationConsentMessage(fields: {
   token: string;
@@ -273,7 +320,7 @@ export function formationConsentMessage(fields: {
   peerKey: string;
   disclosure: string;
 }): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.FormationUsage', 'consent', [
+  return buildUnboundAuthorizationMessage('CadreControl.FormationUsage', 'consent', [
     fields.token, fields.usageStampId, fields.peerKey, fields.disclosure,
   ]);
 }
@@ -286,8 +333,8 @@ export function formationConsentMessage(fields: {
  * canonical `datetime` string ({@link canonicalDatetime}), as {@link ControlDatabase.insertCadreInvite}
  * produces it, or the signed segment will not match what the CHECK sees after coercion.
  */
-export function cadreInviteAddMessage(row: CadreInviteSignedFields): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.CadreInvite', 'add', cadreInviteRowFields(row));
+export function cadreInviteAddMessage(partyId: string, row: CadreInviteSignedFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInvite', 'add', partyId, cadreInviteRowFields(row));
 }
 
 /** The fields both redemption signatures cover; see {@link cadreInviteRedeemMessage}. */
@@ -305,8 +352,8 @@ export interface CadreInviteRedemptionFields {
  * verifies against the invitation's public key. Binding the device and the nonce means a
  * captured redemption can admit no other device and spend no other use.
  */
-export function cadreInviteRedeemMessage(fields: CadreInviteRedemptionFields): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'redeem', [
+export function cadreInviteRedeemMessage(partyId: string, fields: CadreInviteRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'redeem', partyId, [
     fields.inviteKey, fields.usageStampId, fields.peerKey,
   ]);
 }
@@ -317,8 +364,8 @@ export function cadreInviteRedeemMessage(fields: CadreInviteRedemptionFields): U
  * verifies against `PeerKey`. Same fields as {@link cadreInviteRedeemMessage} under a
  * distinct action tag, so neither signature can stand in for the other.
  */
-export function cadreInviteConsentMessage(fields: CadreInviteRedemptionFields): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'consent', [
+export function cadreInviteConsentMessage(partyId: string, fields: CadreInviteRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.CadreInviteUsage', 'consent', partyId, [
     fields.inviteKey, fields.usageStampId, fields.peerKey,
   ]);
 }
@@ -400,19 +447,20 @@ interface GuardedRemoval {
  * field order lives in one place; the base64url verifier is `peer-authorization.ts`'s
  * `revocationDigest`.
  */
-function revocationTombstoneMessage(ref: { tableName: string; rowKey: string; stampId: string }): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.Revocation', 'remove', [ref.tableName, ref.rowKey, ref.stampId]);
+function revocationTombstoneMessage(partyId: string, ref: { tableName: string; rowKey: string; stampId: string }): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.Revocation', 'remove', partyId, [ref.tableName, ref.rowKey, ref.stampId]);
 }
 
 /**
  * The exact bytes an owner signs to seat a further `OwnerKey` row (the signed-add branch of
  * `OwnerKey.Authorized`); the base64url twin is `peer-authorization.ts`'s `ownerKeyAddDigest`.
  */
-function ownerKeyAddMessage(key: string, stampId: string): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
+function ownerKeyAddMessage(partyId: string, key: string, stampId: string): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
 }
 
 function signGuardedRemoval(
+  partyId: string,
   tableName: RemovableTable,
   rowKey: string,
   stampId: string,
@@ -421,8 +469,8 @@ function signGuardedRemoval(
   const ref = { tableName, rowKey, stampId };
   return {
     ref,
-    signature: signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', [rowKey, stampId])),
-    revocationSignature: signMessage(revocationTombstoneMessage(ref)),
+    signature: signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', partyId, [rowKey, stampId])),
+    revocationSignature: signMessage(revocationTombstoneMessage(partyId, ref)),
   };
 }
 
@@ -732,6 +780,7 @@ interface SignedStatement {
  * row's columns in the schema's order (a null column signs as `''`, an integer as its text).
  */
 function signJoinOutcomeInsert(
+  partyId: string,
   requestStampId: string,
   outcome: JoinOutcome,
   ownerKey: string,
@@ -749,7 +798,7 @@ function signJoinOutcomeInsert(
         fields: [requestStampId, at, outcome.Code, outcome.Reason],
         values: [requestStampId, outcome.RecordedAt, outcome.Code, outcome.Reason],
       };
-  const signature = signMessage(buildAuthorizationMessage(`CadreControl.${table}`, 'add', fields));
+  const signature = signMessage(buildAuthorizationMessage(`CadreControl.${table}`, 'add', partyId, fields));
   return { sql, params: [ownerKey, signature, ...values] };
 }
 
@@ -801,7 +850,12 @@ export type GuardedDeleteListener = (revocation: RevokedRowRef) => void;
 export type ControlWriteAbandonedListener = (abandonment: ControlRetryAbandonment) => void;
 
 export interface ControlDatabaseConfig {
-  /** Party ID for the control network */
+  /**
+   * Party ID for the control network. Also the party every owner and peer signature over a
+   * control row binds ({@link buildAuthorizationMessage}), read on the SQL side through
+   * `party_id()` ({@link registerPartyIdFunction}). Must be non-empty: parties with an empty
+   * id would share approvals.
+   */
   partyId: string;
   /**
    * Optional path to the control schema file.
@@ -852,6 +906,9 @@ export class ControlDatabase {
   private controlReadRetryPacing: ControlReadRetryOptions = {};
 
   constructor(config: ControlDatabaseConfig) {
+    if (typeof config.partyId !== 'string' || config.partyId.length === 0) {
+      throw new Error('ControlDatabase requires a non-empty partyId: every control approval is bound to it');
+    }
     this.config = config;
   }
 
@@ -893,6 +950,9 @@ export class ControlDatabase {
       this.db.registerFunction(func.schema);
     }
     timing('[controlDb] optimysticPlugin: %dms', Math.round(performance.now() - t0));
+
+    // Before hydrate: a warm restart parses the persisted CHECK text, which calls party_id().
+    registerPartyIdFunction(this.db, this.config.partyId);
 
     this.collectionFactory = pluginResult.collectionFactory;
 
@@ -1945,7 +2005,7 @@ export class ControlDatabase {
         );
       }
       const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
-      const signature = signMessage(ownerKeyAddMessage(key, stampId));
+      const signature = signMessage(ownerKeyAddMessage(this.config.partyId, key, stampId));
       // Bare `exec`: already inside the write lock, which is NOT re-entrant.
       await this.db!.exec(`
         insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
@@ -2033,7 +2093,7 @@ export class ControlDatabase {
     // Id, Type, MemberPrivateKey ('' when null), StampId. FounderOwnerKey is
     // deliberately NOT in the digest — the schema binds it by equality to the
     // verified context.OwnerKey instead (see the constraint's comment).
-    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, type, memberPrivateKey ?? '', stampId]);
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', this.config.partyId, [strandId, type, memberPrivateKey ?? '', stampId]);
     const signature = signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
@@ -2108,10 +2168,10 @@ export class ControlDatabase {
     }
     const partyKeyStamp = await this.queryStampId('StrandPartyKey', strandId, false);
 
-    const strandRemoval = signGuardedRemoval('Strand', strandId, strandStamp, signMessage);
+    const strandRemoval = signGuardedRemoval(this.config.partyId, 'Strand', strandId, strandStamp, signMessage);
     const partyKeyRemoval = partyKeyStamp === null
       ? null
-      : signGuardedRemoval('StrandPartyKey', strandId, partyKeyStamp, signMessage);
+      : signGuardedRemoval(this.config.partyId, 'StrandPartyKey', strandId, partyKeyStamp, signMessage);
 
     await this.inTransaction('delete Strand', async () => {
       await this.execGuardedRemoval(strandRemoval, ownerKey);
@@ -2159,7 +2219,7 @@ export class ControlDatabase {
 
     // Field order MUST match the schema's StrandPartyKey `AuthorizedInsert` verify:
     // Id, PrivateKey, StampId.
-    const message = buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', [strandId, privateKey, stampId]);
+    const message = buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', this.config.partyId, [strandId, privateKey, stampId]);
     const signature = signMessage(message);
 
     await this.execWrite(`
@@ -2215,7 +2275,7 @@ export class ControlDatabase {
 
     // Field order MUST match the schema's JoinedStrand `AuthorizedInsert` verify:
     // Id, Type, MemberPrivateKey ('' when null), StampId.
-    const message = buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', [row.Id, row.Type, row.MemberPrivateKey ?? '', stampId]);
+    const message = buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', this.config.partyId, [row.Id, row.Type, row.MemberPrivateKey ?? '', stampId]);
     const signature = signMessage(message);
 
     await this.execWrite(`
@@ -2280,7 +2340,7 @@ export class ControlDatabase {
     signMessage: (message: Uint8Array) => string
   ): Promise<PendingJoin> {
     this.ensureInitialized();
-    const insert = signJoinOutcomeInsert(expected.StampId, outcome, ownerKey, signMessage);
+    const insert = signJoinOutcomeInsert(this.config.partyId, expected.StampId, outcome, ownerKey, signMessage);
     return this.lockedWithRetry(async () => {
       const live = await this.readPendingJoin(expected.Id, false);
       if (live === null || live.StampId !== expected.StampId || live.outcome?.kind !== expected.outcome?.kind) {
@@ -2319,9 +2379,9 @@ export class ControlDatabase {
   ): Promise<PendingJoin> {
     this.ensureInitialized();
     const { outcome, ...request } = next;
-    const removal = signGuardedRemoval('JoinRequest', next.Id, expectedStampId, signMessage);
+    const removal = signGuardedRemoval(this.config.partyId, 'JoinRequest', next.Id, expectedStampId, signMessage);
     const { written, insert } = this.signJoinRequestInsert(request, ownerKey, signMessage);
-    const outcomeInsert = outcome === null ? null : signJoinOutcomeInsert(written.StampId, outcome, ownerKey, signMessage);
+    const outcomeInsert = outcome === null ? null : signJoinOutcomeInsert(this.config.partyId, written.StampId, outcome, ownerKey, signMessage);
 
     return this.lockedWithRetry(async () => {
       // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
@@ -2369,7 +2429,7 @@ export class ControlDatabase {
     signMessage: (message: Uint8Array) => string
   ): { written: JoinRequestRow; insert: SignedStatement } {
     const written: JoinRequestRow = { ...request, StampId: generateStampId(this.config.libp2pNode.peerId.toString()) };
-    const signature = signMessage(buildAuthorizationMessage('CadreControl.JoinRequest', 'add', joinRequestAddFields(written)));
+    const signature = signMessage(buildAuthorizationMessage('CadreControl.JoinRequest', 'add', this.config.partyId, joinRequestAddFields(written)));
     const params = [ownerKey, signature, written.Id, written.Invitation, written.Disclosure, written.RequestedAt, written.ExpiresAt, written.StampId];
     return { written, insert: { sql: JOIN_REQUEST_INSERT_SQL, params } };
   }
@@ -2418,7 +2478,7 @@ export class ControlDatabase {
     const stampId = generateStampId(peerId);
 
     // Field order MUST match the schema's ValidationKey `AuthorizedInsert` verify: Key, StampId.
-    const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stampId]);
+    const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', this.config.partyId, [key, stampId]);
     const signature = signMessage(message);
 
     await this.execWrite(`
@@ -2507,7 +2567,7 @@ export class ControlDatabase {
     // row it vouches.
     const stampId = generateStampId(row.peerId);
     const signature = signMessage(
-      buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', [row.peerId, stampId])
+      buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [row.peerId, stampId])
     );
     return await this.mutateCadrePeer('peer-insert', async () => {
       // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
@@ -2596,7 +2656,7 @@ export class ControlDatabase {
       return false;
     }
     const signature = signMessage(
-      buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', [peerId, stampId])
+      buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [peerId, stampId])
     );
     await this.mutateCadrePeer('peer-reauthorize', async () => {
       // Bare `exec` — inside the non-re-entrant write lock (see insertCadrePeer).
@@ -2702,7 +2762,7 @@ export class ControlDatabase {
       return false;
     }
 
-    const removal = signGuardedRemoval(table, keyValue, stampId, signMessage);
+    const removal = signGuardedRemoval(this.config.partyId, table, keyValue, stampId, signMessage);
     await this.inTransaction(`delete ${table}`, async () => {
       await alongside?.(stampId);
       await this.execGuardedRemoval(removal, ownerKey);
@@ -3004,7 +3064,7 @@ export class ControlDatabase {
     const signed = rows.map((row) => ({
       row,
       signature: signMessage(buildAuthorizationMessage(
-        'CadreControl.Revocation', 'reissue',
+        'CadreControl.Revocation', 'reissue', this.config.partyId,
         [row.tableName, row.rowKey, row.stampId, String(reissuedAt)]
       )),
     }));
@@ -3076,7 +3136,7 @@ export class ControlDatabase {
     signMessage: (message: Uint8Array) => string
   ): Promise<RevocationLedgerOpenResult> {
     this.ensureInitialized();
-    const signature = signMessage(revocationTombstoneMessage(REVOCATION_LEDGER_MARKER));
+    const signature = signMessage(revocationTombstoneMessage(this.config.partyId, REVOCATION_LEDGER_MARKER));
     try {
       return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
         if (await this.revocationLedgerFiled()) {
@@ -3478,7 +3538,7 @@ export class ControlDatabase {
 
     // Field order MUST match the schema's FormationInvite `AuthorizedInsert` verify:
     // Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId.
-    const message = buildAuthorizationMessage('CadreControl.FormationInvite', 'add', [
+    const message = buildAuthorizationMessage('CadreControl.FormationInvite', 'add', this.config.partyId, [
       token, sAppId, expiresAtField, totalUsesField, validationUrlField, strandIdField, stampId,
     ]);
     const signature = signMessage(message);
@@ -3964,7 +4024,7 @@ export class ControlDatabase {
     const row: CadreInviteRow = {
       ...signed,
       issuerKey: ownerKey,
-      issuerSig: signMessage(cadreInviteAddMessage(signed)),
+      issuerSig: signMessage(cadreInviteAddMessage(this.config.partyId, signed)),
     };
     await this.lockedWithRetry(() => this.execCadreInviteInsert(row), {}, 'cadre-invite-insert');
     log('Cadre invitation inserted: %s (peer=%s owner=%s)', key, row.peerId ?? 'any', row.grantsOwner);
@@ -4143,7 +4203,7 @@ export class ControlDatabase {
    */
   async isCadreInviteLive(invite: CadreInviteRow, nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
-    const row = await this.queryCadreInvite(invite.key) ?? (verifyCadreInviteRow(invite) ? invite : null);
+    const row = await this.queryCadreInvite(invite.key) ?? (verifyCadreInviteRow(this.config.partyId, invite) ? invite : null);
     if (row === null) {
       return false;
     }
@@ -4215,7 +4275,7 @@ export class ControlDatabase {
         return null;
       }
       const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
-      await this.execTombstone(ref, signMessage(revocationTombstoneMessage(ref)), ownerKey);
+      await this.execTombstone(ref, signMessage(revocationTombstoneMessage(this.config.partyId, ref)), ownerKey);
       return ref;
     }, {}, 'cadre-invite-withdraw');
     if (filed === null) {

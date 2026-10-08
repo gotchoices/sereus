@@ -9,15 +9,16 @@
  * encoding, so no field split is ambiguous even with an opaque platform token. It
  * is intentionally NOT JSON-canonicalized (deterministic across node/browser/RN,
  * no key ordering) and is reconstructable inside the `DeviceToken.AuthorizedUpdate`
- * SQL constraint from the row's own columns:
+ * SQL constraint from the row's own columns and the node-local `party_id()`:
  *
- *   digest('CadreControl.DeviceToken', 'publish',
+ *   digest('CadreControl.DeviceToken', 'publish', party_id(),
  *          new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text))
  *
  * Keep {@link deviceTokenSignedPayload} and that constraint byte-for-byte in sync.
  * The `'publish'` action tag marks this as a peer's SELF-signed record (signed with
  * the peer's own key, not an owner key) and keeps it disjoint from every
- * owner-signed digest.
+ * owner-signed digest; the party id keeps a record published into one party's table
+ * from verifying in another's (peer-record.ts says why a node uses its own party).
  *
  * Unlike a peer-address record, a device-token record carries NO public key: the
  * signature is verified against the `CadrePeer.PublicKey` bound to the same PeerId
@@ -34,10 +35,11 @@ import type { DeviceTokenRecord, PushPlatform } from './types.js';
  * `DeviceToken.AuthorizedUpdate` constraint exactly; both sides take the default
  * base64url output of a single `digest(...)`, which round-trips cleanly.
  */
-export function deviceTokenSignedPayload(record: Omit<DeviceTokenRecord, 'sig'>): string {
+export function deviceTokenSignedPayload(partyId: string, record: Omit<DeviceTokenRecord, 'sig'>): string {
   const fields = controlAuthorizationFields(
     'CadreControl.DeviceToken',
     'publish',
+    partyId,
     [record.peerId, record.platform, record.token, String(record.updatedAt)]
   );
   return digest(fields, 'sha256', 'base64url') as string;
@@ -47,14 +49,16 @@ export function deviceTokenSignedPayload(record: Omit<DeviceTokenRecord, 'sig'>)
  * Sign a device-token record with the ed25519 private key behind its `peerId`.
  * Returns a fully-populated {@link DeviceTokenRecord}.
  *
+ * @param partyId - the party whose `DeviceToken` table the record is published into
  * @param fields - the record fields to sign
  * @param privateKeyB64 - base64url ed25519 seed (see `ed25519KeyPairFromLibp2p`)
  */
 export function signDeviceTokenRecord(
+  partyId: string,
   fields: Omit<DeviceTokenRecord, 'sig'>,
   privateKeyB64: string
 ): DeviceTokenRecord {
-  const payloadDigest = deviceTokenSignedPayload(fields);
+  const payloadDigest = deviceTokenSignedPayload(partyId, fields);
   const sig = sign(
     payloadDigest,
     privateKeyB64,
@@ -68,15 +72,15 @@ export function signDeviceTokenRecord(
 
 /**
  * Verify a record's self-signature against the `CadrePeer.PublicKey` (base64url)
- * bound to its `peerId`. Reconstructs the signed bytes from the record exactly as
- * {@link signDeviceTokenRecord} produced them. Returns false on a missing key/sig or
- * any verification failure.
+ * bound to its `peerId`, for `partyId`. Reconstructs the signed bytes from the record
+ * exactly as {@link signDeviceTokenRecord} produced them. Returns false on a missing
+ * key/sig or any verification failure.
  */
-export function verifyDeviceTokenSignature(record: DeviceTokenRecord, publicKeyB64: string): boolean {
+export function verifyDeviceTokenSignature(partyId: string, record: DeviceTokenRecord, publicKeyB64: string): boolean {
   if (!publicKeyB64 || !record.sig) {
     return false;
   }
-  const payloadDigest = deviceTokenSignedPayload(record);
+  const payloadDigest = deviceTokenSignedPayload(partyId, record);
   return verify(
     payloadDigest,
     record.sig,

@@ -297,6 +297,9 @@ export default tseslint.config(
 			// Plants a CadrePeer row whose stamp is literally the Revocation ledger marker's,
 			// which insertCadrePeer cannot do (it mints its own stamp).
 			'packages/cadre-core/test/control-revocation-ledger-marker.spec.ts',
+			// Presents a voucher signed for ANOTHER party, which insertCadrePeer cannot do (it
+			// builds the message for its own party and mints the stamp internally).
+			'packages/cadre-core/test/control-party-binding.spec.ts',
 		],
 		rules: {
 			'no-restricted-syntax': 'off',

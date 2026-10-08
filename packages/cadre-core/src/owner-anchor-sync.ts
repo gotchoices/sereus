@@ -50,6 +50,8 @@ import type { TrustSource } from './trusted-owner-store.js';
 import type { InvitationChain, OwnerKeyRow, RevocationRow } from './types.js';
 
 export interface OwnerAnchorInputs {
+	/** The party whose table is being read; every stored proof is judged for it, so a voucher or tombstone signed for another party neither seats nor removes a key. */
+	partyId: string;
 	/** The anchor at the start of the pass, every key with its provenance (`TrustedOwnerStore.sources`). */
 	anchor: ReadonlyMap<string, TrustSource>;
 	/** `OwnerKey` rows as read; rows whose stamp a tombstone in `tombstones` retires are dropped here too. */
@@ -68,7 +70,7 @@ export interface OwnerAnchorDerivation {
 }
 
 /** The rule above, as one pure function. */
-export function deriveOwnerAnchor({ anchor, rows, tombstones, chain }: OwnerAnchorInputs): OwnerAnchorDerivation {
+export function deriveOwnerAnchor({ partyId, anchor, rows, tombstones, chain }: OwnerAnchorInputs): OwnerAnchorDerivation {
 	const ownerTombstones = tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey');
 	// NOTE: a stamp is retired by any tombstone that names it, verified or not — the same
 	// reading `queryCadrePeers` and `getOwnerKeys` give the table. A forged tombstone can
@@ -78,9 +80,9 @@ export function deriveOwnerAnchor({ anchor, rows, tombstones, chain }: OwnerAnch
 	const liveRows = rows.filter(row => !retired.has(row.stampId));
 
 	const derived = passStartSet(anchor, liveRows);
-	const chainDerived = deriveFixpoint(derived, liveRows, chain);
+	const chainDerived = deriveFixpoint(partyId, derived, liveRows, chain);
 
-	const removed = removedKeys(derived, chainDerived, ownerTombstones);
+	const removed = removedKeys(partyId, derived, chainDerived, ownerTombstones);
 	if (removed.size > 0 && removed.size === derived.size) {
 		return { target: derived, refusedRemovals: Array.from(removed) };
 	}
@@ -106,7 +108,7 @@ function passStartSet(anchor: ReadonlyMap<string, TrustSource>, liveRows: readon
  * trust only grows within a pass, and a proof that failed against a trusted voucher cannot
  * pass later, so no row is verified twice.
  */
-function deriveFixpoint(derived: Set<string>, liveRows: readonly OwnerKeyRow[], chain: InvitationChain | null): Set<string> {
+function deriveFixpoint(partyId: string, derived: Set<string>, liveRows: readonly OwnerKeyRow[], chain: InvitationChain | null): Set<string> {
 	const chainDerived = new Set<string>();
 	const pending = new Set(liveRows);
 	let progress = true;
@@ -117,7 +119,7 @@ function deriveFixpoint(derived: Set<string>, liveRows: readonly OwnerKeyRow[], 
 				continue;
 			}
 			pending.delete(row);
-			if (proofVerifies(row, derived, chain)) {
+			if (proofVerifies(partyId, row, derived, chain)) {
 				chainDerived.add(row.key);
 				derived.add(row.key);
 				progress = true;
@@ -127,13 +129,13 @@ function deriveFixpoint(derived: Set<string>, liveRows: readonly OwnerKeyRow[], 
 	return chainDerived;
 }
 
-/** Does `row`'s stored proof verify against `trusted`, by the kind of proof it carries (see the module doc)? */
-function proofVerifies(row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: InvitationChain | null): boolean {
+/** Does `row`'s stored proof verify against `trusted`, for `partyId`, by the kind of proof it carries (see the module doc)? */
+function proofVerifies(partyId: string, row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: InvitationChain | null): boolean {
 	if (row.vouchOwner === null) {
 		return false;
 	}
 	if (row.vouchSig !== null) {
-		return verifyOwnerKeyVoucher(row.key, row.stampId, row.vouchOwner, row.vouchSig);
+		return verifyOwnerKeyVoucher(partyId, row.key, row.stampId, row.vouchOwner, row.vouchSig);
 	}
 	if (row.vouchUsage === null) {
 		return false;
@@ -143,7 +145,7 @@ function proofVerifies(row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: In
 	if (usage === undefined || invite === undefined) {
 		return false;
 	}
-	return verifyInvitationOwnerAdmission(row, usage, invite, key => trusted.has(key));
+	return verifyInvitationOwnerAdmission(partyId, row, usage, invite, key => trusted.has(key));
 }
 
 /**
@@ -151,7 +153,7 @@ function proofVerifies(row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: In
  * tombstone judged against the same pass-start set. A tombstone for a key outside `derived`
  * changes nothing and is skipped before any signature work.
  */
-function removedKeys(derived: ReadonlySet<string>, chainDerived: ReadonlySet<string>, ownerTombstones: readonly RevocationRow[]): Set<string> {
+function removedKeys(partyId: string, derived: ReadonlySet<string>, chainDerived: ReadonlySet<string>, ownerTombstones: readonly RevocationRow[]): Set<string> {
 	const removed = new Set<string>();
 	for (const tombstone of ownerTombstones) {
 		const key = tombstone.rowKey;
@@ -161,7 +163,7 @@ function removedKeys(derived: ReadonlySet<string>, chainDerived: ReadonlySet<str
 		if (tombstone.signerKey === key || !derived.has(tombstone.signerKey)) {
 			continue;
 		}
-		if (verifyRevocationSigner(tombstone)) {
+		if (verifyRevocationSigner(partyId, tombstone)) {
 			removed.add(key);
 		}
 	}

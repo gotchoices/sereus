@@ -447,8 +447,9 @@ export interface RedeemSigner {
 /**
  * Build and sign the request for `invitation`: the holder's `'redeem'` signature with the
  * invitation's private key and the device's `'consent'` signature with its own, both over
- * (invitation key, `usageStampId`, device key). The same bytes the schema verifies at the
- * member (`cadreInviteRedeemMessage` / `cadreInviteConsentMessage`).
+ * (invitation key, `usageStampId`, device key) for the invitation's party. The same bytes
+ * the schema verifies at the member (`cadreInviteRedeemMessage` / `cadreInviteConsentMessage`),
+ * whose own `party_id()` must therefore be the party the bundle names.
  */
 export function signRedeemRequest(
   invitation: CadreInvitation,
@@ -466,8 +467,8 @@ export function signRedeemRequest(
     peerKey: signer.peerKey,
     multiaddrs: sanitizeAddrs(multiaddrs),
     usageStampId,
-    inviteSig: signB64(cadreInviteRedeemMessage(fields), invitation.invitePrivateKey),
-    peerSig: signB64(cadreInviteConsentMessage(fields), signer.peerPrivateKey)
+    inviteSig: signB64(cadreInviteRedeemMessage(invitation.partyId, fields), invitation.invitePrivateKey),
+    peerSig: signB64(cadreInviteConsentMessage(invitation.partyId, fields), signer.peerPrivateKey)
   };
 }
 
@@ -496,7 +497,7 @@ export function verifyRedeemReply(
   if (!isTrustedIssuer(reply.invite.issuerKey)) {
     throw new CadreInviteReplyInvalidError('the row the member holds is not issued by one of the invitation\'s owner keys');
   }
-  if (!verifyCadreInviteRow(reply.invite)) {
+  if (!verifyCadreInviteRow(invitation.partyId, reply.invite)) {
     throw new CadreInviteReplyInvalidError('the row the member holds is not signed by its issuer');
   }
 }
@@ -657,7 +658,7 @@ export class CadreInviteHandler {
       return rejection('invite-invalid', 'The peer key is not the connecting identity');
     }
     const fields = { inviteKey: request.invite.key, usageStampId: request.usageStampId, peerKey: request.peerKey };
-    if (!verifyCadreInviteRedemption(fields, request.inviteSig, request.peerSig)) {
+    if (!verifyCadreInviteRedemption(this.options.partyId, fields, request.inviteSig, request.peerSig)) {
       return rejection('invite-invalid', 'The redemption signatures do not verify');
     }
     if (request.invite.peerId !== null && request.invite.peerId !== remotePeerId) {

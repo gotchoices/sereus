@@ -51,11 +51,11 @@ function makeOwner(): Owner {
   return { privateKey, publicKey };
 }
 
-/** A row carrying a REAL voucher: `owner` signs the tagged voucher digest, as insertCadrePeerRow does. */
-function vouchedRow(peerId: string, owner: Owner, overrides: Partial<PeerRow> = {}): PeerRow {
+/** A row carrying a REAL voucher: `owner` signs the tagged, party-bound voucher digest for `partyId` (the node's `CadreNode.partyId`), as insertCadrePeerRow does. */
+function vouchedRow(partyId: string, peerId: string, owner: Owner, overrides: Partial<PeerRow> = {}): PeerRow {
   const stampId = `stamp-${peerId}`;
   const vouchSig = sign(
-    cadrePeerVoucherDigest(peerId, stampId),
+    cadrePeerVoucherDigest(partyId, peerId, stampId),
     owner.privateKey,
     'ed25519',
     'base64url',
@@ -113,9 +113,9 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     inject(node, {
       selfPeerId: SELF,
       members: [
-        vouchedRow(SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' }),
-        vouchedRow(A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' }),
-        vouchedRow(B, owner)
+        vouchedRow(node.partyId, SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' }),
+        vouchedRow(node.partyId, A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' }),
+        vouchedRow(node.partyId, B, owner)
       ],
       anchor: await anchorWith('p', owner.publicKey)
     });
@@ -130,7 +130,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     const owner = makeOwner();
     inject(node, {
       selfPeerId: SELF,
-      members: [vouchedRow(SELF, owner), vouchedRow(A, owner)],
+      members: [vouchedRow(node.partyId, SELF, owner), vouchedRow(node.partyId, A, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
 
@@ -159,9 +159,9 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     inject(node, {
       selfPeerId: SELF,
       members: [
-        vouchedRow(A, owner, { stampId: null }),
-        vouchedRow(B, owner, { vouchSig: null }),
-        vouchedRow(C, owner, { vouchOwner: null })
+        vouchedRow(node.partyId, A, owner, { stampId: null }),
+        vouchedRow(node.partyId, B, owner, { vouchSig: null }),
+        vouchedRow(node.partyId, C, owner, { vouchOwner: null })
       ],
       anchor: await anchorWith('p', owner.publicKey)
     });
@@ -178,8 +178,8 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     inject(node, {
       selfPeerId: SELF,
       members: [
-        vouchedRow(A, partyOwner),
-        vouchedRow(B, outsider, { multiaddr: '/ip4/6.6.6.6/tcp/6' })
+        vouchedRow(node.partyId, A, partyOwner),
+        vouchedRow(node.partyId, B, outsider, { multiaddr: '/ip4/6.6.6.6/tcp/6' })
       ],
       anchor: await anchorWith('p', partyOwner.publicKey)
     });
@@ -195,8 +195,8 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     const other = makeOwner();
-    const forged = vouchedRow(A, other, { vouchOwner: owner.publicKey }); // claims owner, signed by other
-    const replayed = vouchedRow(B, owner, { stampId: 'different-stamp' }); // sig over another nonce
+    const forged = vouchedRow(node.partyId, A, other, { vouchOwner: owner.publicKey }); // claims owner, signed by other
+    const replayed = vouchedRow(node.partyId, B, owner, { stampId: 'different-stamp' }); // sig over another nonce
     inject(node, {
       selfPeerId: SELF,
       members: [forged, replayed],
@@ -212,7 +212,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     const owner = makeOwner();
     // A is a genuine member. B lifts A's whole voucher triple onto its own row —
     // the anchored owner really did sign it, just not for B.
-    const genuine = vouchedRow(A, owner);
+    const genuine = vouchedRow(node.partyId, A, owner);
     const transplanted = bareRow(B, '/ip4/6.6.6.6/tcp/6');
     inject(node, {
       selfPeerId: SELF,
@@ -238,10 +238,10 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     // (the fake mirrors that contract — see inject).
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
-    const resurrected = vouchedRow(A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' });
+    const resurrected = vouchedRow(node.partyId, A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' });
     inject(node, {
       selfPeerId: SELF,
-      members: [resurrected, vouchedRow(B, owner)],
+      members: [resurrected, vouchedRow(node.partyId, B, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       revoked: new Set([resurrected.stampId!])
     });
@@ -259,7 +259,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     const owner = makeOwner();
     inject(node, {
       selfPeerId: SELF,
-      members: [vouchedRow(SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' }), vouchedRow(A, owner)],
+      members: [vouchedRow(node.partyId, SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' }), vouchedRow(node.partyId, A, owner)],
       anchor: await anchorWith('p') // empty anchor
     });
 
@@ -271,7 +271,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
   it('authorizes no one when no anchor exists at all (fail-closed pre-start shape)', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
-    inject(node, { selfPeerId: SELF, members: [vouchedRow(A, owner)] }); // no anchor injected
+    inject(node, { selfPeerId: SELF, members: [vouchedRow(node.partyId, A, owner)] }); // no anchor injected
 
     expect(await node.listAuthorizedMembers()).toEqual([]);
     expect(await node.isAuthorizedMember(A)).toBe(false);
@@ -282,7 +282,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     const owner = makeOwner();
     inject(node, {
       selfPeerId: SELF,
-      members: [vouchedRow(SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' })],
+      members: [vouchedRow(node.partyId, SELF, owner, { multiaddr: '/ip4/1.1.1.1/tcp/1' })],
       anchor: await anchorWith('p', owner.publicKey)
     });
 

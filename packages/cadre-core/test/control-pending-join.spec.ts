@@ -53,7 +53,7 @@ describe('pending joins (owner-signed JoinRequest; outcome rows keyed by its sta
 
   /** An owner-signed `JoinSuccess` insert written directly, to reach the schema rules `recordJoinOutcome` checks first. */
   function rawJoinSuccess(requestStampId: string, outcome: JoinOutcome & { kind: 'joined' }): Promise<unknown> {
-    const signature = asOwner(buildAuthorizationMessage('CadreControl.JoinSuccess', 'add',
+    const signature = asOwner(buildAuthorizationMessage('CadreControl.JoinSuccess', 'add', node.partyId,
       [requestStampId, String(outcome.RecordedAt), outcome.StrandId, outcome.MembershipInvite ?? '']));
     return rawDb.exec(`
       insert into CadreControl.JoinSuccess (RequestStampId, RecordedAt, StrandId, MembershipInvite)
@@ -64,7 +64,7 @@ describe('pending joins (owner-signed JoinRequest; outcome rows keyed by its sta
 
   /** As {@link rawJoinSuccess}, for `JoinFailure`. */
   function rawJoinFailure(requestStampId: string, outcome: JoinOutcome & { kind: 'failed' }): Promise<unknown> {
-    const signature = asOwner(buildAuthorizationMessage('CadreControl.JoinFailure', 'add',
+    const signature = asOwner(buildAuthorizationMessage('CadreControl.JoinFailure', 'add', node.partyId,
       [requestStampId, String(outcome.RecordedAt), outcome.Code, outcome.Reason]));
     return rawDb.exec(`
       insert into CadreControl.JoinFailure (RequestStampId, RecordedAt, Code, Reason)

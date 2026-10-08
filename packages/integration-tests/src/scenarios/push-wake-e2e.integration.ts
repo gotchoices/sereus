@@ -152,6 +152,7 @@ table Data (
  * ~3s run to ~17s.
  */
 async function seedReceiverRecord(
+	partyId: string,
 	ownerNode: CadreNode,
 	rxPeerId: string,
 	rxKey: PrivateKey,
@@ -162,6 +163,7 @@ async function seedReceiverRecord(
 	// the ed25519 key embedded in the peerId (both derived from rxKey here).
 	expect(publicKeyB64).toBe(ed25519PublicKeyB64FromPeerId(rxPeerId));
 	const record = signPeerRecord(
+		partyId,
 		{ peerId: rxPeerId, publicKey: publicKeyB64, addrs: rxAddrs, updatedAt: Date.now() },
 		privateKeyB64,
 	);
@@ -246,7 +248,7 @@ describe('E2E push-wake over the control network', () => {
 			const rxAddrs = controlAddrs(Rx);
 			expect(rxAddrs.length).toBeGreaterThan(0);
 			await S.authorizePeer(sPeerId);
-			await seedReceiverRecord(S, rxPeerId, rxKey, rxAddrs);
+			await seedReceiverRecord(partyId, S, rxPeerId, rxKey, rxAddrs);
 			expect((await S.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
 
 			// Rx's wake gate recognizes S as a member via REPLICATION — no local seeding.
@@ -336,7 +338,7 @@ describe('E2E push-wake over the control network', () => {
 			//     resolver's normalization is pinned end-to-end here and not only in unit tests.
 			const syntheticDirect = '/ip4/10.255.0.1/tcp/4001/ws';
 			await L.authorizePeer(sPeerId);
-			await seedReceiverRecord(L, rxPeerId, rxKey, [rxCircuitAddr, syntheticDirect]);
+			await seedReceiverRecord(partyId, L, rxPeerId, rxKey, [rxCircuitAddr, syntheticDirect]);
 
 			// Converge S on Rx's sibling-written record (pull-on-read) and assert the circuit
 			// addr sorts FIRST — the signaling-first ordering the in-memory unit tests can
@@ -467,7 +469,7 @@ describe('E2E push-wake over the control network', () => {
 			const oPeerId = O.peerId!.toString();
 
 			const rxAddrs = controlAddrs(Rx);
-			await seedReceiverRecord(O, rxPeerId, rxKey, rxAddrs);
+			await seedReceiverRecord(partyId, O, rxPeerId, rxKey, rxAddrs);
 			expect((await O.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
 
 			// THE ATTACK, as it would land in Rx's REPLICATED control state: O's
@@ -638,7 +640,7 @@ describe('E2E push-wake over the control network', () => {
 			//   • Rx's full self-signed address record (`seedReceiverRecord` — one owner
 			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
 			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
-			// `seedReceiverRecord(S, ...)`): each consulting node reads a SIBLING-written row.
+			// `seedReceiverRecord(partyId, S, ...)`): each consulting node reads a SIBLING-written row.
 			// NOTE: `seedReceiverRecord` reaches A's SeedBootstrapService DIRECTLY, below every
 			// `CadreNode` membership wrapper, and relies on the control DB's membership hub to
 			// re-materialize A's per-stream gate snapshot — otherwise that snapshot stays {S}
@@ -650,7 +652,7 @@ describe('E2E push-wake over the control network', () => {
 			// overall (2/6 vs 4/5 passes), because it perturbs commit ordering into the
 			// separate control-DB stale-revision race. Leave the order as is.
 			await A.authorizePeer(sPeerId);
-			await seedReceiverRecord(A, rxPeerId, rxKey, controlAddrs(Rx));
+			await seedReceiverRecord(partyId, A, rxPeerId, rxKey, controlAddrs(Rx));
 
 			// Converge the RECEIVER on S's membership (pull-on-read), then assert the production
 			// gate passes via REPLICATION — with NO local `Rx.authorizePeer(...)` anywhere above.

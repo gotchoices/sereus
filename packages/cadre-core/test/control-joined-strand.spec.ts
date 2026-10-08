@@ -53,9 +53,9 @@ describe('JoinedStrand authorization (row-bound + single-use stamp)', () => {
     );
   }
 
-  /** The exact bytes AuthorizedInsert verifies for a closed row: ('add', Id, 'c', MemberPrivateKey, StampId). */
+  /** The exact bytes AuthorizedInsert verifies for a closed row: ('add', party_id(), Id, 'c', MemberPrivateKey, StampId). */
   function addMessage(id: string, memberPrivateKey: string, stampId: string): Uint8Array {
-    return buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', [id, 'c', memberPrivateKey, stampId]);
+    return buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', node.partyId, [id, 'c', memberPrivateKey, stampId]);
   }
 
   /** Record a closed joined strand the legitimate way, returning its read secret and stamp. */
@@ -159,7 +159,7 @@ describe('JoinedStrand authorization (row-bound + single-use stamp)', () => {
   it('bare signed delete rejected: removal must retire the stamp in the same transaction (RevocationRecorded)', async () => {
     const id = 'js-baredelete-' + rand();
     const { stamp } = await recordClosed(id);
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.JoinedStrand', 'remove', [id, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.JoinedStrand', 'remove', node.partyId, [id, stamp]));
 
     await expectConstraintFailure(
       rawDb.exec(

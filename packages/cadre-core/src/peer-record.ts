@@ -8,15 +8,17 @@
  * multi-field encoding, so no field split is ambiguous. It is intentionally NOT
  * JSON-canonicalized (deterministic across node/browser/RN, no key ordering)
  * and — crucially — is reconstructable inside the `CadrePeer.AuthorizedUpdate`
- * SQL constraint from the row's own columns:
+ * SQL constraint from the row's own columns and the node-local `party_id()`:
  *
- *   digest('CadreControl.CadrePeer', 'publish',
+ *   digest('CadreControl.CadrePeer', 'publish', party_id(),
  *          new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text))
  *
  * Keep {@link peerRecordSignedPayload} and that constraint byte-for-byte in
  * sync. The `'publish'` action tag marks this as a peer's SELF-signed record
  * (signed with the peer's own key, not an owner key) and keeps it disjoint from
- * every owner-signed digest.
+ * every owner-signed digest; the party id keeps a record published into one
+ * party's table from verifying in another's. A node signs and verifies with its
+ * own party: these records come only from its own party's control database.
  *
  * `publicKey` is deliberately excluded from the payload — it is the key the
  * signature is verified *with* (so a signature already commits to exactly one
@@ -51,12 +53,13 @@ const SIGNALING_PREFIX = '/p2p-circuit';
  * base64url output of a single `digest(...)`, which round-trips cleanly (unlike
  * concatenating several base64url digests).
  *
+ * @param partyId - the party whose `CadrePeer` table the record is published into
  * @param peerId - base58btc libp2p peer id (the row key)
  * @param multiaddr - the comma-joined `Multiaddr` string EXACTLY as stored
  * @param updatedAt - epoch-ms freshness stamp
  */
-export function peerRecordSignedPayload(peerId: string, multiaddr: string, updatedAt: number): string {
-  const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', [peerId, multiaddr, String(updatedAt)]);
+export function peerRecordSignedPayload(partyId: string, peerId: string, multiaddr: string, updatedAt: number): string {
+  const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', partyId, [peerId, multiaddr, String(updatedAt)]);
   return digest(fields, 'sha256', 'base64url') as string;
 }
 
@@ -65,14 +68,16 @@ export function peerRecordSignedPayload(peerId: string, multiaddr: string, updat
  * Returns a fully-populated {@link PeerAddressRecord} (the `addrs` order is
  * preserved and is the order signed over).
  *
+ * @param partyId - the party whose `CadrePeer` table the record is published into
  * @param fields - the record fields to sign (signaling addr first by convention)
  * @param privateKeyB64 - base64url ed25519 seed (see `ed25519KeyPairFromLibp2p`)
  */
 export function signPeerRecord(
+  partyId: string,
   fields: { peerId: string; publicKey: string; addrs: string[]; updatedAt: number },
   privateKeyB64: string
 ): PeerAddressRecord {
-  const payloadDigest = peerRecordSignedPayload(fields.peerId, fields.addrs.join(','), fields.updatedAt);
+  const payloadDigest = peerRecordSignedPayload(partyId, fields.peerId, fields.addrs.join(','), fields.updatedAt);
   const sig = sign(
     payloadDigest,
     privateKeyB64,
@@ -85,15 +90,15 @@ export function signPeerRecord(
 }
 
 /**
- * Verify a record's self-signature against its own `publicKey`. Reconstructs the
- * signed bytes from the record exactly as {@link signPeerRecord} produced them.
- * Returns false on a missing key/sig or any verification failure.
+ * Verify a record's self-signature against its own `publicKey`, for `partyId`.
+ * Reconstructs the signed bytes from the record exactly as {@link signPeerRecord}
+ * produced them. Returns false on a missing key/sig or any verification failure.
  */
-export function verifyPeerRecordSignature(record: PeerAddressRecord): boolean {
+export function verifyPeerRecordSignature(partyId: string, record: PeerAddressRecord): boolean {
   if (!record.publicKey || !record.sig) {
     return false;
   }
-  const payloadDigest = peerRecordSignedPayload(record.peerId, record.addrs.join(','), record.updatedAt);
+  const payloadDigest = peerRecordSignedPayload(partyId, record.peerId, record.addrs.join(','), record.updatedAt);
   return verify(
     payloadDigest,
     record.sig,

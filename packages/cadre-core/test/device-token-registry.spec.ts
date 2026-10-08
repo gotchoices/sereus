@@ -106,7 +106,7 @@ describe('device-token registry (real control DB)', () => {
 
     // Replay the FIRST record (equal/lower UpdatedAt) → monotonic clause fails,
     // owner branch absent (context OwnerKey null) → constraint rejects.
-    const replay = signDeviceTokenRecord(
+    const replay = signDeviceTokenRecord(node.partyId,
       { peerId, platform: 'fcm', token: 'fcm-token-1', updatedAt: first!.updatedAt },
       privateKeyB64
     );
@@ -136,7 +136,7 @@ describe('device-token registry (real control DB)', () => {
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
 
-    const seed = signDeviceTokenRecord(
+    const seed = signDeviceTokenRecord(node.partyId,
       { peerId: dronePeerId, platform: 'fcm', token: 'drone-tok-1', updatedAt: Date.now() },
       dronePriv
     );
@@ -146,7 +146,7 @@ describe('device-token registry (real control DB)', () => {
     // Drone self-updates its OWN row with its own key — no owner context —
     // exercising the AuthorizedUpdate self-branch with a key distinct from the
     // owner key.
-    const update = signDeviceTokenRecord(
+    const update = signDeviceTokenRecord(node.partyId,
       { peerId: dronePeerId, platform: 'apns', token: 'drone-tok-2', updatedAt: seed.updatedAt + 1 },
       dronePriv
     );
@@ -163,7 +163,7 @@ describe('device-token registry (real control DB)', () => {
     const { privateKeyB64: dronePriv } = ed25519KeyPairFromLibp2p(drone);
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
-    const seed = signDeviceTokenRecord(
+    const seed = signDeviceTokenRecord(node.partyId,
       { peerId: dronePeerId, platform: 'fcm', token: 'd1', updatedAt: Date.now() },
       dronePriv
     );
@@ -173,7 +173,7 @@ describe('device-token registry (real control DB)', () => {
     // CadrePeer.PublicKey fails.
     const attacker = await generateKeyPair('Ed25519');
     const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
-    const forged = signDeviceTokenRecord(
+    const forged = signDeviceTokenRecord(node.partyId,
       { peerId: dronePeerId, platform: 'fcm', token: 'd2', updatedAt: seed.updatedAt + 1 },
       attackerPriv
     );
@@ -191,7 +191,7 @@ describe('device-token registry (real control DB)', () => {
     // CadrePeer.PublicKey and rejects it.
     const attacker = await generateKeyPair('Ed25519');
     const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
-    const forged = signDeviceTokenRecord(
+    const forged = signDeviceTokenRecord(node.partyId,
       { peerId: dronePeerId, platform: 'fcm', token: 'x', updatedAt: Date.now() },
       attackerPriv
     );

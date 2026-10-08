@@ -509,7 +509,7 @@ export class SeedBootstrapService {
    */
   async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
     const stampId = generateStampId(record.peerId);
-    const signature = this.signDigest(deviceTokenAddDigest({ ...record, stampId }));
+    const signature = this.signDigest(deviceTokenAddDigest(this.config.partyId, { ...record, stampId }));
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -619,7 +619,7 @@ export class SeedBootstrapService {
    *
    * The `CadrePeer.AuthorizedDelete` (`check on delete`) constraint validates a
    * signature over the DISTINCT 'remove'-tagged digest
-   * `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)` by an owner
+   * `digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId)` by an owner
    * key — deliberately NOT the insert voucher digest, so the row's stored `VouchSig` can
    * never be replayed to delete.
    *

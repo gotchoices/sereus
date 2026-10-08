@@ -6,10 +6,15 @@ import {
   peerAuthorizationDigest,
   verifyPeerAuthorization,
   formationConsentDigest,
-  verifyFormationConsent
+  verifyFormationConsent,
+  cadrePeerVoucherDigest,
+  verifyCadrePeerVoucher,
+  revocationDigest,
+  verifyRevocationSigner
 } from '../src/peer-authorization.js';
 import { formationConsentMessage, formationVouchMessage } from '../src/control-database.js';
 import { ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
+import type { RevocationRow } from '../src/types.js';
 
 /**
  * Sign an enrollment vouch the way an owner tool does out-of-band (in-repo the
@@ -229,5 +234,35 @@ describe('verifyFormationConsent', () => {
       'base64url'
     ) as string;
     expect(verifyFormationConsent({ ...row, peerSig })).toBe(true);
+  });
+});
+
+describe('party binding of stored proofs', () => {
+  it('verifyCadrePeerVoucher and verifyRevocationSigner refuse a proof minted for another party', () => {
+    // The reader-side half of the party binding: a machine judges every stored proof it
+    // received by replication for the party it is configured for, so a voucher or a
+    // tombstone lifted from another party's table that shares the owner key is refused
+    // here as it is by the schema's `party_id()`-bound checks.
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    const signB64 = (digestB64: string): string =>
+      sign(digestB64, ownerPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
+    const peerId = '12D3KooWPartyBound';
+    const stampId = 'stamp-party';
+
+    const vouchSig = signB64(cadrePeerVoucherDigest('party-a', peerId, stampId));
+    expect(verifyCadrePeerVoucher('party-a', peerId, stampId, ownerPublicKey, vouchSig)).toBe(true);
+    expect(verifyCadrePeerVoucher('party-b', peerId, stampId, ownerPublicKey, vouchSig)).toBe(false);
+
+    const tombstone: RevocationRow = {
+      tableName: 'CadrePeer',
+      rowKey: peerId,
+      stampId,
+      reissuedAt: 0,
+      signerKey: ownerPublicKey,
+      signerSig: signB64(revocationDigest('party-a', 'CadrePeer', peerId, stampId))
+    };
+    expect(verifyRevocationSigner('party-a', tombstone)).toBe(true);
+    expect(verifyRevocationSigner('party-b', tombstone)).toBe(false);
   });
 });

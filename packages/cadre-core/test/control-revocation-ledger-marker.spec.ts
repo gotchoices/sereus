@@ -89,7 +89,7 @@ describe('Revocation ledger marker', () => {
 
   /** The founder's `Revocation.Authorized` signature over one row. */
   const appendSig = (tableName: string, rowKey: string, stampId: string): string =>
-    signAsFounder(revocationMessage(tableName, rowKey, stampId));
+    signAsFounder(revocationMessage(node.partyId, tableName, rowKey, stampId));
 
   /** Every `Revocation` row filed under `TableName = 'Revocation'`, read raw. */
   async function markerRows(): Promise<Record<string, unknown>[]> {
@@ -185,7 +185,7 @@ describe('Revocation ledger marker', () => {
   it('a marker signed by a key that is not an owner is refused (Authorized)', async () => {
     const stranger = freshKeyPair();
     await expectConstraintFailure(
-      rawAppend(stranger.publicKey, signAs(stranger, revocationMessage(MARKER_TABLE, MARKER_ROW_KEY, MARKER_STAMP))),
+      rawAppend(stranger.publicKey, signAs(stranger, revocationMessage(node.partyId, MARKER_TABLE, MARKER_ROW_KEY, MARKER_STAMP))),
       'Authorized',
     );
     expect(await markerRows()).toEqual([]);
@@ -232,7 +232,7 @@ describe('Revocation ledger marker', () => {
     await db.openRevocationLedger(founder.publicKey, signAsFounder);
 
     const peerId = '12D3KooWLedgerStampTwin';
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, MARKER_STAMP));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, MARKER_STAMP));
     await rawDb.exec(
       `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
@@ -247,7 +247,7 @@ describe('Revocation ledger marker', () => {
       `insert into CadreControl.ValidationKey (Key, StampId)
          with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [founder.publicKey, signAsFounder(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, MARKER_STAMP])), key, MARKER_STAMP],
+      [founder.publicKey, signAsFounder(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', node.partyId, [key, MARKER_STAMP])), key, MARKER_STAMP],
     );
     expect(await db.queryValidationKeyStampId(key)).toBe(MARKER_STAMP);
   }, 60_000);

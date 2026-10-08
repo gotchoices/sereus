@@ -68,4 +68,23 @@ describe('control schema drift guard', () => {
 
     expect(embeddedNorm, message).toBe(fileNorm);
   });
+
+  it('every digest puts party_id() third, except the two on FormationUsage', () => {
+    // The party binding is one argument in every verified digest; a future digest that
+    // forgets it would verify an approval minted for another party. `FormationUsage` is
+    // the one table whose signers cannot know the party (see its `Authorized` comment).
+    // The third argument is captured up to the next comma, so `party_id()` and
+    // `new.Token` both match whole.
+    const digests = Array.from(CONTROL_SCHEMA.matchAll(/digest\(\s*'CadreControl\.(\w+)',\s*'(\w+)',\s*([^,]+),/g));
+    // Anti-vacuity: every tag pair the schema writes must have been captured.
+    const tagPairs = CONTROL_SCHEMA.match(/'CadreControl\.\w+', '\w+',/g) ?? [];
+    expect(digests.length).toBeGreaterThan(0);
+    expect(digests.length).toBe(tagPairs.length);
+
+    for (const [, table, action, third] of digests) {
+      const bound = table !== 'FormationUsage';
+      expect(third.trim() === 'party_id()', `CadreControl.${table} '${action}' third argument is ${JSON.stringify(third.trim())}`).toBe(bound);
+    }
+    expect(digests.filter(([, table]) => table === 'FormationUsage').map(([, , action]) => action).sort()).toEqual(['consent', 'vouch']);
+  });
 });

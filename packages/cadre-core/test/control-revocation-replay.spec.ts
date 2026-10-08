@@ -77,30 +77,31 @@ import { mintConsent } from './formation-consent-helper.js';
 
 const log = debug('sereus:cadre:test:revocation-replay');
 
-/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId). */
-const enrollMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
+/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId). */
+const enrollMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
 
-/** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId). */
-const removeMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [key, stampId]);
+/** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId). */
+const removeMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', partyId, [key, stampId]);
 
 /** `ValidationKey` binds (Key, StampId) under both action tags. */
-const validationKeyMessage = (action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.ValidationKey', action, [key, stampId]);
+const validationKeyMessage = (partyId: string, action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.ValidationKey', action, partyId, [key, stampId]);
 
 /** `Strand`'s add branch binds the whole row; MemberPrivateKey signs as '' when null. */
 const strandAddMessage = (
+  partyId: string,
   id: string,
   type: string,
   memberPrivateKey: string | null,
   stampId: string,
 ): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Strand', 'add', [id, type, memberPrivateKey ?? '', stampId]);
+  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', stampId]);
 
 /** `Strand`'s delete branch binds only the stored (Id, StampId) — a distinct, narrower digest. */
-const strandRemoveMessage = (id: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Strand', 'remove', [id, stampId]);
+const strandRemoveMessage = (partyId: string, id: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Strand', 'remove', partyId, [id, stampId]);
 
 describe('Revocation: remove-then-replay resurrection is closed', () => {
   let node: CadreNode;
@@ -306,14 +307,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   /**
    * Retire a stamp into the append-only tombstone table, owner-signed over the digest
    * `Revocation.Authorized` verifies: `digest('CadreControl.Revocation', 'remove',
-   * new.TableName, new.RowKey, new.StampId)`. `tableName` is a plain string (not
+   * party_id(), new.TableName, new.RowKey, new.StampId)`. `tableName` is a plain string (not
    * `RevocableTable`) so the tests can probe names outside the guarded set — `RowIsGone`
    * is what must reject those, and it only gets the chance once `Authorized` is satisfied.
    */
   function tombstoneStamp(tableName: string, rowKey: string, stampId: string): Promise<void> {
     return rawTombstone(
       founder.publicKey,
-      signAs(founder, revocationMessage(tableName, rowKey, stampId)),
+      signAs(founder, revocationMessage(node.partyId, tableName, rowKey, stampId)),
       tableName,
       rowKey,
       stampId,
@@ -341,7 +342,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   /** Seat a second owner the legitimate way, handing back what a replay attacker captures. */
   async function enrollByFounder(newOwner: KeyPair): Promise<{ stamp: string; enrollSig: string }> {
     const stamp = freshStamp();
-    const enrollSig = signAs(founder, enrollMessage(newOwner.publicKey, stamp));
+    const enrollSig = signAs(founder, enrollMessage(node.partyId, newOwner.publicKey, stamp));
     await rawInsertOwnerKey(founder.publicKey, enrollSig, newOwner.publicKey, stamp);
     return { stamp, enrollSig };
   }
@@ -349,7 +350,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   /** Admit a peer the legitimate way, handing back what a replay attacker captures (VouchSig is even STORED on the row). */
   async function admitPeer(peerId: string): Promise<{ stamp: string; vouchSig: string }> {
     const stamp = freshStamp();
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, stamp));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
     await rawInsertCadrePeer(founder.publicKey, vouchSig, peerId, stamp);
     return { stamp, vouchSig };
   }
@@ -359,7 +360,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await inTransaction(async () => {
       await rawDeleteOwnerKey(
         founder.publicKey,
-        signAs(founder, removeMessage(target.publicKey, stamp)),
+        signAs(founder, removeMessage(node.partyId, target.publicKey, stamp)),
         target.publicKey,
       );
       await tombstoneStamp('OwnerKey', target.publicKey, stamp);
@@ -370,7 +371,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await inTransaction(async () => {
       await rawDeleteCadrePeer(
         founder.publicKey,
-        signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
+        signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, stamp)),
         peerId,
       );
       await tombstoneStamp('CadrePeer', peerId, stamp);
@@ -380,7 +381,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   /** Enroll a validation key the legitimate way, handing back what a replay attacker captures. */
   async function enrollValidationKey(key: string): Promise<{ stamp: string; addSig: string }> {
     const stamp = freshStamp();
-    const addSig = signAs(founder, validationKeyMessage('add', key, stamp));
+    const addSig = signAs(founder, validationKeyMessage(node.partyId, 'add', key, stamp));
     await rawInsertValidationKey(founder.publicKey, addSig, key, stamp);
     return { stamp, addSig };
   }
@@ -392,7 +393,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     memberPrivateKey: string | null = 'member-key-' + Math.random().toString(36).slice(2),
   ): Promise<{ stamp: string; addSig: string }> {
     const stamp = freshStamp();
-    const addSig = signAs(founder, strandAddMessage(id, type, memberPrivateKey, stamp));
+    const addSig = signAs(founder, strandAddMessage(node.partyId, id, type, memberPrivateKey, stamp));
     await rawInsertStrand(founder.publicKey, addSig, id, type, memberPrivateKey, stamp);
     return { stamp, addSig };
   }
@@ -412,7 +413,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       sig: null,
       stampId: freshStamp(),
     };
-    const addSig = signB64(founder, deviceTokenAddDigest(row));
+    const addSig = signB64(founder, deviceTokenAddDigest(node.partyId, row));
     await rawInsertDeviceToken(founder.publicKey, addSig, row);
     return { stamp: row.stampId, addSig };
   }
@@ -422,7 +423,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await inTransaction(async () => {
       await rawDeleteValidationKey(
         founder.publicKey,
-        signAs(founder, validationKeyMessage('remove', key, stamp)),
+        signAs(founder, validationKeyMessage(node.partyId, 'remove', key, stamp)),
         key,
       );
       await tombstoneStamp('ValidationKey', key, stamp);
@@ -434,7 +435,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await inTransaction(async () => {
       await rawDeleteStrand(
         founder.publicKey,
-        signAs(founder, strandRemoveMessage(id, stamp)),
+        signAs(founder, strandRemoveMessage(node.partyId, id, stamp)),
         id,
       );
       await tombstoneStamp('Strand', id, stamp);
@@ -498,13 +499,13 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       inTransaction(async () => {
         await rawDeleteOwnerKey(
           founder.publicKey,
-          signAs(founder, removeMessage(removed.publicKey, removedStamp)),
+          signAs(founder, removeMessage(node.partyId, removed.publicKey, removedStamp)),
           removed.publicKey,
         );
         await tombstoneStamp('OwnerKey', removed.publicKey, removedStamp);
         await rawInsertOwnerKey(
           removed.publicKey,
-          signAs(removed, enrollMessage(stranger.publicKey, strangerStamp)),
+          signAs(removed, enrollMessage(node.partyId, stranger.publicKey, strangerStamp)),
           stranger.publicKey,
           strangerStamp,
         );
@@ -543,7 +544,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawDeleteOwnerKey(
         founder.publicKey,
-        signAs(founder, removeMessage(target.publicKey, stamp)),
+        signAs(founder, removeMessage(node.partyId, target.publicKey, stamp)),
         target.publicKey,
       ),
       'RevocationRecorded',
@@ -558,7 +559,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawDeleteCadrePeer(
         founder.publicKey,
-        signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
+        signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, stamp)),
         peerId,
       ),
       'RevocationRecorded',
@@ -578,7 +579,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       inTransaction(async () => {
         await rawDeleteCadrePeer(
           founder.publicKey,
-          signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
+          signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, stamp)),
           peerId,
         );
         await tombstoneStamp('OwnerKey', peerId, stamp);
@@ -602,7 +603,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawRevouchCadrePeer(
         founder.publicKey,
-        signB64(founder, cadrePeerVoucherDigest(peerId, rotated)),
+        signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, rotated)),
         peerId,
         rotated,
       ),
@@ -614,7 +615,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // freshly signed voucher.
     await rawRevouchCadrePeer(
       founder.publicKey,
-      signB64(founder, cadrePeerVoucherDigest(peerId, stamp)),
+      signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp)),
       peerId,
       null,
     );
@@ -632,7 +633,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const freshStampId = freshStamp();
     await rawInsertOwnerKey(
       founder.publicKey,
-      signAs(founder, enrollMessage(rotated.publicKey, freshStampId)),
+      signAs(founder, enrollMessage(node.partyId, rotated.publicKey, freshStampId)),
       rotated.publicKey,
       freshStampId,
     );
@@ -649,7 +650,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const freshStampId = freshStamp();
     await rawInsertCadrePeer(
       founder.publicKey,
-      signB64(founder, cadrePeerVoucherDigest(peerId, freshStampId)),
+      signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, freshStampId)),
       peerId,
       freshStampId,
     );
@@ -685,7 +686,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
 
     // A genuine 'remove' signature minted for ANOTHER row does not transplant onto this one.
     await expectConstraintFailure(
-      attack(founder.publicKey, signAs(founder, validationKeyMessage('remove', decoy, decoyStamp))),
+      attack(founder.publicKey, signAs(founder, validationKeyMessage(node.partyId, 'remove', decoy, decoyStamp))),
       'AuthorizedDelete',
     );
 
@@ -709,7 +710,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(attack(null, null), 'AuthorizedDelete');
     await expectConstraintFailure(attack(founder.publicKey, addSig), 'AuthorizedDelete');
     await expectConstraintFailure(
-      attack(founder.publicKey, signAs(founder, strandRemoveMessage(decoy, decoyStamp))),
+      attack(founder.publicKey, signAs(founder, strandRemoveMessage(node.partyId, decoy, decoyStamp))),
       'AuthorizedDelete',
     );
 
@@ -890,7 +891,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
     const key = 'val-tomb-' + Math.random().toString(36).slice(2);
     const { stamp } = await enrollValidationKey(key);
-    const removeSig = (): string => signAs(founder, validationKeyMessage('remove', key, stamp));
+    const removeSig = (): string => signAs(founder, validationKeyMessage(node.partyId, 'remove', key, stamp));
 
     // Fully authorized — the ONLY missing piece is the tombstone.
     await expectConstraintFailure(
@@ -917,7 +918,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   it('Strand: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
     const id = 'strand-tomb-' + Math.random().toString(36).slice(2);
     const { stamp } = await seatStrand(id);
-    const removeSig = (): string => signAs(founder, strandRemoveMessage(id, stamp));
+    const removeSig = (): string => signAs(founder, strandRemoveMessage(node.partyId, id, stamp));
 
     await expectConstraintFailure(
       rawDeleteStrand(founder.publicKey, removeSig(), id),
@@ -948,7 +949,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const { stamp } = await seatStrand(id);
     await expectConstraintFailure(
       inTransaction(async () => {
-        await rawDeleteStrand(founder.publicKey, signAs(founder, strandRemoveMessage(id, stamp)), id);
+        await rawDeleteStrand(founder.publicKey, signAs(founder, strandRemoveMessage(node.partyId, id, stamp)), id);
         await tombstoneStamp('Strand', 'some-other-strand-id', stamp);
       }),
       'RevocationRecorded',
@@ -961,7 +962,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       inTransaction(async () => {
         await rawDeleteCadrePeer(
           founder.publicKey,
-          signB64(founder, cadrePeerRemoveDigest(peerId, peerStamp)),
+          signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, peerStamp)),
           peerId,
         );
         await tombstoneStamp('CadrePeer', '12D3KooWSomeOtherPeer', peerStamp);
@@ -995,7 +996,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const freshStampId = freshStamp();
     await rawInsertValidationKey(
       founder.publicKey,
-      signAs(founder, validationKeyMessage('add', key, freshStampId)),
+      signAs(founder, validationKeyMessage(node.partyId, 'add', key, freshStampId)),
       key,
       freshStampId,
     );
@@ -1018,7 +1019,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const freshStampId = freshStamp();
     await rawInsertStrand(
       founder.publicKey,
-      signAs(founder, strandAddMessage(id, 'c', memberPrivateKey, freshStampId)),
+      signAs(founder, strandAddMessage(node.partyId, id, 'c', memberPrivateKey, freshStampId)),
       id,
       'c',
       memberPrivateKey,
@@ -1103,7 +1104,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
            where StampId = ?`,
         [
           founder.publicKey,
-          signAs(founder, reissueMessage('CadrePeer', rowKey, rotatedStamp, 1)),
+          signAs(founder, reissueMessage(node.partyId, 'CadrePeer', rowKey, rotatedStamp, 1)),
           rotatedStamp,
           orphan,
         ],
@@ -1113,7 +1114,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
 
     // The stored signer pair is the filing owner's for good: a fully authorized re-issue that
     // rewrites it, to another value or to null, is refused by the same clause.
-    const reissueSig = signAs(founder, reissueMessage('CadrePeer', rowKey, orphan, 1));
+    const reissueSig = signAs(founder, reissueMessage(node.partyId, 'CadrePeer', rowKey, orphan, 1));
     for (const [signerKey, signerSig] of [[founder.publicKey, reissueSig], [null, null]] as const) {
       await expectConstraintFailure(
         rawDb.exec(
@@ -1156,7 +1157,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(still).toBeDefined();
     expect(Number(still?.ReissuedAt)).toBe(0);
     expect(still?.SignerKey).toBe(founder.publicKey);
-    expect(still?.SignerSig).toBe(signAs(founder, revocationMessage('CadrePeer', rowKey, orphan)));
+    expect(still?.SignerSig).toBe(signAs(founder, revocationMessage(node.partyId, 'CadrePeer', rowKey, orphan)));
   }, 60_000);
 
   // ── Appending a tombstone is itself an OWNER action (Authorized) ───────────
@@ -1181,7 +1182,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       'Authorized',
     );
     await expectConstraintFailure(
-      rawTombstone(null, signAs(founder, revocationMessage('CadrePeer', peerId, stamp)), 'CadrePeer', peerId, stamp),
+      rawTombstone(null, signAs(founder, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp)), 'CadrePeer', peerId, stamp),
       'Authorized',
     );
   }, 60_000);
@@ -1195,7 +1196,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         stranger.publicKey,
-        signAs(stranger, revocationMessage('CadrePeer', peerId, stamp)),
+        signAs(stranger, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp)),
         'CadrePeer',
         peerId,
         stamp,
@@ -1208,7 +1209,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(stranger, revocationMessage('CadrePeer', peerId, stamp)),
+        signAs(stranger, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp)),
         'CadrePeer',
         peerId,
         stamp,
@@ -1226,8 +1227,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await enrollByFounder(second);
     const peerId = '12D3KooWSignerPinTarget';
     const stamp = freshStamp();
-    const founderSig = signAs(founder, revocationMessage('CadrePeer', peerId, stamp));
-    const secondSig = signAs(second, revocationMessage('CadrePeer', peerId, stamp));
+    const founderSig = signAs(founder, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp));
+    const secondSig = signAs(second, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp));
     for (const stored of [
       { signerKey: founder.publicKey, signerSig: null },
       { signerKey: null, signerSig: founderSig },
@@ -1253,7 +1254,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, revocationMessage('CadrePeer', peerId, signedStamp)),
+        signAs(founder, revocationMessage(node.partyId, 'CadrePeer', peerId, signedStamp)),
         'CadrePeer',
         peerId,
         otherStamp,
@@ -1264,7 +1265,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, revocationMessage('OwnerKey', peerId, signedStamp)),
+        signAs(founder, revocationMessage(node.partyId, 'OwnerKey', peerId, signedStamp)),
         'CadrePeer',
         peerId,
         signedStamp,
@@ -1278,7 +1279,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, revocationMessage('CadrePeer', '12D3KooWSomeOtherPeer', signedStamp)),
+        signAs(founder, revocationMessage(node.partyId, 'CadrePeer', '12D3KooWSomeOtherPeer', signedStamp)),
         'CadrePeer',
         peerId,
         signedStamp,
@@ -1291,7 +1292,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['CadrePeer', signedStamp])),
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', node.partyId, ['CadrePeer', signedStamp])),
         'CadrePeer',
         peerId,
         signedStamp,
@@ -1312,7 +1313,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signB64(founder, cadrePeerRemoveDigest(peerId, orphan)),
+        signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, orphan)),
         'CadrePeer',
         peerId,
         orphan,
@@ -1327,7 +1328,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, removeMessage(ghost.publicKey, ownerOrphan)),
+        signAs(founder, removeMessage(node.partyId, ghost.publicKey, ownerOrphan)),
         'OwnerKey',
         ghost.publicKey,
         ownerOrphan,
@@ -1367,7 +1368,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // The admission the pre-block would have refused forever still goes through.
     await rawInsertCadrePeer(
       founder.publicKey,
-      signB64(founder, cadrePeerVoucherDigest(peerId, stamp)),
+      signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp)),
       peerId,
       stamp,
     );
@@ -1388,12 +1389,12 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await inTransaction(async () => {
       await rawDeleteCadrePeer(
         second.publicKey,
-        signB64(second, cadrePeerRemoveDigest(peerId, stamp)),
+        signB64(second, cadrePeerRemoveDigest(node.partyId, peerId, stamp)),
         peerId,
       );
       await rawTombstone(
         second.publicKey,
-        signAs(second, revocationMessage('CadrePeer', peerId, stamp)),
+        signAs(second, revocationMessage(node.partyId, 'CadrePeer', peerId, stamp)),
         'CadrePeer',
         peerId,
         stamp,
@@ -1414,7 +1415,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
 
     const orphan = freshStamp();
     const orphanPeerId = '12D3KooWRemovedOwnerTombstoneTarget';
-    const signedWhileOwner = signAs(second, revocationMessage('CadrePeer', orphanPeerId, orphan));
+    const signedWhileOwner = signAs(second, revocationMessage(node.partyId, 'CadrePeer', orphanPeerId, orphan));
 
     await removeOwnerKey(second, secondStamp);
     expect(await ownerKeys()).toEqual([founder.publicKey]);
@@ -1486,17 +1487,17 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const stamp = await stampIdOf(second.publicKey);
     const added = await rawDb.get('select VouchOwner, VouchSig from CadreControl.OwnerKey where Key = ?', [second.publicKey]);
     expect(added?.VouchOwner).toBe(founder.publicKey);
-    expect(added?.VouchSig).toBe(signAs(founder, enrollMessage(second.publicKey, stamp)));
+    expect(added?.VouchSig).toBe(signAs(founder, enrollMessage(node.partyId, second.publicKey, stamp)));
     // The read-side verifiers rebuild the digest independently of the writer's message builder.
-    expect(verifyOwnerKeyVoucher(second.publicKey, stamp, added?.VouchOwner as string, added?.VouchSig as string)).toBe(true);
+    expect(verifyOwnerKeyVoucher(node.partyId, second.publicKey, stamp, added?.VouchOwner as string, added?.VouchSig as string)).toBe(true);
 
     expect(await db.deleteOwnerKey(second.publicKey, founder.publicKey, sign)).toBe(true);
     expect(await ownerKeys()).toEqual([founder.publicKey]);
     expect((await db.queryRevokedStamps('OwnerKey')).has(stamp)).toBe(true);
     const [tombstone] = (await db.queryRevocations()).filter(row => row.stampId === stamp);
     expect(tombstone?.signerKey).toBe(founder.publicKey);
-    expect(tombstone?.signerSig).toBe(signAs(founder, revocationMessage('OwnerKey', second.publicKey, stamp)));
-    expect(verifyRevocationSigner(tombstone!)).toBe(true);
+    expect(tombstone?.signerSig).toBe(signAs(founder, revocationMessage(node.partyId, 'OwnerKey', second.publicKey, stamp)));
+    expect(verifyRevocationSigner(node.partyId, tombstone!)).toBe(true);
     expect(reasons).toEqual(['owner-key-add', 'owner-key-remove']);
   }, 60_000);
 });

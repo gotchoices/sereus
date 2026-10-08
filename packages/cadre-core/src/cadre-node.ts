@@ -2942,6 +2942,7 @@ export class CadreNode implements SAppIdLookup {
   ): PeerAddressRecord {
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
     return signPeerRecord(
+      this.partyId,
       { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt },
       signingKey.privateKeyB64
     );
@@ -3222,7 +3223,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // Self-signature over (peerId, addrs, updatedAt).
-    if (!verifyPeerRecordSignature(record)) {
+    if (!verifyPeerRecordSignature(this.partyId, record)) {
       // Field detail distinguishes "holding the owner-vouch revision (Sig null,
       // no addrs — a not-yet-self-published row)" from a genuinely corrupt or
       // mixed-revision row. Sig/addrs are public replicated data.
@@ -4554,6 +4555,7 @@ export class CadreNode implements SAppIdLookup {
     // Strictly increase UpdatedAt even on a same-millisecond re-publish (rotation).
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
     const record = signDeviceTokenRecord(
+      this.partyId,
       { peerId, platform, token, updatedAt },
       signingKey.privateKeyB64
     );
@@ -4650,7 +4652,7 @@ export class CadreNode implements SAppIdLookup {
 
     // Self-signature over (peerId, platform, token, updatedAt), verified against the
     // CadrePeer.PublicKey bound to this peerId.
-    if (!verifyDeviceTokenSignature(record, peerRecord.publicKey)) {
+    if (!verifyDeviceTokenSignature(this.partyId, record, peerRecord.publicKey)) {
       log('resolveDeviceToken: signature verification failed for %s', peerId);
       return null;
     }
@@ -7738,7 +7740,7 @@ export class CadreNode implements SAppIdLookup {
     if (usage === undefined || invite === undefined) {
       return false;
     }
-    return verifyInvitationAdmission(row, usage, invite, key => this.trustedOwnerStore?.has(key) ?? false);
+    return verifyInvitationAdmission(this.partyId, row, usage, invite, key => this.trustedOwnerStore?.has(key) ?? false);
   }
 
   /**
@@ -7794,7 +7796,7 @@ export class CadreNode implements SAppIdLookup {
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
       const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
-      const derivation = deriveOwnerAnchor({ anchor: before, rows, tombstones, chain });
+      const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, chain });
       if (derivation.refusedRemovals.length > 0) {
         log('syncOwnerAnchor(%s): refused %d owner removal(s) that would empty the anchor: %o', reason, derivation.refusedRemovals.length, derivation.refusedRemovals);
       }
@@ -7890,7 +7892,7 @@ export class CadreNode implements SAppIdLookup {
     if (!this.trustedOwnerStore?.has(row.vouchOwner)) {
       return false;
     }
-    return verifyCadrePeerVoucher(row.peerId, row.stampId, row.vouchOwner, row.vouchSig);
+    return verifyCadrePeerVoucher(this.partyId, row.peerId, row.stampId, row.vouchOwner, row.vouchSig);
   }
 
   /**

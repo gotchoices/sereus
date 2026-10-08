@@ -99,7 +99,7 @@ describe('CadreControl approval domain separation', () => {
    * pinned to the constraint under test. Owner-signed over its OWN domain-tagged digest
    * (`Revocation.Authorized`); the delete's `'remove'` signature does not satisfy it. */
   function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer' | 'DeviceToken', rowKey: string, stampId: string): Promise<void> {
-    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]));
+    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', node.partyId, [tableName, rowKey, stampId]));
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
@@ -135,7 +135,7 @@ describe('CadreControl approval domain separation', () => {
    * self-update branch has a `PublicKey` to verify against. */
   async function seatCadrePeer(peerId: string, publicKey: string | null): Promise<string> {
     const stamp = freshStamp();
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, stamp));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
     await rawDb.exec(
       `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
@@ -149,7 +149,7 @@ describe('CadreControl approval domain separation', () => {
    * its single-use stamp. Taking the same struct the write does means a test cannot
    * approve one row and present another by accident — only on purpose. */
   function approveDeviceTokenAdd(row: DeviceTokenAuthorizedRow): string {
-    return signB64(founder, deviceTokenAddDigest(row));
+    return signB64(founder, deviceTokenAddDigest(node.partyId, row));
   }
 
   function rawInsertDeviceToken(
@@ -183,7 +183,7 @@ describe('CadreControl approval domain separation', () => {
     return inTransaction(async () => {
       await rawDeleteDeviceToken(
         founder.publicKey,
-        signB64(founder, deviceTokenRemoveDigest(peerId, stampId)),
+        signB64(founder, deviceTokenRemoveDigest(node.partyId, peerId, stampId)),
         peerId,
       );
       await tombstoneStamp('DeviceToken', peerId, stampId);
@@ -255,7 +255,7 @@ describe('CadreControl approval domain separation', () => {
     const stamp = freshStamp();
     const enrollSig = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [second.publicKey, stamp]),
+      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, stamp]),
     );
     // Prove the signature is genuine: the rule it was minted for accepts it.
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
@@ -280,7 +280,7 @@ describe('CadreControl approval domain separation', () => {
     // letting any reader append to the party's most privileged table.
     const peerId = '12D3KooWStoredVouchTarget';
     const stamp = freshStamp();
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, stamp));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
     await rawDb.exec(
       `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
@@ -308,12 +308,12 @@ describe('CadreControl approval domain separation', () => {
     const stamp = freshStamp();
     const enrollSig = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [second.publicKey, stamp]),
+      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, stamp]),
     );
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
     // A CadrePeer row whose (PeerId, StampId) mirror the owner row — the shape an
     // attacker would arrange so the pre-fix shared 'remove' digest lined up.
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(second.publicKey, stamp));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, second.publicKey, stamp));
     await rawDb.exec(
       `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
@@ -323,7 +323,7 @@ describe('CadreControl approval domain separation', () => {
 
     const removeSig = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [second.publicKey, stamp]),
+      buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', node.partyId, [second.publicKey, stamp]),
     );
     // The tombstone rides along so `RevocationRecorded` is satisfied and the rejection
     // stays pinned to the cross-table replay constraint alone. The OwnerKey row
@@ -456,6 +456,7 @@ describe('CadreControl approval domain separation', () => {
     // not a missing peer row.
     await seatCadrePeer(peerId, peer.publicKey);
     const first = signDeviceTokenRecord(
+      node.partyId,
       { peerId, platform: 'fcm', token: 'tok-self-1', updatedAt: 1_000 },
       peer.privateKey,
     );
@@ -466,7 +467,7 @@ describe('CadreControl approval domain separation', () => {
     // monotonically HIGHER UpdatedAt — nothing stale about it, and still refused.
     const ownerVouch = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.DeviceToken', 'vouch', [peerId]),
+      buildAuthorizationMessage('CadreControl.DeviceToken', 'vouch', node.partyId, [peerId]),
     );
     await expectConstraintFailure(
       rawDb.exec(
@@ -484,6 +485,7 @@ describe('CadreControl approval domain separation', () => {
 
     // The peer's OWN monotonic, self-signed update is what rotates the row.
     const second = signDeviceTokenRecord(
+      node.partyId,
       { peerId, platform: 'apns', token: 'tok-self-2', updatedAt: 2_000 },
       peer.privateKey,
     );
@@ -534,7 +536,7 @@ describe('CadreControl approval domain separation', () => {
       founder,
       // Field order mirrors AuthorizedDelete: Token, sAppId, ExpiresAt, TotalUses,
       // ValidationUrl, StrandId, StampId — the four nullable fields sign as ''.
-      buildAuthorizationMessage('CadreControl.FormationInvite', 'remove', [
+      buildAuthorizationMessage('CadreControl.FormationInvite', 'remove', node.partyId, [
         token, 'sapp-domain-sep', '', '', '', '', String(stored?.StampId),
       ]),
     );

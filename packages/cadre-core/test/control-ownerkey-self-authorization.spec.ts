@@ -59,13 +59,13 @@ function signAs(kp: KeyPair, message: Uint8Array): string {
   return cryptoSign(message, kp.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
-/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId). */
-const enrollMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
+/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId). */
+const enrollMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
 
-/** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId). */
-const removeMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [key, stampId]);
+/** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId). */
+const removeMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', partyId, [key, stampId]);
 
 describe('OwnerKey self-authorization and unauthorized deletion', () => {
   let node: CadreNode;
@@ -129,7 +129,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
    * delete's `'CadreControl.OwnerKey'` `'remove'` signature does not satisfy it.
    */
   function tombstoneOwnerKeyStamp(ownerKey: string, stampId: string): Promise<void> {
-    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', ownerKey, stampId]));
+    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', node.partyId, ['OwnerKey', ownerKey, stampId]));
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
@@ -171,7 +171,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const stamp = freshStamp();
     await rawInsertOwnerKey(
       founder.publicKey,
-      signAs(founder, enrollMessage(newOwner.publicKey, stamp)),
+      signAs(founder, enrollMessage(node.partyId, newOwner.publicKey, stamp)),
       newOwner.publicKey,
       stamp,
     );
@@ -256,7 +256,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       rawInsertOwnerKey(
         founder.publicKey,
-        signAs(founder, enrollMessage(second.publicKey, stamp)),
+        signAs(founder, enrollMessage(node.partyId, second.publicKey, stamp)),
         second.publicKey,
         stamp,
         { owner: null, sig: null },
@@ -276,7 +276,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const stamp = freshStamp();
     await rawInsertOwnerKey(
       second.publicKey,
-      signAs(second, enrollMessage(third.publicKey, stamp)),
+      signAs(second, enrollMessage(node.partyId, third.publicKey, stamp)),
       third.publicKey,
       stamp,
     );
@@ -292,7 +292,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await inTransaction(async () => {
       await rawDeleteOwnerKey(
         founder.publicKey,
-        signAs(founder, removeMessage(second.publicKey, stamp)),
+        signAs(founder, removeMessage(node.partyId, second.publicKey, stamp)),
         second.publicKey,
       );
       await tombstoneOwnerKeyStamp(second.publicKey, stamp);
@@ -330,7 +330,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       rawInsertOwnerKey(
         attacker.publicKey,
-        signAs(attacker, enrollMessage(attacker.publicKey, stamp)),
+        signAs(attacker, enrollMessage(node.partyId, attacker.publicKey, stamp)),
         attacker.publicKey,
         stamp,
       ),
@@ -349,9 +349,9 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         // B "authorizes" A ...
-        await rawInsertOwnerKey(b.publicKey, signAs(b, enrollMessage(a.publicKey, stampA)), a.publicKey, stampA);
+        await rawInsertOwnerKey(b.publicKey, signAs(b, enrollMessage(node.partyId, a.publicKey, stampA)), a.publicKey, stampA);
         // ... and A "authorizes" B, in the same transaction.
-        await rawInsertOwnerKey(a.publicKey, signAs(a, enrollMessage(b.publicKey, stampB)), b.publicKey, stampB);
+        await rawInsertOwnerKey(a.publicKey, signAs(a, enrollMessage(node.partyId, b.publicKey, stampB)), b.publicKey, stampB);
       }),
       'Authorized',
     );
@@ -409,12 +409,12 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
       inTransaction(async () => {
         await rawDeleteOwnerKey(
           founder.publicKey,
-          signAs(founder, removeMessage(second.publicKey, secondStamp)),
+          signAs(founder, removeMessage(node.partyId, second.publicKey, secondStamp)),
           second.publicKey,
         );
         await rawDeleteOwnerKey(
           second.publicKey,
-          signAs(second, removeMessage(founder.publicKey, founderStamp)),
+          signAs(second, removeMessage(node.partyId, founder.publicKey, founderStamp)),
           founder.publicKey,
         );
         await tombstoneOwnerKeyStamp(second.publicKey, secondStamp);
@@ -435,7 +435,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
       inTransaction(async () => {
         await rawDeleteOwnerKey(
           second.publicKey,
-          signAs(second, removeMessage(second.publicKey, stamp)),
+          signAs(second, removeMessage(node.partyId, second.publicKey, stamp)),
           second.publicKey,
         );
         await tombstoneOwnerKeyStamp(second.publicKey, stamp);
@@ -474,11 +474,11 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
   // ── Cross-direction signature replay ──────────────────────────────────────
 
   it('rejects: an ENROLLMENT signature replayed as a removal', async () => {
-    // The enrollment signature covers digest('CadreControl.OwnerKey', 'add', Key, StampId);
+    // The enrollment signature covers digest('CadreControl.OwnerKey', 'add', party_id(), Key, StampId);
     // the delete branch binds the 'remove' action tag, so the two can never substitute.
     const second = freshKeyPair();
     const stamp = freshStamp();
-    const enrollSig = signAs(founder, enrollMessage(second.publicKey, stamp));
+    const enrollSig = signAs(founder, enrollMessage(node.partyId, second.publicKey, stamp));
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
     const before = await ownerKeys();
 
@@ -496,7 +496,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const before = await ownerKeys();
     const target = freshKeyPair();
     const stamp = freshStamp();
-    const removeSig = signAs(founder, removeMessage(target.publicKey, stamp));
+    const removeSig = signAs(founder, removeMessage(node.partyId, target.publicKey, stamp));
 
     await expectConstraintFailure(
       rawInsertOwnerKey(founder.publicKey, removeSig, target.publicKey, stamp),

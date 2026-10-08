@@ -134,7 +134,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     strandId?: string;
     stampId: string;
   }): Uint8Array {
-    return buildAuthorizationMessage('CadreControl.FormationInvite', action, [
+    return buildAuthorizationMessage('CadreControl.FormationInvite', action, node.partyId, [
       fields.token,
       fields.sAppId,
       fields.expiresAt ?? '',
@@ -251,7 +251,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const s2 = 'strand-attacker-' + Math.random().toString(36).slice(2);
 
     // Owner signs a valid authorization for s1 (Id, Type, '', stamp).
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [s1, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [s1, 'o', '', stamp]));
 
     const before = await strandCount();
     // Attacker transplants the (stamp, sig) pair onto a DIFFERENT strand id.
@@ -264,7 +264,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const sId = 'strand-xtab-' + Math.random().toString(36).slice(2);
     // A valid Strand authorization (tagged 4-field message).
-    const strandSig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [sId, 'o', '', stamp]));
+    const strandSig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [sId, 'o', '', stamp]));
 
     const attackerKey = generatePrivateKey('ed25519', 'base64url') as string;
     const attackerPub = getPublicKey(attackerKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -279,7 +279,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('replay rejected: re-using the exact (Id, StampId, Signature) is blocked by the unique StampId', async () => {
     const stamp = freshStamp();
     const id = 'strand-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', stamp]));
 
     // First insert is valid and succeeds.
     await rawInsertStrand(sig, id, 'o', null, stamp);
@@ -294,7 +294,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-' + Math.random().toString(36).slice(2);
     // Sign for Type 'o' ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', stamp]));
 
     const before = await strandCount();
     // ... but insert the row with Type 'c'. The verify rebinds to 'c' and fails.
@@ -307,7 +307,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-mpk-' + Math.random().toString(36).slice(2);
     // Sign for an empty (null) MemberPrivateKey ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'c', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'c', '', stamp]));
 
     const before = await strandCount();
     // ... but insert a row carrying an actual MemberPrivateKey.
@@ -331,7 +331,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const k1 = 'val-src-' + Math.random().toString(36).slice(2);
     const k2 = 'val-attacker-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [k1, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', node.partyId, [k1, stamp]));
 
     const before = await validationKeyCount();
     await expect(rawInsertValidationKey(sig, k2, stamp)).rejects.toThrow();
@@ -342,7 +342,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('ValidationKey replay rejected: re-using the exact (Key, StampId, Signature) is blocked', async () => {
     const stamp = freshStamp();
     const key = 'val-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', node.partyId, [key, stamp]));
 
     await rawInsertValidationKey(sig, key, stamp);
     const after = await validationKeyCount();
@@ -355,7 +355,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const newAuthKey = generatePrivateKey('ed25519', 'base64url') as string;
     const newAuthPub = getPublicKey(newAuthKey, 'ed25519', 'base64url', 'base64url') as string;
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [newAuthPub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [newAuthPub, stamp]));
 
     const before = await ownerKeyCount();
     await rawInsertOwnerKey(sig, newAuthPub, stamp);
@@ -374,7 +374,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     ) as string;
 
     // Valid authorization built for k1Pub ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [k1Pub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [k1Pub, stamp]));
 
     const before = await ownerKeyCount();
     // ... transplanted onto an attacker-chosen key. Rebound verify fails.
@@ -555,7 +555,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     // an update. Mirrors the CadrePeer stamp-rotation guard.
     const key = 'val-noupd-' + Math.random().toString(36).slice(2);
     const stamp = freshStamp();
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', node.partyId, [key, stamp]));
     await rawInsertValidationKey(sig, key, stamp);
 
     await expectConstraintFailure(

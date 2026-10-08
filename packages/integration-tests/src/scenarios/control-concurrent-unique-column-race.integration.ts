@@ -74,9 +74,9 @@ describe('Concurrent same-unique-column insert across two machines', () => {
 	 * because `insertStrand` mints its own stamp, which is exactly what this race shares.
 	 */
 	async function seatStrand(db: ControlDatabase, strandId: string, stampId: string): Promise<void> {
-		const { ownerPublicKey, ownerSign } = pair!;
+		const { A, ownerPublicKey, ownerSign } = pair!;
 		const signature = ownerSign(
-			buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, 'o', '', stampId]),
+			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', stampId]),
 		);
 		await db.execWrite(`
 			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)

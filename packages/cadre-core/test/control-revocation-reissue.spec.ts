@@ -70,7 +70,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
   function tombstoneStamp(tableName: string, rowKey: string, stampId: string): Promise<void> {
     return rawTombstone(
       founder.publicKey,
-      signAs(founder, revocationMessage(tableName, rowKey, stampId)),
+      signAs(founder, revocationMessage(node.partyId, tableName, rowKey, stampId)),
       tableName,
       rowKey,
       stampId,
@@ -100,7 +100,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
 
   /** The founder's signature over the 'reissue' digest — what AuthorizedReissue verifies. */
   function reissueSig(tableName: string, rowKey: string, stampId: string, reissuedAt: number): string {
-    return signAs(founder, reissueMessage(tableName, rowKey, stampId, reissuedAt));
+    return signAs(founder, reissueMessage(node.partyId, tableName, rowKey, stampId, reissuedAt));
   }
 
   function readTombstone(stampId: string): Promise<Record<string, unknown> | undefined> {
@@ -239,7 +239,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     await expectConstraintFailure(
       rawReissue(
         founder.publicKey,
-        signAs(founder, revocationMessage('CadrePeer', rowKey, stamp)),
+        signAs(founder, revocationMessage(node.partyId, 'CadrePeer', rowKey, stamp)),
         stamp,
         1,
       ),
@@ -252,7 +252,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     await expectConstraintFailure(
       rawReissue(
         stranger.publicKey,
-        signAs(stranger, reissueMessage('CadrePeer', rowKey, stamp, 1)),
+        signAs(stranger, reissueMessage(node.partyId, 'CadrePeer', rowKey, stamp, 1)),
         stamp,
         1,
       ),
@@ -278,7 +278,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
         `delete from CadreControl.Revocation
            with context OwnerKey = ?, Signature = ?
            where StampId = ?`,
-        [founder.publicKey, signAs(founder, revocationMessage('CadrePeer', rowKey, stamp)), stamp],
+        [founder.publicKey, signAs(founder, revocationMessage(node.partyId, 'CadrePeer', rowKey, stamp)), stamp],
       ),
       'NoDelete',
     );
@@ -292,7 +292,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     // Seating at a saturated counter would freeze the owner's own later re-issues.
     const rowKey = '12D3KooWSaturatedSeatTarget';
     const stamp = freshStamp();
-    const signature = signAs(founder, revocationMessage('CadrePeer', rowKey, stamp));
+    const signature = signAs(founder, revocationMessage(node.partyId, 'CadrePeer', rowKey, stamp));
 
     await expectConstraintFailure(
       rawDb.exec(

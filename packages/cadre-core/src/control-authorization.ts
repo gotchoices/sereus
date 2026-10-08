@@ -6,14 +6,24 @@
  * byte layout cannot drift between them or away from the SQL constraints in
  * `schemas/control.qsql`.
  *
- * Every vector leads with two fixed literals:
+ * Every vector leads with two fixed literals and the party id:
  *
- *   digest(<domain>, <action>, <row field 1>, ..., <row field n>)
+ *   digest(<domain>, <action>, <party id>, <row field 1>, ..., <row field n>)
  *
- * so a signature verifies ONLY against the one rule it was minted for. Without
- * the tags, several rules built byte-identical tuples (e.g. `ValidationKey`
- * insert and `OwnerKey` insert both signed `digest(Key, StampId)`), so an
- * approval for a narrow grant doubled as an approval for full ownership.
+ * so a signature verifies ONLY against the one rule, in the one party, it was
+ * minted for. Without the tags, several rules built byte-identical tuples (e.g.
+ * `ValidationKey` insert and `OwnerKey` insert both signed `digest(Key, StampId)`),
+ * so an approval for a narrow grant doubled as an approval for full ownership.
+ * Without the party, two parties sharing an owner key (one node key owning two
+ * cadres, a hardware owner key) would accept each other's approvals. The SQL side
+ * reads the party from the node-local `party_id()` function `ControlDatabase`
+ * registers (never from a context value or a replicated table), and every
+ * TypeScript signer and verifier passes the party it is configured for.
+ *
+ * Two digests carry NO party ({@link UnboundControlDomain}): the `FormationUsage`
+ * `'consent'` and `'vouch'` digests, whose signers do not know the party (see the
+ * schema's `FormationUsage.Authorized` comment), and the offline `'Cadre.Enrollment'`
+ * vouch, which no table checks.
  *
  * This module deliberately has no Quereus / Optimystic / libp2p imports so the
  * lightweight verifiers (`peer-authorization.ts`, consumed by the offline
@@ -87,6 +97,17 @@ export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'V
 export type ControlDomain = `CadreControl.${ControlTable}` | 'Cadre.Enrollment';
 
 /**
+ * The domains whose digests bind no party id — the only two
+ * {@link unboundAuthorizationFields} accepts. `FormationUsage`: neither signer knows
+ * the party, and the invitation token scopes the digest instead (the reason is at the
+ * schema's `FormationUsage.Authorized` comment). `Cadre.Enrollment`: no table checks it.
+ */
+export type UnboundControlDomain = 'CadreControl.FormationUsage' | 'Cadre.Enrollment';
+
+/** Every domain whose digests bind the party id — the only ones {@link controlAuthorizationFields} accepts. */
+export type BoundControlDomain = Exclude<ControlDomain, UnboundControlDomain>;
+
+/**
  * The action half of the tag:
  *  - `'add'` / `'remove'` — insert / delete of the named row.
  *  - `'vouch'` — an owner (or validation key) vouches the row's semantics
@@ -150,15 +171,31 @@ export function cadreInviteRowFields(row: CadreInviteSignedFields): string[] {
 }
 
 /**
- * The full ordered field vector a control-plane signature covers. Digest this
- * with the crypto plugin's injective multi-field encoding (every field TEXT);
- * the SQL mirror passes the same literals as leading `digest(...)` arguments:
+ * The full ordered field vector a party-bound control-plane signature covers. Digest
+ * this with the crypto plugin's injective multi-field encoding (every field TEXT);
+ * the SQL mirror passes the same literals as leading `digest(...)` arguments and
+ * reads the party from its node-local `party_id()`:
  *
- *   TS:  digest(controlAuthorizationFields('CadreControl.X', 'add', [a, b]), 'sha256', ...)
- *   SQL: digest('CadreControl.X', 'add', new.A, new.B)
+ *   TS:  digest(controlAuthorizationFields('CadreControl.X', 'add', partyId, [a, b]), 'sha256', ...)
+ *   SQL: digest('CadreControl.X', 'add', party_id(), new.A, new.B)
  */
 export function controlAuthorizationFields(
-  domain: ControlDomain,
+  domain: BoundControlDomain,
+  action: ControlAction,
+  partyId: string,
+  rowFields: string[],
+): string[] {
+  return [domain, action, partyId, ...rowFields];
+}
+
+/**
+ * The field vector of the two party-free digests ({@link UnboundControlDomain}):
+ *
+ *   TS:  digest(unboundAuthorizationFields('CadreControl.FormationUsage', 'consent', [a, b]), 'sha256', ...)
+ *   SQL: digest('CadreControl.FormationUsage', 'consent', new.A, new.B)
+ */
+export function unboundAuthorizationFields(
+  domain: UnboundControlDomain,
   action: ControlAction,
   rowFields: string[],
 ): string[] {

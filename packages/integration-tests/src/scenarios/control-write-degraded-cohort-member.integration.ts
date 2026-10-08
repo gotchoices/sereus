@@ -1204,7 +1204,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		expect(before, 'B has no CadrePeer row to refresh — the case cannot drive a self-update').not.toBeNull();
 		// Same shape `CadreNode.signSelfRecord` builds: same addrs, a strictly
 		// later `updatedAt` (the monotonic self-update rule), B's own signature.
-		const record = signPeerRecord({
+		const record = signPeerRecord(partyId, {
 			peerId: bPeerId,
 			publicKey: bSigningKey.publicKeyB64,
 			addrs: before!.addrs,

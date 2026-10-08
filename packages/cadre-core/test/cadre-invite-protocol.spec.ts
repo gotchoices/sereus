@@ -94,10 +94,10 @@ const untouchable: CadreInviteStore = {
   querySeedPeers: async () => { throw new Error('store touched'); }
 };
 
-/** An owner-signed row built by hand, as a stranger's machine would forge one for a known key. */
-function rowSignedBy(issuer: KeyPair, key: string): CadreInviteRow {
+/** An owner-signed row for `partyId` built by hand, as a stranger's machine would forge one for a known key. */
+function rowSignedBy(partyId: string, issuer: KeyPair, key: string): CadreInviteRow {
   const signed = { key, peerId: null, grantsOwner: false, expiresAt: null, totalUses: null, stampId: freshStamp() };
-  return { ...signed, issuerKey: issuer.publicKey, issuerSig: signAs(issuer, cadreInviteAddMessage(signed)) };
+  return { ...signed, issuerKey: issuer.publicKey, issuerSig: signAs(issuer, cadreInviteAddMessage(partyId, signed)) };
 }
 
 describe('cadre invitation redemption protocol', () => {
@@ -243,7 +243,7 @@ describe('cadre invitation redemption protocol', () => {
     const forged = canned({
       accepted: true,
       partyId,
-      invite: rowSignedBy(freshKeyPair(), invitation.invite.key),
+      invite: rowSignedBy(partyId, freshKeyPair(), invitation.invite.key),
       peers: []
     });
     const { node, dials } = dialerOver({ [`${memberAddr}-forged`]: forged, [memberAddr]: memberAs(device) });
@@ -288,7 +288,7 @@ describe('cadre invitation redemption protocol', () => {
     const invite = freshKeyPair();
     // Every liveness condition but the signature holds: the row names the founder, an owner
     // here, as issuer, is unexpired and unused, and this member holds no row under its key.
-    const forged = { ...rowSignedBy(freshKeyPair(), invite.publicKey), issuerKey: founder.publicKey };
+    const forged = { ...rowSignedBy(partyId, freshKeyPair(), invite.publicKey), issuerKey: founder.publicKey };
     const invitation: CadreInvitation = { v: 1, partyId, invitePrivateKey: invite.privateKey, invite: forged, ownerKeys: [founder.publicKey], members: [memberAddr] };
     const { node } = dialerOver({ [memberAddr]: memberAs(device) });
 

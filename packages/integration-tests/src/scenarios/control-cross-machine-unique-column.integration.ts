@@ -77,9 +77,9 @@ describe('Cross-machine uniqueness on a unique control column', () => {
 	 * production writer breaks this one too rather than leaving it quietly passing.
 	 */
 	async function seatStrand(db: ControlDatabase, strandId: string, stampId: string): Promise<void> {
-		const { ownerPublicKey, ownerSign } = pair!;
+		const { A, ownerPublicKey, ownerSign } = pair!;
 		const signature = ownerSign(
-			buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, 'o', '', stampId]),
+			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', stampId]),
 		);
 		await db.execWrite(`
 			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)

@@ -49,11 +49,11 @@ export function makeOwner(): Owner {
   return { privateKey, publicKey };
 }
 
-/** A row carrying a REAL voucher: `owner` signs the tagged voucher digest, as insertCadrePeerRow does. */
-export function vouchedRow(peerId: string, owner: Owner): PeerRow {
+/** A row carrying a REAL voucher: `owner` signs the tagged, party-bound voucher digest for `partyId` (the receiving node's `CadreNode.partyId`), as insertCadrePeerRow does. */
+export function vouchedRow(partyId: string, peerId: string, owner: Owner): PeerRow {
   const stampId = `stamp-${peerId}`;
   const vouchSig = sign(
-    cadrePeerVoucherDigest(peerId, stampId),
+    cadrePeerVoucherDigest(partyId, peerId, stampId),
     owner.privateKey,
     'ed25519',
     'base64url',

@@ -169,6 +169,7 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 		// `updateSelfPeerRecord` is authorized by the row's OWN key, so drive it with the
 		// key behind this peerId — the shape `CadreNode.publishSelfRecord` uses on refresh.
 		await db.updateSelfPeerRecord(signPeerRecord(
+			node.partyId,
 			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs: ['/ip4/10.0.0.2/tcp/4001'], updatedAt: Date.now() + 1_000 },
 			peer.privateKeyB64
 		));

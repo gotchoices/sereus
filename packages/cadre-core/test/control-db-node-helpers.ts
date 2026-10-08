@@ -217,7 +217,7 @@ export async function insertResolvableOfflinePeer(
 ): Promise<OfflinePeer> {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const peerId = peerIdFromPrivateKey(key).toString();
-	const record = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs, updatedAt: Date.now() }, privateKeyB64);
+	const record = signPeerRecord(node.partyId, { peerId, publicKey: publicKeyB64, addrs, updatedAt: Date.now() }, privateKeyB64);
 	await node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
 
 	const resolved = await within(`resolvePeerAddrs(${short(peerId)}) (anti-vacuity)`, opTimeoutMs,

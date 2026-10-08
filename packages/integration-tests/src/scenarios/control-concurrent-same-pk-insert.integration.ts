@@ -94,7 +94,7 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 		const bOwnerKey = pair.B.getIdentityOwnerKey().publicKeyB64;
 		const stampId = `owner-${randomUUID()}`;
 		const signature = pair.ownerSign(
-			buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [bOwnerKey, stampId]),
+			buildAuthorizationMessage('CadreControl.OwnerKey', 'add', pair.A.partyId, [bOwnerKey, stampId]),
 		);
 		// VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
 		await dbA().execWrite(`

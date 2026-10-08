@@ -168,7 +168,7 @@ describe('ControlDatabase — local write lock', () => {
 	 */
 	it('keeps one row when self-publish wins the race against authorize, retaining the self signature', async () => {
 		const peer = await freshPeer();
-		const record = signPeerRecord(
+		const record = signPeerRecord(node.partyId,
 			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs: ['/ip4/10.0.0.3/tcp/4001'], updatedAt: Date.now() },
 			peer.privateKeyB64
 		);
@@ -198,7 +198,7 @@ describe('ControlDatabase — local write lock', () => {
 	 */
 	it('keeps one row when authorize wins the race against self-publish, leaving the signature unset', async () => {
 		const peer = await freshPeer();
-		const record = signPeerRecord(
+		const record = signPeerRecord(node.partyId,
 			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs: ['/ip4/10.0.0.4/tcp/4001'], updatedAt: Date.now() },
 			peer.privateKeyB64
 		);

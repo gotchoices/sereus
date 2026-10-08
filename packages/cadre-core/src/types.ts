@@ -1834,7 +1834,7 @@ export interface CadrePeerRow {
   stampId: string | null;
   /** ed25519 public key (base64url) of the owner that vouched this row, or that issued the invitation that admitted it. */
   vouchOwner: string | null;
-  /** That owner's signature over `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`, base64url; null on an invitation-admitted row. */
+  /** That owner's signature over `digest('CadreControl.CadrePeer', 'vouch', partyId, peerId, stampId)`, base64url; null on an invitation-admitted row. */
   vouchSig: string | null;
   /** The `CadreInviteUsage.UsageStampId` that admitted this row; null on an owner-vouched row. */
   vouchUsage: string | null;

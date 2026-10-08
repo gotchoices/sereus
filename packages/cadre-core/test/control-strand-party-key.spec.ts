@@ -57,9 +57,9 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
     );
   }
 
-  /** The exact bytes AuthorizedInsert verifies: ('add', Id, PrivateKey, StampId). */
+  /** The exact bytes AuthorizedInsert verifies: ('add', party_id(), Id, PrivateKey, StampId). */
   function addMessage(id: string, privateKey: string, stampId: string): Uint8Array {
-    return buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', [id, privateKey, stampId]);
+    return buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', node.partyId, [id, privateKey, stampId]);
   }
 
   /** Run `statements` as one transaction, so a deferred CHECK decides at commit. */
@@ -79,7 +79,7 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
   /** The owner-signed `Revocation` tombstone a `StrandPartyKey` delete must carry. */
   function tombstonePartyKey(rowKey: string, stampId: string): Promise<void> {
     const signature = signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', rowKey, stampId]));
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', node.partyId, ['StrandPartyKey', rowKey, stampId]));
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
@@ -180,7 +180,7 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
     await db.insertStrandPartyKey(strandId, await generateStrandMemberKey(), ownerPublicKey, signMessage);
     const stamp = await db.queryStrandPartyKeyStampId(strandId);
     const sig = signMessage(
-      buildAuthorizationMessage('CadreControl.StrandPartyKey', 'remove', [strandId, stamp!]));
+      buildAuthorizationMessage('CadreControl.StrandPartyKey', 'remove', node.partyId, [strandId, stamp!]));
 
     await expectConstraintFailure(
       rawDb.exec(

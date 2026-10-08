@@ -11,6 +11,9 @@ import {
 } from '../src/device-token.js';
 import type { DeviceTokenRecord, PushPlatform } from '../src/types.js';
 
+/** The party every record here is signed for; the digest binds it, so one id serves the whole file. */
+const PARTY_ID = 'device-token-spec';
+
 /** Build a self-consistent record (peerId + sig from one Ed25519 key). */
 async function makeRecord(
   platform: PushPlatform,
@@ -20,7 +23,7 @@ async function makeRecord(
   const libp2pKey = await generateKeyPair('Ed25519');
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const peerId = peerIdFromPrivateKey(libp2pKey).toString();
-  const record = signDeviceTokenRecord({ peerId, platform, token, updatedAt }, privateKeyB64);
+  const record = signDeviceTokenRecord(PARTY_ID, { peerId, platform, token, updatedAt }, privateKeyB64);
   return { record, privateKeyB64, publicKeyB64, peerId };
 }
 
@@ -32,35 +35,36 @@ describe('device-token signed payload', () => {
     const updatedAt = 1700000000000;
 
     const expected = digest(
-      ['CadreControl.DeviceToken', 'publish', peerId, platform, token, String(updatedAt)],
+      ['CadreControl.DeviceToken', 'publish', PARTY_ID, peerId, platform, token, String(updatedAt)],
       'sha256',
       'base64url'
     ) as string;
-    expect(deviceTokenSignedPayload({ peerId, platform, token, updatedAt })).toBe(expected);
+    expect(deviceTokenSignedPayload(PARTY_ID, { peerId, platform, token, updatedAt })).toBe(expected);
   });
 
   it('is deterministic and changes when any field changes', () => {
     const base = { peerId: 'p', platform: 'fcm' as PushPlatform, token: 't', updatedAt: 5 };
-    const a = deviceTokenSignedPayload(base);
-    expect(deviceTokenSignedPayload(base)).toBe(a);
-    expect(deviceTokenSignedPayload({ ...base, platform: 'apns' })).not.toBe(a);
-    expect(deviceTokenSignedPayload({ ...base, token: 't2' })).not.toBe(a);
-    expect(deviceTokenSignedPayload({ ...base, updatedAt: 6 })).not.toBe(a);
-    expect(deviceTokenSignedPayload({ ...base, peerId: 'q' })).not.toBe(a);
+    const a = deviceTokenSignedPayload(PARTY_ID, base);
+    expect(deviceTokenSignedPayload(PARTY_ID, base)).toBe(a);
+    expect(deviceTokenSignedPayload(PARTY_ID, { ...base, platform: 'apns' })).not.toBe(a);
+    expect(deviceTokenSignedPayload(PARTY_ID, { ...base, token: 't2' })).not.toBe(a);
+    expect(deviceTokenSignedPayload(PARTY_ID, { ...base, updatedAt: 6 })).not.toBe(a);
+    expect(deviceTokenSignedPayload(PARTY_ID, { ...base, peerId: 'q' })).not.toBe(a);
+    expect(deviceTokenSignedPayload('other-party', base)).not.toBe(a);
   });
 });
 
 describe('signDeviceTokenRecord / verifyDeviceTokenSignature', () => {
   it('round-trips a self-signed record against the signing key', async () => {
     const { record, publicKeyB64 } = await makeRecord('fcm', 'tok-1', 1700000000000);
-    expect(verifyDeviceTokenSignature(record, publicKeyB64)).toBe(true);
+    expect(verifyDeviceTokenSignature(PARTY_ID, record, publicKeyB64)).toBe(true);
   });
 
   it('rejects a record verified against a different key', async () => {
     const { record } = await makeRecord('apns', 'tok-2', 10);
     const other = await generateKeyPair('Ed25519');
     const { publicKeyB64: otherPub } = ed25519KeyPairFromLibp2p(other);
-    expect(verifyDeviceTokenSignature(record, otherPub)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, record, otherPub)).toBe(false);
   });
 
   it('rejects a record whose sig was made by a different key', async () => {
@@ -68,23 +72,24 @@ describe('signDeviceTokenRecord / verifyDeviceTokenSignature', () => {
     const otherKey = await generateKeyPair('Ed25519');
     const { privateKeyB64: otherPriv } = ed25519KeyPairFromLibp2p(otherKey);
     const forgedSig = sign(
-      deviceTokenSignedPayload(record),
+      deviceTokenSignedPayload(PARTY_ID, record),
       otherPriv, 'ed25519', 'base64url', 'base64url', 'base64url'
     ) as string;
-    expect(verifyDeviceTokenSignature({ ...record, sig: forgedSig }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, { ...record, sig: forgedSig }, publicKeyB64)).toBe(false);
   });
 
-  it('rejects a record with tampered platform / token / updatedAt', async () => {
+  it('rejects a record with tampered platform / token / updatedAt, or judged for another party', async () => {
     const { record, publicKeyB64 } = await makeRecord('fcm', 'tok-4', 10);
-    expect(verifyDeviceTokenSignature({ ...record, platform: 'apns' }, publicKeyB64)).toBe(false);
-    expect(verifyDeviceTokenSignature({ ...record, token: 'evil' }, publicKeyB64)).toBe(false);
-    expect(verifyDeviceTokenSignature({ ...record, updatedAt: record.updatedAt + 1 }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, { ...record, platform: 'apns' }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, { ...record, token: 'evil' }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, { ...record, updatedAt: record.updatedAt + 1 }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature('other-party', record, publicKeyB64)).toBe(false);
   });
 
   it('rejects a record missing key or sig', async () => {
     const { record, publicKeyB64 } = await makeRecord('fcm', 'tok-5', 10);
-    expect(verifyDeviceTokenSignature(record, '')).toBe(false);
-    expect(verifyDeviceTokenSignature({ ...record, sig: '' }, publicKeyB64)).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, record, '')).toBe(false);
+    expect(verifyDeviceTokenSignature(PARTY_ID, { ...record, sig: '' }, publicKeyB64)).toBe(false);
   });
 });
 

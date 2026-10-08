@@ -389,7 +389,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
 
@@ -400,8 +400,8 @@ describe('CadreNode.admitInboundControlConnection', () => {
   it('admits only provisionally a member whose StampId is retired in Revocation, still admitting its live sibling', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
-    const revoked = vouchedRow(MEMBER, owner);
-    const survivor = vouchedRow('peer-member-2', owner);
+    const revoked = vouchedRow(node.partyId, MEMBER, owner);
+    const survivor = vouchedRow(node.partyId, 'peer-member-2', owner);
     // The gate delegates to the same authorized-membership predicate the
     // authorized-surface spec pins, so a removed peer that dials in must not be admitted outright
     // even while its (still valid, still anchored) voucher row is locally visible —
@@ -453,7 +453,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: true
     });
@@ -470,7 +470,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       liveInvite: true
     });
@@ -485,7 +485,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       liveInvite: 'throws'
     });
@@ -499,7 +499,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: false
     });
@@ -511,7 +511,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       // Would throw if reached — proves the member path never pays for it.
       solicitation: 'throws'
@@ -524,7 +524,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: 'throws'
     });
@@ -536,7 +536,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey),
       solicitation: 'hangs'
     });
@@ -560,7 +560,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
       const node = new CadreNode(createConfig());
       const owner = makeOwner();
       inject(node, {
-        members: [vouchedRow(MEMBER, owner)],
+        members: [vouchedRow(node.partyId, MEMBER, owner)],
         anchor: await anchorWith('p', owner.publicKey)
       });
       const service = new StrandSolicitationService();
@@ -586,7 +586,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const node = new CadreNode(createConfig([`/ip4/10.0.0.1/tcp/4001/p2p/${infraId}`]));
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
 
@@ -601,7 +601,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const owner = makeOwner();
     const IMPOSTOR = 'peer-impostor';
     inject(node, {
-      members: [vouchedRow(MEMBER, owner), bareRow(IMPOSTOR)],
+      members: [vouchedRow(node.partyId, MEMBER, owner), bareRow(IMPOSTOR)],
       anchor: await anchorWith('p', owner.publicKey)
     });
 
@@ -614,7 +614,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     const anchored = makeOwner();
     const selfMinted = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, anchored), vouchedRow('peer-self-minted', selfMinted)],
+      members: [vouchedRow(node.partyId, MEMBER, anchored), vouchedRow(node.partyId, 'peer-self-minted', selfMinted)],
       anchor: await anchorWith('p', anchored.publicKey)
     });
 
@@ -637,7 +637,7 @@ describe('CadreNode.admitInboundControlConnection (relay server on or off)', () 
       const node = new CadreNode(createConfig([], extra));
       const owner = makeOwner();
       inject(node, {
-        members: [vouchedRow(MEMBER, owner)],
+        members: [vouchedRow(node.partyId, MEMBER, owner)],
         anchor: await anchorWith('p', owner.publicKey)
       });
 
@@ -666,7 +666,7 @@ describe('CadreNode.admitControlRelayReservation', () => {
     }));
     const owner = makeOwner();
     inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
+      members: [vouchedRow(node.partyId, MEMBER, owner)],
       anchor: await anchorWith('p', owner.publicKey)
     });
     return node;
@@ -702,14 +702,14 @@ describe('CadreNode.admitControlRelayReservation', () => {
     // with peers that no longer need it.
     const owner = makeOwner();
     const node = new CadreNode(createConfig([], { network: { enableRelay: true, unauthorizedRelayReservationCap: 1 } }));
-    inject(node, { members: [vouchedRow(MEMBER, owner)], anchor: await anchorWith('p', owner.publicKey) });
+    inject(node, { members: [vouchedRow(node.partyId, MEMBER, owner)], anchor: await anchorWith('p', owner.publicKey) });
 
     expect(await admitReservation(node, STRANGER)).toBe(true);
     expect(budgetOf(node).size).toBe(1);
     expect(await admitReservation(node, 'peer-other-unplaced')).toBe(false);
 
     // STRANGER's row replicates in — now admitted on its own merits.
-    fakeDb(node).queryCadrePeers = async () => [vouchedRow(MEMBER, owner), vouchedRow(STRANGER, owner)];
+    fakeDb(node).queryCadrePeers = async () => [vouchedRow(node.partyId, MEMBER, owner), vouchedRow(node.partyId, STRANGER, owner)];
 
     expect(await admitReservation(node, STRANGER)).toBe(true);
     expect(budgetOf(node).size).toBe(0);

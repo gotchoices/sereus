@@ -47,17 +47,18 @@ import {
 const log = debug('sereus:cadre:test:revocation-reap');
 
 /** `ValidationKey` binds (Key, StampId) under both action tags. */
-const validationKeyMessage = (action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.ValidationKey', action, [key, stampId]);
+const validationKeyMessage = (partyId: string, action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.ValidationKey', action, partyId, [key, stampId]);
 
 /** `Strand`'s add branch binds the whole row; MemberPrivateKey signs as '' when null. */
 const strandAddMessage = (
+  partyId: string,
   id: string,
   type: string,
   memberPrivateKey: string | null,
   stampId: string,
 ): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Strand', 'add', [id, type, memberPrivateKey ?? '', stampId]);
+  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', stampId]);
 
 /**
  * `CONTROL_SCHEMA` with EXACTLY the `Revocation.RowIsGone` constraint removed. Throws —
@@ -122,7 +123,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
   /** Admit a peer the legitimate way (owner-vouched insert). */
   async function admitPeer(peerId: string): Promise<{ stamp: string }> {
     const stamp = freshStamp();
-    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, stamp));
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
     await rawDb.exec(
       `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
@@ -139,7 +140,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       `insert into CadreControl.ValidationKey (Key, StampId)
          with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [founder.publicKey, signAs(founder, validationKeyMessage('add', key, stamp)), key, stamp],
+      [founder.publicKey, signAs(founder, validationKeyMessage(node.partyId, 'add', key, stamp)), key, stamp],
     );
     return { stamp };
   }
@@ -154,7 +155,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
          with context OwnerKey = ?, Signature = ?
          values (?, ?, ?, ?, ?)`,
-      [founder.publicKey, signAs(founder, strandAddMessage(id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp, founder.publicKey],
+      [founder.publicKey, signAs(founder, strandAddMessage(node.partyId, id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp, founder.publicKey],
     );
     return { stamp };
   }
@@ -173,7 +174,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
          with context OwnerKey = ?, Signature = ?
          values (?, ?, ?, ?, ?, ?)`,
-      [founder.publicKey, signB64(founder, deviceTokenAddDigest(row)), row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
+      [founder.publicKey, signB64(founder, deviceTokenAddDigest(node.partyId, row)), row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
     );
     return { stamp: row.stampId };
   }
@@ -208,7 +209,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
 
   /** Owner-signed tombstone append (the shape `Revocation.Authorized` verifies). */
   function tombstoneStamp(tableName: string, rowKey: string, stampId: string): Promise<void> {
-    const signature = signAs(founder, revocationMessage(tableName, rowKey, stampId));
+    const signature = signAs(founder, revocationMessage(node.partyId, tableName, rowKey, stampId));
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
@@ -240,7 +241,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
         `delete from CadreControl.CadrePeer
            with context OwnerKey = ?, Signature = ?
            where PeerId = ?`,
-        [founder.publicKey, signB64(founder, cadrePeerRemoveDigest(peerId, stamp)), peerId],
+        [founder.publicKey, signB64(founder, cadrePeerRemoveDigest(node.partyId, peerId, stamp)), peerId],
       );
       await tombstoneStamp('CadrePeer', peerId, stamp);
     });
@@ -278,7 +279,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
         `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
            with context OwnerKey = ?, Signature = ?
            values (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [founder.publicKey, signB64(founder, cadrePeerVoucherDigest(peerId, s2)), peerId, null, '', null, null, s2, founder.publicKey, signB64(founder, cadrePeerVoucherDigest(peerId, s2))],
+        [founder.publicKey, signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, s2)), peerId, null, '', null, null, s2, founder.publicKey, signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, s2))],
       );
 
       // The previous incarnation's stamp: the guard sees the live stamp differs and
@@ -568,7 +569,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
           `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
              with context OwnerKey = ?, Signature = ?
              values (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [founder.publicKey, signB64(founder, cadrePeerVoucherDigest(reseated, s2)), reseated, null, '', null, null, s2, founder.publicKey, signB64(founder, cadrePeerVoucherDigest(reseated, s2))],
+          [founder.publicKey, signB64(founder, cadrePeerVoucherDigest(node.partyId, reseated, s2)), reseated, null, '', null, null, s2, founder.publicKey, signB64(founder, cadrePeerVoucherDigest(node.partyId, reseated, s2))],
         );
         const other = '12D3KooWSweepBehindReseated';
         const { stamp: otherStamp } = await admitPeer(other);

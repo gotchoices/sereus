@@ -63,7 +63,7 @@ async function insertForeignMember(
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
   const peerId = peerIdFromPrivateKey(key).toString();
   const resolvedAddrs = typeof addrs === 'function' ? addrs(peerId) : addrs;
-  const signed = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs: resolvedAddrs, updatedAt }, privateKeyB64);
+  const signed = signPeerRecord(owner.node.partyId, { peerId, publicKey: publicKeyB64, addrs: resolvedAddrs, updatedAt }, privateKeyB64);
   const record = { ...signed, ...overrides };
   await owner.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
   return { peerId, record };
@@ -119,7 +119,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(stored!.publicKey).toBe(publicKeyB64);
     expect(ed25519PublicKeyB64FromPeerId(peerId)).toBe(stored!.publicKey);
     expect(stored!.updatedAt).toBeGreaterThan(0);
-    expect(verifyPeerRecordSignature(stored!)).toBe(true);
+    expect(verifyPeerRecordSignature(node.partyId, stored!)).toBe(true);
 
     // `direct` was pushed WITHOUT a /p2p/ suffix; publication appends this node's
     // own, so the row a sibling replicates is already uniformly suffixed and no
@@ -188,7 +188,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     // Published with this node's own /p2p/ suffix appended (see normalizeSelfAddrs).
     expect(second!.addrs).toContain(`/ip4/2.2.2.2/tcp/4001/p2p/${peerId}`);
     expect(second!.addrs).not.toContain(`/ip4/1.1.1.1/tcp/4001/p2p/${peerId}`);
-    expect(verifyPeerRecordSignature(second!)).toBe(true);
+    expect(verifyPeerRecordSignature(node.partyId, second!)).toBe(true);
   }, 60_000);
 
   it('carries a valid self-signature when an authorize lands mid-publish', async () => {
@@ -213,7 +213,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(wedge.reads()).toBe(2);
 
     const stored = await node.getControlDatabase()!.queryPeerRecord(peerId);
-    expect(verifyPeerRecordSignature(stored!)).toBe(true);
+    expect(verifyPeerRecordSignature(node.partyId, stored!)).toBe(true);
     expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
     // The write that landed was an UPDATE of the authorize's row.
     expect(outcome).toBe('refreshed');
@@ -229,7 +229,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     await node.authorizePeer(peerId, []);
 
     const stored = await node.getControlDatabase()!.queryPeerRecord(peerId);
-    expect(verifyPeerRecordSignature(stored!)).toBe(true);
+    expect(verifyPeerRecordSignature(node.partyId, stored!)).toBe(true);
     expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
   }, 60_000);
 
@@ -267,7 +267,7 @@ describe('peer-record resolution layer (real control DB)', () => {
 
     // Re-sign with updatedAt EQUAL to the stored one → monotonic clause fails,
     // owner branch absent (context OwnerKey null) → constraint rejects.
-    const stale = signPeerRecord(
+    const stale = signPeerRecord(node.partyId,
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/4.4.4.4/tcp/4001'], updatedAt: current!.updatedAt },
       privateKeyB64
     );
@@ -289,7 +289,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     // PublicKey — the constraint verifies Sig against PublicKey → fails.
     const attacker = await generateKeyPair('Ed25519');
     const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
-    const forged = signPeerRecord(
+    const forged = signPeerRecord(node.partyId,
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/6.6.6.6/tcp/4001'], updatedAt: current!.updatedAt + 1 },
       attackerPriv
     );
@@ -344,7 +344,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     const current = await node.getControlDatabase()!.queryPeerRecord(dronePeerId);
     const droneSig = circuitAddr(dronePeerId);
     const direct = '/ip4/10.0.0.1/tcp/4001';
-    const record = signPeerRecord(
+    const record = signPeerRecord(node.partyId,
       { peerId: dronePeerId, publicKey: dronePub, addrs: [droneSig, direct], updatedAt: current!.updatedAt + 1 },
       dronePriv
     );

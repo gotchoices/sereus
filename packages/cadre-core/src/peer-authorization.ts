@@ -1,20 +1,27 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
-import { controlAuthorizationFields, cadreInviteRowFields } from './control-authorization.js';
-import type { CadreInviteSignedFields, ControlAction, ControlDomain, RevocableTable } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields } from './control-authorization.js';
+import type { BoundControlDomain, CadreInviteSignedFields, ControlAction, RevocableTable, UnboundControlDomain } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, OwnerKeyRow, RevocationRow } from './types.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
 /**
- * base64url SHA-256 digest over the shared domain-tagged field vector (see
+ * base64url SHA-256 digest over the shared domain-tagged, party-bound field vector (see
  * control-authorization.ts). The base64url twin of
  * control-database.ts:buildAuthorizationMessage (which returns the same digest as raw
  * bytes): sign either encoding with input encoding to match and the signed bytes agree.
+ * `partyId` is the party the verifier is configured for: a stored proof minted for
+ * another party fails here exactly as it fails the schema's `party_id()`-bound check.
  */
-function taggedDigest(domain: ControlDomain, action: ControlAction, rowFields: string[]): string {
-  return digest(controlAuthorizationFields(domain, action, rowFields), 'sha256', 'base64url') as string;
+function taggedDigest(domain: BoundControlDomain, action: ControlAction, partyId: string, rowFields: string[]): string {
+  return digest(controlAuthorizationFields(domain, action, partyId, rowFields), 'sha256', 'base64url') as string;
+}
+
+/** {@link taggedDigest} for the two party-free digests (`UnboundControlDomain`). */
+function unboundTaggedDigest(domain: UnboundControlDomain, action: ControlAction, rowFields: string[]): string {
+  return digest(unboundAuthorizationFields(domain, action, rowFields), 'sha256', 'base64url') as string;
 }
 
 /**
@@ -29,7 +36,7 @@ function taggedDigest(domain: ControlDomain, action: ControlAction, rowFields: s
  * here and both move together.
  */
 export function peerAuthorizationDigest(peerId: string): string {
-  return taggedDigest('Cadre.Enrollment', 'vouch', [peerId]);
+  return unboundTaggedDigest('Cadre.Enrollment', 'vouch', [peerId]);
 }
 
 /**
@@ -56,7 +63,7 @@ export interface DeviceTokenAuthorizedRow {
 /**
  * Canonical digest an owner signs to authorize a `DeviceToken` INSERT — the WHOLE row,
  * ending in its single-use `StampId` nonce. SQL mirror:
- * `digest('CadreControl.DeviceToken', 'add', new.PeerId, new.Platform, new.Token,
+ * `digest('CadreControl.DeviceToken', 'add', party_id(), new.PeerId, new.Platform, new.Token,
  * coalesce(cast(new.UpdatedAt as text), ''), coalesce(new.Sig, ''), new.StampId)` in
  * `DeviceToken.AuthorizedInsert`.
  *
@@ -72,8 +79,8 @@ export interface DeviceTokenAuthorizedRow {
  * Distinct from {@link deviceTokenRemoveDigest} so a captured insert approval can never
  * be replayed to delete the token, and vice versa.
  */
-export function deviceTokenAddDigest(row: DeviceTokenAuthorizedRow): string {
-  return taggedDigest('CadreControl.DeviceToken', 'add', [
+export function deviceTokenAddDigest(partyId: string, row: DeviceTokenAuthorizedRow): string {
+  return taggedDigest('CadreControl.DeviceToken', 'add', partyId, [
     row.peerId,
     row.platform,
     row.token,
@@ -86,7 +93,7 @@ export function deviceTokenAddDigest(row: DeviceTokenAuthorizedRow): string {
 /**
  * Canonical digest an owner signs to authorize a `DeviceToken` DELETE, bound to the
  * STORED row's (PeerId, StampId). SQL mirror:
- * `digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId)` in
+ * `digest('CadreControl.DeviceToken', 'remove', party_id(), old.PeerId, old.StampId)` in
  * `DeviceToken.AuthorizedDelete`.
  *
  * A narrower vector than {@link deviceTokenAddDigest} on purpose (the same split
@@ -94,8 +101,8 @@ export function deviceTokenAddDigest(row: DeviceTokenAuthorizedRow): string {
  * cannot be re-cut into an insert approval, and it is dead the moment the stamp it
  * names is tombstoned.
  */
-export function deviceTokenRemoveDigest(peerId: string, stampId: string): string {
-  return taggedDigest('CadreControl.DeviceToken', 'remove', [peerId, stampId]);
+export function deviceTokenRemoveDigest(partyId: string, peerId: string, stampId: string): string {
+  return taggedDigest('CadreControl.DeviceToken', 'remove', partyId, [peerId, stampId]);
 }
 
 /**
@@ -109,10 +116,10 @@ export function deviceTokenRemoveDigest(peerId: string, stampId: string): string
  * a delete. The domain tag keeps the stored, replicated `VouchSig` useless against
  * every OTHER table's rules.
  *
- * SQL mirror: `digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId)`.
+ * SQL mirror: `digest('CadreControl.CadrePeer', 'vouch', party_id(), new.PeerId, new.StampId)`.
  */
-export function cadrePeerVoucherDigest(peerId: string, stampId: string): string {
-  return taggedDigest('CadreControl.CadrePeer', 'vouch', [peerId, stampId]);
+export function cadrePeerVoucherDigest(partyId: string, peerId: string, stampId: string): string {
+  return taggedDigest('CadreControl.CadrePeer', 'vouch', partyId, [peerId, stampId]);
 }
 
 /**
@@ -124,10 +131,10 @@ export function cadrePeerVoucherDigest(peerId: string, stampId: string): string 
  * delete lands, because a re-added row carries a FRESH `StampId` (the removed row's
  * stamp is retired into `CadreControl.Revocation` and never reused).
  *
- * SQL mirror: `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`.
+ * SQL mirror: `digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId)`.
  */
-export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
-  return taggedDigest('CadreControl.CadrePeer', 'remove', [peerId, stampId]);
+export function cadrePeerRemoveDigest(partyId: string, peerId: string, stampId: string): string {
+  return taggedDigest('CadreControl.CadrePeer', 'remove', partyId, [peerId, stampId]);
 }
 
 /**
@@ -136,7 +143,7 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
  * (the removed row's primary key: OwnerKey.Key / ValidationKey.Key /
  * CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id) as which row was retired.
  * SQL mirror:
- * `digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId)`
+ * `digest('CadreControl.Revocation', 'remove', party_id(), new.TableName, new.RowKey, new.StampId)`
  * in `Revocation.Authorized`.
  *
  * Its own `'CadreControl.Revocation'` domain tag makes it disjoint from the
@@ -145,20 +152,20 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
  * this tombstone accompanies — a removal signature is not a retirement
  * signature and cannot be replayed as one.
  */
-export function revocationDigest(tableName: RevocableTable, rowKey: string, stampId: string): string {
-  return taggedDigest('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
+export function revocationDigest(partyId: string, tableName: RevocableTable, rowKey: string, stampId: string): string {
+  return taggedDigest('CadreControl.Revocation', 'remove', partyId, [tableName, rowKey, stampId]);
 }
 
 /**
  * Does a `Revocation` row's stored signer pair (`SignerKey` / `SignerSig`) verify over the
- * tombstone's own triple? The read-side mirror of `Revocation.Authorized`, for a node that
- * received the row by replication and must decide whether to honour it. Whether
- * `row.signerKey` is an owner this node trusts is the caller's question, as for
+ * tombstone's own triple, for `partyId`? The read-side mirror of `Revocation.Authorized`,
+ * for a node that received the row by replication and must decide whether to honour it.
+ * Whether `row.signerKey` is an owner this node trusts is the caller's question, as for
  * {@link verifyCadrePeerVoucher}. Never throws: a malformed row verifies as `false`.
  */
-export function verifyRevocationSigner(row: RevocationRow): boolean {
+export function verifyRevocationSigner(partyId: string, row: RevocationRow): boolean {
   try {
-    return verifyB64(revocationDigest(row.tableName, row.rowKey, row.stampId), row.signerSig, row.signerKey);
+    return verifyB64(revocationDigest(partyId, row.tableName, row.rowKey, row.stampId), row.signerSig, row.signerKey);
   } catch (error) {
     log('verifyRevocationSigner failed: %o', error);
     return false;
@@ -168,21 +175,21 @@ export function verifyRevocationSigner(row: RevocationRow): boolean {
 /**
  * Canonical digest an owner signs to seat a further `OwnerKey` row — the signed-add branch
  * of `OwnerKey.Authorized`, which stores the pair as `VouchOwner` / `VouchSig`. SQL mirror:
- * `digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId)`. The removal digest needs
- * no builder here: it is the generic guarded `'remove'` digest over (Key, StampId).
+ * `digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId)`. The removal
+ * digest needs no builder here: it is the generic guarded `'remove'` digest over (Key, StampId).
  */
-export function ownerKeyAddDigest(key: string, stampId: string): string {
-  return taggedDigest('CadreControl.OwnerKey', 'add', [key, stampId]);
+export function ownerKeyAddDigest(partyId: string, key: string, stampId: string): string {
+  return taggedDigest('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
 }
 
 /**
  * Does an owner-signed `OwnerKey` row's stored voucher verify — `vouchSig` by `vouchOwner`
- * over {@link ownerKeyAddDigest} for (`key`, `stampId`)? Whether `vouchOwner` is anchored
- * is the caller's question, as for {@link verifyCadrePeerVoucher}. Never throws.
+ * over {@link ownerKeyAddDigest} for (`partyId`, `key`, `stampId`)? Whether `vouchOwner` is
+ * anchored is the caller's question, as for {@link verifyCadrePeerVoucher}. Never throws.
  */
-export function verifyOwnerKeyVoucher(key: string, stampId: string, vouchOwner: string, vouchSig: string): boolean {
+export function verifyOwnerKeyVoucher(partyId: string, key: string, stampId: string, vouchOwner: string, vouchSig: string): boolean {
   try {
-    return verifyB64(ownerKeyAddDigest(key, stampId), vouchSig, vouchOwner);
+    return verifyB64(ownerKeyAddDigest(partyId, key, stampId), vouchSig, vouchOwner);
   } catch (error) {
     log('verifyOwnerKeyVoucher failed: %o', error);
     return false;
@@ -226,12 +233,13 @@ export function verifyPeerAuthorization(
 
 /**
  * Verify that `signature` is a valid owner ed25519 signature over the
- * `CadrePeer` voucher digest for (`peerId`, `stampId`) — the read-side mirror
- * of the voucher {@link ControlDatabase.insertCadrePeer} signs and persists into
+ * `CadrePeer` voucher digest for (`partyId`, `peerId`, `stampId`) — the read-side
+ * mirror of the voucher {@link ControlDatabase.insertCadrePeer} signs and persists into
  * `VouchOwner`/`VouchSig` (see {@link cadrePeerVoucherDigest}).
  *
  * A `true` result means the holder of `ownerPublicKey` vouched THIS membership
- * row (the peer id bound to the row's single-use `StampId` nonce). It says
+ * row (the peer id bound to the row's single-use `StampId` nonce) in THIS party: a
+ * voucher copied from another party's table that shares the owner key fails. It says
  * nothing about whether that owner key is itself trustworthy — the caller must
  * separately check the key against the node-local trusted-owner anchor
  * (`TrustedOwnerStore`), never the replicated `OwnerKey` table.
@@ -241,6 +249,7 @@ export function verifyPeerAuthorization(
  * resolves to `false`, logged at debug.
  */
 export function verifyCadrePeerVoucher(
+  partyId: string,
   peerId: string,
   stampId: string,
   ownerPublicKey: string,
@@ -248,7 +257,7 @@ export function verifyCadrePeerVoucher(
 ): boolean {
   try {
     return verify(
-      cadrePeerVoucherDigest(peerId, stampId),
+      cadrePeerVoucherDigest(partyId, peerId, stampId),
       signature,
       ownerPublicKey,
       'ed25519',
@@ -266,14 +275,14 @@ export function verifyCadrePeerVoucher(
  * Canonical digest a JOINING peer signs to consent to ONE `FormationUsage`
  * redemption — the read-side mirror of `formationConsentMessage` in
  * control-database.ts, base64url-encoded instead of raw bytes (see
- * {@link taggedDigest}). That doc comment carries the field-vector rationale
- * (notably why `strandId` is not signed); the two vectors must not drift, which
- * peer-authorization.spec.ts pins by signing one form and verifying the other.
+ * {@link unboundTaggedDigest}). That doc comment carries the field-vector rationale
+ * (notably why neither `strandId` nor the party id is signed); the two vectors must not
+ * drift, which peer-authorization.spec.ts pins by signing one form and verifying the other.
  */
 export function formationConsentDigest(
   token: string, usageStampId: string, peerKey: string, disclosure: string
 ): string {
-  return taggedDigest('CadreControl.FormationUsage', 'consent', [token, usageStampId, peerKey, disclosure]);
+  return unboundTaggedDigest('CadreControl.FormationUsage', 'consent', [token, usageStampId, peerKey, disclosure]);
 }
 
 /**
@@ -307,8 +316,8 @@ export function verifyFormationConsent(row: {
  * `ExpiresAt` in its stored canonical form, through the one field builder both sides
  * share (`cadreInviteRowFields`). SQL mirror: `CadreInvite.AuthorizedInsert`.
  */
-export function cadreInviteAddDigest(row: CadreInviteSignedFields): string {
-  return taggedDigest('CadreControl.CadreInvite', 'add', cadreInviteRowFields(row));
+export function cadreInviteAddDigest(partyId: string, row: CadreInviteSignedFields): string {
+  return taggedDigest('CadreControl.CadreInvite', 'add', partyId, cadreInviteRowFields(row));
 }
 
 /**
@@ -318,8 +327,8 @@ export function cadreInviteAddDigest(row: CadreInviteSignedFields): string {
  * device being admitted, so one redemption cannot be re-presented for another device
  * or another use. Mirror of `cadreInviteRedeemMessage` in control-database.ts.
  */
-export function cadreInviteRedeemDigest(inviteKey: string, usageStampId: string, peerKey: string): string {
-  return taggedDigest('CadreControl.CadreInviteUsage', 'redeem', [inviteKey, usageStampId, peerKey]);
+export function cadreInviteRedeemDigest(partyId: string, inviteKey: string, usageStampId: string, peerKey: string): string {
+  return taggedDigest('CadreControl.CadreInviteUsage', 'redeem', partyId, [inviteKey, usageStampId, peerKey]);
 }
 
 /**
@@ -329,8 +338,8 @@ export function cadreInviteRedeemDigest(inviteKey: string, usageStampId: string,
  * the device's signatures are never interchangeable. Mirror of
  * `cadreInviteConsentMessage` in control-database.ts.
  */
-export function cadreInviteConsentDigest(inviteKey: string, usageStampId: string, peerKey: string): string {
-  return taggedDigest('CadreControl.CadreInviteUsage', 'consent', [inviteKey, usageStampId, peerKey]);
+export function cadreInviteConsentDigest(partyId: string, inviteKey: string, usageStampId: string, peerKey: string): string {
+  return taggedDigest('CadreControl.CadreInviteUsage', 'consent', partyId, [inviteKey, usageStampId, peerKey]);
 }
 
 /** ed25519 verify over a base64url digest, with the siblings' never-throws contract left to the caller. */
@@ -339,15 +348,16 @@ function verifyB64(digestB64: string, signature: string, publicKey: string): boo
 }
 
 /**
- * Does a `CadreInvite` row carry a valid `'add'` signature by its own `issuerKey`? The
- * redeeming device runs this over the row a member replies with, after checking the issuer
- * against its pinned owner keys, and a member over a bundle's copy it does not hold yet
+ * Does a `CadreInvite` row carry a valid `'add'` signature by its own `issuerKey`, for
+ * `partyId`? The redeeming device runs this over the row a member replies with, after
+ * checking the issuer against its pinned owner keys and the reply's party against the
+ * invitation's, and a member over a bundle's copy it does not hold yet
  * (`ControlDatabase.isCadreInviteLive`); whether that issuer IS an owner is the caller's question.
  * Never throws: a malformed row verifies as `false`.
  */
-export function verifyCadreInviteRow(invite: CadreInviteRow): boolean {
+export function verifyCadreInviteRow(partyId: string, invite: CadreInviteRow): boolean {
   try {
-    return verifyB64(cadreInviteAddDigest(invite), invite.issuerSig, invite.issuerKey);
+    return verifyB64(cadreInviteAddDigest(partyId, invite), invite.issuerSig, invite.issuerKey);
   } catch (error) {
     log('verifyCadreInviteRow failed: %o', error);
     return false;
@@ -363,13 +373,14 @@ export function verifyCadreInviteRow(invite: CadreInviteRow): boolean {
  * refusal instead of a constraint failure at commit. Never throws.
  */
 export function verifyCadreInviteRedemption(
+  partyId: string,
   fields: { inviteKey: string; usageStampId: string; peerKey: string },
   inviteSig: string,
   peerSig: string,
 ): boolean {
   try {
-    return verifyB64(cadreInviteRedeemDigest(fields.inviteKey, fields.usageStampId, fields.peerKey), inviteSig, fields.inviteKey)
-      && verifyB64(cadreInviteConsentDigest(fields.inviteKey, fields.usageStampId, fields.peerKey), peerSig, fields.peerKey);
+    return verifyB64(cadreInviteRedeemDigest(partyId, fields.inviteKey, fields.usageStampId, fields.peerKey), inviteSig, fields.inviteKey)
+      && verifyB64(cadreInviteConsentDigest(partyId, fields.inviteKey, fields.usageStampId, fields.peerKey), peerSig, fields.peerKey);
   } catch (error) {
     log('verifyCadreInviteRedemption failed: %o', error);
     return false;
@@ -390,10 +401,11 @@ export function verifyCadreInviteRedemption(
  * usage's `peerId` (the schema cannot unwrap a multihash, so a writer could assert any
  * pair); the invitation's stored `'add'` signature verifies over the row rebuilt from its
  * columns; the holder's `'redeem'` signature verifies with the invitation key and the
- * device's `'consent'` signature with its own key. Throws on malformed input; the two
- * callers turn that into `false`.
+ * device's `'consent'` signature with its own key. All three signatures are judged for
+ * `partyId`. Throws on malformed input; the two callers turn that into `false`.
  */
 function verifyAdmissionChain(
+  partyId: string,
   vouchOwner: string,
   vouchUsage: string,
   usage: CadreInviteUsageRow,
@@ -406,9 +418,9 @@ function verifyAdmissionChain(
     && usage.inviteKey === invite.key
     && (invite.peerId === null || invite.peerId === usage.peerId)
     && ed25519PublicKeyB64FromPeerId(usage.peerId) === usage.peerKey
-    && verifyB64(cadreInviteAddDigest(invite), invite.issuerSig, invite.issuerKey)
-    && verifyB64(cadreInviteRedeemDigest(invite.key, usage.usageStampId, usage.peerKey), usage.inviteSig, invite.key)
-    && verifyB64(cadreInviteConsentDigest(invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
+    && verifyB64(cadreInviteAddDigest(partyId, invite), invite.issuerSig, invite.issuerKey)
+    && verifyB64(cadreInviteRedeemDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.inviteSig, invite.key)
+    && verifyB64(cadreInviteConsentDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
 }
 
 /**
@@ -427,6 +439,7 @@ function verifyAdmissionChain(
  * crypto failure resolves to `false`, logged at debug.
  */
 export function verifyInvitationAdmission(
+  partyId: string,
   row: CadrePeerVoucherFields,
   usage: CadreInviteUsageRow,
   invite: CadreInviteRow,
@@ -438,7 +451,7 @@ export function verifyInvitationAdmission(
       && row.vouchUsage !== null
       && usage.peerStampId === row.stampId
       && usage.peerId === row.peerId
-      && verifyAdmissionChain(row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
+      && verifyAdmissionChain(partyId, row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
   } catch (error) {
     log('verifyInvitationAdmission failed: %o', error);
     return false;
@@ -455,6 +468,7 @@ export function verifyInvitationAdmission(
  * {@link verifyInvitationAdmission}.
  */
 export function verifyInvitationOwnerAdmission(
+  partyId: string,
   row: OwnerKeyRow,
   usage: CadreInviteUsageRow,
   invite: CadreInviteRow,
@@ -466,7 +480,7 @@ export function verifyInvitationOwnerAdmission(
       && invite.grantsOwner
       && usage.peerKey === row.key
       && usage.ownerStampId === row.stampId
-      && verifyAdmissionChain(row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
+      && verifyAdmissionChain(partyId, row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
   } catch (error) {
     log('verifyInvitationOwnerAdmission failed: %o', error);
     return false;

@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TTL_MS } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
@@ -45,7 +45,7 @@ export type {
 } from './control-retry.js';
 
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
-export { controlAuthorizationFields, cadreInviteRowFields, type ControlDomain, type ControlAction, type CadreInviteSignedFields } from './control-authorization.js';
+export { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, type ControlDomain, type BoundControlDomain, type UnboundControlDomain, type ControlAction, type CadreInviteSignedFields } from './control-authorization.js';
 
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
 export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';

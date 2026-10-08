@@ -480,9 +480,10 @@ describe('CadreNode.reconcileControlCohort', () => {
 
 /**
  * A signed record for a fresh Ed25519 peer carrying exactly `addrs`, stamped
- * `updatedAt` (now by default; an old stamp makes the record stale).
+ * `updatedAt` (now by default; an old stamp makes the record stale), bound to
+ * `partyId` (the judging node's `CadreNode.partyId`).
  */
-async function signedSibling(addrs: (peerId: string) => string[], updatedAt = Date.now()): Promise<{
+async function signedSibling(partyId: string, addrs: (peerId: string) => string[], updatedAt = Date.now()): Promise<{
   peerId: string;
   record: PeerAddressRecord;
 }> {
@@ -490,6 +491,7 @@ async function signedSibling(addrs: (peerId: string) => string[], updatedAt = Da
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
   const peerId = peerIdFromPrivateKey(key).toString();
   const record = signPeerRecord(
+    partyId,
     { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt },
     privateKeyB64
   );
@@ -503,12 +505,12 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
     // `libp2p.dial([suffixed, unsuffixed])`, which throws InvalidParametersError
     // before touching a transport. Each address is dialed on its own now, but both
     // must still be bound to the sibling. Direct first, relayed second.
-    const { peerId, record } = await signedSibling((self) => [
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(node.partyId, (self) => [
       `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${self}`,
       '/ip4/10.255.0.1/tcp/4001/ws',
     ]);
 
-    const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
       dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
@@ -529,12 +531,12 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
     // it to the sibling instead of leaving a third handling of the same input.
     // (Resolution puts the relayed address first, for `dialWake`; the reconcile
     // dial then tries the direct one first — `directBeforeRelayed`.)
-    const { peerId, record } = await signedSibling(() => [
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(node.partyId, () => [
       '/ip4/9.9.9.9/tcp/4001/ws',
       `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`,
     ]);
 
-    const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
       dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
@@ -553,12 +555,12 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
     // Suffixed and unsuffixed forms of the SAME address are distinct strings on
     // the record and the same address after normalization. A surviving duplicate
     // costs a real dial attempt — for `dialWake`, a whole slice of its budget.
-    const { peerId, record } = await signedSibling((self) => [
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(node.partyId, (self) => [
       '/ip4/9.9.9.9/tcp/4001/ws',
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${self}`,
     ]);
 
-    const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
       dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
@@ -574,12 +576,12 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
   it('drops an addr naming a different peer rather than poisoning the whole list', async () => {
     const other = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-    const { peerId, record } = await signedSibling(() => [
+    const node = new CadreNode(createConfig());
+    const { peerId, record } = await signedSibling(node.partyId, () => [
       '/ip4/9.9.9.9/tcp/4001/ws',
       `/ip4/8.8.8.8/tcp/4001/ws/p2p/${other}`,
     ]);
 
-    const node = new CadreNode(createConfig());
     const { dialCalls } = injectCohort(node, {
       dialFails: true,
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
@@ -1228,7 +1230,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
     // The relaunch after more than fifteen minutes offline: the record verifies but
     // is too old to resolve, and the address book did not survive the process.
     const node = new CadreNode(createConfig());
-    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws'], STALE_UPDATED_AT);
+    const { peerId, record } = await signedSibling(node.partyId, () => ['/ip4/9.9.9.9/tcp/4001/ws'], STALE_UPDATED_AT);
     const store = new CountingBootstrapPeerStore('p');
     await store.record(peerId, ['/ip4/1.1.1.1/tcp/1/ws']);
     const { dialCalls } = injectCohort(node, {
@@ -1263,7 +1265,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
 
   it('dials a sibling whose record resolves from the record, not the retained target', async () => {
     const node = new CadreNode(createConfig());
-    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws']);
+    const { peerId, record } = await signedSibling(node.partyId, () => ['/ip4/9.9.9.9/tcp/4001/ws']);
     const store = new MemoryBootstrapPeerStore('p');
     await store.record(peerId, ['/ip4/1.1.1.1/tcp/1/ws']);
     const { dialCalls } = injectCohort(node, {
@@ -1280,7 +1282,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
   it('replaces a retained target with the differing addresses the record resolves to, once', async () => {
     // A port change seen while connected must be what the next relaunch dials.
     const node = new CadreNode(createConfig());
-    const { peerId, record } = await signedSibling(() => ['/ip4/192.168.1.20/tcp/4102/ws']);
+    const { peerId, record } = await signedSibling(node.partyId, () => ['/ip4/192.168.1.20/tcp/4102/ws']);
     const store = new CountingBootstrapPeerStore('p');
     await store.record(peerId, ['/ip4/192.168.1.20/tcp/4002/ws']);
     injectCohort(node, {
@@ -1301,7 +1303,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
 
   it('does not rewrite a retained target that differs from the record only in suffixes and order', async () => {
     const node = new CadreNode(createConfig());
-    const { peerId, record } = await signedSibling(() => ['/ip4/10.0.0.1/tcp/4001', '/ip4/10.0.0.2/tcp/4002/ws']);
+    const { peerId, record } = await signedSibling(node.partyId, () => ['/ip4/10.0.0.1/tcp/4001', '/ip4/10.0.0.2/tcp/4002/ws']);
     const store = new CountingBootstrapPeerStore('p');
     await store.record(peerId, [`/ip4/10.0.0.2/tcp/4002/ws`, `/ip4/10.0.0.1/tcp/4001/p2p/${peerId}`]);
     injectCohort(node, {
@@ -1317,7 +1319,7 @@ describe('CadreNode.reconcileControlCohort — retained dial target for a siblin
 
   it('never creates a retained target for a sibling that has none', async () => {
     const node = new CadreNode(createConfig());
-    const { peerId, record } = await signedSibling(() => ['/ip4/9.9.9.9/tcp/4001/ws']);
+    const { peerId, record } = await signedSibling(node.partyId, () => ['/ip4/9.9.9.9/tcp/4001/ws']);
     const store = new MemoryBootstrapPeerStore('p');
     injectCohort(node, {
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],

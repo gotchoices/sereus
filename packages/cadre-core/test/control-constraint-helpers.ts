@@ -89,9 +89,9 @@ export function signB64(kp: KeyPair, digestB64url: string): string {
   return cryptoSign(digestB64url, kp.privateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 }
 
-/** `Revocation.Authorized` binds the whole tombstone row under its own domain tag. */
-export const revocationMessage = (tableName: string, rowKey: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
+/** `Revocation.Authorized` binds the whole tombstone row under its own domain tag, for `partyId` (the node's `CadreNode.partyId`). */
+export const revocationMessage = (partyId: string, tableName: string, rowKey: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Revocation', 'remove', partyId, [tableName, rowKey, stampId]);
 
 /**
  * `Revocation.AuthorizedReissue` binds the identity triple PLUS the new counter under the
@@ -101,9 +101,10 @@ export const revocationMessage = (tableName: string, rowKey: string, stampId: st
  * happy-path test in `control-revocation-reissue.spec.ts`.
  */
 export const reissueMessage = (
+  partyId: string,
   tableName: string,
   rowKey: string,
   stampId: string,
   reissuedAt: number,
 ): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Revocation', 'reissue', [tableName, rowKey, stampId, String(reissuedAt)]);
+  buildAuthorizationMessage('CadreControl.Revocation', 'reissue', partyId, [tableName, rowKey, stampId, String(reissuedAt)]);

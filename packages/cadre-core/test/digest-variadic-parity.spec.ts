@@ -2,9 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Database, registerPlugin } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { generatePrivateKey, getPublicKey, sign } from '@optimystic/quereus-plugin-crypto';
-import { buildAuthorizationMessage } from '../src/control-database.js';
+import { buildAuthorizationMessage, registerPartyIdFunction } from '../src/control-database.js';
 import { peerRecordSignedPayload } from '../src/peer-record.js';
 import { signStrandPayload, signStrandApproval } from '../src/strand-membership-writer.js';
+
+/** The party the control-side cases sign for: registered as SQL `party_id()` and passed to every TS builder. */
+const PARTY_ID = 'digest-parity-spec';
 
 /**
  * The single dominant failure mode of the variadic-digest migration is TS↔SQL
@@ -21,9 +24,10 @@ import { signStrandPayload, signStrandApproval } from '../src/strand-membership-
  *   (a) a control MULTI-field message (`buildAuthorizationMessage`) ⇔ `digest(tags…,f1,…,fN)`
  *   (b) a peer-record tagged multi-field payload                    ⇔ `digest(tags…,f1,…,fN)`
  *   (c) a strand SINGLE-string payload (`signStrandPayload`)         ⇔ `digest(payload)`
- *   (d) the leading LITERAL domain/action tags: TS passes them as the first two
- *       array elements, the schema writes them as literal SQL arguments — this is
- *       the parity the whole domain-separation scheme rests on
+ *   (d) the leading LITERAL domain/action tags and the `party_id()` call: TS passes
+ *       them as the first three array elements, the schema writes two string literals
+ *       and a SQL function call — this is the parity the whole domain-separation and
+ *       party-binding scheme rests on
  *
  * In all four the SQL side is `verify(digest(<fields>), <sig>, <pubkey>, 'ed25519')`:
  * SQL `digest(...)` returns a base64url string that `verify`'s default base64url input
@@ -39,6 +43,8 @@ describe('digest-variadic TS↔SQL byte parity', () => {
     db = new Database();
     // Default config (sha256 / base64url), matching ControlDatabase + connectToStrand.
     await registerPlugin(db, cryptoPlugin);
+    // `party_id()` as `ControlDatabase.initialize` registers it, so (d) can quote the schema's digests verbatim.
+    registerPartyIdFunction(db, PARTY_ID);
     priv = generatePrivateKey('ed25519', 'base64url') as string;
     pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
   });
@@ -60,32 +66,32 @@ describe('digest-variadic TS↔SQL byte parity', () => {
   it('(a) control multi-field: buildAuthorizationMessage ⇔ verify(digest(tags…,f1,…,fN))', async () => {
     // Field order/shape mirrors a closed Strand: Id, Type, MemberPrivateKey (''), StampId.
     const rowFields = ['strand-id-xyz', 'c', '', 'stamp-abc'];
-    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', rowFields);
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', PARTY_ID, rowFields);
     // ed25519 signs the raw digest bytes directly (no second hash), exactly as the writers do.
     const sig = sign(message, priv, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
-    expect(await sqlVerify(['CadreControl.Strand', 'add', ...rowFields], sig, pub)).toBe(true);
+    expect(await sqlVerify(['CadreControl.Strand', 'add', PARTY_ID, ...rowFields], sig, pub)).toBe(true);
     // Tamper one field (Type 'c' -> 'o'): the rebound digest differs, verify rejects.
-    expect(await sqlVerify(['CadreControl.Strand', 'add', 'strand-id-xyz', 'o', '', 'stamp-abc'], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.Strand', 'add', PARTY_ID, 'strand-id-xyz', 'o', '', 'stamp-abc'], sig, pub)).toBe(false);
     // Swap the action tag: same row fields, different rule — verify rejects.
-    expect(await sqlVerify(['CadreControl.Strand', 'remove', ...rowFields], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.Strand', 'remove', PARTY_ID, ...rowFields], sig, pub)).toBe(false);
   });
 
   it('(b) peer-record tagged multi-field: peerRecordSignedPayload ⇔ verify(digest(tags…,fields))', async () => {
     const peerId = '12D3KooWExamplePeer';
     const multiaddr = '/ip4/1.2.3.4/tcp/4001';
     const updatedAt = 1700000000000;
-    const fields = ['CadreControl.CadrePeer', 'publish', peerId, multiaddr, String(updatedAt)];
+    const fields = ['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, multiaddr, String(updatedAt)];
 
     // The helper digests the tagged vector to a base64url string; sign over that (input
     // base64url -> raw digest bytes), matching what CadrePeer.AuthorizedUpdate's
     // self-branch checks.
-    const payloadDigest = peerRecordSignedPayload(peerId, multiaddr, updatedAt);
+    const payloadDigest = peerRecordSignedPayload(PARTY_ID, peerId, multiaddr, updatedAt);
     const sig = sign(payloadDigest, priv, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
     expect(await sqlVerify(fields, sig, pub)).toBe(true);
     // Tamper the multiaddr field.
-    expect(await sqlVerify(['CadreControl.CadrePeer', 'publish', peerId, '/ip4/9.9.9.9/tcp/4001', String(updatedAt)], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, '/ip4/9.9.9.9/tcp/4001', String(updatedAt)], sig, pub)).toBe(false);
   });
 
   it('(c) strand single-string: signStrandPayload ⇔ verify(digest(payload))', async () => {
@@ -97,25 +103,26 @@ describe('digest-variadic TS↔SQL byte parity', () => {
     expect(await sqlVerify(['invite-key-xyz|member-key-different'], sig, pub)).toBe(false);
   });
 
-  it('(d) leading literal tags: TS array elements ⇔ SQL literal arguments', async () => {
-    // The schema writes the domain/action tags as SQL string LITERALS
-    // (digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId)), while every TS
-    // signer passes them as the first two ARRAY ELEMENTS. This case pins that the two
-    // spellings hash identical bytes — the parity the domain-separation scheme rests on.
+  it('(d) leading literal tags and party_id(): TS array elements ⇔ SQL literal arguments', async () => {
+    // The schema writes the domain/action tags as SQL string LITERALS and the party as
+    // the `party_id()` CALL (digest('CadreControl.OwnerKey', 'add', party_id(), new.Key,
+    // new.StampId)), while every TS signer passes them as the first three ARRAY ELEMENTS.
+    // This case pins that the two spellings hash identical bytes — the parity the
+    // domain-separation and party-binding scheme rests on.
     const key = 'owner-key-b64url';
     const stampId = 'stamp-xyz';
-    const message = buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
+    const message = buildAuthorizationMessage('CadreControl.OwnerKey', 'add', PARTY_ID, [key, stampId]);
     const sig = sign(message, priv, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
     const row = await db.get(
-      `select verify(digest('CadreControl.OwnerKey', 'add', ?, ?), ?, ?, 'ed25519') as ok`,
+      `select verify(digest('CadreControl.OwnerKey', 'add', party_id(), ?, ?), ?, ?, 'ed25519') as ok`,
       [key, stampId, sig, pub],
     );
     expect(Boolean(row?.ok)).toBe(true);
 
     // The identical row fields under a DIFFERENT literal domain tag must not verify.
     const other = await db.get(
-      `select verify(digest('CadreControl.ValidationKey', 'add', ?, ?), ?, ?, 'ed25519') as ok`,
+      `select verify(digest('CadreControl.ValidationKey', 'add', party_id(), ?, ?), ?, ?, 'ed25519') as ok`,
       [key, stampId, sig, pub],
     );
     expect(Boolean(other?.ok)).toBe(false);
