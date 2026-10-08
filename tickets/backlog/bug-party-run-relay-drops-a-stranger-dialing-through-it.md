@@ -58,10 +58,6 @@ So a hop-connecting outsider has in practice been surviving — until its own li
 
 The half-open abort fix (8c1acc44) landed, so the 5.5 s drop now really happens. Re-grade severity when `feat-phone-relays-through-its-own-always-on-node` is scheduled.
 
-## Moving site (2026-10-07)
-
-`implement/stranger-connections-admitted-provisionally` replaces `'admit-for-relay'` with a provisional admission on every enrolled member, relay server or not. Its deadline becomes `relayedRequestBudgetMs` (28.5 s at the default declaration). At expiry the deadline re-asks the admission policy, where today it closes outright. A hop-connecting outsider is still dropped at expiry, so this defect stands; the fix point (disarm on a hop stream) moves to that provisional deadline. Read this ticket against the renamed code once that lands.
-
 ## The deadline is now the provisional-admission deadline (2026-10-07)
 
 `stranger-connections-admitted-provisionally` landed. `'admit-for-relay'` is gone: every enrolled member, relay server or not, admits a peer it cannot place with `'admit-provisionally'`, and `createMembershipConnectionGater` arms `PROVISIONAL_ADMISSION_DEADLINE_MS` against the connection (`ProvisionalAdmissions` in `membership-connection-gater.ts`). Its length is `relayedRequestBudgetMs` of the member's own declared link: 28.5 s at the default declaration, up from 5.5 s. At the deadline the gate re-asks `admitInboundControlConnection` and closes the connection only if the peer is still unplaced; an admitted reservation still disarms it early. A hop-connecting outsider is still closed at the deadline, so this defect stands, now after about 28.5 s. The fix point (disarm on a hop stream) is `ProvisionalAdmissions.disarm`, called from the reservation hook today.

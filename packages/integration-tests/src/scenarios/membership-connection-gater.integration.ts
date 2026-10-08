@@ -89,11 +89,24 @@ async function waitClosed(a: CadreNode, b: CadreNode, description: string): Prom
 	await waitUntil(() => !openTo(a, b) && !openTo(b, a), { timeoutMs: CLOSE_WINDOW_MS, intervalMs: 100, description });
 }
 
-/** Wait out the provisional deadline, then require both sides to still hold the connection. */
+/** Ids of `from`'s open control connections to `to`. */
+function openConnectionIds(from: CadreNode, to: CadreNode): string[] {
+	const toPeerId = to.peerId!.toString();
+	return from.getControlNode()!.getConnections()
+		.filter((c) => c.remotePeer.toString() === toPeerId && c.status === 'open')
+		.map((c) => c.id);
+}
+
+/**
+ * Wait out the provisional deadline, then require `b` to still hold a connection it held
+ * before the wait — the same one, so a close followed by a re-dial cannot pass for it.
+ */
 async function expectKeptPastDeadline(a: CadreNode, b: CadreNode): Promise<void> {
+	const before = openConnectionIds(b, a);
+	expect(before).not.toEqual([]);
 	await sleep(KEEP_WINDOW_MS);
+	expect(openConnectionIds(b, a).some((id) => before.includes(id))).toBe(true);
 	expect(openTo(a, b)).toBe(true);
-	expect(openTo(b, a)).toBe(true);
 }
 
 describe('E2E control-network membership connection gater', () => {

@@ -62,7 +62,9 @@
  *
  * Measured at `370ad30` with the strip in place: branch intact → green 3/3
  * (~4 s); branch early-returning → RED 3/3, with no dialer at all reconnecting B
- * to A inside the full 45 s window. To re-verify after changing either side, add
+ * to A inside the full 45 s window. Re-measured 2026-10-07 after the refusal moved
+ * to the test-supplied gater: branch early-returning → RED at step 5; intact →
+ * green in ~4 s. To re-verify after changing either side, add
  * an early `return` at the top of `CadreNode.dialColdStartBootstrap`, run
  * `yarn workspace @serfab/cadre-core build`, run this scenario and require RED at
  * step 5; then restore the file, rebuild, and require green.
