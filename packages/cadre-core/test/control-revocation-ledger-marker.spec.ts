@@ -80,10 +80,10 @@ describe('Revocation ledger marker', () => {
     stampId: string = MARKER_STAMP,
   ): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?)`,
-      [contextOwner, signature, tableName, rowKey, stampId],
+         values (?, ?, ?, ?, ?)`,
+      [contextOwner, signature, tableName, rowKey, stampId, contextOwner, signature],
     );
   }
 

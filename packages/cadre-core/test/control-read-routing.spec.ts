@@ -168,7 +168,7 @@ describe('ControlDatabase — read routing', () => {
 			bodyStarted();
 			await bodyGate;
 		});
-		const recorded = recordEvalOptions('select Key from CadreControl.OwnerKey');
+		const recorded = recordEvalOptions('select Key, StampId from CadreControl.OwnerKey');
 		try {
 			await bodyRunning;
 			expect(inner.getAutocommit()).toBe(true);
@@ -185,7 +185,7 @@ describe('ControlDatabase — read routing', () => {
 	it('keeps an unlocked read on the refreshing path once the body has settled, even by throwing', async () => {
 		await expect(db.withWriteLock(() => Promise.reject(new Error('body failed')))).rejects.toThrow('body failed');
 
-		const recorded = recordEvalOptions('select Key from CadreControl.OwnerKey');
+		const recorded = recordEvalOptions('select Key, StampId from CadreControl.OwnerKey');
 		try {
 			await db.getOwnerKeys();
 		} finally {

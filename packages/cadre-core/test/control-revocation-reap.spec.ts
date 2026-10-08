@@ -208,11 +208,12 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
 
   /** Owner-signed tombstone append (the shape `Revocation.Authorized` verifies). */
   function tombstoneStamp(tableName: string, rowKey: string, stampId: string): Promise<void> {
+    const signature = signAs(founder, revocationMessage(tableName, rowKey, stampId));
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?)`,
-      [founder.publicKey, signAs(founder, revocationMessage(tableName, rowKey, stampId)), tableName, rowKey, stampId],
+         values (?, ?, ?, ?, ?)`,
+      [founder.publicKey, signature, tableName, rowKey, stampId, founder.publicKey, signature],
     );
   }
 

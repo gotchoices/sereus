@@ -3,7 +3,7 @@ import { digest, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields, cadreInviteRowFields } from './control-authorization.js';
 import type { CadreInviteSignedFields, ControlAction, ControlDomain, RevocableTable } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
-import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields } from './types.js';
+import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, RevocationRow } from './types.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
@@ -147,6 +147,46 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
  */
 export function revocationDigest(tableName: RevocableTable, rowKey: string, stampId: string): string {
   return taggedDigest('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
+}
+
+/**
+ * Does a `Revocation` row's stored signer pair (`SignerKey` / `SignerSig`) verify over the
+ * tombstone's own triple? The read-side mirror of `Revocation.Authorized`, for a node that
+ * received the row by replication and must decide whether to honour it. Whether
+ * `row.signerKey` is an owner this node trusts is the caller's question, as for
+ * {@link verifyCadrePeerVoucher}. Never throws: a malformed row verifies as `false`.
+ */
+export function verifyRevocationSigner(row: RevocationRow): boolean {
+  try {
+    return verifyB64(revocationDigest(row.tableName, row.rowKey, row.stampId), row.signerSig, row.signerKey);
+  } catch (error) {
+    log('verifyRevocationSigner failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * Canonical digest an owner signs to seat a further `OwnerKey` row — the signed-add branch
+ * of `OwnerKey.Authorized`, which stores the pair as `VouchOwner` / `VouchSig`. SQL mirror:
+ * `digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId)`. The removal digest needs
+ * no builder here: it is the generic guarded `'remove'` digest over (Key, StampId).
+ */
+export function ownerKeyAddDigest(key: string, stampId: string): string {
+  return taggedDigest('CadreControl.OwnerKey', 'add', [key, stampId]);
+}
+
+/**
+ * Does an owner-signed `OwnerKey` row's stored voucher verify — `vouchSig` by `vouchOwner`
+ * over {@link ownerKeyAddDigest} for (`key`, `stampId`)? Whether `vouchOwner` is anchored
+ * is the caller's question, as for {@link verifyCadrePeerVoucher}. Never throws.
+ */
+export function verifyOwnerKeyVoucher(key: string, stampId: string, vouchOwner: string, vouchSig: string): boolean {
+  try {
+    return verifyB64(ownerKeyAddDigest(key, stampId), vouchSig, vouchOwner);
+  } catch (error) {
+    log('verifyOwnerKeyVoucher failed: %o', error);
+    return false;
+  }
 }
 
 /**

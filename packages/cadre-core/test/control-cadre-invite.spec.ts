@@ -3,7 +3,6 @@ import debug from 'debug';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import {
-  buildAuthorizationMessage,
   cadreInviteAddMessage,
   cadreInviteConsentMessage,
   cadreInviteRedeemMessage,
@@ -187,11 +186,12 @@ describe('cadre invitations: schema and ControlDatabase', () => {
 
   /** A founder-signed `'CadreInvite'` tombstone filed directly, as a node that never held the row would receive it. */
   function tombstoneInvite(key: string, stampId: string): Promise<void> {
+    const signature = signFounder(revocationMessage('CadreInvite', key, stampId));
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values ('CadreInvite', ?, ?)`,
-      [founder.publicKey, signFounder(revocationMessage('CadreInvite', key, stampId)), key, stampId],
+         values ('CadreInvite', ?, ?, ?, ?)`,
+      [founder.publicKey, signature, key, stampId, founder.publicKey, signature],
     );
   }
 
@@ -483,7 +483,6 @@ describe('cadre invitations: schema and ControlDatabase', () => {
 describe('cadre invitations: liveness (hasLiveCadreInvite)', () => {
   let node: CadreNode;
   let db: ControlDatabase;
-  let rawDb: Database;
   let founder: KeyPair;
 
   const signFounder = (message: Uint8Array): string => signAs(founder, message);
@@ -499,7 +498,6 @@ describe('cadre invitations: liveness (hasLiveCadreInvite)', () => {
     });
     await node.start();
     db = node.getControlDatabase()!;
-    rawDb = db.getDatabase();
     expect(await db.ensureOwnerKey(founder.publicKey)).toBe(true);
   }, 60_000);
 
@@ -541,33 +539,12 @@ describe('cadre invitations: liveness (hasLiveCadreInvite)', () => {
 
   it('an issuer removed since issuing takes its outstanding invitations with it', async () => {
     const second = freshKeyPair();
-    const enrollStamp = freshStamp();
-    await rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
-         with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?)`,
-      [founder.publicKey, signFounder(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [second.publicKey, enrollStamp])), second.publicKey, enrollStamp, founder.publicKey, signFounder(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [second.publicKey, enrollStamp]))],
-    );
+    expect(await db.insertOwnerKeyVouched(second.publicKey, founder.publicKey, signFounder)).toBe(true);
     const now = Date.now();
     const bySecond = await issueBy(second);
     expect(await db.hasLiveCadreInvite(now)).toBe(true);
 
-    // The founder removes the second owner: the delete and its tombstone in one transaction.
-    await rawDb.beginTransaction();
-    try {
-      await rawDb.exec(
-        `delete from CadreControl.OwnerKey with context OwnerKey = ?, Signature = ? where Key = ?`,
-        [founder.publicKey, signFounder(buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [second.publicKey, enrollStamp])), second.publicKey],
-      );
-      await rawDb.exec(
-        `insert into CadreControl.Revocation (TableName, RowKey, StampId) with context OwnerKey = ?, Signature = ? values ('OwnerKey', ?, ?)`,
-        [founder.publicKey, signFounder(revocationMessage('OwnerKey', second.publicKey, enrollStamp)), second.publicKey, enrollStamp],
-      );
-      await rawDb.commit();
-    } catch (error) {
-      await rawDb.rollback();
-      throw error;
-    }
+    expect(await db.deleteOwnerKey(second.publicKey, founder.publicKey, signFounder)).toBe(true);
 
     expect(await db.hasLiveCadreInvite(now)).toBe(false);
     await expectConstraintFailure(redeemBy(bySecond, await mintContactJoiner(), now), 'Authorized');

@@ -8053,6 +8053,48 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Seat another owner key, signed by this node's owner key (the signed-add branch of
+   * `OwnerKey.Authorized`; the row stores the vouching pair). The write notifies the
+   * membership hub, so the refresh it triggers has run by the time this resolves.
+   *
+   * @param ownerPublicKeyB64 - the new owner's ed25519 public key (base64url).
+   * @returns `true` when the row was seated, `false` when the key is already a live owner.
+   */
+  async addOwner(ownerPublicKeyB64: string): Promise<boolean> {
+    if (!this.seedBootstrapService) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
+    const added = await this.seedBootstrapService.addOwner(key);
+    // NOTE: an OwnerKey add committed alone is local-only and nothing re-issues it (no
+    // update branch to re-touch, unlike CadrePeer), so it is only logged;
+    // tickets/backlog/debt-owner-key-add-while-alone-has-no-reissue.md owns the fix.
+    if (added && this.committedAlone()) {
+      log('addOwner(%s) committed while ALONE (0 control connections): the new owner row is ' +
+        'local-only and is not re-issued on cohort growth, so other machines may never see it.', key);
+    }
+    return added;
+  }
+
+  /**
+   * Remove an owner key, signed by this node's owner key (which must be a different owner):
+   * the delete and its `Revocation` tombstone commit together. Refused by name when the key
+   * is this node's own or the only live owner. The write notifies the membership hub; the
+   * tombstone rides the committed-delete seam ({@link noteGuardedDelete}), so one committed
+   * while alone is re-issued on cohort growth like every other removal.
+   *
+   * @param ownerPublicKeyB64 - the owner's ed25519 public key (base64url).
+   * @returns `true` when the row was removed, `false` when the key is not a live owner here.
+   */
+  async removeOwner(ownerPublicKeyB64: string): Promise<boolean> {
+    if (!this.seedBootstrapService) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
+    return await this.seedBootstrapService.removeOwner(key);
+  }
+
+  /**
    * Create a seed from the current control network state.
    * The seed contains peer information and is signed by an owner.
    */

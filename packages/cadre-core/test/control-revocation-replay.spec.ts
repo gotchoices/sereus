@@ -277,19 +277,23 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
   }
 
-  /** A tombstone append under CALLER-CHOSEN authorization context — the `Authorized` probe. */
+  /**
+   * A tombstone append under CALLER-CHOSEN authorization context — the `Authorized` probe.
+   * The stored signer pair defaults to the context pair, the only shape `Authorized` admits.
+   */
   function rawTombstone(
     contextOwner: string | null,
     signature: string | null,
     tableName: string,
     rowKey: string,
     stampId: string,
+    stored: { signerKey: string | null; signerSig: string | null } = { signerKey: contextOwner, signerSig: signature },
   ): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?)`,
-      [contextOwner, signature, tableName, rowKey, stampId],
+         values (?, ?, ?, ?, ?)`,
+      [contextOwner, signature, tableName, rowKey, stampId, stored.signerKey, stored.signerSig],
     );
   }
 
@@ -1068,6 +1072,22 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       'ReissueOnly',
     );
 
+    // The stored signer pair is the filing owner's for good: a fully authorized re-issue that
+    // rewrites it, to another value or to null, is refused by the same clause.
+    const reissueSig = signAs(founder, reissueMessage('CadrePeer', rowKey, orphan, 1));
+    for (const [signerKey, signerSig] of [[founder.publicKey, reissueSig], [null, null]] as const) {
+      await expectConstraintFailure(
+        rawDb.exec(
+          `update CadreControl.Revocation
+             with context OwnerKey = ?, Signature = ?
+             set ReissuedAt = 1, SignerKey = ?, SignerSig = ?
+             where StampId = ?`,
+          [founder.publicKey, reissueSig, signerKey, signerSig, orphan],
+        ),
+        'ReissueOnly',
+      );
+    }
+
     // And a counter-only bump is an OWNER action: identity untouched and moving upward,
     // so ReissueOnly passes and AuthorizedReissue is the single rejector of the unsigned
     // shape. (The accept direction lives in control-revocation-reissue.spec.ts.)
@@ -1091,11 +1111,13 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
 
     const still = await rawDb.get(
-      'select StampId, ReissuedAt from CadreControl.Revocation where StampId = ?',
+      'select StampId, ReissuedAt, SignerKey, SignerSig from CadreControl.Revocation where StampId = ?',
       [orphan],
     );
     expect(still).toBeDefined();
     expect(Number(still?.ReissuedAt)).toBe(0);
+    expect(still?.SignerKey).toBe(founder.publicKey);
+    expect(still?.SignerSig).toBe(signAs(founder, revocationMessage('CadrePeer', rowKey, orphan)));
   }, 60_000);
 
   // ── Appending a tombstone is itself an OWNER action (Authorized) ───────────
@@ -1154,6 +1176,31 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       ),
       'Authorized',
     );
+  }, 60_000);
+
+  it('Revocation: a tombstone that stores a signer pair other than the context pair is refused (Authorized)', async () => {
+    // The stored pair is what a node that received the row by replication verifies, so it
+    // must be the pair verified at write time. Every probe carries a valid founder context
+    // over an orphan stamp, so only the pin can reject. Each probe breaks one clause: a null
+    // in either column (null-safety), or the other owner's value in either column.
+    const second = freshKeyPair();
+    await enrollByFounder(second);
+    const peerId = '12D3KooWSignerPinTarget';
+    const stamp = freshStamp();
+    const founderSig = signAs(founder, revocationMessage('CadrePeer', peerId, stamp));
+    const secondSig = signAs(second, revocationMessage('CadrePeer', peerId, stamp));
+    for (const stored of [
+      { signerKey: founder.publicKey, signerSig: null },
+      { signerKey: null, signerSig: founderSig },
+      { signerKey: founder.publicKey, signerSig: secondSig },
+      { signerKey: second.publicKey, signerSig: founderSig },
+    ]) {
+      await expectConstraintFailure(
+        rawTombstone(founder.publicKey, founderSig, 'CadrePeer', peerId, stamp, stored),
+        'Authorized',
+      );
+    }
+    expect((await db.queryRevokedStamps('CadrePeer')).size).toBe(0);
   }, 60_000);
 
   it('Revocation: an owner signature does not transplant across TableName, RowKey or StampId (Authorized)', async () => {
@@ -1390,12 +1437,24 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(tombstone?.RowKey).toBe(id);
   }, 60_000);
 
-  it('the two-owner OwnerKey removal transaction retires the stamp', async () => {
+  it('insertOwnerKeyVouched then deleteOwnerKey: the add stores its voucher, the removal retires the stamp and stores its signer', async () => {
+    const reasons: string[] = [];
+    db.setMembershipChangeListener(async (reason) => { reasons.push(reason); });
+    const sign = (message: Uint8Array) => signAs(founder, message);
     const second = freshKeyPair();
-    const { stamp } = await enrollByFounder(second);
 
-    await removeOwnerKey(second, stamp);
+    expect(await db.insertOwnerKeyVouched(second.publicKey, founder.publicKey, sign)).toBe(true);
+    const stamp = await stampIdOf(second.publicKey);
+    const added = await rawDb.get('select VouchOwner, VouchSig from CadreControl.OwnerKey where Key = ?', [second.publicKey]);
+    expect(added?.VouchOwner).toBe(founder.publicKey);
+    expect(added?.VouchSig).toBe(signAs(founder, enrollMessage(second.publicKey, stamp)));
+
+    expect(await db.deleteOwnerKey(second.publicKey, founder.publicKey, sign)).toBe(true);
     expect(await ownerKeys()).toEqual([founder.publicKey]);
     expect((await db.queryRevokedStamps('OwnerKey')).has(stamp)).toBe(true);
+    const [tombstone] = (await db.queryRevocations()).filter(row => row.stampId === stamp);
+    expect(tombstone?.signerKey).toBe(founder.publicKey);
+    expect(tombstone?.signerSig).toBe(signAs(founder, revocationMessage('OwnerKey', second.publicKey, stamp)));
+    expect(reasons).toEqual(['owner-key-add', 'owner-key-remove']);
   }, 60_000);
 });

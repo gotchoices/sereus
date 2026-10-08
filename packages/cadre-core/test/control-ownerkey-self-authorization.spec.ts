@@ -129,16 +129,12 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
    * delete's `'CadreControl.OwnerKey'` `'remove'` signature does not satisfy it.
    */
   function tombstoneOwnerKeyStamp(ownerKey: string, stampId: string): Promise<void> {
+    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', ownerKey, stampId]));
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values ('OwnerKey', ?, ?)`,
-      [
-        founder.publicKey,
-        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', ownerKey, stampId])),
-        ownerKey,
-        stampId,
-      ],
+         values ('OwnerKey', ?, ?, ?, ?)`,
+      [founder.publicKey, signature, ownerKey, stampId, founder.publicKey, signature],
     );
   }
 

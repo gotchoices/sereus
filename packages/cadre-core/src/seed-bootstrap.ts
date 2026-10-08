@@ -669,6 +669,43 @@ export class SeedBootstrapService {
   }
 
   /**
+   * Seat `ownerPublicKey` as a further owner, signed by this service's owner key. The
+   * liveness check, the stamp, the signature and the membership notify are
+   * {@link ControlDatabase.insertOwnerKeyVouched}'s; what stays here is the owner-key
+   * precondition, checked before any read (see {@link removePeer}).
+   *
+   * @returns `true` when the row was seated, `false` when the key is already a live owner.
+   */
+  async addOwner(ownerPublicKey: string): Promise<boolean> {
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.insertOwnerKeyVouched(
+      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
+    );
+  }
+
+  /**
+   * Remove `ownerPublicKey` from the owners, signed by this service's owner key: the delete
+   * and its `Revocation` tombstone in one transaction. The by-name refusals (self-removal,
+   * the last owner), the digests and the membership notify are
+   * {@link ControlDatabase.deleteOwnerKey}'s; what stays here is the owner-key precondition,
+   * checked before any read (see {@link removePeer}).
+   *
+   * @returns `true` when the row was removed, `false` when the key is not a live owner here.
+   */
+  async removeOwner(ownerPublicKey: string): Promise<boolean> {
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.deleteOwnerKey(
+      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
+    );
+  }
+
+  /**
    * Owner "re-touch" of an existing `CadrePeer` membership row: bump `UpdatedAt` and
    * re-vouch the row so it is re-emitted as a fresh, broadcasting transaction. This is
    * the write-while-alone re-replication primitive (`control-write-ensure-replicated`):

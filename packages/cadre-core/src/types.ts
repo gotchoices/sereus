@@ -1924,6 +1924,10 @@ export interface RevocationRow {
   stampId: string;
   /** Monotonic re-issue counter; carries no semantics (see the schema comment). */
   reissuedAt: number;
+  /** The owner key that filed the tombstone (`Revocation.SignerKey`). */
+  signerKey: string;
+  /** That owner's signature over the tombstone's `'remove'` digest (`Revocation.SignerSig`). */
+  signerSig: string;
 }
 
 /**

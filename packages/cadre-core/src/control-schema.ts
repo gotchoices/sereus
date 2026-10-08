@@ -35,7 +35,7 @@ export const CONTROL_SCHEMA = `-- A Sereus party's cadre (its nodes) and their p
 -- check reads the rows this node holds: a node that has not converged on a Revocation row
 -- still accepts the replayed add, and the resurrected row then coexists with its tombstone.
 -- ControlDatabase drops retired stamps on the reads that matter (queryCadrePeers,
--- queryPendingJoins).
+-- queryPendingJoins, getOwnerKeys).
 declare schema CadreControl {
     -- A key that can authorize control changes. A row is seated one of three ways, told apart
     -- by the vouch columns: the founding row (all three null), an owner-signed add (VouchOwner
@@ -729,16 +729,24 @@ declare schema CadreControl {
         StampId text,               -- the retired stamp
         ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
                                         -- node was alone can be re-written and so re-broadcast; nothing reads it
+        SignerKey text null,        -- the owner that filed the tombstone (== insert context.OwnerKey)
+        SignerSig text null,        -- that owner's 'remove' signature (== insert context.Signature). A node that
+                                    -- received the row by replication re-verifies the pair and judges SignerKey
+                                    -- against its node-local trusted-owner anchor (cadre-core
+                                    -- verifyRevocationSigner), not against this replicated table.
         -- Keyed on the stamp: one row key may carry several tombstones over its life.
         primary key (TableName, StampId),
         -- Retirement is permanent.
         constraint NoDelete check on delete (false),
         -- Pinned at 0 so an owner cannot seat a tombstone at a counter its own re-issues cannot pass.
         constraint FreshTombstone check on insert (new.ReissuedAt = 0),
-        -- A re-issue moves nothing but the counter, and only upward.
+        -- A re-issue moves nothing but the counter, and only upward. The signer pair stays the
+        -- filing owner's; the re-issuing owner's signature rides in context only.
         constraint ReissueOnly check on update (
             new.TableName = old.TableName and new.RowKey = old.RowKey
                 and new.StampId = old.StampId and new.ReissuedAt > old.ReissuedAt
+                and coalesce(new.SignerKey, '') = coalesce(old.SignerKey, '')
+                and coalesce(new.SignerSig, '') = coalesce(old.SignerSig, '')
         ),
         -- A stamp is retired only once its row is gone (deferred, so the same-transaction delete
         -- counts). Keyed on the stamp, not RowKey: a node that converges on a re-admission before
@@ -765,9 +773,12 @@ declare schema CadreControl {
         -- against the retired row here (that would reject a tombstone re-issued later, or filed on
         -- a node that never held the row); each guarded table's RevocationRecorded binds it
         -- instead. Reads live OwnerKey like the sibling tables. The marker is signed under this
-        -- rule too, over ('Revocation', 'ledger', 'opened').
+        -- rule too, over ('Revocation', 'ledger', 'opened'). The stored signer pair must be the
+        -- pair verified here.
         constraint Authorized check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
+                and coalesce(new.SignerKey, '') = context.OwnerKey
+                and coalesce(new.SignerSig, '') = context.Signature
         ),
         -- Distinct 'reissue' tag, binding ReissuedAt, so neither approval replays as the other.
         constraint AuthorizedReissue check on update (

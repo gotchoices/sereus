@@ -374,12 +374,11 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
 };
 
 /**
- * A guarded table an owner may remove a row from. `OwnerKey` is excluded only because no
- * production removal path exists yet; `CadreInvite` is excluded by design — its rows are
- * never deleted (`NoDelete`), and withdrawing one is a tombstone alone
+ * A guarded table an owner may remove a row from. `CadreInvite` is excluded by design — its
+ * rows are never deleted (`NoDelete`), and withdrawing one is a tombstone alone
  * ({@link ControlDatabase.withdrawCadreInvite}).
  */
-type RemovableTable = Exclude<RevocableTable, 'OwnerKey' | 'CadreInvite'>;
+type RemovableTable = Exclude<RevocableTable, 'CadreInvite'>;
 
 /**
  * One row incarnation's owner-signed removal, ready for {@link ControlDatabase.execGuardedRemoval}:
@@ -403,6 +402,14 @@ interface GuardedRemoval {
  */
 function revocationTombstoneMessage(ref: { tableName: string; rowKey: string; stampId: string }): Uint8Array {
   return buildAuthorizationMessage('CadreControl.Revocation', 'remove', [ref.tableName, ref.rowKey, ref.stampId]);
+}
+
+/**
+ * The exact bytes an owner signs to seat a further `OwnerKey` row (the signed-add branch of
+ * `OwnerKey.Authorized`); the base64url twin is `peer-authorization.ts`'s `ownerKeyAddDigest`.
+ */
+function ownerKeyAddMessage(key: string, stampId: string): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
 }
 
 function signGuardedRemoval(
@@ -747,7 +754,8 @@ function signJoinOutcomeInsert(
 }
 
 /**
- * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
+ * Notified after a membership write (a `CadreControl.CadrePeer` or `OwnerKey` row, see
+ * {@link ControlDatabase.mutateCadrePeer}) has COMMITTED.
  *
  * The one hook the party-membership snapshot a node admits control-DB traffic
  * against ({@link CadreNode.refreshMembershipGate}) hangs off, so that snapshot
@@ -758,20 +766,21 @@ function signJoinOutcomeInsert(
 export type MembershipChangeListener = (reason: string) => Promise<void>;
 
 /**
- * Identity of the tombstone a committed guarded delete wrote — a
- * {@link RevocationRow} minus its `ReissuedAt` counter, which a fresh tombstone
- * always seats at 0 (`FreshTombstone`) and so carries no information.
+ * Identity of the tombstone a committed guarded delete wrote — the triple a
+ * {@link RevocationRow} is keyed and signed over. The counter is left out because a
+ * fresh tombstone always seats it at 0 (`FreshTombstone`), and the signer pair because
+ * the writer that files the row supplies it.
  */
-export type RevokedRowRef = Omit<RevocationRow, 'reissuedAt'>;
+export type RevokedRowRef = Pick<RevocationRow, 'tableName' | 'rowKey' | 'stampId'>;
 
 /**
  * Notified after a guarded-table delete — and the `CadreControl.Revocation`
  * tombstone it writes in the same transaction — has COMMITTED.
  *
  * The seam the write-while-alone re-replication queue hangs off
- * ({@link CadreNode.noteGuardedDelete}): one listener covers all four guarded
- * tables (`CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`) because every
- * owner delete funnels through {@link deleteGuardedRow}. Synchronous — the
+ * ({@link CadreNode.noteGuardedDelete}): one listener covers every guarded table
+ * because every owner delete funnels through {@link deleteGuardedRow} (or the
+ * two-table `deleteStrandAndPartyKey`). Synchronous — the
  * handler only records the tombstone's identity; it must not throw (the notifier
  * swallows and logs anyway — a committed delete never fails because bookkeeping did).
  */
@@ -1338,6 +1347,9 @@ export class ControlDatabase {
   /**
    * Check whether any owner key exists in the control database.
    * Used to decide whether a fresh-party genesis insert is required.
+   *
+   * Deliberately RAW (no retired-stamp filter, unlike {@link getOwnerKeys}): the genesis
+   * insert is refused by the schema whenever any physical row exists, so this must see one.
    */
   async hasOwnerKey(): Promise<boolean> {
     this.ensureInitialized();
@@ -1370,12 +1382,25 @@ export class ControlDatabase {
    * trusted only if it is already enrolled here (see `SeedTrustPolicy`). It is
    * also the owner-identity source for `queryPeers`, decoupling owner
    * status from the libp2p transport peer ID.
+   *
+   * Rows whose `StampId` is retired in `CadreControl.Revocation` are excluded, as
+   * {@link queryCadrePeers} excludes them: `OwnerKey` is never reaped (`MinOneOwner` makes
+   * an automated reap able to empty the table), so every node but the remover keeps a
+   * removed owner's physical row next to its tombstone. Without the filter a removed owner
+   * would still sign on its own node, still count as the issuer of a live invitation and
+   * still be preferred as a dial target.
+   *
+   * `retry: false` from a caller that reads under the write lock, for the reason on
+   * {@link queryCadrePeers}.
    */
-  async getOwnerKeys(): Promise<Set<string>> {
+  async getOwnerKeys(retry = true): Promise<Set<string>> {
     this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('OwnerKey', retry);
     const keys = new Set<string>();
-    for (const row of await this.readRows('select Key from CadreControl.OwnerKey', undefined, 'owner-keys')) {
-      keys.add(row.Key as string);
+    for (const row of await this.readRows('select Key, StampId from CadreControl.OwnerKey', undefined, 'owner-keys', retry)) {
+      if (!revoked.has(row.StampId as string)) {
+        keys.add(row.Key as string);
+      }
     }
     return keys;
   }
@@ -1648,22 +1673,26 @@ export class ControlDatabase {
   }
 
   /**
-   * Every locally-held `CadreControl.Revocation` tombstone — identity triple plus its
-   * `ReissuedAt` counter. Consumed by the cohort-growth re-issue sweep, which
-   * enumerates what this node holds before {@link reissueRevocations} re-broadcasts
-   * it, and by the reap sweep ({@link reapRevokedRows}). Plain scan with no `where`, so
-   * the composite-primary-key point-lookup hazard (see the statement comment in
+   * Every locally-held `CadreControl.Revocation` tombstone — identity triple, its
+   * `ReissuedAt` counter and the stored signer pair. Consumed by the cohort-growth re-issue
+   * sweep, which enumerates what this node holds before {@link reissueRevocations}
+   * re-broadcasts it, and by the reap sweep ({@link reapRevokedRows}). Plain scan with no
+   * `where`, so the composite-primary-key point-lookup hazard (see the statement comment in
    * {@link reissueRevocations}) does not arise. Unlocked, like every other read.
    *
    * Skips the ledger marker ({@link REVOCATION_LEDGER_MARKER}): it retires nothing, so
    * neither sweep may reap or re-sign it, and skipping it keeps `RevocationRow.tableName`
    * a {@link RevocableTable}. Filtered on `TableName` alone, in TypeScript: `RowIsGone`
    * admits no other row under `'Revocation'`.
+   *
+   * `retry: false` from a caller that reads under the write lock, for the reason on
+   * {@link queryCadrePeers}.
    */
-  async queryRevocations(): Promise<RevocationRow[]> {
+  async queryRevocations(retry = true): Promise<RevocationRow[]> {
     this.ensureInitialized();
     const rows: RevocationRow[] = [];
-    for (const row of await this.readRows('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation', undefined, 'revocations')) {
+    const sql = 'select TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig from CadreControl.Revocation';
+    for (const row of await this.readRows(sql, undefined, 'revocations', retry)) {
       if (row.TableName === REVOCATION_LEDGER_MARKER.tableName) {
         continue;
       }
@@ -1672,6 +1701,8 @@ export class ControlDatabase {
         rowKey: row.RowKey as string,
         stampId: row.StampId as string,
         reissuedAt: (row.ReissuedAt as number | null) ?? 0,
+        signerKey: row.SignerKey as string,
+        signerSig: row.SignerSig as string,
       });
     }
     return rows;
@@ -1818,11 +1849,11 @@ export class ControlDatabase {
     // Bootstrap is authorized by the schema's genesis branch — `(select count(1) from
     // committed.OwnerKey) = 0`, i.e. the party had no owner before this transaction — so no
     // signature is needed. Every other branch of `OwnerKey.Authorized` requires a signature
-    // from a PRE-EXISTING owner, so this method only ever succeeds on a fresh party; seating
-    // a second owner (or removing one) has no writer here and must sign the digests
-    // documented on the schema's `Authorized` constraint. We still persist a fresh, unique
-    // StampId in the row's own column to satisfy the not-null/unique anti-replay constraint —
-    // the StampId is a real column value, not the optimystic `StampId()` SQL function.
+    // from a PRE-EXISTING owner, so this method only ever succeeds on a fresh party; a second
+    // owner is seated by {@link insertOwnerKeyVouched} and removed by {@link deleteOwnerKey}.
+    // We still persist a fresh, unique StampId in the row's own column to satisfy the
+    // not-null/unique anti-replay constraint — the StampId is a real column value, not the
+    // optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
     await this.execWrite(`
       insert into CadreControl.OwnerKey (Key, StampId)
@@ -1830,6 +1861,99 @@ export class ControlDatabase {
         values (?, ?)
     `, [key, stampId], 'owner-key-insert');
     log('Owner key inserted');
+  }
+
+  /**
+   * Owner-signed INSERT of a further `OwnerKey` row, notifying the membership listener once
+   * it has committed. The signed-add branch of `OwnerKey.Authorized`: the signer must be an
+   * owner in the pre-transaction snapshot, its signature covers the `'add'` digest over
+   * (Key, StampId), and the stored `VouchOwner`/`VouchSig` are that same pair, so a reader
+   * can later judge the add against its own anchor (`verifyOwnerKeyVoucher`).
+   *
+   * Through {@link mutateCadrePeer}, the membership hub. The liveness read, the stamp and the
+   * signature all sit inside the locked body: a {@link lockedWithRetry} re-run starts over a
+   * rolled-back attempt with a fresh stamp, as {@link redeemCadreInvite} does.
+   *
+   * NOTE: re-adding a removed owner from a machine that still holds its retired physical row
+   * is refused here by name: `OwnerKey` is not reaped, so only the machine that removed the
+   * key lost the row, and an insert anywhere else would collide on the primary key. Re-add
+   * from that machine; if re-adding removed owners becomes routine, the fix is an `OwnerKey`
+   * reap branch, gated so it can never take the table below `MinOneOwner`.
+   *
+   * @returns `true` when this call seated the row, `false` when `key` is already a live owner
+   *   here (nothing written).
+   * @throws when this node holds `key`'s row under a retired stamp (above), or when the
+   *   schema refuses the signer.
+   */
+  async insertOwnerKeyVouched(
+    key: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    this.ensureInitialized();
+    return await this.mutateCadrePeer('owner-key-add', async () => {
+      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
+      const heldStamp = await this.queryStampId('OwnerKey', key, false);
+      if (heldStamp !== null) {
+        if (!(await this.queryRevokedStamps('OwnerKey', false)).has(heldStamp)) {
+          log('insertOwnerKeyVouched: %s is already an owner; nothing written', key);
+          return false;
+        }
+        throw new Error(
+          `Cannot re-add owner key ${key} here: this node still holds the row it was removed under ` +
+          '(OwnerKey rows are not reaped); re-add it from the machine that removed it'
+        );
+      }
+      const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
+      const signature = signMessage(ownerKeyAddMessage(key, stampId));
+      // Bare `exec`: already inside the write lock, which is NOT re-entrant.
+      await this.db!.exec(`
+        insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?, ?)
+      `, [ownerKey, signature, key, stampId, ownerKey, signature]);
+      log('Owner key %s added (vouched by %s)', key, ownerKey);
+      return true;
+    });
+  }
+
+  /**
+   * Owner-signed removal of one `OwnerKey` row plus the `Revocation` tombstone retiring its
+   * stamp, notifying the membership listener once it has committed. The remove branch of
+   * `OwnerKey.Authorized` requires a signer other than the removed key, and `MinOneOwner`
+   * keeps the table from emptying; both are refused by name here first, read from this
+   * node's live owners ({@link getOwnerKeys}), so a caller gets a clear error rather than a
+   * constraint failure. The schema stays the authority: a concurrent removal elsewhere can
+   * make the local count wrong in either direction, and then `MinOneOwner` or the tombstone's
+   * primary key decides (see the NOTE on {@link deleteGuardedRow}).
+   *
+   * Through {@link mutateCadrePeer}, the membership hub, which notifies whenever the body
+   * resolves, the absent-key answer included.
+   *
+   * @returns `true` when the row was removed, `false` when `key` is not a live owner here
+   *   (nothing written, no tombstone).
+   * @throws when `key` is `ownerKey`, or is the only live owner.
+   */
+  async deleteOwnerKey(
+    key: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    if (key === ownerKey) {
+      throw new Error(`Cannot remove owner key ${key}: an owner cannot remove itself`);
+    }
+    return await this.mutateCadrePeer('owner-key-remove', async () => {
+      // retry: false — inside the locked write body (see queryStampId's NOTE).
+      const owners = await this.getOwnerKeys(false);
+      if (!owners.has(key)) {
+        log('deleteOwnerKey: %s is not a live owner here (already absent)', key);
+        return false;
+      }
+      if (owners.size <= 1) {
+        throw new Error(`Cannot remove owner key ${key}: cannot remove the last owner`);
+      }
+      return await this.deleteGuardedRow('OwnerKey', key, ownerKey, signMessage);
+    });
   }
 
   /**
@@ -2500,15 +2624,9 @@ export class ControlDatabase {
    * Owner-signed delete of one guarded row plus the `Revocation` tombstone retiring its
    * stamp, in ONE transaction. The single body behind EVERY guarded delete —
    * {@link deleteStrand}, {@link deleteValidationKey}, {@link deleteCadrePeer},
-   * {@link deleteDeviceToken}; see any of them for the per-table security rationale. Each
-   * of those is a thin named wrapper, so callers never pass a table name and this
-   * generic shape stays off the public surface.
-   *
-   * `OwnerKey` is excluded from `table` only because no owner-key removal path exists in
-   * production yet — the schema has the `'remove'` branch (`OwnerKey.Authorized`, which
-   * requires a DIFFERENT owner as signer) and `control-revocation-replay.spec.ts` drives
-   * it with hand-rolled SQL. Widen this and add a wrapper when that path lands; the body
-   * needs no change.
+   * {@link deleteDeviceToken}, {@link deleteOwnerKey}; see any of them for the per-table
+   * security rationale. Each of those is a thin named wrapper, so callers never pass a
+   * table name and this generic shape stays off the public surface.
    *
    * The row's CURRENT stamp is read first and signed over, so the remove digest binds to
    * this exact row instance. A no-op (no throw, no tombstone) when the row is absent —
@@ -2581,19 +2699,27 @@ export class ControlDatabase {
   /**
    * File the owner-signed `Revocation` tombstone retiring one row incarnation — the second
    * statement of every guarded removal ({@link execGuardedRemoval}) and the whole of a
-   * `CadreInvite` withdrawal ({@link withdrawCadreInvite}), whose row stays. The caller
-   * supplies the lock and, where one is needed, the transaction.
+   * `CadreInvite` withdrawal ({@link withdrawCadreInvite}), whose row stays — or the ledger
+   * marker ({@link openRevocationLedger}), which retires nothing. The caller supplies the
+   * lock and, where one is needed, the transaction.
    *
    * `ReissuedAt` is named explicitly at 0 (the only value `FreshTombstone` accepts) rather
    * than leaning on the column default — the seat-at-zero rule is load-bearing for
    * {@link reissueRevocations}' monotonic bump, so state it at the write site.
+   *
+   * `SignerKey` / `SignerSig` store the context pair (`Revocation.Authorized` pins them
+   * equal), so a node that receives the row by replication can tell which owner filed it.
    */
-  private async execTombstone(ref: RevokedRowRef, revocationSignature: string, ownerKey: string): Promise<void> {
+  private async execTombstone(
+    ref: RevokedRowRef | typeof REVOCATION_LEDGER_MARKER,
+    revocationSignature: string,
+    ownerKey: string
+  ): Promise<void> {
     await this.db!.exec(`
-      insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+      insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig)
         with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, 0)
-    `, [ownerKey, revocationSignature, ref.tableName, ref.rowKey, ref.stampId]);
+        values (?, ?, ?, 0, ?, ?)
+    `, [ownerKey, revocationSignature, ref.tableName, ref.rowKey, ref.stampId, ownerKey, revocationSignature]);
   }
 
   /**
@@ -2910,19 +3036,14 @@ export class ControlDatabase {
     signMessage: (message: Uint8Array) => string
   ): Promise<RevocationLedgerOpenResult> {
     this.ensureInitialized();
-    const { tableName, rowKey, stampId } = REVOCATION_LEDGER_MARKER;
     const signature = signMessage(revocationTombstoneMessage(REVOCATION_LEDGER_MARKER));
     try {
       return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
         if (await this.revocationLedgerFiled()) {
           return 'already-open';
         }
-        // Bare `exec`: already inside the write lock, which is NOT re-entrant.
-        await this.db!.exec(`
-          insert into CadreControl.Revocation (TableName, RowKey, StampId)
-            with context OwnerKey = ?, Signature = ?
-            values (?, ?, ?)
-        `, [ownerKey, signature, tableName, rowKey, stampId]);
+        // execTombstone is a bare `exec`: already inside the write lock, which is NOT re-entrant.
+        await this.execTombstone(REVOCATION_LEDGER_MARKER, signature, ownerKey);
         log('Revocation ledger marker filed');
         return 'opened';
       }, {}, 'revocation-ledger-open');
@@ -3027,12 +3148,15 @@ export class ControlDatabase {
   }
 
   /**
-   * Run a `CadrePeer` row mutation and notify the membership listener once it has
+   * Run a membership-relevant mutation and notify the membership listener once it has
    * COMMITTED.
    *
-   * EVERY `CadrePeer` writer goes through here, with one documented exception
-   * ({@link updateSelfPeerRecord}, which cannot change the snapshot) — that is what makes
-   * the party-membership snapshot refresh automatic rather than a caller obligation. A
+   * Covers every write that can change who is a member or an owner: EVERY `CadrePeer`
+   * writer, with one documented exception ({@link updateSelfPeerRecord}, which cannot
+   * change the snapshot), the `OwnerKey` writers ({@link insertOwnerKeyVouched},
+   * {@link deleteOwnerKey}) and the invitation redemption ({@link redeemCadreInvite}),
+   * which seats both. That is what makes the party-membership snapshot refresh automatic
+   * rather than a caller obligation. The name predates the `OwnerKey` writers. A
    * writer necessarily holds the target node's ControlDatabase (the `SeedBootstrapService`'s
    * event callbacks are NOT a viable seam: the temp service `CadreNode.applySeed`
    * builds, and services constructed outside `CadreNode` entirely, never get
@@ -3224,7 +3348,7 @@ export class ControlDatabase {
     }
     throw new Error(
       `mutateCadrePeer(${reason}): a transaction is open ${where} the mutation body — a ` +
-      'CadrePeer write must commit before the membership listener runs; move the ' +
+      'membership write must commit before the membership listener runs; move the ' +
       'mutateCadrePeer wrapper out to enclose the commit'
     );
   }
@@ -3924,6 +4048,9 @@ export class ControlDatabase {
    */
   async hasLiveCadreInvite(nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
+    // NOTE: getOwnerKeys reads the retired OwnerKey stamps first, so this gate path scans
+    // Revocation twice (once per table, the two in parallel). If the stranger path's decision
+    // ever nears the admission gate's 2 s deadline, read the retired stamps once for both.
     const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
     // NOTE: scans every CadreInvite row (expired and withdrawn ones included, since rows are
     // never deleted) on the stranger path of an inbound connection. Cadre-scale invitation

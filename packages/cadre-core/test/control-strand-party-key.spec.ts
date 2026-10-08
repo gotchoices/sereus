@@ -78,17 +78,13 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
 
   /** The owner-signed `Revocation` tombstone a `StrandPartyKey` delete must carry. */
   function tombstonePartyKey(rowKey: string, stampId: string): Promise<void> {
+    const signature = signMessage(
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', rowKey, stampId]));
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values ('StrandPartyKey', ?, ?)`,
-      [
-        ownerPublicKey,
-        signMessage(
-          buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['StrandPartyKey', rowKey, stampId])),
-        rowKey,
-        stampId,
-      ],
+         values ('StrandPartyKey', ?, ?, ?, ?)`,
+      [ownerPublicKey, signature, rowKey, stampId, ownerPublicKey, signature],
     );
   }
 

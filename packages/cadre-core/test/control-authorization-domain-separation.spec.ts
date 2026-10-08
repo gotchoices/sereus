@@ -99,17 +99,12 @@ describe('CadreControl approval domain separation', () => {
    * pinned to the constraint under test. Owner-signed over its OWN domain-tagged digest
    * (`Revocation.Authorized`); the delete's `'remove'` signature does not satisfy it. */
   function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer' | 'DeviceToken', rowKey: string, stampId: string): Promise<void> {
+    const signature = signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]));
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?)`,
-      [
-        founder.publicKey,
-        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId])),
-        tableName,
-        rowKey,
-        stampId,
-      ],
+         values (?, ?, ?, ?, ?)`,
+      [founder.publicKey, signature, tableName, rowKey, stampId, founder.publicKey, signature],
     );
   }
 

@@ -50,7 +50,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
   let rawDb: Database;
   let founder: KeyPair;
 
-  /** A tombstone append under CALLER-CHOSEN authorization context. */
+  /** A tombstone append under CALLER-CHOSEN authorization context, storing that pair as its signer (`Authorized` pins them equal). */
   function rawTombstone(
     contextOwner: string | null,
     signature: string | null,
@@ -59,10 +59,10 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     stampId: string,
   ): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId, SignerKey, SignerSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?)`,
-      [contextOwner, signature, tableName, rowKey, stampId],
+         values (?, ?, ?, ?, ?)`,
+      [contextOwner, signature, tableName, rowKey, stampId, contextOwner, signature],
     );
   }
 
@@ -292,13 +292,14 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     // Seating at a saturated counter would freeze the owner's own later re-issues.
     const rowKey = '12D3KooWSaturatedSeatTarget';
     const stamp = freshStamp();
+    const signature = signAs(founder, revocationMessage('CadrePeer', rowKey, stamp));
 
     await expectConstraintFailure(
       rawDb.exec(
-        `insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
+        `insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig)
            with context OwnerKey = ?, Signature = ?
-           values (?, ?, ?, 7)`,
-        [founder.publicKey, signAs(founder, revocationMessage('CadrePeer', rowKey, stamp)), 'CadrePeer', rowKey, stamp],
+           values (?, ?, ?, 7, ?, ?)`,
+        [founder.publicKey, signature, 'CadrePeer', rowKey, stamp, founder.publicKey, signature],
       ),
       'FreshTombstone',
     );
