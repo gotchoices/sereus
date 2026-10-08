@@ -30,3 +30,12 @@ difficulty: medium
 - `removeOwner` plus combined removal; self-shutdown on removal if missing.
 - Reference-app UI.
 - Docs.
+
+## Note from planning `owner-anchor-follows-owner-key-changes`
+
+`CadreNode.addOwner(key)` and `CadreNode.removeOwner(key)` land in `owner-anchor-revocation-signer-and-owner-writers` (the guarded delete plus tombstone, with by-name refusals for self-removal and for the last owner). Build the combined "remove the machine's `OwnerKey` row and its `CadrePeer` row in one transaction" on `ControlDatabase.deleteOwnerKey` and `deleteCadrePeer`, both over `deleteGuardedRow`.
+
+Two consequences of the anchor rule chosen in `owner-anchor-derivation` belong to this ticket's scope:
+
+- **Re-vouch what the removed owner added.** Owners and devices that the removed owner vouched are no longer trusted on any machine until a remaining owner re-vouches them (devices: `reauthorizePeer` rebinds the voucher in place; owners: remove and re-add, since `OwnerKey` has no update branch). The removal flow should list both sets and offer the re-vouch, so removing a stolen phone does not silently drop the owner's other devices.
+- **Re-adding a removed owner** from a machine that still holds the old physical `OwnerKey` row fails on the primary key, because that table is not reaped. Either do the re-add from the machine that removed it, or add an `OwnerKey` reap branch gated by `MinOneOwner` (NOTE at `ControlDatabase.insertOwnerKeyVouched`).

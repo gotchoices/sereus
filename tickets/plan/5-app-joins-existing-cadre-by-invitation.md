@@ -46,3 +46,7 @@ In both flows B pins the owner keys the invitation carries (the existing invite-
 ## Note from planning `cadre-invitations-redeemable-by-any-member`
 
 Final names in cadre-core: `createCadreInvitation({ peerId?, grantsOwner, expiresInMs?, uses? })`, `redeemCadreInvitation(invitation)`, `listCadreInvitations()`, `withdrawCadreInvitation(key)`, and standalone `encodeCadreInvitation`/`decodeCadreInvitation`. The invitation is a keypair (the bundle carries the private half and the owner-signed row), so the bundle is larger than a token; it already carries the issuer's anchored owner keys and up to four members' addresses. The reference apps get a thin "Paste cadre invitation → Join" input in that chain; this ticket owns the request/response flows.
+
+## Note from planning `owner-anchor-follows-owner-key-changes`
+
+Once that chain lands, an owner seated by an owner-granting invitation is derived into every machine's anchor through the stored proof (usage row and invitation), so B's admin work is accepted everywhere without a seed from B. B still has to wire its own key for signing (`initializeSeedBootstrap(ownKey)`). The bundle's `ownerKeys` now carry every current owner, including ones added by other owners, so a device that joins pins all of them.
