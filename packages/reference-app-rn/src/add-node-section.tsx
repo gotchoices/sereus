@@ -1,6 +1,7 @@
 /**
  * add-node-section.tsx — Settings → "Add an always-on node": claim a node a machine
- * running cadre-host shows a code for, by scanning that code or pasting its text.
+ * running cadre-host shows a code for, by scanning that code, pasting its text, or (on
+ * Android) opening it from the system camera, which `app/+native-intent.tsx` routes here.
  *
  * A code goes through `readNodeCode`, then an approval prompt naming the cadre the node
  * will join, then `claimHostNode`. Success means the node accepted the claim, not that a
@@ -37,7 +38,12 @@ type ShowAlert = (title: string, message: string, detail?: string) => void;
 // running claim's progress and a kept code survive a tab switch. If Settings is ever
 // unmounted on blur, the claim would run on in the hook with nothing showing it; move
 // this state into the cadre context then.
-export function AddNodeSection({ showAlert }: { showAlert: ShowAlert }) {
+export function AddNodeSection({ showAlert, linkedCode, onLinkedCodeTaken }: {
+	showAlert: ShowAlert;
+	/** A node code opened from another app (the system camera on Android), not yet handled. */
+	linkedCode: string | null;
+	onLinkedCodeTaken: () => void;
+}) {
 	const cadre = useCadre();
 	const [codeText, setCodeText] = useState('');
 	const [scannerOpen, setScannerOpen] = useState(false);
@@ -47,6 +53,8 @@ export function AddNodeSection({ showAlert }: { showAlert: ShowAlert }) {
 	const [kept, setKept] = useState<NodeClaimPayload | null>(null);
 	const [claiming, setClaiming] = useState(false);
 	const slow = useLaterThan(claiming, CLAIM_SLOW_HINT_MS);
+	// Why the last code opened from another app was not used; cleared by the next one.
+	const [linkNotice, setLinkNotice] = useState<string | null>(null);
 
 	const handleCode = async (text: string) => {
 		const reading = readNodeCode(text);
@@ -74,6 +82,20 @@ export function AddNodeSection({ showAlert }: { showAlert: ShowAlert }) {
 		setScannerOpen(false);
 		void handleCode(text);
 	};
+
+	// One claim at a time: a code that arrives while a prompt is open or a claim runs is
+	// dropped, not queued, so the prompt on screen is always for the code the user acted on.
+	useEffect(() => {
+		if (linkedCode === null) return;
+		onLinkedCodeTaken();
+		if (claiming || pending) {
+			setLinkNotice('A node code opened from another app was ignored: finish adding this node first.');
+			return;
+		}
+		setLinkNotice(null);
+		setScannerOpen(false);
+		void handleCode(linkedCode);
+	}, [linkedCode]);
 
 	const runClaim = async (payload: NodeClaimPayload) => {
 		setKept(null);
@@ -113,6 +135,7 @@ export function AddNodeSection({ showAlert }: { showAlert: ShowAlert }) {
 					{slow ? '\nSome of the node\'s addresses are not answering; still trying the others.' : ''}
 				</Text>
 			)}
+			{linkNotice && <Text style={controlStyles.hint}>{linkNotice}</Text>}
 			{kept && !claiming && (
 				<View style={styles.retryRow}>
 					<View style={styles.retryBtn}>

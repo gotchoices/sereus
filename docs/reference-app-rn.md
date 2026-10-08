@@ -743,10 +743,18 @@ Every failure opens the usual alert, with the underlying error under the title f
 
 A code that is not a node code, comes from a newer cadre-host, or is cut short is refused before the approval prompt, with a line saying which.
 
+### Opening a code from the system camera (Android only)
+
+The node code is a URI with the scheme `sereus-join`, and on Android the app registers that scheme (`app.json` → `expo.android.intentFilters`). Pointing the stock camera app or Google Lens at the code then offers to open it in this app; when several Sereus apps register the scheme, Android shows a chooser listing them. `app/+native-intent.tsx` rewrites the link to `/settings?nodeCode=…`, and the add-node section reads it like a pasted code and shows the approval prompt. A link never claims without that approval.
+
+- **Before the node is connected:** the code waits. While auto-start is still connecting, the prompt opens once it connects; otherwise the Node card says a code is waiting and asks for Connect.
+- **During a claim or with a prompt already open:** the new code is ignored, with a note in the section. One claim at a time.
+- **The intent filter is native configuration:** a dev client built before it does not offer the app to the camera; rebuild it (§ When Native Rebuild Is Needed).
+- **iOS is left out on purpose:** when two iOS apps register the same custom scheme, which one opens is undefined, so a code could open a Sereus app whose cadre the user did not mean. `sereus-join` is therefore not in `expo.scheme`, and iOS users scan inside the app.
+
 ### Not covered here
 
 - Strands on the node. A cadre-host node launches no strand of its own; whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
-- Opening a code from the phone's own camera app rather than the scanner inside this app: ticket `rn-app-opens-node-codes-from-the-system-camera`.
 - Listing the cadre's nodes or removing one from the app. cadre-host's UI and CLI do that on the machine's side.
 
 
@@ -830,7 +838,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. A change to `app.json`'s native configuration, such as the Android intent filter for `sereus-join` codes, is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 

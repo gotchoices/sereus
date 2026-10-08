@@ -42,6 +42,8 @@ export const TEST_IDS = {
 		/** After a failed claim that may succeed again: Try again with the kept code, or Discard it. */
 		retryNodeClaimBtn: 'btn-retry-node-claim',
 		discardNodeClaimBtn: 'btn-discard-node-claim',
+		/** On the disconnected Node card: a node code opened from another app waits for Connect. */
+		waitingNodeCode: 'text-waiting-node-code',
 		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
 		/** Elapsed-time line under the modal title; shown only for strand-creation results. */

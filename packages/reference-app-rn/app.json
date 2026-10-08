@@ -28,6 +28,20 @@
       "permissions": [
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.WAKE_LOCK"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "scheme": "sereus-join"
+            }
+          ]
+        }
       ]
     },
     "plugins": [

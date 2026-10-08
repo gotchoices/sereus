@@ -12,6 +12,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { RedeemCadreInvitationResult, RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddNodeSection } from '../src/add-node-section';
@@ -125,6 +126,7 @@ export default function SettingsScreen() {
   // effect after the re-render `setFounding` schedules.
   const foundingRef = useRef(false);
   const foundingElapsedMs = useFoundingClock(founding);
+  const [linkedNodeCode, setLinkedNodeCode] = useLinkedNodeCode();
 
   const showAlert = useCallback((title: string, message: string, detail?: string) => {
     setModal({ title, message, detail });
@@ -322,6 +324,13 @@ export default function SettingsScreen() {
             </Text>
             <NoiseCryptoChoice value={noiseCryptoMode} onChange={setNoiseCryptoMode} />
             <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
+            {linkedNodeCode !== null && (
+              <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
+                {cadre.status === 'connecting'
+                  ? 'A node code is waiting. The prompt to add the node opens once this phone connects.'
+                  : 'A node code is waiting. Connect first, and the prompt to add the node opens.'}
+              </Text>
+            )}
           </>
         )}
       </Section>
@@ -377,7 +386,13 @@ export default function SettingsScreen() {
       )}
 
       {/* Add an always-on node (claim a cadre-host node by its code) */}
-      {connected && <AddNodeSection showAlert={showAlert} />}
+      {connected && (
+        <AddNodeSection
+          showAlert={showAlert}
+          linkedCode={linkedNodeCode}
+          onLinkedCodeTaken={() => setLinkedNodeCode(null)}
+        />
+      )}
 
       {/* Closed strand (trust model) */}
       {connected && (
@@ -491,6 +506,24 @@ function useFoundingClock(founding: PendingFounding | null): number {
     return () => clearInterval(timer);
   }, [founding]);
   return founding ? Math.max(0, now - founding.startedAt) : 0;
+}
+
+/**
+ * A node code opened from another app (`app/+native-intent.tsx` routes it here as the
+ * `nodeCode` parameter), held until the add-node section takes it. The parameter is
+ * cleared as soon as it is read, so coming back to Settings does not prompt again and
+ * the claim secret does not stay in navigation state.
+ */
+function useLinkedNodeCode(): [string | null, (code: string | null) => void] {
+  const { nodeCode } = useLocalSearchParams<{ nodeCode?: string }>();
+  const router = useRouter();
+  const [code, setCode] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof nodeCode !== 'string' || !nodeCode) return;
+    setCode(nodeCode);
+    router.setParams({ nodeCode: undefined });
+  }, [nodeCode, router]);
+  return [code, setCode];
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────

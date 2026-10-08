@@ -1,6 +1,6 @@
 description: Someone with an Android phone and a PC on the same Wi-Fi needs to try adding the PC's always-on node to the phone's cadre by scanning the code the PC shows, because the app's scan-and-claim screen was written and tested without any phone involved.
 architecture: docs/architecture.md#which-side-dials-the-add-a-node-flows-compared
-files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/src/node-code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
+files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/src/node-code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
 repro: none
 ----
 
@@ -28,9 +28,11 @@ Follow `docs/reference-app-rn.md` → "Adding a Home Machine's Node (cadre-host)
 | Claimed node | Claim a node, then scan the same code from a second phone | "This node already belongs to another cadre…" (`already-claimed`), no Try again |
 | Phone on cellular | Wi-Fi off, scan a code with LAN addresses only | The prompt already says home network only; the claim fails after about 21.5 s per address with "…can only be reached on the machine's home network so far…", and **Try again** is offered |
 | Relaunch | After a successful claim, force-stop the app (`adb shell am force-stop org.gotchoices.sereus.chat`) and open it | Reconnects by itself with the same Party ID, and the node's peer id reappears among the phone's control connections without a new scan |
+| System camera, cold start | Force-stop the app, point the phone's stock camera app (and Google Lens) at a fresh code, open the offered link | The app opens on Settings; once auto-start connects, the approval prompt shows. With no saved start, the Node card says a code is waiting; Connect, and the prompt shows |
+| System camera, warm start | App open in the background; same as above | The approval prompt shows on Settings; leaving Settings and returning does not prompt again |
 | Camera denied | Deny the camera permission on the first Scan code | The scanner says the camera is not allowed, offers Allow camera or Open system settings, and points to the paste field; paste still works |
 
-Also note how the modals behave when the scanner closes and the approval prompt opens in the same moment, how long the progress line runs on the LAN, and whether the wording fits the screen.
+Record which camera apps on the test phone offer to open a custom-scheme (`sereus-join:`) code at all. Also note how the modals behave when the scanner closes and the approval prompt opens in the same moment, how long the progress line runs on the LAN, and whether the wording fits the screen.
 
 ## If the run finds bugs
 
