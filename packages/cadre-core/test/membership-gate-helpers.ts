@@ -79,8 +79,10 @@ export type Outstanding = boolean | 'throws' | 'hangs';
 
 /**
  * The subset of `ControlDatabase` the gate paths touch, as {@link inject} fakes it:
- * the two reads the snapshot is built from, plus the `CadrePeer` membership hub the
- * node attaches its automatic gate refresh to.
+ * the two reads the snapshot is built from, the two the trusted-owner anchor sync at the
+ * head of every refresh reads (`CadreNode.syncOwnerAnchor`; empty here, so the sync finds
+ * nothing to derive and leaves the injected anchor alone), plus the `CadrePeer` membership
+ * hub the node attaches its automatic gate refresh to.
  *
  * `queryCadrePeers` is a field (not a method) so a test can swap in a throwing read;
  * `peerQueries` counts calls, which is how the coalescing assertions prove that N
@@ -89,6 +91,8 @@ export type Outstanding = boolean | 'throws' | 'hangs';
 export interface FakeControlDatabase {
   queryCadrePeers: () => Promise<PeerRow[]>;
   queryRevokedStamps: () => Promise<Set<string>>;
+  queryOwnerKeyRows: () => Promise<never[]>;
+  queryRevocations: () => Promise<never[]>;
   /**
    * The cadre-invitation exemption's sole input ("does this node hold a live
    * `CadreInvite` row?"); a field so a test can flip it between calls.
@@ -134,6 +138,8 @@ function buildFakeDb(members: PeerRow[], revoked: Set<string>, liveInvite: Outst
       return members.filter(row => row.stampId === null || !revoked.has(row.stampId));
     },
     queryRevokedStamps: async () => revoked,
+    queryOwnerKeyRows: async () => [],
+    queryRevocations: async () => [],
     setMembershipChangeListener: (listener) => { db.listener = listener; },
     mutateCadrePeer: async (reason, body) => {
       const result = await body();

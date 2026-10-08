@@ -3,6 +3,7 @@ import { generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quere
 import { CadreNode } from '../src/cadre-node.js';
 import { MemoryTrustedOwnerStore } from '../src/trusted-owner-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
+import { fakeDb, inject } from './membership-gate-helpers.js';
 
 /**
  * Wiring coverage for the node-local trusted-owner anchor
@@ -77,6 +78,31 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 			await node.stop();
 		}
 	}, 120_000);
+
+	it('a key trusted out of band while the anchor sync\'s reads are in flight survives the pass', async () => {
+		// The sync snapshots the anchor, awaits its table reads, then applies the difference. An
+		// invitation pin, a genesis anchor or a claim landing between the snapshot and the apply
+		// is outside the computed target only because the pass never saw it; the apply must diff
+		// against its snapshot, or the key is removed on the spot (observed through the restart
+		// case above, where `refreshMembershipGate('start')` races `trustOwnerKeys`).
+		const partyId = 'anchor-' + Math.random().toString(36).slice(2);
+		const pinnedKey = getPublicKey(generatePrivateKey('ed25519', 'base64url') as string, 'ed25519', 'base64url', 'base64url') as string;
+		const lateKey = getPublicKey(generatePrivateKey('ed25519', 'base64url') as string, 'ed25519', 'base64url', 'base64url') as string;
+		const anchor = new MemoryTrustedOwnerStore(partyId);
+		await anchor.trust(pinnedKey, 'operator');
+		const node = makeNode(partyId);
+		inject(node, { members: [], anchor });
+		let releaseReads!: () => void;
+		const readsGate = new Promise<never[]>((resolve) => { releaseReads = () => resolve([]); });
+		fakeDb(node).queryRevocations = () => readsGate;
+
+		const refresh = node.refreshMembershipGate('race');
+		await node.trustOwnerKeys([lateKey], 'invite');
+		releaseReads();
+		await refresh;
+
+		expect(anchor.sources()).toEqual(new Map([[pinnedKey, 'operator'], [lateKey, 'invite']]));
+	});
 
 	it('trustOwnerKeys before start fails closed', async () => {
 		const node = makeNode('anchor-' + Math.random().toString(36).slice(2));

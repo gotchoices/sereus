@@ -1035,11 +1035,13 @@ export class SeedBootstrapService {
    *
    * NOTE: anchoring a key can flip `CadrePeer` rows ALREADY present from
    * unauthorized to authorized, which the write-driven membership-gate refresh
-   * (`ControlDatabase.mutateCadrePeer`) cannot see — no row was written. Every
-   * anchor mutation today rides seed application, and both seed paths refresh the
-   * gate explicitly afterwards (`CadreNode.applySeed`, `onSeedApplied`). If some
-   * future path anchors an owner OUTSIDE seed application, it owes the same
-   * `CadreNode.refreshMembershipGate()` — or the anchor needs its own hub.
+   * (`ControlDatabase.mutateCadrePeer`) cannot see — no row was written. The anchor
+   * is mutated from two places: here, on seed application, where both seed paths
+   * refresh the gate explicitly afterwards (`CadreNode.applySeed`, `onSeedApplied`);
+   * and by the anchor sync (`CadreNode.syncOwnerAnchor`), which runs INSIDE the
+   * membership refresh, ahead of the membership read, so its changes are judged by
+   * the same pass. If some future path anchors an owner outside both, it owes the
+   * same `CadreNode.refreshMembershipGate()` — or the anchor needs its own hub.
    */
   private async anchorAcceptedSigner(signerKey: string, decision: SeedTrustDecision): Promise<void> {
     if (!decision.anchorAs || !this.config.trustedOwners) {

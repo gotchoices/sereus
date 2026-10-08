@@ -24,11 +24,16 @@
  *    `@serfab/cadre-core/trusted-owner-store-file` (same isolation pattern as
  *    `key-store-file`) so `node:fs` never lands in the RN/browser entry graph.
  *
- * Keys are almost always additive. The one remover, {@link TrustedOwnerStore.remove},
- * exists for two callers: the claim-secret trust policy rolling back a claim whose
- * persist failed (`claimSecretTrustPolicy` in `seed-trust-policy.ts`), and the planned
- * owner-removal work (`owner-anchor-follows-owner-key-changes`). Nothing else removes a
- * key; owner revocation in the replicated tables does not reach in here.
+ * The anchor follows the replicated `OwnerKey` table along VERIFIABLE chains only
+ * (`CadreNode.syncOwnerAnchor`, `owner-anchor-sync.ts`): a key whose stored proof verifies
+ * against a key already anchored enters under source `chain`, and a key named by a
+ * tombstone whose stored signer is anchored leaves. The out-of-band entries are the base
+ * that derivation starts from; a replicated row can never seat itself here.
+ *
+ * Two callers remove keys: the claim-secret trust policy rolling back a claim whose
+ * persist failed (`claimSecretTrustPolicy` in `seed-trust-policy.ts`), and the anchor
+ * sync applying a verifiable `OwnerKey` tombstone or pruning a `chain` entry whose row
+ * is gone. Nothing else removes a key.
  */
 import debug from 'debug';
 import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from './node-local-snapshot.js';
@@ -36,11 +41,15 @@ import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from 
 const log = debug('sereus:cadre:trusted-owner-store');
 
 /**
- * How an owner key entered the anchor (out-of-band provenance). `claim` is the
- * durable "this node has been claimed" marker: the first seed whose sender proved
- * it held the node's claim secret anchored its signer under this source.
+ * How an owner key entered the anchor. Every source but `chain` is out-of-band provenance
+ * and forms the base the anchor sync derives from; `claim` is the durable "this node has
+ * been claimed" marker: the first seed whose sender proved it held the node's claim secret
+ * anchored its signer under this source. `chain` marks a key derived from the replicated
+ * `OwnerKey` table through a proof that verified against the base
+ * (`CadreNode.syncOwnerAnchor`); the sync recomputes these entries on every membership
+ * refresh and they never count as base.
  */
-export type TrustSource = 'genesis' | 'invite' | 'operator' | 'claim';
+export type TrustSource = 'genesis' | 'invite' | 'operator' | 'claim' | 'chain';
 
 export interface TrustedOwnerStore {
 	/** Party this anchor is scoped to. */
@@ -60,9 +69,18 @@ export interface TrustedOwnerStore {
 	all(): ReadonlySet<string>;
 
 	/**
-	 * Add a key established out of band (genesis self-trust / invite pin /
-	 * operator pin / claim). Idempotent: re-trusting a known key is a no-op that keeps
-	 * the original source. Implementations MUST reflect the key in {@link has} /
+	 * Every anchored key with its provenance, as a snapshot (same copy contract as
+	 * {@link all}). The anchor sync splits the base (every source but `chain`) from the
+	 * derived entries with this.
+	 */
+	sources(): ReadonlyMap<string, TrustSource>;
+
+	/**
+	 * Add a key. Idempotent with one asymmetry in provenance: re-trusting a known key
+	 * keeps its source, EXCEPT that an out-of-band source over an existing `chain` entry
+	 * rewrites the provenance (out of band wins: the key is then base, and a later sync
+	 * no longer prunes it when its row goes), while `trust(key, 'chain')` over any
+	 * existing entry is a no-op. Implementations MUST reflect the key in {@link has} /
 	 * {@link all} synchronously; the returned promise tracks durability only
 	 * (a persistent backend's write), so a synchronous caller may safely consult
 	 * the store right after invoking this.
@@ -95,8 +113,12 @@ export class MemoryTrustedOwnerStore implements TrustedOwnerStore {
 		return new Set(this.keys.keys());
 	}
 
+	sources(): ReadonlyMap<string, TrustSource> {
+		return new Map(this.keys);
+	}
+
 	async trust(ownerKey: string, source: TrustSource): Promise<void> {
-		if (this.keys.has(ownerKey)) {
+		if (!provenanceChanges(this.keys.get(ownerKey), source)) {
 			return;
 		}
 		this.keys.set(ownerKey, source);
@@ -110,6 +132,16 @@ export class MemoryTrustedOwnerStore implements TrustedOwnerStore {
 	}
 }
 
+/**
+ * Does `trust(key, source)` write, given the key's current provenance (`undefined` when
+ * absent)? The one rule both backends share (see {@link TrustedOwnerStore.trust}): an absent
+ * key always lands; a `chain` entry is promoted by any out-of-band source; everything else
+ * keeps its original provenance.
+ */
+function provenanceChanges(current: TrustSource | undefined, source: TrustSource): boolean {
+	return current === undefined || (current === 'chain' && source !== 'chain');
+}
+
 /** One anchored key as persisted: provenance + wall-clock trust time (ms). */
 interface TrustedOwnerEntry {
 	source: TrustSource;
@@ -119,7 +151,7 @@ interface TrustedOwnerEntry {
 // Every TrustSource must be listed: under the discard-all policy below, one entry with a
 // source this set does not know discards the WHOLE anchor on reload, so a node whose only
 // owner was anchored by a claim would silently come back unclaimed.
-const KNOWN_SOURCES: ReadonlySet<string> = new Set<TrustSource>(['genesis', 'invite', 'operator', 'claim']);
+const KNOWN_SOURCES: ReadonlySet<string> = new Set<TrustSource>(['genesis', 'invite', 'operator', 'claim', 'chain']);
 
 /**
  * What the anchor persists: `owners` maps ownerKey (base64url) -> provenance.
@@ -174,12 +206,16 @@ export class PersistentTrustedOwnerStore implements TrustedOwnerStore {
 		return this.snapshot.keySnapshot();
 	}
 
+	sources(): ReadonlyMap<string, TrustSource> {
+		return new Map(Array.from(this.snapshot.entrySnapshot(), ([key, entry]) => [key, entry.source]));
+	}
+
 	/**
 	 * Anchor a key: visible via {@link has} / {@link all} synchronously, then the
 	 * full snapshot is persisted (see `NodeLocalSnapshot.put`).
 	 */
 	trust(ownerKey: string, source: TrustSource): Promise<void> {
-		if (this.snapshot.has(ownerKey)) {
+		if (!provenanceChanges(this.snapshot.get(ownerKey)?.source, source)) {
 			// Idempotent: re-enrollment / restart re-seeding keeps the original
 			// provenance and skips the write entirely.
 			// NOTE: this resolves immediately rather than joining the write chain, so

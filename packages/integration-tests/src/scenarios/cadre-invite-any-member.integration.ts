@@ -128,7 +128,14 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// an owner there.
 			expect(await member.node.isAuthorizedMember(pPeerId)).toBe(true);
 			expect((await member.node.listAuthorizedMembers()).map((row) => row.peerId)).toContain(pPeerId);
-			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(ed25519KeyPairFromLibp2p(pKey).publicKeyB64)).toBe(true);
+			const pOwnerKey = ed25519KeyPairFromLibp2p(pKey).publicKeyB64;
+			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(pOwnerKey)).toBe(true);
+			// M's anchor followed the row it wrote: P's key is derived there through the invitation
+			// chain (the membership refresh the write triggered runs the anchor sync first), under
+			// `chain` provenance — M pins only A.
+			await waitUntil(async () => member.node.getTrustedOwnerStore()!.sources().get(pOwnerKey) === 'chain', {
+				timeoutMs: OP_MS, intervalMs: 250, description: 'M derives P\'s owner key into its anchor',
+			});
 			// P's control streams are admitted at M: the rows that make M a member in P's eyes
 			// (A's vouch, judged against the key P just pinned) cross that connection.
 			await waitUntil(async () => (await P!.listAuthorizedMembers()).some((row) => row.peerId === member.peerId), {
@@ -150,6 +157,17 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'A lists P as an authorized member after syncing',
 			});
 			console.log('[any-member] the returning owner listed P %d ms after reconnecting to M', Date.now() - ownerBackAt);
+			// A derives P's owner key from the row's stored proof, as M did, once its copy of the
+			// `OwnerKey` block has caught up. That block reaches A by read repair, not by a push: A
+			// read it before reconnecting (its first reconcile pass), so the storage layer serves the
+			// stale local revision until its read-repair window (10 s) lapses, and no refresh runs on
+			// a replicated change by itself. Drive a refresh per poll, as a replicated change's caller
+			// would; the timed reconcile would do the same within its interval.
+			const aAnchor = A.getTrustedOwnerStore()!;
+			await waitUntil(async () => {
+				await A!.refreshMembershipGate('replicated-owner-row');
+				return aAnchor.sources().get(pOwnerKey) === 'chain';
+			}, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: 'A derives P\'s owner key into its anchor' });
 
 			// ── A withdraws; once M holds the tombstone, Q is refused with invite-spent ──
 			expect(await A.withdrawCadreInvitation(key)).toBe(true);

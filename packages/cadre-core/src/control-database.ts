@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
@@ -1395,15 +1395,50 @@ export class ControlDatabase {
    * {@link queryCadrePeers}.
    */
   async getOwnerKeys(retry = true): Promise<Set<string>> {
+    return new Set((await this.queryOwnerKeyRows(retry)).map(row => row.key));
+  }
+
+  /**
+   * Every live `OwnerKey` row with its persisted proof ({@link OwnerKeyRow}) — what the
+   * trusted-owner anchor sync derives from (`CadreNode.syncOwnerAnchor`). Rows whose
+   * `StampId` is retired in `CadreControl.Revocation` are excluded here, as
+   * {@link queryCadrePeers} excludes them and for the reason on {@link getOwnerKeys}, which
+   * reads through this. A row with no stamp (the schema permits it; no writer produces one)
+   * is dropped too: no proof can bind to it, so no reader could ever derive it.
+   *
+   * `retry: false` from the membership-gate refresh, which runs as the control database's
+   * membership listener with that database's write lock held — the reason on
+   * {@link queryCadrePeers}; both reads here take the flag.
+   *
+   * @param retired - the retired `OwnerKey` stamps, when the caller has already read the
+   *   tombstones (`CadreNode.syncOwnerAnchor` reads {@link queryRevocations} for their
+   *   signers); omitted, they are read here. Before the ledger marker is filed every
+   *   `Revocation` read is a cohort consult, so the sync passing its own set keeps the
+   *   membership refresh at one such read for the anchor.
+   */
+  async queryOwnerKeyRows(retry = true, retired?: ReadonlySet<string>): Promise<OwnerKeyRow[]> {
     this.ensureInitialized();
-    const revoked = await this.queryRevokedStamps('OwnerKey', retry);
-    const keys = new Set<string>();
-    for (const row of await this.readRows('select Key, StampId from CadreControl.OwnerKey', undefined, 'owner-keys', retry)) {
-      if (!revoked.has(row.StampId as string)) {
-        keys.add(row.Key as string);
+    const revoked = retired ?? await this.queryRevokedStamps('OwnerKey', retry);
+    const rows: OwnerKeyRow[] = [];
+    const sql = 'select Key, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
+    for (const row of await this.readRows(sql, undefined, 'owner-keys', retry)) {
+      const stampId = (row.StampId as string | null) ?? null;
+      if (stampId === null) {
+        log('queryOwnerKeyRows: dropping OwnerKey row %s with no StampId', row.Key);
+        continue;
       }
+      if (revoked.has(stampId)) {
+        continue;
+      }
+      rows.push({
+        key: row.Key as string,
+        stampId,
+        vouchOwner: (row.VouchOwner as string | null) ?? null,
+        vouchSig: (row.VouchSig as string | null) ?? null,
+        vouchUsage: (row.VouchUsage as string | null) ?? null,
+      });
     }
-    return keys;
+    return rows;
   }
 
   /**

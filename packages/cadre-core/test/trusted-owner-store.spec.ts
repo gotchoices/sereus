@@ -83,6 +83,19 @@ describe.each(backends)('TrustedOwnerStore contract: $name', ({ make, cleanup })
 		expect(store.all()).toEqual(new Set([KEY_A]));
 	});
 
+	it('trusting a chain-derived key out of band promotes it; trusting an out-of-band key as chain does not demote it', async () => {
+		// The anchor sync recomputes `chain` entries every pass and prunes one whose row is
+		// gone; a pin over it must therefore win, or an operator could never keep a key the
+		// table no longer carries. The reverse must not happen: a derived row must not turn a
+		// pin into something the next pass can prune.
+		const store = await make();
+		await store.trust(KEY_A, 'chain');
+		await store.trust(KEY_A, 'operator');
+		await store.trust(KEY_B, 'invite');
+		await store.trust(KEY_B, 'chain');
+		expect(store.sources()).toEqual(new Map([[KEY_A, 'operator'], [KEY_B, 'invite']]));
+	});
+
 	it('all() returns a snapshot decoupled from later trust() calls', async () => {
 		const store = await make();
 		await store.trust(KEY_A, 'genesis');

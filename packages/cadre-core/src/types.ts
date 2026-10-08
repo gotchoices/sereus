@@ -999,9 +999,10 @@ export interface CadreNodeConfig {
     /**
      * Provenance recorded for {@link pinnedKeys}. Default: 'operator'.
      * ('genesis' is reserved for the node's own founding key, seeded
-     * internally by `initializeSeedBootstrap`.)
+     * internally by `initializeSeedBootstrap`; 'chain' is written only by the
+     * anchor sync, `CadreNode.syncOwnerAnchor`.)
      */
-    pinnedSource?: Exclude<TrustSource, 'genesis'>;
+    pinnedSource?: Exclude<TrustSource, 'genesis' | 'chain'>;
   };
 
   /**
@@ -1843,6 +1844,29 @@ export interface CadrePeerRow {
 export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | 'vouchOwner' | 'vouchSig' | 'vouchUsage'>;
 
 /**
+ * One live `CadreControl.OwnerKey` row as `ControlDatabase.queryOwnerKeyRows` reads it: the
+ * key and the persisted proof of how it was seated. The three proof shapes are the schema's
+ * (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add (`vouchOwner`
+ * and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, stampId)`), or an
+ * owner-granting invitation redeemed by consent (`vouchOwner` the issuer, `vouchSig` null,
+ * `vouchUsage` the `CadreInviteUsage` row). Rows whose stamp is retired in `Revocation` never
+ * reach a reader, so `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`) judges
+ * the proof against the keys it already trusts, never against the table itself.
+ */
+export interface OwnerKeyRow {
+  /** ed25519 public key (base64url) — the row key. */
+  key: string;
+  /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
+  stampId: string;
+  /** The owner that signed the add, or that issued the invitation that admitted it; null on the founding row. */
+  vouchOwner: string | null;
+  /** That owner's signature over the row's `'add'` digest, base64url; null on the founding row and on an invitation-admitted row. */
+  vouchSig: string | null;
+  /** The `CadreInviteUsage.UsageStampId` that admitted this row; null otherwise. */
+  vouchUsage: string | null;
+}
+
+/**
  * One `CadreControl.CadreInvite` row: an owner-signed invitation to join the cadre,
  * as `ControlDatabase.insertCadreInvite` returns it and `queryCadreInvite` reads it.
  * Every column is here because the row travels: the holder carries it inside the
@@ -1880,6 +1904,18 @@ export interface CadreInviteUsageRow {
   inviteSig: string;
   /** The device's signature over the `'consent'` digest, base64url. */
   peerSig: string;
+}
+
+/**
+ * The usage and invitation rows an invitation-admitted row is verified through, keyed by
+ * `UsageStampId` and `CadreInvite.Key`: a `CadrePeer` row through `verifyInvitationAdmission`
+ * (`CadreNode.listAuthorizedMembers`) and an `OwnerKey` row through
+ * `verifyInvitationOwnerAdmission` (`deriveOwnerAnchor`). Loaded once per membership refresh
+ * (`CadreNode.loadInvitationChain`) and shared by both readers.
+ */
+export interface InvitationChain {
+  usages: Map<string, CadreInviteUsageRow>;
+  invites: Map<string, CadreInviteRow>;
 }
 
 /**

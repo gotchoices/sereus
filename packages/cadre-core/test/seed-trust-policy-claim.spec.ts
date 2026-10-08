@@ -126,6 +126,7 @@ describe('claimSecretTrustPolicy', () => {
 			partyId: PARTY,
 			has: (key) => store.has(key),
 			all: () => store.all(),
+			sources: () => store.sources(),
 			trust: async (key, source) => {
 				await store.trust(key, source);
 				if (persistFails) throw new Error('disk full');

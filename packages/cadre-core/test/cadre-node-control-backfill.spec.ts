@@ -195,12 +195,14 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;
-      listAuthorizedMembers(retry: boolean): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
+      collectAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
       refreshAuthorizedControlPeers(reason: string): Promise<void>;
     };
     priv._running = true;
+    // No anchor on an unstarted node, so the trusted-owner sync at the head of the refresh
+    // returns before touching the database; the membership read is what is stubbed.
     priv.controlDatabase = {};
-    priv.listAuthorizedMembers = async () => [{ peerId: 'joiner', multiaddr: null }];
+    priv.collectAuthorizedMembers = async () => [{ peerId: 'joiner', multiaddr: null }];
 
     await priv.refreshAuthorizedControlPeers('test');
 
@@ -215,12 +217,12 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;
-      listAuthorizedMembers(retry: boolean): Promise<unknown>;
+      collectAuthorizedMembers(): Promise<unknown>;
       refreshAuthorizedControlPeers(reason: string): Promise<void>;
     };
     priv._running = true;
     priv.controlDatabase = {};
-    priv.listAuthorizedMembers = async () => { throw new Error('control DB unavailable'); };
+    priv.collectAuthorizedMembers = async () => { throw new Error('control DB unavailable'); };
 
     await expect(priv.refreshAuthorizedControlPeers('test')).resolves.toBeUndefined();
 

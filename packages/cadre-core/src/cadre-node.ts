@@ -34,8 +34,7 @@ import type {
   DeviceTokenRecord,
   CadrePeerVoucherFields,
   CadrePeerRow,
-  CadreInviteRow,
-  CadreInviteUsageRow,
+  InvitationChain,
   CadreInviteStatus,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
@@ -75,6 +74,7 @@ import {
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission } from './peer-authorization.js';
+import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
   signPeerRecord,
@@ -259,16 +259,14 @@ function unionAddrs(primary: readonly string[], extra: readonly string[]): strin
  * them directly (no pre-hash) with the owner private key, returning a base64url signature.
  */
 /**
- * The usage and invitation rows an invitation-admitted `CadrePeer` row is verified through
- * (`CadreNode.hasAnchoredProof`), keyed by `UsageStampId` and `CadreInvite.Key`.
+ * One membership refresh's invitation chain ({@link InvitationChain}), loaded at most once
+ * and shared by the anchor sync (`OwnerKey` rows) and the membership read (`CadrePeer`
+ * rows), each of which calls it only when some row it judges is invitation-admitted.
  */
-interface InvitationChain {
-  usages: Map<string, CadreInviteUsageRow>;
-  invites: Map<string, CadreInviteRow>;
-}
+type InvitationChainSource = () => Promise<InvitationChain>;
 
-/** Whether a `CadrePeer` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`). */
-function isInvitationAdmitted(row: CadrePeerVoucherFields): boolean {
+/** Whether a `CadrePeer` or `OwnerKey` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`). */
+function isInvitationAdmitted(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
   return row.vouchSig === null && row.vouchUsage !== null;
 }
 
@@ -1516,15 +1514,22 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Construct (or adopt) the node-local trusted-owner anchor and seed the
-   * out-of-band pinned keys from `config.trustedOwners`. The store is NEVER
-   * sourced from the replicated control DB — its entries come only from
-   * genesis self-trust ({@link initializeSeedBootstrap}), config pins (here),
-   * or runtime enrollment pins ({@link trustOwnerKeys}).
+   * out-of-band pinned keys from `config.trustedOwners`. The anchor's BASE comes
+   * only from out of band — genesis self-trust ({@link initializeSeedBootstrap}),
+   * config pins (here), runtime enrollment pins ({@link trustOwnerKeys}) and a
+   * claim; everything else in it is derived from that base along verifiable
+   * chains through the replicated `OwnerKey` table ({@link syncOwnerAnchor}),
+   * never read from the table directly.
    *
    * Idempotent across stop()→start(): the store instance is kept, and
    * re-seeding config pins is a no-op ({@link TrustedOwnerStore.trust} is
    * idempotent). An injected store scoped to a different party is a
    * configuration error (fail closed before any network bring-up).
+   *
+   * NOTE: a config pin of a key the owners have since REMOVED is re-anchored here at
+   * every start and removed again by the first sync (`refreshMembershipGate('start')`,
+   * fired without await from {@link start}), so such a pin is honoured for at most one
+   * membership refresh per start; dropping the pin from the config ends that.
    */
   private async initializeTrustedOwnerStore(): Promise<void> {
     const { trustedOwners } = this.config;
@@ -1780,7 +1785,7 @@ export class CadreNode implements SAppIdLookup {
    * holds the pins when the reply and the rows that follow are judged), and an
    * embedder calls it with an operator-supplied pin. Idempotent. ('genesis'
    * provenance is reserved for the node's own founding key, seeded internally by
-   * {@link initializeSeedBootstrap}.)
+   * {@link initializeSeedBootstrap}; 'chain' is written only by {@link syncOwnerAnchor}.)
    *
    * Validates every key's shape before trusting any of them (all-or-nothing):
    * a malformed entry anywhere in `keys` rejects the whole call before a
@@ -1791,7 +1796,7 @@ export class CadreNode implements SAppIdLookup {
    * `unusableEntry: 'discard-all'`) — rather than silently anchoring a subset
    * and leaving the caller to notice a key went missing.
    */
-  async trustOwnerKeys(keys: Iterable<string>, source: Exclude<TrustSource, 'genesis'>): Promise<void> {
+  async trustOwnerKeys(keys: Iterable<string>, source: Exclude<TrustSource, 'genesis' | 'chain'>): Promise<void> {
     if (!this.trustedOwnerStore) {
       throw new Error('CadreNode must be started before trusting owner keys');
     }
@@ -2472,13 +2477,19 @@ export class CadreNode implements SAppIdLookup {
    * read here would sleep its backoff holding the lock and stall every other local
    * writer. Nothing is lost — this refresh already keeps the previous snapshot on
    * failure and is re-driven by the next membership write and by the timed reconcile.
+   *
+   * The trusted-owner anchor sync ({@link syncOwnerAnchor}) runs FIRST, so the snapshot
+   * built here judges `CadrePeer` rows against the anchor as the `OwnerKey` table now
+   * has it. The invitation chain both reads may need is loaded at most once per refresh.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
       return;
     }
     try {
-      const members = await this.listAuthorizedMembers(false);
+      const loadChain = this.invitationChainSource(this.controlDatabase, false);
+      await this.syncOwnerAnchor(reason, false, loadChain);
+      const members = await this.collectAuthorizedMembers(this.controlDatabase, false, loadChain);
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
       log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
       // Remember the party's size for the NEXT launch's control-node repair yardstick
@@ -7487,13 +7498,15 @@ export class CadreNode implements SAppIdLookup {
     // NOTE: non-founder members that also wire seed-bootstrap with their own
     // derived key (e.g. the phone joiner path in runOwnerGenesis, which needs
     // it to self-publish its CadrePeer row) self-anchor a key that is not a
-    // party authority. Harmless while such a node never mints an invite: the
-    // store does not replicate, so a node trusting itself grants nothing to
-    // others. But `createCadreInvitation` hands out the anchor's contents as the
-    // device's pins, so the moment a non-founder member mints an
-    // invitation it exports its own non-authority key as a cadre owner key. If that
-    // becomes reachable (today only cadre-cli/cadre-host owners mint invitations),
-    // gate this self-anchor on the actual OwnerKey genesis insert instead.
+    // party authority. The anchor sync (`syncOwnerAnchor`) does not correct this:
+    // a `genesis` entry is base, kept whether or not a live `OwnerKey` row vouches
+    // it. Harmless while such a node never mints an invite: the store does not
+    // replicate, so a node trusting itself grants nothing to others. But
+    // `createCadreInvitation` hands out the anchor's contents as the device's pins,
+    // so the moment a non-founder member mints an invitation it exports its own
+    // non-authority key as a cadre owner key. If that becomes reachable (today only
+    // cadre-cli/cadre-host owners mint invitations), gate this self-anchor on the
+    // actual OwnerKey genesis insert instead.
     if (this.trustedOwnerStore) {
       void this.trustedOwnerStore
         .trust(ed25519PublicKeyFromPrivate(ownerPrivateKey), 'genesis')
@@ -7626,8 +7639,10 @@ export class CadreNode implements SAppIdLookup {
    *     (`StampId`, `VouchOwner`, `VouchSig` all non-null) OR an invitation admission
    *     (`VouchSig` null, `VouchUsage` naming a `CadreInviteUsage` row);
    *  3. `VouchOwner` is in the NODE-LOCAL trusted-owner anchor
-   *     ({@link getTrustedOwnerStore}) — never the replicated `OwnerKey` table,
-   *     which any stranger can genesis-pollute; and
+   *     ({@link getTrustedOwnerStore}), which follows the replicated `OwnerKey` table
+   *     only along chains that verify from this node's out-of-band keys
+   *     ({@link syncOwnerAnchor}) — never the table itself, which any stranger can
+   *     genesis-pollute; and
    *  4. the proof verifies: for a voucher, `VouchSig` is that owner's signature over
    *     the row's voucher digest ({@link verifyCadrePeerVoucher}), so the anchored
    *     owner really vouched THIS peer id under THIS row's nonce; for an admission,
@@ -7656,7 +7671,11 @@ export class CadreNode implements SAppIdLookup {
    * in the anchor, rows the OLD key vouched fail check 3 until re-vouched — a
    * legit member goes un-authorized on readers that only pin the new key. Full
    * rotation handling (re-vouch on rotate) is the
-   * `flip-strand-membership-rotation-known-gap` work, not this predicate's.
+   * `flip-strand-membership-rotation-known-gap` work, not this predicate's. The
+   * same holds in the `OwnerKey` table: an owner the rotated-out (or removed) key
+   * vouched is pruned from every anchor by {@link syncOwnerAnchor} until a remaining
+   * owner re-adds it; the device-removal plan ticket is told to re-vouch what a
+   * removed owner added.
    *
    * @param retry - Whether the underlying membership reads may retry a transient cluster
    *   failure. Only {@link refreshAuthorizedControlPeers} passes `false`, because it runs
@@ -7667,11 +7686,21 @@ export class CadreNode implements SAppIdLookup {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before listing members');
     }
+    return await this.collectAuthorizedMembers(this.controlDatabase, retry, this.invitationChainSource(this.controlDatabase, retry));
+  }
+
+  /**
+   * The body of {@link listAuthorizedMembers}, with the invitation chain supplied as a
+   * source so the membership refresh can share one load with {@link syncOwnerAnchor}.
+   */
+  private async collectAuthorizedMembers(
+    controlDatabase: ControlDatabase,
+    retry: boolean,
+    loadChain: InvitationChainSource,
+  ): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
     const selfPeerId = this.peerId?.toString();
-    const rows = await this.controlDatabase.queryCadrePeers(retry);
-    const chain = rows.some(isInvitationAdmitted)
-      ? await this.loadInvitationChain(this.controlDatabase, retry)
-      : null;
+    const rows = await controlDatabase.queryCadrePeers(retry);
+    const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
     const authorized = rows
       .filter(row => row.peerId !== selfPeerId && this.hasAnchoredProof(row, chain))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
@@ -7707,9 +7736,119 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The usage and invitation rows {@link hasAnchoredProof} resolves an invitation-admitted
-   * row through, keyed for lookup. Both reads honour `retry` for
-   * {@link listAuthorizedMembers}' reason.
+   * Recompute the node-local trusted-owner anchor from the replicated `OwnerKey` table along
+   * verifiable chains (`owner-anchor-sync.ts` → {@link deriveOwnerAnchor}), as the first step
+   * of every membership refresh ({@link refreshAuthorizedControlPeers}) so the snapshot built
+   * in the same pass judges `CadrePeer` rows against the updated anchor. The out-of-band
+   * entries (every provenance but `chain`) are the base; a key whose live row's stored proof
+   * verifies against the base, or against keys so derived, enters under `chain`; a key an
+   * anchored owner's verifiable tombstone names leaves, base pins included — which is how a
+   * config pin of a removed key, re-anchored at every start
+   * ({@link initializeTrustedOwnerStore}), is removed again. The derivation refuses removals
+   * that would empty the anchor; they are logged here.
+   *
+   * With an EMPTY base the sync does nothing: there is no key to derive from, and a node
+   * waiting to be claimed ({@link isAwaitingClaim}: claim secret set, anchor empty) must
+   * stay empty until the claim anchors its claimant — the replicated table must never seat
+   * the first key. The early return below is the seam that rests on.
+   *
+   * Any read failure skips the whole pass and leaves the anchor as it was; the refresh then
+   * builds its snapshot against that anchor, which is also what its previous snapshot was
+   * judged against. Caught here rather than failing the refresh, because the membership read
+   * tolerates an unreachable `Revocation` block on an isolated node
+   * (`ControlDatabase.readRevokedStampRows`) and `queryRevocations` does not: failing the
+   * whole refresh on that would freeze such a node's gate snapshot.
+   * NOTE: on such a node the sync is skipped at every refresh until the block is held; if an
+   * isolated node ever has to derive owner additions while cut off, give `queryRevocations`
+   * the same cohort-unreachable fallback.
+   *
+   * NOTE: cost per membership refresh is one `OwnerKey` read and one `Revocation` read (the
+   * tombstone list, whose `OwnerKey` stamps are handed to `queryOwnerKeyRows` so it does not
+   * read the retired set again), plus the invitation chain when some owner row is
+   * invitation-admitted — shared with the membership read through `loadChain`; the memo
+   * suggestion on {@link loadInvitationChain} covers that part. Before the Revocation ledger
+   * marker is filed that one read is a cohort consult per refresh, which
+   * `control-founding-consult-budget.spec.ts` pins.
+   *
+   * @param retry - forwarded to every read; `false` on the refresh path, for the reason on
+   *   {@link refreshAuthorizedControlPeers}.
+   */
+  private async syncOwnerAnchor(reason: string, retry: boolean, loadChain: InvitationChainSource): Promise<void> {
+    const store = this.trustedOwnerStore;
+    const controlDatabase = this.controlDatabase;
+    if (!store || !controlDatabase) {
+      return;
+    }
+    const before = store.sources();
+    const base = new Set(Array.from(before).filter(([, source]) => source !== 'chain').map(([key]) => key));
+    if (base.size === 0) {
+      return;
+    }
+    let target: ReadonlySet<string>;
+    try {
+      const tombstones = await controlDatabase.queryRevocations(retry);
+      const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
+      const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
+      const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
+      const derivation = deriveOwnerAnchor({ base, rows, tombstones, chain });
+      if (derivation.refusedRemovals.length > 0) {
+        log('syncOwnerAnchor(%s): refused %d owner removal(s) that would empty the anchor: %o', reason, derivation.refusedRemovals.length, derivation.refusedRemovals);
+      }
+      target = derivation.target;
+    } catch (error) {
+      log('syncOwnerAnchor(%s): read failed — anchor left as it was: %o', reason, error);
+      return;
+    }
+    await this.applyOwnerAnchor(store, before, target, reason);
+  }
+
+  /**
+   * Apply one pass's result: `chain` entries for the keys it newly derived, removal of the keys
+   * it started with that are outside `target` — base keys a verifiable tombstone named, and
+   * `chain` entries whose row is gone.
+   *
+   * Diffed against `before`, the snapshot the derivation was computed from, NOT the live store:
+   * the anchor is written out of band while the pass's reads are in flight (an invitation pin,
+   * the genesis anchor, a claim, a seed), and such a key is outside `target` only because the
+   * pass never saw it — judging the live store would remove it. Likewise a key removed
+   * meanwhile (a claim rollback) must not come back as `chain`. Both are judged by the next
+   * pass. Each change lands in memory synchronously (`TrustedOwnerStore.trust` / `remove`); a
+   * failed PERSIST is logged and does not stop the pass or fail the refresh, as
+   * `SeedBootstrapService.anchorAcceptedSigner` treats the same failure.
+   */
+  private async applyOwnerAnchor(
+    store: TrustedOwnerStore,
+    before: ReadonlyMap<string, TrustSource>,
+    target: ReadonlySet<string>,
+    reason: string,
+  ): Promise<void> {
+    for (const key of target) {
+      if (!before.has(key) && !store.has(key)) {
+        log('syncOwnerAnchor(%s): owner %s derived from the OwnerKey table', reason, key);
+        await store.trust(key, 'chain').catch(error => log('syncOwnerAnchor(%s): anchor persist failed for %s: %o', reason, key, error));
+      }
+    }
+    for (const key of before.keys()) {
+      if (!target.has(key) && store.has(key)) {
+        log('syncOwnerAnchor(%s): owner %s removed from the anchor', reason, key);
+        await store.remove(key).catch(error => log('syncOwnerAnchor(%s): anchor persist failed for %s: %o', reason, key, error));
+      }
+    }
+  }
+
+  /**
+   * A per-refresh {@link InvitationChainSource}: the first call loads the chain through
+   * {@link loadInvitationChain}, every later call shares that load.
+   */
+  private invitationChainSource(controlDatabase: ControlDatabase, retry: boolean): InvitationChainSource {
+    let loading: Promise<InvitationChain> | null = null;
+    return () => (loading ??= this.loadInvitationChain(controlDatabase, retry));
+  }
+
+  /**
+   * The usage and invitation rows {@link hasAnchoredProof} and {@link syncOwnerAnchor}
+   * resolve an invitation-admitted row through, keyed for lookup. Both reads honour `retry`
+   * for {@link listAuthorizedMembers}' reason.
    *
    * NOTE: once invitations are the only admission route (ticket
    * `cadre-invitations-redeemable-by-any-member`), every cadre with a member not yet
@@ -8355,11 +8494,13 @@ export class CadreNode implements SAppIdLookup {
    * credential for admin rights — defaults to a 15-minute lifetime; every other kind to 24
    * hours. One use unless `uses` says otherwise. The bundle carries the signed row (so a
    * member that has not received it by replication seats it from the bundle), this node's
-   * anchored owner keys (the device pins them and checks the member's reply against them;
-   * sourced from the node-local anchor only, never the replicated `OwnerKey` table, because
-   * the device anchors whatever arrives and a stranger's genesis-inserted key must not ride
-   * an invitation into a fresh node's anchor; an empty anchor is refused because a reply
-   * could not be checked), and the addresses of this machine first
+   * anchored owner keys — every current owner this node has verified, the out-of-band ones
+   * and those derived along verifiable chains ({@link syncOwnerAnchor}) — (the device pins
+   * them and checks the member's reply against them; sourced from the node-local anchor
+   * only, never the raw replicated `OwnerKey` table, because the device anchors whatever
+   * arrives and a stranger's genesis-inserted key must not ride an invitation into a fresh
+   * node's anchor; an empty anchor is refused because a reply could not be checked), and
+   * the addresses of this machine first
    * ({@link resolveInviteAddresses}, which honours pushed NAT addresses) then up to three
    * other members ({@link siblingInvitationAddrs}).
    *
@@ -8461,9 +8602,8 @@ export class CadreNode implements SAppIdLookup {
    * When the invitation grants ownership, the member seats this node's key as an `OwnerKey`
    * row by consent. The caller still has to wire that key for signing afterwards —
    * `initializeSeedBootstrap(ownKey)`, which anchors it; never `ensureOwnerKey`, the row is
-   * already there. Until the plan ticket `owner-anchor-follows-owner-key-changes` lands,
-   * other machines accept this node's vouches only after a seed from it, because their
-   * anchors do not follow `OwnerKey` additions.
+   * already there. Other machines derive this node's key into their anchors from the row's
+   * stored proof on their next membership refresh ({@link syncOwnerAnchor}).
    *
    * Limit: the reply check ({@link verifyRedeemReply}) does not authenticate the member. A
    * forged bundle, or a legitimate one whose addresses were swapped, dials a machine that

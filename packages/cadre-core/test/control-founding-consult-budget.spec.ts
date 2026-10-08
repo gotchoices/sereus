@@ -107,7 +107,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-06';
+const MEASURED_ON = '2026-10-07';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -134,8 +134,14 @@ const MEASURED_ON = '2026-10-06';
  *
  * Re-measured whole at `5a5661b0` on 2026-10-06 (clean tree): no figure moved except the cold
  * start, whose growth is the two cadre-invitation tables (see {@link COLD}).
+ *
+ * Re-measured whole at `ff150e0f` on 2026-10-07 (clean tree): the only figures that moved are
+ * the marker test's "before" counts for `authorizePeer` and the idle reconcile, each up by one
+ * `Revocation` consult, and the cause is on this side, not upstream: the trusted-owner anchor
+ * sync (`CadreNode.syncOwnerAnchor`, ticket `owner-anchor-derivation`) now reads the tombstone
+ * list at the head of every membership refresh, and both paths trigger a refresh.
  */
-const BASELINE_UPSTREAM = 'optimystic 5a5661b0';
+const BASELINE_UPSTREAM = 'optimystic ff150e0f';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -230,13 +236,19 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * |---|---|---|
  * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×1, every call | 1 on the first call, then 0 |
  * | `queryCadrePeers()` per call | `Revocation` ×1, every call | 0 |
- * | `authorizePeer` of a new member | 3: `Revocation` ×2, 1 on a tree block | 0 |
- * | idle `reconcileControlCohort` | 4: `Revocation` ×4 | 0 |
+ * | `authorizePeer` of a new member | 4: `Revocation` ×3, 1 on a tree block | 0 |
+ * | idle `reconcileControlCohort` | 5: `Revocation` ×5 | 0 |
  *
  * The one consult after is on the tree block the marker's own commit created, paid by whichever
  * read runs first. Filing the marker cost 2 consults (`Revocation` ×2) and 1 commit (2 before `e6e84aa1`). The reconcile
  * pass is asserted by its busiest block (more than once before, at most once after) rather than
  * pinned, so an unrelated read added to the pass does not read as a marker regression.
+ *
+ * One of `authorizePeer`'s three `Revocation` consults before the marker is the trusted-owner
+ * anchor sync's tombstone read (`CadreNode.syncOwnerAnchor`, the first step of the membership
+ * refresh the insert's commit triggers); it reads the `OwnerKey` stamps it retires from that
+ * same list rather than through `queryRevokedStamps`, so the sync adds exactly one consult, and
+ * none once the block is held. The idle reconcile's fifth is the same read on its refresh.
  *
  * Only the "before" column moved at optimystic `03ffadc4`: every repeated consult of the
  * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
@@ -247,7 +259,7 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * read-repair window never consulted, so dropping them saved nothing.
  */
 const MARKER_BEFORE_PER_CALL = [1, 1, 1, 1, 1, 1];
-const MARKER_BEFORE_AUTHORIZE = 3;
+const MARKER_BEFORE_AUTHORIZE = 4;
 /** The first read after the marker pays one consult on the block its commit created. */
 const MARKER_AFTER_REVOKED_STAMPS = [1, 0, 0, 0, 0, 0];
 const MARKER_AFTER_CADRE_PEERS = [0, 0, 0, 0, 0, 0];

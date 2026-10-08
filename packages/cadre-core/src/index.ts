@@ -386,10 +386,16 @@ export {
   verifyRevocationSigner,
   verifyFormationConsent,
   verifyInvitationAdmission,
+  verifyInvitationOwnerAdmission,
   verifyCadreInviteRow,
   verifyCadreInviteRedemption,
   type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';
+
+// How the trusted-owner anchor follows the replicated OwnerKey table along verifiable
+// chains: the pure derivation rule `CadreNode.syncOwnerAnchor` applies on every membership
+// refresh (owner-anchor-sync.ts).
+export { deriveOwnerAnchor, type OwnerAnchorInputs, type OwnerAnchorDerivation } from './owner-anchor-sync.js';
 
 // Strand Wake (control-network push-wake protocol)
 export {

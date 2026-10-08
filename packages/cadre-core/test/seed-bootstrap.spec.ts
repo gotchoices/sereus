@@ -660,6 +660,7 @@ describe('Seed trust policy', () => {
 				partyId,
 				has: (key: string) => anchor.has(key),
 				all: () => anchor.all(),
+				sources: () => anchor.sources(),
 				trust: async (key: string, source: TrustSource) => {
 					recorded.push([key, source]);
 					await anchor.trust(key, source);
@@ -718,6 +719,7 @@ describe('Seed trust policy', () => {
 			partyId,
 			has: (k: string) => anchor.has(k),
 			all: () => anchor.all(),
+			sources: () => anchor.sources(),
 			trust: async () => { throw new Error('disk full'); },
 			remove: (k: string) => anchor.remove(k),
 		};
