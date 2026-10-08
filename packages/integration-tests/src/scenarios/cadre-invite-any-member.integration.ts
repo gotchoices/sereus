@@ -39,13 +39,11 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import {
-	CadreNode, CadreInviteRejectedError, CadreInviteUnreachableError, MemoryBootstrapPeerStore, ed25519KeyPairFromLibp2p,
-	type CadreInvitation, type RedeemCadreInvitationResult,
-} from '@serfab/cadre-core';
+import { CadreNode, CadreInviteRejectedError, MemoryBootstrapPeerStore, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import type { PrivateKey } from '@libp2p/interface';
 import {
-	controlNodeConfig, makeOwnOwner, controlAddrs, hasOutboundTo, waitUntil, captureRawStorage, readCohort,
+	controlNodeConfig, makeOwnOwner, hasOutboundTo, waitUntil, captureRawStorage, readCohort,
+	startPinningMember, admitMember, redeemWithRetry, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -54,28 +52,6 @@ const STARTUP_MS = 60_000;
 const OP_MS = 30_000;
 /** How long FRET may take to evict a stopped, addressable peer from a member's cohort (about 5 s measured). */
 const COHORT_EVICTION_MS = 60_000;
-/** Pause between a device's redemption attempts while the member answers retryably. */
-const REDEEM_RETRY_PAUSE_MS = 2_000;
-
-interface Member { node: CadreNode; peerId: string }
-
-/**
- * What a device does with a retryable outcome: try again after a pause, until `budgetMs` is
- * spent. The scenario pins one attempt; retrying anyway turns a regression into a count of
- * the attempts the member needed rather than a failure at the first retryable refusal.
- */
-async function redeemWithRetry(device: CadreNode, invitation: CadreInvitation, budgetMs: number): Promise<{ joined: RedeemCadreInvitationResult; attempts: number }> {
-	const deadline = Date.now() + budgetMs;
-	for (let attempts = 1; ; attempts++) {
-		try {
-			return { joined: await device.redeemCadreInvitation(invitation), attempts };
-		} catch (err) {
-			if (!(err instanceof CadreInviteUnreachableError) || Date.now() + REDEEM_RETRY_PAUSE_MS > deadline) throw err;
-			console.log('[any-member] attempt %d answered retryably: %s', attempts, err.message);
-			await new Promise<void>((resolve) => setTimeout(resolve, REDEEM_RETRY_PAUSE_MS));
-		}
-	}
-}
 
 describe('E2E cadre invitation redeemed at a member while the owner is offline', () => {
 	it('A mints, stops; P joins at the only member as an owner; A returns and sees P; a withdrawn invitation refuses Q', async () => {
@@ -95,29 +71,9 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 		function buildDevice(key: PrivateKey): CadreNode {
 			return new CadreNode(controlNodeConfig({ partyId, privateKey: key, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
 		}
-		/** An always-on member, pinning A's key, with the seed handler `cadre start --listen-for-seeds` registers. */
-		async function startMember(aOwnerKey: string): Promise<Member> {
-			const key = await generateKeyPair('Ed25519');
-			const node = new CadreNode(controlNodeConfig({
-				partyId, privateKey: key, profile: 'storage', strandFilter: 'none', pinnedOwnerKeys: [aOwnerKey],
-			}));
-			await node.start();
-			await node.enableSeedListener();
-			return { node, peerId: peerIdFromPrivateKey(key).toString() };
-		}
-		/** The owner-online path: A vouches the member, delivers the seed, and dials it from the retained address. */
-		async function admitMember(owner: CadreNode, member: Member): Promise<void> {
-			const addrs = controlAddrs(member.node);
-			const { seed } = await owner.addDrone({ dronePeerId: member.peerId, droneMultiaddrs: addrs });
-			expect((await owner.deliverSeed(addrs[0]!, seed)).accepted).toBe(true);
-			await owner.reconcileControlCohort();
-			await waitUntil(() => hasOutboundTo(owner, member.peerId), {
-				timeoutMs: STARTUP_MS, intervalMs: 250, description: `A holds an outbound control connection to ${member.peerId}`,
-			});
-		}
 
 		let A: CadreNode | undefined;
-		let M: Member | undefined;
+		let M: InviteMember | undefined;
 		let P: CadreNode | undefined;
 		let Q: CadreNode | undefined;
 		try {
@@ -126,9 +82,9 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			await A.start();
 			const aOwnerKey = await makeOwnOwner(A, aKey);
 
-			M = await startMember(aOwnerKey);
+			M = await startPinningMember(partyId, aOwnerKey);
 			const member = M;
-			await admitMember(A, member);
+			await admitMember(A, member, STARTUP_MS);
 			// M's signed address record has to reach A before it can be named in the invitation.
 			await waitUntil(async () => (await A!.resolvePeerAddrs(member.peerId)).length > 0, {
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'M\'s signed address record reaches A',
@@ -161,7 +117,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			await P.start();
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(false);
 			const redeemStartedAt = Date.now();
-			const { joined, attempts } = await redeemWithRetry(P, invitation, STARTUP_MS);
+			const { joined, attempts } = await redeemWithRetry(P, invitation, STARTUP_MS, 'any-member');
 			console.log('[any-member] P was admitted on attempt %d, %d ms after it first asked', attempts, Date.now() - redeemStartedAt);
 			expect(attempts).toBe(1);
 			expect(joined.peerId).toBe(member.peerId);

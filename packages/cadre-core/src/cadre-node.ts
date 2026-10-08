@@ -1912,8 +1912,9 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Push this member's control store to a device whose invitation redemption has verified,
-   * and wait for the push, before the redemption writes the device's rows (the handler's
-   * `catchUpDevice`; `CadreInviteHandler.catchUpDeviceIfLive` says why the write needs it).
+   * and wait for the push, before the redemption seats the invitation's row and writes the
+   * device's rows (the handler's `catchUpDevice`; `CadreInviteHandler.catchUpDeviceIfLive`
+   * says why those writes need it).
    * The device is admitted at the backfill's gate for the length of the push only.
    *
    * Through {@link PeerJoinBackfill.forceCatchUpPeer}, not `catchUpPeer`: the device's own

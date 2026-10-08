@@ -245,6 +245,18 @@ Found by `redemption-write-tears-on-a-member-whose-cohort-just-shrank`, whose fi
 
 **Why it is not worked here.** The sereus-side fix keeps the write from tearing (the member hands the device the blocks before writing, so the commit is durable on both). The fork needs the tear, so preventing the tear prevents this trigger; what a node should do with a locally committed, never-acknowledged revision remains upstream's call.
 
+## Fourth trigger: an invitation minted while the owner was cut off, then seated at a member (added 2026-10-07)
+
+Found by `cadre-invite-redeemed-at-a-member-without-the-row`. Verified 3 of 3 runs (`tickets/.logs/cadre-invite-redeemed-at-a-member-without-the-row.return{1,2,3}.log`, until they age out).
+
+**How it happens.** Owner A and member M hold the same `CadreInvite` collection (an earlier invitation replicated to M). A, cut off from M, mints an invitation: a local-only insert into `CadreInvite`. A stops. Device P redeems the invitation at M, which does not hold the row and seats the bundle's copy (`ControlDatabase.seatCadreInvite`), a commit held by M and P. A and M have now each inserted the same row, as two different commits to the collection. A restarts on the same storage and reconnects. Reads converge: A lists P as an authorized member 0.6 to 1.6 s after reconnecting. But every write A then makes to `CadreInvite` is refused by the cohort: `Commit failed for collection default/cadrecontrol/CadreInvite after 3 attempts … Transaction rejected by validators … content-digest-mismatch`. In run 3, 24 of 24 `createCadreInvitation` calls over 90 s failed this way, so the owner can no longer mint cadre invitations. `withdrawCadreInvitation` still succeeded, since it writes `Revocation`, not `CadreInvite`.
+
+**What is new about this trigger.** No commit tears and no peer stops mid-commit; the feature's own design forms the fork. The bundle carries the signed row so that a member that never received it can insert it, and the owner already inserted it while apart. That is the shape the architecture doc advertises ("an invitation minted while the owner is alone is redeemable at any member").
+
+**To reproduce.** Run `packages/integration-tests/src/scenarios/cadre-invite-row-unreplicated.integration.ts`, then restart A the way `cadre-invite-any-member.integration.ts` does (the same `captureRawStorage` provider plus a `MemoryBootstrapPeerStore`, then `initializeSeedBootstrap` and `reconcileControlCohort`), without the cutting gater. Wait for A to list P, then call `A.createCadreInvitation`.
+
+**Open on the sereus side.** Whether sereus should stop forming this fork, rather than wait for upstream to heal it, is not examined. The lever would be where a member records a row it seated from a bundle.
+
 ## Cross-cutting obligations
 
 None triggered on the sereus side: no schema, byte format, golden fixture, or determinism

@@ -512,9 +512,9 @@ export interface CadreInviteHandlerOptions {
   store: CadreInviteStore;
   /**
    * Push this member's control store to the device and resolve once the push has finished,
-   * called after the request verified and before the admission is written. Absent, the
-   * write goes ahead with the device holding nothing; see `seatAndRedeem` for why that tears
-   * on a member alone with the device.
+   * called after the request verified and before the row is seated and the admission is
+   * written. Absent, the writes go ahead with the device holding nothing; see
+   * `catchUpDeviceIfLive` for why that tears on a member alone with the device.
    */
   catchUpDevice?: (peerId: string) => Promise<void>;
   /** Time to wait for the request frame; default {@link DEFAULT_REDEEM_READ_TIMEOUT_MS}. */
@@ -550,8 +550,8 @@ function writeFailureRejection(error: unknown): CadreInviteRejection {
 /**
  * Member side: registers the handler and drives each inbound stream through the checks in
  * cost order — shape, connecting identity, both signatures, target device — so no database
- * work happens for a stranger that cannot prove anything, then seats the row, hands the
- * device the control store (`catchUpDevice`) and redeems.
+ * work happens for a stranger that cannot prove anything, then hands the device the control
+ * store (`catchUpDevice`), seats the row and redeems.
  * Hardened as the seed handler is: a concurrency cap (over it, `busy`) and a read timeout.
  *
  * Registered only by a started `CadreNode`, after its control database is up, like the
@@ -663,13 +663,15 @@ export class CadreInviteHandler {
   }
 
   /**
-   * Seat the row from the bundle (its own transaction; a no-op when held), hand the device
-   * this member's control store, then redeem. An issuer this member does not know as an
-   * owner is the one retryable refusal left: the device tries the next address, which may
-   * hold the issuer's row.
+   * Hand the device this member's control store, seat the row from the bundle (its own
+   * transaction; a no-op when held), then redeem. The push comes first because the seat is
+   * already a write the device takes part in (see {@link catchUpDeviceIfLive}). An issuer this
+   * member does not know as an owner is the one retryable refusal left: the device tries the
+   * next address, which may hold the issuer's row.
    */
   private async seatAndRedeem(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRedeemReply> {
     const { store } = this.options;
+    await this.catchUpDeviceIfLive(request.invite, remotePeerId);
     try {
       await store.seatCadreInvite(request.invite);
     } catch (error) {
@@ -679,7 +681,6 @@ export class CadreInviteHandler {
       log('seating invitation %s from %s failed: %o', request.invite.key, remotePeerId, error);
       return constraintRejection(error) ?? writeFailureRejection(error);
     }
-    await this.catchUpDeviceIfLive(request.invite.key, remotePeerId);
     try {
       const result = await store.redeemCadreInvite({
         inviteKey: request.invite.key,
@@ -704,31 +705,35 @@ export class CadreInviteHandler {
   }
 
   /**
-   * Push this member's control store to the device before the admission write. The device
+   * Push this member's control store to the device before the first write of the exchange
+   * (the seat, when this member does not hold the row; otherwise the admission). The device
    * joined this member's control write cohort when it connected, and a cohort node with no
    * base revision of a block refuses a commit to it; a member alone with the device then has
-   * half its cohort refusing, and the admission tears instead of committing. With the store
-   * in hand the device holds the write too.
+   * half its cohort refusing, and the write tears instead of committing. With the store in
+   * hand the device holds the write too.
    *
-   * Only for an invitation still live here, so the holder of a withdrawn, expired or spent
-   * one is refused without being sent anything. The retry of an admission already written
-   * can read as spent too and is sent nothing; it needs nothing, since the device is a member
-   * and the ordinary catch-up reaches it. Best-effort: a failed check or push is logged and
-   * the write goes ahead, then commits or is answered retryably.
+   * Only for an invitation still live here, judged on the row this member holds or, before
+   * the seat, on the bundle's copy once its issuer signature verifies
+   * (`ControlDatabase.isCadreInviteLive`): the holder of a withdrawn, expired or spent one,
+   * or of a forged copy naming a real owner, is refused without being sent anything. The
+   * retry of an admission already written can read as spent too and is sent nothing; it
+   * needs nothing, since the device is a member and the ordinary catch-up reaches it.
+   * Best-effort: a failed check or push is logged and the writes go ahead, then commit or are
+   * answered retryably.
    */
-  private async catchUpDeviceIfLive(inviteKey: string, remotePeerId: string): Promise<void> {
+  private async catchUpDeviceIfLive(invite: CadreInviteRow, remotePeerId: string): Promise<void> {
     const { catchUpDevice, store } = this.options;
     if (!catchUpDevice) return;
     try {
-      if (!await store.isCadreInviteLive(inviteKey)) {
-        log('invitation %s is not live here; %s is not caught up before the write', inviteKey, remotePeerId);
+      if (!await store.isCadreInviteLive(invite)) {
+        log('invitation %s is not live here; %s is not caught up before the write', invite.key, remotePeerId);
         return;
       }
-      // NOTE: accepted tradeoff — when the write then fails (the last seat taken by a race,
-      // the row expiring between this check and the write), the device keeps a copy of a
-      // control store it was not admitted to. It holds a live owner-signed invitation and
-      // proved possession and consent, and a seed hands an un-enrolled machine the same
-      // information. Revisit if a control table ever carries data a non-member must not see.
+      // NOTE: accepted tradeoff — when a write then fails (the seat refused, the last use
+      // taken by a race, the row expiring between this check and the write), the device keeps
+      // a copy of a control store it was not admitted to. It holds a live owner-signed
+      // invitation and proved possession and consent, and a seed hands an un-enrolled machine
+      // the same information. Revisit if a control table ever carries data a non-member must not see.
       await catchUpDevice(remotePeerId);
     } catch (error) {
       log('catching up %s before its admission failed (writing anyway): %o', remotePeerId, error);

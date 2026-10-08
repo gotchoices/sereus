@@ -283,6 +283,23 @@ describe('cadre invitation redemption protocol', () => {
     expect(pushes.some((push) => push.peerId === device.partyId)).toBe(false);
   });
 
+  it('sends nothing to the holder of a forged row naming a real owner, and the seat refuses it', async () => {
+    const device = await mintContactJoiner();
+    const invite = freshKeyPair();
+    // Every liveness condition but the signature holds: the row names the founder, an owner
+    // here, as issuer, is unexpired and unused, and this member holds no row under its key.
+    const forged = { ...rowSignedBy(freshKeyPair(), invite.publicKey), issuerKey: founder.publicKey };
+    const invitation: CadreInvitation = { v: 1, partyId, invitePrivateKey: invite.privateKey, invite: forged, ownerKeys: [founder.publicKey], members: [memberAddr] };
+    const { node } = dialerOver({ [memberAddr]: memberAs(device) });
+
+    const failure = await redeem(node, invitation, requestFor(invitation, device)).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(CadreInviteUnreachableError);
+    expect((failure as CadreInviteUnreachableError).outcomes[0]?.error).toMatchObject({ code: 'issuer-unknown' });
+    expect(pushes.some((push) => push.peerId === device.partyId)).toBe(false);
+    expect(await db.queryCadreInvite(invite.publicKey)).toBeNull();
+  });
+
   it('reports every address\'s outcome when none accepts', async () => {
     const device = await mintContactJoiner();
     const invitation = await mint({}, ['not a multiaddr', `${memberAddr}-dead`]);

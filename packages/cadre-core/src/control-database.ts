@@ -13,6 +13,7 @@ import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, ControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { verifyCadreInviteRow } from './peer-authorization.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
@@ -3966,21 +3967,24 @@ export class ControlDatabase {
 
   /**
    * Is this one cadre invitation still redeemable here — the conditions
-   * {@link hasLiveCadreInvite} applies, for one key? False when this node holds no row for it.
-   * A permissive pre-check like {@link countCadreInviteUsage}: the redemption's own write is
-   * what enforces every condition.
+   * {@link hasLiveCadreInvite} applies, for one invitation? The row judged is the one this node
+   * holds under `invite.key`; when it holds none, `invite` itself (a bundle's copy, not seated
+   * yet), but only if its issuer signature verifies, because an unsigned copy would otherwise be
+   * judged by whichever owner it names as issuer. A permissive pre-check like
+   * {@link countCadreInviteUsage}: {@link seatCadreInvite} and the redemption's own write are
+   * what enforce every condition.
    */
-  async isCadreInviteLive(key: string, nowMs: number = Date.now()): Promise<boolean> {
+  async isCadreInviteLive(invite: CadreInviteRow, nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
-    const invite = await this.queryCadreInvite(key);
-    if (invite === null) {
+    const row = await this.queryCadreInvite(invite.key) ?? (verifyCadreInviteRow(invite) ? invite : null);
+    if (row === null) {
       return false;
     }
     const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
-    if (!cadreInviteStillOpen(invite, withdrawn, owners, nowMs)) {
+    if (!cadreInviteStillOpen(row, withdrawn, owners, nowMs)) {
       return false;
     }
-    return invite.totalUses === null || await this.countCadreInviteUsage(key) < invite.totalUses;
+    return row.totalUses === null || await this.countCadreInviteUsage(row.key) < row.totalUses;
   }
 
   /**
