@@ -75,6 +75,10 @@ export function nodeReach(multiaddrs: readonly string[]): NodeReach {
  * component, so a relayed address is judged by its relay. `isPrivateIp` counts loopback,
  * link-local and 100.64.0.0/10 (shared address space, which Tailscale uses) as private, and
  * returns undefined only for text that is not an IP.
+ *
+ * NOTE: a global IPv6 address counts as public, though most home routers drop unsolicited
+ * inbound IPv6. Hosted nodes listen on IPv4 only today; if they ever listen on IPv6 too, a
+ * home-network-only code would read "reachable from anywhere" here.
  */
 function isPublicAddress(addr: string): boolean {
 	for (const { code, value } of multiaddr(addr).getComponents()) {
