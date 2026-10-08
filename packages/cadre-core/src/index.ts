@@ -476,6 +476,7 @@ export {
 export {
   dialPeerAddrs,
   SelfRelayOnlyError,
+  PeerUnreachableError,
   tryAddrsInTurn,
   directBeforeRelayed,
   DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
@@ -525,7 +526,8 @@ export {
 // Claim proof: how a brand-new node's first seed proves its sender holds the node's
 // one-time claim secret. The owner side builds the proof over `seedDigest` (exported
 // with the seed bootstrap above); `claimSecretTrustPolicy` verifies it.
-// `ClaimRefusedError` is what `CadreNode.claimNode` throws when the node said no.
+// `ClaimRefusedError` is what `CadreNode.claimNode` throws when the node said no;
+// `PeerUnreachableError` (exported with the peer dial above) when it was never reached.
 export {
   parseClaimSecret,
   claimProof,

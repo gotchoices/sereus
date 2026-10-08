@@ -1,11 +1,18 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { Libp2p, Connection, PeerId } from '@libp2p/interface';
+import type { Libp2p, Connection, PeerId, Stream } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
-import { dialPeerAddrs, SelfRelayOnlyError, DEFAULT_PEER_DIAL_BUDGET, type PeerDialBudget } from './peer-dial.js';
+import {
+  dialPeerAddrs,
+  SelfRelayOnlyError,
+  PeerUnreachableError,
+  DEFAULT_PEER_DIAL_BUDGET,
+  type PeerDialBudget,
+} from './peer-dial.js';
+import { withTrailingPeerId } from './peer-record.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 import type {
   ControlNetworkSeed,
@@ -153,7 +160,7 @@ function parseDialAddrs(addrs: readonly string[]): Multiaddr[] {
  * Merge a peer list's addresses into `node`'s peer store, so the node can dial them: the
  * seed's peers after its signature and trust checks, the dial hints a member returns on
  * a cadre invitation redemption (`cadre-invite-protocol.ts`), or the node a seed is being
- * delivered to ({@link resolveDeliveryTarget}). Best-effort per peer — one
+ * delivered to ({@link SeedBootstrapService.deliverSeed}). Best-effort per peer — one
  * unparsable entry costs that peer, not the rest — and a peer with no address is skipped,
  * since there is nothing to dial. Returns how many peers were merged.
  */
@@ -176,21 +183,31 @@ export async function mergeSeedPeers(node: Libp2p, peers: readonly SeedPeer[]): 
   return peersAdded;
 }
 
+/** Opens a seed delivery's stream under the delivery deadline's signal. */
+type SeedStreamOpener = (signal: AbortSignal) => Promise<Stream>;
+
 /**
- * Turn a {@link SeedDeliveryTarget} into what `dialProtocol` takes. A multiaddr string is
- * dialed as given. For a peer id with addresses, the addresses go into the peer store
- * first and the dial is by peer id, so an existing connection is reused and libp2p tries
- * every address under the caller's deadline. A malformed peer id throws here, before
- * anything is dialed; a malformed address is dropped by {@link mergeSeedPeers}, and a
- * target left with no address fails at the dial.
+ * A delivery target's addresses, each bound to its peer id (`withTrailingPeerId`) so the dial
+ * authenticates the node it aims at rather than trusting whoever answers. An address that does
+ * not parse, or that names another peer, throws: that is the caller's mistake, not the node
+ * being unreachable.
  */
-async function resolveDeliveryTarget(node: Libp2p, target: SeedDeliveryTarget): Promise<Multiaddr | PeerId> {
-  if (typeof target === 'string') {
-    return multiaddr(target);
-  }
-  const peerId = peerIdFromString(target.peerId);
-  await mergeSeedPeers(node, [{ peerId: target.peerId, multiaddrs: target.multiaddrs, isOwner: false }]);
-  return peerId;
+function deliveryDialAddrs(peerId: string, addrs: readonly string[]): Multiaddr[] {
+  return addrs.map((text) => {
+    const bound = withTrailingPeerId(multiaddr(text), peerId);
+    if (!bound) {
+      throw new Error(`Seed delivery to ${peerId}: address ${text} names another peer`);
+    }
+    return bound;
+  });
+}
+
+/**
+ * A connection to `peerId` that `node` already holds and a seed stream can use: open and without
+ * relay limits, the rule libp2p applies when `dialProtocol` reuses a connection.
+ */
+function openUnlimitedConnection(node: Libp2p, peerId: PeerId): Connection | undefined {
+  return node.getConnections(peerId).find((c) => c.status === 'open' && c.limits === undefined);
 }
 
 /**
@@ -246,18 +263,20 @@ export interface SeedBootstrapConfig {
    */
   linkRoundTripMs?: number;
   /**
-   * Time {@link SeedBootstrapService.deliverSeed} waits for the whole exchange —
-   * dial, write, ack read — before aborting (ms). Bounds the SENDER against a seed
-   * target that accepts the stream and then never replies; the target is a
-   * not-yet-trusted node during onboarding, so this is the more exposed
+   * Time {@link SeedBootstrapService.deliverSeed} waits for the request — opening the
+   * stream, write, ack read — before aborting (ms). For a multiaddr string, or a peer id
+   * with no addresses, opening the stream includes the dial; for a peer id with addresses
+   * the connection is formed first, outside this limit and within {@link dialBudget}.
+   * Bounds the SENDER against a seed target that accepts the stream and then never replies;
+   * the target is a not-yet-trusted node during onboarding, so this is the more exposed
    * direction than the receiver knobs above.
    *
    * Defaults to `relayedRequestBudgetMs(linkRoundTripMs)` (`link-budget.ts`; 28.5 s at the
-   * default declaration): one dial that may need a relay, then one request and its answer.
-   * Delivery does not set `runOnLimitedConnection`, so it does not use a limited relayed
-   * connection today; the relayed-dial count is the upper bound on the dial it can use, the
-   * same choice `CadreNode.controlDialBudget` makes for every address. It holds only link work
-   * because the receiver acks before its owner dials.
+   * default declaration): one dial that may need a relay, then one request and its answer —
+   * sized for the forms that dial inside it. Delivery does not set `runOnLimitedConnection`,
+   * so it does not use a limited relayed connection today; the relayed-dial count is the upper
+   * bound on the dial it can use, the same choice `CadreNode.controlDialBudget` makes for every
+   * address. It holds only link work because the receiver acks before its owner dials.
    *
    * NOTE: no transfer allowance — a seed is a peer list of a few KB, and `MAX_SEED_SIZE` (1 MiB)
    * is a defensive cap. If seeds ever grow toward that cap, add an allowance the way
@@ -266,8 +285,9 @@ export interface SeedBootstrapConfig {
   seedDeliverTimeoutMs?: number;
   /**
    * Time limits for each peer this service dials from a list of addresses —
-   * {@link SeedBootstrapService.applySeed}'s owner dials — per address and per
-   * peer (see `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
+   * {@link SeedBootstrapService.applySeed}'s owner dials and
+   * {@link SeedBootstrapService.deliverSeed}'s dial of a peer id with addresses — per
+   * address and per peer (see `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
    * passes its `network.controlCohort` limits.
    */
   dialBudget?: PeerDialBudget;
@@ -1016,19 +1036,29 @@ export class SeedBootstrapService {
   /**
    * Deliver a seed directly to a peer via the /sereus/seed/1.0.0 protocol.
    *
-   * Sender hardening: the whole exchange — dial, write, ack read — is bounded by
-   * {@link seedDeliverTimeoutMs}, and the ack is capped at {@link MAX_SEED_SIZE}.
-   * The target is a NOT-YET-TRUSTED node the instigator chose to dial during
-   * onboarding, so an unbounded read here is strictly more exposed than the
-   * membership-gated receiver paths: without the bound a target that accepts the
-   * stream and never replies parks this call forever, and one that streams
-   * arbitrary bytes as a fake ack exhausts memory.
-   *
    * `target` is a multiaddr string, dialed as given, or a peer id with its addresses
-   * ({@link SeedDeliveryTarget}): the addresses are merged into the peer store and the
-   * dial is by peer id, so an existing connection is reused and libp2p tries every
-   * address under the one deadline. `options.claimProof` rides beside the seed in the
-   * message when the target is a brand-new node being claimed (`claim-proof.ts`).
+   * ({@link SeedDeliveryTarget}). For the second, the connection is formed first and on
+   * its own limits ({@link connectForDelivery}): an open one is reused, otherwise each
+   * address is dialed in turn, so one that never answers cannot use up the time a later
+   * one needed. Its addresses are also merged into the peer store, so identify and later
+   * dials see them. A peer id with no addresses is dialed by id, which reuses an open
+   * connection or tries the peer store's addresses. `options.claimProof` rides beside
+   * the seed in the message when the target is a brand-new node being claimed
+   * (`claim-proof.ts`).
+   *
+   * Sender hardening: the request — opening the stream (with its dial, for the forms
+   * that dial by `dialProtocol`), write, ack read — is bounded by {@link seedDeliverTimeoutMs},
+   * and the ack is capped at {@link MAX_SEED_SIZE}. The target is a NOT-YET-TRUSTED node the
+   * instigator chose to dial during onboarding, so an unbounded read here is strictly more
+   * exposed than the membership-gated receiver paths: without the bound a target that accepts
+   * the stream and never replies parks this call forever, and one that streams arbitrary bytes
+   * as a fake ack exhausts memory. A peer id with addresses can therefore take up to
+   * `dialBudget.totalMs` plus {@link seedDeliverTimeoutMs} (114.5 s at the default declared
+   * link) when none of its addresses answers.
+   *
+   * @throws {PeerUnreachableError} for a peer id with addresses, when no connection to it
+   *   formed; nothing was sent. Anything else thrown after the connection formed means the
+   *   node was reached and the exchange failed.
    */
   async deliverSeed(
     target: SeedDeliveryTarget,
@@ -1038,40 +1068,77 @@ export class SeedBootstrapService {
     if (!this.libp2pNode) {
       throw new Error('Service not initialized');
     }
-    // Capture the node so the closure below needs no non-null assertion.
-    const node = this.libp2pNode;
-    const dialTarget = await resolveDeliveryTarget(node, target);
     const label = typeof target === 'string' ? target : target.peerId;
-
     log('Delivering seed to: %s', label);
 
+    const openStream = await this.seedStreamOpener(this.libp2pNode, target);
     return await withDeadline(
       this.seedDeliverTimeoutMs,
       `Seed delivery to ${label}`,
-      (signal) => this.sendSeed(node, dialTarget, seed, options?.claimProof, signal),
+      (signal) => this.sendSeed(openStream, seed, options?.claimProof, signal),
     );
+  }
+
+  /**
+   * The part of {@link deliverSeed} that runs before its deadline: how the delivery's stream
+   * will be opened, with any connection it needs already formed.
+   */
+  private async seedStreamOpener(node: Libp2p, target: SeedDeliveryTarget): Promise<SeedStreamOpener> {
+    if (typeof target === 'string') {
+      const addr = multiaddr(target);
+      return (signal) => node.dialProtocol(addr, SEED_PROTOCOL, { signal });
+    }
+    const peerId = peerIdFromString(target.peerId);
+    const addrs = deliveryDialAddrs(target.peerId, target.multiaddrs);
+    await mergeSeedPeers(node, [{ peerId: target.peerId, multiaddrs: target.multiaddrs, isOwner: false }]);
+    if (addrs.length === 0) {
+      return (signal) => node.dialProtocol(peerId, SEED_PROTOCOL, { signal });
+    }
+    const connection = await this.connectForDelivery(node, peerId, addrs);
+    return (signal) => connection.newStream(SEED_PROTOCOL, { signal });
+  }
+
+  /**
+   * A connection to `peerId` for {@link deliverSeed}: one already open, or one dialed from
+   * `addrs` by {@link dialPeerAddrs} — each address on `dialBudget.perAddressMs`, the whole
+   * peer within `dialBudget.totalMs`, direct addresses before relayed ones and the given
+   * order otherwise.
+   *
+   * @throws {PeerUnreachableError} when no connection formed, with the dial's error as `cause`.
+   */
+  private async connectForDelivery(node: Libp2p, peerId: PeerId, addrs: readonly Multiaddr[]): Promise<Connection> {
+    const open = openUnlimitedConnection(node, peerId);
+    if (open) {
+      log('Seed delivery to %s reuses an open connection', peerId);
+      return open;
+    }
+    try {
+      return await dialPeerAddrs(node, addrs, this.dialBudget, `Seed delivery dial of ${peerId}`);
+    } catch (error) {
+      throw new PeerUnreachableError(peerId.toString(), error);
+    }
   }
 
   /**
    * Open one stream to the target, send the seed frame, half-close, and read the ack.
    *
-   * `signal` is the deadline from {@link deliverSeed}: it goes to `dialProtocol` so
-   * a timeout during connect aborts the dial, and into {@link exchangeFrame} so a
-   * timeout after the stream is open resets it — releasing the otherwise unbounded
+   * `signal` is the deadline from {@link deliverSeed}: it goes to `openStream` so a
+   * timeout while dialing or opening the stream aborts it, and into {@link exchangeFrame}
+   * so a timeout after the stream is open resets it — releasing the otherwise unbounded
    * ack-read.
    *
    * Deliberately NOT `runOnLimitedConnection`: a wake sets it because a wake is a
-   * tiny frame over a relay, whereas a seed is up to 1MB and this delivery path
-   * does not dial relay addresses today. Changing that is a separate decision.
+   * tiny frame over a relay, whereas a seed is up to 1MB, so a relayed address that
+   * forms only a limited connection fails here when the stream is opened. Changing
+   * that is a separate decision.
    */
   private async sendSeed(
-    node: Libp2p,
-    dialTarget: Multiaddr | PeerId,
+    openStream: SeedStreamOpener,
     seed: ControlNetworkSeed,
     claimProof: string | undefined,
     signal: AbortSignal,
   ): Promise<SeedAckMessage> {
-    const rawStream = await node.dialProtocol(dialTarget, SEED_PROTOCOL, { signal });
+    const rawStream = await openStream(signal);
 
     const message: SeedMessage = {
       partyId: seed.partyId,

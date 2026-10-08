@@ -1456,9 +1456,10 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
   });
 
   it('claims an unclaimed node over the wire: the proof rides the frame, the refusal code rides the ack', async () => {
-    // The whole claim path below CadreNode: an object target (addresses merged, dial by
-    // peer id), the claim proof beside the seed, a receiver whose claim policy binds the
-    // proof to ITS OWN peer id, and the machine-readable code copied into the ack.
+    // The whole claim path below CadreNode: an object target (addresses merged, each dialed
+    // bound to the peer id, the stream opened on the connection that forms), the claim proof
+    // beside the seed, a receiver whose claim policy binds the proof to ITS OWN peer id, and
+    // the machine-readable code copied into the ack.
     const { seed, ownerPublicKey } = makeSignedSeed('claim-party');
     const secret = parseClaimSecret(randomBytes(256, 'base64url') as string);
     const anchor = new MemoryTrustedOwnerStore('claim-party');
@@ -1479,11 +1480,16 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     const sender = new SeedBootstrapService({ partyId: 'claim-party', seedDeliverTimeoutMs: 5000 });
     serviceInternals(sender).libp2pNode = {
       peerStore: { merge: async (peerId: { toString(): string }) => { merged.push(peerId.toString()); } },
-      dialProtocol: async (target: { toString(): string }) => {
-        dialed.push(target.toString());
-        const { clientStream, serverStream } = duplexPair();
-        void runHandleSeedStream(receiver, serverStream, 'phone-peer');
-        return clientStream;
+      getConnections: () => [],
+      dial: async (addr: { toString(): string }) => {
+        dialed.push(addr.toString());
+        return {
+          newStream: async () => {
+            const { clientStream, serverStream } = duplexPair();
+            void runHandleSeedStream(receiver, serverStream, 'phone-peer');
+            return clientStream;
+          },
+        };
       },
     };
     const target = { peerId: receiverPeerId.toString(), multiaddrs: ['/ip4/10.0.0.9/tcp/4001'] };
@@ -1503,7 +1509,8 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     expect(anchor.all()).toEqual(new Set([ownerPublicKey]));
 
     expect(merged).toEqual([target.peerId, target.peerId]);
-    expect(dialed).toEqual([target.peerId, target.peerId]);
+    const boundAddr = `${target.multiaddrs[0]}/p2p/${target.peerId}`;
+    expect(dialed).toEqual([boundAddr, boundAddr]);
   });
 });
 

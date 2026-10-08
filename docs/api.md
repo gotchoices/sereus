@@ -11,7 +11,9 @@ authorizePeer(peerId: string, multiaddrs?: string[]): Promise<void>;
 createSeed(): Promise<ControlNetworkSeed>;
 
 // Deliver seed to new node: a multiaddr string, or a peer id with its addresses (merged into the
-// peer store, then dialed by peer id). `claimProof` only when claiming a brand-new node.
+// peer store and dialed one at a time, each on its own limit, before the request). Throws
+// `PeerUnreachableError` when none of those addresses connects; nothing was sent.
+// `claimProof` only when claiming a brand-new node.
 deliverSeed(target: SeedDeliveryTarget, seed: ControlNetworkSeed, options?: { claimProof?: string }): Promise<SeedAckMessage>;
 // Or encode for out-of-band delivery (QR, link, API)
 encodeSeed(seed: ControlNetworkSeed): string;
@@ -24,8 +26,10 @@ addDrone(options: AddDroneOptions): Promise<DroneInitResult>;
 
 // Claim a node started with a claim secret (`CadreNodeConfig.claim`) from what its host showed:
 // mints a seed, proves the secret beside it, delivers it, then vouches the node and keeps its
-// addresses as a dial target. Throws `ClaimRefusedError` (with the node's `code`) on a refusal,
-// writing nothing. Idempotent for the same owner.
+// addresses as a dial target. Throws `ClaimRefusedError` (with the node's `code`) on a refusal and
+// `PeerUnreachableError` when the node was never reached, writing nothing either way; any other
+// error means the node was reached and the exchange or a local step failed. Idempotent for the
+// same owner, so repeating a failed claim is safe.
 claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Promise<void>;
 
 // On the node being claimed: true while it has a claim secret and no owner yet. While true it

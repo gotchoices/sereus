@@ -8137,8 +8137,11 @@ export class CadreNode implements SAppIdLookup {
    * Deliver a seed directly to a peer via the /sereus/seed/1.0.0 protocol.
    *
    * `target` is a multiaddr string, or a peer id with its addresses (the form a phone
-   * uses for a node it scanned). `options.claimProof` rides beside the seed when the
-   * target is a brand-new node being claimed (`claim-proof.ts`).
+   * uses for a node it scanned), which are dialed one at a time before the request
+   * (`SeedBootstrapService.deliverSeed`). `options.claimProof` rides beside the seed when
+   * the target is a brand-new node being claimed (`claim-proof.ts`).
+   *
+   * @throws {PeerUnreachableError} for a peer id with addresses, when no connection to it formed.
    */
   async deliverSeed(
     target: SeedDeliveryTarget,
@@ -8229,11 +8232,21 @@ export class CadreNode implements SAppIdLookup {
    *
    * Requires the seed service with an owner key ({@link initializeSeedBootstrap}), as
    * {@link addDrone} does. The order is the REVERSE of `addDrone`'s: seed first, row
-   * second. A refused claim (`ClaimRefusedError`, carrying the node's refusal code when
-   * its policy gave one) or a failed delivery (thrown by `deliverSeed`) therefore leaves
-   * no `CadrePeer` row and no retained dial target behind on this node — a phone that
-   * typed the wrong secret, or scanned a node someone else already owns, has nothing to
-   * clean up.
+   * second. A refused claim or a failed delivery therefore leaves no `CadrePeer` row and
+   * no retained dial target behind on this node — a phone that typed the wrong secret,
+   * or scanned a node someone else already owns, has nothing to clean up.
+   *
+   * A failure is one of three kinds a caller can tell apart:
+   *
+   * - `ClaimRefusedError` — the node was reached and refused, with its refusal code when
+   *   its policy gave one.
+   * - `PeerUnreachableError` — no connection to the node formed from any of its addresses,
+   *   so nothing was sent. Each address is dialed in turn on its own limit, so this can
+   *   take up to the per-peer dial limit plus the seed request's (114.5 s at the default
+   *   declared link) when none answers.
+   * - anything else — the node was reached and the exchange failed, or a local step failed
+   *   (a malformed secret or address among them). Repeating the claim with the same secret
+   *   is safe (see below).
    *
    * Idempotent for the same owner: a second call after a dropped response is accepted
    * by the node (its anchored branch), the row insert is a no-op on an existing row
@@ -8247,6 +8260,7 @@ export class CadreNode implements SAppIdLookup {
    * with neither is reached by its own reconcile pass alone.
    *
    * @throws {ClaimRefusedError} when the node was reached and refused the claim.
+   * @throws {PeerUnreachableError} when the node was never reached.
    */
   async claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Promise<void> {
     if (!this.seedBootstrapService) {

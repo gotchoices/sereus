@@ -40,8 +40,9 @@ export const CLAIM_SECRET_BYTES = 32;
 
 /**
  * Thrown by `CadreNode.claimNode` when the node answered the claim seed with a refusal.
- * Distinct from a dial or deadline failure (which propagates as thrown by `deliverSeed`):
- * here the node was reached and said no. `code` is the node's machine-readable cause
+ * Distinct from `PeerUnreachableError` (no connection to the node formed) and from a
+ * failure after the node was reached (thrown by `deliverSeed` as is): here the node was
+ * reached and said no. `code` is the node's machine-readable cause
  * when its policy supplied one (`already-claimed`, `claim-proof-invalid`, ...), so a
  * phone can tell "someone else owns it" from "wrong secret" without parsing `reason`.
  */

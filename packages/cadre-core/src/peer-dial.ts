@@ -144,6 +144,22 @@ export class SelfRelayOnlyError extends Error {
 	}
 }
 
+/**
+ * No connection to the peer formed, so nothing was sent to it. `cause` is what the dial threw:
+ * {@link dialPeerAddrs}'s error naming every address and why it failed, or a
+ * {@link SelfRelayOnlyError}.
+ *
+ * Kept apart from failures after a connection formed so a caller can tell "this device could not
+ * reach the peer" from "the peer was reached and then something else failed" without reading
+ * libp2p's error text. `SeedBootstrapService.deliverSeed` throws it, and so `CadreNode.claimNode`.
+ */
+export class PeerUnreachableError extends Error {
+	constructor(readonly peerId: string, cause: unknown) {
+		super(`Could not reach ${peerId}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+		this.name = 'PeerUnreachableError';
+	}
+}
+
 /** One candidate's outcome, kept so the thrown error can name every attempt. */
 interface AddrAttemptFailure {
 	addr: Multiaddr;
