@@ -4311,6 +4311,12 @@ export class CadreNode implements SAppIdLookup {
         this.pendingRevocations.delete(row.stampId);
       }
     } catch (error) {
+      // NOTE: a device whose owner key has been removed keeps running this drain (and the
+      // membership re-touches of reissuePendingPeerWrites / reissueAuthoredMembershipRows)
+      // on every growth edge, and once its own tombstone has reached it every attempt
+      // fails the schema's live-owner clause and lands here. Noise, not harm; a node that
+      // learns it has been revoked shutting itself down belongs to the device-removal plan
+      // ticket (remove-a-device-or-app-from-a-cadre).
       log('drain: revocation re-issue failed; leaving queued for next growth: %o', error);
     }
   }

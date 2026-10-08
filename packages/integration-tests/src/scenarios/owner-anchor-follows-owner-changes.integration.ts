@@ -18,8 +18,9 @@
  * Why this shape. M never pins B, so M accepting B's vouch and B's seed proves that M derived B
  * from A's signed row after it replicated, and M refusing them after A removes B proves that
  * A's tombstone, replicated to M, took B out again. A, M and B stay connected throughout, so the
- * delete and the tombstone reach M together; a machine that receives only the tombstone is
- * ticket `removed-owner-still-authorizes-where-its-row-survives`'s case.
+ * delete and the tombstone reach M together; a machine holding the removed owner's row beside
+ * its tombstone authorizes nothing either, by the live-owner clause on every owner lookup in
+ * `schemas/control.qsql` (pinned on one database by `control-revocation-replay.spec.ts`).
  *
  * M follows a replicated change at its next membership refresh, and on M nothing but the timed
  * control-cohort reconcile runs one (every 15 s by default): a row that arrives by replication

@@ -1388,8 +1388,11 @@ export class ControlDatabase {
    * an automated reap able to empty the table), so a node that received the tombstone
    * without the delete (a removal committed while the remover was alone, re-issued on growth)
    * keeps the removed owner's physical row next to it. Without the filter a removed owner
-   * would still sign on its own node, still count as the issuer of a live invitation and
-   * still be preferred as a dial target.
+   * would still count as an owner in every membership snapshot and seed-trust read, still
+   * read as the issuer of a live invitation and still be preferred as a dial target. The
+   * write side filters for itself: every owner lookup in the schema disqualifies a row whose
+   * stamp is retired (`schemas/control.qsql` header), so a removed owner cannot sign here
+   * once its tombstone has arrived, row or no row.
    *
    * `retry: false` from a caller that reads under the write lock, for the reason on
    * {@link queryCadrePeers}.

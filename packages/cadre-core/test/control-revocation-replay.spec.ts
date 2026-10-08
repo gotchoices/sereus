@@ -482,6 +482,39 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
 
+  it('OwnerKey: an owner removed in the same transaction cannot vouch an add there (Authorized reads live Revocation beside the committed snapshot)', async () => {
+    // The signer of an add is read from `committed.OwnerKey`, so an owner removed in this
+    // very transaction is still in that snapshot; what disqualifies it is its tombstone, read
+    // LIVE, so the one filed here counts. Without that clause the transaction commits and a
+    // stranger vouched by an owner removed in the same breath stands. This is the one shape
+    // of "row present beside its tombstone" a single database can hold, since RowIsGone and
+    // NotRevoked keep the committed state free of it.
+    const removed = freshKeyPair();
+    const { stamp: removedStamp } = await enrollByFounder(removed);
+    const stranger = freshKeyPair();
+    const strangerStamp = freshStamp();
+
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteOwnerKey(
+          founder.publicKey,
+          signAs(founder, removeMessage(removed.publicKey, removedStamp)),
+          removed.publicKey,
+        );
+        await tombstoneStamp('OwnerKey', removed.publicKey, removedStamp);
+        await rawInsertOwnerKey(
+          removed.publicKey,
+          signAs(removed, enrollMessage(stranger.publicKey, strangerStamp)),
+          stranger.publicKey,
+          strangerStamp,
+        );
+      }),
+      'Authorized',
+    );
+    // The rollback undid the removal too: the transaction stands or falls as one.
+    expect(await ownerKeys()).toEqual([founder.publicKey, removed.publicKey].sort());
+  }, 60_000);
+
   it('CadrePeer: a captured admission approval cannot re-seat a removed peer', async () => {
     const peerId = '12D3KooWRevocationReplayTarget';
     const { stamp, vouchSig } = await admitPeer(peerId);

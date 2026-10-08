@@ -140,6 +140,15 @@ const MEASURED_ON = '2026-10-07';
  * `Revocation` consult, and the cause is on this side, not upstream: the trusted-owner anchor
  * sync (`CadreNode.syncOwnerAnchor`, ticket `owner-anchor-derivation`) now reads the tombstone
  * list at the head of every membership refresh, and both paths trigger a refresh.
+ *
+ * Re-measured whole at `ff150e0f` on 2026-10-07, later the same day, after every owner lookup in
+ * the control schema gained its live-owner clause (`removed-owner-still-authorizes-where-its-row-survives`):
+ * each owner-gated write's check now reads `Revocation` once more, so `foundStrand`'s control
+ * side 7 → 8, the marker test's `authorizePeer` before the marker 4 → 5 and the marker's own
+ * filing 2 → 3. After the marker nothing moved: the block is held and inside its window. The
+ * idle reconcile before the marker measured 6 both before and after that change: the 5 the
+ * previous paragraph recorded predates the review pass of that ticket, which reworked the anchor
+ * sync, and the table below now says 6.
  */
 const BASELINE_UPSTREAM = 'optimystic ff150e0f';
 
@@ -173,18 +182,21 @@ const COLD: Budget = { consults: 37, blocks: 29, commits: 1, consultBudget: 41, 
  */
 const GENESIS: Budget = { consults: 3, blocks: 3, commits: 2, consultBudget: 4, blockBudget: 4, commitBudget: 3 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 7 consults over 5
+ * `foundStrand`, control network side: the `Strand` row published. 8 consults over 5
  * blocks, 3 commits: `Strand` ×2 and its `StampId` unique index ×1 (missing until the
- * publish commits), the never-written `Revocation` ×2 and `CadrePeer` ×1, and 1 on a tree
- * block the commit created. History: 25 over 6 blocks on 2026-09-15 (×8, ×6, ×4, ×4, ×2,
- * ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId` index ×3,
+ * publish commits), the never-written `Revocation` ×3 (the publish's `NotRevoked`, the
+ * live-owner clause on its owner lookup, and the membership read beside `CadrePeer` ×1), and
+ * 1 on a tree block the commit created. History: 25 over 6 blocks on 2026-09-15 (×8, ×6, ×4,
+ * ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId` index ×3,
  * `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
- * was the `MemberPrivateKey` index's only consults. Control and strand together now sum to 28
- * consults and 6 commits, against 28 and 12 at `8a0b48c7`, 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47
- * and 12 in the trace taken before upstream removed the absence memo.
+ * was the `MemberPrivateKey` index's only consults; 8 over 5 once every owner lookup read
+ * `Revocation` (2026-10-07, see {@link BASELINE_UPSTREAM}). Control and strand together now
+ * sum to 29 consults and 6 commits, against 28 and 6 before that clause, 28 and 12 at
+ * `8a0b48c7`, 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace
+ * taken before upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 7, blocks: 5, commits: 3, consultBudget: 9, blockBudget: 7, commitBudget: 4 };
+const FOUNDING_CONTROL: Budget = { consults: 8, blocks: 5, commits: 3, consultBudget: 10, blockBudget: 7, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 21 consults over 15 blocks, 3 commits: the strand's schema catalog ×5,
@@ -236,19 +248,22 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * |---|---|---|
  * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×1, every call | 1 on the first call, then 0 |
  * | `queryCadrePeers()` per call | `Revocation` ×1, every call | 0 |
- * | `authorizePeer` of a new member | 4: `Revocation` ×3, 1 on a tree block | 0 |
- * | idle `reconcileControlCohort` | 5: `Revocation` ×5 | 0 |
+ * | `authorizePeer` of a new member | 5: `Revocation` ×4, 1 on a tree block | 0 |
+ * | idle `reconcileControlCohort` | 6: `Revocation` ×6 | 0 |
  *
  * The one consult after is on the tree block the marker's own commit created, paid by whichever
- * read runs first. Filing the marker cost 2 consults (`Revocation` ×2) and 1 commit (2 before `e6e84aa1`). The reconcile
- * pass is asserted by its busiest block (more than once before, at most once after) rather than
- * pinned, so an unrelated read added to the pass does not read as a marker regression.
+ * read runs first. Filing the marker cost 3 consults (`Revocation` ×3; 2 before every owner
+ * lookup read the table) and 1 commit (2 before `e6e84aa1`). The reconcile pass is asserted by
+ * its busiest block (more than once before, at most once after) rather than pinned, so an
+ * unrelated read added to the pass does not read as a marker regression.
  *
- * One of `authorizePeer`'s three `Revocation` consults before the marker is the trusted-owner
- * anchor sync's tombstone read (`CadreNode.syncOwnerAnchor`, the first step of the membership
- * refresh the insert's commit triggers); it reads the `OwnerKey` stamps it retires from that
- * same list rather than through `queryRevokedStamps`, so the sync adds exactly one consult, and
- * none once the block is held. The idle reconcile's fifth is the same read on its refresh.
+ * `authorizePeer`'s four `Revocation` consults before the marker: two are the insert's own
+ * checks (`NotRevoked`, and the live-owner clause on its owner lookup, which disqualifies a
+ * signer whose stamp is retired), one is the membership refresh the commit triggers, and one is
+ * the trusted-owner anchor sync's tombstone read at the head of that refresh
+ * (`CadreNode.syncOwnerAnchor`); the sync reads the `OwnerKey` stamps it retires from that same
+ * list rather than through `queryRevokedStamps`, so it adds exactly one consult, and none once
+ * the block is held. The idle reconcile's sixth is the same read on its refresh.
  *
  * Only the "before" column moved at optimystic `03ffadc4`: every repeated consult of the
  * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
@@ -259,7 +274,7 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * read-repair window never consulted, so dropping them saved nothing.
  */
 const MARKER_BEFORE_PER_CALL = [1, 1, 1, 1, 1, 1];
-const MARKER_BEFORE_AUTHORIZE = 4;
+const MARKER_BEFORE_AUTHORIZE = 5;
 /** The first read after the marker pays one consult on the block its commit created. */
 const MARKER_AFTER_REVOKED_STAMPS = [1, 0, 0, 0, 0, 0];
 const MARKER_AFTER_CADRE_PEERS = [0, 0, 0, 0, 0, 0];
