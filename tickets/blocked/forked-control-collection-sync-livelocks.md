@@ -255,7 +255,9 @@ Found by `cadre-invite-redeemed-at-a-member-without-the-row`. Verified 3 of 3 ru
 
 **To reproduce.** Run `packages/integration-tests/src/scenarios/cadre-invite-row-unreplicated.integration.ts`, then restart A the way `cadre-invite-any-member.integration.ts` does (the same `captureRawStorage` provider plus a `MemoryBootstrapPeerStore`, then `initializeSeedBootstrap` and `reconcileControlCohort`), without the cutting gater. Wait for A to list P, then call `A.createCadreInvitation`.
 
-**Open on the sereus side.** Whether sereus should stop forming this fork, rather than wait for upstream to heal it, is not examined. The lever would be where a member records a row it seated from a bundle.
+**How often a user meets it.** Any cadre past its first invitation, whose owner mints while apart from the member the device then redeems at, and comes back afterwards: a phone owner minting with no connection to the home server is that case. The owner's later invitations then fail; nothing else observed breaks.
+
+**Open on the sereus side (decision for the human, unmeasured).** Recommended default: wait for the upstream fork healing this ticket is blocked on, since every other trigger here needs it too and a sereus-side change removes only this one. The alternative weighed is to stop forming this fork: a member records a row it seated from a bundle in a separate control table rather than in the owner's `CadreInvite` collection, so only minting owners write `CadreInvite`. It costs a schema change (`CadreInviteUsage`'s constraints, `isCadreInviteLive` and the membership predicate would read both tables) and does not cover two owners minting while apart. Doing nothing leaves the owner unable to mint after this path until upstream heals forks; the alternative is reversible only by a further schema change.
 
 ## Cross-cutting obligations
 

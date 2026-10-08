@@ -301,7 +301,8 @@ function verifyB64(digestB64: string, signature: string, publicKey: string): boo
 /**
  * Does a `CadreInvite` row carry a valid `'add'` signature by its own `issuerKey`? The
  * redeeming device runs this over the row a member replies with, after checking the issuer
- * against its pinned owner keys; whether that issuer IS an owner is the caller's question.
+ * against its pinned owner keys, and a member over a bundle's copy it does not hold yet
+ * (`ControlDatabase.isCadreInviteLive`); whether that issuer IS an owner is the caller's question.
  * Never throws: a malformed row verifies as `false`.
  */
 export function verifyCadreInviteRow(invite: CadreInviteRow): boolean {

@@ -542,6 +542,10 @@ function constraintRejection(error: unknown): CadreInviteRejection | null {
 
 /** A write failure that is not a refusal: the retry gave up (`conflict`), or something else (`internal`). */
 function writeFailureRejection(error: unknown): CadreInviteRejection {
+  // NOTE: a seat torn on a member alone with an uncaught-up device was measured answering
+  // `internal`, not `conflict` (cadre-invite-redeemed-at-a-member-without-the-row). Both are
+  // retryable, so the device is unaffected; if the two codes ever diverge in retryability,
+  // find which tear `isRetriableControlWriteFailure` does not recognise.
   return isRetriableControlWriteFailure(error)
     ? rejection('conflict', 'The redemption write failed transiently; nothing was recorded')
     : rejection('internal', 'Internal redemption error');
