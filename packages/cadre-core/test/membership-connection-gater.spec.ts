@@ -16,14 +16,14 @@ import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject,
  * Unit coverage for the control-network inbound admission gates
  * (`membership-connection-gater`): the gater composition/fail-open contract on
  * BOTH composed hooks (`denyInboundEncryptedConnection` and
- * `denyInboundRelayReservation`), the admit-for-relay not-reserving deadline,
- * the `UnauthorizedReservationBudget`, the
+ * `denyInboundRelayReservation`), the provisional-admission deadline and its
+ * re-check, the `UnauthorizedReservationBudget`, the
  * `CadreNode.admitInboundControlConnection` decision matrix (anchor state,
  * bootstrap infra, formation-responder mode, the live cadre invitation, the
- * authorized-member set, the relay-enabled verdict) and the
+ * authorized-member set, the same verdict with or without a relay server) and the
  * `CadreNode.admitControlRelayReservation` decision matrix. The wire-level effect (an
- * outsider's dial actually failing / an unauthorized reservation landing) is
- * proven in the integration scenarios `membership-connection-gater.integration.ts`
+ * outsider's provisional connection actually closing / an unauthorized reservation
+ * landing) is proven in the integration scenarios `membership-connection-gater.integration.ts`
  * and `relay-only-control-addr.integration.ts`. The fail-closed per-stream
  * sibling gate is covered by `control-stream-authorization.spec.ts`; the row
  * builders and node injector both suites share live in
@@ -36,16 +36,17 @@ function fakePeerId(id: string): PeerId {
 
 const MA_CONN = {} as MultiaddrConnection;
 
-/** A MultiaddrConnection whose close and abort are both observable — the not-reserving deadline's target. */
+/** An open MultiaddrConnection whose close and abort are both observable — the provisional deadline's target. */
 type DroppableConn = MultiaddrConnection & { close: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> };
 
 /**
  * The deadline ends a connection with `close()`, falling back to `abort()`; the
  * double carries BOTH so a test can tell which one fired. `close` rejecting is
- * the only way to reach the fallback, so it is a parameter.
+ * the only way to reach the fallback, so it is a parameter. `status: 'open'`
+ * because the deadline skips a connection that is already gone.
  */
 function droppableConn(closeResult: () => Promise<void> = () => Promise.resolve()): DroppableConn {
-  return { close: vi.fn(closeResult), abort: vi.fn() } as unknown as DroppableConn;
+  return { status: 'open', close: vi.fn(closeResult), abort: vi.fn() } as unknown as DroppableConn;
 }
 
 /** Assemble a policy from its two decisions; the reservation half admits by default. */
@@ -68,25 +69,11 @@ function delay(ms: number): Promise<void> {
 }
 
 describe('createMembershipConnectionGater (composition + fail-open)', () => {
-  it('denies when the policy refuses, admits when it accepts', async () => {
-    const policy = policyOf((id) => (id === 'friend' ? 'admit' : 'deny'));
-    const gater = createMembershipConnectionGater(policy);
-
-    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('friend'), MA_CONN)).toBe(false);
-    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('stranger'), MA_CONN)).toBe(true);
-  });
-
   it('honors a base-gater deny even when the policy would admit', async () => {
     const gater = createMembershipConnectionGater(policyOf(() => 'admit'), denyingBase('blocked'));
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('blocked'), MA_CONN)).toBe(true);
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone-else'), MA_CONN)).toBe(false);
-  });
-
-  it('still applies the policy when the base gater admits', async () => {
-    const gater = createMembershipConnectionGater(policyOf(() => 'deny'), denyingBase('blocked'));
-
-    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(true);
   });
 
   it('preserves the base gater\'s other hooks unchanged', async () => {
@@ -95,23 +82,29 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
     expect(await gater.denyDialMultiaddr!(undefined as never)).toBe(false);
   });
 
-  it('fails open (admits) when the policy throws — the stream gates stay the fail-closed layer', async () => {
+  it('fails open (admits outright, no deadline) when the policy throws — the stream gates stay the fail-closed layer', async () => {
+    const maConn = droppableConn();
     const policy = policyOf(() => { throw new Error('control DB torn down mid-check'); });
-    const gater = createMembershipConnectionGater(policy);
+    const gater = createMembershipConnectionGater(policy, undefined, 2_000, 30);
 
-    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), maConn)).toBe(false);
+    await delay(90);
+    expect(maConn.close).not.toHaveBeenCalled();
   });
 
-  it('fails open (admits) when the decision outstays its deadline — never wedges the inbound upgrade', async () => {
+  it('fails open (admits outright, no deadline) when the decision outstays its deadline — never wedges the inbound upgrade', async () => {
+    const maConn = droppableConn();
     let settle: (() => void) | undefined;
     const policy = policyOf(
       // A control-DB read that pulls over the network and never comes back.
-      () => new Promise<InboundConnectionVerdict>((resolve) => { settle = () => resolve('deny'); })
+      () => new Promise<InboundConnectionVerdict>((resolve) => { settle = () => resolve('admit-provisionally'); })
     );
-    const gater = createMembershipConnectionGater(policy, undefined, 20);
+    const gater = createMembershipConnectionGater(policy, undefined, 20, 30);
 
-    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), maConn)).toBe(false);
     settle?.(); // release the pending policy promise so the test leaves nothing dangling
+    await delay(90);
+    expect(maConn.close).not.toHaveBeenCalled();
   });
 });
 
@@ -202,12 +195,12 @@ describe('createMembershipConnectionGater (bring-up quiet period)', () => {
   });
 });
 
-// ── the relay-reservation seam (admit-for-relay + denyInboundRelayReservation) ─
+// ── provisional admission (its deadline, the re-check, and the reservation seam) ─
 
-describe('createMembershipConnectionGater (relay-reservation seam)', () => {
-  it('admits an admit-for-relay connection, then CLOSES it when no reservation is admitted in time', async () => {
+describe('createMembershipConnectionGater (provisional admission + relay-reservation seam)', () => {
+  it('admits a provisional connection, then CLOSES it when the peer is still unplaced at the deadline', async () => {
     const maConn = droppableConn();
-    const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay'), undefined, 2_000, 30);
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit-provisionally'), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     expect(maConn.close).not.toHaveBeenCalled();
@@ -220,7 +213,7 @@ describe('createMembershipConnectionGater (relay-reservation seam)', () => {
 
   it('aborts the expired connection only when the close itself fails', async () => {
     const maConn = droppableConn(() => Promise.reject(new Error('close timed out draining')));
-    const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay'), undefined, 2_000, 30);
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit-provisionally'), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     await delay(90);
@@ -228,9 +221,57 @@ describe('createMembershipConnectionGater (relay-reservation seam)', () => {
     expect(maConn.abort).toHaveBeenCalledTimes(1);
   });
 
-  it('an admitted reservation disarms the not-reserving deadline', async () => {
+  it('keeps the connection when the deadline\'s re-check now admits the peer', async () => {
+    // A sibling whose row landed, or a device whose invitation row was seated from
+    // its bundle, before the deadline.
     const maConn = droppableConn();
-    const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay', () => true), undefined, 2_000, 30);
+    let asked = 0;
+    const policy = policyOf(() => (asked++ === 0 ? 'admit-provisionally' : 'admit'));
+    const gater = createMembershipConnectionGater(policy, undefined, 2_000, 30);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('since-placed'), maConn)).toBe(false);
+    await delay(90);
+    expect(asked).toBe(2);
+    expect(maConn.close).not.toHaveBeenCalled();
+    expect(maConn.abort).not.toHaveBeenCalled();
+  });
+
+  it('keeps the connection when the deadline\'s re-check throws (fail-open)', async () => {
+    const maConn = droppableConn();
+    let asked = 0;
+    const policy = policyOf(() => {
+      if (asked++ === 0) return 'admit-provisionally';
+      throw new Error('control DB torn down mid-check');
+    });
+    const gater = createMembershipConnectionGater(policy, undefined, 2_000, 30);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
+    await delay(90);
+    expect(asked).toBe(2);
+    expect(maConn.close).not.toHaveBeenCalled();
+  });
+
+  it('a reservation admitted while the deadline\'s re-check is out keeps the connection', async () => {
+    const maConn = droppableConn();
+    let answer: ((verdict: InboundConnectionVerdict) => void) | undefined;
+    let asked = 0;
+    const policy = policyOf(() => (asked++ === 0
+      ? 'admit-provisionally'
+      : new Promise<InboundConnectionVerdict>((resolve) => { answer = resolve; })));
+    const gater = createMembershipConnectionGater(policy, undefined, 2_000, 30);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('reserving'), maConn)).toBe(false);
+    await delay(60); // the deadline has fired, and its re-check is waiting on the policy
+    expect(answer).toBeDefined();
+    expect(await gater.denyInboundRelayReservation!(fakePeerId('reserving'))).toBe(false);
+    answer!('admit-provisionally');
+    await delay(30);
+    expect(maConn.close).not.toHaveBeenCalled();
+  });
+
+  it('an admitted reservation disarms the provisional deadline', async () => {
+    const maConn = droppableConn();
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit-provisionally', () => true), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     expect(await gater.denyInboundRelayReservation!(fakePeerId('unplaced'))).toBe(false);
@@ -241,7 +282,7 @@ describe('createMembershipConnectionGater (relay-reservation seam)', () => {
 
   it('a REFUSED reservation leaves the deadline armed — the connection still gets dropped', async () => {
     const maConn = droppableConn();
-    const gater = createMembershipConnectionGater(policyOf(() => 'admit-for-relay', () => false), undefined, 2_000, 30);
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit-provisionally', () => false), undefined, 2_000, 30);
 
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('unplaced'), maConn)).toBe(false);
     expect(await gater.denyInboundRelayReservation!(fakePeerId('unplaced'))).toBe(true);
@@ -338,17 +379,13 @@ function verdictOf(node: CadreNode, remotePeerId: string): Promise<InboundConnec
   }).admitInboundControlConnection(remotePeerId);
 }
 
-/**
- * Boolean view of the verdict for the matrix below — every config here runs
- * WITHOUT a relay server, so "not denied" and `'admit'` coincide; the
- * relay-enabled `'admit-for-relay'` verdict has its own describe further down.
- */
+/** Boolean view of the verdict for the matrix below: true when admitted outright, false when only provisionally. */
 async function admit(node: CadreNode, remotePeerId: string): Promise<boolean> {
-  return (await verdictOf(node, remotePeerId)) !== 'deny';
+  return (await verdictOf(node, remotePeerId)) === 'admit';
 }
 
 describe('CadreNode.admitInboundControlConnection', () => {
-  it('denies a stranger only in the fully-established steady state; admits the authorized member', async () => {
+  it('admits a stranger only provisionally in the fully-established steady state; the authorized member outright', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
@@ -360,13 +397,13 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(false);
   });
 
-  it('denies a member whose StampId is retired in Revocation, still admitting its live sibling', async () => {
+  it('admits only provisionally a member whose StampId is retired in Revocation, still admitting its live sibling', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     const revoked = vouchedRow(MEMBER, owner);
     const survivor = vouchedRow('peer-member-2', owner);
     // The gate delegates to the same authorized-membership predicate the
-    // authorized-surface spec pins, so a removed peer that dials in must be refused
+    // authorized-surface spec pins, so a removed peer that dials in must not be admitted outright
     // even while its (still valid, still anchored) voucher row is locally visible —
     // the cross-node convergence state the read-side revocation filter exists for.
     inject(node, {
@@ -424,7 +461,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(true);
   });
 
-  it('admits a stranger while a live cadre invitation exists, and denies once none is live', async () => {
+  it('admits a stranger outright while a live cadre invitation exists, and only provisionally once none is live', async () => {
     // The cadre-invitation exemption: a device redeems at any member, and is a stranger
     // until the redemption writes its row. Keyed on a live `CadreInvite` row exactly as the
     // formation exemption is keyed on an outstanding open invitation; a withdrawn, expired
@@ -456,9 +493,9 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(true);
   });
 
-  it('denies a stranger when the responder is registered but NO invitation is outstanding', async () => {
+  it('admits a stranger only provisionally when the responder is registered but NO invitation is outstanding', async () => {
     // The whole point of the narrowed carve-out: registering the formation
-    // responder (as reference-app-rn does at bring-up) must NOT disarm the gate.
+    // responder (as reference-app-rn does at bring-up) must NOT admit strangers outright.
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
@@ -513,10 +550,11 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId(STRANGER), MA_CONN)).toBe(false);
   });
 
-  it('mint → admit → lapse → deny, driven through a REAL solicitation service', async () => {
+  it('mint → admit → lapse → provisional, driven through a REAL solicitation service', async () => {
     // Acceptance shape of the narrowed carve-out, end to end through the actual
-    // predicate rather than a stub: the node denies until it mints an invitation,
-    // admits while that invitation lives, and denies again once it expires.
+    // predicate rather than a stub: the node admits only provisionally until it mints
+    // an invitation, outright while that invitation lives, and provisionally again once
+    // it expires.
     vi.useFakeTimers();
     try {
       const node = new CadreNode(createConfig());
@@ -556,7 +594,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(false);
   });
 
-  it('denies a peer whose row is addressable but unvouched, alongside a real member', async () => {
+  it('admits only provisionally a peer whose row is addressable but unvouched, alongside a real member', async () => {
     // The step-4 distinction at the connection layer: having a `CadrePeer` row
     // (so `isMember` is true) is NOT membership — only an anchored voucher is.
     const node = new CadreNode(createConfig());
@@ -571,7 +609,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, IMPOSTOR)).toBe(false);
   });
 
-  it('denies a peer vouched by a key that is NOT in this node\'s anchor', async () => {
+  it('admits only provisionally a peer vouched by a key that is NOT in this node\'s anchor', async () => {
     const node = new CadreNode(createConfig());
     const anchored = makeOwner();
     const selfMinted = makeOwner();
@@ -585,36 +623,27 @@ describe('CadreNode.admitInboundControlConnection', () => {
   });
 });
 
-// ── the relay-enabled verdict ───────────────────────────────────────────────
+// ── the verdict does not depend on the relay server ────────────────────────
 
-describe('CadreNode.admitInboundControlConnection (relay-enabled verdict)', () => {
-  async function establishedNode(extra: Parameters<typeof createConfig>[1]): Promise<CadreNode> {
-    const node = new CadreNode(createConfig([], extra));
-    const owner = makeOwner();
-    inject(node, {
-      members: [vouchedRow(MEMBER, owner)],
-      anchor: await anchorWith('p', owner.publicKey)
-    });
-    return node;
-  }
+describe('CadreNode.admitInboundControlConnection (relay server on or off)', () => {
+  it('admits a stranger provisionally and a member outright, whether or not the node runs the relay server', async () => {
+    const configs: Parameters<typeof createConfig>[1][] = [
+      {},
+      { network: { enableRelay: true } },
+      { profile: 'storage' },
+      { profile: 'storage', network: { enableRelay: false } }
+    ];
+    for (const extra of configs) {
+      const node = new CadreNode(createConfig([], extra));
+      const owner = makeOwner();
+      inject(node, {
+        members: [vouchedRow(MEMBER, owner)],
+        anchor: await anchorWith('p', owner.publicKey)
+      });
 
-  it('turns the steady-state deny into admit-for-relay when network.enableRelay is on', async () => {
-    const node = await establishedNode({ network: { enableRelay: true } });
-
-    expect(await verdictOf(node, STRANGER)).toBe('admit-for-relay');
-    expect(await verdictOf(node, MEMBER)).toBe('admit');
-  });
-
-  it('storage profile implies the relay server, so it implies the relay verdict too', async () => {
-    const node = await establishedNode({ profile: 'storage' });
-
-    expect(await verdictOf(node, STRANGER)).toBe('admit-for-relay');
-  });
-
-  it('an explicit enableRelay:false wins over the storage-profile default — plain deny', async () => {
-    const node = await establishedNode({ profile: 'storage', network: { enableRelay: false } });
-
-    expect(await verdictOf(node, STRANGER)).toBe('deny');
+      expect(await verdictOf(node, STRANGER)).toBe('admit-provisionally');
+      expect(await verdictOf(node, MEMBER)).toBe('admit');
+    }
   });
 });
 

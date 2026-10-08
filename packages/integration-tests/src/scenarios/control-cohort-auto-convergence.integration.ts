@@ -15,7 +15,8 @@
  * Honesty note (for reviewers): A vouches B (`authorizePeer`) before minting the
  * seed, mirroring production onboarding (`addDrone` /
  * `addPhoneWithRelay` in seed-bootstrap.ts) — without it A's inbound connection
- * gate refuses B's cold-start dial once A holds any authorized member. The vouch
+ * gate admits B's cold-start dial only provisionally once A holds any authorized
+ * member, and closes it at the provisional deadline. The vouch
  * is a control-DB write, not a dial, so it does not touch the "zero manual
  * control dials" claim below. In a 2-node party the FIRST connection is
  * necessarily established by the cold-start path (`applySeed`'s owner dial) —

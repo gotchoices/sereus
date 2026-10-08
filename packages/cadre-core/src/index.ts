@@ -637,8 +637,8 @@ export {
 // Control-network inbound connection gate (membership defense-in-depth)
 export {
   createMembershipConnectionGater,
-  RELAY_ADMISSION_RESERVE_DEADLINE_MS,
-  RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
+  PROVISIONAL_ADMISSION_DEADLINE_MS,
+  PROVISIONAL_ADMISSION_CLOSE_TIMEOUT_MS,
   MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
   UnauthorizedReservationBudget,
   type InboundAdmissionPolicy,

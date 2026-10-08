@@ -3,6 +3,7 @@ import { randomBytes } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { MemoryTrustedOwnerStore } from '../src/trusted-owner-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
+import type { InboundConnectionVerdict } from '../src/membership-connection-gater.js';
 
 /**
  * What a node waiting to be claimed (`CadreNodeConfig.claim`, `CadreNode.isAwaitingClaim`)
@@ -24,7 +25,7 @@ describe('CadreNode admission while awaiting a claim', () => {
 	interface Predicates {
 		authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean;
 		admitControlRelayReservation(remotePeerId: string): Promise<boolean>;
-		admitInboundControlConnection(remotePeerId: string): Promise<'admit' | 'admit-for-relay' | 'deny'>;
+		admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict>;
 	}
 
 	/** A started-looking node with an empty anchor, optionally waiting to be claimed. */

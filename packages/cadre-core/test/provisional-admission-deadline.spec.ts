@@ -7,17 +7,17 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { createMembershipConnectionGater, type InboundAdmissionPolicy } from '../src/membership-connection-gater.js';
 
 /**
- * The relay-only not-reserving deadline against a real WebSocket transport:
- * when the deadline fires, does the STRANGER'S end of the socket actually go
- * away?
+ * The provisional-admission deadline against a real WebSocket transport: when
+ * the deadline closes a stranger's connection, does the STRANGER'S end of the
+ * socket actually go away?
  *
  * `membership-connection-gater.spec.ts` covers the deadline's logic with
  * doubles, and cannot answer that — a double records whatever call it is given.
  * The bug this pins was exactly there: the deadline used to call
  * `maConn.abort()`, which on `@libp2p/websockets` marks the local end `aborted`
- * without sending anything, so the relay dropped the connection from its own
+ * without sending anything, so the member dropped the connection from its own
  * list while the stranger kept an open socket indefinitely — one leaked socket
- * per stranger on a public relay. Every doubles case still passed.
+ * per stranger on a public address. Every doubles case still passed.
  *
  * So this spec asserts from the DIALER's side, over a real socket, and the
  * nodes keep libp2p's stock connection monitor: its ~10 s ping interval means
@@ -37,26 +37,26 @@ const DEADLINE_MS = 1_000;
 /** How long the dialer's connection may survive the deadline. Far under the ~15 s a ping failure would take. */
 const DROP_WINDOW_MS = 5_000;
 
-describe('relay-only not-reserving deadline (real WebSocket transport)', () => {
-	it('drops the stranger\'s own end of the connection, not just the relay\'s', async () => {
-		const relayOnly: InboundAdmissionPolicy = {
-			admitInbound: () => 'admit-for-relay',
+describe('provisional-admission deadline (real WebSocket transport)', () => {
+	it('drops the stranger\'s own end of the connection, not just the member\'s', async () => {
+		const unplaced: InboundAdmissionPolicy = {
+			admitInbound: () => 'admit-provisionally',
 			admitRelayReservation: () => false,
 		};
-		const relay = await startNode(['/ip4/127.0.0.1/tcp/0/ws'], createMembershipConnectionGater(relayOnly, undefined, 2_000, DEADLINE_MS));
+		const member = await startNode(['/ip4/127.0.0.1/tcp/0/ws'], createMembershipConnectionGater(unplaced, undefined, 2_000, DEADLINE_MS));
 		const stranger = await startNode([]);
-		const relayAddr = relay.getMultiaddrs().find((addr) => addr.toString().includes('/ws'));
-		expect(relayAddr).toBeDefined();
+		const memberAddr = member.getMultiaddrs().find((addr) => addr.toString().includes('/ws'));
+		expect(memberAddr).toBeDefined();
 
-		await stranger.dial(multiaddr(relayAddr!.toString()));
-		expect(openTo(stranger, relay)).toBe(true);
+		await stranger.dial(multiaddr(memberAddr!.toString()));
+		expect(openTo(stranger, member)).toBe(true);
 
 		const started = Date.now();
-		while (openTo(stranger, relay) && Date.now() - started < DROP_WINDOW_MS) {
+		while (openTo(stranger, member) && Date.now() - started < DROP_WINDOW_MS) {
 			await delay(100);
 		}
 
-		expect(openTo(stranger, relay)).toBe(false);
+		expect(openTo(stranger, member)).toBe(false);
 	});
 });
 

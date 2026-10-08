@@ -14,10 +14,10 @@ import type { CadreNodeConfig } from '../src/types.js';
  * catch-up, and whether it hands it anything at all.
  *
  * The load-bearing case is `authorizePeer`. The control network's inbound connection gate
- * deliberately admits non-members in several states (seed delivery to an un-enrolled node,
- * an open enrollment window, an outstanding invitation, configured bootstrap/relay peers),
- * so a catch-up wired WITHOUT that gate would push the party's entire membership, peer
- * addresses and strand list to any of them. That regression is invisible to the
+ * admits every peer's connection, non-members included (outright during seed delivery to
+ * an un-enrolled node, an outstanding invitation and for configured bootstrap/relay peers,
+ * provisionally otherwise), so a catch-up wired WITHOUT that gate would push the party's
+ * entire membership, peer addresses and strand list to any of them. That regression is invisible to the
  * integration scenario, whose joiner is authorized before the dial — it would still pass.
  * Hence an explicit assertion here that the gate is wired and that it is
  * `isAuthorizedMember`, not some looser predicate.

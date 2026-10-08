@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
 import { CachedRawStorage, MemoryRawStorage, defaultCachePool, noisePureJsCrypto } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
-import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
+import type { ConnectionGater } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { CircuitRelayTarget } from '../src/delegate-admission.js';
@@ -827,23 +827,6 @@ describe('CadreNode control-network node options', () => {
 
       expect(called).toBe(true);
       expect(denied).toBe(true);
-    });
-
-    it('routes the composed inbound-encrypted hook back into this node', async () => {
-      const options = controlOptions(new CadreNode(createConfig()));
-
-      // The membership admission policy the gater is built around is
-      // `this.admitInboundControlConnection`; on a bare, not-yet-started node its
-      // `admitControlPeerUnconditionally` baseline admits, so the composed hook must
-      // resolve to "not denied". A hook wired to the wrong method (or to no node at
-      // all) denies or throws here. The gater's own composition/fail-open semantics
-      // are owned by membership-connection-gater.spec.ts.
-      const denied = await options.connectionGater?.denyInboundEncryptedConnection?.(
-        { toString: () => 'some-peer-id' } as PeerId,
-        {} as MultiaddrConnection
-      );
-
-      expect(denied).toBe(false);
     });
   });
 

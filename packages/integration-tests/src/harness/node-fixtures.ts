@@ -60,11 +60,19 @@ export interface ControlNodeOpts {
   /**
    * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
    * defaults it to `profile === 'storage'`, so a storage node relays unless a
-   * scenario says otherwise. Pass `false` explicitly to get a storage node whose
-   * gate refuses an unplaceable peer outright, instead of admitting it for relay
-   * and dropping it at the not-reserving deadline.
+   * scenario says otherwise. Pass `false` explicitly for a storage node that
+   * takes no reservations.
    */
   enableRelay?: boolean;
+  /**
+   * Becomes `network.linkRoundTripMs` — the declared link every budget of the node is derived
+   * from (`link-budget.ts`). Left unset the node declares nothing and takes the default (3.5 s
+   * round trip). A scenario that waits out a derived deadline declares a short link so the wait
+   * stays short, as one that must see the provisional-admission deadline close a stranger's
+   * connection does (`relayedRequestBudgetMs`: 4.7 s at 100 ms, 28.5 s at the default).
+   * Declare the same value on every node of one party.
+   */
+  linkRoundTripMs?: number;
   listenAddrs?: string[];
   /**
    * Relay servers to reserve a `/p2p-circuit` slot through — the FAIL-FAST route:
@@ -252,6 +260,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       // value here (it overrides the storage-profile default), and a truthiness
       // test would silently drop it and leave the relay server on.
       ...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
+      ...(opts.linkRoundTripMs !== undefined ? { linkRoundTripMs: opts.linkRoundTripMs } : {}),
       ...(opts.unauthorizedRelayReservationCap !== undefined
         ? { unauthorizedRelayReservationCap: opts.unauthorizedRelayReservationCap } : {}),
       ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),

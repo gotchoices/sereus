@@ -15,9 +15,10 @@
  * `bootPair` still boots A and B DISCONNECTED (no dial yet), but A vouches B
  * (`authorizePeer`) right after B starts — a control-DB write, not a dial — so that
  * A's inbound connection gate (`admitInboundControlConnection`) will later admit B's
- * connect attempt. Without the vouch, A's cold-start carve-out (which admits any
+ * connect attempt outright. Without the vouch, A's cold-start carve-out (which admits any
  * peer while A has zero authorized members) closes the moment this scenario's own
- * `authorizePeer(xPeerId)` write lands, and B's connect would be refused.
+ * `authorizePeer(xPeerId)` write lands, and B's connect would be admitted only
+ * provisionally and closed at the provisional deadline.
  *
  * The connection itself is still formed with a test-only manual `dial()` over the
  * public `getControlNode()` seam (as the sibling convergence scenario does) — that

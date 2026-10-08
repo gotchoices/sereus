@@ -193,9 +193,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 
 			// A standing UNLIMITED invite that is never redeemed. Every metered invite in
 			// this file ends up spent, and the membership connection gate admits a stranger's
-			// NEW dial only while some invite is outstanding — without this door, case 3's
-			// fresh dials could be refused at the connection layer and misread as the
-			// terminal refusal under test.
+			// NEW dial outright only while some invite is outstanding — without this door,
+			// case 3's fresh dials would be admitted only provisionally, and a connection
+			// closed at the provisional deadline could be misread as the terminal refusal
+			// under test.
 			const doorToken = `invite-concurrent-door-${Date.now()}`;
 			await dbA().insertFormationInvite(doorToken, SAPP_ID, ownerPublicKey, ownerSign, {
 				expiresAtMs: Date.now() + YEAR_MS,

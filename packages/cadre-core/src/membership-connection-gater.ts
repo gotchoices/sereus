@@ -1,32 +1,40 @@
 /**
- * Control-network inbound admission gates (defense-in-depth): the
- * encrypted-connection checkpoint and the circuit-relay reservation checkpoint.
+ * Control-network inbound admission gates: the encrypted-connection checkpoint
+ * and the circuit-relay reservation checkpoint.
  *
- * Layer 2 of the membership enforcement chain: the PRIMARY gate is per-stream —
- * the control node's protocol guard (`control-protocol-guard.ts`) refuses a peer
- * that is not an authorized member on every protocol not declared open to
- * strangers, before its handler runs — and the replicated rows an outsider *can*
- * still write are disbelieved at read time. This module adds the opportunistic
- * connection-level layer on top: a
- * peer this node can positively determine is NOT authorized is refused at the
- * encrypted-connection checkpoint, before any protocol negotiation, so a
- * known-nothing outsider is never even in the conversation — EXCEPT on a node
- * that runs the circuit-relay server, where the refusal moves to the
- * relay-reservation checkpoint instead (see "The relay-reservation seam").
+ * The fail-closed layer of the membership enforcement chain is per-stream: the
+ * control node's protocol guard (`control-protocol-guard.ts`) refuses a peer that
+ * is not an authorized member on every protocol not declared open to strangers,
+ * before its handler runs, and the replicated rows an outsider *can* still write
+ * are disbelieved at read time. This module is NOT a stranger boundary on an
+ * enrolled node — outside the bring-up quiet period it admits every inbound
+ * connection. Its jobs are:
  *
- * ## The stranger windows
+ *  - the bring-up quiet period (below), the one state in which it denies;
+ *  - deciding which admitted peers carry a deadline: a peer the policy cannot
+ *    place is admitted PROVISIONALLY, and its connection is closed at the
+ *    deadline unless the policy admits it by then (see "Provisional admission");
+ *  - handing circuit-relay reservations to the reservation policy (see "The
+ *    relay-reservation seam").
  *
- * A libp2p connection gater decides per CONNECTION, before protocols are
- * negotiated, so "allow seed, deny repo" cannot be expressed here — instead the
- * policy admits a connection whenever a legitimate stranger interaction could be
- * riding it, and the protocol guard takes over. Which protocols a NOT-yet-authorized
- * peer may speak is declared once, as the `stranger-open` class of
- * `controlProtocolClasses` (`control-protocol-guard.ts`); this section says when
- * the connection carrying each one is admitted:
+ * Why a stranger's connection is admitted at all: the gate sees only a peer id,
+ * after the encrypted handshake and before any protocol, so it cannot tell an
+ * outsider from a device carrying a cadre invitation this node has not received
+ * yet, or from a sibling whose membership row is still replicating. Refusing
+ * would fail those at the connection; admitting costs a mute connection for a
+ * bounded time, because the protocol guard refuses it every members-only protocol.
+ *
+ * ## Admitted outright
+ *
+ * A peer the policy CAN place gets no deadline. Besides members, configured
+ * infrastructure and an un-enrolled node's whole world (empty anchor or empty
+ * authorized set), that covers the stranger windows: states in which this node
+ * expects a stranger on one of the `stranger-open` protocols declared in
+ * `controlProtocolClasses` (`control-protocol-guard.ts`):
  *
  *  - `/sereus/seed/1.0.0` — enrollment seed delivery.
  *    An owner dials a brand-new node to seed it (the new node has no members
- *    yet, so its gate is inert). The handler's own trust decision is the
+ *    yet, so it admits everyone outright). The handler's own trust decision is the
  *    anchored seed-trust policy — or, on a node started with a claim secret
  *    (`CadreNodeConfig.claim`), the claim-secret policy. Such a node is the one
  *    stranger-facing state that is NOT "admit the connection and let the
@@ -40,14 +48,14 @@
  *  - `/sereus/formation/1.0.0` — cross-party
  *    strand formation via open invitations. Stranger-facing BY DESIGN: the
  *    initiator is another party, and its token is only checkable inside the
- *    protocol. The exemption is therefore keyed on EXPECTATION of a stranger,
- *    not capability to serve one: stranger denial is suspended only while this
- *    node has at least one UNEXPIRED, NOT-FULLY-CONSUMED open invitation
- *    outstanding (`StrandSolicitationService.hasOutstandingInvitation` — the
- *    tokens this process minted or published, plus any still-redeemable
- *    `FormationInvite` row the usage recorder can see). Registering the
- *    responder does NOT suspend it, so every node — each registers one at
- *    `CadreNode.start` — keeps a live gate. The
+ *    protocol. The window is keyed on EXPECTATION of a stranger, not capability
+ *    to serve one: it is open only while this node has at least one UNEXPIRED,
+ *    NOT-FULLY-CONSUMED open invitation outstanding
+ *    (`StrandSolicitationService.hasOutstandingInvitation` — the tokens this
+ *    process minted or published, plus any still-redeemable `FormationInvite`
+ *    row the usage recorder can see). Registering the responder does NOT open
+ *    it, so on every node — each registers one at `CadreNode.start` — a stranger
+ *    with no invitation in play stays on the provisional deadline. The
  *    handler's own trust decision remains the per-token check, which is
  *    strictly finer than this one: a peer admitted here can still be rejected
  *    in-protocol for a bogus or spent token.
@@ -55,67 +63,80 @@
  *    of a cadre invitation at any member machine. Stranger-facing BY DESIGN:
  *    the device is not a member until the redemption writes its row, and its
  *    proof of possession (a signature with the invitation's private key) is
- *    only checkable inside the protocol. Keyed on EXPECTATION of a stranger,
- *    as formation's is: stranger denial is suspended only while this node
- *    holds at least one LIVE `CadreInvite` row (`ControlDatabase.hasLiveCadreInvite`:
- *    not withdrawn, unexpired, uses left, issuer still an owner). The handler
- *    is registered on every started node, and registering suspends nothing.
- *    On a node that runs the relay server, a stranger is admitted for relay
- *    only when no live invitation exists, and outright when one does — as for
- *    formation.
+ *    only checkable inside the protocol. Keyed on expectation, as formation's
+ *    is: open only while this node holds at least one LIVE `CadreInvite` row
+ *    (`ControlDatabase.hasLiveCadreInvite`: not withdrawn, unexpired, uses left,
+ *    issuer still an owner). A member that has not yet received the device's
+ *    row by replication admits the device provisionally instead, seats the row
+ *    from the invitation bundle during the redemption, and so admits it at the
+ *    deadline's re-check.
  *
  * There is one further connection-level carve-out, which is NOT a protocol
- * exemption and needs no stranger window:
+ * window:
  *
  *  - **Announced delegate peers** (`delegate-admission.ts`). A member's strand
  *    node runs as a separate libp2p identity whose peerId no sibling can
  *    recompute. Before starting a strand node, a member's control node
  *    announces that peerId over the already-authenticated strand-addr RPC, and
  *    the receiver holds a short-lived grant for it
- *    (`CadreNode.grantDelegateAdmission`). The grant admits the CONNECTION,
- *    admits the peer's RESERVATION at the seam below (without spending the
- *    unauthorized budget), and nothing else — it is deliberately invisible to
- *    the protocol guard, so a delegate still gets refused on every
+ *    (`CadreNode.grantDelegateAdmission`). The grant admits the CONNECTION
+ *    outright, admits the peer's RESERVATION at the seam below (without
+ *    spending the unauthorized budget), and nothing else — it is deliberately
+ *    invisible to the protocol guard, so a delegate still gets refused on every
  *    members-only protocol.
+ *
+ * ## Provisional admission
+ *
+ * A peer the policy cannot place (`'admit-provisionally'`) gets its connection
+ * and a deadline — {@link PROVISIONAL_ADMISSION_DEADLINE_MS} at the default
+ * declaration; `CadreNode` passes the one derived from its OWN declared link,
+ * because the member is the machine that decides. At the deadline the gate asks
+ * the policy again:
+ *
+ *  - `'admit'` — the peer has since become a member, holds a delegate grant, or
+ *    this node now holds a live invitation (a redeeming device's row was
+ *    seated): the connection stays, and nothing is re-armed;
+ *  - `'admit-provisionally'` — the connection is closed (a bounded graceful
+ *    close, with an abort only as the escalation);
+ *  - the question throws or outlasts the decision deadline — the connection
+ *    stays (see "Fail-open, deliberately").
+ *
+ * A connection that is already gone by then costs no question. One peer may hold
+ * several provisional connections; each deadline re-asks on its own.
+ *
+ * NOTE: the gate does not stop a provisionally admitted stranger from being
+ * counted into this node's FRET ring and control-database cohort by opening or
+ * advertising the party's protocols — FRET and Optimystic decide that from the
+ * protocols libp2p records the peer as serving. Ticket
+ * `stranger-joins-the-control-cohort-by-advertising-protocols` (blocked).
  *
  * ## The relay-reservation seam
  *
  * A circuit-relay reservation is established by the reserving peer DIALING the
- * relay, so at the relay it is an inbound connection — and killing that
+ * relay, so at the relay it rides an inbound connection — and closing that
  * connection kills the reservation. For a genuine member whose `CadrePeer` row
- * has not yet replicated to this node, a connection-level deny here is NOT
- * self-healing the way a data connection's is: an outbound reconcile dial
- * re-establishes a data link, but no outbound dial can grant the REMOTE peer a
- * reservation, and a relay-only peer has no address of its own to dial back —
- * the reservation IS its address. Boot ordering makes the window ordinary (a
- * node's circuit listener runs inside `libp2p.start()`, before its own row
- * could have replicated anywhere), and a stalled replication makes it
- * unbounded. So the relay would be answering a RELAY question ("may this peer
- * use my forwarding capacity?") with a MEMBERSHIP answer, at a checkpoint where
- * a wrong answer is unrecoverable.
+ * has not yet replicated to this node that would NOT be self-healing the way a
+ * data connection's close is: an outbound reconcile dial re-establishes a data
+ * link, but no outbound dial can grant the REMOTE peer a reservation, and a
+ * relay-only peer has no address of its own to dial back — the reservation IS
+ * its address. Boot ordering makes the window ordinary (a node reserves at the
+ * end of its own `start()`, before its row could have replicated anywhere), and
+ * a stalled replication makes it unbounded. So the reservation is decided on its
+ * own terms, not by the connection's:
  *
- * On a node whose relay server is enabled the two questions are separated:
- *
- *  - The policy returns `'admit-for-relay'` instead of `'deny'`, and the
- *    connection is ADMITTED. The protocol guard still refuses such a peer every
- *    members-only protocol, so it gains the libp2p plumbing (identify, ping, the
- *    relay hop protocol) and the stranger-open protocols, nothing else.
- *  - The reservation itself is decided at libp2p's
- *    `denyInboundRelayReservation` hook (the circuit-relay server consults it
- *    per RESERVE request): the policy admits members, delegates and configured
- *    infra outright, and admits peers it cannot place only within a bounded
- *    budget ({@link UnauthorizedReservationBudget}) — a member whose row is in
- *    flight always finds a slot under any sane cap, while outsiders cannot
- *    annex the party's relay capacity. COUNT and lifetime are the only bounds
- *    on such a peer: a party-run relay forwards without libp2p's per-connection
- *    data and duration limit by default (`relay-server.ts`), so what a granted
- *    slot carries is not capped.
- *  - An `'admit-for-relay'` connection that is NOT reserving is dropped: it has
- *    {@link RELAY_ADMISSION_RESERVE_DEADLINE_MS} to get a reservation ADMITTED
- *    at that hook, after which the gate CLOSES the underlying connection so
- *    both ends let go of the socket. The guarantee above thus weakens on
- *    relay-enabled nodes from "never in the conversation" to "in it briefly,
- *    and can speak nothing".
+ *  - It is decided at libp2p's `denyInboundRelayReservation` hook (the
+ *    circuit-relay server consults it per RESERVE request): the policy admits
+ *    members, delegates and configured infra outright, and admits peers it
+ *    cannot place only within a bounded budget
+ *    ({@link UnauthorizedReservationBudget}) — a member whose row is in flight
+ *    always finds a slot under any sane cap, while outsiders cannot annex the
+ *    party's relay capacity. COUNT and lifetime are the only bounds on such a
+ *    peer: a party-run relay forwards without libp2p's per-connection data and
+ *    duration limit by default (`relay-server.ts`), so what a granted slot
+ *    carries is not capped.
+ *  - An ADMITTED reservation disarms every provisional deadline the peer holds
+ *    here, so its connection outlives the deadline even while the peer is still
+ *    unplaced. A refused one disarms nothing.
  *
  * The deadline clears on reservation ADMISSION, not on the reservation's own
  * success: this gate cannot observe the server-side `reserve()` outcome, so a
@@ -129,10 +150,10 @@
  * (`control-protocol-guard.ts`), one seam that wraps every handler at dispatch,
  * with a protocol nobody classed treated as members-only. The two layers
  * complement, not duplicate: this connection gate is fail-open over a live DB
- * read (deny only on positive proof of an outsider), the protocol guard is
+ * read and decides only how long a connection lasts, the protocol guard is
  * fail-closed and has NO stranger carve-outs — a live invitation admits a
- * stranger's connection for redemption, yet its repo and FRET streams are still
- * refused.
+ * stranger's connection outright for redemption, yet its repo and FRET streams
+ * are still refused.
  *
  * ## The bring-up quiet period
  *
@@ -168,50 +189,59 @@
  *
  * ## Fail-open, deliberately
  *
- * Outside that window this layer only ever denies on a POSITIVE determination of
- * "unauthorized outsider while no stranger path is open". Any error, missing
- * dependency, or ambiguous state admits the connection (and the reservation) and
- * defers to the fail-closed stream gates — a DB hiccup must not partition a
- * legitimate cadre.
+ * Outside that window this layer never denies, and it closes a provisional
+ * connection only on a positive answer that the peer is still unplaced. Any
+ * error, missing dependency, timeout or ambiguous state admits the connection
+ * outright (and the reservation), or keeps a provisional connection at its
+ * deadline, and defers to the fail-closed stream gates — a DB hiccup must not
+ * partition a legitimate cadre.
  */
 
 import debug from 'debug';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
 import { withDeadline } from './control-stream.js';
 import { PARTY_RELAY_RESERVATION_TTL_MS } from './relay-server.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, relayAdmissionReserveDeadlineMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:connection-gater');
 
 /**
- * How long an `'admit-for-relay'` connection may exist without a relay
- * reservation being ADMITTED at the `denyInboundRelayReservation` hook, after
- * which the gate closes the underlying connection. A reserving client asks for
- * its slot immediately after the connection upgrades (`relay-reservation.ts`
- * dials and requests in one drive; a strand node's configured circuit listener
- * does the same from inside its own `listen()`), so a connection idle past this
- * deadline is not reserving.
+ * How long a provisionally admitted connection lasts before the gate re-asks the
+ * policy and closes it unless the peer is admissible by then (see the module
+ * doc's "Provisional admission").
  *
- * Derived from the link ({@link relayAdmissionReserveDeadlineMs}): one link round trip for the
- * request to arrive plus one admission decision on it. This is the value at the default
- * declaration; `CadreNode` passes the one derived from the relay's OWN declaration, because the
- * relay is the machine that decides.
+ * {@link relayedRequestBudgetMs}: 28 500 ms at the default declaration. The
+ * longest exchange a stranger legitimately starts on a fresh connection is a
+ * cadre invitation redemption, and the device abandons each member address after
+ * that same budget of its own declared link (`redeemAtMembers`): it covers the
+ * dial, the request, the member's catch-up push, the seat and the redemption. So
+ * a member never cuts an exchange the device is still waiting on, and a
+ * reservation request lands well inside it. This is the value at the default
+ * declaration; `CadreNode` passes the one derived from its OWN declaration.
+ *
+ * NOTE: accepted tradeoff — any stranger can hold a mute connection to any
+ * enrolled member for this long, weighed against letting a device redeem an
+ * invitation at a member that has not yet received its row (maintainer,
+ * 2026-10-07, plan `cadre-invite-redeemable-before-the-row-replicates`). It can
+ * open only stranger-open and transport streams (the protocol guard), and
+ * libp2p's connection-manager limits bound how many it holds. Revisit if stranger
+ * connections show up as load on a member.
  */
-export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = relayAdmissionReserveDeadlineMs();
+export const PROVISIONAL_ADMISSION_DEADLINE_MS = relayedRequestBudgetMs();
 
 /**
- * Bound on the graceful close of an expired relay-only connection. It exists
+ * Bound on the graceful close of an expired provisional connection. It exists
  * because `AbstractMultiaddrConnection.close()` awaits an `idle`/`drain` event
  * when the connection still has unsent bytes, and that wait has no timeout of
  * its own — an unsignalled one never ends. This gate writes nothing to a
- * stranger, so the wait is not reachable today; the bound is here so a timer
+ * stranger, so the wait is not reachable from here; the bound is here so a timer
  * callback can never hold an unending await.
  *
  * Applied through {@link withDeadline}, not `AbortSignal.timeout`: the latter is
  * not reliably present on React Native/Hermes, which loads this same module.
  */
 // eslint-disable-next-line no-restricted-syntax -- link-independent: bounds a local connection close inside a timer callback, and expiry aborts the connection instead
-export const RELAY_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
+export const PROVISIONAL_ADMISSION_CLOSE_TIMEOUT_MS = 2_000;
 
 /**
  * Default cap on concurrent relay reservations held by peers the membership
@@ -235,15 +265,16 @@ export const MAX_UNAUTHORIZED_RELAY_RESERVATIONS = 8;
 /**
  * The connection-level outcome of the admission policy:
  *  - `'admit'` — a peer with a legitimate claim on the connection (member,
- *    delegate, infra, open stranger window, or any fail-open state).
- *  - `'deny'` — positively an outsider, and this node runs no relay server, so
- *    the connection can carry nothing legitimate.
- *  - `'admit-for-relay'` — positively an outsider (or an unreplicated member —
- *    indistinguishable), but this node runs the relay server: admit the
- *    connection so a reservation can be asked for, decide at the reservation
- *    seam, and drop the connection if no reservation is admitted in time.
+ *    delegate, infra, open stranger window, or any fail-open state); no deadline.
+ *  - `'admit-provisionally'` — a peer the policy cannot place (an outsider, a
+ *    device whose invitation row this node does not hold yet, or a member whose
+ *    row is still replicating — indistinguishable here): admit the connection,
+ *    and at the deadline ask again and close it unless the answer is `'admit'`.
+ *
+ * There is no deny: the gate's only denial is the bring-up quiet period, which
+ * is not a judgement of the peer.
  */
-export type InboundConnectionVerdict = 'admit' | 'deny' | 'admit-for-relay';
+export type InboundConnectionVerdict = 'admit' | 'admit-provisionally';
 
 /**
  * The admission decisions the gate defers to — implemented by
@@ -254,7 +285,10 @@ export type InboundConnectionVerdict = 'admit' | 'deny' | 'admit-for-relay';
  * composition/fail-open behavior is unit-testable without a full node.
  */
 export interface InboundAdmissionPolicy {
-  /** Verdict on an inbound encrypted connection from this peer. */
+  /**
+   * Verdict on an inbound encrypted connection from this peer. Asked again at a
+   * provisional connection's deadline, so it must answer from current state.
+   */
   admitInbound(remotePeerId: string): Promise<InboundConnectionVerdict> | InboundConnectionVerdict;
   /** Should this peer be granted a circuit-relay reservation slot? */
   admitRelayReservation(remotePeerId: string): Promise<boolean> | boolean;
@@ -343,27 +377,30 @@ export class UnauthorizedReservationBudget {
  * membership — this node decides for itself who to talk to.
  *
  * Composition semantics: every hook of `base` is preserved as-is; on the three
- * composed hooks a deny from EITHER the base gater or the admission policy
- * denies. A policy error — or a decision slower than `decisionTimeoutMs` —
- * takes the fail-open outcome (connection admitted / reservation admitted, see
- * module doc); the base gater's verdict is still honored first.
+ * composed hooks a deny from the base gater denies, and so does the quiet
+ * period. The admission policy never denies a connection. A policy error — or a
+ * decision slower than `decisionTimeoutMs` — takes the fail-open outcome
+ * (connection admitted outright / reservation admitted, see module doc); the
+ * base gater's verdict is still honored first.
  *
- * An `'admit-for-relay'` verdict admits the connection and arms a
- * `reserveDeadlineMs` timer against it; the timer is disarmed when a
- * reservation for that peer is ADMITTED at the reservation hook, and closes the
- * underlying `MultiaddrConnection` when it fires first.
+ * An `'admit-provisionally'` verdict admits the connection and arms a
+ * `provisionalDeadlineMs` timer against it. When the timer fires the policy is
+ * asked again, and the underlying `MultiaddrConnection` is closed unless it now
+ * answers `'admit'`; a reservation for that peer ADMITTED at the reservation
+ * hook disarms the timer first.
  *
  * NOTE: `base` is spread, so a gater passed as a CLASS INSTANCE would lose its
  * prototype methods; every caller in this repo (and libp2p's own default)
  * supplies a plain object. If a class-based gater ever shows up, delegate
  * per-hook instead of spreading.
  *
- * Deny timing, as observed by the denied dialer: noise negotiates the muxer in
- * the security handshake's early data, so the DIALER's upgrade may complete
- * (its `dial()` resolves) before this receiver-side hook runs. The deny then
- * aborts the receiver's upgrade — the receiver never registers the connection
- * and never creates its muxer, so no protocol can ever be negotiated — and the
- * dialer sees its "open" connection close moments later.
+ * Deny timing, as observed by the denied dialer (a quiet-period or base-gater
+ * deny): noise negotiates the muxer in the security handshake's early data, so
+ * the DIALER's upgrade may complete (its `dial()` resolves) before this
+ * receiver-side hook runs. The deny then aborts the receiver's upgrade — the
+ * receiver never registers the connection and never creates its muxer, so no
+ * protocol can ever be negotiated — and the dialer sees its "open" connection
+ * close moments later.
  *
  * Control node only: strand cohort nodes legitimately connect cross-party
  * peers, so cadre membership never gates them. An OPEN strand's node receives
@@ -376,9 +413,12 @@ export function createMembershipConnectionGater(
   policy: InboundAdmissionPolicy,
   base?: ConnectionGater,
   decisionTimeoutMs: number = ADMISSION_DECISION_TIMEOUT_MS,
-  reserveDeadlineMs: number = RELAY_ADMISSION_RESERVE_DEADLINE_MS
+  provisionalDeadlineMs: number = PROVISIONAL_ADMISSION_DEADLINE_MS
 ): ConnectionGater {
-  const pendingReservations = new PendingReserveDeadlines(reserveDeadlineMs);
+  const decideInbound = (remotePeerId: string): Promise<InboundConnectionVerdict> => decideWithinDeadline(
+    () => policy.admitInbound(remotePeerId), 'admit', decisionTimeoutMs, `admitInbound(${remotePeerId})`
+  );
+  const provisional = new ProvisionalAdmissions(provisionalDeadlineMs, decideInbound);
   const quiet = (): boolean => policy.bringUpInFlight?.() ?? false;
   return {
     ...base,
@@ -403,18 +443,15 @@ export function createMembershipConnectionGater(
       const remotePeerId = peerId.toString();
       let verdict: InboundConnectionVerdict;
       try {
-        verdict = await decideWithinDeadline(
-          () => policy.admitInbound(remotePeerId), 'admit', decisionTimeoutMs, `admitInbound(${remotePeerId})`
-        );
+        verdict = await decideInbound(remotePeerId);
       } catch (error) {
         log('admitInbound threw for %s — admitting (fail-open; stream gates decide): %o', remotePeerId, error);
         return false;
       }
-      if (verdict === 'admit-for-relay') {
-        pendingReservations.arm(remotePeerId, maConn);
-        return false;
+      if (verdict === 'admit-provisionally') {
+        provisional.arm(remotePeerId, maConn);
       }
-      return verdict === 'deny';
+      return false;
     },
     denyInboundRelayReservation: async (peerId: PeerId): Promise<boolean> => {
       if (await base?.denyInboundRelayReservation?.(peerId)) {
@@ -431,7 +468,7 @@ export function createMembershipConnectionGater(
         admitted = true;
       }
       if (admitted) {
-        pendingReservations.disarm(remotePeerId);
+        provisional.disarm(remotePeerId);
       }
       return !admitted;
     }
@@ -469,20 +506,19 @@ export async function decideWithinDeadline<T>(
   }
 }
 
-/** One armed not-reserving deadline: the connection it will close, and its timer. */
-interface PendingReserveDeadline {
+/** One armed provisional deadline: the connection it may close, and its timer. */
+interface ProvisionalAdmission {
   maConn: MultiaddrConnection;
   timer: ReturnType<typeof setTimeout>;
 }
 
 /**
- * The not-reserving deadlines for `'admit-for-relay'` connections, keyed by
- * remote peerId (a Set per peer — one peer can hold several in-flight
- * connections). `arm` starts a timer that closes the connection; `disarm`
- * (called when a reservation for that peer is admitted) cancels every pending
- * timer for the peer. Timers are unref'd so an armed deadline never holds a
- * process open, and a timer that fires against an already-closed connection is
- * a no-op (`close()` returns at once on any status but `open`).
+ * The deadlines of `'admit-provisionally'` connections, keyed by remote peerId
+ * (a Set per peer — one peer can hold several in-flight connections). `arm`
+ * starts a timer that re-asks the policy and closes the connection unless it now
+ * admits; `disarm` (called when a reservation for that peer is admitted) cancels
+ * every pending deadline for the peer, one whose question is already out
+ * included. Timers are unref'd so an armed deadline never holds a process open.
  *
  * Disarming is final for the connections it cancelled: a peer that reserved
  * once and then lets its reservation lapse keeps a mute connection (the
@@ -490,15 +526,18 @@ interface PendingReserveDeadline {
  * side closes it. Bounded — only a peer the reservation policy already admitted
  * can reach that state, so unplaceable peers are bounded by the budget cap.
  */
-class PendingReserveDeadlines {
-  private readonly byPeer = new Map<string, Set<PendingReserveDeadline>>();
+class ProvisionalAdmissions {
+  private readonly byPeer = new Map<string, Set<ProvisionalAdmission>>();
 
-  constructor(private readonly deadlineMs: number) {}
+  constructor(
+    private readonly deadlineMs: number,
+    private readonly decide: (remotePeerId: string) => Promise<InboundConnectionVerdict>
+  ) {}
 
   arm(remotePeerId: string, maConn: MultiaddrConnection): void {
-    const entry: PendingReserveDeadline = {
+    const entry: ProvisionalAdmission = {
       maConn,
-      timer: setTimeout(() => this.expire(remotePeerId, entry), this.deadlineMs)
+      timer: setTimeout(() => void this.expire(remotePeerId, entry), this.deadlineMs)
     };
     (entry.timer as { unref?: () => void }).unref?.();
     let entries = this.byPeer.get(remotePeerId);
@@ -507,7 +546,7 @@ class PendingReserveDeadlines {
       this.byPeer.set(remotePeerId, entries);
     }
     entries.add(entry);
-    log('Admitted %s for relay only — dropping the connection unless a reservation is admitted within %dms', remotePeerId, this.deadlineMs);
+    log('Admitted %s provisionally — closing the connection in %dms unless it is admissible by then', remotePeerId, this.deadlineMs);
   }
 
   disarm(remotePeerId: string): void {
@@ -521,18 +560,48 @@ class PendingReserveDeadlines {
     }
   }
 
-  private expire(remotePeerId: string, entry: PendingReserveDeadline): void {
+  private async expire(remotePeerId: string, entry: ProvisionalAdmission): Promise<void> {
+    if (entry.maConn.status !== 'open') {
+      this.release(remotePeerId, entry);
+      return;
+    }
+    const verdict = await this.recheck(remotePeerId);
+    // False when a reservation admitted while the question was out disarmed this deadline.
+    if (!this.release(remotePeerId, entry)) {
+      return;
+    }
+    if (verdict === 'admit') {
+      log('%s is admissible at its provisional deadline — keeping the connection', remotePeerId);
+      return;
+    }
+    log('Provisional admission expired for %s — still unplaced after %dms, closing the connection', remotePeerId, this.deadlineMs);
+    await this.drop(remotePeerId, entry.maConn);
+  }
+
+  /** The policy's answer at the deadline; a throw keeps the connection (fail-open). */
+  private async recheck(remotePeerId: string): Promise<InboundConnectionVerdict> {
+    try {
+      return await this.decide(remotePeerId);
+    } catch (error) {
+      log('admitInbound threw for %s at its provisional deadline — keeping the connection (fail-open): %o', remotePeerId, error);
+      return 'admit';
+    }
+  }
+
+  /** Forget `entry`; false when a `disarm` already took it. */
+  private release(remotePeerId: string, entry: ProvisionalAdmission): boolean {
     const entries = this.byPeer.get(remotePeerId);
-    entries?.delete(entry);
-    if (entries?.size === 0) {
+    if (!entries?.delete(entry)) {
+      return false;
+    }
+    if (entries.size === 0) {
       this.byPeer.delete(remotePeerId);
     }
-    log('Relay-only admission expired for %s — no reservation admitted within %dms, closing the connection', remotePeerId, this.deadlineMs);
-    void this.drop(remotePeerId, entry.maConn);
+    return true;
   }
 
   /**
-   * End an expired relay-only connection: a bounded graceful close, with
+   * End an expired provisional connection: a bounded graceful close, with
    * `abort()` only as the escalation. The order cannot be reversed — `abort()`
    * marks the connection `aborted`, and `close()` returns immediately on any
    * status that is not `open`, so aborting first would make the close a silent
@@ -542,13 +611,13 @@ class PendingReserveDeadlines {
   private async drop(remotePeerId: string, maConn: MultiaddrConnection): Promise<void> {
     try {
       await withDeadline(
-        RELAY_ADMISSION_CLOSE_TIMEOUT_MS,
-        `relay-only close for ${remotePeerId}`,
+        PROVISIONAL_ADMISSION_CLOSE_TIMEOUT_MS,
+        `provisional close for ${remotePeerId}`,
         (signal) => maConn.close({ signal })
       );
       return;
     } catch (error) {
-      log('Closing the expired relay-only connection from %s failed — aborting: %o', remotePeerId, error);
+      log('Closing the expired provisional connection from %s failed — aborting: %o', remotePeerId, error);
     }
     // NOTE: this fallback cannot actually free a WebSocket. `@libp2p/websockets`'
     // `sendReset()` calls `websocket.close(1006)`, and 1006 is a reserved code
@@ -560,9 +629,9 @@ class PendingReserveDeadlines {
     // far as this layer can go. Revisit — drop the fallback, or go back to a
     // plain `abort()` — once that transport sends a legal reset code.
     try {
-      maConn.abort(new Error(`relay-only admission expired: no relay reservation admitted within ${this.deadlineMs}ms`));
+      maConn.abort(new Error(`provisional admission expired: still unplaced after ${this.deadlineMs}ms`));
     } catch (error) {
-      log('Aborting the expired relay-only connection from %s threw: %o', remotePeerId, error);
+      log('Aborting the expired provisional connection from %s threw: %o', remotePeerId, error);
     }
   }
 }

@@ -3,6 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlNetworkSeed } from '../src/types.js';
+import type { InboundConnectionVerdict } from '../src/membership-connection-gater.js';
 import {
   MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb,
   type Owner, type PeerRow, type FakeControlDatabase
@@ -41,9 +42,9 @@ function refresh(node: CadreNode): Promise<void> {
   }).refreshAuthorizedControlPeers('test');
 }
 
-function admitConnection(node: CadreNode, remotePeerId: string): Promise<'admit' | 'deny' | 'admit-for-relay'> {
+function admitConnection(node: CadreNode, remotePeerId: string): Promise<InboundConnectionVerdict> {
   return (node as unknown as {
-    admitInboundControlConnection(remotePeerId: string): Promise<'admit' | 'deny' | 'admit-for-relay'>;
+    admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict>;
   }).admitInboundControlConnection(remotePeerId);
 }
 

@@ -41,7 +41,7 @@ import { waitUntil } from './wait-utils.js';
 
 /** Owner self-publish wait — same budget the trio and late-join fixtures use. */
 const OWNER_SELF_PUBLISH_TIMEOUT_MS = 20_000;
-/** Enrollment's settled-connection poll — the gate denies after upgrade (see below). */
+/** Enrollment's settled-connection poll — the gate decides after upgrade (see below). */
 const ENROLL_CONNECT_TIMEOUT_MS = 45_000;
 /** Cohort barrier budget — `bootConnectedPair`'s 30 s, which covers ring warm-up 6×.
  *  NOTE: these three budgets are fixed for every spec — loopback bring-up leaves them
@@ -228,7 +228,7 @@ async function ownerGenesis(owner: CadreNode, key: PrivateKey, label: string): P
 /**
  * Enroll one already-started member over the production membership path:
  * `createSeed` → `applySeed`, then poll for the SETTLED outbound connection — the
- * owner's gate denies after the dialer's upgrade completes, so the dial's return
+ * owner's gate decides after the dialer's upgrade completes, so the dial's return
  * value proves nothing. The vouch happened before the member started (see caller).
  */
 async function enrollMember(

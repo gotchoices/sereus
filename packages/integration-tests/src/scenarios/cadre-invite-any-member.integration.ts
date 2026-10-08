@@ -29,14 +29,11 @@
  *
  * The invitation names A's own address first and then M's; A is stopped when P redeems, so
  * P's first dial fails and it moves on. The scenario waits until M holds the invitation's row
- * before A stops: a member's connection gate admits a stranger only while it holds a live row
- * (`decide-cadre-invite-redeemed-before-the-row-replicates`).
+ * before A stops.
  *
- * The withdrawal arm relies on M running the circuit-relay server (the storage-profile
- * default): with no live invitation held, M's gate admits Q's connection for relay only and
- * drops it at the not-reserving deadline, which is long enough for the redemption exchange to
- * be answered. On a member with the relay server off, Q would be refused at the connection
- * instead and this arm would see `CadreInviteUnreachableError`.
+ * In the withdrawal arm M holds no live invitation, so its connection gate admits Q only
+ * provisionally; the redemption exchange is answered, and refused by name, well inside the
+ * provisional deadline.
  */
 
 import { describe, it, expect } from 'vitest';

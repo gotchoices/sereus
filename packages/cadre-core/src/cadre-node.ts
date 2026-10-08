@@ -110,7 +110,7 @@ import {
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayAdmissionReserveDeadlineMs, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, pendingJoinId, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
@@ -637,10 +637,8 @@ export class CadreNode implements SAppIdLookup {
    * Does this node's CONTROL libp2p run the circuit-relay server, and with which
    * init? Resolved once from `network` and `profile` by the same function every
    * strand node's build uses (`relay-server.ts`). Read by
-   * {@link buildControlNodeOptions} (which configures the server from it),
-   * {@link admitInboundControlConnection} (whose deny/admit-for-relay branch must
-   * agree with whether a reservation is even servable here), and the
-   * unauthorized budget above (whose TTL is the server's).
+   * {@link buildControlNodeOptions} (which configures the server from it) and
+   * the unauthorized budget above (whose TTL is the server's).
    */
   private readonly relayServer: ResolvedRelayServer;
 
@@ -2122,9 +2120,11 @@ export class CadreNode implements SAppIdLookup {
       // `announceAddrs` replaces the advertised set (see warnIfAnnounceAddrsDiscardRelay).
       ...resolveAnnounceAddrs(network),
       // The CONTROL node composes the membership admission gate onto any
-      // caller-supplied gater (deny from either wins on the inbound-encrypted
-      // and relay-reservation hooks; all other hooks pass through). Strand
-      // cohort nodes keep the raw configured gater (see
+      // caller-supplied gater (a deny from the caller's wins on every composed
+      // hook; the membership policy refuses reservations, never connections,
+      // and puts an unplaced peer's connection on the provisional deadline,
+      // derived from THIS node's declared link because this node decides).
+      // Strand cohort nodes keep the raw configured gater (see
       // strand-instance-manager.ts) — their peers are legitimately
       // cross-party, so cadre membership must not gate them.
       connectionGater: createMembershipConnectionGater(
@@ -2135,7 +2135,7 @@ export class CadreNode implements SAppIdLookup {
         },
         network?.connectionGater,
         ADMISSION_DECISION_TIMEOUT_MS,
-        relayAdmissionReserveDeadlineMs(network?.linkRoundTripMs)
+        relayedRequestBudgetMs(network?.linkRoundTripMs)
       ),
       // Fail-closed per-stream authorization for the four Optimystic control-DB
       // protocols — the members-only layer the connection gater's stranger
@@ -2167,15 +2167,15 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Decide whether an inbound CONTROL-network connection from `remotePeerId`
-   * should be admitted — the policy behind the connection gater wired in
-   * {@link createControlNode}. Deny only on a positive "unauthorized outsider
-   * while no stranger path is open" determination; everything ambiguous admits
-   * and defers to the fail-closed per-stream gates (see
+   * Decide how an inbound CONTROL-network connection from `remotePeerId` is
+   * admitted — the policy behind the connection gater wired in
+   * {@link createControlNode}. Every connection is admitted; the answer decides
+   * only whether it carries the provisional deadline (see
    * `membership-connection-gater.ts` for the layer's rationale and the
-   * stranger-open protocol allowlist).
+   * stranger-open protocol allowlist). Asked once when the connection arrives
+   * and again at a provisional connection's deadline.
    *
-   * Returns `'admit'` when ANY of:
+   * Returns `'admit'` (no deadline) when ANY of:
    *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
    *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
    *     configured bootstrap/relay infrastructure);
@@ -2193,44 +2193,39 @@ export class CadreNode implements SAppIdLookup {
    *     initiator is another party's peer by design and its token is only
    *     checkable inside the protocol, so the gate asks the coarser question
    *     "does this node expect a stranger at all?". REGISTERING the responder
-   *     does not suspend stranger denial: every node registers one at
-   *     {@link start}, and registering mints no invitation; or
+   *     does not count: every node registers one at {@link start}, and
+   *     registering mints no invitation; or
    *  6. a LIVE cadre invitation exists — a `CadreInvite` row this node holds
    *     that is not withdrawn, unexpired, has uses left and whose issuer is
    *     still an owner (`ControlDatabase.hasLiveCadreInvite`). The device that
    *     redeems it is a stranger until the redemption writes its row, and its
    *     proof of possession is only checkable inside `/sereus/cadre-invite/1.0.0`;
    *     same reasoning as check 5, and the same expectation-of-a-stranger key.
-   *     NOTE: keyed on the row being HELD here, so a member that has not yet
-   *     received the row by replication denies the device although the bundle
-   *     carries the row (`createCadreInvitation`); the device's dial fails and it
-   *     tries the next address. Whether the gate should admit such a device is
-   *     the blocked ticket `decide-cadre-invite-redeemed-before-the-row-replicates`.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
    * checks 1-2 are in-memory, 3/4 share one control-DB read, and only a peer
-   * already on the deny path reaches check 5's and 6's invitation lookups.
+   * that is otherwise headed for a provisional admission reaches check 5's and
+   * 6's invitation lookups.
    *
-   * Caveats of check 5, both self-healing:
+   * Caveats of check 5:
    *  - the in-memory mint registry dies with the process, so after a restart
    *    only invitations persisted as `FormationInvite` rows still hold the
-   *    exemption open (re-mint otherwise);
+   *    window open (re-mint otherwise);
    *  - a peer holding a token whose `FormationInvite` row has not replicated to
-   *    this node yet is denied even though the formation handler would have
-   *    accepted it, exactly like the unreplicated-membership-row case below.
+   *    this node yet is admitted only provisionally, so its connection is closed
+   *    at the deadline unless the row has landed by then.
    *
-   * When every check falls through, the verdict depends on whether this node
-   * runs the circuit-relay server ({@link relayServer}): without one,
-   * `'deny'`; with one, `'admit-for-relay'` — a circuit-relay reservation is
-   * established by the reserving peer DIALING the relay, so a connection deny
-   * here kills the reservation, and that deny is NOT self-healing: an outbound
-   * reconcile re-dial re-establishes a data link, but no outbound dial can
-   * grant the remote peer a reservation, and a relay-only peer has no address
-   * of its own to dial back — the reservation IS its address. The gater admits
-   * such a connection, decides the reservation via
-   * {@link admitControlRelayReservation}, and drops the connection if no
-   * reservation is admitted in time (see `membership-connection-gater.ts` →
-   * "The relay-reservation seam").
+   * When every check falls through: `'admit-provisionally'`, on every node,
+   * relay server or not. The gate sees only a peer id, so it cannot tell an
+   * outsider from a device whose invitation row this node has not received yet
+   * (it redeems here by seating the row from its bundle, after which check 6
+   * admits) or from a sibling whose membership row is still replicating (check 4
+   * admits once it lands; if it has not landed by the deadline, the connection
+   * is closed and either side's next reconcile dial re-forms it, since outbound
+   * dials are never gated). The protocol guard refuses all of them every
+   * members-only protocol meanwhile. A circuit-relay reservation admitted by
+   * {@link admitControlRelayReservation} disarms the deadline (see
+   * `membership-connection-gater.ts` → "The relay-reservation seam").
    *
    * NOTE: check 3/4 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, and this
@@ -2239,23 +2234,15 @@ export class CadreNode implements SAppIdLookup {
    * materialized {@link authorizedControlPeers} snapshot instead.
    * NOTE: checks 5 and 6 add two more control reads (`hasOutstandingFormationInvite`,
    * `hasLiveCadreInvite`) for a stranger with no locally minted invitation in play, on
-   * every node now that every node runs both responders — a relay-enabled storage node
-   * included. If stranger connections to such a node ever arrive fast enough for those
-   * reads to show, cache the answers for a few seconds.
-   * NOTE: on a relay-DISABLED node, a sibling whose membership row has not yet
-   * replicated here is denied until the row converges (typically via the
-   * owner); either side's next outbound reconcile dial (outbound is never
-   * gated) re-establishes the DATA link — self-healing for data, visible as a
-   * transient deny. That self-healing story never covered a reservation, which
-   * is exactly why the relay-enabled path above exists.
+   * every node, and a provisional connection's deadline runs the whole decision once
+   * more. If stranger connections ever arrive fast enough for those reads — on arrival
+   * or at the deadline — to show, cache the answers for a few seconds.
    */
   private async admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict> {
     // NOTE: a node waiting to be claimed (isAwaitingClaim) lands on this empty-anchor
     // admission too, so a stranger can hold an idle, mute connection to it for as long
-    // as it waits on a public address; if that ever shows up as a resource problem, arm
-    // a drop deadline for unclaimed-node admissions. Not 'admit-for-relay': that
-    // deadline clears only on an admitted reservation, which an unclaimed node refuses,
-    // so it would also cut the claimant's connection after its claim.
+    // as it waits on a public address; if that ever shows up as a resource problem, put
+    // unclaimed-node admissions on the provisional deadline too.
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return 'admit';
     }
@@ -2280,12 +2267,8 @@ export class CadreNode implements SAppIdLookup {
       log('admitInboundControlConnection: outstanding-invitation check threw for %s — admitting (fail-open): %o', remotePeerId, error);
       return 'admit';
     }
-    if (this.relayServer.enabled) {
-      log('admitInboundControlConnection: admitting %s FOR RELAY ONLY — not an authorized member and no enrollment path open; the gater drops the connection unless a reservation is admitted', remotePeerId);
-      return 'admit-for-relay';
-    }
-    log('admitInboundControlConnection: DENYING inbound from %s — not an authorized member and no enrollment path open', remotePeerId);
-    return 'deny';
+    log('admitInboundControlConnection: %s is not an authorized member and no stranger window is open — admitting provisionally', remotePeerId);
+    return 'admit-provisionally';
   }
 
   /**
@@ -8325,13 +8308,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * The row commits locally and replicates like any other control write; minted while
    * alone (a phone with no connection), it reaches the other members through the
-   * peer-join block catch-up on the next connection. Until a member holds the row, that
-   * member's connection gate denies the device ({@link admitInboundControlConnection}
-   * check 6 admits a stranger only while a live `CadreInvite` row is held locally), so the
-   * device's dial of it fails and it moves to the next address; the bundle's copy of the
-   * row is seated only at a member whose gate is already open (no vouched member yet, or
-   * another live invitation). See the blocked ticket
-   * `decide-cadre-invite-redeemed-before-the-row-replicates`.
+   * peer-join block catch-up on the next connection. The device can redeem at any member it
+   * reaches meanwhile: a member that does not hold the row yet admits the device's connection
+   * provisionally ({@link admitInboundControlConnection}) and seats the row from the bundle.
    *
    * @throws when no owner key is wired, the anchor is empty, `uses` is not a positive
    *   integer, or neither this machine nor any other member has an address.

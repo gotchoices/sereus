@@ -158,17 +158,17 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 
 			// ── The public routine the timer would have called — not a raw dial().
 			//    Polled rather than called exactly once: if B's own row has not yet
-			//    replicated to C, C's `admitInboundControlConnection` denies and the
-			//    connection dies moments after `dial()` resolves, so a single pass can
-			//    lose that race. Each iteration is a real production reconcile pass,
-			//    run with B's dials to C allowed for exactly that pass.
+			//    replicated to C, C admits the connection only provisionally and closes
+			//    it at the provisional deadline unless the row has landed by then, so a
+			//    single pass can lose that race. Each iteration is a real production
+			//    reconcile pass, run with B's dials to C allowed for exactly that pass.
 			await waitUntil(
 				async () => {
 					if (hasOutboundTo(B, cPeerId)) return true;
 					await dialsToC.reconcile();
-					// The membership gater denies AFTER the dialer's upgrade completes,
-					// so a refused dial looks momentarily successful — re-check on the
-					// next poll rather than accepting this pass's immediate state.
+					// A connection the gate closes was open first, so a lost dial looks
+					// momentarily successful — re-check on the next poll rather than
+					// accepting this pass's immediate state.
 					return false;
 				},
 				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'an explicit reconcile pass dials C' }

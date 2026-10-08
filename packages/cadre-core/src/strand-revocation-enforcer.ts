@@ -83,23 +83,23 @@
  *
  * ## What transfers from the control gater (`membership-connection-gater.ts`)
  *
- * Transfers: the two-layer shape (fail-closed per-stream gate as PRIMARY, an
- * opportunistic connection-level deny on top), the synchronous in-memory
+ * Transfers: the two-layer shape (fail-closed per-stream gate as PRIMARY, a
+ * connection-level layer on top), the synchronous in-memory
  * snapshot judged by the stream gate (a live DB read inside a gate deadlocks —
  * the same argument as the control node's `authorizeInboundControlStream`), the
  * fail-open-on-error/timeout posture for the connection hooks
  * (`decideWithinDeadline`, reused as-is), and the "compose over the caller's
  * gater, every base hook preserved" mechanics.
  *
- * Does NOT transfer — the relay-reservation seam (`'admit-for-relay'` + the
- * unauthorized budget). That machinery exists because the control gate denies on
- * ABSENCE of placement, where a member whose row is in flight is
- * indistinguishable from an outsider and a wrong reservation deny is
- * unrecoverable. This gate denies on POSITIVE revocation evidence, so a
- * reservation deny is never that kind of wrong answer; the one stale-wrong case
- * (a missed re-add) heals via replication as above. `denyInboundRelayReservation`
- * here is therefore a plain "deny iff revoked" — no budget, no admit-for-relay
- * verdict, no reserve deadline.
+ * Does NOT transfer — provisional admission and the relay-reservation seam
+ * (`'admit-provisionally'`, its deadline, the unauthorized budget). That
+ * machinery exists because the control gate judges on ABSENCE of placement,
+ * where a member whose row is in flight, or a device whose invitation row has
+ * not arrived, is indistinguishable from an outsider, and a wrong reservation
+ * deny is unrecoverable. This gate denies on POSITIVE revocation evidence, so a
+ * deny is never that kind of wrong answer; the one stale-wrong case (a missed
+ * re-add) heals via replication as above. Every hook here is therefore a plain
+ * "deny iff revoked" — no budget, no provisional verdict, no deadline.
  *
  * Does NOT transfer — the bring-up quiet period. A strand node's DB bring-up
  * NEEDS its cross-party cohort connections; this enforcer simply starts with an

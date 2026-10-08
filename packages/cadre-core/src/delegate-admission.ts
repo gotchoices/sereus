@@ -21,7 +21,7 @@
  * granted delegate is admitted outright, never drawing on the small
  * unauthorized-reservation budget that unplaced peers share
  * (`membership-connection-gater.ts` → "The relay-reservation seam") and never
- * racing its not-reserving connection deadline. The fail-closed per-stream gate
+ * put on the provisional connection deadline. The fail-closed per-stream gate
  * (`authorizeInboundControlStream`) never honors a grant, so a delegate gets
  * the connection and its reservation (all a circuit-relay `hop` needs) and
  * nothing more.

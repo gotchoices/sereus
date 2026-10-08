@@ -14,30 +14,25 @@
  * returned at its sibling check. A node whose first dial lost the race was
  * stranded permanently.
  *
- * The failure is forced with no test doubles, using the production gate that
- * causes it in the field: B applies A's seed BEFORE A vouches B, so A's
- * membership connection gater refuses the inbound connection. A vouches B only
- * afterwards; B must then find its way back in on its own.
+ * The failure is forced by A refusing B's inbound connections, through a
+ * test-supplied connection gater (`network.connectionGater`, which cadre-core
+ * composes under its own) that stands in for an owner that refuses, or is
+ * simply unreachable, at the moment the seed lands. B applies A's seed while
+ * that refusal stands; A then vouches B and lifts it, and B must find its way
+ * back in on its own.
+ *
+ * Why not A's own membership gate: it does not refuse an unvouched peer. It
+ * admits it provisionally (`membership-connection-gater.ts` → "Provisional
+ * admission") and closes the connection only at the provisional deadline (28.5 s
+ * at the default declared link), and a re-dial after that close (FRET's, see
+ * below) gets a fresh provisional connection, so the refused first dial this
+ * scenario exists to recover from would not settle into "no connection".
  *
  * Two details make the proof unambiguous:
  *  - B listens on NOTHING (`listenAddrs: []`, the client-only profile an RN/phone
  *    node uses). A therefore cannot dial B, so the connection that eventually
  *    exists can only be one B dialed.
  *  - The assertion checks `direction === 'outbound'` on B's side as well.
- *
- * A third detail is what makes the FORCED refusal reachable at all: A passes
- * `enableRelay: false`, and must keep passing it. Relay is NOT off by default
- * here — `resolveRelayServer` (`relay-server.ts`) defaults it to `profile === 'storage'`,
- * and A is a storage node — so omitting the flag leaves the relay server ON. On
- * a node running it the gater answers an unplaceable peer with
- * `'admit-for-relay'` rather than a deny (see `membership-connection-gater.ts` →
- * "The relay-reservation seam"): B's dial is ADMITTED and only dropped at the
- * not-reserving deadline (5.5 s at the default declared link), so B holds a live
- * connection to A for that long. Step 3 below then never observes the refusal it exists to pin, and
- * step 5 would be satisfied by the seed dial's own still-live connection rather
- * than by a re-dial, proving nothing. A relay-less owner is
- * also the sharper model of the failure this scenario is about: an owner that
- * refuses, or is simply unreachable, at the moment the seed lands.
  *
  * WHY STEP 3b STRIPS A FROM B's peerStore — read this before deleting that
  * step. Without it the scenario proves nothing: measured 2026-08-20, with
@@ -80,6 +75,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import type { ConnectionGater } from '@libp2p/interface';
 import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import {
 	waitUntil, waitForCadrePeerConverged,
@@ -95,12 +92,18 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 		try {
 			const partyId = `cold-retry-${Date.now()}`;
 
-			// A: owner + storage (holds the CadrePeer blocks). `enableRelay: false` is
-			// load-bearing and overrides the storage-profile default — see the module
-			// doc: with the relay server on, A's gate admits B for relay instead of
-			// refusing it, and step 3's forced refusal never happens.
+			// B's identity first, so A can be built refusing it.
+			const bKey = await generateKeyPair('Ed25519');
+			const bPeerId = peerIdFromPrivateKey(bKey).toString();
+
+			// A: owner + storage (holds the CadrePeer blocks), refusing B's inbound
+			// connections until step 4 lifts it — see the module doc.
+			let refusingB = true;
+			const refuseB: ConnectionGater = {
+				denyInboundEncryptedConnection: (peerId) => refusingB && peerId.toString() === bPeerId
+			};
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: false }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', connectionGater: refuseB }));
 			await A.start();
 			await makeOwnOwner(A, aKey);
 			const aPeer = A.peerId!;
@@ -109,12 +112,10 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			// B: a client-only reader (listens on nothing, so only B can start a
 			// connection) with a short reconcile cadence, so the cold-start branch
 			// fires several times inside the convergence window.
-			const bKey = await generateKeyPair('Ed25519');
 			B = new CadreNode(controlNodeConfig({
 				partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], reconcileMs: 2_000
 			}));
 			await B.start();
-			const bPeerId = B.peerId!.toString();
 
 			// Wait for A to self-register its own CadrePeer row WITH a dialable address,
 			// so the seed it mints carries A's owner address for B to dial.
@@ -126,27 +127,27 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 				{ timeoutMs: 20_000, intervalMs: 250, description: 'A self-registers a CadrePeer row with addrs' }
 			);
 
-			// 1. Arm A's inbound gate. `admitInboundControlConnection` admits everyone
-			//    while A knows of no authorized member at all, so vouch a decoy peer
-			//    (never started, pure row subject) to close that cold-start carve-out.
-			//    Now A denies any inbound peer it has not vouched — which is B.
+			// 1. Close A's cold-start carve-out. `admitInboundControlConnection` admits
+			//    everyone outright while A knows of no authorized member at all, so vouch
+			//    a decoy peer (never started, pure row subject). B is then NOT a member
+			//    on A until step 4, as in a delayed onboarding.
 			const decoyPeerId = await randomPeerId();
 			await A.authorizePeer(decoyPeerId);
 
-			// 2. B applies A's seed while still UNVOUCHED. The seed itself is accepted
-			//    (signature + pinned owner key), but its one owner dial cannot survive
-			//    A's gate. This is the production failure the ticket describes — an
-			//    owner that is momentarily unreachable produces the same state.
+			// 2. B applies A's seed while still UNVOUCHED and refused. The seed itself is
+			//    accepted (signature + pinned owner key), but its one owner dial cannot
+			//    survive A's refusal — the state an owner that is momentarily
+			//    unreachable when the seed lands leaves behind.
 			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
 			// A is the seed's only owner peer with an address, so exactly one dial is
-			// attempted. `ownerDialsFailed` is deliberately NOT asserted: A's gate denies
+			// attempted. `ownerDialsFailed` is deliberately NOT asserted: A's refusal lands
 			// AFTER the dialer's upgrade completes, so the dial may or may not throw.
 			expect(applied.ownerDialsAttempted).toBe(1);
 
-			// 3. Confirm the first dial really did not stick. A's deny lands AFTER the
+			// 3. Confirm the first dial really did not stick. A's refusal lands AFTER the
 			//    dialer's upgrade completes (noise negotiates the muxer in the security
 			//    handshake's early data, see createMembershipConnectionGater), so
 			//    `dial()` may resolve and the connection die moments later — poll for
@@ -177,10 +178,11 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 				{ timeoutMs: 5_000, intervalMs: 100, description: "B's peerStore holds no address for A" }
 			);
 
-			// 4. A vouches B, exactly as a delayed/retried onboarding would. Nothing
-			//    dials on B's behalf here: B listens on nothing, so A cannot reach it,
-			//    and B's one seed dial is already spent.
+			// 4. A vouches B, exactly as a delayed/retried onboarding would, and stops
+			//    refusing it. Nothing dials on B's behalf here: B listens on nothing, so
+			//    A cannot reach it, and B's one seed dial is already spent.
 			await A.authorizePeer(bPeerId);
+			refusingB = false;
 
 			// 5. THE REGRESSION ASSERTION. Only the cold-start branch of
 			//    `reconcileControlCohort` can produce this connection — B's CadrePeer

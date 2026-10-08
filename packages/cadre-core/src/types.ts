@@ -2355,7 +2355,8 @@ export interface ApplySeedResult {
    * `CadreNode.dialColdStartBootstrap`), so this is a signal, not a fatal error.
    *
    * Zero failures is NOT proof of a live connection: the receiving node's
-   * membership gate denies AFTER the dialer's upgrade completes (see
+   * connection gate decides AFTER the dialer's upgrade completes, and closes a
+   * provisionally admitted connection at its deadline (see
    * `createMembershipConnectionGater`), so a dial can resolve and then be torn
    * down. Treat a non-zero value as certain failure and zero as "no failure
    * observed".

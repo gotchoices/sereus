@@ -320,7 +320,7 @@ async function enrollNewcomer(founded: FoundedStrand, handles: LateJoinHandles):
 	if (!applied.success) {
 		throw new Error(`newcomer failed to apply the founder's seed: ${JSON.stringify(applied)}`);
 	}
-	// The gate denies AFTER the dialer's upgrade completes — poll for the settled
+	// The gate decides AFTER the dialer's upgrade completes — poll for the settled
 	// connection, never the dial's return value.
 	await waitUntil(() => hasOutboundTo(newcomer, founderPeerId), {
 		timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,

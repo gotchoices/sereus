@@ -3,12 +3,12 @@
  * — the fail-closed layer behind the fail-open connection gater, which also backs
  * Optimystic's own `authorizeInboundStream` check on the four control-DB protocols).
  *
- * The hole this gate closes: the connection gater must admit strangers while
- * a cadre invitation is live (`createCadreInvitation` — the device dials in before
- * it is authorized), and a connection-level decision cannot say "allow seed,
- * deny repo". So during that window an outsider HOLDS an admitted connection
- * to the owner — and without the stream gate it could speak the four
- * Optimystic control-DB protocols directly. This scenario drives the repo
+ * The hole this gate closes: the connection gater admits every stranger's
+ * connection — outright while a cadre invitation is live (`createCadreInvitation`
+ * — the device dials in before it is authorized), provisionally otherwise — and a
+ * connection-level decision cannot say "allow seed, deny repo". So an outsider
+ * HOLDS an admitted connection to the owner — and without the stream gate it
+ * could speak the four Optimystic control-DB protocols directly. This scenario drives the repo
  * protocol RAW (a `RepoClient` over a minimal `IPeerNetwork` stub), and every
  * other members-only protocol the owner serves, to prove, over real WebSocket
  * libp2p nodes:
@@ -56,9 +56,9 @@ import type { PeerId } from '@libp2p/interface';
 import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
-import { CadreNode, collectStrandAddrs, controlProtocolClasses } from '@serfab/cadre-core';
+import { CadreNode, collectStrandAddrs, controlProtocolClasses, relayedRequestBudgetMs } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { controlNodeConfig, makeOwnOwner, waitForControlConnection, waitUntil } from '../harness/index.js';
+import { controlNodeConfig, makeOwnOwner, sleep, waitForControlConnection, waitUntil } from '../harness/index.js';
 import type { ControlNodeOpts } from '../harness/index.js';
 
 /** Every node here runs control-only (`strandFilter: 'none'`); nothing else differs. */
@@ -80,6 +80,9 @@ function peerNetworkOver(node: Libp2p): IPeerNetwork {
 			await node.dialProtocol(libp2pPeerIdFromString(peerId.toString()), protocol, options),
 	};
 }
+
+/** The link the delegate case's relay-owner declares, so its provisional deadline is short enough to wait out. */
+const A_LINK_ROUND_TRIP_MS = 100;
 
 /** How long one probe stream may take to be refused before the probe counts it as answered by silence. */
 const PROBE_TIMEOUT_MS = 10_000;
@@ -293,15 +296,19 @@ describe('E2E per-stream control-DB stream authorization', () => {
 		}
 	}, 120_000);
 
-	it('denies an un-announced stranger connection, admits an announced delegate, and still refuses that delegate the repo and strand-addr surfaces', async () => {
+	it('closes an un-announced stranger\'s provisional connection at the deadline, admits an announced delegate outright, and still refuses that delegate the repo and strand-addr surfaces', async () => {
 		let A: CadreNode | undefined;
 		let D: CadreNode | undefined;
 		try {
 			// ── Relay-owner A: armed gate (anchored, non-empty authorized set, no
 			// enrollment window, no outstanding invitation) ───────────────────────
 			const partyId = `delegate-admission-${Date.now()}`;
+			// A declares a 100 ms link so the provisional deadline it derives from it
+			// (`relayedRequestBudgetMs`) is 4.7 s rather than the default declaration's 28.5 s.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			A = new CadreNode(nodeConfig({
+				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, linkRoundTripMs: A_LINK_ROUND_TRIP_MS,
+			}));
 			await A.start();
 			await makeOwnOwner(A, aKey);
 
@@ -322,19 +329,22 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			const dNode = D.getControlNode()!;
 
 			// ── (a) Un-announced: the connection does not survive ─────────────────
-			// A runs the relay server, so the un-announced stranger is admitted FOR
-			// RELAY ONLY (membership-connection-gater.ts → "The relay-reservation
-			// seam") — and since it never asks for a reservation, the not-reserving
-			// deadline (5 s) closes the connection. Either way D ends up with no
-			// open connection to A. (On a relay-less node the same dial is denied
-			// outright at the upgrade.) The wait is generous against that 5 s: the
-			// close lands within a few hundred milliseconds of it.
+			// A cannot place D, so D is admitted PROVISIONALLY
+			// (membership-connection-gater.ts → "Provisional admission") — and since
+			// nothing makes D admissible and it never has a reservation admitted, A
+			// closes the connection at the provisional deadline. The wait is
+			// generous against that deadline: the close lands within a few hundred
+			// milliseconds of it.
 			await dNode.dial(aAddr).catch(() => undefined);
 			await waitUntil(
 				() => !dNode.getConnections().some(
 					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
 				),
-				{ timeoutMs: 10_000, intervalMs: 250, description: 'un-announced stranger connection torn down' }
+				{
+					timeoutMs: relayedRequestBudgetMs(A_LINK_ROUND_TRIP_MS) + 10_000,
+					intervalMs: 250,
+					description: 'un-announced stranger connection closed at the provisional deadline',
+				}
 			);
 			expect(
 				A.getControlNode()!.getConnections().some(
@@ -381,8 +391,11 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			expect(refused.addrs).toEqual([]);
 			expect(refused.outcomes.get(aPeerId)).toBe('unreachable');
 
-			// The refused streams did not cost the delegate its connection — the
-			// circuit-relay reservation riding it would survive.
+			// The refused streams did not cost the delegate its connection, and the
+			// grant admitted it outright: it outlives the provisional deadline that
+			// closed the un-announced connection in (a), so the circuit-relay
+			// reservation riding it would survive.
+			await sleep(relayedRequestBudgetMs(A_LINK_ROUND_TRIP_MS) + 3_000);
 			expect(
 				A.getControlNode()!.getConnections().some(
 					(c) => c.remotePeer.toString() === dPeerId && c.status === 'open'

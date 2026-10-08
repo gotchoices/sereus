@@ -8,10 +8,10 @@
  * - **A**, the owner: an in-process `CadreNode` that founds the cadre and listens on a loopback
  *   WebSocket port, as `cadre-invite-any-member.integration.ts` builds one. Its control storage
  *   and dial-target store are kept across a stop/start, and the restart binds the same port, so
- *   an invitation minted before the stop still names a live address after it. It runs the
- *   circuit-relay server: once its invitations are spent or expired its connection gate admits
- *   a stranger for relay only, which is long enough for a redemption to be answered and
- *   refused by name (the any-member scenario's withdrawal arm relies on the same).
+ *   an invitation minted before the stop still names a live address after it. Once its
+ *   invitations are spent or expired its connection gate admits a stranger only provisionally,
+ *   which is long enough for a redemption to be answered and refused by name (the any-member
+ *   scenario's withdrawal arm relies on the same).
  * - **The host**, `createTestCadreHost`: the real orchestrator spawning real `cadre-cli`
  *   children (so `@serfab/cadre-cli` and `@serfab/cadre-host` must be built), the hosted-node
  *   service with its watcher and supervisor, and the offline NAT layer.

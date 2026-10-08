@@ -297,9 +297,9 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			expect(openControlConnections(B)).toHaveLength(0);
 
 			// ── 6. Link: the production routine, polled the same way the isolation
-			//       scenario polls it — the membership gate denies AFTER the
-			//       dialer's upgrade completes, so a single pass can lose the
-			//       admission race. Each pass runs with B's dials to C allowed
+			//       scenario polls it — C's membership gate admits B only
+			//       provisionally until B's row has reached it, so a single pass
+			//       can lose the admission race. Each pass runs with B's dials to C allowed
 			//       (`dialsToC.reconcile`) and dials the owner A first (denied by
 			//       the sever; `dialControlSibling` logs and swallows per-peer
 			//       failures, so the denied sibling never aborts the pass) and then

@@ -19,12 +19,11 @@
  *
  * Cases 2 and 3 boot a relay-only node the relay has NOT authorized — the state a
  * genuine member is in during the window between booting and its `CadrePeer` row
- * replicating to the relay. Before the relay-reservation seam landed
- * (`membership-connection-gater.ts` → "The relay-reservation seam"), A's
- * membership connection gate killed the reservation stream mid-handshake; the
- * relay now admits the connection for relay purposes and decides at the
- * reservation hook, where an unplaced peer gets a slot from the bounded
- * unauthorized-reservation budget. Case 2 takes the `network.relayAddrs` route,
+ * replicating to the relay. The relay admits such a peer's connection
+ * provisionally and decides the reservation at the reservation hook
+ * (`membership-connection-gater.ts` → "The relay-reservation seam"), where an
+ * unplaced peer gets a slot from the bounded unauthorized-reservation budget;
+ * the admitted reservation disarms the connection's provisional deadline. Case 2 takes the `network.relayAddrs` route,
  * case 3 the explicit `reserveRelays` one. Both reach link 2 of case 1's chain
  * (the relay's peerStore learns the circuit address) without authorization,
  * because that link rides the reservation rather than the membership row.
@@ -55,11 +54,11 @@
  * unauthorized and later converges" cannot be asserted here without a test that
  * fails half the time.
  *
- * Cases 4 and 5 pin the bounds of the relay's admission: an admitted-for-relay
- * stranger still cannot speak any control-DB protocol and is dropped when it
- * takes no reservation (case 4), and the unauthorized budget genuinely caps —
- * the peer past the cap is refused while an authorized member still reserves
- * (case 5).
+ * Cases 4 and 5 pin the bounds of the relay's admission: a provisionally
+ * admitted stranger still cannot speak any control-DB protocol and is closed at
+ * the provisional deadline when it takes no reservation (case 4), and the
+ * unauthorized budget genuinely caps — the peer past the cap is refused while an
+ * authorized member still reserves (case 5).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -70,7 +69,7 @@ import type { Libp2p } from 'libp2p';
 import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork } from '@optimystic/db-core';
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, relayedRequestBudgetMs } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	controlNodeConfig,
@@ -303,21 +302,24 @@ describe('E2E relay-only control node circuit address', () => {
 		}
 	}, 180_000);
 
-	it('an admitted-for-relay stranger speaks no control-DB protocol and is dropped when it never reserves', async () => {
-		// The two bounds on the relay-only admission (membership-connection-gater.ts
-		// → "The relay-reservation seam"): the connection buys identify/ping and the
-		// hop protocol only — the fail-closed per-stream gate still refuses the
-		// control-DB surface (extending what control-stream-authz.integration.ts
-		// proves for enrollment-window and delegate admissions) — and a connection
-		// that takes no reservation is closed at the not-reserving deadline
-		// (RELAY_ADMISSION_RESERVE_DEADLINE_MS, 5.5 s at the default declaration).
+	it('a provisionally admitted stranger speaks no control-DB protocol and is closed when it never reserves', async () => {
+		// The two bounds on a stranger's admission at a relay (membership-connection-gater.ts
+		// → "Provisional admission" and "The relay-reservation seam"): the connection
+		// buys the transport and stranger-open protocols only — the fail-closed
+		// per-stream gate still refuses the control-DB surface (extending what
+		// control-stream-authz.integration.ts proves for enrollment-window and
+		// delegate admissions) — and a connection that takes no reservation is
+		// closed at the provisional deadline. A declares a 100 ms link so that
+		// deadline (`relayedRequestBudgetMs`, from the relay's own declaration) is
+		// 4.7 s rather than the default declaration's 28.5 s.
 		const partyId = `relay-stranger-${Date.now()}`;
+		const linkRoundTripMs = 100;
 		let A: CadreNode | undefined;
 		let S: CadreNode | undefined;
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
+				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none', linkRoundTripMs,
 			}));
 			await A.start();
 			await makeOwnOwner(A, aKey);
@@ -327,15 +329,14 @@ describe('E2E relay-only control node circuit address', () => {
 			const aPeerId = A.peerId!.toString();
 
 			// A different party's node, no relay listener, no reservation intent —
-			// pure stranger. Before the fix its connection was denied outright; now
-			// it is admitted for relay purposes only.
+			// pure stranger, admitted provisionally.
 			S = new CadreNode(controlNodeConfig({ partyId: 'relay-stranger-outsider', strandFilter: 'none' }));
 			await S.start();
 			const sPeerId = S.peerId!.toString();
 			const sNode = S.getControlNode()!;
 
 			await sNode.dial(aAddr);
-			await waitForControlConnection(A, sPeerId, 'relay admits the stranger connection (relay-only)');
+			await waitForControlConnection(A, sPeerId, 'relay admits the stranger connection provisionally');
 
 			// Raw repo pend on the control-DB protocol while the connection lives:
 			// the per-stream gate aborts the stream before any frame is decoded, so
@@ -357,15 +358,19 @@ describe('E2E relay-only control node circuit address', () => {
 				)
 			).rejects.toThrow();
 
-			// No reservation was ever admitted for S, so the not-reserving deadline
-			// closes the connection, which both ends then let go of. The wait is
-			// generous against the 5.5 s deadline — the close itself lands within a
-			// few hundred milliseconds of it.
+			// No reservation was ever admitted for S and nothing made it admissible,
+			// so the provisional deadline closes the connection, which both ends then
+			// let go of. The wait is generous against the deadline — the close itself
+			// lands within a few hundred milliseconds of it.
 			await waitUntil(
 				() => !sNode.getConnections().some(
 					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
 				),
-				{ timeoutMs: 10_000, intervalMs: 250, description: 'not-reserving stranger connection dropped' }
+				{
+					timeoutMs: relayedRequestBudgetMs(linkRoundTripMs) + 10_000,
+					intervalMs: 250,
+					description: 'never-reserving stranger connection closed at the provisional deadline',
+				}
 			);
 			expect(
 				A.getControlNode()!.getConnections().some(

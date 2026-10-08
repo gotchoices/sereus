@@ -342,7 +342,7 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// protocol across a circuit: B's control node dials A's `/p2p-circuit`
 		// bootstrap address through A's relay — in the per-party arm a relay B
 		// holds no reservation on — and A's membership gate admits the stranger
-		// only because the invitation is outstanding.
+		// outright because the invitation is outstanding.
 		const decoded = B.decodeInvitation(encoded);
 		expect(decoded.token).toBe(invitation.token);
 		expect(decoded.expiration.getTime()).toBe(invitation.expiration.getTime());

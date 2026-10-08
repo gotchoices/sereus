@@ -131,15 +131,17 @@ circuit-relay server's reservation hook (`membership-connection-gater.ts` → "T
 relay-reservation seam"), where members and delegates are admitted outright and a peer the
 relay cannot (yet) place — typically a genuine member whose `CadrePeer` row has not
 replicated to the relay — is admitted within a small bounded budget
-(`network.unauthorizedRelayReservationCap`, default 8); an admitted-for-relay connection
-that never reserves is dropped after a few seconds. So a single-node NAT'd (SN) party
+(`network.unauthorizedRelayReservationCap`, default 8); a connection from a peer the relay
+cannot place, and that never has a reservation admitted, is closed at the provisional
+deadline (28.5 s at the default declaration) unless the peer has become admissible by
+then. So a single-node NAT'd (SN) party
 finds a willing relay in its own party's storage nodes, or in the ungated dedicated
 relays, and is never locked out of its first address by replication ordering.
   - Grants live only in the relay's memory, so a relay **restart** drops them all and the
     announcing member is not told. A strand node's relay-reservation supervisor therefore
     re-announces FIRST: before every re-drive it runs `CadreNode.announceDelegateToRelay`,
     an unthrottled announce of that strand's delegate peer id to exactly the relay about to
-    be re-dialed, so the re-drive meets a fresh grant rather than the connection gate. The
+    be re-dialed, so the re-drive meets a fresh grant rather than the unauthorized budget. The
     periodic refresh pass (at most half the grant lifetime, currently 15 min) still runs as
     the backstop for a grant that lapses while the reservation itself survives. If relay
     restarts become routine, the durable attestation below is still the better fix than

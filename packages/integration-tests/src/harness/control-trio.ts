@@ -309,7 +309,8 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	//
 	// Production onboarding vouches before seeding (`addDrone` in seed-bootstrap.ts),
 	// or admits by invitation (`redeemCadreInvitation`, where the member writes the
-	// row itself); without a row A's inbound gate refuses B's cold-start dial.
+	// row itself); without a row A's inbound gate admits B's cold-start dial only
+	// provisionally and closes it at the provisional deadline.
 	// Vouching a moment EARLIER — before B starts — costs nothing and makes the
 	// drain checkpoint below observable: B's own start-time self-registration then
 	// has a row to refresh instead of logging "not yet a CadrePeer member".
@@ -342,9 +343,9 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		throw new Error(`bootControlTrio: B failed to apply A's seed: ${JSON.stringify(appliedB)}`);
 	}
 
-	// A's gate denies AFTER the dialer's upgrade completes, so a dial can resolve
-	// and die moments later — poll for the settled connection, never the return
-	// value of the dial.
+	// A's gate decides AFTER the dialer's upgrade completes, so a dial can resolve
+	// and the connection still be closed — poll for the settled connection, never
+	// the return value of the dial.
 	await waitUntil(
 		() => hasOutboundTo(B, aPeerId),
 		{ timeoutMs: 45_000, intervalMs: 250, description: 'B holds an outbound control connection to A' }

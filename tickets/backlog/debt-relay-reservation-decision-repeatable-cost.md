@@ -67,3 +67,7 @@ missing from it for a window — and if the unauthorized budget is full at that 
 member is refused its reservation and left with no address at all. That is precisely the
 failure `control-sibling-relay-reservation-denied` was opened to fix, which is why the
 reservation hook reads live.
+
+## Window widened (2026-10-07)
+
+Since `stranger-connections-admitted-provisionally`, an unplaced peer's connection lasts until the provisional-admission deadline (`relayedRequestBudgetMs`, 28.5 s at the default declared link) instead of ~5.5 s, on every enrolled member, so the "never gets a reservation" arm above has about five times as long per connection to repeat RESERVE requests. The expiry also runs `admitInboundControlConnection` once more per provisional connection (the NOTE on that method).

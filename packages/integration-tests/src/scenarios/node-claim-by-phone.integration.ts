@@ -350,13 +350,8 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     await rival.start();
     await makeOwnOwner(rival, built.key);
 
-    // The rival is no member, so the claimed node's connection gate lets it in only because a
-    // storage-profile node runs the relay server: the verdict is 'admit-for-relay' rather than
-    // 'deny', and the seed stream completes inside that admission's reserve deadline.
-    // NOTE: with the relay off (`CADRE_ENABLE_RELAY=false`) the rival is refused at the
-    // connection and `claimNode` throws a dial error, not `already-claimed`. Fine while hosted
-    // nodes run the storage default; if one ever runs without the relay, the "already claimed"
-    // answer cadre-host's join flow shows needs the gate to admit a stranger for the seed.
+    // The rival is no member, so the claimed node's connection gate admits it provisionally, and
+    // the seed stream completes well inside the provisional deadline.
     const failure = await rival.claimNode({ peerId: node.peerId, multiaddrs: nodeAddrs, secret: claimSecret })
       .catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(ClaimRefusedError);
