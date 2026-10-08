@@ -88,8 +88,8 @@ describe('CadreControl approvals are bound to the party', () => {
     );
   }
 
-  async function count(sql: string, params: unknown[]): Promise<number> {
-    const row = await rawDb.get(sql, params as never);
+  async function count(sql: string, params: string[]): Promise<number> {
+    const row = await rawDb.get(sql, params);
     return Number(row?.n ?? 0);
   }
 
