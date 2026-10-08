@@ -1887,8 +1887,8 @@ export class ControlDatabase {
 
     // Bootstrap is authorized by the schema's genesis branch — `(select count(1) from
     // committed.OwnerKey) = 0`, i.e. the party had no owner before this transaction — so no
-    // signature is needed. Every other branch of `OwnerKey.Authorized` requires a signature
-    // from a PRE-EXISTING owner, so this method only ever succeeds on a fresh party; a second
+    // signature is needed. Every other branch of `OwnerKey.Authorized` requires a PRE-EXISTING,
+    // unretired owner, so this method only ever succeeds on a fresh party; a second
     // owner is seated by {@link insertOwnerKeyVouched} and removed by {@link deleteOwnerKey}.
     // We still persist a fresh, unique StampId in the row's own column to satisfy the
     // not-null/unique anti-replay constraint — the StampId is a real column value, not the
