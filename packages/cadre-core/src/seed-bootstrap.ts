@@ -1112,6 +1112,10 @@ export class SeedBootstrapService {
       log('Seed delivery to %s reuses an open connection', peerId);
       return open;
     }
+    // NOTE: a relayed address can return a limited connection, on which `sendSeed`'s stream
+    // open then fails as a plain error rather than `PeerUnreachableError`, though nothing was
+    // sent. Claim codes carry no relay addresses today; if a delivery target ever may, count a
+    // limited connection as unreachable here.
     try {
       return await dialPeerAddrs(node, addrs, this.dialBudget, `Seed delivery dial of ${peerId}`);
     } catch (error) {
