@@ -6,7 +6,13 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { buildAuthorizationMessage, pendingJoinId } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest } from '../src/peer-authorization.js';
+import {
+  cadrePeerVoucherDigest,
+  cadrePeerRemoveDigest,
+  deviceTokenAddDigest,
+  verifyOwnerKeyVoucher,
+  verifyRevocationSigner,
+} from '../src/peer-authorization.js';
 import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
 import {
   expectConstraintFailure,
@@ -1448,6 +1454,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const added = await rawDb.get('select VouchOwner, VouchSig from CadreControl.OwnerKey where Key = ?', [second.publicKey]);
     expect(added?.VouchOwner).toBe(founder.publicKey);
     expect(added?.VouchSig).toBe(signAs(founder, enrollMessage(second.publicKey, stamp)));
+    // The read-side verifiers rebuild the digest independently of the writer's message builder.
+    expect(verifyOwnerKeyVoucher(second.publicKey, stamp, added?.VouchOwner as string, added?.VouchSig as string)).toBe(true);
 
     expect(await db.deleteOwnerKey(second.publicKey, founder.publicKey, sign)).toBe(true);
     expect(await ownerKeys()).toEqual([founder.publicKey]);
@@ -1455,6 +1463,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const [tombstone] = (await db.queryRevocations()).filter(row => row.stampId === stamp);
     expect(tombstone?.signerKey).toBe(founder.publicKey);
     expect(tombstone?.signerSig).toBe(signAs(founder, revocationMessage('OwnerKey', second.publicKey, stamp)));
+    expect(verifyRevocationSigner(tombstone!)).toBe(true);
     expect(reasons).toEqual(['owner-key-add', 'owner-key-remove']);
   }, 60_000);
 });

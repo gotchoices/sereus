@@ -1385,8 +1385,9 @@ export class ControlDatabase {
    *
    * Rows whose `StampId` is retired in `CadreControl.Revocation` are excluded, as
    * {@link queryCadrePeers} excludes them: `OwnerKey` is never reaped (`MinOneOwner` makes
-   * an automated reap able to empty the table), so every node but the remover keeps a
-   * removed owner's physical row next to its tombstone. Without the filter a removed owner
+   * an automated reap able to empty the table), so a node that received the tombstone
+   * without the delete (a removal committed while the remover was alone, re-issued on growth)
+   * keeps the removed owner's physical row next to it. Without the filter a removed owner
    * would still sign on its own node, still count as the issuer of a live invitation and
    * still be preferred as a dial target.
    *
@@ -1875,10 +1876,11 @@ export class ControlDatabase {
    * rolled-back attempt with a fresh stamp, as {@link redeemCadreInvite} does.
    *
    * NOTE: re-adding a removed owner from a machine that still holds its retired physical row
-   * is refused here by name: `OwnerKey` is not reaped, so only the machine that removed the
-   * key lost the row, and an insert anywhere else would collide on the primary key. Re-add
-   * from that machine; if re-adding removed owners becomes routine, the fix is an `OwnerKey`
-   * reap branch, gated so it can never take the table below `MinOneOwner`.
+   * is refused here by name: `OwnerKey` is not reaped, so a machine that received the
+   * tombstone without the delete (see {@link getOwnerKeys}) keeps the row, and an insert there
+   * would collide on the primary key. Re-add from the machine that removed the key, or any
+   * machine the delete reached; if re-adding removed owners becomes routine, the fix is an
+   * `OwnerKey` reap branch, gated so it can never take the table below `MinOneOwner`.
    *
    * @returns `true` when this call seated the row, `false` when `key` is already a live owner
    *   here (nothing written).
