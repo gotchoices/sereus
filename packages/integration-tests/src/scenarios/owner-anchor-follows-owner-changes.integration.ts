@@ -44,6 +44,12 @@ const OP_MS = 30_000;
  * A row M already holds reaching M's anchor: one control-cohort reconcile interval (15 s by
  * default) plus that pass. Measured 14.0–14.9 s per step over eight runs, four of them in
  * parallel, because each step's write lands just after the tick that ended the previous wait.
+ *
+ * NOTE: M keeps the default interval although that is ~45 s of the run. With M at 2 s, B's vouch
+ * of C lands ~1.5 s after A's `addOwner` and failed 2 of 3 runs beside the other invite scenarios:
+ * one validator rejects it as `unavailable (unmaterializable)`, the vote tracked by
+ * `fresh-strand-replica-vetoes-writes-while-catching-up`. Once that lands, pass `reconcileMs` to
+ * M (a `startPinningMember` option to add) and shorten this budget.
  */
 const REFRESH_MS = 30_000;
 /** The seed trust policy's refusal of a signer outside the receiver's anchor (`anchoredTrustPolicy`). */

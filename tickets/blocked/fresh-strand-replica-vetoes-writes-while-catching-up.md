@@ -1,7 +1,7 @@
 ----
 description: A storage replica that has just joined a strand's cohort votes on writes before it holds the blocks they touch. It approves one pend on a block it has no committed revision of, then rejects the next pend on that block as `unmaterializable`, and that single reject fails the phone's write. The voting policy is in the sibling optimystic repo.
 prereq:
-files: ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (validatePendOperations ~line 1776-1803), ../optimystic/packages/db-p2p/src/storage/storage-repo.ts (get, the `unavailable = 'unmaterializable'` arms ~line 390-420), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (commit, the `local-executed` durability gate ~line 2820-2832), packages/integration-tests/src/scenarios/strand-always-on-replica-hosts-cross-party-join.integration.ts (step 3, `writeRows(phoneDb, 'after-replica')`)
+files: ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (validatePendOperations ~line 1776-1803), ../optimystic/packages/db-p2p/src/storage/storage-repo.ts (get, the `unavailable = 'unmaterializable'` arms ~line 390-420), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (commit, the `local-executed` durability gate ~line 2820-2832), packages/integration-tests/src/scenarios/strand-always-on-replica-hosts-cross-party-join.integration.ts (step 3, `writeRows(phoneDb, 'after-replica')`), packages/integration-tests/src/scenarios/owner-anchor-follows-owner-changes.integration.ts (B's `authorizePeer` after `addOwner`)
 difficulty: medium
 ----
 
@@ -38,6 +38,17 @@ So the replica's vote is inconsistent: it approves the first write it cannot che
 
 Commits `90bc88f6..2113e7b1` (cadre invitations, node claims, connection gating, cadre-host) do not touch any strand file (`strand-*.ts`, `storage-replica*`). Their one edit near this path, `peer-join-backfill.ts`, adds `forceCatchUpPeer` and moves the in-flight bookkeeping into `trackRun`; `catchUpPeer` behaves as before. They change control-network timing only, and the failing commit runs on the strand network.
 
+## Second instance: the control database (`owner-anchor-follows-owner-changes`)
+
+Found while reviewing `owner-anchor-follows-owner-key-changes`, on the cadre's control network rather than a strand. Same fingerprint 1: `Transaction rejected by validators (1/3 rejected): <peer>: block <id> unavailable (unmaterializable): cannot verify revision`, plus `The stream has been reset` from a second member, thrown out of B's `authorizePeer` (a `CadrePeer` insert). A has just added B as an owner (`addOwner`) and B has just received its own `OwnerKey` row; B's write lands about 1.5 s after A's.
+
+| run (with `cadre-invite-any-member`, `cadre-invite-row-unreplicated`, `enrollment-e2e` alongside) | result |
+| --- | --- |
+| M's `controlCohort.reconcileMs` at 2 s (B writes ~1.5 s after A) | **2 of 3 failed** |
+| M at the default 15 s (B writes ~15 s after A) | 3 of 3 passed (8 of 8 in the implement pass) |
+
+Not diagnosed further: no debug logs were taken, so which member rejected, and whether it holds a pending record without a committed base as in step 3 above, is unconfirmed (`repro: verified` for the rejection, `static` for the mechanism). The scenario keeps M at the default interval and carries a `NOTE:` at its `REFRESH_MS`.
+
 ## Why Sereus should not work around it
 
 The test could wait for block coverage on the replica before the phone writes again, but that would hide the product behaviour: in production a phone writing while its always-on machine first launches the strand loses those writes with a non-retryable error. The test's ordering is the real-world one.
@@ -55,3 +66,4 @@ Either way, approval and rejection must agree: a member that rejects a pend it c
 
 - Re-run the scenario 8-way parallel for 3 rounds (`yarn workspace @serfab/integration-tests exec vitest run strand-always-on-replica-hosts-cross-party-join`, 8 copies at once); expect 24 of 24.
 - Remove this scenario's entry from `tickets/.pre-existing-known.md`.
+- Give `startPinningMember` a `reconcileMs` option, run M in `owner-anchor-follows-owner-changes` at 2 s, and re-run it beside the three invite scenarios above; expect every run green, then follow its `REFRESH_MS` `NOTE:`.
