@@ -19,3 +19,4 @@ Keeping owner signing entirely on phones or hardware keys is the more secure des
 - Write the principle into docs/architecture.md as a constraint.
 - Decide the cadre-cli `--owner` question.
 - Design owner keys separate from node identity, for hardware keys.
+- **A signing prompt must name the party.** Every owner-signed control approval binds the party id (`control-approvals-bound-to-party`), and one hardware key can own several cadres, so the device's prompt must show which cadre the signature is for. A prompt that shows only the action would let one cadre's request be approved as if it came from another.
