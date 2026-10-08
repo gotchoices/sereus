@@ -7672,10 +7672,10 @@ export class CadreNode implements SAppIdLookup {
    * legit member goes un-authorized on readers that only pin the new key. Full
    * rotation handling (re-vouch on rotate) is the
    * `flip-strand-membership-rotation-known-gap` work, not this predicate's. The
-   * same holds in the `OwnerKey` table: an owner the rotated-out (or removed) key
-   * vouched is pruned from every anchor by {@link syncOwnerAnchor} until a remaining
-   * owner re-adds it; the device-removal plan ticket is told to re-vouch what a
-   * removed owner added.
+   * `OwnerKey` table differs: an owner the rotated-out (or removed) key vouched keeps
+   * its place in every anchor that had derived it ({@link syncOwnerAnchor}: a derived
+   * entry stays while its own row is live), and is only out of reach for a machine that
+   * never held it until a remaining owner re-adds it or an invitation pins it.
    *
    * @param retry - Whether the underlying membership reads may retry a transient cluster
    *   failure. Only {@link refreshAuthorizedControlPeers} passes `false`, because it runs
@@ -7739,15 +7739,14 @@ export class CadreNode implements SAppIdLookup {
    * Recompute the node-local trusted-owner anchor from the replicated `OwnerKey` table along
    * verifiable chains (`owner-anchor-sync.ts` → {@link deriveOwnerAnchor}), as the first step
    * of every membership refresh ({@link refreshAuthorizedControlPeers}) so the snapshot built
-   * in the same pass judges `CadrePeer` rows against the updated anchor. The out-of-band
-   * entries (every provenance but `chain`) are the base; a key whose live row's stored proof
-   * verifies against the base, or against keys so derived, enters under `chain`; a key an
-   * anchored owner's verifiable tombstone names leaves, base pins included — which is how a
-   * config pin of a removed key, re-anchored at every start
-   * ({@link initializeTrustedOwnerStore}), is removed again. The derivation refuses removals
-   * that would empty the anchor; they are logged here.
+   * in the same pass judges `CadrePeer` rows against the updated anchor. A key whose live
+   * row's stored proof verifies against a key already anchored enters under `chain` and
+   * stays while its row is live; a key an anchored owner's verifiable tombstone names
+   * leaves, base pins included — which is how a config pin of a removed key, re-anchored at
+   * every start ({@link initializeTrustedOwnerStore}), is removed again. The derivation
+   * refuses removals that would empty the anchor; they are logged here.
    *
-   * With an EMPTY base the sync does nothing: there is no key to derive from, and a node
+   * With an EMPTY anchor the sync does nothing: there is no key to derive from, and a node
    * waiting to be claimed ({@link isAwaitingClaim}: claim secret set, anchor empty) must
    * stay empty until the claim anchors its claimant — the replicated table must never seat
    * the first key. The early return below is the seam that rests on.
@@ -7780,8 +7779,7 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     const before = store.sources();
-    const base = new Set(Array.from(before).filter(([, source]) => source !== 'chain').map(([key]) => key));
-    if (base.size === 0) {
+    if (before.size === 0) {
       return;
     }
     let target: ReadonlySet<string>;
@@ -7790,7 +7788,7 @@ export class CadreNode implements SAppIdLookup {
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
       const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
-      const derivation = deriveOwnerAnchor({ base, rows, tombstones, chain });
+      const derivation = deriveOwnerAnchor({ anchor: before, rows, tombstones, chain });
       if (derivation.refusedRemovals.length > 0) {
         log('syncOwnerAnchor(%s): refused %d owner removal(s) that would empty the anchor: %o', reason, derivation.refusedRemovals.length, derivation.refusedRemovals);
       }

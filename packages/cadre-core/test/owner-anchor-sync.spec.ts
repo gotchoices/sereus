@@ -7,6 +7,7 @@ import {
 	ownerKeyAddDigest,
 	revocationDigest,
 } from '../src/peer-authorization.js';
+import type { TrustSource } from '../src/trusted-owner-store.js';
 import type { InvitationChain, OwnerKeyRow, RevocationRow } from '../src/types.js';
 import { freshKeyPair, freshStamp, signB64 } from './control-constraint-helpers.js';
 import type { KeyPair } from './control-constraint-helpers.js';
@@ -78,6 +79,11 @@ async function invitationAdmittedOwner(issuer: KeyPair): Promise<{ row: OwnerKey
 }
 
 const keysOf = (...owners: KeyPair[]): Set<string> => new Set(owners.map(owner => owner.publicKey));
+/** An anchor as `TrustedOwnerStore.sources()` reports it: `base` pinned out of band, `derived` under `chain`. */
+const anchorOf = (base: KeyPair[], derived: KeyPair[] = []): Map<string, TrustSource> => new Map([
+	...base.map((owner): [string, TrustSource] => [owner.publicKey, 'operator']),
+	...derived.map((owner): [string, TrustSource] => [owner.publicKey, 'chain']),
+]);
 
 describe('deriveOwnerAnchor', () => {
 	it('derives a chain of two in one pass, owner-signed then invitation-admitted, and never the founding row', async () => {
@@ -88,15 +94,15 @@ describe('deriveOwnerAnchor', () => {
 		// Rows listed with the far end first, so a single sweep in row order could not find B before C needs it.
 		const rows = [admitted.row, bRow, foundingRow(a)];
 
-		const { target, refusedRemovals } = deriveOwnerAnchor({ base: keysOf(a), rows, tombstones: [], chain: admitted.chain });
+		const { target, refusedRemovals } = deriveOwnerAnchor({ anchor: anchorOf([a]), rows, tombstones: [], chain: admitted.chain });
 		expect(target).toEqual(keysOf(a, b, admitted.device));
 		expect(refusedRemovals).toEqual([]);
 
 		// With no anchored voucher at the root, nothing is derived — the table alone seats nobody.
-		expect(deriveOwnerAnchor({ base: new Set(), rows, tombstones: [], chain: admitted.chain }).target.size).toBe(0);
+		expect(deriveOwnerAnchor({ anchor: new Map(), rows, tombstones: [], chain: admitted.chain }).target.size).toBe(0);
 	});
 
-	it('prunes an owner vouched by a removed owner, and derives it again once a remaining owner re-adds it', () => {
+	it('keeps an owner a removed owner had added where it was derived, and cannot derive it elsewhere until re-added', () => {
 		const a = freshKeyPair();
 		const b = freshKeyPair();
 		const c = freshKeyPair();
@@ -104,13 +110,39 @@ describe('deriveOwnerAnchor', () => {
 		const cByB = signedRow(c, b);
 		const bRemoved = tombstoneFor(bRow, a);
 
-		// A machine that holds B's row beside its tombstone: B is retired, so C's chain from A is broken.
-		const pruned = deriveOwnerAnchor({ base: keysOf(a), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
-		expect(pruned.target).toEqual(keysOf(a));
+		// A machine that had derived B and C: B's row is retired, so B goes; C's row is live, so C stays.
+		const kept = deriveOwnerAnchor({ anchor: anchorOf([a], [b, c]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
+		expect(kept.target).toEqual(keysOf(a, c));
+
+		// A machine that never held C: its chain from A runs through B's retired row.
+		const unreached = deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [bRow, cByB], tombstones: [bRemoved], chain: null });
+		expect(unreached.target).toEqual(keysOf(a));
 
 		const cByA = signedRow(c, a);
-		const healed = deriveOwnerAnchor({ base: keysOf(a), rows: [cByA], tombstones: [bRemoved], chain: null });
+		const healed = deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [cByA], tombstones: [bRemoved], chain: null });
 		expect(healed.target).toEqual(keysOf(a, c));
+	});
+
+	it('an owner rotation survives the pass after the old key is removed, and the new key then vouches and is removable', () => {
+		// Rotation is add-then-remove: A adds A2, A2 removes A. The pass that sees both derives A2
+		// from A (base, whatever its own row) and removes A; the NEXT pass holds only A2 as `chain`
+		// with no base left to re-derive it from, and must keep it on the strength of its live row.
+		const a = freshKeyPair();
+		const a2 = freshKeyPair();
+		const b = freshKeyPair();
+		const aRow = foundingRow(a);
+		const a2Row = signedRow(a2, a);
+		const rotation = { rows: [aRow, a2Row], tombstones: [tombstoneFor(aRow, a2)], chain: null };
+
+		expect(deriveOwnerAnchor({ anchor: anchorOf([a]), ...rotation }).target).toEqual(keysOf(a2));
+		expect(deriveOwnerAnchor({ anchor: anchorOf([], [a2]), ...rotation }).target).toEqual(keysOf(a2));
+
+		// A2 is a full owner afterwards: B derives through its vouch, and B's removal of A2 applies.
+		const bRow = signedRow(b, a2);
+		const rows = [...rotation.rows, bRow];
+		expect(deriveOwnerAnchor({ ...rotation, anchor: anchorOf([], [a2]), rows }).target).toEqual(keysOf(a2, b));
+		const tombstones = [...rotation.tombstones, tombstoneFor(a2Row, b)];
+		expect(deriveOwnerAnchor({ anchor: anchorOf([], [a2, b]), rows, tombstones, chain: null }).target).toEqual(keysOf(b));
 	});
 
 	it('a re-add under a fresh stamp beats the older tombstone, and a base pin of a removed key is dropped', () => {
@@ -120,12 +152,12 @@ describe('deriveOwnerAnchor', () => {
 		const removed = tombstoneFor(first, a);
 
 		// K pinned here out of band (operator pin), removed by A elsewhere: the pin goes.
-		expect(deriveOwnerAnchor({ base: keysOf(a, k), rows: [], tombstones: [removed], chain: null }).target).toEqual(keysOf(a));
+		expect(deriveOwnerAnchor({ anchor: anchorOf([a, k]), rows: [], tombstones: [removed], chain: null }).target).toEqual(keysOf(a));
 
 		// Re-added under a fresh stamp: the live derivable row wins over the old stamp's tombstone.
 		const second = signedRow(k, a);
-		expect(deriveOwnerAnchor({ base: keysOf(a, k), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
-		expect(deriveOwnerAnchor({ base: keysOf(a), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
+		expect(deriveOwnerAnchor({ anchor: anchorOf([a, k]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
+		expect(deriveOwnerAnchor({ anchor: anchorOf([a]), rows: [second], tombstones: [removed], chain: null }).target).toEqual(keysOf(a, k));
 	});
 
 	it('refuses a mutual removal that would empty the anchor, and applies it when a third owner remains', () => {
@@ -136,11 +168,11 @@ describe('deriveOwnerAnchor', () => {
 		const bRow = signedRow(b, a);
 		const tombstones = [tombstoneFor(aRow, b), tombstoneFor(bRow, a)];
 
-		const refused = deriveOwnerAnchor({ base: keysOf(a, b), rows: [], tombstones, chain: null });
+		const refused = deriveOwnerAnchor({ anchor: anchorOf([a, b]), rows: [], tombstones, chain: null });
 		expect(refused.target).toEqual(keysOf(a, b));
 		expect(new Set(refused.refusedRemovals)).toEqual(keysOf(a, b));
 
-		const applied = deriveOwnerAnchor({ base: keysOf(a, b, c), rows: [], tombstones, chain: null });
+		const applied = deriveOwnerAnchor({ anchor: anchorOf([a, b, c]), rows: [], tombstones, chain: null });
 		expect(applied.target).toEqual(keysOf(c));
 		expect(applied.refusedRemovals).toEqual([]);
 	});
@@ -155,6 +187,6 @@ describe('deriveOwnerAnchor', () => {
 		const forged = { ...tombstoneFor(bRow, a), signerSig: tombstoneFor(signedRow(b, a), a).signerSig };
 
 		// B's row is kept out so the tombstones' stamps retire nothing; B is base, as a pin would be.
-		expect(deriveOwnerAnchor({ base: keysOf(a, b), rows: [], tombstones: [byStranger, bySelf, forged], chain: null }).target).toEqual(keysOf(a, b));
+		expect(deriveOwnerAnchor({ anchor: anchorOf([a, b]), rows: [], tombstones: [byStranger, bySelf, forged], chain: null }).target).toEqual(keysOf(a, b));
 	});
 });

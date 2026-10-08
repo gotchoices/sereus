@@ -45,9 +45,9 @@ const log = debug('sereus:cadre:trusted-owner-store');
  * and forms the base the anchor sync derives from; `claim` is the durable "this node has
  * been claimed" marker: the first seed whose sender proved it held the node's claim secret
  * anchored its signer under this source. `chain` marks a key derived from the replicated
- * `OwnerKey` table through a proof that verified against the base
- * (`CadreNode.syncOwnerAnchor`); the sync recomputes these entries on every membership
- * refresh and they never count as base.
+ * `OwnerKey` table through a proof that verified against a key already anchored
+ * (`CadreNode.syncOwnerAnchor`); the sync keeps such an entry while its row is live and
+ * prunes it once the row is gone, which a base entry never is.
  */
 export type TrustSource = 'genesis' | 'invite' | 'operator' | 'claim' | 'chain';
 

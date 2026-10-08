@@ -6,20 +6,25 @@
  *
  * Why not simply trust the table: an empty local copy can seat any key through the
  * schema's genesis branch and that row replicates (`docs/architecture.md` → "Node-local
- * trusted-owner anchor"). So every node recomputes its anchor from a set of keys it trusts
- * out of band (the base) plus the rows whose stored proof verifies against what it already
- * trusts, on every membership refresh. The terms used throughout:
+ * trusted-owner anchor"). So every node grows its anchor only through rows whose stored
+ * proof verifies against a key it already trusts, on every membership refresh. The terms
+ * used throughout:
  *
- * - **base**: the anchor's entries whose provenance is not `chain`.
+ * - **base**: the anchor's entries whose provenance is not `chain` (trusted out of band).
  * - **live row**: an `OwnerKey` row whose stamp no tombstone retires.
+ * - **kept**: a `chain` entry that still has a live row. A derived entry is state, not
+ *   recomputed from the base each pass: it entered through a proof that verified then, and
+ *   it stays until its own row is retired or a verifiable tombstone removes it. This is what
+ *   lets an owner rotate (A adds A', A' removes A): A' keeps its place after A's row is
+ *   retired, although nothing could re-derive it from the remaining base.
  * - **derivable from S**: a live row whose stored proof verifies against S — owner-signed
  *   (`vouchSig` set): `vouchOwner` is in S and `verifyOwnerKeyVoucher` holds;
  *   invitation-admitted (`vouchSig` null, `vouchUsage` set): `verifyInvitationOwnerAdmission`
  *   holds with S as the anchor. The founding row (all three null) is never derivable:
  *   founders enter anchors only out of band.
- * - **derived**: the least fixpoint from base — add every key whose live row is derivable
- *   from what is already in the set, until nothing changes. **chainDerived** is derived
- *   minus base, plus any base key that also has a live derivable row.
+ * - **derived**: the least fixpoint from base ∪ kept — add every key whose live row is
+ *   derivable from what is already in the set, until nothing changes. **chainDerived** is the
+ *   keys whose live row was derivable in this pass, base keys included.
  * - **removed**: a key K in derived is removed when an `OwnerKey` tombstone names K, its
  *   signer is in derived and is not K, its stored signature verifies
  *   (`verifyRevocationSigner`), AND K is not in chainDerived. The last condition is what
@@ -33,18 +38,20 @@
  * pass still counts, and a mutual removal of the last two owners is refused rather than
  * decided by read order.
  *
- * Deliberate deviation from the plan ticket (`owner-anchor-follows-owner-key-changes`): an
- * owner C vouched by a removed owner B is NOT kept. Keeping it would leave machines that
- * already held C and machines enrolled afterwards (which can never derive it, B's row being
- * retired) in permanent disagreement; pruning C everywhere until a remaining owner re-adds
- * it is what `CadrePeer` already does for devices a removed owner vouched.
+ * An owner C that a removed owner B had added therefore stays where it was already derived
+ * (its row is live) and cannot be derived on a machine that never held it (the chain from
+ * that machine's base runs through B's retired row) until a remaining owner re-adds it or
+ * an invitation pins it there. The rotation case above is the same shape with C = A', so the
+ * two cannot be told apart from replicated state; keeping is the only rule under which a
+ * sole owner can rotate at all.
  */
 import { verifyInvitationOwnerAdmission, verifyOwnerKeyVoucher, verifyRevocationSigner } from './peer-authorization.js';
+import type { TrustSource } from './trusted-owner-store.js';
 import type { InvitationChain, OwnerKeyRow, RevocationRow } from './types.js';
 
 export interface OwnerAnchorInputs {
-	/** The anchor's out-of-band entries (every provenance but `chain`). */
-	base: ReadonlySet<string>;
+	/** The anchor at the start of the pass, every key with its provenance (`TrustedOwnerStore.sources`). */
+	anchor: ReadonlyMap<string, TrustSource>;
 	/** `OwnerKey` rows as read; rows whose stamp a tombstone in `tombstones` retires are dropped here too. */
 	rows: readonly OwnerKeyRow[];
 	/** `Revocation` rows; only those with `tableName === 'OwnerKey'` are consulted. */
@@ -61,12 +68,16 @@ export interface OwnerAnchorDerivation {
 }
 
 /** The rule above, as one pure function. */
-export function deriveOwnerAnchor({ base, rows, tombstones, chain }: OwnerAnchorInputs): OwnerAnchorDerivation {
+export function deriveOwnerAnchor({ anchor, rows, tombstones, chain }: OwnerAnchorInputs): OwnerAnchorDerivation {
 	const ownerTombstones = tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey');
+	// NOTE: a stamp is retired by any tombstone that names it, verified or not — the same
+	// reading `queryCadrePeers` and `getOwnerKeys` give the table. A forged tombstone can
+	// therefore prune a derived entry (its row goes) but never seat or keep one; if tombstone
+	// pollution is ever closed at the write side, judge retirement by the verified signer too.
 	const retired = new Set(ownerTombstones.map(tombstone => tombstone.stampId));
 	const liveRows = rows.filter(row => !retired.has(row.stampId));
 
-	const derived = new Set(base);
+	const derived = passStartSet(anchor, liveRows);
 	const chainDerived = deriveFixpoint(derived, liveRows, chain);
 
 	const removed = removedKeys(derived, chainDerived, ownerTombstones);
@@ -77,11 +88,23 @@ export function deriveOwnerAnchor({ base, rows, tombstones, chain }: OwnerAnchor
 	return { target, refusedRemovals: [] };
 }
 
+/** base ∪ kept: every out-of-band entry, and every `chain` entry whose row is still live. */
+function passStartSet(anchor: ReadonlyMap<string, TrustSource>, liveRows: readonly OwnerKeyRow[]): Set<string> {
+	const liveKeys = new Set(liveRows.map(row => row.key));
+	const start = new Set<string>();
+	for (const [key, source] of anchor) {
+		if (source !== 'chain' || liveKeys.has(key)) {
+			start.add(key);
+		}
+	}
+	return start;
+}
+
 /**
  * Grow `derived` to the least fixpoint and return chainDerived: every key whose live row was
- * derivable, base keys included. A row is judged once its voucher is in the set, and settled
- * either way then: trust only grows within a pass, and a proof that failed against a trusted
- * voucher cannot pass later, so no row is verified twice.
+ * derivable. A row is judged once its voucher is in the set, and settled either way then:
+ * trust only grows within a pass, and a proof that failed against a trusted voucher cannot
+ * pass later, so no row is verified twice.
  */
 function deriveFixpoint(derived: Set<string>, liveRows: readonly OwnerKeyRow[], chain: InvitationChain | null): Set<string> {
 	const chainDerived = new Set<string>();

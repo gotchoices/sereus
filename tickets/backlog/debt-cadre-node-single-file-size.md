@@ -115,3 +115,5 @@ Worth noting alongside it: `control-database.ts` is now the package's second-lar
 ## Later measurement (2026-09-28)
 
 `wc -l packages/cadre-core/src/cadre-node.ts` → 8218 lines (8131 before `party-wide-joined-strands`). That ticket added the party-wide joined-strand adapter (`createPartyJoinedStrandLedger`, `enrolledOwnerSigningKey`, about 60 lines plus doc comments); the publish/remove/leave policy itself went into `joined-strand-store.ts`.
+
+- Evidence (review of `owner-anchor-derivation`, 2026-10-07): the trusted-owner anchor sync, its apply step and the shared invitation-chain source added about 140 lines to this file; measured `wc -l packages/cadre-core/src/cadre-node.ts` = 9,375.

@@ -1849,8 +1849,9 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
  * (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add (`vouchOwner`
  * and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, stampId)`), or an
  * owner-granting invitation redeemed by consent (`vouchOwner` the issuer, `vouchSig` null,
- * `vouchUsage` the `CadreInviteUsage` row). Rows whose stamp is retired in `Revocation` never
- * reach a reader, so `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`) judges
+ * `vouchUsage` the `CadreInviteUsage` row). Rows whose stamp is retired in `Revocation`, and
+ * the stampless row the schema permits but no writer produces, never reach a reader, so
+ * `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`) judges
  * the proof against the keys it already trusts, never against the table itself.
  */
 export interface OwnerKeyRow {
