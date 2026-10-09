@@ -10,4 +10,6 @@ export { statusCommand } from './commands/status.js';
 export { enrollCommand } from './commands/enroll.js';
 export { strandCommand } from './commands/strands.js';
 export { validationKeyCommand } from './commands/validation-key.js';
+export { initCommand, initNode, publicMultiaddr, type InitOptions, type InitResult } from './commands/init.js';
+export { codeCommand, selectClaimAddresses, nodeCodeLink } from './commands/code.js';
 
