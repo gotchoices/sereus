@@ -15,6 +15,7 @@ import { specifiedEnv } from '@serfab/config-check';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record.js';
+import { resolveClaimSecret } from './claim-secret.js';
 import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor } from './start-node.js';
 import {
   decodeInvitationFor,
@@ -100,7 +101,8 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * `--seed` and an invitation (`--invitation`, `CADRE_INVITATION`) join one, and a pinned owner
  * key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node
  * refuses a pin beside a claim itself (`CadreNodeConfig.claim`), but its message names the
- * config field; this check runs first — for the secret, before the config is loaded — and
+ * config field; this check runs first — for an environment secret, before the config is loaded;
+ * for `claim.secretFile`, right after — and
  * names the options the operator actually passed. `subject` is what the message blames: the secret, or the record.
  */
 export function refuseClaimConflicts(
@@ -193,12 +195,12 @@ export const startCommand = new Command('start')
     try {
       writeStartupToken(options.startupTokenFile);
 
-      // Env only, never a flag: a flag value shows in the process list. Set-but-empty is unset,
-      // as for every other variable.
-      const claimSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
+      // Env or a file the config names, never a flag: a flag value shows in the process list.
+      // Set-but-empty is unset, as for every other variable.
+      const envClaimSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
       const startup = startupInvitation(options.invitation, commandEnv('CADRE_INVITATION'));
       const conflictOptions = { owner: options.owner, seed: options.seed, invitation: startup, pinOwnerKey: options.pinOwnerKey };
-      if (claimSecret !== undefined) refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'));
+      if (envClaimSecret !== undefined) refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'));
 
       // A --identity-file flag overrides the config file's identity. Route it through the env
       // mapping (CADRE_KEY_FILE -> identity.keyFile) so the loader resolves it exactly as the
@@ -211,6 +213,13 @@ export const startCommand = new Command('start')
 
       const config = await resolveConfig(options.config);
       applyWsPortOption(config, options.wsPort);
+
+      // The claim secret: the environment's, or the one in the file the config names (`cadre init`
+      // writes `claim.secretFile`). A file-held secret refuses the same options, checked now that
+      // the config is loaded.
+      const { secret: claimSecret, source: claimSource, warnings: claimWarnings } = resolveClaimSecret(envClaimSecret, config.claimSecretFile);
+      for (const warning of claimWarnings) console.warn(`⚠ ${warning}`);
+      if (claimSource !== undefined && envClaimSecret === undefined) refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'), claimSource);
 
       // The claim on record names the party this node serves and the owner it belongs to; the
       // config's party is then a placeholder. A malformed record throws here and stops the
@@ -348,7 +357,7 @@ export const startCommand = new Command('start')
       await node.start();
 
       if (claimSecret !== undefined) {
-        console.log(node.isAwaitingClaim() ? '✓ Awaiting claim' : '• Already claimed; CADRE_CLAIM_SECRET is ignored');
+        console.log(node.isAwaitingClaim() ? '✓ Awaiting claim (run `cadre code` for the code the owner\'s phone scans)' : `• Already claimed; ${claimSource} is ignored`);
       }
 
       // Join by invitation, right after the node is up: the redemption dials the members the

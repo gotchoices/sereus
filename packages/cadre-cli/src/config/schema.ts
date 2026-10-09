@@ -141,6 +141,8 @@ const hibernation = objectOf<Block<'hibernation'>>(
 
 const nodeState = objectOf<Block<'nodeState'>>({ dir: nonEmptyString });
 
+const claim = objectOf<Block<'claim'>>({ secretFile: nonEmptyString });
+
 // Push sub-fields are type-checked only. Which of them must be present when a platform block
 // is present stays with cadre-core's `validatePushCredentials`, which host and provider also
 // use; `resolveConfig` calls it after this pass.
@@ -178,6 +180,7 @@ const root = objectOf<CliConfig>(
     strandWatchInterval: positiveNumber,
     nodeState,
     push,
+    claim,
   },
   { required: ['controlNetwork', 'profile'] },
 );
