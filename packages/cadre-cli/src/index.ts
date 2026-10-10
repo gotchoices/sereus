@@ -12,4 +12,5 @@ export { strandCommand } from './commands/strands.js';
 export { validationKeyCommand } from './commands/validation-key.js';
 export { initCommand, initNode, publicMultiaddr, type InitOptions, type InitResult } from './commands/init.js';
 export { codeCommand, selectClaimAddresses, nodeCodeLink } from './commands/code.js';
+export { serviceCommand, renderService, installSteps, type ServiceKind, type ServiceSpec } from './commands/service.js';
 
