@@ -9,6 +9,7 @@ import { strandCommand } from '../commands/strands.js';
 import { validationKeyCommand } from '../commands/validation-key.js';
 import { initCommand } from '../commands/init.js';
 import { codeCommand } from '../commands/code.js';
+import { serviceCommand } from '../commands/service.js';
 
 // The version comes from this package's own package.json (dist/bin/ -> ../../), so a release
 // bump can never leave it behind (gotchoices/sereus#35).
@@ -24,6 +25,7 @@ program
 program.addCommand(initCommand);
 program.addCommand(startCommand);
 program.addCommand(codeCommand);
+program.addCommand(serviceCommand);
 program.addCommand(statusCommand);
 program.addCommand(enrollCommand);
 program.addCommand(strandCommand);
