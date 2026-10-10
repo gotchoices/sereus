@@ -2,9 +2,11 @@ import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
 import { CLAIM_SECRET_BYTES, decodeCadreInvitation, type CadreInvitation } from '@serfab/cadre-core';
+import { primaryLanAddress } from '@serfab/cadre-core/primary-lan-address';
 import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provider';
 
 import type { HostedSpawnRequest, ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
+import type { ClaimAddressSettings } from '../installer/config.js';
 import { buildClaimDetails, type ClaimDetails, type HostedNodeAddressSource } from './claim-details.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
 import { HostedNodeWatcher } from './hosted-node-watcher.js';
@@ -130,6 +132,10 @@ export interface HostedNodeServiceOptions {
   store: HostedNodeStore;
   /** The NAT layer, for the node's public addresses and reachability verdict. */
   addresses: HostedNodeAddressSource;
+  /** `host.config.json`'s `claimAddresses`, read on every claim-code request so an edit applies at once. */
+  claimAddressSettings?: () => ClaimAddressSettings | undefined;
+  /** The machine's primary address, the `lan: 'auto'` fallback when no UPnP gateway answered. */
+  primaryLan?: () => Promise<string | undefined>;
   /** Clock override for tests. */
   now?: () => Date;
 }
@@ -159,6 +165,8 @@ export class HostedNodeService {
   private readonly orchestrator: HostedNodeOrchestrator;
   private readonly store: HostedNodeStore;
   private readonly addresses: HostedNodeAddressSource;
+  private readonly claimAddressSettings: () => ClaimAddressSettings | undefined;
+  private readonly primaryLan: () => Promise<string | undefined>;
   private readonly now: () => Date;
   private readonly listeners = new Set<HostedNodeChangeListener>();
   private readonly watcher: HostedNodeWatcher;
@@ -171,6 +179,8 @@ export class HostedNodeService {
     this.orchestrator = opts.orchestrator;
     this.store = opts.store;
     this.addresses = opts.addresses;
+    this.claimAddressSettings = opts.claimAddressSettings ?? (() => undefined);
+    this.primaryLan = opts.primaryLan ?? primaryLanAddress;
     this.now = opts.now ?? (() => new Date());
     this.watcher = new HostedNodeWatcher({
       store: this.store,
@@ -335,7 +345,17 @@ export class HostedNodeService {
     const { secret } = node.join;
     const status = await readNodeStatus(node.statusEndpoint);
     this.recordPeerId(id, status.peerId);
-    return buildClaimDetails({ id, secret, status, ports: this.orchestrator.getNode?.(id)?.ports, addresses: this.addresses });
+    const settings = this.claimAddressSettings();
+    const needsPrimary = (settings?.lan ?? 'auto') === 'auto' && !settings?.addrs?.length && this.addresses.getStatus().gateway.lanAddress === null;
+    return buildClaimDetails({
+      id,
+      secret,
+      status,
+      ports: this.orchestrator.getNode?.(id)?.ports,
+      addresses: this.addresses,
+      settings,
+      primaryLan: needsPrimary ? await this.primaryLan() : undefined,
+    });
   }
 
   /** Cache the peer id on the record, once. Best-effort: the claim details do not depend on it. */

@@ -18,6 +18,10 @@
 	let autoApply = $state(false);
 	let manifestUrl = $state('');
 	let savingUpdates = $state(false);
+	let lanMode = $state<'auto' | 'none' | 'ip'>('auto');
+	let lanIp = $state('');
+	let exactAddrs = $state('');
+	let savingAddresses = $state(false);
 	let applying = $state(false);
 
 	onMount(() => {
@@ -30,7 +34,29 @@
 		if (!s) return;
 		autoApply = s.updates.autoApply;
 		manifestUrl = s.updates.manifestUrl ?? '';
+		const lan = s.claimAddresses?.lan ?? 'auto';
+		lanMode = lan === 'auto' || lan === 'none' ? lan : 'ip';
+		lanIp = lanMode === 'ip' ? lan : '';
+		exactAddrs = (s.claimAddresses?.addrs ?? []).join('\n');
 	});
+
+	async function saveAddresses(event: Event): Promise<void> {
+		event.preventDefault();
+		savingAddresses = true;
+		try {
+			const addrs = exactAddrs.split('\n').map((a) => a.trim()).filter((a) => a.length > 0);
+			await apiPut('/api/settings', {
+				claimAddresses: { lan: lanMode === 'ip' ? lanIp.trim() : lanMode, addrs },
+			});
+			pushToast('success', 'Claim code addresses saved; the next code shown uses them');
+			await refreshSettings();
+		} catch (err) {
+			const code = err instanceof ApiError ? err.code : 'error';
+			pushToast('error', `Save failed: ${(err as Error).message} (${code})`);
+		} finally {
+			savingAddresses = false;
+		}
+	}
 
 	async function saveUpdates(event: Event): Promise<void> {
 		event.preventDefault();
@@ -75,7 +101,7 @@
 <section class="stack">
 	<header>
 		<h2>Settings</h2>
-		<p class="muted">Update preferences and install metadata.</p>
+		<p class="muted">Update preferences, claim code addresses and install metadata.</p>
 	</header>
 
 	<form class="card stack" onsubmit={saveUpdates}>
@@ -123,6 +149,33 @@
 		</div>
 	</form>
 
+	<form class="card stack" onsubmit={saveAddresses}>
+		<h3>Claim code addresses</h3>
+		<p class="muted small">
+			The addresses a node's QR code carries. A phone tries each in turn, so only ones it can reach belong
+			there: public addresses (your DDNS name, when set) and one LAN address for phones at home. Docker
+			bridges, VPNs and TCP are always left out.
+		</p>
+		<fieldset class="stack">
+			<legend>LAN address</legend>
+			<label class="row inline"><input type="radio" bind:group={lanMode} value="auto" /> <span>Automatic (this machine's address on the router's network)</span></label>
+			<label class="row inline"><input type="radio" bind:group={lanMode} value="none" /> <span>None (phones reach nodes by the public address only)</span></label>
+			<label class="row inline">
+				<input type="radio" bind:group={lanMode} value="ip" /> <span>This address:</span>
+				<input type="text" bind:value={lanIp} placeholder="192.168.1.20" disabled={lanMode !== 'ip'} autocomplete="off" />
+			</label>
+		</fieldset>
+		<div>
+			<label for="exact-addrs">Exact addresses (optional, one multiaddr per line; replaces the automatic choice)</label>
+			<textarea id="exact-addrs" rows="3" bind:value={exactAddrs} placeholder="/dns4/node.example.org/tcp/443/wss"></textarea>
+		</div>
+		<div class="actions">
+			<button type="submit" class="primary" disabled={savingAddresses || (lanMode === 'ip' && !lanIp.trim())}>
+				{savingAddresses ? 'Saving…' : 'Save addresses'}
+			</button>
+		</div>
+	</form>
+
 	<div class="card">
 		<h3>Install</h3>
 		{#if app.settings}
@@ -162,7 +215,10 @@
 
 <style>
 	.row.inline { gap: 0.5rem; }
-	.row.inline input[type='checkbox'] { width: auto; }
+	.row.inline input[type='checkbox'],
+	.row.inline input[type='radio'] { width: auto; }
+	fieldset { border: none; padding: 0; margin: 0; }
+	legend { font-weight: 600; margin-bottom: var(--space-1); }
 	.banner {
 		display: flex;
 		align-items: center;

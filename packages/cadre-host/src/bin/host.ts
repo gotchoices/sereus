@@ -304,6 +304,8 @@ program
         orchestrator,
         store: hostedNodeStore,
         addresses: natService,
+        // Re-read per claim code so a Settings edit (or a hand edit) applies to the next code shown.
+        claimAddressSettings: () => readHostConfig(cfgPath).claimAddresses,
       });
 
       // Respawn supervision — nothing else brings a hosted node back. A crash,
