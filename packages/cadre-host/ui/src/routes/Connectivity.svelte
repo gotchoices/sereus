@@ -29,6 +29,7 @@
 	let externallyManaged = $state(false);
 	let fieldValues: Record<string, string> = $state({});
 	let upnpEnabled = $state(true);
+	let networkSetting = $state<'auto' | 'lan' | 'public'>('auto');
 
 	let testing = $state(false);
 	let savingDdns = $state(false);
@@ -42,6 +43,7 @@
 	const unreachableCount = $derived(runningNodes.filter((n) => n.verdict === 'unreachable').length);
 
 	const cgnatDetected = $derived(app.connectivity?.cgnatDetected === true);
+	const publicMode = $derived(app.connectivity?.network.mode === 'public');
 
 	onMount(() => {
 		void refreshConnectivity();
@@ -56,6 +58,7 @@
 		if (hostname === '' && c.ddns.hostname) hostname = c.ddns.hostname;
 		externallyManaged = c.ddns.externallyManaged;
 		upnpEnabled = c.upnpEnabled;
+		networkSetting = c.network.setting;
 	});
 
 	async function loadProviders(): Promise<void> {
@@ -105,8 +108,8 @@
 		event.preventDefault();
 		savingUpnp = true;
 		try {
-			await apiPut('/nat/settings', { upnpEnabled });
-			pushToast('success', 'Port mapping settings saved');
+			await apiPut('/nat/settings', { network: networkSetting, upnpEnabled });
+			pushToast('success', 'Network settings saved');
 			await refreshConnectivity();
 		} catch (err) {
 			pushToast('error', `Save failed: ${(err as Error).message}`);
@@ -128,6 +131,18 @@
 			{#if app.connectivity}
 				<ConnectivityBadge reachability={app.connectivity.directReachability} />
 				<dl class="kv">
+					<div>
+						<dt>Network</dt>
+						<dd>
+							{#if publicMode}
+								public IP {app.connectivity.network.publicInterfaceIp ?? app.connectivity.externalIp ?? ''} on this machine · no router
+							{:else}
+								behind a router
+							{/if}
+							<span class="muted">({app.connectivity.network.setting === 'auto' ? 'detected' : 'set'})</span>
+						</dd>
+					</div>
+					{#if !publicMode}
 					<div><dt>UPnP</dt><dd>{app.connectivity.upnpEnabled ? 'on' : 'off'}</dd></div>
 					<div>
 						<dt>Router</dt>
@@ -141,6 +156,7 @@
 					</div>
 					<div><dt>External IP</dt><dd>{app.connectivity.externalIp ?? '—'}</dd></div>
 					<div><dt>Router IP</dt><dd>{app.connectivity.gateway.routerExternalIp ?? '—'}</dd></div>
+					{/if}
 					<div><dt>Last tested</dt><dd>{formatRelativeTime(app.connectivity.lastTestedAt)}</dd></div>
 					<div><dt>External IP detected</dt><dd>{formatRelativeTime(app.connectivity.externalIpDetectedAt)}</dd></div>
 				</dl>
@@ -152,7 +168,13 @@
 			{/if}
 		</div>
 
-		{#if cgnatDetected}
+		{#if publicMode}
+			<div class="card">
+				<h3>Reached directly</h3>
+				<p>This machine holds a public IP address, so there is no router to configure: each node is reached at its own ports.</p>
+				<p>Allow those ports through any firewall on this machine (for example <code>sudo ufw allow</code>) and in your hosting provider's firewall. Each node below lists its ports.</p>
+			</div>
+		{:else if cgnatDetected}
 			<div class="card warning">
 				<h3>Behind carrier-grade NAT</h3>
 				<p>Your ISP appears to use carrier-grade NAT (CGNAT), so a port forward on your router will not help. Ask your ISP for a public IP address.</p>
@@ -196,11 +218,18 @@
 	</div>
 
 	<form class="card stack" onsubmit={saveUpnp}>
-		<h3>Port mapping</h3>
+		<h3>Network</h3>
+		<fieldset class="stack">
+			<label class="row inline"><input type="radio" bind:group={networkSetting} value="auto" /> <span>Automatic: public when this machine holds a public IP address</span></label>
+			<label class="row inline"><input type="radio" bind:group={networkSetting} value="lan" /> <span>Behind a router (home or office network)</span></label>
+			<label class="row inline"><input type="radio" bind:group={networkSetting} value="public" /> <span>Public IP (a VPS or server reached directly)</span></label>
+		</fieldset>
+		{#if !publicMode || networkSetting === 'lan'}
 		<label class="row inline">
 			<input type="checkbox" bind:checked={upnpEnabled} />
 			<span>Ask the router to map each node's ports automatically (UPnP)</span>
 		</label>
+		{/if}
 		<div class="actions">
 			<button type="submit" class="primary" disabled={savingUpnp}>
 				{savingUpnp ? 'Saving…' : 'Save'}
@@ -286,7 +315,9 @@
 	.kv dt { color: var(--color-text-muted); }
 	.kv dd { margin: 0; }
 	.row.inline { gap: 0.5rem; }
-	.row.inline input[type='checkbox'] { width: auto; }
+	.row.inline input[type='checkbox'],
+	.row.inline input[type='radio'] { width: auto; }
+	fieldset { border: none; padding: 0; margin: 0; }
 	.nodes { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
 	.nodes li { border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
 	.nodes li:first-child { border-top: 0; padding-top: 0; }

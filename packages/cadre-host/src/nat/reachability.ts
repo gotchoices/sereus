@@ -32,9 +32,10 @@ export interface NodeVerdictResult {
 
 /**
  * `unreachable` when either port has no usable route or the host part is
- * unknown; otherwise `manual` when either port is forwarded by hand, else
- * `mapped`. A UPnP route under CGNAT is not usable: the router's mapping is on
- * a carrier-private address.
+ * unknown; otherwise `manual` when either port is forwarded by hand, `direct`
+ * when the ports are reached as-is (public mode, with the firewall reminder as
+ * the reason), else `mapped`. A UPnP route under CGNAT is not usable: the
+ * router's mapping is on a carrier-private address.
  */
 export function evaluateNodeReachability(input: NodeVerdictInput): NodeVerdictResult {
   const ports = portRoutes(input);
@@ -45,8 +46,9 @@ export function evaluateNodeReachability(input: NodeVerdictInput): NodeVerdictRe
   if (failing.length > 0) {
     return { verdict: 'unreachable', reason: describeFailures(failing, input) };
   }
-  const manual = ports.some(({ route }) => route.source === 'manual');
-  return { verdict: manual ? 'manual' : 'mapped', reason: null };
+  if (ports.some(({ route }) => route.source === 'manual')) return { verdict: 'manual', reason: null };
+  if (ports.some(({ route }) => route.source === 'direct')) return { verdict: 'direct', reason: firewallReminder(ports) };
+  return { verdict: 'mapped', reason: null };
 }
 
 /**
@@ -123,6 +125,16 @@ function describeCause(cause: FailureCause, entries: PortEntry[], input: NodeVer
     case 'pending':
       return `The ${joinNames(names)} ${entries.length === 1 ? 'is' : 'are'} not mapped yet; the router is being asked.`;
   }
+}
+
+/** Public mode: nothing to map, but a host or cloud firewall can still block the ports. */
+function firewallReminder(ports: PortEntry[]): string {
+  const numbers = ports.map(({ route }) => route.internalPort);
+  const ufw = numbers.length === 2 && Math.abs(numbers[0]! - numbers[1]!) === 1
+    ? `${Math.min(...numbers)}:${Math.max(...numbers)}/tcp`
+    : `${numbers.join(',')}/tcp`;
+  return `Reached directly at this machine's public address. Allow TCP ${ports.length === 1 ? 'port' : 'ports'} ${listPorts(ports)} through any firewall `
+    + `(for example: sudo ufw allow ${ufw}; and any cloud-provider firewall).`;
 }
 
 function kindLabel(kind: PortKind): string {

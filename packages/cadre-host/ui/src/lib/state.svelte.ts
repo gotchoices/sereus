@@ -15,7 +15,7 @@ import { deriveOverallStatus } from './overall-status.js';
 export type ContainerStatus = 'running' | 'stopped';
 
 export type DirectReachability = 'reachable' | 'unreachable' | 'unknown' | 'cgnat';
-export type NodeVerdict = 'mapped' | 'manual' | 'unreachable';
+export type NodeVerdict = 'mapped' | 'manual' | 'direct' | 'unreachable';
 
 export interface NodeInfo {
 	id: string;
@@ -40,7 +40,7 @@ export interface PortRoute {
 	internalPort: number;
 	/** Null when there is no route. */
 	externalPort: number | null;
-	source: 'upnp' | 'manual' | null;
+	source: 'upnp' | 'manual' | 'direct' | null;
 	leaseExpiresAt: string | null;
 	/** Last mapping failure in plain language. */
 	error: string | null;
@@ -65,7 +65,11 @@ export interface ManualForwardPatch {
 	ws?: number | null;
 }
 
+export type NetworkSetting = 'auto' | 'lan' | 'public';
+
 export interface NatStatusSnapshot {
+	/** LAN (behind a router) or public (an interface holds a public IPv4, e.g. a VPS). */
+	network: { setting: NetworkSetting; mode: 'lan' | 'public'; publicInterfaceIp: string | null };
 	upnpEnabled: boolean;
 	gateway: {
 		found: boolean;

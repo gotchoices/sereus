@@ -6,6 +6,7 @@ import type { NatService, NatChangeListener } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
 
 export const SAMPLE_CONNECTIVITY: NatStatusSnapshot = {
+  network: { setting: 'auto', mode: 'lan', publicInterfaceIp: null },
   upnpEnabled: true,
   gateway: { found: true, lanAddress: '192.168.1.20', routerExternalIp: '203.0.113.5', lastError: null },
   externalIp: '203.0.113.5',

@@ -42,7 +42,7 @@ import {
   HOSTED_NODE_REAP_SWEEP_MS,
   HOSTED_NODE_SPAWNING_TTL_MS,
 } from '../hosted/index.js';
-import { NatService } from '../nat/index.js';
+import { NatService, publicInterfaceAddress } from '../nat/index.js';
 import type { ManualForwardPatch } from '../nat/types.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
 import {
@@ -55,6 +55,7 @@ import {
 import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 import { printForwardResult, printNatStatus, type NatStatusLike } from './nat-output.js';
+import { isHeadless, uiAccessLines } from './ui-access.js';
 import {
   printClaimPayload,
   printClaimed,
@@ -128,6 +129,13 @@ program
         console.log('  Service:      not registered (--no-service)');
         console.log(`  Run the host: cadre-host start --data-dir "${result.dataDir}"`);
       }
+      const publicIp = publicInterfaceAddress();
+      console.log(publicIp
+        ? `  Network:      public IP ${publicIp}: nodes are reached directly. Allow their ports through your firewall (the UI lists them).`
+        : '  Network:      behind a router: nodes need UPnP or a port forward (the UI shows which).');
+      console.log('');
+      for (const line of uiAccessLines(Number(new URL(result.uiUrl).port), isHeadless())) console.log(line);
+      console.log('Everything else (a public name, joining a cadre, ports) is in the UI.');
       process.exit(0);
     } catch (err) {
       console.error(`install failed: ${(err as Error).message}`);
@@ -389,6 +397,12 @@ program
       }
       const cfg = readHostConfig(cfgPath);
       const url = `http://127.0.0.1:${cfg.uiPort}`;
+      if (isHeadless()) {
+        // A browser here would open nowhere the admin can see: say how to reach it instead.
+        for (const line of uiAccessLines(cfg.uiPort, true)) console.log(line);
+        process.exit(0);
+        return;
+      }
       console.log(url);
       if (opts.browser !== false) {
         const res = openBrowser(url);
@@ -673,18 +687,21 @@ nat
 
 nat
   .command('settings')
-  .description('Update NAT settings (UPnP toggle)')
+  .description('Update NAT settings (network mode, UPnP toggle)')
+  .option('--network <mode>', 'auto (default: public when this machine holds a public IPv4), lan (behind a router) or public (reached directly, e.g. a VPS)')
   .option('--upnp', 'Ask the router for port mappings over UPnP')
   .option('--no-upnp', 'Stop asking the router for port mappings (manual forwards stay)')
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
   .action(async (opts: {
+    network?: string;
     upnp?: boolean;
     port: string;
     host: string;
   }) => {
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/settings`;
     const patch: Record<string, unknown> = {};
+    if (opts.network !== undefined) patch.network = opts.network;
     // Commander assigns `upnp: false` when `--no-upnp` is passed.
     if (opts.upnp === false) patch.upnpEnabled = false;
     if (opts.upnp === true) patch.upnpEnabled = true;
