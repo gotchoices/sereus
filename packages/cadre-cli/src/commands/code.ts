@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import dgram from 'node:dgram';
 import { Command } from 'commander';
 import QRCode from 'qrcode';
-import { encodeNodeClaimPayload } from '@serfab/cadre-core';
+import { encodeNodeClaimPayload, selectNodeClaimAddresses } from '@serfab/cadre-core';
+import { primaryLanAddress } from '@serfab/cadre-core/primary-lan-address';
 import { specifiedEnv } from '@serfab/config-check';
 import { loadValidatedConfig } from '../config/loader.js';
 import { commandEnv } from '../config/env.js';
@@ -15,42 +15,35 @@ import { queryRuntime } from './status-query.js';
 /** Exit code when no running node answered, as `cadre status` uses. */
 const EXIT_UNREACHABLE = 3;
 
-const LOOPBACK = /^\/(ip4\/127\.|ip6\/::1\/|dns[46]?\/localhost\/)/;
-const DNS = /^\/dns[46]?\//;
-/** A phone has no TCP transport: it dials WebSocket and relay addresses only. */
-const PHONE_DIALABLE = /\/wss?(\/|$)|\/p2p-circuit(\/|$)/;
+const DNS = /^\/dns/;
 
-const IP_ADDR = /^\/ip[46]\/([^/]+)\//;
-const PRIVATE_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/;
-const PRIVATE_V6 = /^(f[cd]|fe80)/i;
-
-/** Whether an /ip4 or /ip6 address is on a private network (RFC 1918, CGNAT, link-local, ULA). */
-function isPrivateIp(ip: string): boolean {
-  return ip.includes(':') ? PRIVATE_V6.test(ip) : PRIVATE_V4.test(ip);
+/** How `cadre code` chooses addresses: its `--addr`, `--lan` / `--no-lan` and `--all` options. */
+export interface ClaimAddressChoice {
+  /** An exact list (`--addr`, repeatable), used as given apart from appending `/p2p/<peerId>`. */
+  addr?: string[];
+  /** `--lan <ip>`: the LAN address to keep; `false` from `--no-lan`: none; otherwise found automatically. */
+  lan?: string | boolean;
+  /** `--all`: every address the node reports, TCP and every interface included. */
+  all?: boolean;
 }
 
 /**
- * The addresses a node code carries, from those the node reports on `/status`: loopback
- * dropped, each ending in `/p2p/<peerId>`, DNS names first (the public names an operator
- * announced, which work away from home), then the rest in the node's order.
- *
- * Unless `all`: only addresses a phone can dial (no TCP), and of the private addresses only
- * those on `primaryIp`, the machine's main LAN address. A server also reports Docker bridges,
- * VPN and other interfaces no phone can reach, and the phone dials every address in turn, each
- * on its own timeout, so each dead one delays a failed claim. Without a `primaryIp` every
- * private address is kept. Shorter is also a smaller QR code.
+ * The addresses `cadre code` puts in the node code: the operator's exact `--addr` list when
+ * given, else cadre-core's {@link selectNodeClaimAddresses} over what the node reports, with
+ * the LAN address from `--lan`, none for `--no-lan`, or the machine's primary address.
  */
-export function selectClaimAddresses(reported: readonly string[], peerId: string, all = false, primaryIp?: string): string[] {
-  const suffix = `/p2p/${peerId}`;
-  const usable = reported
-    .filter((addr) => !LOOPBACK.test(addr))
-    .filter((addr) => all || PHONE_DIALABLE.test(addr))
-    .filter((addr) => {
-      const ip = IP_ADDR.exec(addr)?.[1];
-      return all || primaryIp === undefined || ip === undefined || !isPrivateIp(ip) || ip === primaryIp;
-    })
-    .map((addr) => (addr.endsWith(suffix) ? addr : `${addr}${suffix}`));
-  return [...new Set([...usable.filter((a) => DNS.test(a)), ...usable.filter((a) => !DNS.test(a))])];
+export async function claimAddressesFor(
+  reported: readonly string[],
+  peerId: string,
+  choice: ClaimAddressChoice,
+  detectLan: () => Promise<string | undefined> = primaryLanAddress,
+): Promise<string[]> {
+  if (choice.addr && choice.addr.length > 0) {
+    return [...new Set(choice.addr.map((a) => (a.trim().includes('/p2p/') ? a.trim() : `${a.trim()}/p2p/${peerId}`)))];
+  }
+  if (choice.all) return selectNodeClaimAddresses(reported, peerId, { includeTcp: true });
+  const lan = choice.lan === false ? null : typeof choice.lan === 'string' ? choice.lan : await detectLan();
+  return selectNodeClaimAddresses(reported, peerId, { lan });
 }
 
 /**
@@ -70,26 +63,6 @@ export function nodeCodeLink(base: string, code: string): string {
   return `${base}#${code}`;
 }
 
-/**
- * The machine's main LAN address: the local address the OS would use to reach the internet,
- * learned by "connecting" a UDP socket (which sends nothing) to a public address. Undefined
- * when there is no route (offline), and then no private address is dropped.
- */
-export async function primaryLocalIp(): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    const socket = dgram.createSocket('udp4');
-    const done = (ip?: string) => { try { socket.close(); } catch { /* already closed */ } resolve(ip); };
-    socket.on('error', () => done());
-    try {
-      socket.connect(53, '1.1.1.1', () => {
-        try { done(socket.address().address); } catch { done(); }
-      });
-    } catch {
-      done();
-    }
-  });
-}
-
 /** The command that opens a file in the desktop's default viewer, or why there is none. */
 export function openerFor(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): { command: string; args: (file: string) => string[] } | { none: string } {
   if (platform === 'darwin') return { command: 'open', args: (file) => [file] };
@@ -104,6 +77,8 @@ interface CodeOptions {
   healthPort: string;
   timeout: string;
   all?: boolean;
+  addr?: string[];
+  lan?: string | boolean;
   qr?: boolean;
   png?: string;
   svg?: string;
@@ -119,7 +94,10 @@ export const codeCommand = new Command('code')
   .option('--health-host <host>', 'Host of the running node\'s health server', 'localhost')
   .option('--health-port <port>', 'Port of the running node\'s health server (env: CADRE_HEALTH_PORT)', '8080')
   .option('--timeout <ms>', 'Status query timeout in milliseconds', '2000')
-  .option('--all', 'Include every address the node reports: TCP (phones cannot dial it) and private addresses on interfaces other than the main LAN one (Docker bridges, VPNs)')
+  .option('--lan <ip>', 'The LAN address phones at home use (default: the machine\'s primary address); other private addresses, such as Docker bridges and VPNs, are left out')
+  .option('--no-lan', 'Leave every LAN address out: phones reach this node by its public name only')
+  .option('--addr <multiaddr>', 'Put exactly these addresses in the code, in this order (repeatable); /p2p/<peer id> is appended when missing', (value: string, previous: string[]) => [...previous, value], [] as string[])
+  .option('--all', 'Include every address the node reports: TCP (phones cannot dial it) and every interface')
   .option('--qr', 'Also show the code as a QR code in the terminal')
   .option('--png <file>', 'Also write the QR code as a PNG image (mode 600: it carries the secret)')
   .option('--svg <file>', 'Also write the QR code as an SVG image (mode 600)')
@@ -146,10 +124,10 @@ export const codeCommand = new Command('code')
       const peerId = status.node.peerId ?? status.peerId;
       if (!peerId) throw new Error('The node has not reported its peer id yet; try again in a moment.');
 
-      const multiaddrs = selectClaimAddresses(status.multiaddrs, peerId, options.all, options.all ? undefined : await primaryLocalIp());
+      const multiaddrs = await claimAddressesFor(status.multiaddrs, peerId, options);
       if (multiaddrs.length === 0) {
-        throw new Error(`The node reports no address a phone can dial (${options.all ? 'none at all' : 'no /ws, /wss or relay address'}). `
-          + 'Add a WebSocket listener (/ip4/0.0.0.0/tcp/<port>/ws, or cadre start --ws-port).');
+        throw new Error('The node reports no address a phone can dial (no /ws, /wss or relay address after --lan/--no-lan). '
+          + 'Add a WebSocket listener (/ip4/0.0.0.0/tcp/<port>/ws, or cadre start --ws-port), or name addresses with --addr.');
       }
       const code = encodeNodeClaimPayload({ peerId, multiaddrs, secret });
       const text = options.link ? nodeCodeLink(options.link, code) : code;

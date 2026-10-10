@@ -161,6 +161,16 @@ cadre-host nat forward hn_abc123 --clear                  # forget them
 
 The UI's **Connectivity** page shows the same per node, with an "I forwarded these ports" form. A node whose public addresses change restarts to announce them to the cadre it belongs to, at most once every 10 minutes; a node that restarts or respawns keeps its ports, so the forward stays valid. If your ISP uses carrier-grade NAT, a port forward will not help and the status says so. See [docs/cadre-host.md § Manual port forwarding](../../docs/cadre-host.md#manual-port-forwarding).
 
+**Which addresses the QR code carries.** A phone tries each address in turn, so the code carries only ones a phone can use: the public addresses (your DDNS name when set, otherwise the public IP) and one LAN address for phones at home. Docker bridges, VPN interfaces and TCP are left out. By default the LAN address is this machine's address on the router's network. To choose it, or to leave it out (a machine reached only by its public name), or to list exact addresses instead, use **Settings → Claim code addresses** in the UI, or set `claimAddresses` in `host.config.json`:
+
+```json
+"claimAddresses": { "lan": "192.168.1.20" }
+"claimAddresses": { "lan": "none" }
+"claimAddresses": { "addrs": ["/dns4/node.example.org/tcp/443/wss"] }
+```
+
+The next code shown uses the change; no restart is needed.
+
 When your residential IP changes (it will), members can't find you on the old IP. DDNS (a hostname that auto-updates to your current IP) fixes this:
 
 ```bash

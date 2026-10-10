@@ -24,6 +24,10 @@
       "types": "./dist/key-store-file.d.ts",
       "import": "./dist/key-store-file.js"
     },
+    "./primary-lan-address": {
+      "types": "./dist/primary-lan-address.d.ts",
+      "import": "./dist/primary-lan-address.js"
+    },
     "./trusted-owner-store-file": {
       "types": "./dist/trusted-owner-store-file.d.ts",
       "import": "./dist/trusted-owner-store-file.js"

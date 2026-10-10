@@ -63,7 +63,8 @@ function makeHarness(store?: HostedNodeStore): Harness {
   const service = new HostedNodeService({
     orchestrator: orch,
     store: theStore,
-    addresses: { publicAddressesFor: () => [], getStatus: () => ({ nodes: [] }) },
+    addresses: { publicAddressesFor: () => [], getStatus: () => ({ nodes: [], gateway: { lanAddress: null } }) },
+      primaryLan: async () => undefined,
     now,
   });
   const changes: HostedNodeChange[] = [];
