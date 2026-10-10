@@ -23,8 +23,27 @@ export type DirectReachability = 'reachable' | 'unreachable' | 'unknown' | 'cgna
 /** The two ports of a hosted node that are mapped: libp2p TCP and libp2p WebSocket. */
 export type PortKind = 'tcp' | 'ws';
 
-/** Where a port's external route came from. */
-export type PortRouteSource = 'upnp' | 'manual';
+/**
+ * How this machine meets the internet. `lan`: behind a router (home or office), so node ports need
+ * UPnP or a forward on the router. `public`: an interface holds a public IPv4 (a VPS, a server with a
+ * routed address), so node ports are reachable at their own numbers unless a firewall blocks them.
+ */
+export type NetworkMode = 'lan' | 'public';
+
+/** The `network` setting: `auto` picks the mode from this machine's interfaces. */
+export type NetworkSetting = 'auto' | NetworkMode;
+
+/** The network section of the status snapshot. */
+export interface NatNetworkStatus {
+  setting: NetworkSetting;
+  /** The mode in effect: the setting, or what `auto` found. */
+  mode: NetworkMode;
+  /** The public IPv4 an interface holds, when one does; what `auto` decides on. */
+  publicInterfaceIp: string | null;
+}
+
+/** Where a port's external route came from. `direct`: public mode, the port as-is. */
+export type PortRouteSource = 'upnp' | 'manual' | 'direct';
 
 /** How one of a node's ports is reached from outside the home network. */
 export interface PortRoute {
@@ -38,8 +57,8 @@ export interface PortRoute {
   error: string | null;
 }
 
-/** Per-node verdict. */
-export type NodeVerdict = 'mapped' | 'manual' | 'unreachable';
+/** Per-node verdict. `direct`: reachable at this machine's public address, firewall permitting. */
+export type NodeVerdict = 'mapped' | 'manual' | 'direct' | 'unreachable';
 
 /** Reachability of one hosted node, as reported in the status snapshot. */
 export interface NodeReachability {
@@ -50,7 +69,8 @@ export interface NodeReachability {
   /**
    * Plain-language reason and remedy when unreachable, e.g. "Router refused
    * the WebSocket port mapping. Forward port 10004 to 192.168.1.20 on your
-   * router, then tell cadre-host the external port."
+   * router, then tell cadre-host the external port." For `direct`, the
+   * firewall reminder: which ports to allow.
    */
   reason: string | null;
   tcp: PortRoute;
@@ -73,6 +93,7 @@ export interface NatGatewayStatus {
 
 /** Snapshot returned to the management UI / CLI. */
 export interface NatStatusSnapshot {
+  network: NatNetworkStatus;
   upnpEnabled: boolean;
   gateway: NatGatewayStatus;
 
@@ -123,7 +144,9 @@ export interface ManualForwardPatch {
  */
 export interface NatSettingsFile {
   version: 1;
-  /** Whether to ask the router for port mappings at all. */
+  /** LAN or public-IP mode; `auto` (default) decides from the interfaces. Absent in older files. */
+  network: NetworkSetting;
+  /** Whether to ask the router for port mappings at all. Ignored in public mode. */
   upnpEnabled: boolean;
   /** Per node id: the external port the user forwarded on their router, per port kind. */
   forwards: Record<string, ManualForward>;

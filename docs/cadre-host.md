@@ -231,7 +231,18 @@ This is a rule of the whole hosted-node surface. Spawning a child takes seconds,
 
 ## NAT and DDNS
 
-Cadre-host runs on machines that are typically behind NAT. For the nodes it runs to be dialable from the open internet it composes three layers, each fail-safe and independent:
+Cadre-host runs on machines that are typically behind NAT, and sometimes on one that holds a public IP address. The **network mode** says which (`nat.json` `network`: `auto` (default) | `lan` | `public`, set from Connectivity or `cadre-host nat settings --network`):
+
+- **`lan`:** the layers below apply.
+- **`public`:** an interface holds a public IPv4, as on a VPS.
+  - Every node port gets a `direct` route: reached at its own number, with nothing to map.
+  - No UPnP discovery or mapping runs, and CGNAT is ruled out.
+  - Public addresses use the interface's address, or the DDNS hostname when one is set.
+  - The node's verdict is `direct`, and its reason is the firewall reminder (which ports to allow) rather than router advice.
+  - A manual forward still wins, for a public machine behind a provider's NAT.
+- **`auto`:** reads the interfaces (`publicInterfaceAddress`) at start and on every probe pass. A change of mode re-routes every node, and leaving `lan` releases its UPnP mappings.
+
+In LAN mode, for the nodes it runs to be dialable from the open internet, cadre-host composes three layers, each fail-safe and independent:
 
 1. **Port mapping per hosted node.** `NatService` keeps one mapping table keyed by node id (the hosted node's id) with a route per port: the node's libp2p TCP port and its WebSocket port, the one a phone dials. Health and metrics ports are never mapped. See [Port mapping](#port-mapping) for the rules.
 2. **Circuit-relay reservation (not wired).** When the host is unreachable directly (CGNAT or stubborn router), a relay reservation would give its nodes a `/p2p-circuit` address phones can still dial. The pieces exist below cadre-host: cadre-core runs relay servers (`network.enableRelay`) and can reserve on a relay (`network.relayAddrs`), and cadre-cli exposes the reservation as `CADRE_RELAY_ADDRS`. What is missing is in cadre-host itself: host settings have no field for a relay address, and the spawn removes every `CADRE_*` variable from the environment its nodes inherit, then never sets `CADRE_RELAY_ADDRS`. So no node cadre-host runs is reachable through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)), and a host behind CGNAT cannot make its nodes reachable from outside its network (`feat-cadre-host-children-reserve-on-a-relay`). Nodes listen and announce on IPv4 only, so IPv6 is no way around it either.

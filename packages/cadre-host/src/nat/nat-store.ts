@@ -8,6 +8,7 @@ import {
   type ManualForwardPatch,
   type NatDdnsSettings,
   type NatSettingsFile,
+  type NetworkSetting,
   type PortKind,
 } from './types.js';
 import { isDnsHostname } from './address-resolver.js';
@@ -144,6 +145,7 @@ export class NatStore {
 function defaultSettings(): NatSettingsFile {
   return {
     version: FILE_VERSION,
+    network: 'auto',
     upnpEnabled: true,
     forwards: {},
     ddns: defaultDdns(),
@@ -169,6 +171,8 @@ function fromParsed(v: unknown): NatSettingsFile | null {
   const obj = v as Record<string, unknown>;
   if (obj.version !== FILE_VERSION) return null;
   if (typeof obj.upnpEnabled !== 'boolean') return null;
+  // Absent in a file written before network modes existed; that reads as `auto`.
+  if (obj.network !== undefined && !isNetworkSetting(obj.network)) return null;
   const ddns = obj.ddns as Record<string, unknown> | undefined;
   if (!ddns || typeof ddns !== 'object') return null;
   if (ddns.providerId !== null && typeof ddns.providerId !== 'string') return null;
@@ -179,6 +183,7 @@ function fromParsed(v: unknown): NatSettingsFile | null {
   if (!forwards) return null;
   return {
     version: FILE_VERSION,
+    network: (obj.network as NetworkSetting | undefined) ?? 'auto',
     upnpEnabled: obj.upnpEnabled,
     forwards,
     ddns: {
@@ -209,7 +214,14 @@ function parseForwards(v: unknown): Record<string, ManualForward> | null {
   return out;
 }
 
+function isNetworkSetting(v: unknown): v is NetworkSetting {
+  return v === 'auto' || v === 'lan' || v === 'public';
+}
+
 function validate(s: NatSettingsFile): void {
+  if (!isNetworkSetting(s.network)) {
+    throw new NatError('invalid_config', `network must be "auto", "lan" or "public", got "${String(s.network)}"`);
+  }
   for (const [nodeId, forward] of Object.entries(s.forwards)) {
     if (nodeId.length === 0) {
       throw new NatError('invalid_config', 'a manual forward needs a node id');

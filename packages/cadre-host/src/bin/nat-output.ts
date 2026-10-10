@@ -26,6 +26,7 @@ export interface NatNodeLike {
 }
 
 export interface NatStatusLike {
+  network?: { setting?: string; mode?: string; publicInterfaceIp?: string | null };
   upnpEnabled?: boolean;
   gateway?: {
     found?: boolean;
@@ -85,6 +86,15 @@ export function printForwardResult(nodeId: string, s: NatStatusLike): void {
 }
 
 function printHostLines(s: NatStatusLike): void {
+  const network = s.network ?? {};
+  const how = network.setting === 'auto' || network.setting === undefined ? 'detected' : 'set';
+  if (network.mode === 'public') {
+    console.log(`Network:      public IP ${network.publicInterfaceIp ?? s.externalIp ?? '?'} on this machine (${how}); no router, so no UPnP`);
+    console.log(`External IP:  ${s.externalIp ?? network.publicInterfaceIp ?? '(unknown)'}`);
+    console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
+    return;
+  }
+  console.log(`Network:      behind a router (${how})`);
   const gateway = s.gateway ?? {};
   const gatewayLine = gateway.found
     ? `found (this machine is ${gateway.lanAddress ?? '?'} on its network)`
@@ -115,7 +125,7 @@ function printNodeReachability(n: NatNodeLike, s: NatStatusLike): void {
   printField('TCP', [formatRoute(n.tcp)]);
   printField('WebSocket', [n.ws ? formatRoute(n.ws) : 'not available']);
   printField('Public', n.publicAddrs?.length ? n.publicAddrs : ['none']);
-  if (n.reason) printField('Why', [n.reason]);
+  if (n.reason) printField(n.verdict === 'direct' ? 'Firewall' : 'Why', [n.reason]);
   const advice = forwardAdvice(n, s);
   if (advice.length > 0) printField('To fix', advice);
 }
@@ -129,6 +139,7 @@ function formatRoute(r: NatPortRouteLike | undefined): string {
   const internal = `internal ${r.internalPort ?? '?'}`;
   if (r.externalPort == null) return `${internal} → not mapped${r.error ? ` (${r.error})` : ''}`;
   const failed = r.error ? `; last attempt failed: ${r.error}` : '';
+  if (r.source === 'direct') return `${internal} → public, as-is${failed}`;
   return `${internal} → external ${r.externalPort} (${r.source === 'manual' ? 'forwarded by hand' : 'UPnP'}${failed})`;
 }
 

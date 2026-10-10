@@ -131,7 +131,7 @@ describe('Installer smoke', () => {
     // returned answers stand on their own.
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
-    let seenDefaults: { dataDir: string; uiPort: number; upnpEnabled: boolean } | undefined;
+    let seenDefaults: Record<string, unknown> | undefined;
     await installer.install({
       nonInteractive: false,
       dataDir: tmp,
@@ -139,6 +139,7 @@ describe('Installer smoke', () => {
       noUpnp: true,
       openBrowser: false,
       serviceHost: fake,
+      publicInterfaceAddress: () => null,
       wizard: async (defaults) => {
         seenDefaults = { ...defaults };
         // Simulate the user pressing Enter at every prompt.
@@ -146,15 +147,17 @@ describe('Installer smoke', () => {
           dataDir: defaults.dataDir,
           uiPort: defaults.uiPort,
           upnpEnabled: defaults.upnpEnabled,
-          configureDdns: false,
         };
       },
     });
 
+    // Every value came from a flag, so the wizard is told not to ask for any of them.
     expect(seenDefaults).toEqual({
       dataDir: tmp,
       uiPort: 19997,
       upnpEnabled: false,
+      given: { dataDir: true, uiPort: true, upnpEnabled: true },
+      publicInterfaceIp: null,
     });
     expect(fake.installCalls).toHaveLength(1);
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
@@ -173,7 +176,6 @@ describe('Installer smoke', () => {
         dataDir: tmp,
         uiPort: 19996,
         upnpEnabled: true,
-        configureDdns: false,
       }),
     });
     expect(fake.installCalls).toHaveLength(1);
