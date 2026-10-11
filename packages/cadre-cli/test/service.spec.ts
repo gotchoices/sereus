@@ -34,10 +34,17 @@ describe('renderService', () => {
     expect(unit).toMatch(/ExecStart=.* start -c \/opt\/cadre\/cadre\.yaml --health-port 8081$/m);
   });
 
-  it('quotes paths with spaces for systemd', () => {
-    const unit = renderService({ ...SPEC, configPath: '/home/k/my node/cadre.yaml', workdir: '/home/k/my node' });
-    expect(unit).toContain('WorkingDirectory="/home/k/my node"');
-    expect(unit).toContain('start -c "/home/k/my node/cadre.yaml"');
+  it('writes paths literally for systemd: ExecStart words quoted, %, $ and \\ escaped; WorkingDirectory unquoted', () => {
+    const dir = '/home/k/my 100% $node\\x';
+    const unit = renderService({ ...SPEC, configPath: `${dir}/cadre.yaml`, workdir: dir });
+    expect(unit).toContain('WorkingDirectory=/home/k/my 100%% $node\\x\n');
+    expect(unit).toContain('start -c "/home/k/my 100%% $$node\\\\x/cadre.yaml"');
+  });
+
+  it('refuses a service name or path it cannot write safely', () => {
+    expect(() => renderService({ ...SPEC, name: 'cadre@1' })).toThrow(/--name/);
+    expect(() => renderService({ ...SPEC, name: '-x; rm' })).toThrow(/--name/);
+    expect(() => renderService({ ...SPEC, workdir: '/opt/a\nExecStartPre=/bin/x' })).toThrow(/control character/);
   });
 
   it('writes a launchd agent that runs at load, is kept alive, and logs into the node folder', () => {

@@ -218,7 +218,7 @@ A claim secret, and a claim on record, cannot be combined with `--owner`, `--see
   ```
 - **macOS:** a launchd agent (`~/Library/LaunchAgents/org.sereus.cadre-node.plist`), logging into the node folder.
 
-`--name` changes the service name (to run several nodes), `-c` points at another config, and `--health-port` / `--metrics-port` are passed to `cadre start`. Stop a copy running in a terminal first: the two would hold the same ports. The [systemd unit in `contrib/`](./contrib/cadre-node.service) remains the template for a dedicated `cadre` system user with `/etc/cadre` and `/var/lib/cadre`.
+`--name` changes the service name (to run several nodes; letters, digits, `.`, `_` and `-`), `-c` points at another config, and `--health-port` / `--metrics-port` are passed to `cadre start`. Stop a copy running in a terminal first: the two would hold the same ports. The systemd unit sets `NoNewPrivileges=` and no file-system sandboxing, because the node folder can be anywhere its account can write. The [systemd unit in `contrib/`](./contrib/cadre-node.service) remains the template for a sandboxed node run by a dedicated `cadre` system user with `/etc/cadre` and `/var/lib/cadre`.
 
 ### The node code
 
