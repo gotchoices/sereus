@@ -38,7 +38,7 @@ import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, waitUntil, readCohort, peerDialGate, captureRawStorage, awaitBlockCoverage,
-	startPinningMember, admitMember, redeemWithRetry, type InviteMember,
+	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -122,9 +122,9 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			P = new CadreNode(controlNodeConfig({ partyId, privateKey: pKey, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
 			await P.start();
 			const redeemStartedAt = Date.now();
-			const { joined, attempts } = await redeemWithRetry(P, invitation, STARTUP_MS, 'row-unreplicated');
-			console.log('[row-unreplicated] P was admitted on attempt %d, %d ms after it first asked', attempts, Date.now() - redeemStartedAt);
-			expect(attempts).toBe(1);
+			const { joined, passes } = await redeemWaitingForMember(P, invitation, STARTUP_MS, 'row-unreplicated');
+			console.log('[row-unreplicated] P was admitted on pass %d, %d ms after it first asked', passes, Date.now() - redeemStartedAt);
+			expect(passes).toBe(1);
 			expect(joined.peerId).toBe(member.peerId);
 			expect(joined.grantsOwner).toBe(true);
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(true);

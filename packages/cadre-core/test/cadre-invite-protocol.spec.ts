@@ -16,6 +16,7 @@ import {
   type CadreInviteRedeemReply,
   type CadreInviteStore
 } from '../src/cadre-invite-protocol.js';
+import { CADRE_INVITATION_PREFIX, encodeCadreJoinRequest } from '../src/cadre-join-request.js';
 import { writeFrame, type ControlStream } from '../src/control-stream.js';
 import type { CadreInviteRow } from '../src/types.js';
 import { freshKeyPair, freshStamp, signAs, type KeyPair } from './control-constraint-helpers.js';
@@ -321,11 +322,16 @@ describe('cadre invitation redemption protocol', () => {
     expect((failure as CadreInviteUnreachableError).retryable).toBe(true);
   });
 
-  it('encodes and decodes a bundle, refusing another version or a malformed one', async () => {
+  it('encodes and decodes a bundle behind its prefix, refusing another version, a malformed one, no prefix, or a join request', async () => {
     const invitation = await mint();
-    expect(decodeCadreInvitation(encodeCadreInvitation(invitation))).toEqual(invitation);
+    const encoded = encodeCadreInvitation(invitation);
+    expect(encoded.startsWith(CADRE_INVITATION_PREFIX)).toBe(true);
+    expect(decodeCadreInvitation(encoded)).toEqual(invitation);
     expect(() => decodeCadreInvitation(encodeCadreInvitation({ ...invitation, v: 2 as unknown as 1 }))).toThrow(/unsupported version/);
     expect(() => decodeCadreInvitation(encodeCadreInvitation({ ...invitation, ownerKeys: [] }))).toThrow(/malformed/);
-    expect(() => decodeCadreInvitation('not base64url json')).toThrow(/does not decode/);
+    expect(() => decodeCadreInvitation(`${CADRE_INVITATION_PREFIX}not base64url json`)).toThrow(/does not decode/);
+    expect(() => decodeCadreInvitation(encoded.slice(CADRE_INVITATION_PREFIX.length))).toThrow(/must start with/);
+    const request = encodeCadreJoinRequest({ v: 1, peerId: (await mintContactJoiner()).partyId, appName: 'New app' });
+    expect(() => decodeCadreInvitation(request)).toThrow(/join request, not a cadre invitation/);
   });
 });

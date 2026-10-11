@@ -38,6 +38,7 @@ import type {
   CadreInviteStatus,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
+  RedeemCadreInvitationOptions,
   RedeemCadreInvitationResult,
   PeerAddressRecord,
   ResolveDeviceTokenOpts,
@@ -117,7 +118,7 @@ import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConf
 import {
   CadreInviteHandler,
   encodeCadreInvitation,
-  redeemAtMembers,
+  redeemInPasses,
   signRedeemRequest,
   type CadreInvitation
 } from './cadre-invite-protocol.js';
@@ -137,7 +138,12 @@ import {
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
-import { selectInvitationSiblingAddrs, type InvitationSibling } from './invitation-bootstrap.js';
+import {
+  cadreInvitationReach,
+  selectCadreInvitationMembers,
+  selectInvitationSiblingAddrs,
+  type InvitationSibling
+} from './invitation-bootstrap.js';
 import {
   createMembershipConnectionGater,
   UnauthorizedReservationBudget,
@@ -7524,18 +7530,23 @@ export class CadreNode implements SAppIdLookup {
     // — anchor it in the node-local store. The in-memory set updates
     // synchronously (see TrustedOwnerStore.trust); only the file persist is
     // fire-and-forget, logged on failure.
-    // NOTE: non-founder members that also wire seed-bootstrap with their own
-    // derived key (e.g. the phone joiner path in runOwnerGenesis, which needs
-    // it to self-publish its CadrePeer row) self-anchor a key that is not a
-    // party authority. The anchor sync (`syncOwnerAnchor`) does not correct this:
-    // a `genesis` entry is base, kept whether or not a live `OwnerKey` row vouches
-    // it. Harmless while such a node never mints an invite: the store does not
-    // replicate, so a node trusting itself grants nothing to others. But
-    // `createCadreInvitation` hands out the anchor's contents as the device's pins,
-    // so the moment a non-founder member mints an invitation it exports its own
-    // non-authority key as a cadre owner key. If that becomes reachable (today only
-    // cadre-cli/cadre-host owners mint invitations), gate this self-anchor on the
-    // actual OwnerKey genesis insert instead.
+    // NOTE: wiring a key that is not a live owner here self-anchors a key that is
+    // no party authority, and the anchor sync (`syncOwnerAnchor`) does not correct
+    // it: a `genesis` entry is base, kept whether or not a live `OwnerKey` row
+    // vouches it. A machine that joined by invitation reaches this only through
+    // `wireOwnKeyIfOwner`, which checks the row first, so a joined non-owner never
+    // self-anchors. Three callers still wire unconditionally on every start, so a
+    // node of theirs started for a party founded elsewhere does: the phone kit's
+    // `runOwnerGenesis` (cadre-rn; its joined-party path is ticket
+    // app-joins-existing-cadre-by-invitation), the web reference app's start
+    // (`cadre-web.ts`) and `cadre start --owner`. Contained while the store does
+    // not replicate and such a node cannot mint: `createCadreInvitation` hands out
+    // the anchor as the device's pins, but the `CadreInvite` insert needs a live
+    // owner as issuer. If anything hands out the anchor without that check, gate
+    // this self-anchor on a live `OwnerKey` row instead. A non-owner needs no
+    // owner key to publish its own address record: once an owner or a redemption
+    // has written its `CadrePeer` row, `registerSelf` refreshes it with the
+    // identity key alone.
     if (this.trustedOwnerStore) {
       void this.trustedOwnerStore
         .trust(ed25519PublicKeyFromPrivate(ownerPrivateKey), 'genesis')
@@ -8527,9 +8538,13 @@ export class CadreNode implements SAppIdLookup {
    * only, never the raw replicated `OwnerKey` table, because the device anchors whatever
    * arrives and a stranger's genesis-inserted key must not ride an invitation into a fresh
    * node's anchor; an empty anchor is refused because a reply could not be checked), and
-   * the addresses of this machine first
-   * ({@link resolveInviteAddresses}, which honours pushed NAT addresses) then up to three
-   * other members ({@link siblingInvitationAddrs}).
+   * at most six addresses: this machine's first ({@link resolveInviteAddresses}, which
+   * honours pushed NAT addresses), then two each of up to three other members
+   * (`selectCadreInvitationMembers`), so the encoded text fits a QR code.
+   *
+   * The result's `reach` says where a device could redeem it from once this machine is gone
+   * (`cadreInvitationReach`, judged on the other members' addresses only), so an app can warn
+   * before handing over an invitation only it could answer.
    *
    * The row commits locally and replicates like any other control write; minted while
    * alone (a phone with no connection), it reaches the other members through the
@@ -8553,7 +8568,8 @@ export class CadreNode implements SAppIdLookup {
     if (!Number.isInteger(uses) || uses < 1) {
       throw new Error(`createCadreInvitation: uses must be a positive integer (received ${String(options.uses)})`);
     }
-    const members = [...await this.resolveInviteAddresses(), ...await this.siblingInvitationAddrs()];
+    const { siblings, connected } = await this.resolveInvitationSiblings();
+    const members = selectCadreInvitationMembers(await this.resolveInviteAddresses(), siblings, connected);
     if (members.length === 0) {
       throw new Error('createCadreInvitation: neither this machine nor any other machine of the party has an address a device could dial');
     }
@@ -8575,9 +8591,10 @@ export class CadreNode implements SAppIdLookup {
       ownerKeys,
       members,
     };
-    log('Cadre invitation minted: %s (peer=%s owner=%s uses=%d, %d member address(es))',
-      row.key, row.peerId ?? 'any', row.grantsOwner, uses, members.length);
-    return { invitation, encoded: encodeCadreInvitation(invitation) };
+    const reach = cadreInvitationReach(members, this.controlNode!.peerId.toString());
+    log('Cadre invitation minted: %s (peer=%s owner=%s uses=%d, %d member address(es), reach=%s)',
+      row.key, row.peerId ?? 'any', row.grantsOwner, uses, members.length, reach);
+    return { invitation, encoded: encodeCadreInvitation(invitation), reach };
   }
 
   /**
@@ -8617,7 +8634,7 @@ export class CadreNode implements SAppIdLookup {
    * Steps: refuse an invitation for another party; pin its `ownerKeys` into the node-local
    * anchor (`'invite'` provenance — the pin sticks even if the redemption then fails, as it
    * does for a seed invite, so a later attempt or seed from the same owner is anchored);
-   * sign the request; dial the listed members in order ({@link redeemAtMembers}); on
+   * sign the request; dial the listed members in order (`redeemAtMembers`); on
    * acceptance verify the reply against the pinned keys, merge its dial hints into the peer
    * store, retain the answering member as a cold-start dial target, refresh the membership
    * gate and start a cohort reconcile pass. This node then syncs the control database over
@@ -8626,11 +8643,20 @@ export class CadreNode implements SAppIdLookup {
    * A device that is already a member (a restart with the invitation still configured) is
    * answered as accepted by the member's idempotent redemption, with no second usage row.
    *
+   * One pass over the listed members by default. With `options.waitForMember` the call keeps
+   * making passes while every answer is retryable — for a device redeeming while no
+   * always-on member is up — until a member accepts, one refuses finally, the invitation
+   * expires (thrown as the `invite-spent` refusal) or `options.signal` aborts
+   * (`redeemInPasses`). The request is signed once, before the first pass, and every pass
+   * sends it: its `usageStampId` keys the usage row, so a member that admitted this node on a
+   * pass whose reply was lost answers the next as already a member. `options.onProgress`
+   * reports each pass and pause.
+   *
    * When the invitation grants ownership, the member seats this node's key as an `OwnerKey`
-   * row by consent. The caller still has to wire that key for signing afterwards —
-   * `initializeSeedBootstrap(ownKey)`, which anchors it; never `ensureOwnerKey`, the row is
-   * already there. Other machines derive this node's key into their anchors from the row's
-   * stored proof on their next membership refresh ({@link syncOwnerAnchor}).
+   * row by consent. The caller still has to wire that key for signing afterwards, with
+   * {@link wireOwnKeyIfOwner}; never `ensureOwnerKey`, the row is already there. Other
+   * machines derive this node's key into their anchors from the row's stored proof on their
+   * next membership refresh ({@link syncOwnerAnchor}).
    *
    * Limit: the reply check ({@link verifyRedeemReply}) does not authenticate the member. A
    * forged bundle, or a legitimate one whose addresses were swapped, dials a machine that
@@ -8641,10 +8667,10 @@ export class CadreNode implements SAppIdLookup {
    *
    * @throws `CadreInviteRejectedError` on a final refusal, `CadreInviteReplyInvalidError` on
    *   an acceptance that fails the reply check, `CadreInviteUnreachableError` when every
-   *   listed address was tried without an acceptance, and a plain `Error` for the
-   *   preconditions above.
+   *   listed address was tried without an acceptance (one pass only), the signal's reason on
+   *   an abort, and a plain `Error` for the preconditions above.
    */
-  async redeemCadreInvitation(invitation: CadreInvitation): Promise<RedeemCadreInvitationResult> {
+  async redeemCadreInvitation(invitation: CadreInvitation, options: RedeemCadreInvitationOptions = {}): Promise<RedeemCadreInvitationResult> {
     const controlNode = this.controlNode;
     if (!controlNode || !this.controlDatabase || !this._running) {
       throw new Error('CadreNode must be started before redeeming a cadre invitation');
@@ -8664,11 +8690,14 @@ export class CadreNode implements SAppIdLookup {
       generateStampId(controlNode.peerId.toString()),
       await this.resolveInviteAddresses()
     );
-    const { reply, memberPeerId, memberAddr } = await redeemAtMembers(controlNode, {
+    const { reply, memberPeerId, memberAddr } = await redeemInPasses(controlNode, {
       invitation,
       request,
       isTrustedIssuer: (ownerKey) => pinned.has(ownerKey),
       linkRoundTripMs: this.config.network?.linkRoundTripMs,
+      waitForMember: options.waitForMember ?? false,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
     });
     log('Cadre invitation %s redeemed at %s (owner=%s)', invitation.invite.key, memberAddr, reply.invite.grantsOwner);
 
@@ -8687,6 +8716,39 @@ export class CadreNode implements SAppIdLookup {
     void this.reconcileControlCohort().catch((error) =>
       log('redeemCadreInvitation: the post-redemption reconcile pass failed: %o', error));
     return { peerId: memberPeerId, grantsOwner: reply.invite.grantsOwner, redeemedAt: new Date().toISOString() };
+  }
+
+  /**
+   * If this node's identity key is a live `OwnerKey` here, wire it for signing
+   * ({@link initializeSeedBootstrap}) and return true; otherwise change nothing and return
+   * false. For a machine that joined someone else's cadre by invitation: after an
+   * owner-granting redemption, and on every later start. A redemption seats the request's
+   * `peerKey`, the key behind this node's peer id, so the identity key is the one to look for.
+   *
+   * Unlike `ensureOwnerKey` it never inserts an `OwnerKey` row, so a machine that joined a
+   * cadre can never genesis-insert itself into it, and a non-owner never anchors its own key.
+   * An owner whose key is already wired (an earlier call) is answered true with nothing redone.
+   *
+   * NOTE: a node running the listener-only seed service ({@link enableSeedListener}) cannot be
+   * wired this way: libp2p takes one seed handler, and {@link initializeSeedBootstrap} would
+   * register a second. Nothing that joins by invitation enables the listener today; if one
+   * does, replace the listener here rather than beside it.
+   *
+   * @throws when the node is not started.
+   */
+  async wireOwnKeyIfOwner(): Promise<boolean> {
+    if (!this.controlDatabase || !this._running) {
+      throw new Error('CadreNode must be started before wiring its owner key');
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey || !(await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64)) {
+      log('wireOwnKeyIfOwner: this node\'s key is not an owner here; not wiring it');
+      return false;
+    }
+    if (!this.seedBootstrapService?.canAuthorize()) {
+      await this.initializeSeedBootstrap(signingKey.privateKeyB64);
+    }
+    return true;
   }
 
   // ============================================================================
@@ -8832,20 +8894,28 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Addresses of the party's other machines for an invitation's bootstrap list — an open
-   * strand invitation's ({@link createOpenInvitation}) or a cadre invitation's
-   * ({@link createCadreInvitation}); {@link selectInvitationSiblingAddrs} picks which. The
-   * source is each authorized member's signed `CadrePeer` record ({@link resolvePeerRecord}),
-   * so a machine whose record is missing, stale or untrusted is left out; live connections
-   * only order them.
+   * Addresses of the party's other machines for an open strand invitation's bootstrap list
+   * ({@link createOpenInvitation}); {@link selectInvitationSiblingAddrs} picks which.
+   */
+  private async siblingInvitationAddrs(): Promise<string[]> {
+    const { siblings, connected } = await this.resolveInvitationSiblings();
+    return selectInvitationSiblingAddrs(siblings, connected);
+  }
+
+  /**
+   * The party's other machines an invitation may name — an open strand invitation
+   * ({@link siblingInvitationAddrs}) or a cadre invitation ({@link createCadreInvitation}) —
+   * and which of them this node is connected to. The source is each authorized member's
+   * signed `CadrePeer` record ({@link resolvePeerRecord}), so a machine whose record is
+   * missing, stale or untrusted is left out; live connections only order them.
    *
    * Best-effort: a failed read leaves the invitation naming this machine alone, which is what
    * it named before siblings were added.
    */
-  private async siblingInvitationAddrs(): Promise<string[]> {
+  private async resolveInvitationSiblings(): Promise<{ siblings: InvitationSibling[]; connected: ReadonlySet<string> }> {
     const controlNode = this.controlNode;
     if (!controlNode || !this.controlDatabase) {
-      return [];
+      return { siblings: [], connected: new Set() };
     }
     try {
       const siblings: InvitationSibling[] = [];
@@ -8855,11 +8925,10 @@ export class CadreNode implements SAppIdLookup {
           siblings.push({ peerId, updatedAt: resolved.updatedAt, addrs: resolved.addrs.map(String) });
         }
       }
-      const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
-      return selectInvitationSiblingAddrs(siblings, connected);
+      return { siblings, connected: new Set(controlNode.getConnections().map((c) => c.remotePeer.toString())) };
     } catch (error) {
       log('siblingInvitationAddrs: resolving the other machines failed; the invitation names only this one: %o', error);
-      return [];
+      return { siblings: [], connected: new Set() };
     }
   }
 

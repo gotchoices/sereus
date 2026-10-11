@@ -31,6 +31,7 @@ import {
   cadreInviteConsentMessage,
   CadreInviteIssuerUnknownError,
   InvitationExhaustedError,
+  parseNullableStoredDatetimeMs,
   type ControlDatabase
 } from './control-database.js';
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
@@ -38,7 +39,8 @@ import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed2
 import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
 import { isRetriableControlWriteFailure } from './control-write-retry.js';
-import type { CadreInviteRow, SeedPeer } from './types.js';
+import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX } from './cadre-join-request.js';
+import type { CadreInviteRow, CadreJoinProgress, SeedPeer } from './types.js';
 
 const log = debug('sereus:cadre:invite-proto');
 
@@ -107,29 +109,42 @@ export interface CadreInvitation {
    */
   ownerKeys: string[];
   /**
-   * Multiaddrs ending in `/p2p/<peerId>`: the issuer's own first, then up to
-   * `INVITATION_SIBLING_MACHINES` other members (`invitation-bootstrap.ts`). The device
-   * tries them in order.
+   * Multiaddrs ending in `/p2p/<peerId>`: the issuer's own first, then other members', at
+   * most `CADRE_INVITATION_MAX_ADDRS` in all (`selectCadreInvitationMembers` in
+   * `invitation-bootstrap.ts`). The device tries them in order.
    */
   members: string[];
 }
 
-/** Encode a bundle for out-of-band delivery: base64url over JSON, as seeds and open invitations are. */
+/**
+ * Encode a bundle for out-of-band delivery: {@link CADRE_INVITATION_PREFIX}, then base64url
+ * over JSON. The prefix lets an app tell an invitation from a join request
+ * (`cadre-join-request.ts`) and name the mistake when one is pasted for the other.
+ */
 export function encodeCadreInvitation(invitation: CadreInvitation): string {
-  return uint8ArrayToString(new TextEncoder().encode(JSON.stringify(invitation)), 'base64url');
+  return `${CADRE_INVITATION_PREFIX}${uint8ArrayToString(new TextEncoder().encode(JSON.stringify(invitation)), 'base64url')}`;
 }
 
 /**
  * Decode a bundle, refusing anything that is not a well-formed version-1
- * {@link CadreInvitation}. Standalone so a client without a node (a settings screen that
- * wants to show which cadre an invitation joins) can decode one.
+ * {@link CadreInvitation} behind {@link CADRE_INVITATION_PREFIX}. Standalone so a client
+ * without a node (a settings screen that wants to show which cadre an invitation joins) can
+ * decode one.
  *
- * @throws on a string that is not base64url JSON, or decodes to another shape or version.
+ * @throws on a join request, a string without the prefix or that is not base64url JSON after
+ *   it, or one that decodes to another shape or version.
  */
 export function decodeCadreInvitation(encoded: string): CadreInvitation {
+  const trimmed = encoded.trim();
+  if (trimmed.startsWith(CADRE_JOIN_REQUEST_PREFIX)) {
+    throw new Error('This is a join request, not a cadre invitation; paste it into the app that manages your cadre');
+  }
+  if (!trimmed.startsWith(CADRE_INVITATION_PREFIX)) {
+    throw new Error(`Cadre invitation must start with "${CADRE_INVITATION_PREFIX}" (this one starts with "${trimmed.slice(0, CADRE_INVITATION_PREFIX.length)}")`);
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(uint8ArrayFromString(encoded.trim(), 'base64url')));
+    parsed = JSON.parse(new TextDecoder().decode(uint8ArrayFromString(trimmed.slice(CADRE_INVITATION_PREFIX.length), 'base64url')));
   } catch (error) {
     throw new Error('Cadre invitation does not decode as base64url JSON', { cause: error });
   }
@@ -773,6 +788,8 @@ export interface RedeemAtMembersOptions {
   /** Per-address deadline override; default derived from `linkRoundTripMs`. */
   addressBudgetMs?: number;
   protocolId?: string;
+  /** Cancels the dial or stream in flight and ends the pass; the call throws the signal's reason. */
+  signal?: AbortSignal;
 }
 
 /** What a successful redemption yields the device. */
@@ -815,7 +832,32 @@ async function exchangeRedemption(
 }
 
 function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
+  if (error instanceof Error) return error;
+  // A WebSocket transport rejects a refused dial with an `ErrorEvent`, whose text is its `message`.
+  const message = (error as { message?: unknown } | null)?.message;
+  return new Error(typeof message === 'string' && message.length > 0 ? message : String(error), { cause: error });
+}
+
+/**
+ * Run `op` with a signal that aborts when either `deadline` or the caller's `signal` does.
+ * Relayed by hand rather than with `AbortSignal.any`, which the phone runtimes lack.
+ */
+async function underDeadlineAndCaller<T>(
+  deadline: AbortSignal,
+  caller: AbortSignal | undefined,
+  op: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  if (!caller) return await op(deadline);
+  const either = new AbortController();
+  const abort = (): void => either.abort();
+  deadline.addEventListener('abort', abort, { once: true });
+  caller.addEventListener('abort', abort, { once: true });
+  try {
+    return await op(either.signal);
+  } finally {
+    deadline.removeEventListener('abort', abort);
+    caller.removeEventListener('abort', abort);
+  }
 }
 
 /**
@@ -830,12 +872,14 @@ function asError(error: unknown): Error {
  * @throws {CadreInviteRejectedError} on a final refusal (its `retryable` is false).
  * @throws {CadreInviteReplyInvalidError} on an acceptance that fails {@link verifyRedeemReply}.
  * @throws {CadreInviteUnreachableError} when every address was tried and none accepted.
+ * @throws the reason of `options.signal` once it aborts.
  */
 export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOptions): Promise<CadreInviteRedemption> {
   const protocolId = options.protocolId ?? CADRE_INVITE_PROTOCOL;
   const budgetMs = options.addressBudgetMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
   const outcomes: CadreInviteAddressOutcome[] = [];
   for (const addr of options.invitation.members) {
+    options.signal?.throwIfAborted();
     // Between attempts: a relayed address's relay leg goes through libp2p's dial queue, which
     // needs a macrotask to drop an aborted job (see `tryAddrsInTurn`).
     if (outcomes.length > 0) await nextMacrotask();
@@ -848,7 +892,8 @@ export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOpti
     }
     try {
       const reply = await withDeadline(budgetMs, `Cadre invitation redemption via ${addr}`,
-        (signal) => exchangeRedemption(node, parsed, options.request, signal, budgetMs, protocolId));
+        (deadline) => underDeadlineAndCaller(deadline, options.signal,
+          (signal) => exchangeRedemption(node, parsed, options.request, signal, budgetMs, protocolId)));
       if (!reply.accepted) {
         const refusal = new CadreInviteRejectedError(reply.code, reply.reason);
         if (!refusal.retryable) throw refusal;
@@ -860,9 +905,117 @@ export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOpti
       return { reply, memberPeerId: trailingPeerId(parsed), memberAddr: addr };
     } catch (error) {
       if (error instanceof CadreInviteRejectedError || error instanceof CadreInviteReplyInvalidError) throw error;
+      // The caller's abort cut this attempt short; its reason, not the cut, is the answer.
+      options.signal?.throwIfAborted();
       log('redemption via %s failed before an answer (%s); trying the next address', addr, asError(error).message);
       outcomes.push({ addr, error: asError(error) });
     }
   }
   throw new CadreInviteUnreachableError(outcomes);
+}
+
+/** Pause after the first pass in which no member accepted; doubled after each further one. */
+const REDEEM_PASS_FIRST_PAUSE_MS = 5_000;
+
+/** Longest pause between passes. */
+const REDEEM_PASS_MAX_PAUSE_MS = 60_000;
+
+export interface RedeemInPassesOptions extends RedeemAtMembersOptions {
+  /** Keep making passes while every answer is retryable; false makes exactly one. */
+  waitForMember: boolean;
+  /** Called at each pass and each pause; an exception it throws is logged and ignored. */
+  onProgress?: (progress: CadreJoinProgress) => void;
+}
+
+/**
+ * Device side, in passes: one {@link redeemAtMembers} pass over the bundle's addresses, or,
+ * with `waitForMember`, as many as it takes, pausing between them (5 s after the first,
+ * doubling to 60 s, never past the invitation's expiry). Every pass sends the same signed
+ * request, so a member that admitted the device on a pass whose reply was lost answers a later
+ * pass as already a member, with no second usage row.
+ *
+ * A wait ends at the first acceptance, at a final refusal or an invalid reply (thrown as
+ * {@link redeemAtMembers} throws them), when the invitation expires by this device's clock
+ * (thrown as the `invite-spent` refusal a member would give), when `signal` aborts (its reason
+ * thrown), and when `node` stops. A bundle that names no address has nothing to wait for and
+ * throws at once.
+ */
+export async function redeemInPasses(node: Libp2p, options: RedeemInPassesOptions): Promise<CadreInviteRedemption> {
+  for (let pass = 1; ; pass++) {
+    if (options.waitForMember) {
+      // One pass leaves expiry to the member, whose clock decides; a wait has nothing else to end it.
+      refuseIfExpired(options.invitation.invite);
+      refuseIfStopped(node);
+    }
+    reportProgress(options.onProgress, { state: 'redeeming', pass });
+    try {
+      return await redeemAtMembers(node, options);
+    } catch (error) {
+      if (!options.waitForMember || !(error instanceof CadreInviteUnreachableError) || error.outcomes.length === 0) throw error;
+      const pauseMs = pauseAfterPass(pass, options.invitation.invite);
+      reportProgress(options.onProgress, {
+        state: 'waiting', pass, retryAtMs: Date.now() + pauseMs, reason: waitReason(error.outcomes), outcomes: error.outcomes
+      });
+      log('redemption pass %d found no member ready; the next pass in %d ms', pass, pauseMs);
+      // NOTE: a node stopped during this pause is noticed only when it ends, so the timer keeps a
+      // Node process alive up to a minute past the stop. If that is ever seen holding up an exit,
+      // abort `signal` from the embedder's stop.
+      await pause(pauseMs, options.signal);
+    }
+  }
+}
+
+function refuseIfExpired(invite: CadreInviteRow): void {
+  const expiresAtMs = parseNullableStoredDatetimeMs(invite.expiresAt);
+  if (expiresAtMs !== null && expiresAtMs <= Date.now()) {
+    throw new CadreInviteRejectedError('invite-spent', 'the invitation expired before a member accepted it');
+  }
+}
+
+/** A stopped node's every dial fails at once, which would otherwise read as "no member answered" until expiry. */
+function refuseIfStopped(node: Libp2p): void {
+  if (node.status !== undefined && node.status !== 'started') {
+    throw new Error(`Cadre invitation redemption stopped waiting: the node is ${node.status}`);
+  }
+}
+
+/** The pause after pass `pass`, cut short at the invitation's expiry so the next check ends the wait then. */
+function pauseAfterPass(pass: number, invite: CadreInviteRow): number {
+  const backoffMs = Math.min(REDEEM_PASS_FIRST_PAUSE_MS * 2 ** (pass - 1), REDEEM_PASS_MAX_PAUSE_MS);
+  const expiresAtMs = parseNullableStoredDatetimeMs(invite.expiresAt);
+  return expiresAtMs === null ? backoffMs : Math.max(0, Math.min(backoffMs, expiresAtMs - Date.now()));
+}
+
+/** Any refusal means a member answered and is not ready yet; otherwise none answered at all. */
+function waitReason(outcomes: readonly CadreInviteAddressOutcome[]): 'no-member-answered' | 'member-not-ready' {
+  return outcomes.some((outcome) => outcome.error instanceof CadreInviteRejectedError) ? 'member-not-ready' : 'no-member-answered';
+}
+
+/** A UI callback must not break the join. */
+function reportProgress(onProgress: ((progress: CadreJoinProgress) => void) | undefined, progress: CadreJoinProgress): void {
+  if (!onProgress) return;
+  try {
+    onProgress(progress);
+  } catch (error) {
+    log('redemption progress callback threw (ignored): %o', error);
+  }
+}
+
+/** Wait `ms`, or reject with `signal`'s reason as soon as it aborts; the timer is cleared either way. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }

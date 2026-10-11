@@ -556,10 +556,23 @@ export {
   selectNodeClaimAddresses,
   withClaimDestination,
   destinationPeerIdOf,
+  classifyDialAddress,
   NODE_CLAIM_PAYLOAD_PREFIX,
   type NodeClaimPayload,
-  type NodeClaimAddressOptions
+  type NodeClaimAddressOptions,
+  type DialAddressKind
 } from './node-claim-payload.js';
+
+// The join request: what an app that wants to join a cadre copies to the app that manages it,
+// which mints an invitation targeted at the request's peer id. Both paste-text prefixes live here.
+export {
+  encodeCadreJoinRequest,
+  decodeCadreJoinRequest,
+  CADRE_JOIN_REQUEST_PREFIX,
+  CADRE_INVITATION_PREFIX,
+  CADRE_JOIN_REQUEST_MAX_APP_NAME,
+  type CadreJoinRequest
+} from './cadre-join-request.js';
 
 // Schema Verification
 export {
@@ -606,6 +619,7 @@ export { formationDeadlines, type FormationDeadlines } from './strand-formation-
 export {
   CadreInviteHandler,
   redeemAtMembers,
+  redeemInPasses,
   signRedeemRequest,
   verifyRedeemReply,
   encodeCadreInvitation,
@@ -627,9 +641,17 @@ export {
   type CadreInviteHandlerOptions,
   type CadreInviteStore,
   type RedeemAtMembersOptions,
+  type RedeemInPassesOptions,
   type RedeemSigner,
   type CadreInviteRedemption
 } from './cadre-invite-protocol.js';
+// Which machines, and how many addresses of each, an invitation names; how far a cadre invitation reaches
+export {
+  selectCadreInvitationMembers,
+  cadreInvitationReach,
+  CADRE_INVITATION_MAX_ADDRS,
+  CADRE_INVITATION_ADDRS_PER_SIBLING
+} from './invitation-bootstrap.js';
 // The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
 export { PENDING_JOIN_POLL_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
 

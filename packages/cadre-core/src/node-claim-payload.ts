@@ -132,35 +132,59 @@ export function withClaimDestination(addr: string, peerId: string): string {
 	return destinationPeerIdOf(trimmed) === null ? `${trimmed}/p2p/${peerId}` : trimmed;
 }
 
-type ClaimAddressKind = 'name' | 'public' | 'private' | 'relay';
+/**
+ * Where a phone could dial an address from: a relayed address (`/p2p-circuit`), a public name,
+ * a public IP, a private (LAN, VPN, link-local) IP, or this machine's own loopback.
+ */
+export type DialAddressKind = 'relay' | 'name' | 'public' | 'private' | 'loopback';
 
-/** One address's place in {@link selectNodeClaimAddresses}, or undefined to drop it. */
-function classifyClaimAddress(addr: string, peerId: string, options: NodeClaimAddressOptions): { kind: ClaimAddressKind; addr: string } | undefined {
-	let components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>;
+/**
+ * Classify `addr` for a phone dialing it, or undefined when no phone can dial it at all: it
+ * does not parse, names the unspecified address, or is plain TCP without `includeTcp` (phones
+ * dial WebSocket and relay only).
+ */
+export function classifyDialAddress(addr: string, options: { includeTcp?: boolean } = {}): DialAddressKind | undefined {
+	const components = componentsOf(addr);
+	return components ? classifyComponents(components, options.includeTcp ?? false)?.kind : undefined;
+}
+
+type AddressComponents = ReturnType<ReturnType<typeof multiaddr>['getComponents']>;
+
+function componentsOf(addr: string): AddressComponents | undefined {
 	try {
-		components = multiaddr(addr).getComponents();
+		return multiaddr(addr).getComponents();
 	} catch {
 		return undefined;
 	}
-	const withId = destinationIn(components) === null ? `${addr}/p2p/${peerId}` : addr;
-	if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return { kind: 'relay', addr: withId };
-	if (!options.includeTcp && !components.some((c) => c.code === CODE_WS || c.code === CODE_WSS)) return undefined;
+}
+
+/** {@link classifyDialAddress}, keeping the IP for a caller that narrows private addresses by it. */
+function classifyComponents(components: AddressComponents, includeTcp: boolean): { kind: DialAddressKind; ip?: string } | undefined {
+	if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return { kind: 'relay' };
+	if (!includeTcp && !components.some((c) => c.code === CODE_WS || c.code === CODE_WSS)) return undefined;
 	const host = components[0];
 	if (!host?.value) return undefined;
 	if (host.code === CODE_DNS || host.code === CODE_DNS4 || host.code === CODE_DNS6 || host.code === CODE_DNSADDR) {
-		return host.value === 'localhost' ? undefined : { kind: 'name', addr: withId };
+		return { kind: host.value === 'localhost' ? 'loopback' : 'name' };
 	}
 	if (host.code !== CODE_IP4 && host.code !== CODE_IP6 && host.code !== CODE_IP6ZONE) return undefined;
 	const ip = host.code === CODE_IP6ZONE ? components[1]?.value ?? '' : host.value;
-	if (isLoopbackOrUnspecified(ip)) return undefined;
-	if (host.code !== CODE_IP6ZONE && !isPrivateIp(ip)) return { kind: 'public', addr: withId };
-	if (options.lan === null) return undefined;
-	if (options.lan !== undefined && ip !== options.lan) return undefined;
-	return { kind: 'private', addr: withId };
+	if (ip === '0.0.0.0' || ip === '::') return undefined;
+	if (ip.startsWith('127.') || ip === '::1') return { kind: 'loopback', ip };
+	if (host.code !== CODE_IP6ZONE && !isPrivateIp(ip)) return { kind: 'public', ip };
+	return { kind: 'private', ip };
 }
 
-function isLoopbackOrUnspecified(ip: string): boolean {
-	return ip.startsWith('127.') || ip === '0.0.0.0' || ip === '::1' || ip === '::';
+/** One address's place in {@link selectNodeClaimAddresses}, or undefined to drop it. */
+function classifyClaimAddress(addr: string, peerId: string, options: NodeClaimAddressOptions): { kind: Exclude<DialAddressKind, 'loopback'>; addr: string } | undefined {
+	const components = componentsOf(addr);
+	if (!components) return undefined;
+	const classified = classifyComponents(components, options.includeTcp ?? false);
+	if (!classified || classified.kind === 'loopback') return undefined;
+	if (classified.kind === 'private' && (options.lan === null || (options.lan !== undefined && classified.ip !== options.lan))) {
+		return undefined;
+	}
+	return { kind: classified.kind, addr: destinationIn(components) === null ? `${addr}/p2p/${peerId}` : addr };
 }
 
 /** RFC 1918, carrier-grade NAT (100.64/10), link-local, and IPv6 unique-local / link-local. */
@@ -225,7 +249,7 @@ export function destinationPeerIdOf(addr: string): string | null {
 	return destinationIn(multiaddr(addr).getComponents());
 }
 
-function destinationIn(components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>): string | null {
+function destinationIn(components: AddressComponents): string | null {
 	for (let i = components.length - 1; i >= 0; i--) {
 		const component = components[i]!;
 		if (component.code === CODE_P2P_CIRCUIT) return null;

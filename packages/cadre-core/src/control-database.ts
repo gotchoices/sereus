@@ -182,7 +182,7 @@ function parseStoredDatetimeMs(value: string | number): number {
  * and "unparseable" to null — i.e. "no expiry". Shared by every `ExpiresAt`
  * reader so the NaN guard cannot drift between them.
  */
-function parseNullableStoredDatetimeMs(value: string | number | null | undefined): number | null {
+export function parseNullableStoredDatetimeMs(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const parsed = parseStoredDatetimeMs(value);
   return Number.isNaN(parsed) ? null : parsed;

@@ -3,6 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode, CADRE_INVITATION_DEFAULT_TTL_MS, OWNER_INVITATION_DEFAULT_TTL_MS } from '../src/cadre-node.js';
 import { decodeCadreInvitation, type CadreInvitation } from '../src/cadre-invite-protocol.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
+import { INVITATION_ADDRS_PER_SIBLING } from '../src/invitation-bootstrap.js';
 import { startSelfOwnerNode, type SelfOwnerNode } from './self-owner-node-helpers.js';
 import { anchorWith, createConfig, inject } from './membership-gate-helpers.js';
 
@@ -60,9 +61,9 @@ describe('CadreNode.createCadreInvitation', () => {
     const { invitation, encoded } = await owner.node.createCadreInvitation({ grantsOwner: false });
     expect(invitation.partyId).toBe(owner.node.partyId);
     expect(invitation.ownerKeys).toEqual([owner.ownerKey.publicKeyB64]);
-    // Alone in its party, the invitation names exactly this machine's own addresses.
+    // Alone in its party, the invitation names this machine's own addresses, the first four.
     expect(invitation.members.length).toBeGreaterThan(0);
-    expect(invitation.members).toEqual(owner.node.getMultiaddrs());
+    expect(invitation.members).toEqual(owner.node.getMultiaddrs().slice(0, INVITATION_ADDRS_PER_SIBLING));
     expect(decodeCadreInvitation(encoded)).toEqual(invitation);
   });
 

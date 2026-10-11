@@ -17,7 +17,7 @@ import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { CadreInviteSignedFields, RevocableTable } from './control-authorization.js';
-import type { CadreInvitation } from './cadre-invite-protocol.js';
+import type { CadreInvitation, CadreInviteAddressOutcome } from './cadre-invite-protocol.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
@@ -2448,12 +2448,57 @@ export interface CreateCadreInvitationOptions {
   uses?: number;
 }
 
+/**
+ * Where a phone could redeem a cadre invitation from, judged on the addresses of machines
+ * other than the one that minted it — the answer to "can the new app join once this one is
+ * closed?". A minting machine that is itself always on can therefore read `issuer-only`.
+ */
+export type CadreInvitationReach =
+  /** Another machine has a relayed (`/p2p-circuit`), public-name or public-IP WebSocket address. */
+  | 'anywhere'
+  /** Other machines are named, but only at private or loopback addresses: works on their network only. */
+  | 'local-network'
+  /** The bundle names no other machine at an address a phone can dial. */
+  | 'issuer-only';
+
 /** What `CadreNode.createCadreInvitation` returns: the bundle, and the same encoded for sharing. */
 export interface CreateCadreInvitationResult {
   invitation: CadreInvitation;
-  /** `encodeCadreInvitation(invitation)`: base64url JSON for a QR code, a paste or a link. */
+  /** `encodeCadreInvitation(invitation)`: `sereus-invite:1.` and base64url JSON, for a QR code, a paste or a link. */
   encoded: string;
+  /** Whether a device could redeem it once the minting machine is gone; see {@link CadreInvitationReach}. */
+  reach: CadreInvitationReach;
 }
+
+/** How `CadreNode.redeemCadreInvitation` runs. */
+export interface RedeemCadreInvitationOptions {
+  /**
+   * Keep making passes over the bundle's addresses while every answer is retryable, until a
+   * member accepts, one refuses finally, the invitation expires, or `signal` aborts.
+   * Default false: one pass.
+   */
+  waitForMember?: boolean;
+  /** Ends the pause and the pass in flight; the call then throws the signal's reason. */
+  signal?: AbortSignal;
+  /** Called at each pass and each pause; an exception it throws is logged and ignored. */
+  onProgress?: (progress: CadreJoinProgress) => void;
+}
+
+/** A redemption's progress, as `RedeemCadreInvitationOptions.onProgress` reports it. */
+export type CadreJoinProgress =
+  | { state: 'redeeming'; pass: number }
+  | {
+      state: 'waiting';
+      pass: number;
+      /** Epoch ms of the next pass. */
+      retryAtMs: number;
+      /**
+       * `'no-member-answered'`: every address failed to dial or answer. `'member-not-ready'`: at
+       * least one member answered with a retryable refusal (issuer-unknown, busy, conflict, internal).
+       */
+      reason: 'no-member-answered' | 'member-not-ready';
+      outcomes: readonly CadreInviteAddressOutcome[];
+    };
 
 /** What `CadreNode.redeemCadreInvitation` returns once a member accepted. */
 export interface RedeemCadreInvitationResult {

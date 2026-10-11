@@ -89,8 +89,9 @@ export function refuseInvitationConflicts(invitation: StartupInvitation, options
  * neither needs to.
  *
  * NOTE: a retryable failure (no member reachable, or members that answered busy/conflict in the
- * window after the owner left their cohort) is not retried here. If headless joins in that
- * window become common, add a bounded retry on `retryable` before giving up.
+ * window after the owner left their cohort) is not retried here: one pass. If headless joins in
+ * that window become common, pass `waitForMember: true` with a `signal` bounding the wait, which
+ * keeps making passes on the same signed request until a member accepts or the invitation expires.
  */
 export async function redeemStartupInvitation(node: CadreNode, invitation: CadreInvitation): Promise<InvitationStatus> {
   try {

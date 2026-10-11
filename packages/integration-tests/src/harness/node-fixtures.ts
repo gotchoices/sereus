@@ -332,6 +332,15 @@ export function controlAddrs(node: CadreNode): string[] {
   return node.getControlNode()!.getMultiaddrs().map((ma) => ma.toString());
 }
 
+/** The loopback WebSocket port `node` listens on, as a listen address a restart can bind again. */
+export function sameListenAddr(node: CadreNode): string {
+  const port = node.getMultiaddrs().map(String)
+    .map((addr) => /^\/ip4\/127\.0\.0\.1\/tcp\/(\d+)\/ws/.exec(addr)?.[1])
+    .find((found) => found !== undefined);
+  if (!port) throw new Error(`no loopback listen address among ${node.getMultiaddrs().join(', ')}`);
+  return `/ip4/127.0.0.1/tcp/${port}/ws`;
+}
+
 /** Wait until `node`'s control libp2p reports an open connection to `peerId`. */
 export async function waitForControlConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
   const controlNode = node.getControlNode()!;

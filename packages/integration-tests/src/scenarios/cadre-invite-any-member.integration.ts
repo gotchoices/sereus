@@ -45,7 +45,7 @@ import { CadreNode, CadreInviteRejectedError, MemoryBootstrapPeerStore, ed25519K
 import type { PrivateKey } from '@libp2p/interface';
 import {
 	controlNodeConfig, makeOwnOwner, hasOutboundTo, waitUntil, captureRawStorage, readCohort,
-	startPinningMember, admitMember, redeemWithRetry, type InviteMember,
+	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -119,9 +119,9 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			await P.start();
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(false);
 			const redeemStartedAt = Date.now();
-			const { joined, attempts } = await redeemWithRetry(P, invitation, STARTUP_MS, 'any-member');
-			console.log('[any-member] P was admitted on attempt %d, %d ms after it first asked', attempts, Date.now() - redeemStartedAt);
-			expect(attempts).toBe(1);
+			const { joined, passes } = await redeemWaitingForMember(P, invitation, STARTUP_MS, 'any-member');
+			console.log('[any-member] P was admitted on pass %d, %d ms after it first asked', passes, Date.now() - redeemStartedAt);
+			expect(passes).toBe(1);
 			expect(joined.peerId).toBe(member.peerId);
 			expect(joined.grantsOwner).toBe(true);
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(true);

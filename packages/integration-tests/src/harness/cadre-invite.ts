@@ -1,25 +1,27 @@
 /**
- * Machines and steps shared by the cadre invitation scenarios (`cadre-invite-*.integration.ts`)
- * and the owner-anchor scenario: an always-on member that pins the owner's key, its owner-online
- * admission, and a device's redemption that keeps trying while members answer retryably.
+ * Machines and steps shared by the cadre invitation scenarios (`cadre-invite-*.integration.ts`,
+ * `app-joins-cadre-by-invitation`) and the owner-anchor scenario: an always-on member that pins
+ * the owner's key, its owner-online admission, and a device's redemption that waits while
+ * members answer retryably.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import {
-	CadreNode, CadreInviteUnreachableError, ed25519KeyPairFromLibp2p,
-	type CadreInvitation, type RawStorageProvider, type RedeemCadreInvitationResult,
+	CadreNode, ed25519KeyPairFromLibp2p,
+	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider, type RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
 import { controlNodeConfig, controlAddrs, hasOutboundTo } from './node-fixtures.js';
 import { waitUntil } from './wait-utils.js';
 
-/** Pause between a device's redemption attempts while the members answer retryably. */
-const REDEEM_RETRY_PAUSE_MS = 2_000;
-
 export interface InviteMember { node: CadreNode; peerId: string; key: PrivateKey }
 
 export interface PinningMemberOptions {
+	/** The member's identity; default a fresh one. Pass the stopped member's key, with its storage and address, to restart it. */
+	key?: PrivateKey;
+	/** The member's listen addresses; default one loopback WebSocket address on a free port. */
+	listenAddrs?: string[];
 	/** Lets a scenario look inside the member's raw stores. */
 	storageProvider?: RawStorageProvider;
 	/**
@@ -40,9 +42,10 @@ export interface PinningMemberOptions {
  * registers.
  */
 export async function startPinningMember(partyId: string, ownerKey: string, options: PinningMemberOptions = {}): Promise<InviteMember> {
-	const key = await generateKeyPair('Ed25519');
+	const key = options.key ?? await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
 		partyId, privateKey: key, profile: 'storage', strandFilter: 'none', pinnedOwnerKeys: [ownerKey],
+		...(options.listenAddrs ? { listenAddrs: options.listenAddrs } : {}),
 		...(options.storageProvider ? { storageProvider: options.storageProvider } : {}),
 		...(options.reconcileMs !== undefined ? { reconcileMs: options.reconcileMs } : {}),
 	}));
@@ -68,24 +71,37 @@ export async function admitMember(owner: CadreNode, member: InviteMember, timeou
 }
 
 /**
- * What a device does with a retryable outcome: try again after a pause, until `budgetMs` is
- * spent. A scenario that pins one attempt still retries, so a regression shows as the count of
- * attempts the member needed rather than a failure at the first retryable refusal.
+ * A device's redemption that waits for a member (`waitForMember`), bounded by `budgetMs`, with
+ * each pass that found no member ready logged. A scenario that pins one pass still waits, so a
+ * regression shows as the count of passes the member needed rather than a failure at the first
+ * retryable answer. `onProgress` sees every report too.
  */
-export async function redeemWithRetry(
+export async function redeemWaitingForMember(
 	device: CadreNode,
 	invitation: CadreInvitation,
 	budgetMs: number,
-	label: string
-): Promise<{ joined: RedeemCadreInvitationResult; attempts: number }> {
-	const deadline = Date.now() + budgetMs;
-	for (let attempts = 1; ; attempts++) {
-		try {
-			return { joined: await device.redeemCadreInvitation(invitation), attempts };
-		} catch (err) {
-			if (!(err instanceof CadreInviteUnreachableError) || Date.now() + REDEEM_RETRY_PAUSE_MS > deadline) throw err;
-			console.log('[%s] attempt %d answered retryably: %s', label, attempts, err.message);
-			await new Promise<void>((resolve) => setTimeout(resolve, REDEEM_RETRY_PAUSE_MS));
-		}
+	label: string,
+	onProgress?: (progress: CadreJoinProgress) => void
+): Promise<{ joined: RedeemCadreInvitationResult; passes: number }> {
+	const budget = new AbortController();
+	const timer = setTimeout(() => budget.abort(new Error(`[${label}] no member accepted the invitation within ${budgetMs} ms`)), budgetMs);
+	let passes = 0;
+	try {
+		const joined = await device.redeemCadreInvitation(invitation, {
+			waitForMember: true,
+			signal: budget.signal,
+			onProgress: (progress) => {
+				if (progress.state === 'redeeming') {
+					passes = progress.pass;
+				} else {
+					console.log('[%s] pass %d found no member ready (%s): %s', label, progress.pass, progress.reason,
+						progress.outcomes.map((outcome) => `${outcome.addr}: ${outcome.error.message}`).join('; '));
+				}
+				onProgress?.(progress);
+			},
+		});
+		return { joined, passes };
+	} finally {
+		clearTimeout(timer);
 	}
 }

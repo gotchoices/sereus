@@ -37,6 +37,7 @@ import {
 	controlNodeConfig,
 	createSignedSAppConfig,
 	captureRawStorage,
+	sameListenAddr,
 	waitUntil,
 	type RawStorageCapture,
 } from '../harness/index.js';
@@ -91,15 +92,6 @@ async function startOwner(machine: Machine, running: Set<CadreNode>, beforeStart
 async function stopNode(node: CadreNode, running: Set<CadreNode>): Promise<void> {
 	running.delete(node);
 	await node.stop();
-}
-
-/** The loopback port `node` listens on, as a listen address a restart can bind again. */
-function sameListenAddr(node: CadreNode): string {
-	const port = node.getMultiaddrs().map(String)
-		.map((addr) => /^\/ip4\/127\.0\.0\.1\/tcp\/(\d+)\/ws/.exec(addr)?.[1])
-		.find((found) => found !== undefined);
-	if (!port) throw new Error(`no loopback listen address among ${node.getMultiaddrs().join(', ')}`);
-	return `/ip4/127.0.0.1/tcp/${port}/ws`;
 }
 
 /** Claim `strandId` from `strand:discovered` with the app's config and wait until it is writable. */

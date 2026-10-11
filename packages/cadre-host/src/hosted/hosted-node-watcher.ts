@@ -236,8 +236,9 @@ export class HostedNodeWatcher {
 
 /**
  * The owner a joined invitation node is shown under: the issuer of its invitation. The
- * record's bundle decoded at `join`, so this only fails on a hand-edited
- * `hosted-nodes.json`; the node is a member either way, so the record says so without one.
+ * record's bundle decoded at `join`, so this fails only on a hand-edited
+ * `hosted-nodes.json` or on a record written before invitations carried their
+ * `sereus-invite:1.` prefix; the node is a member either way, so the record says so without one.
  */
 function issuerOf(node: HostedNode): string | undefined {
   if (node.join.kind !== 'invitation') return undefined;
