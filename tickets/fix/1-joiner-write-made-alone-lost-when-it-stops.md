@@ -59,3 +59,13 @@ If the answer needs a product call (any shape that refuses writes a user expects
 
 - Reads of never-written tables failing with `cohort-unreachable` on the phones (not reproduced here; upstream read path).
 - `appTablesReadable` (`strand-first-sync-gate.ts`) probes the sApp's tables one at a time and restarts from the first on any failure; on the phones' 17 tables over a slow link it took 155–390 s. kjeib offered to file it separately. If you confirm it while here, park it as `backlog/feat-first-sync-probe-remembers-settled-tables`.
+
+## Upstream findings (optimystic, 2026-10-11)
+
+From optimystic's fix stage of `a-write-made-alone-while-other-members-are-known-never-reaches-them`:
+
+- **Delivery after restart works in db-p2p once the two nodes reconnect.** Two optimystic repros (direct TCP, and phone-shaped over a circuit relay with the writer restarting on a fresh in-memory kv store) showed the partner holding every lone-written block about 5 s after the pair re-formed; the rebalance growth arm delivered it. So the phones' 30-minute miss most likely means the two strand nodes never re-established a connection after restart. Investigate that here first.
+- **New diagnostics coming in the optimystic release:** `commit:solo-cohort` gains `knownAbsent` (members known to serve the strand but not connected) and `awaitingBootstrap`. If both are empty/false in the failing arm, the joiner never identified the founder's strand node at all, so first sync passed without the strand nodes exchanging identify. That is a sereus problem.
+- **Upstream change:** a solo write names the known-absent members as owed (`unconfirmed`/`cohortPeerIds` and the under-replication ledger), so the drain pushes to them as soon as they connect.
+- **Not fixable upstream:** a joiner that writes alone and then stops for good cannot deliver. Admission of lone writes belongs to the maintainer's partition-healing design (decided 2026-09-15 not to point-fix), and the joiner's case looks the same as a lone survivor's. Sereus-side options: expose `local` durability to the app (optimystic #26), or have cadre-core treat "no strand peer connected" as not writable in the narrow first-write-after-join window (a product call: route to a `decide-*` if it would affect offline writes).
+- **Ledger persistence:** sereus strand nodes pass no `kvStore`, so the under-replication ledger is lost at restart. Decide whether strand nodes should pass a persistent kvStore (storage-backed on Node and RN).
