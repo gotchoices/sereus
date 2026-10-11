@@ -63,7 +63,6 @@
     "@libp2p/crypto": "^5.1.23",
     "@libp2p/interface": "^3.3.0",
     "@libp2p/peer-id": "^6.0.15",
-    "@multiformats/multiaddr": "^13.0.3",
     "@serfab/cadre-cli": "workspace:^",
     "@serfab/cadre-core": "workspace:^",
     "@serfab/cadre-provider": "workspace:^",
