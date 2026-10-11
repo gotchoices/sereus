@@ -10,7 +10,9 @@
 
 import {
 	CadreNode,
+	DEFAULT_IDENTITY_KEY_ID,
 	exportStrandBundle,
+	loadOrCreateIdentityKey,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
 	PersistentStrandNetworkStateStore,
@@ -172,6 +174,14 @@ export type PhoneNodeStatus =
 	| { state: 'running'; node: CadreNode; owner: OwnerGenesisResult }
 	| { state: 'failed'; error: Error };
 
+/** A join's progress: the redemption's passes and pauses, then the steps after a member admitted the app. */
+export type PhoneJoinProgress =
+	| CadreJoinProgress
+	/** A member admitted the app; the kit is wiring its owner key and saving the start. */
+	| { state: 'admitted'; grantsOwner: boolean }
+	/** The app's key is wired as an owner and the strands this join recorded are being adopted. */
+	| { state: 'moving-strands' };
+
 /** How {@link PhoneNode.joinCadre} runs. */
 export interface JoinCadreOptions {
 	/** Relays the joined node reserves on. Default: the running start's, else the saved one's. */
@@ -180,8 +190,12 @@ export interface JoinCadreOptions {
 	noiseCryptoMode?: NoiseCryptoMode;
 	/** Cancels the join: the app goes back to the party it left, and the call throws the signal's reason. */
 	signal?: AbortSignal;
-	/** Each redemption pass and each pause while no member is ready, for a "waiting for an always-on machine" display. */
-	onProgress?: (progress: CadreJoinProgress) => void;
+	/**
+	 * Each redemption pass and each pause while no member is ready, for a "waiting for an always-on
+	 * machine" display; then `admitted`, and `moving-strands` when this join's strands are adopted.
+	 * A listener that throws is logged and ignored.
+	 */
+	onProgress?: (progress: PhoneJoinProgress) => void;
 }
 
 /** What an admitted {@link PhoneNode.joinCadre} returns. */
@@ -198,6 +212,13 @@ export interface PhoneNode {
 	readonly node: CadreNode | null;
 	/** The options the running node was started with, the Noise mode resolved; null unless running. */
 	readonly options: PhoneNodeOptions | null;
+	/**
+	 * This app's peer id, the same in every party: the node's while one is running or joining,
+	 * answered at once; otherwise read from the secure store, created there when absent, in turn
+	 * with start, stop and join so a first start cannot generate a different key. A read the
+	 * secure store refuses throws.
+	 */
+	identityPeerId(): Promise<string>;
 	/**
 	 * Start, or join the start in flight; a running node is returned as is, whatever its options.
 	 * A start called during a stop or restart runs after it. Opens the four node-local stores
@@ -355,6 +376,18 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	get options(): PhoneNodeOptions | null {
 		return this.currentStatus.state === 'running' ? this.runningOptions : null;
+	}
+
+	identityPeerId(): Promise<string> {
+		const status = this.currentStatus;
+		// A join may wait minutes for a member; the screen showing the join request must not wait with it.
+		const peerId = status.state === 'running' || status.state === 'joining' ? status.node.peerId : undefined;
+		if (peerId) return Promise.resolve(peerId.toString());
+		return this.inTurn(async () => {
+			const key = await loadOrCreateIdentityKey(this.keyStore, DEFAULT_IDENTITY_KEY_ID);
+			// A public key's string form is its peer id's.
+			return key.publicKey.toString();
+		});
 	}
 
 	start(options: PhoneNodeOptions): Promise<CadreNode> {
@@ -643,6 +676,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		signal: AbortSignal,
 	): Promise<JoinCadreResult> {
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
+		reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
 		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
 		// An owner grant arriving by a second invitation finishes a move an earlier join deferred.
 		const strandMove = await this.settleJoinMove(node, running.formerPartyId, owner);
@@ -680,7 +714,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		const movingFrom = founded ? await this.recordStrandMove(founded, invitation) : undefined;
 		try {
 			await this.shutDown();
-			return await this.startAndRedeem(joined, invitation, options, signal);
+			return await this.startAndRedeem(joined, invitation, options, signal, movingFrom);
 		} catch (err) {
 			await this.returnToLeftParty(restore, movingFrom);
 			throw err;
@@ -715,13 +749,16 @@ class PhoneNodeRuntime implements PhoneNode {
 		invitation: CadreInvitation,
 		options: JoinCadreOptions,
 		signal: AbortSignal,
+		movingFrom: string | undefined,
 	): Promise<JoinCadreResult> {
 		this.setStatus({ state: 'starting' });
 		const { node, resolved } = await this.bringUp(joined);
 		this.setStatus({ state: 'joining', node });
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
+		reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
 		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
 		await this.saveRunningStart(resolved);
+		if (movingFrom !== undefined && owner === 'enrolled') reportProgress(options, { state: 'moving-strands' });
 		const strandMove = await this.settleJoinMove(node, resolved.formerPartyId, owner);
 		this.reportRunning(node, resolved, owner);
 		return joinResult(redemption, resolved.formerPartyId, strandMove);
@@ -947,6 +984,15 @@ function relayAbort(source: AbortSignal | undefined, target: AbortController): (
 /** Wait for a member: a phone joining by invitation is often the only machine of the party up. */
 function redeemOptions(options: JoinCadreOptions, signal: AbortSignal): RedeemCadreInvitationOptions {
 	return { waitForMember: true, signal, ...(options.onProgress ? { onProgress: options.onProgress } : {}) };
+}
+
+/** Tell the join's listener; one that throws must not fail a join a member has already admitted. */
+function reportProgress(options: JoinCadreOptions, progress: PhoneJoinProgress): void {
+	try {
+		options.onProgress?.(progress);
+	} catch (err) {
+		console.warn('[cadre-rn/phone-node] join progress listener threw:', err);
+	}
 }
 
 /**

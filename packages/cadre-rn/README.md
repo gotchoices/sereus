@@ -52,7 +52,8 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
 | `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
 | `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
-| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result, `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause). |
+| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result, `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause, then `admitted` and, when this join's strands are being adopted, `moving-strands`; a listener that throws is logged and ignored). |
+| `identityPeerId()` | This app's peer id, the same in every party, for a join request before any cadre is started. Answers at once while a node is running or joining; otherwise reads the identity from the secure store (creating it on a fresh install) in turn with start, stop and join, so the first start uses the same key. |
 | `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
 | `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
 | `dissolveFormerParty(options?)` | Deletes the local storage of `formerPartyId` once the running party holds everything it holds and no other machine is in it, and starts the running party again without `formerPartyId` (see [Dissolving the left cadre](#dissolving-the-left-cadre)). |
@@ -78,7 +79,11 @@ import { decodeCadreInvitation } from '@serfab/cadre-core';
 const cancel = new AbortController();   // a Cancel button calls cancel.abort()
 const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
 	signal: cancel.signal,
-	onProgress: (p) => { if (p.state === 'waiting') show(p.reason); },   // 'no-member-answered' | 'member-not-ready'
+	onProgress: (p) => {
+		if (p.state === 'waiting') show(p.reason);   // 'no-member-answered' | 'member-not-ready'
+		else if (p.state === 'admitted') show('admitted; finishing');
+		else if (p.state === 'moving-strands') show('moving your chats');
+	},
 });
 ```
 

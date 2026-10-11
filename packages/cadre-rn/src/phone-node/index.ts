@@ -8,6 +8,7 @@ export {
 	type JoinCadreOptions,
 	type JoinCadreResult,
 	type LevelDBNative,
+	type PhoneJoinProgress,
 	type PhoneNode,
 	type PhoneNodeNames,
 	type PhoneNodePlatform,

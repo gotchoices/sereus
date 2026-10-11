@@ -162,6 +162,16 @@ describe('createPhoneNode — start and stop', () => {
 		expect(phone.ownerPublicKey()).toBe(before);
 	}, LIFECYCLE_MS * 2);
 
+	it('reports the identity\'s peer id before any start, and the first start uses it', async () => {
+		const { platform, partyId } = device();
+		const phone = phoneNode(platform);
+
+		const peerId = await phone.identityPeerId();
+		await phone.start(options(partyId));
+
+		expect(phone.node?.peerId?.toString()).toBe(peerId);
+	}, LIFECYCLE_MS);
+
 	it('reports a failed start, closes what it opened, and starts afresh next time', async () => {
 		const { platform, leveldb, partyId } = device();
 		const phone = phoneNode(platform);
