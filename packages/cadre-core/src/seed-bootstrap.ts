@@ -11,8 +11,8 @@ import {
   PeerUnreachableError,
   DEFAULT_PEER_DIAL_BUDGET,
   type PeerDialBudget,
+  withTrailingPeerId,
 } from './peer-dial.js';
-import { withTrailingPeerId } from './peer-record.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 import type {
   ControlNetworkSeed,
@@ -1118,6 +1118,10 @@ export class SeedBootstrapService {
   private async seedStreamOpener(node: Libp2p, target: SeedDeliveryTarget): Promise<SeedStreamOpener> {
     if (typeof target === 'string') {
       const addr = multiaddr(target);
+      // NOTE: this one-address form goes through libp2p's dial queue, which joins it to any dial
+      // of the same peer in flight and then waits on that job's address, not this one. Nothing is
+      // skipped (there is one address), only delayed; if a seed delivered to a bare multiaddr is
+      // ever seen timing out while something else dials that peer, open it with `dialAddr`.
       return (signal) => node.dialProtocol(addr, SEED_PROTOCOL, { signal });
     }
     const peerId = peerIdFromString(target.peerId);

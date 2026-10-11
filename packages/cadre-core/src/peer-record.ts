@@ -126,10 +126,6 @@ export function isSignalingAddr(addr: string): boolean {
   return addr.includes(SIGNALING_PREFIX);
 }
 
-// The two address helpers are defined in `peer-dial.ts`, which must stay free of this module
-// (it pulls in the crypto plugin) to remain importable from anywhere without a cycle.
-export { trailingPeerId, withTrailingPeerId } from './peer-dial.js';
-
 /**
  * Return `addrs` with signaling (`/p2p-circuit`) addrs first, otherwise stable.
  * Used to present the WebRTC dial input ahead of direct addrs. Does NOT mutate

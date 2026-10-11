@@ -29,7 +29,7 @@ import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
-import { trailingPeerId } from './peer-record.js';
+import { trailingPeerId } from './peer-dial.js';
 import {
   formationDeadlines,
   resolveProvisionTimeoutMs,
@@ -802,6 +802,9 @@ export interface FormationDialResult {
  * refused fails fast and still hands over to the next. A budget per address here would overrun
  * the session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
  * hung first address are seen in practice, give each address a sub-budget or dial them in parallel.
+ * The same dial can also be joined to another dial of the responder in flight (the queue keys
+ * jobs by peer id — see `peer-dial.ts` → `dialAddr`), which then holds this one on that job's
+ * address; the remedy, when that is seen, is the same per-address dial.
  */
 function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
   return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {

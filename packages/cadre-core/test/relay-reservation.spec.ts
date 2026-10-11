@@ -11,7 +11,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
-import { trailingPeerId } from '../src/peer-record.js';
+import { trailingPeerId } from '../src/peer-dial.js';
 import {
   circuitMultiaddrs,
   circuitMultiaddrsVia,

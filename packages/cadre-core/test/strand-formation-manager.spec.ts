@@ -30,7 +30,7 @@ import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import type { StrandFormationManagerConfig } from '../src/strand-formation-manager.js';
 import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
 import { FormationRejectedError } from '../src/strand-formation-rejection.js';
-import { trailingPeerId } from '../src/peer-record.js';
+import { trailingPeerId } from '../src/peer-dial.js';
 import type { ControlStream } from '../src/control-stream.js';
 import type { OpenInvitation, StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';

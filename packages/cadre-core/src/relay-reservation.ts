@@ -126,7 +126,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
-import { trailingPeerId } from './peer-record.js';
+import { trailingPeerId } from './peer-dial.js';
 import { relayReservationBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:relay-reservation');

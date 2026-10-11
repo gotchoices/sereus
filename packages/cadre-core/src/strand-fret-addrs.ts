@@ -29,7 +29,7 @@ import { PeerRecord, RecordEnvelope } from '@libp2p/peer-record';
 import { peerIdFromPublicKey } from '@libp2p/peer-id';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { fromString as uint8ArrayFromString } from 'uint8arrays';
-import { withTrailingPeerId } from './peer-record.js';
+import { withTrailingPeerId } from './peer-dial.js';
 
 const log = debug('sereus:cadre:strand-fret-addrs');
 

@@ -428,7 +428,6 @@ export {
   isPeerRecordFresh,
   isSignalingAddr,
   orderSignalingFirst,
-  withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -486,6 +485,7 @@ export {
 // so another dial of the same peer in flight cannot capture the attempt.
 export {
   dialAddr,
+  withTrailingPeerId,
   dialPeerAddrs,
   SelfRelayOnlyError,
   PeerUnreachableError,

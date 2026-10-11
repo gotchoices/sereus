@@ -662,8 +662,9 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 
 				// Kick a pass and wait until its dial is actually IN FLIGHT — the silent
 				// server has accepted the connection it will never answer — stopping
-				// before the pass reaches the dial would test nothing. If the pass somehow
-				// settles first, proceed anyway: stop() must be bounded regardless.
+				// before the pass reaches the dial would test nothing. On loopback the accept
+				// always comes before the pass can settle, so a pass that settled first means
+				// the dial never reached the server and the case has not tested stop() mid-dial.
 				const pass = owner.node.reconcileControlCohort();
 				let passSettled = false;
 				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });

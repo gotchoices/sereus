@@ -8,7 +8,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Connection, PeerId } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { dialAddr, dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, withTrailingPeerId, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
+import { dialAddr, dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, trailingPeerId, withTrailingPeerId, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
 import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
@@ -234,6 +234,74 @@ describe('dialAddr — the node stops with an attempt in flight', () => {
 		await dialer.stop();
 		await expect(attempt).rejects.toThrow(/the node stopped/);
 		expect(Date.now() - stopped).toBeLessThan(SLACK_MS);
+	});
+
+	it('rejects with the reason of a signal already aborted on entry, touching no network', async () => {
+		// An aborted signal fires no `abort` event, so a dial that only listened for one would run
+		// to the transport's own limit; the helper has to read the signal's state as well.
+		const dialer = await startNode([webSockets()], []);
+		const dead = await silentServer();
+		const controller = new AbortController();
+		controller.abort(new Error('already past the deadline'));
+
+		await expect(dialAddr(dialer, boundTo(dead.wsAddr, await newPeerId()), controller.signal, 'test dial'))
+			.rejects.toThrow('already past the deadline');
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(dead.accepted()).toBe(0);
+	});
+});
+
+describe('withTrailingPeerId', () => {
+	const TARGET = '12D3KooWTargetAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	const RELAY = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	const OTHER = '12D3KooWOtherAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+	/** Normalize a string addr and return the string, or null when it was dropped. */
+	const normalize = (addr: string, peerId = TARGET): string | null =>
+		withTrailingPeerId(multiaddr(addr), peerId)?.toString() ?? null;
+
+	it('appends the suffix to a direct addr that carries no /p2p/ at all', () => {
+		expect(normalize('/ip4/1.2.3.4/tcp/4001')).toBe(`/ip4/1.2.3.4/tcp/4001/p2p/${TARGET}`);
+	});
+
+	it('appends the suffix to a ws addr too (the shape the push-wake scenario uses)', () => {
+		expect(normalize('/ip4/10.255.0.1/tcp/4001/ws')).toBe(`/ip4/10.255.0.1/tcp/4001/ws/p2p/${TARGET}`);
+	});
+
+	it('leaves a circuit addr already ending in /p2p/<target> untouched', () => {
+		const addr = `/dns4/r.example.org/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${TARGET}`;
+		expect(normalize(addr)).toBe(addr);
+		// Identity, not merely an equal string — no needless re-encapsulation.
+		const parsed = multiaddr(addr);
+		expect(withTrailingPeerId(parsed, TARGET)).toBe(parsed);
+	});
+
+	it('appends the target to a relay hop whose destination is missing', () => {
+		// The trailing peer id here is the RELAY's, so the naive "it already has a
+		// /p2p/, leave it" rule would file a circuit-to-nowhere under the target.
+		const hop = `/dns4/r.example.org/tcp/4001/p2p/${RELAY}/p2p-circuit`;
+		expect(trailingPeerId(multiaddr(hop))).toBe(RELAY);
+		expect(normalize(hop)).toBe(`${hop}/p2p/${TARGET}`);
+	});
+
+	it('drops an addr terminating in a DIFFERENT peer id (it does not reach the target)', () => {
+		expect(normalize(`/ip4/1.2.3.4/tcp/4001/p2p/${OTHER}`)).toBeNull();
+		expect(normalize(`/dns4/r/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${OTHER}`)).toBeNull();
+	});
+
+	it('is idempotent — normalizing an already-normalized addr changes nothing', () => {
+		const once = normalize('/ip4/1.2.3.4/tcp/4001');
+		expect(once).not.toBeNull();
+		expect(normalize(once!)).toBe(once);
+	});
+
+	it('leaves a normalized list uniform, which is what libp2p.dial requires', () => {
+		const mixed = [
+			`/dns4/r/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${TARGET}`,
+			'/ip4/10.255.0.1/tcp/4001/ws',
+		];
+		const normalized = mixed.map((a) => normalize(a));
+		expect(normalized.every((a) => a?.endsWith(`/p2p/${TARGET}`))).toBe(true);
 	});
 });
 

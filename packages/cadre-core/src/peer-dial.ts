@@ -29,7 +29,7 @@
  * Dependency-free apart from `control-stream.ts` and `link-budget.ts`, so any
  * module may import it without creating an import cycle. That is why the two
  * address helpers ({@link trailingPeerId}, {@link withTrailingPeerId}) live here
- * and `peer-record.ts`, which pulls in the crypto plugin, re-exports them.
+ * rather than in `peer-record.ts`, which pulls in the crypto plugin.
  */
 
 import debug from 'debug';
@@ -261,27 +261,50 @@ export async function dialAddr(dialer: AddrDialer, addr: Multiaddr, signal: Abor
 		log('%s: reusing the open connection to %s', label, target);
 		return open;
 	}
-	await assertDialAllowed(components?.connectionGater, target, addr, label);
+	const attempt = attemptSignal(dialer, signal, label);
+	try {
+		await assertDialAllowed(components?.connectionGater, target, addr, label);
+		if (attempt.signal.aborted) {
+			throw attempt.signal.reason;
+		}
+		// NOTE: a relayed address's relay leg still goes through the dial queue (the circuit
+		// transport dials the relay by peer id), so another dial of the relay can join it. Fine
+		// while a relay connection is normally already open for the reservation; revisit if a
+		// relayed attempt is ever seen timing out while a dial of the relay by id is in flight.
+		return await manager.dial(addr, { signal: attempt.signal });
+	} catch (err) {
+		// A transport reports an aborted connect as its own failure ("Could not connect to …");
+		// why it was aborted — the deadline, or the stop — is the error worth surfacing.
+		throw attempt.signal.aborted ? attempt.signal.reason : err;
+	} finally {
+		attempt.release();
+	}
+}
+
+/**
+ * The signal one attempt dials under: aborted when the caller's `signal` aborts, with its
+ * reason, or when the node stops. Linked before anything in the attempt awaits (the gater
+ * hooks are async), so neither event can fall between the check and the dial; a `signal`
+ * already aborted on entry aborts it at once, since no `abort` event will come. `release`
+ * unhooks both listeners.
+ */
+function attemptSignal(dialer: AddrDialer, signal: AbortSignal, label: string): { signal: AbortSignal; release(): void } {
 	const events = dialer as AddrDialer & StopEventsLike;
 	const controller = new AbortController();
 	const onAbort = (): void => controller.abort(signal.reason);
 	const onStop = (): void => controller.abort(new Error(`${label}: the node stopped`));
 	signal.addEventListener('abort', onAbort, { once: true });
 	events.addEventListener?.('stop', onStop);
-	try {
-		// NOTE: a relayed address's relay leg still goes through the dial queue (the circuit
-		// transport dials the relay by peer id), so another dial of the relay can join it. Fine
-		// while a relay connection is normally already open for the reservation; revisit if a
-		// relayed attempt is ever seen timing out while a dial of the relay by id is in flight.
-		return await manager.dial(addr, { signal: controller.signal });
-	} catch (err) {
-		// A transport reports an aborted connect as its own failure ("Could not connect to …");
-		// why it was aborted — the deadline, or the stop — is the error worth surfacing.
-		throw controller.signal.aborted ? controller.signal.reason : err;
-	} finally {
-		signal.removeEventListener('abort', onAbort);
-		events.removeEventListener?.('stop', onStop);
+	if (signal.aborted) {
+		onAbort();
 	}
+	return {
+		signal: controller.signal,
+		release: () => {
+			signal.removeEventListener('abort', onAbort);
+			events.removeEventListener?.('stop', onStop);
+		},
+	};
 }
 
 /**

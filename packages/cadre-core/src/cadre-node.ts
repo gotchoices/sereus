@@ -82,8 +82,6 @@ import {
   isPeerRecordFresh,
   orderSignalingFirst,
   isSignalingAddr,
-  trailingPeerId,
-  withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -108,6 +106,8 @@ import {
   dialPeerAddrs,
   SelfRelayOnlyError,
   CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS,
+  trailingPeerId,
+  withTrailingPeerId,
   type PeerDialBudget
 } from './peer-dial.js';
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
