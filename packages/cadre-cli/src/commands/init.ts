@@ -197,6 +197,7 @@ export const initCommand = new Command('init')
       const inDir = path.resolve(options.dir) === process.cwd() ? '' : `cd ${rel(result.dir)} && `;
       console.log(`  2. ${inDir}cadre start            (or npm start)`);
       console.log(`  3. ${inDir}cadre code --qr        in another terminal, then scan it with the Sereus app on the phone that owns the cadre`);
+      console.log(`  4. ${inDir}cadre service          to run it at boot instead of in a terminal (prints the unit and how to install it)`);
     } catch (err) {
       console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);

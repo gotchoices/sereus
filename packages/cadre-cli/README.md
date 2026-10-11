@@ -12,6 +12,7 @@ npm init -y && npm install @serfab/cadre-cli
 npx cadre init --public my-node.example.com    # identity, claim secret, cadre.yaml; --public is where phones reach it from outside
 npx cadre start                                 # or: npm start (init adds the script); waits to be claimed
 npx cadre code --qr                             # in another terminal: the code to scan with the Sereus app on your phone
+npx cadre service                               # to run it at boot instead: prints the unit and how to install it
 ```
 
 `init` listens on TCP 4001 and WebSocket 4002 (`--port`, `--ws-port`); phones dial the WebSocket port, so that is
@@ -198,6 +199,26 @@ The claim names the cadre. A node waiting to be claimed cannot know which party 
 `/status` reports `node.claim` as `claimed` as soon as a claim is on record (read at start, or written in this process — before the claimant is acknowledged, and kept across the restart, so a poller never sees it flip back), `awaiting` with a secret and no record, and `none` without a secret. When claimed, `node.claimedBy` is the record's owner key, and `node.partyId` names the party the running node serves — the claimed one once the restart completes. cadre-host's join flow reads both.
 
 A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never printed or logged.
+
+### Run it as a service
+
+`cadre service` prints a service definition that runs this node folder's `cadre start` at boot and restarts it when it exits, then (on stderr) the commands that install it. It writes nothing itself. All paths are absolute (this `node`, this package's `cadre.js`, the config), and the node needs no environment, since `cadre init` keeps the claim secret in the file the config names.
+
+- **Linux, user unit (default):** a `systemctl --user` unit. Installing it needs no root, but `sudo loginctl enable-linger $USER` is what starts user services at boot and keeps them running after you log out.
+  ```bash
+  mkdir -p ~/.config/systemd/user
+  npx cadre service > ~/.config/systemd/user/cadre-node.service
+  systemctl --user daemon-reload && systemctl --user enable --now cadre-node
+  sudo loginctl enable-linger $USER
+  ```
+- **Linux, `--system`:** a system unit run as you (`User=`), installed with sudo; no linger needed.
+  ```bash
+  npx cadre service --system | sudo tee /etc/systemd/system/cadre-node.service >/dev/null
+  sudo systemctl daemon-reload && sudo systemctl enable --now cadre-node
+  ```
+- **macOS:** a launchd agent (`~/Library/LaunchAgents/org.sereus.cadre-node.plist`), logging into the node folder.
+
+`--name` changes the service name (to run several nodes), `-c` points at another config, and `--health-port` / `--metrics-port` are passed to `cadre start`. Stop a copy running in a terminal first: the two would hold the same ports. The [systemd unit in `contrib/`](./contrib/cadre-node.service) remains the template for a dedicated `cadre` system user with `/etc/cadre` and `/var/lib/cadre`.
 
 ### The node code
 
