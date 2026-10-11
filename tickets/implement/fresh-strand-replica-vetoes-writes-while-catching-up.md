@@ -5,7 +5,7 @@ files: ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (validatePendOp
 difficulty: medium
 ----
 
-**Blocked (b): a dependency outside this repo.** The vote that fails the write is cast by `@optimystic/db-p2p`'s cluster member (sibling `../optimystic`, at 1.12.0). Nothing in Sereus decides how a cohort member that is still catching up votes. This unblocks when optimystic changes that policy (see "Proposed upstream change") and this workspace links a build that carries it. Filed in `../optimystic` as `tickets/fix/catching-up-member-vetoes-pends-it-cannot-verify`.
+**Unblocked:** optimystic 1.12.1 ships `catching-up-member-vetoes-pends-it-cannot-verify` (the vote reads storage metadata, and a member that cannot read it abstains). Do the steps under "When unblocked" below. If the scenario still fails, capture logs and route back to `blocked/` with the new evidence.
 
 # A fresh strand replica vetoes the phone's writes while it catches up
 

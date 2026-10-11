@@ -5,7 +5,7 @@ repro: verified
 difficulty: medium
 ----
 
-**Blocked: a dependency outside this repo.** Filed in `../Fret` as `tickets/fix/address-less-peer-never-marked-dead`. This unblocks when FRET ships the two-arm rule below and this workspace links a build that carries it.
+**Resolved upstream:** FRET 1.0.2 (`address-less-peer-never-marked-dead`), linked here through optimystic. Follow-up: `implement/phone-owner-never-leaves-members-cohort`.
 
 # A peer with no address never fails a contact, so it is never marked dead
 
