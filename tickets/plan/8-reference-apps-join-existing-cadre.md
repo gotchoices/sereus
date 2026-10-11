@@ -29,3 +29,11 @@ difficulty: medium
 ## Note from planning `app-joins-existing-cadre-by-invitation`
 
 Building blocks this ticket uses: `encodeCadreJoinRequest` / `decodeCadreJoinRequest` and the `sereus-invite:1.` invitation prefix (both decoders refuse the other kind by name); `CreateCadreInvitationResult.reach` (`anywhere` / `local-network` / `issuer-only`) for the warning before handing an invitation over; `redeemCadreInvitation(…, { waitForMember, signal, onProgress })` with `waiting` progress (`no-member-answered` → "waiting for an always-on machine", `member-not-ready` → "the cadre is catching up") and a cancel; `CadreNode.wireOwnKeyIfOwner`. On the phone, `PhoneNode.joinCadre` does the party switch and rollback, and the status has a `joining` state. Invitations are capped at 6 member addresses, which with 3 owner keys measured 1,972 characters: it fits a QR code. The web app has no kit: it must follow the same rules itself — one node, switch party by stopping it and building one for party A, never run its owner genesis (`ensureOwnerKey`, `cadre-web.ts`) for a joined party, call `wireOwnKeyIfOwner` instead, and restore party B on failure.
+
+## Note from reviewing `app-joins-existing-cadre-by-invitation`
+
+What the RN app's thin wiring left for these screens:
+
+- **The Connect form keeps the party id it showed before the join.** Settings fills Party ID once at launch, so after a join without a relaunch, Disconnect → Connect starts the party the app left (as founded, which is safe) and reads as the join being undone. Refill the form from the running options after a join (`getRunningOptions()` in `cadre-phone.ts`).
+- **Nothing shows the wait or offers a cancel.** `use-cadre.ts` `joinCadre` passes neither `onProgress` nor `signal` to `joinCadreByInvitation`, and Settings hides the connected sections (the Join section included) while the hook's status is `connecting`, so a join waiting for an always-on machine shows nothing until it ends. Disconnect cancels a join in the kit, but it is hidden too.
+- **The hook holds the stopped node during the join.** Until `adoptRunningNode` runs at the end, `node` and `strands` in the hook are the node the join stopped; a screen that writes through them in that window gets the stopped node's error.

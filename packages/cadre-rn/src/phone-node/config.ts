@@ -155,8 +155,10 @@ export function wireJoinedOwnerKey(
 	let expired = false;
 	const wiring = async (): Promise<OwnerGenesisResult> => {
 		while (!(await node.wireOwnKeyIfOwner())) {
-			if (!options.granted || expired) return 'member';
+			if (!options.granted) return 'member';
 			await new Promise((resolve) => setTimeout(resolve, GRANTED_OWNER_RECHECK_MS));
+			// Past the bound the start has gone on as `'timed-out'`, and may have stopped the node.
+			if (expired) return 'member';
 		}
 		return 'enrolled';
 	};
